@@ -7,8 +7,9 @@
 //! not the variable suffix either, because that suffix is inside the system
 //! block and a re-ranked packet there re-writes the provider's whole prefix
 //! cache. Eligibility and rank are deterministic, the budget is a hard cap
-//! that drops whole lines, no line runs past `MAX_PACKET_LINE_CHARS`, one
-//! claim takes one line, and every built packet writes one retrieval-audit
+//! that drops whole lines, no line runs past `MAX_PACKET_LINE_CHARS` for a
+//! recipient that can fetch the rest with `memory_search` (any other gets
+//! whole records), one claim takes one line, and every built packet writes one retrieval-audit
 //! row naming what was selected, what was excluded and why, and who received
 //! it. Off means no packet and no audit — the setting is the record of why.
 
@@ -26,7 +27,7 @@ pub(crate) const MAX_PACKET_CHARS: usize = 4_000;
 /// ten short constraints, and the constraints were the ones dropped.
 pub(crate) const MAX_PACKET_LINE_CHARS: usize = 320;
 /// Ends a clipped body. The agent tools can return the full text.
-const CLIPPED_MARKER: &str = " ... (clipped; memory_search returns the full text)";
+pub(crate) const CLIPPED_MARKER: &str = " ... (clipped; memory_search returns the full text)";
 const EXCLUDE_UNSAFE: &str = "unsafe_body";
 const EXCLUDE_OVER_BUDGET: &str = "over_budget";
 /// The codes that say an active record was held back at the gate. The audit
@@ -193,7 +194,7 @@ pub struct MemoryPacket {
 /// could forge additional `[id] kind (reason):` lines and pass its own text
 /// off as separately cited memories. Bodies are rendered on one line; the
 /// break becomes a visible space rather than a new citation.
-fn render_body(body: &str) -> String {
+pub(crate) fn render_body(body: &str) -> String {
     body.split(['\n', '\r'])
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -243,10 +244,23 @@ pub(crate) fn unsafe_body(body: &str) -> bool {
 
 /// Build the packet for one recipient session and write its audit row.
 /// `None` means no packet: injection off, no scope content, or nothing fit.
+/// Whether the recipient can fetch a record's full text. Clipping a line is
+/// only honest when it can: the marker names `memory_search`, and a recipient
+/// without it (a Cursor chat, a worker, a host without the chat-tools route)
+/// would lose the rest of the record for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retrieval {
+    /// The recipient has `memory_search`: long lines are clipped.
+    MemorySearch,
+    /// The packet is all the recipient gets: every record goes in whole.
+    PacketOnly,
+}
+
 pub fn for_session(
     db: &Connection,
     scope_key: &str,
     recipient_session_id: &str,
+    retrieval: Retrieval,
 ) -> Result<Option<MemoryPacket>, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     if !injection_enabled(db, &scope_key)? {
@@ -376,7 +390,10 @@ pub fn for_session(
         }
         let reason = reason_for(&row.provenance, row.confidence_bps);
         let prefix = line_prefix(&row.id, &row.kind, &reason);
-        let body = clip_body(&render_body(&row.body), prefix.chars().count());
+        let body = match retrieval {
+            Retrieval::MemorySearch => clip_body(&render_body(&row.body), prefix.chars().count()),
+            Retrieval::PacketOnly => render_body(&row.body),
+        };
         let line = format!("{prefix}{body}\n");
         if used + line.len() > MAX_PACKET_CHARS {
             exclusions.push((row.id, EXCLUDE_OVER_BUDGET));
@@ -554,7 +571,12 @@ pub fn latest_audit(
 /// The launch-path helper: account scope, swallowing nothing silently — an
 /// error surfaces, a disabled or empty scope is simply no section.
 pub fn for_compile(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
-    Ok(for_session(db, ACCOUNT_MEMORY_SCOPE, session_id)?.map(|packet| packet.text))
+    let retrieval = if crate::memory_tools::has_memory_search(db, session_id) {
+        Retrieval::MemorySearch
+    } else {
+        Retrieval::PacketOnly
+    };
+    Ok(for_session(db, ACCOUNT_MEMORY_SCOPE, session_id, retrieval)?.map(|packet| packet.text))
 }
 
 #[cfg(test)]
@@ -608,7 +630,7 @@ mod tests {
     }
 
     fn selected_ids(db: &Connection) -> Vec<String> {
-        for_session(db, "account:local", "session-1")
+        for_session(db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .map(|packet| packet.selected.into_iter().map(|item| item.record_id).collect())
             .unwrap_or_default()
@@ -637,6 +659,25 @@ mod tests {
         let exclusions = audit_exclusions(&db);
         assert_eq!(exclusions.iter().filter(|(_, code)| code == EXCLUDE_NEAR_DUPLICATE).count(), 1);
         assert!(GATE_EXCLUSION_CODES.contains(&EXCLUDE_NEAR_DUPLICATE), "counted with the other gate codes");
+    }
+
+    #[test]
+    fn a_recipient_without_memory_search_gets_long_records_whole() {
+        // Review finding: a Cursor chat (no bridge server, so no memory_search)
+        // lost the tail of a long pin behind a marker naming a tool it lacks.
+        let (_dir, db) = packet_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind)
+             VALUES('cursor-chat',NULL,'cursor','chat','idle','reported','direct')",
+            [],
+        )
+        .unwrap();
+        let long = format!("{} and never force-push a shared branch.", "Keep every release branch protected ".repeat(14));
+        assert!(long.chars().count() > 500);
+        insert(&db, "long-pin", &long, "user_explicit", "active", None);
+        let text = for_compile(&db, "cursor-chat").unwrap().expect("a packet");
+        assert!(text.contains("never force-push a shared branch."), "{text}");
+        assert!(!text.contains("memory_search"), "no pointer at a tool the chat lacks");
     }
 
     #[test]
@@ -689,7 +730,7 @@ mod tests {
     fn an_approved_agent_proposal_reads_as_agent_memory() {
         let (_dir, db) = packet_db();
         insert_kind(&db, "agent", "constraint", "Check upstream trackers before a security hunt", "agent_proposal", None);
-        let packet = for_session(&db, "account:local", "session-1").unwrap().unwrap();
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap().unwrap();
         assert!(packet.text.contains("constraint (agent memory): Check upstream"), "{}", packet.text);
     }
 
@@ -756,7 +797,7 @@ mod tests {
             "active",
             None,
         );
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         assert_eq!(packet.selected.len(), 1);
@@ -799,7 +840,7 @@ mod tests {
             None,
             Some("subject:review"),
         );
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         let selected: Vec<&str> = packet
@@ -842,7 +883,7 @@ mod tests {
             "expired",
             None,
         );
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         assert_eq!(packet.selected.len(), 1);
@@ -883,7 +924,7 @@ mod tests {
             "active",
             None,
         );
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         let order: Vec<&str> = packet
@@ -942,7 +983,7 @@ mod tests {
                 &format!("2026-09-01T00:{:02}:{:02}Z", index / 60, index % 60),
             );
         }
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .expect("the active pin is a candidate");
         let ids: Vec<&str> = packet
@@ -985,7 +1026,7 @@ mod tests {
             "active",
             "2026-09-02T00:00:00Z",
         );
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         let ids: Vec<&str> = packet
@@ -1008,7 +1049,7 @@ mod tests {
                 "2026-09-01T00:00:00Z",
             );
         }
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
         assert_eq!(latest_candidate_count(&db), ACTIVE_CANDIDATE_CAP as i64);
         let raw: String = db
             .query_row(
@@ -1038,7 +1079,7 @@ mod tests {
                 "2026-09-01T00:00:00Z",
             );
         }
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
         assert_eq!(latest_candidate_count(&db), ACTIVE_CANDIDATE_CAP as i64);
         assert!(!audit_exclusions(&db)
             .iter()
@@ -1060,7 +1101,7 @@ mod tests {
                 None,
             );
         }
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         assert!(
@@ -1087,7 +1128,7 @@ mod tests {
             "active",
             None,
         );
-        let huge = for_session(&db2, "account:local", "session-1")
+        let huge = for_session(&db2, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .expect("a long record is clipped into one line rather than dropped");
         assert_eq!(huge.selected.len(), 1);
@@ -1096,7 +1137,7 @@ mod tests {
 
         let (_dir3, db3) = packet_db();
         assert!(
-            for_session(&db3, "account:local", "session-1").unwrap().is_none(),
+            for_session(&db3, "account:local", "session-1", Retrieval::MemorySearch).unwrap().is_none(),
             "an empty scope is no packet"
         );
     }
@@ -1112,7 +1153,7 @@ mod tests {
             "active",
             None,
         );
-        let packet = for_session(&db, "account:local", "session-1")
+        let packet = for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .unwrap();
         let citation_lines = packet
@@ -1142,7 +1183,7 @@ mod tests {
             "active",
             None,
         );
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
         // The session is running with that packet. Editing and deleting the
         // records must not rewrite or shrink what it was told it received.
         db.execute(
@@ -1177,14 +1218,14 @@ mod tests {
     fn recompiling_a_session_compacts_the_prior_payload_instead_of_duplicating_it() {
         let (_dir, db) = packet_db();
         insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
 
         db.execute(
             "UPDATE memory_records SET body='Prefers spaces now' WHERE id='a1'",
             [],
         )
         .unwrap();
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
 
         let audits: i64 = db
             .query_row(
@@ -1214,13 +1255,13 @@ mod tests {
     fn recompiling_to_an_empty_packet_still_compacts_the_prior_payload() {
         let (_dir, db) = packet_db();
         insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
         db.execute(
             "UPDATE memory_records SET status='deleted' WHERE id='a1'",
             [],
         )
         .unwrap();
-        assert!(for_session(&db, "account:local", "session-1")
+        assert!(for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .is_none());
 
@@ -1241,8 +1282,8 @@ mod tests {
     fn packet_audits_remain_independent_between_sessions() {
         let (_dir, db) = packet_db();
         insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
-        for_session(&db, "account:local", "session-1").unwrap();
-        for_session(&db, "account:local", "session-2").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
+        for_session(&db, "account:local", "session-2", Retrieval::MemorySearch).unwrap();
 
         let audits: i64 = db
             .query_row("SELECT COUNT(*) FROM memory_retrieval_audits", [], |row| {
@@ -1269,7 +1310,7 @@ mod tests {
             "default is on"
         );
         set_injection(&db, "account:local", false).unwrap();
-        assert!(for_session(&db, "account:local", "session-1")
+        assert!(for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .is_none());
         let audits: i64 = db
@@ -1279,7 +1320,7 @@ mod tests {
             .unwrap();
         assert_eq!(audits, 0, "off means off: the setting is the record");
         set_injection(&db, "account:local", true).unwrap();
-        assert!(for_session(&db, "account:local", "session-1")
+        assert!(for_session(&db, "account:local", "session-1", Retrieval::MemorySearch)
             .unwrap()
             .is_some());
     }
@@ -1288,7 +1329,7 @@ mod tests {
     fn the_audit_answers_what_a_session_received() {
         let (_dir, db) = packet_db();
         insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
-        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-1", Retrieval::MemorySearch).unwrap();
         let audit = latest_audit(&db, "session-1").unwrap().unwrap();
         assert_eq!(audit.selected.len(), 1);
         assert_eq!(audit.selected[0].body, "Prefers tabs");

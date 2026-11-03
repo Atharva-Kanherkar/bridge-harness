@@ -103,9 +103,9 @@ fn ledger_db(ledger: &Ledger) -> (tempfile::TempDir, Connection) {
     (dir, db)
 }
 
-fn score(ledger: &Ledger) -> PacketScore {
+fn score(ledger: &Ledger, retrieval: memory_packet::Retrieval) -> PacketScore {
     let (_dir, db) = ledger_db(ledger);
-    let packet = memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "eval-recipient").unwrap();
+    let packet = memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "eval-recipient", retrieval).unwrap();
     let mut score = PacketScore { must_cover: ledger.must_cover.len(), ..Default::default() };
     let Some(packet) = packet else { return score };
     let selected: BTreeSet<&str> = packet.selected.iter().map(|item| item.record_id.as_str()).collect();
@@ -163,16 +163,24 @@ fn ledgers() -> Vec<Ledger> {
 
 #[test]
 fn packet_eval() {
+    use memory_packet::Retrieval;
     let mut failures = Vec::new();
     println!(
-        "{:<36} {:>8} {:>11} {:>9} {:>10} {:>8} {:>7} {:>6}",
-        "ledger", "covered", "constraints", "dup-lines", "dup-groups", "conflict", "longest", "chars"
+        "{:<36} {:<13} {:>8} {:>11} {:>9} {:>10} {:>8} {:>7} {:>6}",
+        "ledger", "recipient", "covered", "constraints", "dup-lines", "dup-groups", "conflict", "longest", "chars"
     );
-    for ledger in ledgers() {
-        let score = score(&ledger);
+    // Both recipients: a chat that can fetch a clipped record's full text, and
+    // one (a Cursor chat, a worker) for which the packet is all there is.
+    for (ledger, retrieval) in ledgers().into_iter().flat_map(|ledger| {
+        let ledger = std::rc::Rc::new(ledger);
+        [(ledger.clone(), Retrieval::MemorySearch), (ledger, Retrieval::PacketOnly)]
+    }) {
+        let score = score(&ledger, retrieval);
+        let recipient = if retrieval == Retrieval::MemorySearch { "memory-search" } else { "packet-only" };
         println!(
-            "{:<36} {:>8} {:>11} {:>9} {:>10} {:>8} {:>7} {:>6}",
+            "{:<36} {:<13} {:>8} {:>11} {:>9} {:>10} {:>8} {:>7} {:>6}",
             ledger.name,
+            recipient,
             format!("{}/{}", score.covered, score.must_cover),
             format!("{}/{}", score.constraints_covered, score.constraints),
             score.exact_duplicate_lines,
@@ -182,10 +190,10 @@ fn packet_eval() {
             score.total_chars,
         );
         if score.covered != score.must_cover {
-            failures.push(format!("{}: covered {}/{}", ledger.name, score.covered, score.must_cover));
+            failures.push(format!("{} ({recipient}): covered {}/{}", ledger.name, score.covered, score.must_cover));
         }
         if score.constraints_covered != score.constraints {
-            failures.push(format!("{}: constraints {}/{}", ledger.name, score.constraints_covered, score.constraints));
+            failures.push(format!("{} ({recipient}): constraints {}/{}", ledger.name, score.constraints_covered, score.constraints));
         }
         if score.exact_duplicate_lines != 0 {
             failures.push(format!("{}: {} exact duplicate lines", ledger.name, score.exact_duplicate_lines));
@@ -193,7 +201,7 @@ fn packet_eval() {
         if score.conflict_groups_repeated != 0 {
             failures.push(format!("{}: a conflict group reached the packet twice", ledger.name));
         }
-        if score.longest_line > LINE_CAP {
+        if retrieval == Retrieval::MemorySearch && score.longest_line > LINE_CAP {
             failures.push(format!("{}: a {}-char line exceeds {LINE_CAP}", ledger.name, score.longest_line));
         }
         if score.total_chars > memory_packet::MAX_PACKET_CHARS {

@@ -251,7 +251,8 @@ fn ledger_record() -> impl Strategy<Value = LedgerRecord> {
 fn the_packet_keeps_its_caps_and_rules_on_any_ledger() {
     let (_dir, db) = property_db();
     runner(200)
-        .run(&prop::collection::vec(ledger_record(), 0..40), |records| {
+        .run(&(prop::collection::vec(ledger_record(), 0..40), any::<bool>()), |(records, can_search)| {
+            let retrieval = if can_search { memory_packet::Retrieval::MemorySearch } else { memory_packet::Retrieval::PacketOnly };
             reset(&db, 1000, memory_extraction::MODE_PROPOSE);
             for (index, record) in records.iter().enumerate() {
                 db.execute(
@@ -271,8 +272,8 @@ fn the_packet_keeps_its_caps_and_rules_on_any_ledger() {
                 )
                 .unwrap();
             }
-            let first = memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "recipient").unwrap();
-            let second = memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "recipient").unwrap();
+            let first = memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "recipient", retrieval).unwrap();
+            let second = memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "recipient", retrieval).unwrap();
             prop_assert_eq!(first.as_ref().map(|packet| packet.text.clone()), second.as_ref().map(|packet| packet.text.clone()), "reproducible");
             let Some(packet) = first else {
                 prop_assert!(records.iter().all(|record| memory_packet::unsafe_body(&record.body)), "only an empty or unsafe ledger yields no packet");
@@ -282,7 +283,9 @@ fn the_packet_keeps_its_caps_and_rules_on_any_ledger() {
             prop_assert_eq!(lines.len(), packet.selected.len(), "one line per selected record");
             let mut total = 0;
             for line in &lines {
-                prop_assert!(line.chars().count() <= memory_packet::MAX_PACKET_LINE_CHARS, "{line}");
+                if can_search {
+                    prop_assert!(line.chars().count() <= memory_packet::MAX_PACKET_LINE_CHARS, "{line}");
+                }
                 total += line.len() + 1;
             }
             prop_assert!(total <= memory_packet::MAX_PACKET_CHARS);
@@ -291,6 +294,10 @@ fn the_packet_keeps_its_caps_and_rules_on_any_ledger() {
             for (index, item) in packet.selected.iter().enumerate() {
                 let record = source(&item.record_id);
                 prop_assert!(!memory_packet::unsafe_body(&record.body));
+                if !can_search {
+                    prop_assert_eq!(&item.body, &memory_packet::render_body(&record.body), "a recipient without memory_search gets the whole record");
+                    prop_assert!(!item.body.ends_with(memory_packet::CLIPPED_MARKER));
+                }
                 if let Some(group) = record.group {
                     prop_assert!(groups.insert(group), "two members of {group}");
                 }

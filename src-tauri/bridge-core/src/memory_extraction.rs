@@ -1959,7 +1959,7 @@ mod tests {
         );
 
         let packet =
-            crate::memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "a-future-session")
+            crate::memory_packet::for_session(&db, ACCOUNT_MEMORY_SCOPE, "a-future-session", crate::memory_packet::Retrieval::MemorySearch)
                 .unwrap()
                 .unwrap();
         assert_eq!(packet.selected.len(), 1);

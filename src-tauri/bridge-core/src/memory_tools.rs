@@ -48,14 +48,20 @@ pub fn guidance_applies(harness: &str, top_level_chat: bool, tools_served: bool)
     top_level_chat && tools_served && HARNESSES_WITH_BRIDGE_TOOLS.contains(&harness)
 }
 
-/// [`SESSION_GUIDANCE`] for `session_id` when it applies.
-pub fn session_guidance(db: &Connection, session_id: &str) -> Option<&'static str> {
-    let harness: String = db
-        .query_row("SELECT harness FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
-        .ok()?;
+/// Whether `session_id` will be able to call `memory_search`: the same test
+/// [`SESSION_GUIDANCE`] and the packet's clipping both depend on.
+pub fn has_memory_search(db: &Connection, session_id: &str) -> bool {
+    let Ok(harness) = db.query_row("SELECT harness FROM sessions WHERE id=?1", params![session_id], |row| row.get::<_, String>(0)) else {
+        return false;
+    };
     let top_level = crate::chat_defaults::is_top_level_chat(db, session_id).unwrap_or(false);
     let served = crate::notes::tool::listener_url().is_some() && crate::mcp_apps::helper_binary().is_some();
-    guidance_applies(&harness, top_level, served).then_some(SESSION_GUIDANCE)
+    guidance_applies(&harness, top_level, served)
+}
+
+/// [`SESSION_GUIDANCE`] for `session_id` when it applies.
+pub fn session_guidance(db: &Connection, session_id: &str) -> Option<&'static str> {
+    has_memory_search(db, session_id).then_some(SESSION_GUIDANCE)
 }
 
 #[derive(Debug, Deserialize)]
