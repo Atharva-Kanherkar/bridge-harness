@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Editor } from "@tiptap/core";
 import { resetMockNotes } from "../../../notesMock";
 import { NoteEditor, HAND_OVER_MS, type NoteEditorHandle, type NoteEditorProps } from "./NoteEditor";
+import { imageWidthOf } from "./views";
 
 // No core assets in jsdom: images draw from a fake url, which still exercises
 // the caption and the resize handles.
@@ -318,6 +319,17 @@ describe("NoteEditor", () => {
     expect(editor().getMarkdown()).toContain("[[Fresh thoughts]]");
   });
 
+  it("opens no [[ menu inside inline code, and shows at most 20 pages", async () => {
+    const many = Array.from({ length: 30 }, (_, index) => ({ id: `p-${index}`, title: `Plan ${index}` }));
+    await mount("say `code` here\n", { pages: { title: () => undefined, open: vi.fn(), pages: () => many } });
+    await typeAfter("cod", "[[Pl");
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+    await typeAfter("here", " [[Plan");
+    await settle();
+    expect(document.querySelectorAll("[role='listbox'][aria-label='Page links'] [role='option']")).toHaveLength(21);
+  });
+
   it("lets go of the [[ menu once the link is closed by hand", async () => {
     await mount("first\n");
     await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Plans").run(); });
@@ -364,6 +376,17 @@ describe("NoteEditor", () => {
     await settle();
     await commit();
     expect(onChange.mock.calls[0][0]).toBe("Before\n\n![Old plan, revised](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
+
+    // A bracket would end `![…]`, so a typed one is left out.
+    await act(async () => {
+      caption.textContent = "step 2] [final";
+      caption.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await settle();
+    await commit();
+    expect(onChange.mock.lastCall![0]).toContain("![step 2 final](assets/0123456789abcdef.png \"420\")");
+    expect(caption.textContent).toBe("step 2 final");
+    expect(imageWidthOf("0")).toBeNull();
   });
 
   it("shows an empty caption while its image is selected, and keeps a real title", async () => {

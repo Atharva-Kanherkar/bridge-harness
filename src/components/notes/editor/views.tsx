@@ -26,7 +26,7 @@ const IMAGE_MIN_PX = 120;
 /** The width the image's title holds ("420"), 0 or missing meaning natural. */
 export function imageWidthOf(title: unknown): number | null {
   const parsed = title == null ? null : /^\d{1,4}$/.exec(String(title).trim());
-  return parsed ? Math.max(IMAGE_MIN_PX, Number(parsed[0])) : null;
+  return parsed && Number(parsed[0]) > 0 ? Math.max(IMAGE_MIN_PX, Number(parsed[0])) : null;
 }
 
 /** The width a drag with a left or right handle lands on, clamped between
@@ -65,7 +65,9 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
     if (box && box.textContent !== caption) box.textContent = caption;
   }, [caption]);
   const commitCaption = (event: FocusEvent<HTMLElement>) => {
-    const text = (event.currentTarget.textContent ?? "").replace(/\n/g, " ");
+    // `![…]` holds the caption unescaped, so a bracket would end the image.
+    const text = (event.currentTarget.textContent ?? "").replace(/\n/g, " ").replace(/[[\]]/g, "");
+    if (event.currentTarget.textContent !== text) event.currentTarget.textContent = text;
     if (text !== caption) updateAttributes({ alt: text });
   };
   const beginDrag = (edge: "left" | "right") => (event: React.PointerEvent) => {
