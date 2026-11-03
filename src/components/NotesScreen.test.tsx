@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
+import { mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, mockUpdateNote, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
 import type { AdapterDescriptor, Session, Workspace } from "../types";
 import type { Editor } from "@tiptap/core";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
@@ -192,7 +192,10 @@ describe("list", () => {
     const held: { query: string; resolve: () => void }[] = [];
     vi.spyOn(bridgeApi, "listNotes").mockImplementation(async params => {
       const result = await realList(params);
-      await new Promise<void>(resolve => held.push({ query: params?.query ?? "", resolve }));
+      // The whole list read beside each search answers at once; only the
+      // searches race.
+      if (!params?.query) return result;
+      await new Promise<void>(resolve => held.push({ query: params.query!, resolve }));
       return result;
     });
     const search = field<HTMLInputElement>("Search notes");
@@ -247,6 +250,16 @@ describe("pages under pages", () => {
     expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(true);
     await expandUnder(ONBOARDING);
     expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(false);
+  });
+
+  it("still lists a page whose parent is archived", async () => {
+    await render();
+    const parentId = mockIdOf(ONBOARDING);
+    mockCreatePage({ title: "Orphaned research", content: "kept", parentId });
+    mockUpdateNote({ id: parentId, state: "archived" });
+    await settle(60);
+    await clearSearch();
+    expect(rowTitles().some(title => title.includes("Orphaned research"))).toBe(true);
   });
 
   it("moves and promotes pages, listing neither itself nor its descendants", async () => {
@@ -755,6 +768,22 @@ describe("links between pages", () => {
     expect(sync.markdown).toContain("[[Inbox plan|the plan]]");
   });
 
+  it("opens the page a wiki link names while a search hides it, making no copy", async () => {
+    await render();
+    await rename(ONBOARDING, "Onboarding");
+    await openNote("Local-first sync libraries");
+    await write(`${shown()}\n\nSee [[Onboarding]].\n`);
+    await leave();
+    await settle(60);
+    await typeInto(field<HTMLInputElement>("Search notes"), "Local-first");
+    await settle(250);
+    expect(rowTitles().some(title => title.startsWith("Onboarding"))).toBe(false);
+    await click(host.querySelector<HTMLButtonElement>("button[aria-label='Open the page Onboarding']")!);
+    await settle(60);
+    expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Onboarding");
+    expect(mockListNotes({ includeArchived: true }).notes.filter(note => note.title === "Onboarding")).toHaveLength(1);
+  });
+
   it("opens an unresolved wiki link by making the page", async () => {
     await render();
     await openNote(ONBOARDING);
@@ -768,7 +797,8 @@ describe("links between pages", () => {
   });
 });
 
-function mockIdOf(text: string): string {  const note = mockListNotes({ includeArchived: true }).notes.find(item => !item.parentId && `${item.title ?? ""}\n${item.preview}`.includes(text));
+function mockIdOf(text: string): string {
+  const note = mockListNotes({ includeArchived: true }).notes.find(item => !item.parentId && `${item.title ?? ""}\n${item.preview}`.includes(text));
   if (!note) throw new Error(`no note with ${text}`);
   return note.id;
 }

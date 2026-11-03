@@ -153,6 +153,26 @@ export function noteDisplayTitle(note: Pick<Note, "title" | "preview">): string 
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
+/** The pages a `[[Title]]` can name, as the core resolves them: by stored
+ *  title, case and spacing aside, the oldest page holding a title winning. */
+export function linkablePages(notes: Note[]): Note[] {
+  const held = new Map<string, Note>();
+  for (const note of notes) {
+    const key = note.title?.trim().toLowerCase();
+    if (note.kind === "task" || !key) continue;
+    const other = held.get(key);
+    if (!other || note.createdAt < other.createdAt || (note.createdAt === other.createdAt && note.id < other.id)) held.set(key, note);
+  }
+  const winners = new Set(held.values());
+  return notes.filter(note => winners.has(note));
+}
+
+/** The page `[[title]]` opens, if any has that title. */
+export function pageTitled(notes: Note[], title: string): Note | undefined {
+  const key = title.trim().toLowerCase();
+  return linkablePages(notes).find(note => note.title!.trim().toLowerCase() === key);
+}
+
 /** Markdown as one line of plain text, for a list preview. */
 export function plainPreview(markdown: string): string {
   return markdown

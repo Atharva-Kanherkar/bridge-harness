@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ChevronRight, PanelLeft, Plus, Search, Settings2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { taskBrief } from "../notesBrief";
-import { noteDisplayTitle, plainPreview } from "../notesDraft";
+import { noteDisplayTitle, pageTitled, plainPreview } from "../notesDraft";
 import type { AdapterDescriptor, Note, NotePage, NotesList, NotesSettings, Session, Workspace } from "../types";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -69,6 +69,9 @@ const agentHarness = (note: Note) => /^agent:([^:]+):/.exec(note.lastActor)?.[1]
 
 export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
   const [list, setList] = useState<NotesList | null>(null);
+  // Every note, search or not: links, moves and breadcrumbs resolve against
+  // all pages, never just the ones a search shows.
+  const [everyNote, setEveryNote] = useState<Note[] | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -116,8 +119,14 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     const ticket = ++listRequest.current;
     try {
       // Archived pages come too, for the Archived tab; the others leave them out.
-      const next = await bridgeApi.listNotes({ query: queryRef.current.trim() || null, includeArchived: true });
-      if (ticket === listRequest.current) setList(next);
+      const query = queryRef.current.trim() || null;
+      const [next, whole] = await Promise.all([
+        bridgeApi.listNotes({ query, includeArchived: true }),
+        query ? bridgeApi.listNotes({ query: null, includeArchived: true }) : null,
+      ]);
+      if (ticket !== listRequest.current) return;
+      setList(next);
+      setEveryNote((whole ?? next).notes);
     } catch (error) {
       if (ticket === listRequest.current) fail(error);
     }
@@ -215,14 +224,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   }, [fail, refreshList]);
 
   const notes = list?.notes ?? [];
-  const byId = useMemo(() => new Map(notes.map(note => [note.id, note])), [notes]);
+  const allNotes = everyNote ?? notes;
+  const byId = useMemo(() => new Map(allNotes.map(note => [note.id, note])), [allNotes]);
   // A [[ link opens the page titled so, making it first when none is there.
+  // Like the core: by the stored title, case and spacing aside, oldest first.
   const openByTitle = useCallback((title: string) => {
-    const key = title.trim().toLowerCase();
-    const found = notes.find(note => note.kind !== "task" && noteDisplayTitle(note).trim().toLowerCase() === key);
+    const found = pageTitled(allNotes, title);
     if (found) { void open(found.id); return; }
-    void bridgeApi.createNotePage({ title, content: "" }).then(note => { void open(note.id); void refreshList(); }, fail);
-  }, [notes, open, fail, refreshList]);
+    void createPageFor(null, title).then(page => { if (page) void open(page.id); });
+  }, [allNotes, open, createPageFor]);
   const chatTitle = useCallback((sessionId: string) => {
     const session = sessions.find(candidate => candidate.id === sessionId);
     return session ? chatName(session) : undefined;
@@ -269,7 +279,6 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   // Searched and single-kind views stay flat; a page keeps its rows someplace
   // findable even when its parent is not listed.
   const asTree = !query && (filter === "all" || filter === "pages");
-  const parent = page?.note.parentId ? byId.get(page.note.parentId) ?? null : null;
   // The whole chain above the open page, for its breadcrumb: Root > Parent > Here.
   const ancestors = useMemo(() => {
     const chain: Note[] = [];
@@ -311,7 +320,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
             : <p className="m-0 mt-0.5 text-[12px] text-faint">Saving…</p>}
         </li>)}
         {asTree ? <PageTree
-          roots={visible.filter(note => !note.parentId || !childrenOf.has(note.parentId))}
+          roots={visible.filter(note => !note.parentId || !visibleIds.has(note.parentId))}
           visibleIds={visibleIds}
           childrenOf={childrenOf}
           expanded={expandedPages}
@@ -339,7 +348,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         sessions={sessions}
         defaultHarness={defaultHarness}
         chatTitle={chatTitle}
-        childPages={notes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
+        childPages={allNotes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
         ancestors={ancestors}
         startingId={startingId}
         chatOpen={chatOpen}
@@ -347,7 +356,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         listOpen={listOpen}
         onToggleList={toggleList}
         pageTitle={id => { const child = byId.get(id); return child ? noteDisplayTitle(child) : undefined; }}
-        notes={notes}
+        notes={allNotes}
         onOpenByTitle={openByTitle}
         onCreatePage={createPageFor}
         onBack={() => select(null)}

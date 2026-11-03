@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { noteDisplayTitle, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
+import { linkablePages, noteDisplayTitle, pageTitled, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
+import type { Note } from "./types";
 
 describe("rebaseDraft", () => {
   const sent = "alpha\nbeta\ngamma\n";
@@ -82,5 +83,19 @@ describe("plainPreview and quoteText", () => {
     expect(quoteText("- add a skip button")).toBe("add a skip button");
     expect(quoteText("2. second")).toBe("second");
     expect(quoteText("need to - keep dashes")).toBe("need to - keep dashes");
+  });
+});
+
+describe("wiki link targets", () => {
+  const note = (id: string, title: string | null, createdAt: string, kind: Note["kind"] = "page") => ({ id, title, createdAt, kind, preview: "first line" }) as Note;
+  const notes = [note("b", "Plans", "2026-02-01"), note("a", " plans ", "2026-01-01"), note("u", null, "2026-01-01"), note("t", "Plans", "2025-01-01", "task")];
+
+  it("offers titled pages only, one per title, the oldest holding it", () => {
+    expect(linkablePages(notes).map(item => item.id)).toEqual(["a"]);
+  });
+
+  it("resolves a title the way the core does, case and spacing aside", () => {
+    expect(pageTitled(notes, "PLANS")?.id).toBe("a");
+    expect(pageTitled(notes, "first line")).toBeUndefined();
   });
 });
