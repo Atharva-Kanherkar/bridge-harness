@@ -27,8 +27,10 @@ export interface WikiChoice {
   create: boolean;
 }
 
-/** Pages matching every word of the query as typed, plus one Create choice
- *  when nothing has the exact title (case and spacing aside). */
+const WIKI_SHOWN = 20;
+
+/** The first pages matching every word of the query as typed, plus one
+ *  Create choice when nothing has the exact title (case and spacing aside). */
 export function matchWikiChoices(pages: WikiPage[], query: string): WikiChoice[] {
   const clean = query.trim().toLowerCase();
   const words = clean.split(/\s+/).filter(Boolean);
@@ -36,7 +38,7 @@ export function matchWikiChoices(pages: WikiPage[], query: string): WikiChoice[]
     const title = page.title.toLowerCase();
     return words.every(word => title.includes(word));
   });
-  const choices: WikiChoice[] = found.map(page => ({ target: page.title, id: page.id, create: false }));
+  const choices: WikiChoice[] = found.slice(0, WIKI_SHOWN).map(page => ({ target: page.title, id: page.id, create: false }));
   if (clean && !pages.some(page => page.title.trim().toLowerCase() === clean)) choices.push({ target: query.trim(), create: true });
   return choices;
 }
@@ -73,7 +75,9 @@ export function wikiCommand(onState: (state: WikiState | null) => void, onKey: (
           // A bracket or bar past the `[[` ends the link being typed: the
           // menu lets go there rather than catch Enter for the whole line.
           const typed = state.doc.textBetween(range.from, range.to).slice(2);
-          return !/[[\]|]/.test(typed) && !$from.parent.type.spec.code && $from.parent.type.name !== "detailsSummary";
+          // Code is never a link, a block or a span of it.
+          const inCode = $from.parent.type.spec.code || $from.marks().some(mark => mark.type.spec.code);
+          return !/[[\]|]/.test(typed) && !inCode && $from.parent.type.name !== "detailsSummary";
         },
         items: ({ query }) => matchWikiChoices(host().pages(), query),
         command: ({ editor, range, props }) => {

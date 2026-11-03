@@ -236,7 +236,7 @@ export const WikiLink = Node.create({
       find: /\[\[([^\]\r\n]+)\]\]$/,
       handler: ({ state, range, match }) => {
         const link = readWikiLink(match[1]);
-        if (!link || state.doc.resolve(range.from).parent.type.spec.code) return null;
+        if (!link) return null;
         state.tr.replaceWith(range.from, range.to, this.type.create(link));
       },
     })];
