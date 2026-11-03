@@ -54,7 +54,8 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
 - A cell cleared in Bridge records the value it removed on the row (a `cleared` map) until a
   projection has dropped the stale line, so a clear survives a file that has a pending outside
   edit. The line leaves only while it still says the cleared value; a different value on that
-  line is the person's and imports.
+  line is the person's and imports. Import compares a line with the file's base, not with the
+  cleared value, so the same value typed back in after the line left imports like any edit.
 
 ### Retype conversion
 - number↔text; select↔text (matched to an option by name, or a new option is created);

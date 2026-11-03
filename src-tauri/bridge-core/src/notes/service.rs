@@ -2798,6 +2798,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_cleared_value_typed_back_into_the_file_imports() {
+        // Cleared in the file (an accidental delete) and in Bridge: either way,
+        // putting the same line back afterwards is an edit, not the stale copy.
+        for in_bridge in [false, true] {
+            let (_dir, notes) = service();
+            let (id, rating, _status) = reading_list(&notes);
+            let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+            notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+            let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+            if in_bridge {
+                notes.set_values(&row.id, &[(rating.clone(), None)], PERSON).unwrap();
+            } else {
+                let file = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(&path, file.replace("Rating: 5\n", "")).unwrap();
+                crate::notes::projector::import_changes(&notes).unwrap();
+            }
+            crate::notes::projector::reconcile(&notes).unwrap();
+            assert!(!values_of(&notes, &row.id).contains_key(&rating));
+            let file = std::fs::read_to_string(&path).unwrap();
+            assert!(!file.contains("Rating:"), "{file}");
+            std::fs::write(&path, file.replacen("\n---\n", "\nRating: 5\n---\n", 1)).unwrap();
+            crate::notes::projector::import_changes(&notes).unwrap();
+            assert_eq!(values_of(&notes, &row.id).get(&rating), Some(&serde_json::json!(5)), "in_bridge={in_bridge}: the line typed back in is the person's value");
+            assert!(notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.cleared())).unwrap().is_empty(), "the hold settles");
+        }
+    }
+
+    #[test]
     fn re_adding_a_deleted_property_starts_empty() {
         let (_dir, notes) = service();
         let (id, rating, _status) = reading_list(&notes);

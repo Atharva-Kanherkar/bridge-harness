@@ -241,7 +241,6 @@ fn apply_import(
             // Compared against the file's own base, like every other property,
             // so a value the person changed in Bridge is not reverted here.
             let current = base.values();
-            let stale = super::doc::load_page(db, id, None)?.0.cleared();
             let ordered = database.ordered();
             let mut patch: Vec<(String, Option<serde_json::Value>)> = Vec::new();
             for line in &front.unknown {
@@ -254,12 +253,10 @@ fn apply_import(
                     eprintln!("[notes] kept {key} of {id} verbatim: it is not a valid {}", def.kind.as_str());
                     continue;
                 };
-                // A line that still says the value a clear removed is the stale
-                // copy; the projection drops it, and importing it would undo the
-                // clear.
-                if stale.get(*prop) == Some(&value) {
-                    continue;
-                }
+                // Compared with the file's base, not the cleared value: a stale
+                // copy of a clear still matches the base it was written from, so
+                // it writes nothing. A line that says the cleared value after the
+                // projection dropped it was typed back in, and it imports.
                 if current.get(*prop) != Some(&value) {
                     patch.push(((*prop).clone(), Some(value)));
                 }
