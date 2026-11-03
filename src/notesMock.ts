@@ -323,7 +323,9 @@ function linksOf(body: string): WikiSpan[] {
     if (!match[2].trim()) continue;
     found.push({ start, end: start + match[0].length, target: match[2], alias: null, kind: "page", opening: match[1] });
   }
-  return found;
+  // In body order, like the core's one pattern, so a rewrite from the end
+  // never shifts a link still to come.
+  return found.sort((a, b) => a.start - b.start);
 }
 
 /** `[[target]]` becomes the source's text without the double brackets, the way

@@ -78,6 +78,13 @@ describe("mock notes", () => {
     expect(mockReadPage(first.id).note.title).toBe("Shared");
   });
 
+  it("rewrites a page tag and a wiki link on one line without shifting either", () => {
+    const target = mockCreatePage({ title: "Old", content: "x" });
+    const source = mockCreatePage({ content: `<page url="bridge://p/${target.id}">Old</page> see [[Old]] end` });
+    mockUpdateNote({ id: target.id, title: "A much longer title" });
+    expect(mockReadPage(source.id).markdown).toBe(`<page url="bridge://p/${target.id}">A much longer title</page> see [[A much longer title]] end`);
+  });
+
   it("sends a shared title's backlink to the oldest page only, untitled pages by first line", () => {
     const oldest = mockCreatePage({ title: "Spec", content: "one" });
     const newer = mockCreatePage({ title: "Spec", content: "two" });
