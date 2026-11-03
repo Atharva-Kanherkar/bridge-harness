@@ -7,6 +7,7 @@
 - Linked task rows show the latest chat's current status and Open chat, without Start. Starting, running, waiting, finished-turn, failed and stopped states are distinct. Marking done and reopening remain explicit user actions.
 - Unstarted open tasks retain Start. Done and archived tasks do not invite a new start. A linked task's own page labels an intentional additional chat as New chat.
 - Repeated clicks while a task is starting create at most one chat. A failed start can be retried.
+- A blank existingTaskId means new work, not an unknown id. Streaming drafts omit entries that name an existing task. Reopening a linked task returns it to Doing.
 
 ## Unit Tests
 - Rust notes::tasks regressions: rerun with explicit existing-task identities and rewritten titles after appending work; missing/unknown identities; new outcomes sharing an existing sentence; preserve started, done and archived task identities; duplicate excerpt/title pairs within a reply; separate outcomes sharing a sentence; distinct excerpts; existing-task prompt context.
@@ -23,6 +24,9 @@
 ## E2E Tests
 - Fresh-profile local browser: open a note, extract tasks, append a new task and extract again, verify unique rows; start one and verify Open chat and status; mark done and reopen.
 - The browser uses the local mock backend; Rust tests cover actual model reply acceptance and durable writes.
+
+## Model Evals
+- `live_task_reruns`: renamed tracked tasks plus appended work, including a new outcome sharing a tracked task's sentence. Zero rejected replies, zero repeated tracked work, every appended outcome found.
 
 ## Manual / cURL Tests
 - In the desktop app, add a bullet to a previously converted note and rerun extraction. Existing task ids, edits, states and chat links must survive.

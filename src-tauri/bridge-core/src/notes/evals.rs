@@ -4,6 +4,7 @@
 //! ```text
 //! BRIDGE_NOTES_EVAL=1 cargo test -p bridge-core --lib notes::evals::live_structure -- --ignored --nocapture
 //! BRIDGE_NOTES_EVAL=1 cargo test -p bridge-core --lib notes::evals::live_tasks -- --ignored --nocapture
+//! BRIDGE_NOTES_EVAL=1 cargo test -p bridge-core --lib notes::evals::live_task_reruns -- --ignored --nocapture
 //! BRIDGE_NOTES_TOOLS_EVAL=1 cargo test -p bridge-core --lib notes::evals::live_tools -- --ignored --nocapture
 //! ```
 //!
@@ -255,6 +256,89 @@ fn live_tasks() {
     assert!(matched * 15 >= groups * 13, "recall {matched}/{groups} is below 13/15");
     assert!(produced > 0 && relevant * 15 >= produced * 12, "precision {relevant}/{produced} is below 12/15");
     assert_eq!(empty_ok, empty_total, "a page with nothing to do got tasks");
+}
+
+/// A page turned into tasks before, then edited: the person renamed the tasks
+/// and wrote more work. A rerun must add only that new work.
+struct RerunCase {
+    page: &'static str,
+    /// The tasks already tracked, as (the title the person gave it, its excerpt).
+    tracked: &'static [(&'static str, &'static str)],
+    /// Each group is one new task: any keyword in its title matches.
+    expect: &'static [&'static [&'static str]],
+}
+
+fn rerun_cases() -> Vec<RerunCase> {
+    vec![
+        RerunCase {
+            page: "# Launch\n\nWe need to buy the bridge.dev domain.\nThen write the landing page copy, short and plain.\nWrite the release notes for 0.10.",
+            tracked: &[("Register bridge.dev", "We need to buy the bridge.dev domain."), ("Draft homepage words", "Then write the landing page copy, short and plain.")],
+            expect: &[&["release"]],
+        },
+        RerunCase {
+            page: "Lisbon trip in May: book the flights, reserve a hotel near Alfama, renew my passport.",
+            tracked: &[("Arrange air travel", "Lisbon trip in May: book the flights, reserve a hotel near Alfama, renew my passport.")],
+            expect: &[&["hotel"], &["passport"]],
+        },
+        RerunCase {
+            page: "Meeting 10/29\n- Alice: update the onboarding docs\n- me: fix the CI cache\n- Bob: email the vendor about the invoice",
+            tracked: &[("Refresh the onboarding guide", "- Alice: update the onboarding docs"), ("Repair build caching", "- me: fix the CI cache"), ("Chase vendor payment", "- Bob: email the vendor about the invoice")],
+            expect: &[],
+        },
+        RerunCase {
+            page: "Bug: collapsing a sidebar group hides chats that are still running. Fix it before the release.\nAlso add a regression test for the collapsed group.",
+            tracked: &[("Keep running chats visible when collapsed", "Fix it before the release.")],
+            expect: &[&["test"]],
+        },
+    ]
+}
+
+#[test]
+#[ignore = "runs real provider turns"]
+fn live_task_reruns() {
+    use super::service::tests::service;
+    use super::service::{CreatePage, PERSON};
+
+    assert!(std::env::var_os("BRIDGE_NOTES_EVAL").is_some(), "set BRIDGE_NOTES_EVAL=1");
+    let registry = registry();
+    let model = std::env::var("BRIDGE_NOTES_EVAL_MODEL").ok();
+    let cases = rerun_cases();
+    let (mut ran, mut rejected, mut groups, mut matched, mut repeats, mut spend) = (0, 0, 0, 0, 0, 0);
+    for case in &cases {
+        let (_dir, notes) = service();
+        let page = notes.create(CreatePage { content: Some(case.page.into()), ..Default::default() }, PERSON).unwrap();
+        for (title, excerpt) in case.tracked {
+            let task = CreatePage { parent_id: Some(page.id.clone()), kind: Some("task".into()), state: Some("open".into()), title: Some((*title).into()), source_excerpt: Some((*excerpt).into()), ..Default::default() };
+            notes.create(task, PERSON).unwrap();
+        }
+        let page = notes.read(&page.id).unwrap();
+        let generation = match generate(&registry, model.as_deref(), tasks::INSTRUCTIONS, &tasks::prompt(&page.markdown, &[], &page.tasks)) {
+            Ok(generation) => generation,
+            Err(detail) => {
+                println!("FAIL turn: {detail} <- {}", guards::clip(case.page, 50));
+                continue;
+            }
+        };
+        ran += 1;
+        spend += generation.spend_microusd;
+        if let Err(reason) = tasks::accept(&notes, &page, &generation.text, &[], &harness(), model.as_deref()) {
+            rejected += 1;
+            println!("REJECTED {reason} <- {}", guards::clip(case.page, 50));
+            continue;
+        }
+        let added: Vec<_> = notes.read(&page.note.id).unwrap().tasks.into_iter().filter(|task| !page.tasks.iter().any(|old| old.id == task.id)).collect();
+        let titled = |task: &bridge_protocol::messages::Note, group: &[&str]| group.iter().any(|word| task.title.as_deref().unwrap_or_default().to_lowercase().contains(word));
+        groups += case.expect.len();
+        matched += case.expect.iter().filter(|group| added.iter().any(|task| titled(task, group))).count();
+        let repeated = added.iter().filter(|task| !case.expect.iter().any(|group| titled(task, group))).count();
+        repeats += repeated;
+        println!("{} {} added: {:?} <- {}", if repeated > 0 { "DUP " } else { "    " }, added.len(), added.iter().map(|task| task.title.as_deref().unwrap_or_default()).collect::<Vec<_>>(), guards::clip(case.page, 50));
+    }
+    println!("\ntask reruns on {}: ran {ran}/{}, rejected {rejected}, new work found {matched}/{groups}, tracked work repeated {repeats}, spend {spend} microusd", harness(), cases.len());
+    assert_eq!(ran, cases.len(), "every page must reach the model; a broken harness or wiring is a failure, not a skip");
+    assert_eq!(rejected, 0, "a rerun reply failed to identify existing tasks");
+    assert_eq!(repeats, 0, "tracked work came back as a new task");
+    assert_eq!(matched, groups, "appended work was missed");
 }
 
 /// Requests typed as a person would, and the action each should produce.
