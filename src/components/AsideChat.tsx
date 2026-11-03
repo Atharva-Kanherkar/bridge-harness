@@ -18,7 +18,7 @@ import { useComposerSuggestion } from "../useComposerSuggestion";
 import { ComposerSuggestionStatus } from "./ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "../composerSlash";
 import { SIDE_CHAT_COMMANDS } from "../sideChat";
-import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
+import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
@@ -203,8 +203,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
 
   // Mirrors the main composer's `handleComposerPaste`: clipboard images become
   // removable preview chips instead of inserted text; every other paste falls
-  // through untouched. Sized before decode, same reasoning as the main chat —
-  // a silent multi-second paste for a huge screenshot reads as broken.
+  // through untouched. Oversized images are resized, as in the main chat.
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = event.clipboardData?.items;
     if (!items) return;
@@ -214,15 +213,10 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
     attachFiles(files);
   };
   const attachFiles = (files: Array<{ type: string; size?: number }>) => {
-    if (files.some(isPasteTooLarge)) {
-      setComposerError("That image is too large to paste (over 8 MB).");
-      return;
-    }
     setComposerError(undefined);
     void Promise.all(files.map(async file => ({
       id: crypto.randomUUID(),
-      mediaType: mediaTypeOf(file),
-      dataUri: await readAsDataUri(file),
+      ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));

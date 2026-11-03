@@ -55,7 +55,7 @@ const BACKOFF_MAX_MS = 5_000;
 
 /** `bridged::MAX_FRAME_BYTES`: the daemon closes a connection whose message is
  *  larger, taking every call on it down too. A test pins this to the Rust value. */
-export const MAX_FRAME_BYTES = 1024 * 1024;
+export const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const utf8 = new TextEncoder();
 
 export const CONNECTION_LOST = "The Bridge daemon connection was lost; reconnecting";
