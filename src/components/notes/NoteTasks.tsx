@@ -46,7 +46,7 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
             type="button"
             aria-label={done ? `Reopen ${title}` : `Mark ${title} done`}
             title={done ? "Reopen" : "Mark done"}
-            onClick={() => onSetState(task, done ? "open" : "done")}
+            onClick={() => onSetState(task, done ? (lastChat ? "doing" : "open") : "done")}
             className="mt-[3px] grid size-5 shrink-0 place-items-center rounded-full transition-transform hover:scale-110"
           >
             <StatusGlyph state={task.state} size={15} />

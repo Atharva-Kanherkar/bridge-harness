@@ -629,6 +629,7 @@ describe("tasks and Start", () => {
     expect(mockReadPage(mockIdOf(ONBOARDING)).tasks.find(task => task.title === "add a skip button")?.state).toBe("done");
     await click(button("Reopen add a skip button", row()));
     await settle(60);
+    expect(mockReadPage(mockIdOf(ONBOARDING)).tasks.find(task => task.title === "add a skip button")?.state).toBe("doing");
     expect(row().querySelector("[role='status']")?.textContent).toBe("Finished");
     expect(button("Start add a skip button", row())).toBeUndefined();
     await click(button("add a skip button", row()));
