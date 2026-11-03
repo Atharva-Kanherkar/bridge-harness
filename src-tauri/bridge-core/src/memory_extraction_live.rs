@@ -304,14 +304,7 @@ fn one_bounded_turn(
                     }
                     Some("result") => {
                         if let Some(usage) = message.get("usage") {
-                            tokens += usage
-                                .get("input_tokens")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0);
-                            tokens += usage
-                                .get("output_tokens")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0);
+                            tokens += observed_tokens(usage);
                         }
                         if let Some(cost) = message.get("total_cost_usd").and_then(Value::as_f64) {
                             spend += (cost * 1_000_000.0).round() as i64;
@@ -346,10 +339,49 @@ fn one_bounded_turn(
     }
 }
 
+/// Every token the turn was billed for. A Claude Code turn is mostly cache
+/// writes and reads around a short prompt, so counting only `input_tokens` and
+/// `output_tokens` reported about 175 tokens for a turn that cost nine cents.
+fn observed_tokens(usage: &Value) -> i64 {
+    [
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ]
+    .iter()
+    .map(|key| usage.get(key).and_then(Value::as_i64).unwrap_or(0).max(0))
+    .sum()
+}
+
 fn settle_session(core: &Arc<BridgeCore>, session_id: &str, status: &str) {
     let db = core.db.lock().unwrap();
     let _ = db.execute(
         "UPDATE sessions SET status=?2,ended_at=?3 WHERE id=?1",
         params![session_id, status, Utc::now().to_rfc3339()],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn observed_tokens_count_cache_writes_and_reads() {
+        let usage = json!({
+            "input_tokens": 12,
+            "output_tokens": 160,
+            "cache_creation_input_tokens": 9_000,
+            "cache_read_input_tokens": 16_000
+        });
+        assert_eq!(observed_tokens(&usage), 25_172);
+    }
+
+    #[test]
+    fn observed_tokens_ignore_missing_and_negative_fields() {
+        assert_eq!(observed_tokens(&json!({})), 0);
+        assert_eq!(observed_tokens(&json!({"input_tokens": -5, "output_tokens": 7})), 7);
+        assert_eq!(observed_tokens(&json!({"input_tokens": "12"})), 0);
+    }
 }

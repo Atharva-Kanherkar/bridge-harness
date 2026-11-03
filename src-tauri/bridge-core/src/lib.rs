@@ -103,6 +103,7 @@ pub mod memory_extraction_live;
 pub mod memory_ledger;
 pub mod memory_insights;
 pub mod memory_packet;
+pub mod memory_similarity;
 pub mod meter;
 pub mod meter_sources;
 pub mod menu_bar;

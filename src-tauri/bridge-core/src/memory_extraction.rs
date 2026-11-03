@@ -241,6 +241,12 @@ pub fn enqueue_after_turn(db: &Connection, session_id: &str) -> Result<bool, Bri
     if resolve_profile(db, &current, session_id)?.is_none() {
         return Ok(false);
     }
+    // A full scope refuses every proposal the run could produce, so the run
+    // would be a model call that can only be thrown away. The Memory surface
+    // shows the full scope; the remedy is review, not another paid turn.
+    if crate::memory_consolidation::scope_full(db, ACCOUNT_MEMORY_SCOPE)? {
+        return Ok(false);
+    }
     let open: Option<i64> = db
         .query_row(
             "SELECT 1 FROM memory_extraction_runs
@@ -310,8 +316,14 @@ pub fn claim_due(
         } else {
             None
         };
+        // A run queued before the scope filled must not spend a turn whose
+        // every proposal the budget will refuse.
+        let full = profile.is_some() && crate::memory_consolidation::scope_full(db, &scope_key)?;
+        let profile = if full { None } else { profile };
         let Some((harness, model)) = profile else {
-            let detail = if extraction_enabled(&current.mode) {
+            let detail = if full {
+                "scope_full"
+            } else if extraction_enabled(&current.mode) {
                 "no_extraction_profile"
             } else {
                 "extraction_disabled"
@@ -1381,8 +1393,12 @@ pub fn gate_and_insert(
                 continue;
             }
         };
-        let body_key = body.to_lowercase();
+        let body_key = crate::memory_similarity::normalize(&body);
         if memory_ledger::body_already_known(db, &scope_key, &body)?
+            || memory_ledger::near_duplicate_of(db, &scope_key, &body)?.is_some()
+            || batch_bodies
+                .iter()
+                .any(|seen: &String| crate::memory_similarity::near_duplicate(seen, &body))
             || !batch_bodies.insert(body_key)
         {
             report.duplicates += 1;
@@ -1569,6 +1585,75 @@ mod tests {
             params![id, harness, model],
         )
         .unwrap();
+    }
+
+    fn fill_scope(db: &Connection, max_records: i64) {
+        crate::memory_consolidation::update_settings(
+            db,
+            ACCOUNT_MEMORY_SCOPE,
+            "off",
+            None,
+            None,
+            Some(max_records),
+            None,
+            None,
+        )
+        .unwrap();
+        for index in 0..max_records {
+            memory_ledger::save(db, &format!("pin number {index} about topic {index}"), None, None).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_full_scope_enqueues_no_extraction() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat_on(&db, "chat", "claude", Some("sonnet"));
+        fill_scope(&db, 2);
+        assert!(!enqueue_after_turn(&db, "chat").unwrap(), "no run, so no model call");
+        let runs: i64 = db.query_row("SELECT COUNT(*) FROM memory_extraction_runs", [], |row| row.get(0)).unwrap();
+        assert_eq!(runs, 0);
+    }
+
+    #[test]
+    fn a_run_queued_before_the_scope_filled_is_cancelled_at_claim() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat_on(&db, "chat", "claude", Some("sonnet"));
+        assert!(enqueue_after_turn(&db, "chat").unwrap());
+        fill_scope(&db, 2);
+        assert!(claim_due(&db, Utc::now()).unwrap().is_none(), "nothing reaches an adapter");
+        let (status, detail): (String, String) = db
+            .query_row("SELECT status, detail FROM memory_extraction_runs", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!((status.as_str(), detail.as_str()), ("cancelled", "scope_full"));
+    }
+
+    #[test]
+    fn a_scope_with_room_still_enqueues_and_claims() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat_on(&db, "chat", "claude", Some("sonnet"));
+        fill_scope(&db, 1);
+        crate::memory_consolidation::update_settings(&db, ACCOUNT_MEMORY_SCOPE, "off", None, None, Some(2), None, None).unwrap();
+        assert!(enqueue_after_turn(&db, "chat").unwrap());
+        assert!(claim_due(&db, Utc::now()).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_light_edit_of_a_known_claim_is_a_duplicate() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat_on(&db, "chat", "claude", Some("sonnet"));
+        memory_ledger::save(&db, "Run bun run build and bun run test before opening any pull request", Some("constraint"), None).unwrap();
+        let text = "```bridge-memory-proposals\n[\n\
+            {\"body\": \"Run bun run build and bun run test before opening every pull request\", \"kind\": \"constraint\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"},\n\
+            {\"body\": \"Keeps the main checkout on main\", \"kind\": \"fact\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"},\n\
+            {\"body\": \"keeps the main checkout on main.\", \"kind\": \"fact\", \"confidenceBps\": 8000, \"rationale\": \"[e1] said so\"}\n\
+            ]\n```";
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "chat", MODE_PROPOSE, text).unwrap();
+        assert_eq!(report.duplicates, 2, "one near the pin, one inside the batch");
+        assert_eq!(report.written, 1);
     }
 
     struct CannedModel(String);
