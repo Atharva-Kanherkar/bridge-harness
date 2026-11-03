@@ -809,6 +809,28 @@ describe("links between pages", () => {
     expect(mockListNotes({ includeArchived: true }).notes.filter(note => note.title === "Twice clicked")).toHaveLength(1);
   });
 
+  it("keeps every page known when a search keystroke cuts in on a change's read", async () => {
+    await render();
+    const search = field<HTMLInputElement>("Search notes");
+    await typeInto(search, "syn");
+    await settle(250);
+    const realList = bridgeApi.listNotes;
+    vi.spyOn(bridgeApi, "listNotes").mockImplementation(async params => {
+      const result = await realList(params);
+      if (!params?.query) await new Promise(resolve => setTimeout(resolve, 400));
+      return result;
+    });
+    mockCreatePage({ title: "Fresh one", content: "x" });
+    await settle(20);
+    await typeInto(search, "sync");
+    await settle(1000);
+    await openNote("Local-first sync libraries");
+    await click(button("More"));
+    await click(button("Move to…"));
+    const picker = host.querySelector("[aria-label='Move this page']")!;
+    expect([...picker.querySelectorAll("button")].map(node => node.textContent?.trim())).toContain("Fresh one");
+  });
+
   it("opens an unresolved wiki link by making the page", async () => {
     await render();
     await openNote(ONBOARDING);

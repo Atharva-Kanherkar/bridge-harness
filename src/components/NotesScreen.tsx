@@ -117,19 +117,26 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   // List reads overlap too (a search typed while a refresh is out); only the
   // newest one may replace what is shown.
   const listRequest = useRef(0);
+  // Set by any change, cleared once a whole list lands: a search keystroke
+  // that cuts in on a change's read still reads the whole list again.
+  const wholeStale = useRef(true);
   // `searchOnly`: only the query changed, so the whole list still holds.
   const refreshList = useCallback(async (searchOnly = false) => {
     const ticket = ++listRequest.current;
+    if (!searchOnly) wholeStale.current = true;
     try {
       // Archived pages come too, for the Archived tab; the others leave them out.
       const query = queryRef.current.trim() || null;
       const [next, whole] = await Promise.all([
         bridgeApi.listNotes({ query, includeArchived: true }),
-        query && !searchOnly ? bridgeApi.listNotes({ query: null, includeArchived: true }) : null,
+        query && wholeStale.current ? bridgeApi.listNotes({ query: null, includeArchived: true }) : null,
       ]);
       if (ticket !== listRequest.current) return;
       setList(next);
-      if (whole || !query) setEveryNote((whole ?? next).notes);
+      if (whole || !query) {
+        setEveryNote((whole ?? next).notes);
+        wholeStale.current = false;
+      }
     } catch (error) {
       if (ticket === listRequest.current) fail(error);
     }
@@ -218,27 +225,37 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   };
   // The `/` menu's Page: made under its parent, left closed. A [[ menu makes
   // a page named so at the top level instead.
-  // A titled page being made is shared until the list knows it, so a second
+  // A titled page being made is shared until the list shows it, so a second
   // click on the same link cannot make it twice.
-  const making = useRef(new Map<string, Promise<{ id: string; title: string } | null>>());
+  const making = useRef(new Map<string, { made: Promise<{ id: string; title: string } | null>; id?: string }>());
   const createPageFor = useCallback((parentId: string | null, title: string | null) => {
     const key = title === null ? null : `${parentId ?? ""}\n${title.trim().toLowerCase()}`;
     const pending = key === null ? undefined : making.current.get(key);
-    if (pending) return pending;
-    const made = (async () => {
+    if (pending) return pending.made;
+    const entry: { made: Promise<{ id: string; title: string } | null>; id?: string } = { made: null! };
+    entry.made = (async () => {
       try {
         const note = await bridgeApi.createNotePage({ title, content: "", ...(parentId ? { parentId } : {}) });
+        entry.id = note.id;
         await refreshList();
         return { id: note.id, title: noteDisplayTitle(note) };
-      } catch (error) { fail(error); return null; } finally { if (key !== null) making.current.delete(key); }
+      } catch (error) {
+        if (key !== null) making.current.delete(key);
+        fail(error);
+        return null;
+      }
     })();
-    if (key !== null) making.current.set(key, made);
-    return made;
+    if (key !== null) making.current.set(key, entry);
+    return entry.made;
   }, [fail, refreshList]);
 
   const notes = list?.notes ?? [];
   const allNotes = everyNote ?? notes;
   const byId = useMemo(() => new Map(allNotes.map(note => [note.id, note])), [allNotes]);
+  // A made page leaves the in-flight set once the list holds it.
+  useEffect(() => {
+    for (const [key, entry] of making.current) if (entry.id && byId.has(entry.id)) making.current.delete(key);
+  }, [byId]);
   // A [[ link opens the page titled so, making it first when none is there.
   // Like the core: by the title a list shows, case and spacing aside, oldest
   // first.
