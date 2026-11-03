@@ -38,7 +38,7 @@ const MAX_WALL_SECONDS: i64 = 240;
 const POLL_SECONDS: u64 = 60;
 
 /// The cadence loop, started once per host beside the other maintenance
-/// threads. Every tick sweeps expiries, schedules a run for a scope that has
+/// threads. Every tick sweeps expiries and stale proposals, schedules a run for a scope that has
 /// reached its budget, and then claims at most one due run — so the
 /// deterministic half keeps working in a scope that never turns the bounded
 /// half on, and a full scope that nobody is talking to still gets consolidated.
@@ -48,7 +48,10 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
         let now = Utc::now();
         let swept = {
             let db = core.db.lock().unwrap();
-            memory_ledger::sweep_expired(&db, now)
+            memory_ledger::sweep_expired(&db, now).and_then(|mut expired| {
+                expired.extend(memory_ledger::sweep_stale_proposals(&db, now)?);
+                Ok(expired)
+            })
         };
         if matches!(&swept, Ok(expired) if !expired.is_empty()) {
             core.events.publish(CoreEvent::MemoryChanged {

@@ -293,6 +293,15 @@ pub fn held_records(db: &Connection, scope_key: &str) -> Result<i64, BridgeError
 /// unusable signal as a silent truncation: the writer has to be able to tell
 /// what to do next, and what to do next is reduce the scope, never let
 /// something be dropped on their behalf.
+/// Whether a write that grows `scope_key` would be refused right now. The
+/// question a job asks before it spends anything on producing such a write.
+pub fn scope_full(db: &Connection, scope_key: &str) -> Result<bool, BridgeError> {
+    if scope_key != ACCOUNT_MEMORY_SCOPE {
+        return Ok(false);
+    }
+    Ok(held_records(db, scope_key)? >= settings(db, scope_key)?.max_records)
+}
+
 pub(crate) fn enforce_scope_budget(db: &Connection, scope_key: &str) -> Result<(), BridgeError> {
     // Only the account scope has a configurable budget in this release, so
     // only the account scope pays one: an unraisable default ceiling on a

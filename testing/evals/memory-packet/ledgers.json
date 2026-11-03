@@ -1,0 +1,723 @@
+{
+  "schemaVersion": 1,
+  "ledgers": [
+    {
+      "name": "reply-pins-crowd-out-constraints",
+      "description": "The live failure from #885: assistant replies saved by one click as user_explicit preferences, several saved more than once, beside short extracted constraints that the old packet dropped over budget.",
+      "records": [
+        {
+          "id": "reply-01",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Here's the situation and what I did.\n\n## Parallel-work collision, reconciled without clobbering\n\nWhile I was rebasing the worker branch, a second session pushed a migration that renumbered schema 41 to 42. I kept both: the worker's migration moved to 43, the store test now asserts the new head, and the conflict in `store.rs` was a pure renumbering with no semantic overlap. I re-ran `cargo test -p bridge-core store::` (212 passed) and the full Vitest suite (1,904 passed). Nothing was force-pushed. The branch is ready for review and the PR body lists the renumbering so the reviewer is not surprised.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T11:00:00.000Z"
+        },
+        {
+          "id": "reply-02",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Here's the situation and what I did.\n\n## Parallel-work collision, reconciled without clobbering\n\nWhile I was rebasing the worker branch, a second session pushed a migration that renumbered schema 41 to 42. I kept both: the worker's migration moved to 43, the store test now asserts the new head, and the conflict in `store.rs` was a pure renumbering with no semantic overlap. I re-ran `cargo test -p bridge-core store::` (212 passed) and the full Vitest suite (1,904 passed). Nothing was force-pushed. The branch is ready for review and the PR body lists the renumbering so the reviewer is not surprised.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T12:00:00.000Z"
+        },
+        {
+          "id": "reply-03",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Here's the situation and what I did.\n\n## Parallel-work collision, reconciled without clobbering\n\nWhile I was rebasing the worker branch, a second session pushed a migration that renumbered schema 41 to 42. I kept both: the worker's migration moved to 43, the store test now asserts the new head, and the conflict in `store.rs` was a pure renumbering with no semantic overlap. I re-ran `cargo test -p bridge-core store::` (212 passed) and the full Vitest suite (1,904 passed). Nothing was force-pushed. The branch is ready for review and the PR body lists the renumbering so the reviewer is not surprised.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T13:00:00.000Z"
+        },
+        {
+          "id": "reply-04",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "CI is rerunning on `6a77f0c1`. The earlier Rust and Linux failures were my own test bug, and I've fixed it.\n\n**What failed:** two new daemon tests took the next frame as the response to a request, but event notifications can arrive in between: boot-time discovery events on the macOS runner, and the chat's own state-changed event on Linux. The daemon was fine.\n\n**Fix:** the tests now wait for the frame whose id matches the request. They passed three runs in a row locally. The packaged-app smoke job was still pending on the previous run, so it hasn't been exercised yet.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T14:00:00.000Z"
+        },
+        {
+          "id": "reply-05",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "CI is rerunning on `6a77f0c1`. The earlier Rust and Linux failures were my own test bug, and I've fixed it.\n\n**What failed:** two new daemon tests took the next frame as the response to a request, but event notifications can arrive in between: boot-time discovery events on the macOS runner, and the chat's own state-changed event on Linux. The daemon was fine.\n\n**Fix:** the tests now wait for the frame whose id matches the request. They passed three runs in a row locally. The packaged-app smoke job was still pending on the previous run, so it hasn't been exercised yet.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T15:00:00.000Z"
+        },
+        {
+          "id": "reply-06",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "CI is rerunning on `6a77f0c1`. The earlier Rust and Linux failures were my own test bug, and I've fixed it.\n\n**What failed:** two new daemon tests took the next frame as the response to a request, but event notifications can arrive in between: boot-time discovery events on the macOS runner, and the chat's own state-changed event on Linux. The daemon was fine.\n\n**Fix:** the tests now wait for the frame whose id matches the request. They passed three runs in a row locally. The packaged-app smoke job was still pending on the previous run, so it hasn't been exercised yet.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T16:00:00.000Z"
+        },
+        {
+          "id": "reply-07",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "CI is rerunning on `6a77f0c1`. The earlier Rust and Linux failures were my own test bug, and I've fixed it.\n\n**What failed:** two new daemon tests took the next frame as the response to a request, but event notifications can arrive in between: boot-time discovery events on the macOS runner, and the chat's own state-changed event on Linux. The daemon was fine.\n\n**Fix:** the tests now wait for the frame whose id matches the request. They passed three runs in a row locally. The packaged-app smoke job was still pending on the previous run, so it hasn't been exercised yet.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T17:00:00.000Z"
+        },
+        {
+          "id": "reply-08",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "These are missing `node_modules` in the fresh worktree, not related to my change. Let's install deps and rerun the frontend gate before touching anything else, because a missing dependency fails every component test in the same way and hides the one real failure we are looking for.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T18:00:00.000Z"
+        },
+        {
+          "id": "reply-09",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "These are missing `node_modules` in the fresh worktree, not related to my change. Let's install deps and rerun the frontend gate before touching anything else, because a missing dependency fails every component test in the same way and hides the one real failure we are looking for.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T19:00:00.000Z"
+        },
+        {
+          "id": "reply-10",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Only construction site is inside `compile()` itself, no other literals break. Renumbering plan: the worker's v34 becomes v35, the briefing column moves after it, and the migration test pins both. I checked every `include_str!` of the schema file and none of them hardcode the version number, so the bump is mechanical.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T20:00:00.000Z"
+        },
+        {
+          "id": "reply-11",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "3-way apply left unmerged index entries despite resolved content, marking resolution, then committing: `git add -u` on the four files, a `git diff --cached --stat` to confirm only the intended hunks are staged, and a commit with the original message so the history reads as if the patch applied cleanly.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T21:00:00.000Z"
+        },
+        {
+          "id": "reply-12",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "You're right, my job is to route, not to run their review CLIs. I'll finish the trivial mechanics inline (the import fix and the snapshot update), then hand the review itself to a verification worker with the diff and the contract, and report back with its verdict rather than my own reading of the change.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T22:00:00.000Z"
+        },
+        {
+          "id": "reply-13",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "All three props are symmetric across the type definition, hook, component render, and stories. The diff is tight: 41 lines added, 12 removed, no behaviour change outside the dock. Storybook renders all six states, and the jsdom test covers the collapsed and pinned paths that the screenshot loop cannot reach.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-20T23:00:00.000Z"
+        },
+        {
+          "id": "reply-14",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "The worker got policy-blocked: Bridge anchors every worker inside its own auto-provisioned worktree (based on the orchestrator's HEAD), and the requested write scope pointed at the main checkout. I re-delegated with a scope inside the worker worktree and an explicit `Write scope: src/components/**` line, which the policy engine accepts without an approval card.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T00:00:00.000Z"
+        },
+        {
+          "id": "reply-15",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "That's the known worktree gotcha: the Tauri shell needs gitignored sidecar binaries copied from the main checkout. I copied `bridged` and the browser host into `src-tauri/binaries/`, rebuilt, and the shell now starts. I did not commit them; they are build inputs, not sources.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T01:00:00.000Z"
+        },
+        {
+          "id": "reply-16",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "I asked the worker to stop cleanly and hand back its exact worktree and branch so I can continue without losing or duplicating its edits. It returned `needs_delegation` with the branch name, the last green commit, and a note that the e2e test still flakes under load, which matches what we saw on main yesterday.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T02:00:00.000Z"
+        },
+        {
+          "id": "reply-17",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Two Bugbot findings, both real: the disabled flip during a live model switch closes the two-pane popover, and the effort chip reads the stale model's levels for one render. Both are fixed in separate commits with a regression test each, and each test fails with the fix reverted.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T03:00:00.000Z"
+        },
+        {
+          "id": "reply-18",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Now the codex native fork. Let me check the `restoration_mode` parser and `start_chat`'s post-start persistence, because the fork path writes the provider session id after the first frame and a crash in between would leave the chat pointing at a thread that never existed.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T04:00:00.000Z"
+        },
+        {
+          "id": "reply-19",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Type-aware rules aren't firing yet (a tsconfig error is blocking them). Checking that, and running react-doctor on the changed components in the meantime so we at least get the hook-order and effect-dependency findings before the lint config is fixed.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T05:00:00.000Z"
+        },
+        {
+          "id": "reply-20",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "The supported Python runtime is now pinned in the reproduction instructions, committed as `b523a71`, pushed, and the maintainer's checklist item is ticked. The repro runs green on 3.12 and fails with the expected error on 3.13, which is exactly the version boundary the issue describes.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T06:00:00.000Z"
+        },
+        {
+          "id": "reply-21",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "The full suite passed, along with all 12 live Chrome checks. I'm bringing the branch onto current main and running the final checks there before publishing the PR, since main moved by nine commits and two of them touch the same settings page.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T07:00:00.000Z"
+        },
+        {
+          "id": "reply-22",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "The scratch files in /tmp were lost with the session restart. The branch is pushed. Recreating the PR body and opening the PR from the contract and the commit messages, which carry everything the body needs.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T08:00:00.000Z"
+        },
+        {
+          "id": "emdash-a",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "The user does not want em dashes used in written text or prose produced for them.",
+          "confidenceBps": 9300,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T09:00:00.000Z"
+        },
+        {
+          "id": "emdash-b",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "Do not use em dashes in written output.",
+          "confidenceBps": 9500,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T10:00:00.000Z"
+        },
+        {
+          "id": "attribution-a",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "No AI attribution anywhere in authored output (commits, issue and PR bodies, or other written artifacts).",
+          "confidenceBps": 9400,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T11:00:00.000Z"
+        },
+        {
+          "id": "attribution-b",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "Wants no AI attribution and no em dashes anywhere in authored artifacts such as commits, issue bodies and PR bodies.",
+          "confidenceBps": 9100,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T12:00:00.000Z"
+        },
+        {
+          "id": "issues-a",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "GitHub issues in this repo must follow the repo's 'for humans and agents' issue format, or a bot closes them.",
+          "confidenceBps": 8800,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T13:00:00.000Z"
+        },
+        {
+          "id": "issues-b",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "Issues in the repository have to follow the issue guidelines with a For humans section and a For agents section, or they are auto-closed.",
+          "confidenceBps": 8600,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T14:00:00.000Z"
+        },
+        {
+          "id": "mockups-a",
+          "kind": "preference",
+          "provenance": "model_proposal",
+          "body": "For design proposals, the user wants rendered visual mockups (for example HTML screenshots) rather than ASCII wireframes.",
+          "confidenceBps": 8200,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T15:00:00.000Z"
+        },
+        {
+          "id": "mockups-b",
+          "kind": "preference",
+          "provenance": "model_proposal",
+          "body": "Prefers rendered visual mockups (for example HTML screenshots) over ASCII wireframes when reviewing design proposals.",
+          "confidenceBps": 8000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T16:00:00.000Z"
+        },
+        {
+          "id": "email",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "The user's email for commit authorship and DCO sign-offs is a personal address, not the work one.",
+          "confidenceBps": 7800,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T17:00:00.000Z"
+        },
+        {
+          "id": "oss",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "The user contributes to open-source AI infrastructure projects, routers and LLM gateways in particular.",
+          "confidenceBps": 7600,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T18:00:00.000Z"
+        },
+        {
+          "id": "machine",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "The user works on a Mac mini.",
+          "confidenceBps": 7000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T19:00:00.000Z"
+        }
+      ],
+      "mustCover": [
+        [
+          "emdash-a",
+          "emdash-b"
+        ],
+        [
+          "attribution-a",
+          "attribution-b"
+        ],
+        [
+          "issues-a",
+          "issues-b"
+        ],
+        [
+          "mockups-a",
+          "mockups-b"
+        ],
+        [
+          "email"
+        ],
+        [
+          "oss"
+        ],
+        [
+          "machine"
+        ]
+      ],
+      "duplicateGroups": [
+        [
+          "reply-01",
+          "reply-02",
+          "reply-03"
+        ],
+        [
+          "reply-04",
+          "reply-05",
+          "reply-06",
+          "reply-07"
+        ],
+        [
+          "reply-08",
+          "reply-09"
+        ],
+        [
+          "emdash-a",
+          "emdash-b"
+        ],
+        [
+          "attribution-a",
+          "attribution-b"
+        ],
+        [
+          "issues-a",
+          "issues-b"
+        ],
+        [
+          "mockups-a",
+          "mockups-b"
+        ]
+      ]
+    },
+    {
+      "name": "constraints-outrank-long-facts",
+      "description": "Many long extracted facts and a handful of short constraints. Every constraint must reach the packet.",
+      "records": [
+        {
+          "id": "fact-1",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 1: the daemon subsystem was reworked in phase 2, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T20:00:00.000Z"
+        },
+        {
+          "id": "fact-2",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 2: the sidebar subsystem was reworked in phase 3, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T21:00:00.000Z"
+        },
+        {
+          "id": "fact-3",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 3: the router subsystem was reworked in phase 4, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T22:00:00.000Z"
+        },
+        {
+          "id": "fact-4",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 4: the worktree subsystem was reworked in phase 5, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-21T23:00:00.000Z"
+        },
+        {
+          "id": "fact-5",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 5: the sidecar subsystem was reworked in phase 6, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T00:00:00.000Z"
+        },
+        {
+          "id": "fact-6",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 6: the notes subsystem was reworked in phase 7, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T01:00:00.000Z"
+        },
+        {
+          "id": "fact-7",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 7: the usage subsystem was reworked in phase 8, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T02:00:00.000Z"
+        },
+        {
+          "id": "fact-8",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 8: the daemon subsystem was reworked in phase 9, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T03:00:00.000Z"
+        },
+        {
+          "id": "fact-9",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 9: the sidebar subsystem was reworked in phase 10, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T04:00:00.000Z"
+        },
+        {
+          "id": "fact-10",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 10: the router subsystem was reworked in phase 11, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T05:00:00.000Z"
+        },
+        {
+          "id": "fact-11",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 11: the worktree subsystem was reworked in phase 12, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T06:00:00.000Z"
+        },
+        {
+          "id": "fact-12",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 12: the sidecar subsystem was reworked in phase 13, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T07:00:00.000Z"
+        },
+        {
+          "id": "fact-13",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 13: the notes subsystem was reworked in phase 14, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T08:00:00.000Z"
+        },
+        {
+          "id": "fact-14",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Project note 14: the usage subsystem was reworked in phase 15, with a migration that moved its settings into the shared store, a compatibility shim for one release, and a follow-up to remove the shim once telemetry shows no old clients. The owner wants the history kept in the PR body rather than in code comments, and the tests live next to the code.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T09:00:00.000Z"
+        },
+        {
+          "id": "rule-tests",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "Run bun run build and bun run test before opening any PR.",
+          "confidenceBps": 7000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T10:00:00.000Z"
+        },
+        {
+          "id": "rule-commits",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "Commits follow Conventional Commits and never cite issue numbers.",
+          "confidenceBps": 7100,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T11:00:00.000Z"
+        },
+        {
+          "id": "rule-tailwind",
+          "kind": "constraint",
+          "provenance": "user_explicit",
+          "body": "Style only with Tailwind utilities; no CSS-in-JS and no new .css files.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T12:00:00.000Z"
+        },
+        {
+          "id": "rule-subagents",
+          "kind": "constraint",
+          "provenance": "model_proposal",
+          "body": "Never let a worker spawn its own subagents.",
+          "confidenceBps": 6900,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T13:00:00.000Z"
+        },
+        {
+          "id": "pref-concise",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Keep answers very concise.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T14:00:00.000Z"
+        }
+      ],
+      "mustCover": [
+        [
+          "rule-tests"
+        ],
+        [
+          "rule-commits"
+        ],
+        [
+          "rule-tailwind"
+        ],
+        [
+          "rule-subagents"
+        ],
+        [
+          "pref-concise"
+        ]
+      ],
+      "duplicateGroups": []
+    },
+    {
+      "name": "case-and-whitespace-duplicates",
+      "description": "The same pin saved several times with different case, spacing and trailing punctuation. One line reaches the packet.",
+      "records": [
+        {
+          "id": "dup-1",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Prefer vitest -t filters over whole-file runs while triaging.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T15:00:00.000Z"
+        },
+        {
+          "id": "dup-2",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "prefer  vitest -t filters over whole-file runs while triaging",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T16:00:00.000Z"
+        },
+        {
+          "id": "dup-3",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Prefer vitest -t filters over whole-file runs while triaging!!",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T17:00:00.000Z"
+        },
+        {
+          "id": "other",
+          "kind": "fact",
+          "provenance": "user_explicit",
+          "body": "The main checkout lives in ~/Documents/harness.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T18:00:00.000Z"
+        }
+      ],
+      "mustCover": [
+        [
+          "dup-1",
+          "dup-2",
+          "dup-3"
+        ],
+        [
+          "other"
+        ]
+      ],
+      "duplicateGroups": [
+        [
+          "dup-1",
+          "dup-2",
+          "dup-3"
+        ]
+      ]
+    },
+    {
+      "name": "conflict-group-written-around",
+      "description": "Two members of one conflict group are both active (something wrote around the ledger rule). At most one reaches the packet.",
+      "records": [
+        {
+          "id": "tz-old",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "The user is in the Asia/Kolkata timezone.",
+          "confidenceBps": 8000,
+          "conflictGroup": "timezone",
+          "updatedAt": "2026-08-22T19:00:00.000Z"
+        },
+        {
+          "id": "tz-new",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "The user is in the Asia/Tokyo timezone.",
+          "confidenceBps": 9000,
+          "conflictGroup": "timezone",
+          "updatedAt": "2026-08-22T20:00:00.000Z"
+        },
+        {
+          "id": "editor",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Uses Zed as the editor.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T21:00:00.000Z"
+        }
+      ],
+      "mustCover": [
+        [
+          "tz-old",
+          "tz-new"
+        ],
+        [
+          "editor"
+        ]
+      ],
+      "duplicateGroups": [],
+      "maxPerConflictGroup": 1
+    },
+    {
+      "name": "healthy-small-ledger",
+      "description": "Everything fits. Nothing may be dropped when there is room.",
+      "records": [
+        {
+          "id": "h1",
+          "kind": "preference",
+          "provenance": "user_explicit",
+          "body": "Explain with diagrams when a mechanism has more than three moving parts.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T22:00:00.000Z"
+        },
+        {
+          "id": "h2",
+          "kind": "constraint",
+          "provenance": "user_explicit",
+          "body": "Never push directly to main without being asked.",
+          "confidenceBps": null,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-22T23:00:00.000Z"
+        },
+        {
+          "id": "h3",
+          "kind": "fact",
+          "provenance": "model_proposal",
+          "body": "Works mostly in Rust and TypeScript.",
+          "confidenceBps": 8500,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-23T00:00:00.000Z"
+        },
+        {
+          "id": "h4",
+          "kind": "decision",
+          "provenance": "model_proposal",
+          "body": "Bridge Notes are documents, not agent memory.",
+          "confidenceBps": 9000,
+          "conflictGroup": null,
+          "updatedAt": "2026-08-23T01:00:00.000Z"
+        }
+      ],
+      "mustCover": [
+        [
+          "h1"
+        ],
+        [
+          "h2"
+        ],
+        [
+          "h3"
+        ],
+        [
+          "h4"
+        ]
+      ],
+      "duplicateGroups": []
+    }
+  ]
+}

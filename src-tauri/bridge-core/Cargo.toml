@@ -67,3 +67,8 @@ hmac = "0.12"
 security-framework = "3.7"
 security-framework-sys = "2.17"
 core-foundation = "0.10"
+
+[dev-dependencies]
+# Property tests for the memory ledger's invariants (budget, intervals,
+# packet caps, the proposal gate on arbitrary model text).
+proptest = { version = "1", default-features = false, features = ["std"] }

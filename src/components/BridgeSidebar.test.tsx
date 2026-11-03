@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, Workspace } from "../types";
-import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
+import { BridgeSidebar, pendingBadge, type BridgeSidebarProps } from "./BridgeSidebar";
 import { CHAT_VIEW_KEY } from "./sidebarChats";
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
@@ -427,6 +427,24 @@ describe("BridgeSidebar without the projects tree", () => {
     const memoryButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Memory"')) ?? "";
     expect(memoryButton(render())).not.toContain("aria-current");
     expect(memoryButton(render({ memoryActive: true }))).toContain('aria-current="page"');
+  });
+
+  it("counts memory proposals waiting for review, and shows nothing at zero", () => {
+    const memoryButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Memory')) ?? "";
+    expect(memoryButton(render())).toContain('aria-label="Memory"');
+    expect(memoryButton(render({ memoryPending: 0 }))).toContain('aria-label="Memory"');
+    const three = memoryButton(render({ memoryPending: 3 }));
+    expect(three).toContain('aria-label="Memory, 3 proposals to review"');
+    expect(three).toContain(">3</span>");
+    expect(memoryButton(render({ memoryPending: 1 }))).toContain("1 proposal to review");
+  });
+
+  it("reads a capped proposal list as 50+ rather than an exact count", () => {
+    expect(pendingBadge(0)).toBeUndefined();
+    expect(pendingBadge(-1)).toBeUndefined();
+    expect(pendingBadge(49)?.count).toBe("49");
+    expect(pendingBadge(50)?.count).toBe("50+");
+    expect(pendingBadge(50)?.label).toBe("50+ proposals to review");
   });
 
   it("uses a real local account row as the settings entry", () => {

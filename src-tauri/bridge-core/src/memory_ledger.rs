@@ -19,6 +19,14 @@ const KIND_FACT: &str = "fact";
 const KIND_DECISION: &str = "decision";
 const KIND_CONSTRAINT: &str = "constraint";
 const PROVENANCE_USER_EXPLICIT: &str = "user_explicit";
+pub const PROVENANCE_MODEL_PROPOSAL: &str = "model_proposal";
+/// A proposal an agent made with `memory_propose`. Never activated without a
+/// person's approval.
+pub const PROVENANCE_AGENT_PROPOSAL: &str = "agent_proposal";
+/// How long a proposal waits for review before it is swept to `expired`.
+/// Long enough to survive a holiday, short enough that a review queue nobody
+/// opens drains instead of holding the scope at its budget forever.
+pub const PROPOSAL_TTL_DAYS: i64 = 30;
 const STATUS_ACTIVE: &str = "active";
 const STATUS_PROPOSED: &str = "proposed";
 const STATUS_REJECTED: &str = "rejected";
@@ -263,6 +271,12 @@ pub fn save(
             Some(session_id.to_string())
         }
     };
+    // Saving what is already pinned is not growth. A double click, or the same
+    // pin typed again in different case, answers with the record that exists,
+    // and a full scope does not refuse a pin it already holds.
+    if let Some(existing) = active_with_same_text(db, &scope_key, &body)? {
+        return Ok(existing);
+    }
     crate::memory_consolidation::enforce_scope_budget(db, &scope_key)?;
     let now = Utc::now().to_rfc3339();
     let record = MemoryRecord {
@@ -386,6 +400,52 @@ pub(crate) fn insert_proposal(
     rationale: Option<&str>,
     source_session_id: &str,
 ) -> Result<MemoryRecord, BridgeError> {
+    insert_proposal_as(
+        db,
+        scope_key,
+        body,
+        kind,
+        PROVENANCE_MODEL_PROPOSAL,
+        confidence_bps,
+        rationale,
+        source_session_id,
+    )
+}
+
+/// The agent tools' only write path: the same proposal, under the provenance
+/// that says an agent asked for it.
+pub(crate) fn insert_agent_proposal(
+    db: &Connection,
+    scope_key: &str,
+    body: &str,
+    kind: &str,
+    rationale: &str,
+    source_session_id: &str,
+) -> Result<MemoryRecord, BridgeError> {
+    insert_proposal_as(
+        db,
+        scope_key,
+        body,
+        kind,
+        PROVENANCE_AGENT_PROPOSAL,
+        None,
+        Some(rationale),
+        source_session_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_proposal_as(
+    db: &Connection,
+    scope_key: &str,
+    body: &str,
+    kind: &str,
+    provenance: &str,
+    confidence_bps: Option<u32>,
+    rationale: Option<&str>,
+    source_session_id: &str,
+) -> Result<MemoryRecord, BridgeError> {
+    debug_assert!(provenance == PROVENANCE_MODEL_PROPOSAL || provenance == PROVENANCE_AGENT_PROPOSAL);
     crate::memory_consolidation::enforce_scope_budget(db, scope_key)?;
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
@@ -395,7 +455,7 @@ pub(crate) fn insert_proposal(
         "INSERT INTO memory_records(
             id, scope_key, kind, body, provenance, status, source_session_id,
             confidence_bps, rationale, valid_from, valid_to, created_at, updated_at
-         ) VALUES(?1,?2,?3,?4,'model_proposal','proposed',?5,?6,?7,?8,?8,?8,?8)",
+         ) VALUES(?1,?2,?3,?4,?9,'proposed',?5,?6,?7,?8,?8,?8,?8)",
         params![
             id,
             scope_key,
@@ -405,6 +465,7 @@ pub(crate) fn insert_proposal(
             confidence_bps.map(|value| value as i64),
             rationale,
             now,
+            provenance,
         ],
     )?;
     load(db, &id)?.ok_or_else(|| BridgeError::Invalid("The proposal was not written.".into()))
@@ -412,6 +473,12 @@ pub(crate) fn insert_proposal(
 
 /// Case-insensitive body match against every non-deleted record in scope, so
 /// the extractor cannot re-propose what already exists in any state but gone.
+///
+/// A proposal the TTL swept unreviewed is the exception: it is `expired` with
+/// an empty interval, so it never held, nobody decided against it, and it can
+/// no longer be approved. Vetoing a repeat would leave the claim with no way
+/// back into review. A rejection still vetoes, and so does a record that held
+/// and then expired.
 pub(crate) fn body_already_known(
     db: &Connection,
     scope_key: &str,
@@ -421,12 +488,61 @@ pub(crate) fn body_already_known(
         .query_row(
             "SELECT 1 FROM memory_records
              WHERE scope_key=?1 AND status<>'deleted' AND lower(trim(body))=lower(trim(?2))
+               AND NOT (status='expired' AND valid_to IS valid_from)
              LIMIT 1",
             params![scope_key, body],
             |row| row.get(0),
         )
         .optional()?;
     Ok(found.is_some())
+}
+
+/// The active record in scope whose text is the same as `body` once case,
+/// whitespace and edge punctuation are folded. An explicit save's idempotency
+/// check: exact text only, because a person typing a similar pin means it.
+fn active_with_same_text(
+    db: &Connection,
+    scope_key: &str,
+    body: &str,
+) -> Result<Option<MemoryRecord>, BridgeError> {
+    let wanted = crate::memory_similarity::normalize(body);
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE scope_key=?1 AND status=?2
+         ORDER BY created_at, id",
+    ))?;
+    let records = statement.query_map(params![scope_key, STATUS_ACTIVE], map_row)?;
+    for record in records {
+        let record = record?;
+        if crate::memory_similarity::normalize(&record.body) == wanted {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
+/// The record a new proposal would repeat: an active, proposed or rejected
+/// record in scope that makes the same claim by
+/// [`crate::memory_similarity::near_duplicate`]. Rejected counts, so a claim
+/// the person turned down does not come back with a word changed.
+pub(crate) fn near_duplicate_of(
+    db: &Connection,
+    scope_key: &str,
+    body: &str,
+) -> Result<Option<MemoryRecord>, BridgeError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE scope_key=?1 AND status IN ('active','proposed','rejected')
+         ORDER BY status='active' DESC, created_at, id",
+    ))?;
+    let records = statement.query_map(params![scope_key], map_row)?;
+    for record in records {
+        let record = record?;
+        if crate::memory_similarity::near_duplicate(&record.body, body) {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
 }
 
 /// `proposed -> active`. The only path to active a proposal has, and the
@@ -654,6 +770,37 @@ pub fn sweep_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>,
         params![STATUS_EXPIRED, now, STATUS_ACTIVE],
     )?;
     Ok(expiring)
+}
+
+/// Expire proposals that waited longer than [`PROPOSAL_TTL_DAYS`] for review.
+///
+/// A proposal never held, so its interval stays empty: `valid_to` is left at
+/// `valid_from`, and no as-of read of any instant returns it. Only the status
+/// moves, which takes it out of the review queue and out of the budget. Like
+/// [`sweep_expired`], the instant is an argument so the boundary is exact: a
+/// proposal created exactly `PROPOSAL_TTL_DAYS` before `now` is stale.
+pub fn sweep_stale_proposals(
+    db: &Connection,
+    now: DateTime<Utc>,
+) -> Result<Vec<String>, BridgeError> {
+    let cutoff = (now - chrono::Duration::days(PROPOSAL_TTL_DAYS)).to_rfc3339();
+    let mut statement = db.prepare(
+        "SELECT id FROM memory_records
+         WHERE status=?1 AND created_at <= ?2
+         ORDER BY created_at, id",
+    )?;
+    let stale: Vec<String> = statement
+        .query_map(params![STATUS_PROPOSED, cutoff], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if stale.is_empty() {
+        return Ok(stale);
+    }
+    db.execute(
+        "UPDATE memory_records SET status=?1, updated_at=?2
+         WHERE status=?3 AND created_at <= ?4",
+        params![STATUS_EXPIRED, now.to_rfc3339(), STATUS_PROPOSED, cutoff],
+    )?;
+    Ok(stale)
 }
 
 /// Put an end on an active record without closing it now. The sweep is what
@@ -919,6 +1066,171 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap()
+    }
+
+    fn set_budget(db: &Connection, max_records: i64) {
+        crate::memory_consolidation::update_settings(
+            db,
+            ACCOUNT_MEMORY_SCOPE,
+            "off",
+            None,
+            None,
+            Some(max_records),
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    fn count(db: &Connection, status: &str) -> i64 {
+        db.query_row(
+            "SELECT COUNT(*) FROM memory_records WHERE status=?1",
+            params![status],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn saving_the_same_pin_twice_is_one_record() {
+        let (_dir, db) = ledger_db();
+        let first = save(&db, "Prefer vitest -t filters while triaging.", None, None).unwrap();
+        let again = save(&db, "  prefer VITEST -t filters while triaging ", Some("constraint"), None).unwrap();
+        assert_eq!(again.id, first.id, "the existing record answers");
+        assert_eq!(again.kind, "preference", "a repeat changes nothing");
+        assert_eq!(count(&db, "active"), 1);
+        let different = save(&db, "Prefer vitest -t filters while debugging.", None, None).unwrap();
+        assert_ne!(different.id, first.id, "a different pin is a new record");
+    }
+
+    #[test]
+    fn pins_that_differ_only_in_identifier_punctuation_are_two_records() {
+        let (_dir, db) = ledger_db();
+        let cpp = save(&db, "Use C++", None, None).unwrap();
+        let csharp = save(&db, "Use C#", None, None).unwrap();
+        assert_ne!(csharp.id, cpp.id);
+        assert_eq!(csharp.body, "Use C#", "the second pin is kept as typed");
+        assert_eq!(count(&db, "active"), 2);
+    }
+
+    #[test]
+    fn only_an_expired_record_that_never_held_drops_out_of_the_known_bodies() {
+        let (_dir, db) = ledger_db();
+        let insert = |id: &str, valid_to: &str| {
+            db.execute(
+                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                     valid_from, valid_to, created_at, updated_at)
+                 VALUES(?1, ?2, 'fact', ?1, 'model_proposal', 'expired', '2026-09-01T00:00:00+00:00', ?3, 'now', 'now')",
+                params![id, ACCOUNT_MEMORY_SCOPE, valid_to],
+            )
+            .unwrap();
+        };
+        insert("swept proposal", "2026-09-01T00:00:00+00:00");
+        insert("held then expired", "2026-10-01T00:00:00+00:00");
+        assert!(!body_already_known(&db, ACCOUNT_MEMORY_SCOPE, "swept proposal").unwrap());
+        assert!(body_already_known(&db, ACCOUNT_MEMORY_SCOPE, "held then expired").unwrap());
+    }
+
+    #[test]
+    fn a_full_scope_still_answers_a_pin_it_already_holds() {
+        let (_dir, db) = ledger_db();
+        set_budget(&db, 1);
+        let first = save(&db, "Keep answers short", None, None).unwrap();
+        assert_eq!(save(&db, "keep answers short.", None, None).unwrap().id, first.id);
+        assert!(save(&db, "Something new", None, None).is_err(), "growth is still refused");
+    }
+
+    #[test]
+    fn a_forgotten_pin_saved_again_is_a_new_record() {
+        let (_dir, db) = ledger_db();
+        let first = save(&db, "Uses zed", None, None).unwrap();
+        forget(&db, &first.id).unwrap();
+        let again = save(&db, "Uses zed", None, None).unwrap();
+        assert_ne!(again.id, first.id, "only active records answer for a repeat");
+        assert_eq!(again.status, "active");
+    }
+
+    #[test]
+    fn near_duplicates_are_found_among_active_proposed_and_rejected() {
+        let (_dir, db) = ledger_db();
+        insert_proposed(&db, "p1", "CI is rerunning on 6a77f0c1 after the daemon test fix landed");
+        assert_eq!(
+            near_duplicate_of(&db, ACCOUNT_MEMORY_SCOPE, "CI is rerunning on 6a77f0c1 after the daemon test fix has landed")
+                .unwrap()
+                .map(|record| record.id),
+            Some("p1".to_string())
+        );
+        reject(&db, "p1").unwrap();
+        assert!(
+            near_duplicate_of(&db, ACCOUNT_MEMORY_SCOPE, "ci is rerunning on 6a77f0c1 after the daemon test fix landed").unwrap().is_some(),
+            "a rejected claim does not come back"
+        );
+        db.execute("UPDATE memory_records SET status='deleted' WHERE id='p1'", []).unwrap();
+        assert!(
+            near_duplicate_of(&db, ACCOUNT_MEMORY_SCOPE, "CI is rerunning on 6a77f0c1 after the daemon test fix landed").unwrap().is_none(),
+            "a tombstone is gone"
+        );
+    }
+
+    #[test]
+    fn agent_proposals_carry_their_own_provenance_and_stay_proposed() {
+        let (_dir, db) = ledger_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind)
+             VALUES('chat',NULL,'opencode','chat','idle','reported','direct')",
+            [],
+        )
+        .unwrap();
+        let record = insert_agent_proposal(&db, ACCOUNT_MEMORY_SCOPE, "Check upstream trackers before hunting", "constraint", "the person said so", "chat").unwrap();
+        assert_eq!(record.provenance, PROVENANCE_AGENT_PROPOSAL);
+        assert_eq!(record.status, "proposed");
+        assert_eq!(record.valid_to.as_deref(), Some(record.valid_from.as_str()), "an empty interval");
+        assert_eq!(record.source_session_id.as_deref(), Some("chat"));
+        assert_eq!(record.confidence_bps, None, "an agent claims no confidence");
+    }
+
+    #[test]
+    fn stale_proposals_expire_at_the_boundary_and_keep_an_empty_interval() {
+        let (_dir, db) = ledger_db();
+        let now = Utc::now();
+        let created = |db: &Connection, id: &str, at: DateTime<Utc>| {
+            db.execute(
+                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                     valid_from, valid_to, created_at, updated_at)
+                 VALUES(?1, ?2, 'fact', ?1, 'model_proposal', 'proposed', ?3, ?3, ?3, ?3)",
+                params![id, ACCOUNT_MEMORY_SCOPE, at.to_rfc3339()],
+            )
+            .unwrap();
+        };
+        let ttl = chrono::Duration::days(PROPOSAL_TTL_DAYS);
+        created(&db, "exactly-stale", now - ttl);
+        created(&db, "older", now - ttl - chrono::Duration::seconds(1));
+        created(&db, "fresh", now - ttl + chrono::Duration::seconds(1));
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                 valid_from, created_at, updated_at)
+             VALUES('old-active', ?1, 'fact', 'old active', 'user_explicit', 'active', ?2, ?2, ?2)",
+            params![ACCOUNT_MEMORY_SCOPE, (now - ttl * 3).to_rfc3339()],
+        )
+        .unwrap();
+        let held_before = crate::memory_consolidation::held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+
+        let swept = sweep_stale_proposals(&db, now).unwrap();
+        assert_eq!(swept, vec!["older".to_string(), "exactly-stale".to_string()]);
+        for id in ["older", "exactly-stale"] {
+            let record = load(&db, id).unwrap().unwrap();
+            assert_eq!(record.status, STATUS_EXPIRED);
+            assert_eq!(record.valid_to.as_deref(), Some(record.valid_from.as_str()), "never held, so never true");
+        }
+        assert_eq!(load(&db, "fresh").unwrap().unwrap().status, "proposed");
+        assert_eq!(load(&db, "old-active").unwrap().unwrap().status, "active", "the TTL is for proposals only");
+        assert_eq!(
+            crate::memory_consolidation::held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap(),
+            held_before - 2,
+            "expired proposals leave the budget"
+        );
+        assert!(list_as_of(&db, ACCOUNT_MEMORY_SCOPE, now - ttl).unwrap().records.iter().all(|record| record.id == "old-active"));
+        assert!(sweep_stale_proposals(&db, now).unwrap().is_empty(), "a second sweep finds nothing");
     }
 
     #[test]

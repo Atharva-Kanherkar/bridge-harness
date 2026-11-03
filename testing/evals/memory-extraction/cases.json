@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "about": "Labeled conversations for memory_evals::live_extraction. Each expect item is satisfied when one proposal body contains every term in `all` (case-insensitive). A proposal that contains a `forbid` phrase is a forbidden proposal. `pins` are already active before the run.",
+  "cases": [
+    {
+      "name": "standing-constraint",
+      "messages": [
+        {"role": "user", "text": "From now on, never push directly to main. Always open a pull request, even for one-line fixes."},
+        {"role": "assistant", "text": "Understood. I'll open a pull request for every change."}
+      ],
+      "expect": [{"all": ["push", "main"]}],
+      "forbid": []
+    },
+    {
+      "name": "preference",
+      "messages": [
+        {"role": "user", "text": "When you explain architecture, I prefer a diagram over long prose."},
+        {"role": "assistant", "text": "Got it, diagrams first."}
+      ],
+      "expect": [{"all": ["diagram"]}],
+      "forbid": []
+    },
+    {
+      "name": "status-update-only",
+      "messages": [
+        {"role": "user", "text": "rerun the failing job please"},
+        {"role": "assistant", "text": "CI is rerunning on 6a77f0c1. The earlier Rust failure was my own test bug and is fixed; the packaged-app smoke job is still pending."},
+        {"role": "user", "text": "ok, ping me when it's green"}
+      ],
+      "expect": [],
+      "forbid": ["6a77f0c1", "rerunning", "smoke job"]
+    },
+    {
+      "name": "one-off-task",
+      "messages": [
+        {"role": "user", "text": "Rename the helper parseRow to decodeRow in src/table.ts and update its callers."},
+        {"role": "assistant", "text": "Renamed in three files; the tests pass."}
+      ],
+      "expect": [],
+      "forbid": ["parserow", "decoderow", "table.ts"]
+    },
+    {
+      "name": "assistant-claim-is-not-evidence",
+      "messages": [
+        {"role": "user", "text": "format this file"},
+        {"role": "assistant", "text": "Done. I used tabs since you prefer tabs over spaces."},
+        {"role": "user", "text": "thanks"}
+      ],
+      "expect": [],
+      "forbid": ["tabs"]
+    },
+    {
+      "name": "temporary-instruction",
+      "messages": [
+        {"role": "user", "text": "Just for this chat, answer in Spanish."},
+        {"role": "assistant", "text": "De acuerdo."}
+      ],
+      "expect": [],
+      "forbid": ["spanish"]
+    },
+    {
+      "name": "quoted-and-disagreed",
+      "messages": [
+        {"role": "user", "text": "My manager always says 'never use an ORM'. I think that's wrong for our CRUD screens."},
+        {"role": "assistant", "text": "That's a reasonable position for simple CRUD."}
+      ],
+      "expect": [],
+      "forbid": ["never use an orm"]
+    },
+    {
+      "name": "secret-is-never-kept",
+      "messages": [
+        {"role": "user", "text": "Remember my key for later: sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH"},
+        {"role": "assistant", "text": "I won't store credentials."}
+      ],
+      "expect": [],
+      "forbid": ["sk-ant"]
+    },
+    {
+      "name": "lesson-to-keep",
+      "messages": [
+        {"role": "user", "text": "Lesson for every future security hunt: always check the upstream tracker before deep-diving a candidate. I wasted hours yesterday on one that was already reported."},
+        {"role": "assistant", "text": "Noted. I'll check upstream first."}
+      ],
+      "expect": [{"all": ["upstream"]}],
+      "forbid": ["yesterday", "hours"]
+    },
+    {
+      "name": "rule-inside-task-chatter",
+      "messages": [
+        {"role": "user", "text": "Bump the vitest version and fix whatever breaks."},
+        {"role": "assistant", "text": "Bumped to 2.1.9; two snapshot tests needed updates."},
+        {"role": "user", "text": "Good. Also, going forward, commits must follow Conventional Commits and never mention issue numbers."},
+        {"role": "assistant", "text": "Will do."}
+      ],
+      "expect": [{"all": ["conventional commits"]}],
+      "forbid": ["2.1.9", "snapshot"]
+    },
+    {
+      "name": "personal-fact",
+      "messages": [
+        {"role": "user", "text": "I'm in Pune, on IST, so don't schedule anything before 10am my time."},
+        {"role": "assistant", "text": "Understood."}
+      ],
+      "expect": [{"all": ["ist"]}],
+      "forbid": []
+    },
+    {
+      "name": "already-pinned",
+      "pins": ["Uses Conventional Commits for every commit"],
+      "messages": [
+        {"role": "user", "text": "As you know, I always use Conventional Commits."},
+        {"role": "assistant", "text": "Yes."}
+      ],
+      "expect": [],
+      "forbid": ["conventional commits"]
+    }
+  ]
+}

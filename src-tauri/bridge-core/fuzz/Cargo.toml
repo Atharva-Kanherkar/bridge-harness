@@ -1,0 +1,40 @@
+# Coverage-guided fuzzing for the memory gates (nightly, cargo-fuzz):
+#
+#   cd src-tauri/bridge-core/fuzz
+#   cargo +nightly fuzz run memory_gate corpus/memory_gate seeds/memory_gate -- -max_total_time=300
+#   cargo +nightly fuzz run memory_tools corpus/memory_tools seeds/memory_tools -- -max_total_time=300
+#
+# Its own workspace so the main build never compiles libfuzzer.
+[package]
+name = "bridge-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bridge-core = { path = ".." }
+bridge-protocol = { path = "../../bridge-protocol" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+tempfile = "3"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "memory_gate"
+path = "fuzz_targets/memory_gate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "memory_tools"
+path = "fuzz_targets/memory_tools.rs"
+test = false
+doc = false
+bench = false

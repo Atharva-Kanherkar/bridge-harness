@@ -2,7 +2,10 @@ import { briefingOptions, isBriefing } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
 /** The `bridge` server's tools that only read or display. */
-export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read"];
+export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search"];
+/** The `bridge` server's tools whose only effect waits for the person's review:
+ *  a memory proposal changes nothing until they approve it in Bridge. */
+export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose"];
 
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
@@ -12,9 +15,10 @@ export function permissionOptions(mode, networkAllowed = false, mcpServers = {})
     case "Isolated":
       // Bridge renders no Claude permission prompt, so anything that needs one
       // is refused outright. Bridge's own read-only tools change nothing and
-      // run; notes writes stay refused until Bridge asks for them itself.
+      // run, and so does a memory proposal, which Bridge itself puts in front
+      // of the person; notes writes stay refused until Bridge asks for them.
       return mcpServers.bridge
-        ? { permissionMode: "acceptEdits", allowedTools: [...BRIDGE_READ_TOOLS] }
+        ? { permissionMode: "acceptEdits", allowedTools: [...BRIDGE_READ_TOOLS, ...BRIDGE_REVIEWED_TOOLS] }
         : { permissionMode: "acceptEdits" };
     case "Full":
     default:
