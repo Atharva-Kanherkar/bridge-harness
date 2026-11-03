@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { noteDisplayTitle, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
+import { linkChoices, linkablePages, noteDisplayTitle, pageTitled, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
+import type { Note } from "./types";
 
 describe("rebaseDraft", () => {
   const sent = "alpha\nbeta\ngamma\n";
@@ -71,6 +72,12 @@ describe("noteDisplayTitle", () => {
     expect(noteDisplayTitle({ title: "", preview: "   \n" })).toBe("Untitled");
     expect(noteDisplayTitle({ title: null, preview: "x".repeat(120) })).toHaveLength(80);
   });
+
+  it("counts characters, not UTF-16 units, the way the core cuts a long line", () => {
+    const line = `${"a".repeat(77)}🚀🚀`;
+    expect(noteDisplayTitle({ title: null, preview: line })).toBe(line);
+    expect([...noteDisplayTitle({ title: null, preview: `${line}🚀🚀` })]).toHaveLength(80);
+  });
 });
 
 describe("plainPreview and quoteText", () => {
@@ -82,5 +89,30 @@ describe("plainPreview and quoteText", () => {
     expect(quoteText("- add a skip button")).toBe("add a skip button");
     expect(quoteText("2. second")).toBe("second");
     expect(quoteText("need to - keep dashes")).toBe("need to - keep dashes");
+  });
+});
+
+describe("wiki link targets", () => {
+  const note = (id: string, title: string | null, createdAt: string, preview = "", kind: Note["kind"] = "page") => ({ id, title, createdAt, kind, preview }) as Note;
+  const notes = [note("b", "Plans", "2026-02-01"), note("a", " plans ", "2026-01-01"), note("u", null, "2025-06-01", "Roadmap\nnext"), note("t", "Errand", "2025-01-01", "", "task")];
+
+  it("offers one page per title, the oldest holding it, untitled ones by their first line", () => {
+    expect(linkablePages(notes).map(item => item.id)).toEqual(["a", "u", "t"]);
+  });
+
+  it("offers every named page, marking those another page wins to link by id", () => {
+    expect(linkChoices([...notes, note("blank", null, "2024-01-01")])).toEqual([
+      { id: "b", title: "Plans", byId: true },
+      { id: "a", title: "plans", byId: false },
+      { id: "u", title: "Roadmap", byId: false },
+      { id: "t", title: "Errand", byId: false },
+    ]);
+  });
+
+  it("resolves a title the way the core does, case and spacing aside", () => {
+    expect(pageTitled(notes, "PLANS")?.id).toBe("a");
+    expect(pageTitled(notes, "roadmap")?.id).toBe("u");
+    expect(pageTitled(notes, "Errand")?.id).toBe("t");
+    expect(pageTitled(notes, "nothing")).toBeUndefined();
   });
 });

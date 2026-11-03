@@ -150,7 +150,42 @@ export function noteDisplayTitle(note: Pick<Note, "title" | "preview">): string 
   if (title) return title;
   const line = note.preview.split("\n").map(part => part.replace(/^#+\s*/, "").trim()).find(Boolean);
   if (!line) return "Untitled";
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+  // Characters, not UTF-16 units, as the core counts them.
+  const characters = [...line];
+  return characters.length > 80 ? `${characters.slice(0, 79).join("")}…` : line;
+}
+
+/** The pages a `[[Title]]` can name, as the core resolves them: by the title
+ *  a list shows (an untitled page by its first line), case and spacing aside,
+ *  the oldest page holding a title winning. */
+export function linkablePages(notes: Note[]): Note[] {
+  const held = new Map<string, Note>();
+  for (const note of notes) {
+    const key = linkKey(noteDisplayTitle(note));
+    const other = held.get(key);
+    if (!other || note.createdAt < other.createdAt || (note.createdAt === other.createdAt && note.id < other.id)) held.set(key, note);
+  }
+  const winners = new Set(held.values());
+  return notes.filter(note => winners.has(note));
+}
+
+/** Every named page a `[[` menu offers, newest first; one another page wins
+ *  the title of is marked to be linked by its id. */
+export function linkChoices(notes: Note[]): { id: string; title: string; byId: boolean }[] {
+  const winners = new Set(linkablePages(notes));
+  return notes
+    .filter(note => note.title?.trim() || plainPreview(note.preview))
+    .map(note => ({ id: note.id, title: noteDisplayTitle(note), byId: !winners.has(note) }));
+}
+
+/** The page `[[title]]` opens, if any page goes by that title. */
+export function pageTitled(notes: Note[], title: string): Note | undefined {
+  const key = linkKey(title);
+  return linkablePages(notes).find(note => linkKey(noteDisplayTitle(note)) === key);
+}
+
+function linkKey(title: string): string {
+  return title.trim().toLowerCase();
 }
 
 /** Markdown as one line of plain text, for a list preview. */

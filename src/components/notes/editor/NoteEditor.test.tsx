@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Editor } from "@tiptap/core";
 import { resetMockNotes } from "../../../notesMock";
 import { NoteEditor, HAND_OVER_MS, type NoteEditorHandle, type NoteEditorProps } from "./NoteEditor";
+import { imageWidthOf } from "./views";
+
+// No core assets in jsdom: images draw from a fake url, which still exercises
+// the caption and the resize handles.
+vi.mock("./assets", async actual => ({ ...(await actual<typeof import("./assets")>()), assetUrl: async (source: string) => `blob:asset${source}` }));
 
 let host: HTMLDivElement;
 let root: Root;
@@ -28,7 +33,18 @@ const handle = createRef<NoteEditorHandle>();
 
 async function mount(text: string, overrides: Partial<NoteEditorProps> = {}) {
   const onChange = vi.fn();
-  const props: NoteEditorProps = { text, title: null, onChange, pages: { title: () => undefined, open: vi.fn() }, onCreatePage: vi.fn(async () => ({ id: "child-1", title: "Child" })), onError: vi.fn(), ...overrides };
+  const props: NoteEditorProps = {
+    text, title: null, onChange,
+    pages: {
+      title: () => undefined,
+      open: vi.fn(),
+      openByTitle: vi.fn(),
+      pages: () => [{ id: "p-plans", title: "Plans" }, { id: "p-crew", title: "Crew notes" }],
+    },
+    onCreatePage: vi.fn(async (title: string | null) => ({ id: "child-1", title: title ?? "Child" })),
+    onError: vi.fn(),
+    ...overrides,
+  };
   await act(async () => { root.render(<NoteEditor ref={handle} {...props} />); });
   await settle();
   return { props, onChange, rerender: async (next: Partial<NoteEditorProps>) => { await act(async () => { root.render(<NoteEditor ref={handle} {...props} {...next} />); }); await settle(); } };
@@ -221,5 +237,204 @@ describe("NoteEditor", () => {
     await typeAfter("Last line", "!");
     await commit();
     expect(onChange).toHaveBeenLastCalledWith("First  with __bold__.\r\n\r\n<details open>\r\n<summary>More</summary>\r\n\r\nHidden\r\n\r\n</details>\r\n\r\nLast line!\r\n");
+  });
+
+  it("round-trips wiki links, with and without an alias, beside untouched blocks", async () => {
+    const before = "Before\n\nSee [[Plans]] then [[Crew|the crew]].\n\nAfter\n";
+    const { onChange } = await mount(before);
+    const dom = host.querySelector(".note-editor")!;
+    expect([...dom.querySelectorAll("button[aria-label^='Open the page']")].map(node => node.textContent)).toEqual(["Plans", "the crew"]);
+    await commit();
+    expect(onChange).not.toHaveBeenCalled();
+    await typeAfter("Before", "!");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe(before.replace("Before", "Before!"));
+  });
+
+  it("keeps a wiki link's spacing, empty alias and inner bracket byte for byte, as the core reads them", async () => {
+    const before = "Lead\n\n[[Foo | Bar]] and [[Foo|]] and [[a[b]] here.\n";
+    const { onChange } = await mount(before);
+    expect([...host.querySelectorAll("button[aria-label^='Open the page']")].map(node => node.textContent)).toEqual(["Bar", "Foo", "a[b"]);
+    await typeAfter("here", "!");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe(before.replace("here.", "here!."));
+  });
+
+  it("turns a [[link]] typed straight through into a link", async () => {
+    await mount("first\n");
+    const view = editor().view;
+    const type = (text: string) => {
+      for (const char of text) {
+        const { from, to } = view.state.selection;
+        const handled = view.someProp("handleTextInput", handler => handler(view, from, to, char, () => view.state.tr.insertText(char, from, to)));
+        if (!handled) view.dispatch(view.state.tr.insertText(char, from, to));
+      }
+    };
+    await act(async () => { editor().commands.setTextSelection(6); type(" [[Meeting notes]]"); });
+    await settle();
+    expect(editor().getMarkdown()).toContain("first [[Meeting notes]]");
+    expect(host.querySelector("button[aria-label='Open the page Meeting notes']")).not.toBeNull();
+  });
+
+  it("escapes brackets only where a wiki link could be misread", async () => {
+    const { onChange } = await mount("plain [1] stays\n");
+    await typeAfter("stays", " typed [[maybe]] else");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe("plain \\[1] stays typed \\[\\[maybe]] else\n");
+  });
+
+  it("opens the [[ menu on typing, filters pages, and inserts a link on Enter", async () => {
+    await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).not.toBeNull();
+    await typeAfter("[[", "pl");
+    await settle();
+    const options = [...document.querySelectorAll("[role='listbox'][aria-label='Page links'] [role='option']")].map(node => node.textContent);
+    expect(options).toEqual(["Plans", 'Make "pl"']);
+    await key("Enter");
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+    expect(editor().getMarkdown()).toContain("[[Plans]]");
+  });
+
+  it("closes the [[ menu on Escape without inserting anything", async () => {
+    await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Crew").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).not.toBeNull();
+    await key("Escape");
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+    expect(editor().getMarkdown()).toContain("[[Crew");
+  });
+
+  it("offers to make the page when no existing title matches, and links to it", async () => {
+    const { props: given } = await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Fresh thoughts").run(); });
+    await settle();
+    const options = [...document.querySelectorAll("[role='listbox'][aria-label='Page links'] [role='option']")].map(node => node.textContent);
+    expect(options).toEqual(['Make "Fresh thoughts"']);
+    await key("Enter");
+    await settle();
+    expect(given.onCreatePage).toHaveBeenCalledWith("Fresh thoughts");
+    expect(editor().getMarkdown()).toContain("[[Fresh thoughts]]");
+  });
+
+  it("opens no [[ menu inside inline code, and shows at most 20 pages", async () => {
+    const many = Array.from({ length: 30 }, (_, index) => ({ id: `p-${index}`, title: `Plan ${index}` }));
+    await mount("say `code` here\n", { pages: { title: () => undefined, open: vi.fn(), pages: () => many } });
+    await typeAfter("cod", "[[Pl");
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+    await typeAfter("here", " [[Plan");
+    await settle();
+    expect(document.querySelectorAll("[role='listbox'][aria-label='Page links'] [role='option']")).toHaveLength(21);
+  });
+
+  it("lets go of the [[ menu once the link is closed by hand", async () => {
+    await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Plans").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).not.toBeNull();
+    await act(async () => { editor().chain().insertContent("]] and more").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+  });
+
+  it("links a page whose title [[ ]] cannot hold by its id", async () => {
+    await mount("first\n", { pages: { title: () => undefined, open: vi.fn(), pages: () => [{ id: "p-q4", title: "Q4 | Launches" }] } });
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Q4").run(); });
+    await settle();
+    await key("Enter");
+    await settle();
+    expect(editor().getMarkdown()).toContain('<page url="bridge://p/p-q4">Q4 | Launches</page>');
+    expect(editor().getMarkdown()).not.toContain("[[Q4");
+  });
+
+  it("opens the page named in a wiki link when its pill is clicked", async () => {
+    const { props: given } = await mount("See [[Plans]] and continue\n");
+    const pill = [...host.querySelectorAll("button[aria-label]")].find(node => node.getAttribute("aria-label") === "Open the page Plans");
+    expect(pill).not.toBeNull();
+    await act(async () => { pill!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(given.pages.openByTitle).toHaveBeenCalledWith("Plans");
+  });
+
+  it("edits an image caption and round-trips a set width through its Markdown", async () => {
+    const { onChange } = await mount("Before\n\n![Old plan](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
+    const figure = host.querySelector("figure.note-image")!;
+    const caption = figure.querySelector("figcaption[aria-label='Caption']")!;
+    expect(caption.textContent).toBe("Old plan");
+    expect((figure.querySelector("img") as HTMLElement).style.width).toBe("420px");
+    expect([...host.querySelectorAll("figcaption[aria-label='Caption']")].filter(node => node.getAttribute("data-empty") === null).length).toBe(1);
+
+    // The caption is edited like text: retype it, leave, and only that image
+    // block's Markdown changes.
+    await act(async () => {
+      caption.textContent = "Old plan, revised";
+      caption.dispatchEvent(new Event("input", { bubbles: true }));
+      caption.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await settle();
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe("Before\n\n![Old plan, revised](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
+
+    // A bracket would end `![…]`, so a typed one is left out.
+    await act(async () => {
+      caption.textContent = "step 2] [final";
+      caption.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await settle();
+    await commit();
+    expect(onChange.mock.lastCall![0]).toContain("![step 2 final](assets/0123456789abcdef.png \"420\")");
+    expect(caption.textContent).toBe("step 2 final");
+    expect(imageWidthOf("0")).toBeNull();
+  });
+
+  it("shows an empty caption while its image is selected, and keeps a real title", async () => {
+    await mount("Intro\n\n![](assets/0123456789abcdef.png)\n\n![](assets/89abcdef01234567.png \"Figure 1\")\n");
+    const [plain, titled] = [...host.querySelectorAll("figure.note-image")];
+    expect(plain.querySelector("figcaption")!.className).toContain("data-[empty]:hidden");
+    await act(async () => { editor().commands.setNodeSelection(editor().state.doc.child(0).nodeSize); });
+    expect(plain.querySelector("figcaption")!.className).not.toContain("data-[empty]:hidden");
+    // A worded title is the image's own: shown, never overwritten by a drag.
+    expect(titled.querySelector("img")!.getAttribute("title")).toBe("Figure 1");
+    expect(titled.querySelector("button[aria-label^='Resize']")).toBeNull();
+  });
+
+  it("keeps the handles on an image whose width reads 0, drawn at its natural size", async () => {
+    await mount("Intro\n\n![](assets/0123456789abcdef.png \"0\")\n");
+    const image = host.querySelector("figure.note-image img") as HTMLElement;
+    expect(image.style.width).toBe("");
+    expect(image.getAttribute("title")).toBeNull();
+    expect(host.querySelector("button[aria-label='Resize from the right edge']")).not.toBeNull();
+  });
+
+  it("links a page that shares an older page's title by its id", async () => {
+    await mount("first\n", { pages: { title: () => undefined, open: vi.fn(), pages: () => [{ id: "p-new", title: "Notes", byId: true }, { id: "p-old", title: "Notes" }] } });
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Notes").run(); });
+    await settle();
+    await key("Enter");
+    await settle();
+    expect(editor().getMarkdown()).toContain('<page url="bridge://p/p-new">Notes</page>');
+  });
+
+  it("selects only the caption on select all inside it", async () => {
+    await mount("Intro words\n\n![Old plan](assets/0123456789abcdef.png)\n");
+    const caption = host.querySelector<HTMLElement>("figcaption[aria-label='Caption']")!;
+    await act(async () => { caption.dispatchEvent(new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true })); });
+    expect(getSelection()?.toString()).toBe("Old plan");
+  });
+
+  it("resizes an image from its handles, clamping to at least 120px", async () => {
+    const { onChange } = await mount("Intro\n\n![Plan](assets/0123456789abcdef.png)\n");
+    const handle = host.querySelector<HTMLButtonElement>("button[aria-label='Resize from the right edge']")!;
+    // jsdom has no PointerEvent; MouseEvent with clientX does for our use.
+    const pointer = (type: string, target: EventTarget, x: number) => target.dispatchEvent(new MouseEvent(type, { clientX: x, bubbles: true, cancelable: true }));
+    await act(async () => { pointer("pointerdown", handle, 500); });
+    await act(async () => { pointer("pointermove", window, 700); });
+    await act(async () => { pointer("pointerup", window, 700); });
+    await settle();
+    await commit();
+    // jsdom offers no layout, so the drag clamps to the smallest width (120px).
+    expect(onChange.mock.calls[0][0]).toBe("Intro\n\n![Plan](assets/0123456789abcdef.png \"120\")\n");
   });
 });

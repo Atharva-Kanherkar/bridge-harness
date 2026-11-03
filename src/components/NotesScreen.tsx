@@ -7,10 +7,10 @@
 // core merge it. The list collapses (`toggle-notes-list`) so the page can take the width.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { PanelLeft, Plus, Search, Settings2 } from "lucide-react";
+import { ChevronRight, PanelLeft, Plus, Search, Settings2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { taskBrief } from "../notesBrief";
-import { noteDisplayTitle, plainPreview } from "../notesDraft";
+import { noteDisplayTitle, pageTitled, plainPreview } from "../notesDraft";
 import type { AdapterDescriptor, Note, NotePage, NotesList, NotesSettings, Session, Workspace } from "../types";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -26,8 +26,8 @@ import type { StartChoice } from "./notes/NotePickers";
 
 export const JOB_POLL_MS = 1500;
 
-type Filter = "all" | "inbox" | "tasks" | "archived";
-const FILTERS: [Filter, string][] = [["all", "All"], ["inbox", "Inbox"], ["tasks", "Tasks"], ["archived", "Archived"]];
+type Filter = "all" | "inbox" | "pages" | "tasks" | "archived";
+const FILTERS: [Filter, string][] = [["all", "All"], ["inbox", "Inbox"], ["pages", "Pages"], ["tasks", "Tasks"], ["archived", "Archived"]];
 
 export interface NoteChatRequest { message: string; workspaceId: string | null; harness: string }
 
@@ -41,6 +41,8 @@ const CHAT_OPEN_KEY = "bridge.notes.chatOpen";
 const readChatOpen = () => { try { return localStorage.getItem(CHAT_OPEN_KEY) === "1"; } catch { return false; } };
 const LIST_OPEN_KEY = "bridge.notes.listOpen";
 const readListOpen = () => { try { return localStorage.getItem(LIST_OPEN_KEY) !== "0"; } catch { return true; } };
+const EXPANDED_KEY = "bridge.notes.expandedPages";
+const readExpanded = (): Set<string> => { try { return new Set<string>(JSON.parse(localStorage.getItem(EXPANDED_KEY) ?? "[]") as string[]); } catch { return new Set(); } };
 
 export interface NotesScreenProps {
   adapters: AdapterDescriptor[];
@@ -67,6 +69,9 @@ const agentHarness = (note: Note) => /^agent:([^:]+):/.exec(note.lastActor)?.[1]
 
 export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
   const [list, setList] = useState<NotesList | null>(null);
+  // Every note, search or not: links, moves and breadcrumbs resolve against
+  // all pages, never just the ones a search shows.
+  const [everyNote, setEveryNote] = useState<Note[] | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -82,6 +87,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     return !current;
   }), []);
   const [listOpen, setListOpen] = useState(readListOpen);
+  const [expandedPages, setExpandedPages] = useState<Set<string>>(readExpanded);
+  const changeExpanded = useCallback((change: (next: Set<string>) => void) => setExpandedPages(current => {
+    const next = new Set(current);
+    change(next);
+    if (next.size === current.size && [...next].every(id => current.has(id))) return current;
+    try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch { /* storage off */ }
+    return next;
+  }), []);
+  const toggleExpand = useCallback((id: string) => changeExpanded(next => { if (next.has(id)) next.delete(id); else next.add(id); }), [changeExpanded]);
   const toggleList = useCallback(() => setListOpen(current => {
     try { localStorage.setItem(LIST_OPEN_KEY, current ? "0" : "1"); } catch { /* storage off */ }
     return !current;
@@ -103,12 +117,26 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   // List reads overlap too (a search typed while a refresh is out); only the
   // newest one may replace what is shown.
   const listRequest = useRef(0);
-  const refreshList = useCallback(async () => {
+  // Set by any change, cleared once a whole list lands: a search keystroke
+  // that cuts in on a change's read still reads the whole list again.
+  const wholeStale = useRef(true);
+  // `searchOnly`: only the query changed, so the whole list still holds.
+  const refreshList = useCallback(async (searchOnly = false) => {
     const ticket = ++listRequest.current;
+    if (!searchOnly) wholeStale.current = true;
     try {
       // Archived pages come too, for the Archived tab; the others leave them out.
-      const next = await bridgeApi.listNotes({ query: queryRef.current.trim() || null, includeArchived: true });
-      if (ticket === listRequest.current) setList(next);
+      const query = queryRef.current.trim() || null;
+      const [next, whole] = await Promise.all([
+        bridgeApi.listNotes({ query, includeArchived: true }),
+        query && wholeStale.current ? bridgeApi.listNotes({ query: null, includeArchived: true }) : null,
+      ]);
+      if (ticket !== listRequest.current) return;
+      setList(next);
+      if (whole || !query) {
+        setEveryNote((whole ?? next).notes);
+        wholeStale.current = false;
+      }
     } catch (error) {
       if (ticket === listRequest.current) fail(error);
     }
@@ -134,7 +162,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const refreshAll = useCallback(async () => { await Promise.all([refreshList(), refreshPage()]); }, [refreshList, refreshPage]);
 
   useEffect(() => {
-    const timer = setTimeout(() => void refreshList(), query ? 200 : 0);
+    const timer = setTimeout(() => void refreshList(true), query ? 200 : 0);
     return () => clearTimeout(timer);
   }, [query, refreshList]);
 
@@ -195,17 +223,47 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       await open(note.id);
     } catch (error) { fail(error); }
   };
-  // The `/` menu's Page: made under the open page, left closed.
-  const createChildPage = async (parentId: string) => {
-    try {
-      const note = await bridgeApi.createNotePage({ title: null, content: "", parentId });
-      await refreshList();
-      return { id: note.id, title: noteDisplayTitle(note) };
-    } catch (error) { fail(error); return null; }
-  };
+  // The `/` menu's Page: made under its parent, left closed. A [[ menu makes
+  // a page named so at the top level instead.
+  // A titled page being made is shared until the list shows it, so a second
+  // click on the same link cannot make it twice.
+  const making = useRef(new Map<string, { made: Promise<{ id: string; title: string } | null>; id?: string }>());
+  const createPageFor = useCallback((parentId: string | null, title: string | null) => {
+    const key = title === null ? null : `${parentId ?? ""}\n${title.trim().toLowerCase()}`;
+    const pending = key === null ? undefined : making.current.get(key);
+    if (pending) return pending.made;
+    const entry: { made: Promise<{ id: string; title: string } | null>; id?: string } = { made: null! };
+    entry.made = (async () => {
+      try {
+        const note = await bridgeApi.createNotePage({ title, content: "", ...(parentId ? { parentId } : {}) });
+        entry.id = note.id;
+        await refreshList();
+        return { id: note.id, title: noteDisplayTitle(note) };
+      } catch (error) {
+        if (key !== null) making.current.delete(key);
+        fail(error);
+        return null;
+      }
+    })();
+    if (key !== null) making.current.set(key, entry);
+    return entry.made;
+  }, [fail, refreshList]);
 
   const notes = list?.notes ?? [];
-  const byId = useMemo(() => new Map(notes.map(note => [note.id, note])), [notes]);
+  const allNotes = everyNote ?? notes;
+  const byId = useMemo(() => new Map(allNotes.map(note => [note.id, note])), [allNotes]);
+  // A made page leaves the in-flight set once the list holds it.
+  useEffect(() => {
+    for (const [key, entry] of making.current) if (entry.id && byId.has(entry.id)) making.current.delete(key);
+  }, [byId]);
+  // A [[ link opens the page titled so, making it first when none is there.
+  // Like the core: by the title a list shows, case and spacing aside, oldest
+  // first.
+  const openByTitle = useCallback((title: string) => {
+    const found = pageTitled(allNotes, title);
+    if (found) { void open(found.id); return; }
+    void createPageFor(null, title).then(page => { if (page) void open(page.id); });
+  }, [allNotes, open, createPageFor]);
   const chatTitle = useCallback((sessionId: string) => {
     const session = sessions.find(candidate => candidate.id === sessionId);
     return session ? chatName(session) : undefined;
@@ -235,14 +293,44 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   };
 
   // A task lives under its page; any other page under a page (one an agent
-  // wrote from the open page, say) is listed like a top-level one.
+  // wrote from the open page, say) is nested under it in the list, one an
+  // expand/collapse chevron away.
   const childTask = (note: Note) => !!note.parentId && note.kind === "task";
   const visible = notes.filter(note => {
     if (filter === "archived") return note.state === "archived";
     if (note.state === "archived") return false;
-    return filter === "tasks" ? note.kind === "task" : !childTask(note) && (filter === "all" || note.state === "inbox");
+    if (filter === "tasks") return note.kind === "task";
+    if (filter === "pages") return note.kind !== "task";
+    return !childTask(note) && (filter === "all" || note.state === "inbox");
   });
-  const parent = page?.note.parentId ? byId.get(page.note.parentId) ?? null : null;
+  const visibleIds = new Set(visible.map(note => note.id));
+  const childrenOf = new Map<string, Note[]>();
+  for (const note of notes) {
+    if (note.kind === "task" || !note.parentId || !visibleIds.has(note.id)) continue;
+    const under = childrenOf.get(note.parentId) ?? [];
+    if (!childrenOf.has(note.parentId)) childrenOf.set(note.parentId, under);
+    under.push(note);
+  }
+  // Searched and single-kind views stay flat; a page keeps its rows someplace
+  // findable even when its parent is not listed.
+  const asTree = !query && (filter === "all" || filter === "pages");
+  // The whole chain above the open page, for its breadcrumb: Root > Parent > Here.
+  const ancestors = useMemo(() => {
+    const chain: Note[] = [];
+    let id: string | null = page?.note.parentId ?? null;
+    for (let guard = 0; id && byId.has(id) && guard < 64; guard += 1) {
+      const holder = byId.get(id)!;
+      chain.unshift(holder);
+      id = holder.parentId ?? null;
+      if (chain.some(item => item.id === id)) break;
+    }
+    return chain;
+  }, [page, byId]);
+  // Opening a nested page opens the tree down to its row.
+  const ancestorIds = ancestors.map(ancestor => ancestor.id).join(" ");
+  useEffect(() => {
+    if (ancestorIds) changeExpanded(next => { for (const id of ancestorIds.split(" ")) next.add(id); });
+  }, [ancestorIds, changeExpanded]);
 
   return <div className="flex h-full min-h-0 bg-background">
     <aside aria-label="Notes list" className={clsx("min-h-0 w-full shrink-0 flex-col border-r border-border md:w-[18.5rem]", selectedId ? "hidden" : "flex", listOpen ? "md:flex" : "md:hidden")}>
@@ -271,7 +359,16 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
             </div>
             : <p className="m-0 mt-0.5 text-[12px] text-faint">Saving…</p>}
         </li>)}
-        {visible.map(note => <li key={note.id}>
+        {asTree ? <PageTree
+          roots={visible.filter(note => !note.parentId || !visibleIds.has(note.parentId))}
+          visibleIds={visibleIds}
+          childrenOf={childrenOf}
+          expanded={expandedPages}
+          activeId={selectedId}
+          workspaces={workspaces}
+          onToggle={toggleExpand}
+          onOpen={id => void open(id)}
+        /> : visible.map(note => <li key={note.id}>
           <NoteRow note={note} active={note.id === selectedId} parent={note.parentId ? byId.get(note.parentId) : undefined} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => void open(note.id)} />
         </li>)}
         {list && !visible.length && !pending.length && <li className="px-3 py-8 text-center text-[12.5px] leading-relaxed text-muted-foreground">
@@ -291,16 +388,17 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         sessions={sessions}
         defaultHarness={defaultHarness}
         chatTitle={chatTitle}
-        parent={parent}
-        // A child page the body links to shows as its block, not twice.
-        childPages={notes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
+        childPages={allNotes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
+        ancestors={ancestors}
         startingId={startingId}
         chatOpen={chatOpen}
         onToggleChat={copilot ? toggleChat : undefined}
         listOpen={listOpen}
         onToggleList={toggleList}
         pageTitle={id => { const child = byId.get(id); return child ? noteDisplayTitle(child) : undefined; }}
-        onCreateChildPage={() => createChildPage(page.note.id)}
+        notes={allNotes}
+        onOpenByTitle={openByTitle}
+        onCreatePage={createPageFor}
         onBack={() => select(null)}
         onOpenPage={id => void open(id)}
         onChanged={() => void refreshAll()}
@@ -369,6 +467,55 @@ function NoteRow({ note, active, parent, project, onOpen }: { note: Note; active
     {firstLine && <span className="mt-0.5 block truncate text-[12.5px] text-muted-foreground">{firstLine}</span>}
     {meta.length > 0 && <span className="mt-1 block truncate text-[11px] text-faint">{meta.join(" · ")}</span>}
   </button>;
+}
+
+/** The list's nested pages: one row per page, its children indented beneath
+ *  it, shown only while the parent is expanded. */
+function PageTree({ roots, visibleIds, childrenOf, expanded, activeId, workspaces, onToggle, onOpen, depth = 0 }: {
+  roots: Note[];
+  visibleIds: Set<string>;
+  childrenOf: Map<string, Note[]>;
+  expanded: Set<string>;
+  activeId: string | null;
+  workspaces: Workspace[];
+  onToggle: (id: string) => void;
+  onOpen: (id: string) => void;
+  depth?: number;
+}) {
+  return <>{roots.map(note => {
+    const kids = [...(childrenOf.get(note.id) ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const openNow = expanded.has(note.id);
+    return <li key={note.id}>
+      <div className="flex items-stretch" style={depth ? { paddingLeft: depth * 14 } : undefined}>
+        {kids.length
+          ? <button
+            type="button"
+            aria-label={`Expand the pages under ${noteDisplayTitle(note)}`}
+            aria-expanded={openNow}
+            title={openNow ? "Hide the pages under it" : "Show the pages under it"}
+            onClick={() => onToggle(note.id)}
+            className="grid w-5 shrink-0 place-items-center text-faint transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ChevronRight size={14} aria-hidden="true" className={clsx("transition-transform", openNow && "rotate-90")} />
+          </button>
+          : <span aria-hidden="true" className="w-5 shrink-0" />}
+        <div className="min-w-0 flex-1">
+          <NoteRow note={note} active={note.id === activeId} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => onOpen(note.id)} />
+        </div>
+      </div>
+      {openNow && <PageTree
+        roots={kids.filter(child => visibleIds.has(child.id))}
+        visibleIds={visibleIds}
+        childrenOf={childrenOf}
+        expanded={expanded}
+        activeId={activeId}
+        workspaces={workspaces}
+        onToggle={onToggle}
+        onOpen={onOpen}
+        depth={depth + 1}
+      />}
+    </li>;
+  })}</>;
 }
 
 function NotesFooter({ root, onNewPage, onError }: { root?: string; onNewPage: () => void; onError: (error: unknown) => void }) {

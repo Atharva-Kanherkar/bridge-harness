@@ -1,6 +1,6 @@
-// How images, child pages and callouts draw inside the editor.
+// How images, child pages and wiki links draw inside the editor.
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type FocusEvent } from "react";
 import Image from "@tiptap/extension-image";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
 import { FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert } from "lucide-react";
@@ -8,36 +8,150 @@ import { FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Triangle
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { assetUrl } from "./assets";
-import { Callout, CALLOUT_KINDS, PageLink, type CalloutKind } from "./blocks";
+import { Callout, CALLOUT_KINDS, PageLink, WikiLink, type CalloutKind } from "./blocks";
 
 /** What the views need from the page around the editor. */
 export interface EditorPages {
   title: (id: string) => string | undefined;
   open: (id: string) => void;
+  /** Open the page titled so, creating it first when none has that title. */
+  openByTitle?: (title: string) => void;
+  /** The pages a [[ menu can suggest, newest first. */
+  pages?: () => { id: string; title: string }[];
 }
 export const EditorPagesContext = createContext<EditorPages>({ title: () => undefined, open: () => undefined });
 
-function ImageView({ node, selected }: ReactNodeViewProps) {
+const IMAGE_MIN_PX = 120;
+
+/** The width the image's title holds ("420"), 0 or missing meaning natural. */
+export function imageWidthOf(title: unknown): number | null {
+  const parsed = title == null ? null : /^\d{1,4}$/.exec(String(title).trim());
+  return parsed && Number(parsed[0]) > 0 ? Math.max(IMAGE_MIN_PX, Number(parsed[0])) : null;
+}
+
+/** The width a drag with a left or right handle lands on, clamped between
+ *  120px and the column the editor sits in. */
+export function draggedImageWidth(edge: "left" | "right", startX: number, width: number, x: number, available: number): number {
+  const wanted = edge === "left" ? width + (startX - x) : width + (x - startX);
+  return Math.round(Math.min(Math.max(wanted, IMAGE_MIN_PX), Math.max(IMAGE_MIN_PX, available)));
+}
+
+function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   const src = String(node.attrs.src ?? "");
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [live, setLive] = useState<number | null>(null);
+  const figure = useRef<HTMLElement>(null);
+  const captionBox = useRef<HTMLElement>(null);
+  // A drag in progress, dropped without saving if the view goes first.
+  const dragging = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragging.current?.(), []);
   useEffect(() => {
     let current = true;
     setFailed(false);
     assetUrl(src).then(next => { if (current) setUrl(next); }, () => { if (current) setFailed(true); });
     return () => { current = false; };
   }, [src]);
-  return <NodeViewWrapper as="figure" data-drag-handle="" className="note-image my-3">
-    {failed
-      ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-[12.5px] text-muted-foreground">Couldn't load {src}</div>
-      : url
-        ? <img src={url} alt={String(node.attrs.alt ?? "")} title={node.attrs.title ?? undefined} draggable={false} className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")} />
-        : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
+  // The title holds the width; a title that is words stays the image's own,
+  // and that image keeps its natural size rather than lose it to a drag.
+  const title = node.attrs.title == null ? "" : String(node.attrs.title);
+  const resizable = !title.trim() || /^\d{1,4}$/.test(title.trim());
+  const width = live ?? (resizable ? imageWidthOf(title) : null);
+  const caption = String(node.attrs.alt ?? "");
+  // The browser edits the caption's text, so React never renders into it:
+  // the box takes the alt text only when it changes from outside.
+  useEffect(() => {
+    const box = captionBox.current;
+    if (box && box.textContent !== caption) box.textContent = caption;
+  }, [caption]);
+  const commitCaption = (event: FocusEvent<HTMLElement>) => {
+    // `![…]` holds the caption unescaped, so a bracket would end the image.
+    const text = (event.currentTarget.textContent ?? "").replace(/\n/g, " ").replace(/[[\]]/g, "");
+    if (event.currentTarget.textContent !== text) event.currentTarget.textContent = text;
+    if (text !== caption) updateAttributes({ alt: text });
+  };
+  const beginDrag = (edge: "left" | "right") => (event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const image = figure.current?.querySelector("img");
+    if (!image) return;
+    const imageRect = image.getBoundingClientRect();
+    const start = {
+      edge,
+      x: event.clientX,
+      width: imageRect.width,
+      available: figure.current?.closest("article")?.clientWidth ?? imageRect.width,
+    };
+    let settled: number | null = null;
+    const move = (dragEvent: PointerEvent) => {
+      settled = draggedImageWidth(start.edge, start.x, start.width, dragEvent.clientX, start.available);
+      setLive(settled);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      dragging.current = null;
+    };
+    const finish = () => {
+      stop();
+      setLive(null);
+      if (settled != null) updateAttributes({ title: String(settled) });
+    };
+    const cancel = () => { stop(); setLive(null); };
+    dragging.current?.();
+    dragging.current = stop;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+  };
+  const handle = clsx("absolute top-1/2 z-10 h-12 w-1.5 -translate-y-1/2 cursor-col-resize rounded-full bg-foreground/40 opacity-0 transition-opacity", selected ? "opacity-100" : "group-hover:opacity-100");
+  return <NodeViewWrapper as="figure" ref={figure} data-drag-handle="" className="note-image group relative mx-auto my-3 w-fit max-w-full">
+    <span className="relative block w-fit max-w-full">
+      {failed
+        ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-[12.5px] text-muted-foreground">Couldn't load {src}</div>
+        : url
+          ? <img
+            src={url}
+            alt={caption}
+            title={resizable ? undefined : title}
+            draggable={false}
+            // The width is the one computed thing a utility cannot say.
+            style={width == null ? undefined : { width: `${width}px` }}
+            className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}
+          />
+          : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
+      {url && !failed && resizable && <>
+        <button type="button" contentEditable={false} aria-label="Resize from the left edge" onPointerDown={beginDrag("left")} className={clsx(handle, "left-0 -translate-x-1/2")} />
+        <button type="button" contentEditable={false} aria-label="Resize from the right edge" onPointerDown={beginDrag("right")} className={clsx(handle, "right-0 translate-x-1/2")} />
+      </>}
+    </span>
+    <figcaption
+      ref={captionBox}
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck="false"
+      aria-label="Caption"
+      onKeyDown={event => {
+        if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
+        // Select all means the caption, not the page around it.
+        if (event.key === "a" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          getSelection()?.selectAllChildren(event.currentTarget);
+        }
+      }}
+      onBlur={commitCaption}
+      data-empty={caption ? undefined : ""}
+      // An empty caption shows while the image is selected or in use, with a
+      // prompt to type one.
+      className={clsx("mt-1.5 text-center text-[12.5px] leading-relaxed text-muted-foreground outline-none empty:before:text-faint empty:before:content-['Add_a_caption'] focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring", !selected && "data-[empty]:hidden group-focus-within:data-[empty]:block")}
+    />
   </NodeViewWrapper>;
 }
 
 export const NoteImage = Image.extend({
-  addNodeView() { return ReactNodeViewRenderer(ImageView); },
+  // The wrapper hugs the picture, so its handles and outline do too.
+  addNodeView() { return ReactNodeViewRenderer(ImageView, { className: "mx-auto w-fit max-w-full" }); },
 });
 
 function PageLinkView({ node, selected }: ReactNodeViewProps) {
@@ -59,6 +173,30 @@ function PageLinkView({ node, selected }: ReactNodeViewProps) {
 
 export const NotePageLink = PageLink.extend({
   addNodeView() { return ReactNodeViewRenderer(PageLinkView); },
+});
+
+function WikiLinkView({ node }: ReactNodeViewProps) {
+  const pages = useContext(EditorPagesContext);
+  // Spacing is kept in the Markdown, not in what the pill says or opens.
+  const target = String(node.attrs.target ?? "").trim();
+  const alias = node.attrs.alias == null ? null : String(node.attrs.alias).trim() || null;
+  return <NodeViewWrapper as="span" className="inline">
+    <button
+      type="button"
+      contentEditable={false}
+      title={`Open the page ${target}`}
+      aria-label={`Open the page ${target}`}
+      onClick={() => { if (target) pages.openByTitle?.(target); }}
+      className="inline-flex cursor-pointer items-baseline gap-1 rounded text-foreground align-baseline underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
+    >
+      <FileText size={13} strokeWidth={1.75} aria-hidden="true" className="relative top-[1px] shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">{alias ?? target}</span>
+    </button>
+  </NodeViewWrapper>;
+}
+
+export const NoteWikiLink = WikiLink.extend({
+  addNodeView() { return ReactNodeViewRenderer(WikiLinkView); },
 });
 
 const CALLOUT_LOOK: Record<CalloutKind, { label: string; icon: typeof Info; tone: string }> = {

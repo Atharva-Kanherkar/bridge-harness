@@ -4,11 +4,11 @@
 // view sits beside it, and the page's tasks below; both fill in live while
 // their pass streams. Keyed by page id, so the draft starts fresh per page.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../../connectorSurface";
-import { noteDisplayTitle, quoteText } from "../../notesDraft";
+import { linkChoices, noteDisplayTitle, quoteText } from "../../notesDraft";
 import { noteTaskStatus } from "../../notesTask";
 import { streamingStructure, streamingTasks, type StreamingStructure } from "../../notesPass";
 import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayload, Session, StructuredView, Workspace } from "../../types";
@@ -53,10 +53,10 @@ export interface NotePageViewProps {
   sessions: Session[];
   defaultHarness: string | null;
   chatTitle: (sessionId: string) => string | undefined;
-  /** The page this one sits under, if any. */
-  parent?: Note | null;
   /** Pages (not tasks) that sit under this one. */
   childPages?: Note[];
+  /** The ancestor chain above this page, outermost first. */
+  ancestors?: Note[];
   startingId: string | null;
   /** The Notes chat panel, when the host offers one. */
   chatOpen?: boolean;
@@ -66,8 +66,13 @@ export interface NotePageViewProps {
   onToggleList?: () => void;
   /** A page's current title, for child page blocks. */
   pageTitle?: (id: string) => string | undefined;
-  /** Make a page under this one (the `/` menu's Page). */
-  onCreateChildPage?: () => Promise<{ id: string; title: string } | null>;
+  /** Every page in the space, for the [[ suggestions. */
+  notes?: Note[];
+  /** Open the page titled so, making it when none exists. */
+  onOpenByTitle?: (title: string) => void;
+  /** Make a page: the `/` menu makes one under this one (null title), a
+   *  [[ menu makes one named so at the top level. */
+  onCreatePage?: (parentId: string | null, title: string | null) => Promise<{ id: string; title: string } | null>;
   onBack: () => void;
   onOpenPage: (id: string) => void;
   /** Something changed that the list and page should re-read. */
@@ -79,8 +84,24 @@ export interface NotePageViewProps {
   onError: (message: string) => void;
 }
 
+/** Where a page can be moved: every page besides tasks, itself and its
+ *  descendants (a cycle stops the walk). */
+function moveTargetsOf(notes: Note[] | undefined, self: string): Note[] {
+  const list = notes ?? [];
+  const parentOf = new Map(list.map(item => [item.id, item.parentId ?? null]));
+  return list.filter(candidate => {
+    if (candidate.kind === "task" || candidate.id === self) return false;
+    let id: string | null = candidate.parentId ?? null;
+    for (let guard = 0; id && guard < 64; guard += 1) {
+      if (id === self || id === candidate.id) return false;
+      id = parentOf.get(id) ?? null;
+    }
+    return true;
+  });
+}
+
 export function NotePageView(props: NotePageViewProps) {
-  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, onCreateChildPage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
+  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, childPages = [], ancestors = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, notes, onOpenByTitle, onCreatePage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
   const { note } = page;
   const draft = useNoteDraft(page, onSaved, onError);
   const editor = useRef<NoteEditorHandle>(null);
@@ -104,6 +125,7 @@ export function NotePageView(props: NotePageViewProps) {
   /** Everything typed, stored. Passes, chats and restores read the stored page. */
   const flush = () => { editor.current?.commit(); return draft.flush(); };
 
+  const startersParent = ancestors[ancestors.length - 1];
   const fail = (error: unknown) => onError(error instanceof Error ? error.message : String(error));
   const update = async (patch: Parameters<typeof bridgeApi.updateNote>[0]) => {
     try { await bridgeApi.updateNote(patch); onChanged(); } catch (error) { fail(error); }
@@ -148,22 +170,32 @@ export function NotePageView(props: NotePageViewProps) {
   };
   const structureText = streamed("structure", structureJob);
   const tasksText = streamed("tasks", tasksJob);
+  const moveTargets = useMemo(() => moveTargetsOf(notes, note.id), [notes, note.id]);
+  const linkTargets = useMemo(() => linkChoices(notes ?? []), [notes]);
 
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
         {onToggleList && !listOpen && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
         <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
-        {parent && <>
+        {ancestors.map(ancestor => <Fragment key={ancestor.id}>
           <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
-          <button type="button" onClick={() => onOpenPage(parent.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(parent)}</button>
-        </>}
+          <button type="button" onClick={() => onOpenPage(ancestor.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(ancestor)}</button>
+        </Fragment>)}
         <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
         <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{noteDisplayTitle({ title: note.title, preview: draft.text || note.preview })}</span>
       </nav>
       <span role="status" aria-label="Save status" className="shrink-0 px-2 text-[12px] text-muted-foreground">{draft.status === "saved" ? editedLabel(note.updatedAt) : STATUS_COPY[draft.status]}</span>
       {onToggleChat && <Pill aria-pressed={!!chatOpen} active={!!chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
-      <MoreMenu note={note} taskCount={page.tasks.length} onHistory={() => setHistoryOpen(true)} onDelete={() => void remove()} />
+      <MoreMenu
+        note={note}
+        taskCount={page.tasks.length}
+        moveTargets={moveTargets}
+        onPromote={note.state === "inbox" ? () => void update({ id: note.id, state: "open" }) : undefined}
+        onMove={parentId => void update({ id: note.id, ...(parentId ? { parentId } : { clearParent: true }) })}
+        onHistory={() => setHistoryOpen(true)}
+        onDelete={() => void remove()}
+      />
     </header>
 
     <NoteHistoryDialog page={page} open={historyOpen} chatTitle={chatTitle} onClose={() => setHistoryOpen(false)} onRestore={restore} />
@@ -211,7 +243,7 @@ export function NotePageView(props: NotePageViewProps) {
         </PopoverAction>
         {note.kind === "task" && <span role="status" className="px-2 text-[12px] text-muted-foreground">{noteTaskStatus(note, sessions.find(session => session.id === note.sessionIds.at(-1)))}</span>}
         {(note.kind !== "task" || (note.state !== "done" && note.state !== "archived")) && <PopoverAction label={note.sessionIds.length ? "New chat" : "Start a chat"} panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
-          {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? parent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
+          {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? startersParent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
         </PopoverAction>}
         {note.sessionIds.length > 0 && <Pill onClick={() => onOpenChat(note.sessionIds[note.sessionIds.length - 1])}>Open chat</Pill>}
       </div>
@@ -231,8 +263,15 @@ export function NotePageView(props: NotePageViewProps) {
           title={note.title ?? null}
           onChange={draft.setText}
           onLeave={() => void draft.flush()}
-          pages={{ title: id => pageTitle?.(id), open: onOpenPage }}
-          onCreatePage={async () => onCreateChildPage ? (await flush()) ? onCreateChildPage() : null : null}
+          pages={{
+            title: id => pageTitle?.(id),
+            open: onOpenPage,
+            openByTitle: onOpenByTitle,
+            pages: () => linkTargets,
+          }}
+          // A child page waits for this one's save; a [[ page stands alone and
+          // is made at once, so a click on its new link finds it in flight.
+          onCreatePage={async title => !onCreatePage ? null : title !== null ? onCreatePage(null, title) : (await flush()) ? onCreatePage(note.id, null) : null}
           onError={onError}
         />
       </div>
@@ -267,6 +306,31 @@ export function NotePageView(props: NotePageViewProps) {
         onOpen={task => onOpenPage(task.id)}
         onSetState={(task, state) => void update({ id: task.id, state })}
       />
+
+      {page.backlinks.length > 0 && <section aria-label="Backlinks" className="my-12">
+        <div className="flex items-baseline gap-2 border-b border-border pb-2">
+          <h3 className="m-0 text-[13px] font-semibold text-foreground">Backlinks</h3>
+          <span className="text-[12px] text-muted-foreground">{page.backlinks.length}</span>
+        </div>
+        <ul className="m-0 list-none divide-y divide-border p-0">
+          {page.backlinks.map((backlink, index) => <li key={`${backlink.pageId}-${index}`}>
+            <button
+              type="button"
+              onClick={() => onOpenPage(backlink.pageId)}
+              className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-2">
+                  <span className="min-w-0 truncate text-[14px] text-foreground">{backlink.title || "Untitled"}</span>
+                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{capital(backlink.kind)}</span>
+                </span>
+                <blockquote className="m-0 mt-0.5 truncate text-[12.5px] text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(backlink.excerpt)}</blockquote>
+              </span>
+              <span className="shrink-0 text-[12px] text-faint">{relativeTime(backlink.updatedAt)}</span>
+            </button>
+          </li>)}
+        </ul>
+      </section>}
     </article>
   </div>;
 }
@@ -332,10 +396,19 @@ function Author({ note, chatTitle, onOpenChat }: { note: Note; chatTitle: (id: s
   </Property>;
 }
 
-function MoreMenu({ note, taskCount, onHistory, onDelete }: { note: Note; taskCount: number; onHistory: () => void; onDelete: () => void }) {
+function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, onDelete }: {
+  note: Note;
+  taskCount: number;
+  moveTargets: Note[];
+  onPromote?: () => void;
+  onMove?: (parentId: string | null) => void;
+  onHistory: () => void;
+  onDelete: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const close = () => { setOpen(false); setConfirming(false); };
+  const [moving, setMoving] = useState(false);
+  const close = () => { setOpen(false); setConfirming(false); setMoving(false); };
   return <div className="relative">
     <button type="button" aria-label="More" aria-expanded={open} onClick={() => open ? close() : setOpen(true)} className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
       <MoreHorizontal size={16} aria-hidden="true" />
@@ -350,12 +423,21 @@ function MoreMenu({ note, taskCount, onHistory, onDelete }: { note: Note; taskCo
             <button type="button" onClick={() => { close(); onDelete(); }} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-[13px] font-medium text-destructive-foreground hover:opacity-90">Delete</button>
           </div>
         </div>
-        : <>
-          <MenuButton onClick={() => { close(); onHistory(); }}>History</MenuButton>
-          {note.path && <MenuButton onClick={() => { void navigator.clipboard?.writeText(note.path!); close(); }}>Copy file path</MenuButton>}
-          <MenuDivider />
-          <MenuButton destructive onClick={() => setConfirming(true)}>Delete page</MenuButton>
-        </>}
+        : moving
+          ? <div aria-label="Move this page" className="p-1.5">
+            <p className="m-0 px-1 pb-1.5 pt-1 text-[11px] font-medium text-faint">Move {noteDisplayTitle(note)}</p>
+            {note.parentId != null && onMove && <MenuButton onClick={() => { onMove(null); close(); }}>Page top level</MenuButton>}
+            {moveTargets.map(target => <MenuButton key={target.id} onClick={() => { onMove?.(target.id); close(); }}>{noteDisplayTitle(target)}</MenuButton>)}
+            {!moveTargets.length && note.parentId == null && <p className="m-0 px-1.5 py-2 text-[12.5px] text-muted-foreground">No other page to move under.</p>}
+          </div>
+          : <>
+            <MenuButton onClick={() => { close(); onHistory(); }}>History</MenuButton>
+            {note.path && <MenuButton onClick={() => { void navigator.clipboard?.writeText(note.path!); close(); }}>Copy file path</MenuButton>}
+            {onPromote && <MenuButton onClick={() => { onPromote(); close(); }}>Promote to page</MenuButton>}
+            {onMove && <MenuButton onClick={() => setMoving(true)}>Move to…</MenuButton>}
+            <MenuDivider />
+            <MenuButton destructive onClick={() => setConfirming(true)}>Delete page</MenuButton>
+          </>}
     </Popover>
   </div>;
 }
