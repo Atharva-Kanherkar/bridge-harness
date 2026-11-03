@@ -93,7 +93,8 @@ pub fn guard(text: &str, body: &str, projects: &[ProjectChoice], page_project: O
             return Err("existingTaskId must be a listed task id or null".into());
         }
         tasks.push(GuardedTask {
-            existing_task_id: identity.and_then(|id| id.as_str()).map(str::to_owned),
+            // Models sometimes write "" for "no id"; it means new work, not an unknown id.
+            existing_task_id: identity.and_then(|id| id.as_str()).map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned),
             compared_existing: identity.is_some(),
             excerpt,
             title,
@@ -339,6 +340,18 @@ mod tests {
             assert!(accept(&notes, &page, &text, &[], "claude", None).is_err());
             assert_eq!(notes.read(&page.note.id).unwrap().tasks, page.tasks);
         }
+    }
+
+    #[test]
+    fn a_blank_existing_task_id_means_new_work() {
+        let (_dir, notes) = service();
+        let page = notes.create(CreatePage { content: Some(PAGE.into()), ..Default::default() }, PERSON).unwrap();
+        run(&notes, &page.id, reply(), vec![]);
+        let first = notes.read(&page.id).unwrap().tasks;
+        run(&notes, &page.id, json!({"tasks": [{"existingTaskId": " ", "excerpt": "Maybe later: think about pricing.", "title": "Think about pricing"}]}), vec![]);
+        let tasks = notes.read(&page.id).unwrap().tasks;
+        assert_eq!(tasks.len(), first.len() + 1);
+        assert_eq!(tasks.last().unwrap().title.as_deref(), Some("Think about pricing"));
     }
 
     #[test]
