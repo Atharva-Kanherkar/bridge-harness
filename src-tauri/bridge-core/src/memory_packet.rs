@@ -356,6 +356,10 @@ pub fn for_session(
     // A group is spoken for only once a member is actually selected: a first
     // member dropped over budget must not shut out a second that fits.
     let mut spoken_for: Vec<String> = Vec::new();
+    // The full bodies already selected. Compared in full, never as the clipped
+    // text a line carries: the clip marker would make two copies of one long
+    // record look different.
+    let mut said: Vec<String> = Vec::new();
     let mut used = 0usize;
     let mut selected: Vec<SelectedMemory> = Vec::new();
     for row in eligible {
@@ -363,9 +367,9 @@ pub fn for_session(
             exclusions.push((row.id, EXCLUDE_CONFLICT_GROUP));
             continue;
         }
-        if selected
+        if said
             .iter()
-            .any(|item| crate::memory_similarity::near_duplicate(&item.body, &row.body))
+            .any(|body| crate::memory_similarity::near_duplicate(body, &row.body))
         {
             exclusions.push((row.id, EXCLUDE_NEAR_DUPLICATE));
             continue;
@@ -382,6 +386,7 @@ pub fn for_session(
         if let Some(group) = row.conflict_group {
             spoken_for.push(group);
         }
+        said.push(row.body);
         selected.push(SelectedMemory {
             record_id: row.id,
             body,
@@ -632,6 +637,18 @@ mod tests {
         let exclusions = audit_exclusions(&db);
         assert_eq!(exclusions.iter().filter(|(_, code)| code == EXCLUDE_NEAR_DUPLICATE).count(), 1);
         assert!(GATE_EXCLUSION_CODES.contains(&EXCLUDE_NEAR_DUPLICATE), "counted with the other gate codes");
+    }
+
+    #[test]
+    fn two_copies_of_one_long_record_take_one_line() {
+        // Found by the packet property: comparing against the clipped line
+        // let the clip marker hide the repeat.
+        let (_dir, db) = packet_db();
+        let long = format!("Run the full suite before a pull request {}", "and more detail ".repeat(30));
+        insert(&db, "copy-a", &long, "user_explicit", "active", None);
+        insert(&db, "copy-b", &long, "user_explicit", "active", None);
+        assert_eq!(selected_ids(&db).len(), 1);
+        assert!(audit_exclusions(&db).iter().any(|(_, code)| code == EXCLUDE_NEAR_DUPLICATE));
     }
 
     #[test]
