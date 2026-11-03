@@ -222,10 +222,10 @@ export function mockUpdateNote(params: UpdateNoteParams): Note {
   const rename = previousTitle && newTitle && newTitle !== previousTitle ? { from: previousTitle, to: newTitle } : null;
   const renameRequests = rename ? renameRecipients(page.note.id, rename.from) : [];
   commit(page, page.history[page.history.length - 1], PERSON, props);
-  for (const from of renameRequests) {
-    const source = live(from);
+  for (const request of renameRequests) {
+    const source = live(request.id);
     const body = source.history[source.history.length - 1];
-    const rewritten = renameBody(body, page.note.id, rename!.from, rename!.to, true);
+    const rewritten = renameBody(body, page.note.id, rename!.from, rename!.to, request.wiki);
     if (rewritten !== body) commit(source, rewritten, PERSON);
   }
   return clone(page.note);
@@ -363,14 +363,19 @@ function backlinksOf(id: string): NoteBacklink[] {
   return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.pageId.localeCompare(b.pageId) || a.kind.localeCompare(b.kind));
 }
 
-/** The pages that point at `renamed` with a wiki link through its old title:
- *  the first page with that title is where `[[old]]` resolves. */
-function renameRecipients(id: string, oldTitle: string): string[] {
+/** The pages a rename touches: every page tag pointing at `id`, and wiki
+ *  links through the old title only when `id` is where `[[old]]` resolves
+ *  (the first page with that title). */
+function renameRecipients(id: string, oldTitle: string): { id: string; wiki: boolean }[] {
   const key = linkKey(oldTitle);
-  const sources = pages.filter(page => !page.deleted && linksOf(page.history[page.history.length - 1]).some(link => link.kind === "wiki" && linkKey(link.target) === key));
   const holder = pages.filter(page => !page.deleted && page.note.title != null && linkKey(page.note.title!) === key)
     .sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt) || a.note.id.localeCompare(b.note.id))[0];
-  return holder && holder.note.id === id ? sources.map(source => source.note.id) : [];
+  const wiki = !!holder && holder.note.id === id;
+  return pages.filter(page => !page.deleted).flatMap(page => {
+    const links = linksOf(page.history[page.history.length - 1]);
+    const touched = links.some(link => (link.kind === "page" && link.target === id) || (wiki && link.kind === "wiki" && linkKey(link.target) === key));
+    return touched ? [{ id: page.note.id, wiki }] : [];
+  });
 }
 
 /** What a rename does to one body: wiki links that resolved to this page move

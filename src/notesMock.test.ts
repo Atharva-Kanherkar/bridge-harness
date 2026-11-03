@@ -66,6 +66,18 @@ describe("mock notes", () => {
     expect(mockReadPage(source.id).markdown).toBe(`<page url="bridge://p/${target.id}">Q4 | Launches</page> and <page url="bridge://p/${target.id}">mine</page> plus <page url="bridge://p/${target.id}">Q4 | Launches</page>`);
   });
 
+  it("carries page tags with a rename even where no wiki link names the page", () => {
+    const first = mockCreatePage({ title: "Shared", content: "oldest" });
+    const target = mockCreatePage({ title: "Shared", content: "newer" });
+    const tagOnly = mockCreatePage({ content: `see <page url="bridge://p/${target.id}">Shared</page>` });
+    const wiki = mockCreatePage({ content: "[[Shared]]" });
+    mockUpdateNote({ id: target.id, title: "Moved" });
+    expect(mockReadPage(tagOnly.id).markdown).toBe(`see <page url="bridge://p/${target.id}">Moved</page>`);
+    // `[[Shared]]` resolves to the oldest page, so this rename leaves it be.
+    expect(mockReadPage(wiki.id).markdown).toBe("[[Shared]]");
+    expect(mockReadPage(first.id).note.title).toBe("Shared");
+  });
+
   it("merges a stale save with an agent write", () => {
     const note = mockCaptureNote("first line\n");
     const base = mockReadPage(note.id).seq;
