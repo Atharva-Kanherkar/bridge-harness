@@ -51,6 +51,10 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
 - A value for an unknown property id, an unknown option id, the wrong JSON type, a non-finite
   number or a repeated list item is refused, and a refused patch writes nothing.
 - A value whose property was deleted stays in the doc but is not indexed or projected.
+- A cell cleared in Bridge records the value it removed on the row (a `cleared` map) until a
+  projection has dropped the stale line, so a clear survives a file that has a pending outside
+  edit. The line leaves only while it still says the cleared value; a different value on that
+  line is the person's and imports.
 
 ### Retype conversion
 - number↔text; select↔text (matched to an option by name, or a new option is created);
@@ -63,7 +67,8 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
   Validation runs inside the write's transaction, so two callers cannot add the same name; the
   schema commits first and the row writes follow, so a failure after the commit leaves the schema
   changed and returns the error. Re-running the same retype repairs the rows it did not reach:
-  a value that does not fit the current type is cleared and the file is rewritten.
+  a value that does not fit the current type is converted by its own JSON shape where it can
+  (a number in a text column becomes its text) and cleared otherwise, and the file is rewritten.
 
 ### Index maintenance
 - `database_props` and `page_values` match the docs after every write: set, clear, row
@@ -130,6 +135,8 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
   maintenance pass (the rows are marked stale), not inside the request. A stale line goes only
   when the document writes the same value under the property's new name; a line the person edited
   is kept as a foreign key. A renamed option does the same.
+- Deleting a property leaves its lines in the row files as foreign keys, which keeps the data.
+  Re-adding a property with that name starts empty and does not import them.
 - `database` is a reserved frontmatter key: a property cannot be named it.
 
 ## Unit Tests

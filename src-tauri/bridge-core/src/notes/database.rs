@@ -256,6 +256,19 @@ fn date_key(def: &PropertyDef, raw: &str) -> Option<String> {
     }
 }
 
+/// The type a JSON value most likely came from. Used to repair a value left
+/// behind by a retype that did not finish.
+pub fn infer_type(value: &Value) -> Option<PropertyType> {
+    match value {
+        Value::Bool(_) => Some(PropertyType::Checkbox),
+        Value::Number(_) => Some(PropertyType::Number),
+        Value::String(_) => Some(PropertyType::Text),
+        Value::Array(_) => Some(PropertyType::MultiSelect),
+        Value::Object(object) => object.contains_key("start").then_some(PropertyType::Date),
+        Value::Null => None,
+    }
+}
+
 /// The value a retype produces. `None` clears the cell. A retype to `select`
 /// or `status` may add options: the ids have to exist before values that name
 /// them are written.

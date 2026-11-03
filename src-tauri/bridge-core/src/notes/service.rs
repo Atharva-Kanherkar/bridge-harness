@@ -774,7 +774,6 @@ impl NotesService {
         if patch.is_empty() {
             return Err(invalid("no values to set"));
         }
-        let mut cleared: Vec<String> = Vec::new();
         let (note, _, _) = self.write_with(id, actor, |db, live, _| {
             let props = live.props();
             if props.deleted_at.is_some() {
@@ -809,11 +808,11 @@ impl NotesService {
                                 }
                             }
                         }
-                        records = records.put_value(prop_id, Some(value));
+                        records = records.put_value(prop_id, Some(value)).settle_value(prop_id);
                     }
                     None => {
-                        if current.contains_key(prop_id) {
-                            cleared.push(def.name.clone());
+                        if let Some(value) = current.get(prop_id) {
+                            records = records.clear_value(prop_id, value);
                         }
                         records = records.put_value(prop_id, None);
                     }
@@ -821,11 +820,6 @@ impl NotesService {
             }
             live.edit_records(&records)
         })?;
-        if !cleared.is_empty() {
-            // The old line is still in the file; the regular projection kept it
-            // because the document no longer has a value for the property.
-            self.project_with(id, &cleared, true)?;
-        }
         Ok(note)
     }
 
@@ -898,8 +892,12 @@ impl NotesService {
                         let def = PropertyDef { name: name.clone(), kind, order, options, relation, date_format: new.date_format.clone() };
                         let prop = new_id();
                         schema.insert(prop.clone(), def.clone());
-                        next.updated.added.push((prop.clone(), name));
-                        next.imported.push((prop, def));
+                        next.updated.added.push((prop.clone(), name.clone()));
+                        // A name a delete retired starts empty: the old lines
+                        // are foreign keys, not values to restore silently.
+                        if !live.retired().keys().any(|old| old.to_lowercase() == name.to_lowercase()) {
+                            next.imported.push((prop, def));
+                        }
                     }
                     SchemaOp::Rename { prop, name } => {
                         let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
@@ -1079,7 +1077,14 @@ impl NotesService {
     /// One row's converted value, written only when it changed since the scan.
     fn convert_row(&self, row: &str, prop: &str, old: &PropertyDef, next: &PropertyDef, value: &Value, actor: &str) -> Result<(), BridgeError> {
         let mut scratch = next.clone();
-        let converted = database::convert(old, &mut scratch, value);
+        // A repair runs with `old == next`; the value's own shape is the type
+        // it came from, so `5` in a text column still becomes "5".
+        let source = if old.kind == next.kind {
+            database::infer_type(value).map(|kind| PropertyDef { kind, ..old.clone() }).unwrap_or_else(|| old.clone())
+        } else {
+            old.clone()
+        };
+        let converted = database::convert(&source, &mut scratch, value);
         if converted.as_ref() == Some(value) {
             return Ok(());
         }
@@ -1088,19 +1093,20 @@ impl NotesService {
             if live.values().get(prop) != Some(value) {
                 return Ok(None);
             }
-            live.edit_records(&RecordsPatch::default().put_value(prop, converted.as_ref()))
+            let mut records = RecordsPatch::default().put_value(prop, converted.as_ref());
+            if converted.is_none() {
+                // Keep the cleared value so a projection that has to wait for
+                // an outside edit still knows which line is stale.
+                records = records.clear_value(prop, value);
+            }
+            live.edit_records(&records)
         })?;
-        if converted.is_none() {
-            // The file still carries the old line for a value the write cleared.
-            self.project_with(row, std::slice::from_ref(&next.name), true)?;
-        }
         Ok(())
     }
 
     /// Remove a deleted option from every row that used it, one attributed
     /// write per row.
     fn drop_option(&self, database_id: &str, prop: &str, option: &str, actor: &str) -> Result<(), BridgeError> {
-        let name = self.with_db(|db| database::read(db, database_id))?.and_then(|database| database.schema.get(prop).map(|def| def.name.clone()));
         for (row, value) in self.with_db(|db| database::row_values(db, database_id, prop))? {
             let next = match &value {
                 Value::String(id) if id == option => None,
@@ -1114,13 +1120,12 @@ impl NotesService {
                 if live.values().get(prop) != Some(&value) {
                     return Ok(None);
                 }
-                live.edit_records(&RecordsPatch::default().put_value(prop, next.as_ref()))
-            })?;
-            if next.is_none() {
-                if let Some(name) = &name {
-                    self.project_with(&row, std::slice::from_ref(name), true)?;
+                let mut records = RecordsPatch::default().put_value(prop, next.as_ref());
+                if next.is_none() {
+                    records = records.clear_value(prop, &value);
                 }
-            }
+                live.edit_records(&records)
+            })?;
         }
         Ok(())
     }
@@ -1398,13 +1403,6 @@ impl NotesService {
     /// earlier snapshot can never overwrite a later one or mistake Bridge's
     /// own previous write for an outside edit.
     pub(crate) fn project(&self, page_id: &str) -> Result<Option<Note>, BridgeError> {
-        self.project_with(page_id, &[], false)
-    }
-
-    /// Mirror a page. `drop` names carry values this write cleared, whose old
-    /// lines must leave the file; `force` rewrites a file whose doc has not
-    /// moved (a reconcile after a pending outside edit).
-    pub(crate) fn project_with(&self, page_id: &str, drop: &[String], force: bool) -> Result<Option<Note>, BridgeError> {
         let _projection = self.projection_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let row = self.with_db(|db| {
             Ok(db
@@ -1425,7 +1423,7 @@ impl NotesService {
             self.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=?2, path=NULL, content_hash=NULL WHERE id=?1", params![note.id, note.seq])?))?;
             return Ok(Some(note));
         }
-        if !force && projected.is_some_and(|projected| projected >= note.seq) {
+        if projected.is_some_and(|projected| projected >= note.seq) {
             return Ok(Some(note));
         }
         let records = self.page_records(&note)?;
@@ -1439,7 +1437,7 @@ impl NotesService {
             properties: &records.properties,
             owned: &records.owned,
             retired: &records.retired,
-            drop,
+            drop: &records.drop,
         };
         let root = self.root();
         let Some(mirrored) = projector::mirror(&root, &input) else {
@@ -1487,6 +1485,10 @@ impl NotesService {
             for (old, prop) in &database.retired {
                 records.retired.push((old.clone(), rendered.get(prop).cloned()));
             }
+            for (prop, stale) in live.cleared() {
+                let Some(def) = database.schema.get(&prop) else { continue };
+                records.drop.push((def.name.clone(), database::render_value(db, &note.space_id, def, &stale)));
+            }
             Ok(records)
         })
     }
@@ -1528,6 +1530,9 @@ struct MirroredRecords {
     /// Old names a rename or a delete retired, with the value the document
     /// writes under the property's current name (`None` when it is gone).
     retired: Vec<(String, Option<String>)>,
+    /// Cleared cells whose stale line has not left the file yet, with the
+    /// rendered value that line must match to be dropped.
+    drop: Vec<(String, Option<String>)>,
 }
 
 pub(crate) fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
@@ -2744,7 +2749,13 @@ pub(crate) mod tests {
         assert_eq!(values_of(&notes, &row.id)[&rating], serde_json::json!("five"));
         let updated = notes.update_schema(&id, &[SchemaOp::Retype { prop: rating.clone(), to: "number".into() }], PERSON).unwrap();
         assert!(updated.warnings.iter().any(|warning| warning.contains("already")), "{updated:?}");
-        assert!(!values_of(&notes, &row.id).contains_key(&rating), "the stranded value is cleared, not left invisible");
+        assert!(!values_of(&notes, &row.id).contains_key(&rating), "a value the type cannot hold is cleared, not left invisible");
+        // The other direction keeps what a conversion can carry.
+        let added = notes.update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Note".into(), kind: "text".into(), ..Default::default() })], PERSON).unwrap();
+        let note = added.added[0].0.clone();
+        notes.write(&row.id, PERSON, |live| live.edit_records(&RecordsPatch::default().put_value(&note, Some(&serde_json::json!(5))))).unwrap();
+        notes.update_schema(&id, &[SchemaOp::Retype { prop: note.clone(), to: "text".into() }], PERSON).unwrap();
+        assert_eq!(values_of(&notes, &row.id)[&note], serde_json::json!("5"), "a stranded number becomes its text");
     }
 
     #[test]
@@ -2761,6 +2772,43 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(notes.database(&id).unwrap().schema[&status].options.len(), 4);
+    }
+
+    #[test]
+    fn a_clear_survives_a_dirty_file_and_a_later_outside_edit() {
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        // The file is dirty when the person clears the cell.
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\n---\n\ntyped in obsidian\n")).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), None)], PERSON).unwrap();
+        crate::notes::projector::import_changes(&notes).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
+        assert!(!values_of(&notes, &row.id).contains_key(&rating));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Rating:"), "the projection drops the stale line");
+        // A later outside edit must not read the old line back in.
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("typed in obsidian", "typed again in obsidian")).unwrap();
+        crate::notes::projector::import_changes(&notes).unwrap();
+        assert!(!values_of(&notes, &row.id).contains_key(&rating), "the clear is not undone");
+        assert!(notes.read(&row.id).unwrap().markdown.contains("typed again in obsidian"));
+    }
+
+    #[test]
+    fn re_adding_a_deleted_property_starts_empty() {
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        notes.update_schema(&id, &[SchemaOp::Delete { prop: rating.clone() }], PERSON).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Rating: 5"), "a deleted column's line stays as a foreign key");
+        let added = notes.update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        assert!(!values_of(&notes, &row.id).contains_key(&added.added[0].0), "the old line is not restored silently");
     }
 
     #[test]

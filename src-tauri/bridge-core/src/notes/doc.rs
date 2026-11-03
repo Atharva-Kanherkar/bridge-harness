@@ -32,6 +32,9 @@ pub const PROPS: &str = "props";
 pub const DATABASE: &str = "database";
 pub const SCHEMA: &str = "schema";
 pub const VIEWS: &str = "views";
+/// A value a person cleared in Bridge, held until a projection has removed the
+/// stale line from the row's file. Keyed by property id.
+pub const CLEARED: &str = "cleared";
 /// Old property names a rename or a delete retired, mapping the name to the
 /// property id. Files still carrying the old line drop it on their next write.
 pub const RETIRED: &str = "retired";
@@ -283,6 +286,8 @@ pub struct RecordsPatch {
     pub values: Vec<(String, Option<String>)>,
     /// Retired property names, keyed by the name, holding the property id.
     pub retired: Vec<(String, Option<String>)>,
+    /// A cleared cell's property id, holding the value that was cleared.
+    pub cleared: Vec<(String, Option<String>)>,
 }
 
 impl RecordsPatch {
@@ -323,6 +328,19 @@ impl RecordsPatch {
         self
     }
 
+    /// Hold the value a clear removed, so a stale file line goes even when the
+    /// write that cleared it could not project.
+    pub fn clear_value(mut self, id: &str, value: &serde_json::Value) -> Self {
+        self.cleared.push((id.to_owned(), Some(json_string(value))));
+        self
+    }
+
+    /// Drop the hold: the cell has a value again.
+    pub fn settle_value(mut self, id: &str) -> Self {
+        self.cleared.push((id.to_owned(), None));
+        self
+    }
+
     /// Set (`Some`) or clear (`None`) one property's value.
     pub fn put_value(mut self, id: &str, value: Option<&serde_json::Value>) -> Self {
         self.values.push((id.to_owned(), value.map(json_string)));
@@ -330,7 +348,7 @@ impl RecordsPatch {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.scope.is_none() && self.schema.is_empty() && self.views.is_empty() && self.values.is_empty() && self.retired.is_empty()
+        self.scope.is_none() && self.schema.is_empty() && self.views.is_empty() && self.values.is_empty() && self.retired.is_empty() && self.cleared.is_empty()
     }
 }
 
@@ -496,6 +514,11 @@ impl PageDoc {
         self.records(RETIRED).into_iter().filter_map(|(name, json)| Some((name, serde_json::from_str(&json).ok()?))).collect()
     }
 
+    /// Values a clear removed, by property id, until a file has dropped them.
+    pub fn cleared(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        self.records(CLEARED).into_iter().filter_map(|(id, json)| Some((id, serde_json::from_str(&json).ok()?))).collect()
+    }
+
     /// Change the scope, schema, views or values in one transaction. Maps a
     /// patch does not touch are not created, so a plain page never grows empty
     /// shared types.
@@ -540,6 +563,7 @@ impl PageDoc {
             views: (!patch.views.is_empty()).then(|| self.doc.get_or_insert_map(VIEWS)),
             values: (!patch.values.is_empty()).then(|| self.doc.get_or_insert_map(VALUES)),
             retired: (!patch.retired.is_empty()).then(|| self.doc.get_or_insert_map(RETIRED)),
+            cleared: (!patch.cleared.is_empty()).then(|| self.doc.get_or_insert_map(CLEARED)),
         }
     }
 
@@ -555,6 +579,7 @@ struct RecordMaps {
     views: Option<yrs::MapRef>,
     values: Option<yrs::MapRef>,
     retired: Option<yrs::MapRef>,
+    cleared: Option<yrs::MapRef>,
 }
 
 fn apply_records(txn: &mut TransactionMut, maps: &RecordMaps, patch: &RecordsPatch) {
@@ -574,7 +599,13 @@ fn apply_records(txn: &mut TransactionMut, maps: &RecordMaps, patch: &RecordsPat
             }
         }
     }
-    for (map, entries) in [(&maps.schema, &patch.schema), (&maps.views, &patch.views), (&maps.values, &patch.values), (&maps.retired, &patch.retired)] {
+    for (map, entries) in [
+        (&maps.schema, &patch.schema),
+        (&maps.views, &patch.views),
+        (&maps.values, &patch.values),
+        (&maps.retired, &patch.retired),
+        (&maps.cleared, &patch.cleared),
+    ] {
         let Some(map) = map else { continue };
         for (key, value) in entries {
             let was = match map.get(&*txn, key.as_str()) {

@@ -36,8 +36,9 @@ pub struct MirrorInput<'a> {
     /// A renamed or deleted property's old name, and, when the property is
     /// still live, the value the document now writes for it.
     pub retired: &'a [(String, Option<String>)],
-    /// Names whose value this write cleared, whose old line leaves the file.
-    pub drop: &'a [String],
+    /// Cleared cells whose stale line has not left the file yet: the property
+    /// name and the rendered value the line must match to be dropped.
+    pub drop: &'a [(String, Option<String>)],
 }
 
 /// What the projector did: the file and the hash of what it wrote.
@@ -140,8 +141,14 @@ pub fn mirror(root: &Path, input: &MirrorInput<'_>) -> Option<Mirrored> {
         // now owns is written from the document, so the file's copy goes.
         .filter(|line| {
             let key = line_key(line).to_lowercase();
-            if input.drop.iter().any(|name| name.to_lowercase() == key) {
-                return false;
+            let raw = || line.split_once(':').map(|(_, value)| value.trim());
+            if let Some((_, stale)) = input.drop.iter().find(|(name, _)| name.to_lowercase() == key) {
+                // Drop the line only while it still says the value the person
+                // cleared; anything else is a new edit waiting to import.
+                return match (stale, raw()) {
+                    (Some(stale), Some(raw)) => raw != stale.trim(),
+                    _ => true,
+                };
             }
             if input.owned.iter().any(|name| name.to_lowercase() == key) {
                 // A live property owns its line unless the document has no
@@ -234,6 +241,7 @@ fn apply_import(
             // Compared against the file's own base, like every other property,
             // so a value the person changed in Bridge is not reverted here.
             let current = base.values();
+            let stale = super::doc::load_page(db, id, None)?.0.cleared();
             let ordered = database.ordered();
             let mut patch: Vec<(String, Option<serde_json::Value>)> = Vec::new();
             for line in &front.unknown {
@@ -246,6 +254,12 @@ fn apply_import(
                     eprintln!("[notes] kept {key} of {id} verbatim: it is not a valid {}", def.kind.as_str());
                     continue;
                 };
+                // A line that still says the value a clear removed is the stale
+                // copy; the projection drops it, and importing it would undo the
+                // clear.
+                if stale.get(*prop) == Some(&value) {
+                    continue;
+                }
                 if current.get(*prop) != Some(&value) {
                     patch.push(((*prop).clone(), Some(value)));
                 }
