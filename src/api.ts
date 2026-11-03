@@ -633,6 +633,7 @@ const mockMemoryRecords: MemoryRecord[] = [
   memRecord("mem_c1f3", "Uses bun (not npm) for this repo's install, dev, test, and build scripts.", "fact", "active", "model_proposal", { confidenceBps: 7400, rationale: "observed across 6 sessions" }),
   memRecord("mem_p1a8", "Read-only workers need an injected GH_TOKEN — the sandbox blocks the keychain.", "fact", "proposed", "model_proposal", { confidenceBps: 7100, rationale: "run 8821 · seen in 3 sessions" }),
   memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
+  memRecord("mem_p3c7", "Check the upstream tracker before deep-diving a security-hunt candidate.", "constraint", "proposed", "agent_proposal", { rationale: "The person said to keep this for every future hunt." }),
   memRecord("mem_d1c9", "Sprint-scoped: land the onboarding picker before Friday.", "constraint", "deleted", "model_proposal", { confidenceBps: 3000, createdAt: "2026-08-05T09:00:00Z", validTo: "2026-08-18T09:00:00Z" }),
 ];
 
