@@ -104,6 +104,7 @@ pub mod memory_ledger;
 pub mod memory_insights;
 pub mod memory_packet;
 pub mod memory_similarity;
+pub mod memory_tools;
 #[cfg(test)]
 mod memory_evals;
 pub mod meter;

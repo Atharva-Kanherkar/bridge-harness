@@ -1324,7 +1324,7 @@ fn fenced_payload(text: &str) -> Option<&str> {
     Some(after[..end].trim())
 }
 
-fn contains_secret_material(text: &str) -> bool {
+pub(crate) fn contains_secret_material(text: &str) -> bool {
     let lowered = text.to_lowercase();
     lowered.contains("[secret:")
         || lowered.contains("/credential-proxy/")

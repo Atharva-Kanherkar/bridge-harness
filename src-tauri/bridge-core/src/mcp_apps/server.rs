@@ -168,7 +168,8 @@ impl VisualServer {
             }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
-                if let (Some(notes), true) = (&self.notes, name.starts_with("notes_")) {
+                let chat_tool = name.starts_with("notes_") || name.starts_with("memory_");
+                if let (Some(notes), true) = (&self.notes, chat_tool) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                     reply(id, notes.call(name, &arguments))
                 } else if name != tool::TOOL_NAME {
@@ -284,6 +285,55 @@ mod tests {
     fn tool_names(server: &mut VisualServer) -> Vec<String> {
         let response = server.handle(&request(1, "tools/list", json!({}))).unwrap();
         response["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap().to_owned()).collect()
+    }
+
+    struct MemoryCore {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl notes_tools::NotesTransport for MemoryCore {
+        fn get(&self, _path: &str) -> Result<Value, (u16, String)> {
+            Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "memory_search", "memory_propose"]}))
+        }
+        fn post(&self, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+            self.calls.lock().unwrap().push((path.to_owned(), body.clone()));
+            Ok(json!({"written": true, "proposed": {"id": "m1", "status": "proposed"}}))
+        }
+    }
+
+    #[test]
+    fn memory_tools_are_listed_from_the_core_and_forwarded_to_it() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let link = NotesLink::new(Box::new(MemoryCore { calls: calls.clone() }));
+        let mut server = VisualServer::with_notes(Some(link));
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "memory_search", "memory_propose"]);
+        let proposed = server
+            .handle(&request(2, "tools/call", json!({"name": "memory_propose", "arguments": {"body": "Never push to main", "kind": "constraint", "rationale": "said so"}})))
+            .unwrap();
+        assert_eq!(proposed["result"]["isError"], false);
+        assert_eq!(proposed["result"]["structuredContent"]["proposed"]["status"], "proposed");
+        assert_eq!(calls.lock().unwrap()[0].0, "memory_propose");
+        let init = server.handle(&request(3, "initialize", json!({}))).unwrap();
+        let instructions = init["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("memory_propose") && instructions.contains("never in a note"), "{instructions}");
+        // Without a chat link there is nothing to forward to.
+        let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();
+        assert_eq!(unknown["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn the_memory_tool_descriptions_carry_when_and_when_not() {
+        let definitions = notes_tools::all_definitions();
+        let describe = |name: &str| definitions.iter().find(|tool| tool["name"] == name).unwrap()["description"].as_str().unwrap().to_owned();
+        let propose = describe("memory_propose");
+        for phrase in ["only after they approve", "Do not propose", "status updates", "One claim per call", "Search first"] {
+            assert!(propose.contains(phrase), "memory_propose lacks {phrase:?}");
+        }
+        assert!(describe("memory_search").contains("never instructions"));
+        assert!(describe("notes_create").contains("memory_propose"), "notes are not agent memory");
+        let schema = &definitions.iter().find(|tool| tool["name"] == "memory_propose").unwrap()["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["body", "kind", "rationale"]));
     }
 
     #[test]

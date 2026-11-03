@@ -123,10 +123,19 @@ pub enum Access {
 }
 
 impl Access {
+    /// Every tool this access may call on the chat-tools route: the notes
+    /// tools and the memory tools, which share the route and its token.
     pub fn tools(self) -> Vec<&'static str> {
+        let memory = crate::memory_tools::READ_TOOLS.iter();
         match self {
-            Access::Write => READ_TOOLS.iter().chain(WRITE_TOOLS.iter()).copied().collect(),
-            Access::ReadOnly => READ_TOOLS.to_vec(),
+            Access::Write => READ_TOOLS
+                .iter()
+                .chain(WRITE_TOOLS.iter())
+                .chain(memory)
+                .chain(crate::memory_tools::WRITE_TOOLS.iter())
+                .copied()
+                .collect(),
+            Access::ReadOnly => READ_TOOLS.iter().chain(memory).copied().collect(),
         }
     }
 }
@@ -291,6 +300,23 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
             Err(_) => return reply(400, json!({"error": "the request body must be a JSON object"})),
         }
     };
+    if tool.starts_with("memory_") {
+        let outcome = {
+            let db = core.db.lock().unwrap();
+            crate::memory_tools::run(&db, session_id, access == Access::Write, tool, &args)
+        };
+        return match outcome {
+            Ok(outcome) => {
+                if outcome.changed {
+                    core.events.publish(crate::events::CoreEvent::MemoryChanged {
+                        scope_key: crate::memory_ledger::account_memory_scope().to_string(),
+                    });
+                }
+                reply(200, outcome.result)
+            }
+            Err(error) => reply(error.status, json!({"error": error.message})),
+        };
+    }
     match run(&core.notes, access, &actor, tool, &args) {
         Ok(result) => reply(200, result),
         Err(error) => reply(error.status, json!({"error": error.message})),
@@ -373,7 +399,9 @@ mod tests {
         assert_eq!(found["pages"].as_array().unwrap().len(), 1);
         let read = run(&notes, Access::ReadOnly, actor, "notes_read", &json!({"id": page.id})).unwrap();
         assert_eq!(read["markdown"], "keep me as I am");
-        assert_eq!(Access::ReadOnly.tools(), vec!["notes_search", "notes_read"]);
+        assert_eq!(Access::ReadOnly.tools(), vec!["notes_search", "notes_read", "memory_search"]);
+        assert!(Access::Write.tools().contains(&"memory_propose"));
+        assert!(!Access::ReadOnly.tools().contains(&"memory_propose"));
     }
 
     #[test]
@@ -450,5 +478,23 @@ mod tests {
         assert_eq!(call("chat-1", "", "notes_search", json!({})).0, 401);
         assert_eq!(call("ghost", &token_for("ghost"), "notes_search", json!({})).0, 404);
         assert_eq!(core.notes.read(&id).unwrap().markdown, "researched");
+
+        // The memory tools share the route and its token. A top-level chat
+        // proposes, a worker only searches, and a proposal tells the UI.
+        let mut events = core.events.subscribe();
+        let rule = json!({"body": "Check upstream trackers before a security hunt", "kind": "constraint", "rationale": "the person said so"});
+        let (status, proposed) = call("chat-1", &chat, "memory_propose", rule.clone());
+        assert_eq!(status, 200, "{proposed}");
+        assert_eq!(proposed["proposed"]["provenance"], "agent_proposal");
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::MemoryChanged { .. }));
+        let (status, again) = call("chat-1", &chat, "memory_propose", rule);
+        assert_eq!((status, again["written"].as_bool()), (200, Some(false)), "a repeat writes nothing");
+        assert!(events.try_recv().is_err(), "and tells nobody");
+        assert_eq!(call("worker-1", &worker, "memory_propose", json!({"body": "b", "kind": "fact", "rationale": "r"})).0, 403);
+        let (status, found) = call("worker-1", &worker, "memory_search", json!({"query": "upstream"}));
+        assert_eq!(status, 200, "{found}");
+        assert_eq!(found["records"].as_array().unwrap().len(), 0, "a proposal is not memory until approved");
+        assert!(tools["tools"].as_array().unwrap().iter().any(|tool| tool == "memory_search"));
+        assert_eq!(call("chat-1", &worker, "memory_search", json!({"query": "x"})).0, 401, "another chat's token");
     }
 }
