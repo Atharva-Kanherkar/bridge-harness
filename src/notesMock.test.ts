@@ -66,6 +66,23 @@ describe("mock notes", () => {
     expect(mockListNotes().notes.some(item => item.id === note.id || item.parentId === note.id)).toBe(false);
   });
 
+  it("keeps edited and started tasks when more work is extracted", () => {
+    const note = mockCaptureNote("- write the doc\n- write the doc\n");
+    mockExtractTasks({ id: note.id });
+    vi.advanceTimersByTime(20);
+    const [first] = mockReadPage(note.id).tasks;
+    expect(mockReadPage(note.id).tasks).toHaveLength(1);
+    mockUpdateNote({ id: first.id, title: "My custom title", state: "done", addSessionId: "chat-existing" });
+    const existing = mockReadPage(first.id).note;
+    mockEditPage({ id: note.id, text: "- write   the doc\n- ship the app\n" });
+    mockExtractTasks({ id: note.id });
+    vi.advanceTimersByTime(20);
+    const tasks = mockReadPage(note.id).tasks;
+    expect(tasks).toHaveLength(2);
+    expect(tasks.find(task => task.id === first.id)).toEqual(existing);
+    expect(tasks.find(task => task.id !== first.id)?.sourceExcerpt).toBe("- ship the app");
+  });
+
   it("announces every write", () => {
     const changes: string[] = [];
     onMockNotesPageChanged(change => changes.push(change.actor));

@@ -144,6 +144,8 @@ pub struct NotesService {
     /// Held for a whole rename, from the title change to the last rewritten
     /// backlink, so overlapping renames cannot rewrite links to a stale title.
     rename_lock: Mutex<()>,
+    /// Serializes accepting task extraction replies, including overlapping jobs.
+    pub(super) task_lock: Mutex<()>,
 }
 
 impl NotesService {
@@ -172,6 +174,7 @@ impl NotesService {
             import_lock: Mutex::new(()),
             projection_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
+            task_lock: Mutex::new(()),
         };
         // Pages committed but never mirrored (a failed write, a crash between
         // commit and projection) get their files now.
@@ -483,13 +486,19 @@ impl NotesService {
             } else if let Some(workspace) = update.workspace_id {
                 patch = patch.set(key::WORKSPACE, workspace);
             }
-            if let Some(state) = update.state {
+            if let Some(state) = &update.state {
                 patch = patch.set(key::STATE, state);
             }
             if let Some(session) = update.add_session_id.filter(|session| !session.trim().is_empty()) {
                 let mut sessions = props.session_ids.clone();
                 if !sessions.contains(&session) {
                     sessions.push(session);
+                    // The chat may have taken time to start. Inspect the live
+                    // state under the write lock so linking cannot reopen a
+                    // task the person finished or archived in the meantime.
+                    if update.state.is_none() && props.kind.as_deref() == Some("task") && matches!(props.state.as_deref(), Some("open" | "inbox")) {
+                        patch = patch.set(key::STATE, "doing");
+                    }
                 }
                 patch = patch.list(key::SESSIONS, &sessions);
             }
@@ -1407,6 +1416,22 @@ pub(crate) mod tests {
             notes.update(UpdateNote { id: page.id.clone(), add_session_id: Some(session.into()), ..Default::default() }, PERSON).unwrap();
         }
         assert_eq!(notes.read(&page.id).unwrap().note.session_ids, vec!["s1", "s2"]);
+    }
+
+    #[test]
+    fn linking_a_chat_starts_only_open_tasks_and_preserves_explicit_states() {
+        let (_dir, notes) = service();
+        for (state, expected) in [("inbox", "doing"), ("open", "doing"), ("doing", "doing"), ("done", "done"), ("archived", "archived")] {
+            let task = notes.create(CreatePage { kind: Some("task".into()), state: Some(state.into()), ..Default::default() }, PERSON).unwrap();
+            let linked = notes.update(UpdateNote { id: task.id, add_session_id: Some("chat-started".into()), ..Default::default() }, PERSON).unwrap();
+            assert_eq!(linked.state, expected);
+            assert_eq!(linked.session_ids, vec!["chat-started"]);
+        }
+        let task = notes.create(CreatePage { kind: Some("task".into()), ..Default::default() }, PERSON).unwrap();
+        let linked = notes.update(UpdateNote { id: task.id, state: Some("done".into()), add_session_id: Some("chat-started".into()), ..Default::default() }, PERSON).unwrap();
+        assert_eq!(linked.state, "done");
+        let page = notes.capture("normal note", PERSON).unwrap();
+        assert_eq!(notes.update(UpdateNote { id: page.id, add_session_id: Some("chat-started".into()), ..Default::default() }, PERSON).unwrap().state, "inbox");
     }
 
     #[test]

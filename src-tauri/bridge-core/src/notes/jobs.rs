@@ -232,7 +232,7 @@ pub fn drain_once(notes: &NotesService, backend: &dyn ModelBackend, owner: &str)
     let tags = notes.with_db(|db| top_tags(db, notes.space()))?;
     let (instructions, prompt) = match job.kind.as_str() {
         STRUCTURE => (structure::INSTRUCTIONS, structure::prompt(&page.markdown, &projects, &tags)),
-        _ => (tasks::INSTRUCTIONS, tasks::prompt(&page.markdown, &projects)),
+        _ => (tasks::INSTRUCTIONS, tasks::prompt(&page.markdown, &projects, &page.tasks)),
     };
     // The reply streams to open pages as `notes/pass_progress`, throttled,
     // and once more in full; only the settled job is stored.
