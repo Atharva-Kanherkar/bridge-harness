@@ -325,7 +325,10 @@ function linksOf(body: string): WikiSpan[] {
   }
   // In body order, like the core's one pattern, so a rewrite from the end
   // never shifts a link still to come.
-  return found.sort((a, b) => a.start - b.start);
+  // One link per byte, the leftmost first, as one pattern would match.
+  const kept: WikiSpan[] = [];
+  for (const span of found.sort((a, b) => a.start - b.start)) if (!kept.length || span.start >= kept[kept.length - 1].end) kept.push(span);
+  return kept;
 }
 
 /** `[[target]]` becomes the source's text without the double brackets, the way
