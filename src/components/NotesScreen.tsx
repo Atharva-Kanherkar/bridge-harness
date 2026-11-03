@@ -269,7 +269,10 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     return session ? chatName(session) : undefined;
   }, [sessions]);
 
+  const starts = useRef(new Set<string>());
   const start = async (target: Note, choice: StartChoice): Promise<boolean> => {
+    if (starts.current.has(target.id)) return false;
+    starts.current.add(target.id);
     setStartingId(target.id);
     try {
       const full = await bridgeApi.readNotePage(target.id);
@@ -277,14 +280,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       const brief = taskBrief({ kind: target.kind === "task" ? "task" : "note", title: noteDisplayTitle({ title: target.title, preview: full.markdown }), body: full.markdown, excerpt: target.sourceExcerpt, parentTitle: parent ? noteDisplayTitle(parent) : null });
       const sessionId = await onStartChat({ message: brief, workspaceId: choice.workspaceId, harness: choice.harness });
       if (!sessionId) return false;
-      await bridgeApi.updateNote({ id: target.id, addSessionId: sessionId, ...(target.kind === "task" && target.state === "open" ? { state: "doing" } : {}) });
+      await bridgeApi.updateNote({ id: target.id, addSessionId: sessionId });
       await refreshAll();
       return true;
     } catch (error) {
       fail(error);
       return false;
     } finally {
-      setStartingId(null);
+      starts.current.delete(target.id);
+      setStartingId(current => current === target.id ? null : current);
     }
   };
 

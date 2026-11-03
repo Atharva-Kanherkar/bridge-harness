@@ -59,4 +59,9 @@ describe("streamingTasks", () => {
     expect(streamingTasks('{"tasks": [')).toEqual([]);
     expect(streamingTasks("nope")).toEqual([]);
   });
+
+  it("does not draft restatements of tracked tasks", () => {
+    const tasks = JSON.stringify({ tasks: [{ existingTaskId: "task-1", excerpt: "a", title: "Rephrased tracked work" }, { existingTaskId: null, excerpt: "b", title: "Send invites" }, { existingTaskId: "", excerpt: "c", title: "Book the venue" }] });
+    expect(streamingTasks(tasks)).toEqual([{ title: "Send invites", excerpt: "b" }, { title: "Book the venue", excerpt: "c" }]);
+  });
 });

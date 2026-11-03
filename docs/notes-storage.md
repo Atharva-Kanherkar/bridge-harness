@@ -36,3 +36,44 @@ and examines at most 64 ancestors.
 
 The editor link picker, backlinks panel, and nested sidebar tree consume these
 backend capabilities in the frontend phase.
+
+## Task extraction
+
+Turn into tasks receives the note's text and its existing tasks, including each
+task's ID, title, and source excerpt. The extractor prioritizes new outcomes and
+omits tracked work. If it returns tracked work anyway, `existingTaskId` names the
+supplied task ID; `null` or a blank string identifies a new outcome. A rewritten title or shorter
+quote can therefore reuse a task, while separate outcomes sharing one sentence
+can become separate tasks. Source excerpts ground suggestions in the note;
+quotes alone do not determine whether two outcomes are the same work.
+
+Acceptance preserves existing task IDs, edited titles and bodies, states, and
+chat links. Repeated excerpt/title pairs are skipped. On reruns, missing,
+malformed, or unknown identity decisions reject the reply before any tasks are
+created. Accepting replies is serialized; if the set of task IDs changed during
+generation, the reply must be regenerated against the current tasks. Each reply
+allows at most 20 proposed new tasks; matched existing tasks do not use that
+budget. While a reply streams, entries naming an existing task are not drawn
+as drafts, so a restated task never flashes as a second row.
+
+`live_task_reruns` in `notes/evals.rs` scores reruns against real models: tracked
+work the person renamed must not come back as new, and appended work must be found.
+
+## Linked task lifecycle
+
+Starting a task links the created chat and moves an open or Inbox task to Doing
+in the same write transaction. An explicit state takes precedence, and linking
+cannot reopen a task marked Done or Archived while the chat was starting.
+Repeated Start clicks while creation is pending start only one chat per task.
+
+A linked task row offers Open chat instead of Start and follows its newest
+linked chat's live status, including Running, Needs you, Ready to review,
+Finished, Failed, and Stopped. If the chat details have not loaded, the row says
+Chat linked. Chat completion does not mark a task Done; finishing or reopening
+the task requires an explicit state change. Reopening a linked task returns it
+to Doing; reopening an unlinked one returns it to Open. Done and Archived remain
+authoritative over the chat status.
+
+An unfinished task's own page offers New chat when it already has a chat link.
+Done and Archived tasks offer no start action. Archived tasks do not count as
+open, and the list says All done only when every task is Done.

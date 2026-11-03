@@ -127,6 +127,57 @@ describe("deferred new-chat creation (#350)", () => {
     expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project") ?? null).toBeNull();
   });
 
+  it("delivers a leading issue number as the first message of a new chat", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut");
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    const composer = composerField()!;
+    await type(composer, "#389 needs investigation");
+    await act(async () => pressEnter(composer));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledWith(expect.any(String), "#389 needs investigation", [], "steer");
+  });
+
+  it("accepts an image with a leading issue number in a new chat", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    const composer = composerField()!;
+    await type(composer, "#389 needs investigation");
+    const file = new File(["image bytes"], "screenshot.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { items: { 0: { kind: "file", type: "image/png", getAsFile: () => file }, length: 1 } } });
+    await act(async () => composer.dispatchEvent(paste));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await act(async () => pressEnter(composer));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+
+    expect(submit).toHaveBeenCalledWith(expect.any(String), "#389 needs investigation", [expect.objectContaining({ mediaType: "image/png" })], "steer");
+  });
+
+  it("sends a leading issue number as the selected specialist's objective", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Agent: None"]')!.click());
+    const specialist = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Agent"] [role="menuitemradio"]')].find(item => item.textContent !== "No agent")!;
+    await act(async () => specialist.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+    const creates = spyCreates();
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut").mockResolvedValue({ disposition: "launched", agentId: "specialist", agentName: "Specialist", role: "research", interceptions: [] });
+    await type(composerField()!, "#389 needs investigation");
+    await act(async () => pressEnter(composerField()!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+
+    const result: Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>> = await creates.configured.mock.results[0].value;
+    const target = result.configuration.settings.target;
+    expect(target.kind).toBe("agent");
+    if (target.kind !== "agent") throw new Error("expected specialist target");
+    expect(dispatch).toHaveBeenCalledWith(result.sessionId, target.agentId, "#389 needs investigation");
+  });
+
   it("an empty submit creates nothing and keeps the draft open", async () => {
     await act(async () => byLabel("New Chat")!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });

@@ -9,6 +9,7 @@ import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../../connectorSurface";
 import { linkChoices, noteDisplayTitle, quoteText } from "../../notesDraft";
+import { noteTaskStatus } from "../../notesTask";
 import { streamingStructure, streamingTasks, type StreamingStructure } from "../../notesPass";
 import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayload, Session, StructuredView, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
@@ -240,9 +241,10 @@ export function NotePageView(props: NotePageViewProps) {
         <PopoverAction label="Turn into tasks" busy={busy(tasksJob)} busyLabel={PASS_COPY.tasks.busy} panelLabel="Turn into tasks options" align="end">
           {close => <PassPicker label="Turn into tasks" what="Finds the work this page asks for and adds each piece as a task below, quoting the words it came from. Existing tasks are kept." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("tasks", harness); }} />}
         </PopoverAction>
-        <PopoverAction label="Start a chat" panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
+        {note.kind === "task" && <span role="status" className="px-2 text-[12px] text-muted-foreground">{noteTaskStatus(note, sessions.find(session => session.id === note.sessionIds.at(-1)))}</span>}
+        {(note.kind !== "task" || (note.state !== "done" && note.state !== "archived")) && <PopoverAction label={note.sessionIds.length ? "New chat" : "Start a chat"} panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
           {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? startersParent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
-        </PopoverAction>
+        </PopoverAction>}
         {note.sessionIds.length > 0 && <Pill onClick={() => onOpenChat(note.sessionIds[note.sessionIds.length - 1])}>Open chat</Pill>}
       </div>
 

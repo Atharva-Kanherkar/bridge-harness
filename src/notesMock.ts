@@ -215,7 +215,10 @@ export function mockUpdateNote(params: UpdateNoteParams): Note {
   if (params.state) props.state = params.state;
   if (params.workspaceId) props.workspaceId = params.workspaceId;
   if (params.clearWorkspace) props.workspaceId = null;
-  if (params.addSessionId && !page.note.sessionIds.includes(params.addSessionId)) props.sessionIds = [...page.note.sessionIds, params.addSessionId];
+  if (params.addSessionId && !page.note.sessionIds.includes(params.addSessionId)) {
+    props.sessionIds = [...page.note.sessionIds, params.addSessionId];
+    if (!params.state && page.note.kind === "task" && (page.note.state === "open" || page.note.state === "inbox")) props.state = "doing";
+  }
   // A title the links followed takes them with it: decide who names the page
   // before the rename lands, so a duplicate title cannot claim a link.
   const newTitle = props.title ?? null;
@@ -474,9 +477,12 @@ const tasksOf = (page: MockPage) => page.history[page.history.length - 1].split(
 export function mockExtractTasks(params: StructureNoteParams): NoteJobQueued {
   const reply = (page: MockPage) => JSON.stringify({ tasks: tasksOf(page).map(excerpt => ({ excerpt, title: lineTitle(excerpt), detail: "", doneWhen: "", project: null })) });
   return queue("tasks", params, reply, page => {
-    const existing = pages.filter(candidate => !candidate.deleted && candidate.note.parentId === page.note.id).map(candidate => candidate.note.sourceExcerpt);
+    const normalize = (text: string) => text.trim().replace(/\s+/g, " ");
+    const existing = new Set(pages.filter(candidate => !candidate.deleted && candidate.note.kind === "task" && candidate.note.parentId === page.note.id).map(candidate => normalize(candidate.note.sourceExcerpt ?? "")));
     for (const excerpt of tasksOf(page)) {
-      if (existing.includes(excerpt)) continue;
+      const key = normalize(excerpt);
+      if (existing.has(key)) continue;
+      existing.add(key);
       const title = lineTitle(excerpt);
       make(`${title}.\n\nDone when: ${title.toLowerCase()} is shipped and checked.`, `model:tasks:${params.model ?? "claude-sonnet-5-5"}`, {
         title, kind: "task", state: "open", parentId: page.note.id, sourceExcerpt: excerpt, workspaceId: page.note.workspaceId ?? null,

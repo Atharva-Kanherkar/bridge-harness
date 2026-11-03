@@ -87,10 +87,11 @@ export function streamingStructure(reply: string): StreamingStructure | null {
   };
 }
 
-/** The task titles a Turn into tasks reply has so far. */
+/** The new task titles a Turn into tasks reply has so far. An entry naming an
+ * existing task is a restatement the backend skips, so it is never a draft. */
 export function streamingTasks(reply: string): { title: string; excerpt: string }[] {
   return list(record(partialJson(reply))?.tasks).map(record).flatMap(task => {
     const title = text(task?.title);
-    return task && title ? [{ title, excerpt: text(task.excerpt) ?? "" }] : [];
+    return task && title && !text(task.existingTaskId)?.trim() ? [{ title, excerpt: text(task.excerpt) ?? "" }] : [];
   });
 }

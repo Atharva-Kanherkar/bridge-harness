@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentDefinition } from "./types";
-import { agentMentionQuery, agentShortcutCandidates, normalizeAgentToken, parseAgentMention } from "./agentMention";
+import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, normalizeAgentToken, parseAgentMention } from "./agentMention";
 
 const agent = (overrides: Partial<AgentDefinition>): AgentDefinition => ({
   id: "bridge-verification",
@@ -47,6 +47,30 @@ describe("agentMentionQuery", () => {
     expect(agentMentionQuery("#ver")).toBe("ver");
     expect(agentMentionQuery("#verifier verify")).toBeUndefined();
     expect(agentMentionQuery("ask #ver")).toBeUndefined();
+    expect(agentMentionQuery("#389")).toBeUndefined();
+  });
+});
+
+describe("configuredAgentMention", () => {
+  const agents = [agent({ id: "worker-123", name: "Release QA" })];
+
+  it.each(["#release-qa", "#WORKER-123", "#verification", "#reviewer", "#verifier"])(
+    "recognizes an exact name, id, role or alias: %s", text => {
+      expect(configuredAgentMention(`${text} check this`, agents)?.objective).toBe("check this");
+    },
+  );
+
+  it.each(["issue #389", "#389", "#eng-alerts investigate", "#ver check this", "# verifier heading"])(
+    "does not reserve unrelated references: %s", text => {
+      expect(configuredAgentMention(text, agents)).toBeNull();
+    },
+  );
+
+  it("leaves disabled, ambiguous and orchestrator targets for host validation", () => {
+    expect(configuredAgentMention("#verifier check", [agent({ enabled: false })])?.token).toBe("verifier");
+    expect(configuredAgentMention("#verifier check", [agent({}), agent({ id: "another" })])?.token).toBe("verifier");
+    expect(configuredAgentMention("#orchestrator check", [agent({ role: "orchestrator" })])?.token).toBe("orchestrator");
+    expect(configuredAgentMention("#verifier", agents)).toEqual({ token: "verifier", objective: "" });
   });
 });
 
