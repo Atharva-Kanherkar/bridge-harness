@@ -250,6 +250,31 @@ describe("NoteEditor", () => {
     expect(onChange.mock.calls[0][0]).toBe(before.replace("Before", "Before!"));
   });
 
+  it("keeps a wiki link's spacing, empty alias and inner bracket byte for byte, as the core reads them", async () => {
+    const before = "Lead\n\n[[Foo | Bar]] and [[Foo|]] and [[a[b]] here.\n";
+    const { onChange } = await mount(before);
+    expect([...host.querySelectorAll("button[aria-label^='Open the page']")].map(node => node.textContent)).toEqual(["Bar", "Foo", "a[b"]);
+    await typeAfter("here", "!");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe(before.replace("here.", "here!."));
+  });
+
+  it("turns a [[link]] typed straight through into a link", async () => {
+    await mount("first\n");
+    const view = editor().view;
+    const type = (text: string) => {
+      for (const char of text) {
+        const { from, to } = view.state.selection;
+        const handled = view.someProp("handleTextInput", handler => handler(view, from, to, char, () => view.state.tr.insertText(char, from, to)));
+        if (!handled) view.dispatch(view.state.tr.insertText(char, from, to));
+      }
+    };
+    await act(async () => { editor().commands.setTextSelection(6); type(" [[Meeting notes]]"); });
+    await settle();
+    expect(editor().getMarkdown()).toContain("first [[Meeting notes]]");
+    expect(host.querySelector("button[aria-label='Open the page Meeting notes']")).not.toBeNull();
+  });
+
   it("escapes brackets only where a wiki link could be misread", async () => {
     const { onChange } = await mount("plain [1] stays\n");
     await typeAfter("stays", " typed [[maybe]] else");

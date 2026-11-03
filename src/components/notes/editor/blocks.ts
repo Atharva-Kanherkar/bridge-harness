@@ -6,7 +6,7 @@
 // Math, tables, to-dos and images come from Tiptap's own extensions; math is
 // read more strictly than Tiptap does, so "$5 and $10" stays prose.
 
-import { Node, mergeAttributes, type JSONContent, type MarkdownToken } from "@tiptap/core";
+import { InputRule, Node, mergeAttributes, type JSONContent, type MarkdownToken } from "@tiptap/core";
 import { Details, DetailsContent, DetailsSummary } from "@tiptap/extension-details";
 import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
 
@@ -179,8 +179,17 @@ export const PageLink = Node.create({
 });
 
 /** `[[Target]]` or `[[Target|Alias]]`, all on one line; the same grammar the
- *  core reads, so links written elsewhere resolve here and back. */
-export const WIKI_LINK = /^\[\[([^\[\]\n|]+?)(?:\|([^\[\]\n]+?))?\]\]/;
+ *  core reads (the first `|` splits), so links written elsewhere resolve here
+ *  and back. */
+export const WIKI_LINK = /^\[\[([^\]\r\n]+)\]\]/;
+
+/** A wiki link's target and alias exactly as written, spacing kept so the
+ *  Markdown comes back byte for byte; null when the target is blank. */
+export function readWikiLink(inner: string): { target: string; alias: string | null } | null {
+  const bar = inner.indexOf("|");
+  const target = bar < 0 ? inner : inner.slice(0, bar);
+  return target.trim() ? { target, alias: bar < 0 ? null : inner.slice(bar + 1) } : null;
+}
 
 /** A wiki link, read from other pages and the chats: an inline pill the
  *  editor draws over `[[…]]`, whatever page the title ends up on. */
@@ -202,7 +211,7 @@ export const WikiLink = Node.create({
   renderHTML({ node, HTMLAttributes }) {
     const target = String(node.attrs.target ?? "");
     const alias = node.attrs.alias == null ? null : String(node.attrs.alias);
-    return ["span", mergeAttributes(HTMLAttributes, { "data-type": "wikiLink", "data-wiki-target": target, ...(alias ? { "data-wiki-alias": alias } : {}) }), alias ?? target];
+    return ["span", mergeAttributes(HTMLAttributes, { "data-type": "wikiLink", "data-wiki-target": target, ...(alias != null ? { "data-wiki-alias": alias } : {}) }), alias?.trim() || target.trim()];
   },
   markdownTokenizer: {
     name: "wikiLink",
@@ -210,17 +219,27 @@ export const WikiLink = Node.create({
     start: (src: string) => src.indexOf("[["),
     tokenize: (src: string) => {
       const match = WIKI_LINK.exec(src);
-      const target = match?.[1].trim();
-      if (!match || !target) return undefined;
-      const alias = match[2]?.trim() ?? null;
-      return { type: "wikiLink", raw: match[0], target, alias: alias || null };
+      const link = match ? readWikiLink(match[1]) : null;
+      return match && link ? { type: "wikiLink", raw: match[0], ...link } : undefined;
     },
   },
   parseMarkdown: token => ({ type: "wikiLink", attrs: { target: token.target, alias: token.alias } }),
   renderMarkdown: node => {
     const target = String(node.attrs?.target ?? "");
     const alias = node.attrs?.alias == null ? null : String(node.attrs.alias);
-    return alias ? `[[${target}|${alias}]]` : `[[${target}]]`;
+    return alias == null ? `[[${target}]]` : `[[${target}|${alias}]]`;
+  },
+  // `[[Title]]` typed straight through becomes the link, as it would from
+  // the menu.
+  addInputRules() {
+    return [new InputRule({
+      find: /\[\[([^\]\r\n]+)\]\]$/,
+      handler: ({ state, range, match }) => {
+        const link = readWikiLink(match[1]);
+        if (!link || state.doc.resolve(range.from).parent.type.spec.code) return null;
+        state.tr.replaceWith(range.from, range.to, this.type.create(link));
+      },
+    })];
   },
 });
 
