@@ -135,6 +135,13 @@ mod tests {
     }
 
     #[test]
+    fn stop_words_and_bare_punctuation_are_not_terms() {
+        let expected: BTreeSet<String> = ["cat", "hat"].iter().map(|word| word.to_string()).collect();
+        assert_eq!(terms("The cat, and the hat!"), expected);
+        assert!(terms("-- ... !!").is_empty());
+    }
+
+    #[test]
     fn identifier_punctuation_is_part_of_the_claim() {
         assert_ne!(normalize("Use C++"), normalize("Use C#"));
         assert_eq!(normalize("Use C++."), normalize("use c++"), "a trailing full stop is still sentence punctuation");

@@ -701,6 +701,18 @@ mod tests {
     }
 
     #[test]
+    fn a_line_exactly_at_the_cap_ranks_with_the_whole_claims() {
+        // Killed a surviving mutant: with `>` turned into `>=`, a line that fits
+        // exactly fell behind every shorter claim of a lower tier.
+        let (_dir, db) = packet_db();
+        let prefix = line_prefix("exact-pin", "preference", "explicit pin");
+        let body = "x".repeat(MAX_PACKET_LINE_CHARS - prefix.chars().count());
+        insert(&db, "exact-pin", &body, "user_explicit", "active", None);
+        insert_kind(&db, "short-fact", "fact", "Works on a Mac mini", "model_proposal", Some(7000));
+        assert_eq!(selected_ids(&db), vec!["exact-pin", "short-fact"]);
+    }
+
+    #[test]
     fn a_line_at_the_cap_is_whole_and_one_past_it_is_clipped() {
         let prefix = line_prefix("abcdefgh-0000", "fact", "explicit pin");
         let room = MAX_PACKET_LINE_CHARS - prefix.chars().count();

@@ -303,6 +303,16 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_in_the_rationale_alone_is_refused() {
+        // Killed a surviving mutant: with the secret check's `||` turned into
+        // `&&`, a clean body let a credential in the rationale through.
+        let (_dir, db) = tools_db();
+        let args = json!({"body": "Deploys only from the release branch", "kind": "constraint", "rationale": "use sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH to deploy"});
+        assert_eq!(run(&db, "chat", true, PROPOSE, &args).unwrap_err().status, 400);
+        assert_eq!(proposals_by(&db, "chat").unwrap(), 0);
+    }
+
+    #[test]
     fn a_duplicate_answers_with_the_existing_record() {
         let (_dir, db) = tools_db();
         let pin = memory_ledger::save(&db, "Check upstream trackers before a security hunt", Some("constraint"), None).unwrap();
