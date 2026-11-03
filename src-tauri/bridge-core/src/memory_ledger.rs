@@ -1097,6 +1097,16 @@ mod tests {
     }
 
     #[test]
+    fn pins_that_differ_only_in_identifier_punctuation_are_two_records() {
+        let (_dir, db) = ledger_db();
+        let cpp = save(&db, "Use C++", None, None).unwrap();
+        let csharp = save(&db, "Use C#", None, None).unwrap();
+        assert_ne!(csharp.id, cpp.id);
+        assert_eq!(csharp.body, "Use C#", "the second pin is kept as typed");
+        assert_eq!(count(&db, "active"), 2);
+    }
+
+    #[test]
     fn a_full_scope_still_answers_a_pin_it_already_holds() {
         let (_dir, db) = ledger_db();
         set_budget(&db, 1);

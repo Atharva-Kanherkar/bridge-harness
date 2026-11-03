@@ -38,24 +38,40 @@ const STOP_WORDS: &[&str] = &[
     "or", "that", "the", "their", "them", "they", "this", "to", "was", "were", "with",
 ];
 
-/// Case, whitespace and edge punctuation folded. Two bodies with the same
-/// normal form are the same text as far as any reader is concerned.
+/// Punctuation that ends a sentence and says nothing about the claim. Only
+/// these are dropped from the end of a body; `+`, `#` and the like name
+/// things ("C++" against "C#") and stay.
+const SENTENCE_PUNCTUATION: &[char] = &['.', ',', ';', ':', '!', '?', '\u{2026}'];
+/// Quotes and brackets that wrap a word without being part of it.
+const WRAPPERS: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '{', '}', '<', '>', '\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}'];
+
+/// Case and whitespace folded, trailing sentence punctuation dropped. Two
+/// bodies with the same normal form are the same text as far as any reader
+/// is concerned.
 pub fn normalize(body: &str) -> String {
     body.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
-        .trim_matches(|c: char| !c.is_alphanumeric())
+        .trim_end_matches(|c: char| SENTENCE_PUNCTUATION.contains(&c) || c.is_whitespace())
         .to_string()
 }
 
-/// The content words of a claim, in order: lowercase alphanumeric runs, stop
-/// words out.
+/// The content words of a claim, in order: whitespace-separated, lowercased,
+/// with wrapping quotes and brackets and trailing sentence punctuation
+/// trimmed, so "C++", "C#", ".NET" and "don't" survive as words. Stop words
+/// and words without a letter or digit are out.
 fn content_words(body: &str) -> Vec<String> {
     body.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty() && !STOP_WORDS.contains(word))
-        .map(str::to_owned)
+        .replace('\u{2019}', "'")
+        .split_whitespace()
+        .map(|word| {
+            word.trim_start_matches(|c: char| WRAPPERS.contains(&c))
+                .trim_end_matches(|c: char| WRAPPERS.contains(&c) || SENTENCE_PUNCTUATION.contains(&c))
+                .trim_start_matches(|c: char| WRAPPERS.contains(&c))
+                .to_owned()
+        })
+        .filter(|word| word.chars().any(char::is_alphanumeric) && !STOP_WORDS.contains(&word.as_str()))
         .collect()
 }
 
@@ -116,6 +132,16 @@ mod tests {
             "Prefer vitest -t filters over whole-file runs while triaging.",
             "prefer  vitest -t filters over whole-file runs while triaging"
         ));
+    }
+
+    #[test]
+    fn identifier_punctuation_is_part_of_the_claim() {
+        assert_ne!(normalize("Use C++"), normalize("Use C#"));
+        assert_eq!(normalize("Use C++."), normalize("use c++"), "a trailing full stop is still sentence punctuation");
+        assert_eq!(normalize("Uses .NET!"), "uses .net");
+        assert!(!near_duplicate("Use C++", "Use C#"));
+        assert!(!near_duplicate("Writes most services in C++ for latency", "Writes most services in C# for latency"));
+        assert!(!near_duplicate("Targets node 18+ in every package", "Targets node 18 in every package"));
     }
 
     #[test]
