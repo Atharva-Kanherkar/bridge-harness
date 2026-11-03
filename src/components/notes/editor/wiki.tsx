@@ -21,6 +21,8 @@ export interface WikiHost {
 
 export interface WikiChoice {
   target: string;
+  /** The page an existing choice is, for titles `[[…]]` cannot hold. */
+  id?: string;
   /** Make the page at `target` before linking to it. */
   create: boolean;
 }
@@ -34,7 +36,7 @@ export function matchWikiChoices(pages: WikiPage[], query: string): WikiChoice[]
     const title = page.title.toLowerCase();
     return words.every(word => title.includes(word));
   });
-  const choices: WikiChoice[] = found.map(page => ({ target: page.title, create: false }));
+  const choices: WikiChoice[] = found.map(page => ({ target: page.title, id: page.id, create: false }));
   if (clean && !pages.some(page => page.title.trim().toLowerCase() === clean)) choices.push({ target: query.trim(), create: true });
   return choices;
 }
@@ -50,6 +52,11 @@ export interface WikiState {
 
 export const wikiKey = new PluginKey("noteWiki");
 
+/** A title `[[…]]` can carry and read back as itself. */
+export function wikiSafe(title: string): boolean {
+  return !!title.trim() && !/[[\]|\r\n]/.test(title);
+}
+
 /** The `[[` trigger. The menu itself is React, fed through `onState`. */
 export function wikiCommand(onState: (state: WikiState | null) => void, onKey: (event: KeyboardEvent) => boolean, host: () => WikiHost) {
   return Extension.create({
@@ -63,11 +70,19 @@ export function wikiCommand(onState: (state: WikiState | null) => void, onKey: (
         startOfLine: false,
         allow: ({ state, range }) => {
           const $from = state.doc.resolve(range.from);
-          return !$from.parent.type.spec.code && $from.parent.type.name !== "detailsSummary";
+          // A bracket or bar past the `[[` ends the link being typed: the
+          // menu lets go there rather than catch Enter for the whole line.
+          const typed = state.doc.textBetween(range.from, range.to).slice(2);
+          return !/[[\]|]/.test(typed) && !$from.parent.type.spec.code && $from.parent.type.name !== "detailsSummary";
         },
         items: ({ query }) => matchWikiChoices(host().pages(), query),
         command: ({ editor, range, props }) => {
           editor.chain().focus().deleteRange(range).run();
+          // A page whose title `[[…]]` would misread links by its id instead.
+          if (props.id && !wikiSafe(props.target)) {
+            editor.chain().focus().insertContentAt(range.from, { type: "pageLink", attrs: { id: props.id, title: props.target } }).run();
+            return;
+          }
           editor.chain().focus().insertContentAt(range.from, { type: "wikiLink", attrs: { target: props.target, alias: null } }).run();
           if (props.create) void host().createByTitle?.(props.target);
         },
@@ -122,7 +137,7 @@ export const WikiMenu = forwardRef<WikiMenuHandle, { state: WikiState }>(functio
   >
     {choices.length
       ? choices.map((choice, index) => <button
-        key={`${choice.create ? "make" : "go"}-${choice.target}`}
+        key={choice.id ?? `make-${choice.target}`}
         type="button"
         role="option"
         data-index={index}

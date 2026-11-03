@@ -18,8 +18,6 @@ export interface EditorPages {
   openByTitle?: (title: string) => void;
   /** The pages a [[ menu can suggest, newest first. */
   pages?: () => { id: string; title: string }[];
-  /** Make a page titled so; null when it failed. */
-  createByTitle?: (title: string) => Promise<{ id: string; title: string } | null>;
 }
 export const EditorPagesContext = createContext<EditorPages>({ title: () => undefined, open: () => undefined });
 
@@ -44,13 +42,20 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   const [failed, setFailed] = useState(false);
   const [live, setLive] = useState<number | null>(null);
   const figure = useRef<HTMLElement>(null);
+  // A drag in progress, dropped without saving if the view goes first.
+  const dragging = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragging.current?.(), []);
   useEffect(() => {
     let current = true;
     setFailed(false);
     assetUrl(src).then(next => { if (current) setUrl(next); }, () => { if (current) setFailed(true); });
     return () => { current = false; };
   }, [src]);
-  const width = live ?? imageWidthOf(node.attrs.title);
+  // The title holds the width; a title that is words stays the image's own,
+  // and that image keeps its natural size rather than lose it to a drag.
+  const title = node.attrs.title == null ? "" : String(node.attrs.title);
+  const resizable = !title.trim() || imageWidthOf(title) != null;
+  const width = live ?? (resizable ? imageWidthOf(title) : null);
   const caption = String(node.attrs.alt ?? "");
   const commitCaption = (event: FocusEvent<HTMLElement>) => {
     const text = (event.currentTarget.textContent ?? "").replace(/\n/g, " ");
@@ -73,14 +78,23 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
       settled = draggedImageWidth(start.edge, start.x, start.width, dragEvent.clientX, start.available);
       setLive(settled);
     };
-    const finish = () => {
+    const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      dragging.current = null;
+    };
+    const finish = () => {
+      stop();
       setLive(null);
       if (settled != null) updateAttributes({ title: String(settled) });
     };
+    const cancel = () => { stop(); setLive(null); };
+    dragging.current?.();
+    dragging.current = stop;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
   };
   const handle = clsx("absolute top-1/2 z-10 h-12 w-1.5 -translate-y-1/2 cursor-col-resize rounded-full bg-foreground/40 opacity-0 transition-opacity", selected ? "opacity-100" : "group-hover:opacity-100");
   return <NodeViewWrapper as="figure" ref={figure} data-drag-handle="" className="note-image group relative mx-auto my-3 w-fit max-w-full">
@@ -91,13 +105,14 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
           ? <img
             src={url}
             alt={caption}
+            title={resizable ? undefined : title}
             draggable={false}
             // The width is the one computed thing a utility cannot say.
             style={width == null ? undefined : { width: `${width}px` }}
             className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}
           />
           : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
-      {url && !failed && <>
+      {url && !failed && resizable && <>
         <button type="button" contentEditable={false} aria-label="Resize from the left edge" onPointerDown={beginDrag("left")} className={clsx(handle, "left-0 -translate-x-1/2")} />
         <button type="button" contentEditable={false} aria-label="Resize from the right edge" onPointerDown={beginDrag("right")} className={clsx(handle, "right-0 translate-x-1/2")} />
       </>}
@@ -110,7 +125,9 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
       onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
       onBlur={commitCaption}
       data-empty={caption ? undefined : ""}
-      className="mt-1.5 text-center text-[12.5px] leading-relaxed text-muted-foreground outline-none focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring data-[empty]:hidden group-focus-within:data-[empty]:block"
+      // An empty caption shows while the image is selected or in use, with a
+      // prompt to type one.
+      className={clsx("mt-1.5 text-center text-[12.5px] leading-relaxed text-muted-foreground outline-none empty:before:text-faint empty:before:content-['Add_a_caption'] focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring", !selected && "data-[empty]:hidden group-focus-within:data-[empty]:block")}
     >{caption}</figcaption>
   </NodeViewWrapper>;
 }

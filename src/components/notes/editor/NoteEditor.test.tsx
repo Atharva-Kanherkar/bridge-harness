@@ -293,6 +293,26 @@ describe("NoteEditor", () => {
     expect(editor().getMarkdown()).toContain("[[Fresh thoughts]]");
   });
 
+  it("lets go of the [[ menu once the link is closed by hand", async () => {
+    await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Plans").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).not.toBeNull();
+    await act(async () => { editor().chain().insertContent("]] and more").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+  });
+
+  it("links a page whose title [[ ]] cannot hold by its id", async () => {
+    await mount("first\n", { pages: { title: () => undefined, open: vi.fn(), pages: () => [{ id: "p-q4", title: "Q4 | Launches" }] } });
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Q4").run(); });
+    await settle();
+    await key("Enter");
+    await settle();
+    expect(editor().getMarkdown()).toContain('<page url="bridge://p/p-q4">Q4 | Launches</page>');
+    expect(editor().getMarkdown()).not.toContain("[[Q4");
+  });
+
   it("opens the page named in a wiki link when its pill is clicked", async () => {
     const { props: given } = await mount("See [[Plans]] and continue\n");
     const pill = [...host.querySelectorAll("button[aria-label]")].find(node => node.getAttribute("aria-label") === "Open the page Plans");
@@ -319,6 +339,17 @@ describe("NoteEditor", () => {
     await settle();
     await commit();
     expect(onChange.mock.calls[0][0]).toBe("Before\n\n![Old plan, revised](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
+  });
+
+  it("shows an empty caption while its image is selected, and keeps a real title", async () => {
+    await mount("Intro\n\n![](assets/0123456789abcdef.png)\n\n![](assets/89abcdef01234567.png \"Figure 1\")\n");
+    const [plain, titled] = [...host.querySelectorAll("figure.note-image")];
+    expect(plain.querySelector("figcaption")!.className).toContain("data-[empty]:hidden");
+    await act(async () => { editor().commands.setNodeSelection(editor().state.doc.child(0).nodeSize); });
+    expect(plain.querySelector("figcaption")!.className).not.toContain("data-[empty]:hidden");
+    // A worded title is the image's own: shown, never overwritten by a drag.
+    expect(titled.querySelector("img")!.getAttribute("title")).toBe("Figure 1");
+    expect(titled.querySelector("button[aria-label^='Resize']")).toBeNull();
   });
 
   it("resizes an image from its handles, clamping to at least 120px", async () => {
