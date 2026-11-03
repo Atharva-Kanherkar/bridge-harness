@@ -117,18 +117,19 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   // List reads overlap too (a search typed while a refresh is out); only the
   // newest one may replace what is shown.
   const listRequest = useRef(0);
-  const refreshList = useCallback(async () => {
+  // `searchOnly`: only the query changed, so the whole list still holds.
+  const refreshList = useCallback(async (searchOnly = false) => {
     const ticket = ++listRequest.current;
     try {
       // Archived pages come too, for the Archived tab; the others leave them out.
       const query = queryRef.current.trim() || null;
       const [next, whole] = await Promise.all([
         bridgeApi.listNotes({ query, includeArchived: true }),
-        query ? bridgeApi.listNotes({ query: null, includeArchived: true }) : null,
+        query && !searchOnly ? bridgeApi.listNotes({ query: null, includeArchived: true }) : null,
       ]);
       if (ticket !== listRequest.current) return;
       setList(next);
-      setEveryNote((whole ?? next).notes);
+      if (whole || !query) setEveryNote((whole ?? next).notes);
     } catch (error) {
       if (ticket === listRequest.current) fail(error);
     }
@@ -154,7 +155,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const refreshAll = useCallback(async () => { await Promise.all([refreshList(), refreshPage()]); }, [refreshList, refreshPage]);
 
   useEffect(() => {
-    const timer = setTimeout(() => void refreshList(), query ? 200 : 0);
+    const timer = setTimeout(() => void refreshList(true), query ? 200 : 0);
     return () => clearTimeout(timer);
   }, [query, refreshList]);
 

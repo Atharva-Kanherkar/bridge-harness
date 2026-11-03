@@ -170,6 +170,8 @@ export function NotePageView(props: NotePageViewProps) {
   const structureText = streamed("structure", structureJob);
   const tasksText = streamed("tasks", tasksJob);
   const moveTargets = useMemo(() => moveTargetsOf(notes, note.id), [notes, note.id]);
+  // A blank page has no name to link by; every other one does.
+  const linkTargets = useMemo(() => linkablePages(notes ?? []).filter(candidate => candidate.title?.trim() || plainPreview(candidate.preview)).map(candidate => ({ id: candidate.id, title: noteDisplayTitle(candidate) })), [notes]);
 
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">
@@ -264,10 +266,11 @@ export function NotePageView(props: NotePageViewProps) {
             title: id => pageTitle?.(id),
             open: onOpenPage,
             openByTitle: onOpenByTitle,
-            // A blank page has no name to link by; every other one does.
-            pages: () => linkablePages(notes ?? []).filter(candidate => candidate.title?.trim() || plainPreview(candidate.preview)).map(candidate => ({ id: candidate.id, title: noteDisplayTitle(candidate) })),
+            pages: () => linkTargets,
           }}
-          onCreatePage={async title => onCreatePage ? (await flush()) ? onCreatePage(title === null ? note.id : null, title) : null : null}
+          // A child page waits for this one's save; a [[ page stands alone and
+          // is made at once, so a click on its new link finds it in flight.
+          onCreatePage={async title => !onCreatePage ? null : title !== null ? onCreatePage(null, title) : (await flush()) ? onCreatePage(note.id, null) : null}
           onError={onError}
         />
       </div>
