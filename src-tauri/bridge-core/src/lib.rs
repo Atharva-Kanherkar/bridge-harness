@@ -104,6 +104,8 @@ pub mod memory_ledger;
 pub mod memory_insights;
 pub mod memory_packet;
 pub mod memory_similarity;
+#[cfg(test)]
+mod memory_evals;
 pub mod meter;
 pub mod meter_sources;
 pub mod menu_bar;

@@ -7,7 +7,8 @@
 //! not the variable suffix either, because that suffix is inside the system
 //! block and a re-ranked packet there re-writes the provider's whole prefix
 //! cache. Eligibility and rank are deterministic, the budget is a hard cap
-//! that drops whole records, and every built packet writes one retrieval-audit
+//! that drops whole lines, no line runs past `MAX_PACKET_LINE_CHARS`, one
+//! claim takes one line, and every built packet writes one retrieval-audit
 //! row naming what was selected, what was excluded and why, and who received
 //! it. Off means no packet and no audit — the setting is the record of why.
 
@@ -20,17 +21,27 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub(crate) const MAX_PACKET_CHARS: usize = 4_000;
+/// The longest line one record may take, prefix included. Without it one long
+/// pin (a whole assistant reply saved with "Remember this") cost the space of
+/// ten short constraints, and the constraints were the ones dropped.
+pub(crate) const MAX_PACKET_LINE_CHARS: usize = 320;
+/// Ends a clipped body. The agent tools can return the full text.
+const CLIPPED_MARKER: &str = " ... (clipped; memory_search returns the full text)";
 const EXCLUDE_UNSAFE: &str = "unsafe_body";
 const EXCLUDE_OVER_BUDGET: &str = "over_budget";
 /// The codes that say an active record was held back at the gate. The audit
 /// also codes records that were never eligible (proposed, superseded); those
 /// are not "left out" in any sense a reader cares about.
-pub(crate) const GATE_EXCLUSION_CODES: [&str; 4] = [
+pub(crate) const GATE_EXCLUSION_CODES: [&str; 5] = [
     EXCLUDE_UNSAFE,
     EXCLUDE_OVER_BUDGET,
     EXCLUDE_CONFLICT_GROUP,
     EXCLUDE_TRUNCATED,
+    EXCLUDE_NEAR_DUPLICATE,
 ];
+/// The record says what a record already in the packet says. One line per
+/// claim: four copies of one status update used to take four lines.
+const EXCLUDE_NEAR_DUPLICATE: &str = "near_duplicate";
 /// A second member of a conflict group reaching the same packet is the failure
 /// the group exists to prevent, so the packet excludes it by code rather than
 /// trusting the ledger's one-active-member rule to have held.
@@ -190,6 +201,37 @@ fn render_body(body: &str) -> String {
         .join(" ")
 }
 
+/// Why a record is in the packet, as the line says it.
+fn reason_for(provenance: &str, confidence_bps: Option<i64>) -> String {
+    match provenance {
+        "user_explicit" => "explicit pin".to_string(),
+        memory_ledger::PROVENANCE_AGENT_PROPOSAL => "agent memory".to_string(),
+        _ => match confidence_bps {
+            Some(bps) => format!("extracted memory ({}%)", bps / 100),
+            None => "extracted memory".to_string(),
+        },
+    }
+}
+
+fn line_prefix(id: &str, kind: &str, reason: &str) -> String {
+    let short_id: String = id.chars().take(8).collect();
+    format!("[{short_id}] {kind} ({reason}): ")
+}
+
+/// Fit one rendered body into a line that starts with `prefix_chars`
+/// characters. A body that fits is returned whole; a longer one is cut on a
+/// character boundary, trimmed, and ends with [`CLIPPED_MARKER`], so the line
+/// says it is partial rather than passing a fragment off as the claim.
+fn clip_body(rendered: &str, prefix_chars: usize) -> String {
+    let room = MAX_PACKET_LINE_CHARS.saturating_sub(prefix_chars);
+    if rendered.chars().count() <= room {
+        return rendered.to_string();
+    }
+    let keep = room.saturating_sub(CLIPPED_MARKER.chars().count());
+    let head: String = rendered.chars().take(keep).collect();
+    format!("{}{CLIPPED_MARKER}", head.trim_end())
+}
+
 pub(crate) fn unsafe_body(body: &str) -> bool {
     let lowered = body.to_lowercase();
     lowered.contains("</bridge-")
@@ -216,14 +258,20 @@ pub fn for_session(
     // long-lived pin out before its status was ever checked: it showed as
     // active on the Memory screen and never reached a prompt.
     //
-    // The order is the packet's rank. Explicit pins outrank suggestions;
-    // suggestions rank by confidence; newest first breaks ties. It is total,
-    // so the packet is reproducible from the ledger.
+    // The order is the packet's rank (before the whole-before-clipped split
+    // below). Explicit pins outrank suggestions;
+    // within each, a constraint outranks a preference, a decision and then a
+    // fact, because a rule the agent breaks costs more than a fact it lacks;
+    // then confidence; newest first breaks ties. It is total, so the packet is
+    // reproducible from the ledger.
     let mut statement = db.prepare(
         "SELECT id, body, kind, provenance, confidence_bps, conflict_group
          FROM memory_records
          WHERE scope_key=?1 AND status='active'
-         ORDER BY provenance='user_explicit' DESC, COALESCE(confidence_bps, -1) DESC,
+         ORDER BY provenance='user_explicit' DESC,
+                  CASE kind WHEN 'constraint' THEN 0 WHEN 'preference' THEN 1
+                            WHEN 'decision' THEN 2 WHEN 'fact' THEN 3 ELSE 4 END,
+                  COALESCE(confidence_bps, -1) DESC,
                   updated_at DESC, id DESC
          LIMIT ?2",
     )?;
@@ -252,6 +300,16 @@ pub fn for_session(
         .collect::<Result<Vec<_>, _>>()?;
     let truncated = rows.len() > ACTIVE_CANDIDATE_CAP;
     rows.truncate(ACTIVE_CANDIDATE_CAP);
+
+    // Whole claims before clipped ones. A body too long for one line is
+    // usually pasted text, and its clipped line carries part of a claim in the
+    // space a whole one would use; it still reaches the packet when there is
+    // room, and memory_search still returns all of it. The sort is stable, so
+    // within each half the rank above holds.
+    rows.sort_by_key(|row| {
+        let prefix = line_prefix(&row.id, &row.kind, &reason_for(&row.provenance, row.confidence_bps));
+        prefix.chars().count() + render_body(&row.body).chars().count() > MAX_PACKET_LINE_CHARS
+    });
 
     let candidate_count = rows.len() as i64;
     let mut exclusions: Vec<(String, &'static str)> = Vec::new();
@@ -294,40 +352,39 @@ pub fn for_session(
     // a group active, so a second one here means something wrote around that
     // rule; the packet still refuses to inject two contradictory facts, and
     // says which one it dropped and why.
+    //
+    // A group is spoken for only once a member is actually selected: a first
+    // member dropped over budget must not shut out a second that fits.
     let mut spoken_for: Vec<String> = Vec::new();
     let mut used = 0usize;
     let mut selected: Vec<SelectedMemory> = Vec::new();
     for row in eligible {
-        if let Some(group) = row.conflict_group.clone() {
-            if spoken_for.contains(&group) {
-                exclusions.push((row.id, EXCLUDE_CONFLICT_GROUP));
-                continue;
-            }
-            spoken_for.push(group);
+        if row.conflict_group.as_ref().is_some_and(|group| spoken_for.contains(group)) {
+            exclusions.push((row.id, EXCLUDE_CONFLICT_GROUP));
+            continue;
         }
-        let reason = if row.provenance == "user_explicit" {
-            "explicit pin".to_string()
-        } else {
-            match row.confidence_bps {
-                Some(bps) => format!("extracted memory ({}%)", bps / 100),
-                None => "extracted memory".to_string(),
-            }
-        };
-        let short_id: String = row.id.chars().take(8).collect();
-        let line = format!(
-            "[{short_id}] {} ({}): {}\n",
-            row.kind,
-            reason,
-            render_body(&row.body)
-        );
+        if selected
+            .iter()
+            .any(|item| crate::memory_similarity::near_duplicate(&item.body, &row.body))
+        {
+            exclusions.push((row.id, EXCLUDE_NEAR_DUPLICATE));
+            continue;
+        }
+        let reason = reason_for(&row.provenance, row.confidence_bps);
+        let prefix = line_prefix(&row.id, &row.kind, &reason);
+        let body = clip_body(&render_body(&row.body), prefix.chars().count());
+        let line = format!("{prefix}{body}\n");
         if used + line.len() > MAX_PACKET_CHARS {
             exclusions.push((row.id, EXCLUDE_OVER_BUDGET));
             continue;
         }
         used += line.len();
+        if let Some(group) = row.conflict_group {
+            spoken_for.push(group);
+        }
         selected.push(SelectedMemory {
             record_id: row.id,
-            body: row.body,
+            body,
             kind: row.kind,
             reason,
         });
@@ -533,6 +590,90 @@ mod tests {
             params![id, body, provenance, status, confidence, group],
         )
         .unwrap();
+    }
+
+    fn insert_kind(db: &Connection, id: &str, kind: &str, body: &str, provenance: &str, confidence: Option<i64>) {
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, confidence_bps,
+                 valid_from, created_at, updated_at)
+             VALUES(?1,'account:local',?2,?3,?4,'active',?5,'now','now','now')",
+            params![id, kind, body, provenance, confidence],
+        )
+        .unwrap();
+    }
+
+    fn selected_ids(db: &Connection) -> Vec<String> {
+        for_session(db, "account:local", "session-1")
+            .unwrap()
+            .map(|packet| packet.selected.into_iter().map(|item| item.record_id).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn within_a_tier_constraints_come_first_then_preference_decision_fact() {
+        let (_dir, db) = packet_db();
+        insert_kind(&db, "fact", "fact", "Works on a Mac mini", "model_proposal", Some(9900));
+        insert_kind(&db, "decision", "decision", "Notes are documents", "model_proposal", Some(9900));
+        insert_kind(&db, "preference", "preference", "Likes diagrams", "model_proposal", Some(9900));
+        insert_kind(&db, "constraint", "constraint", "Never push to main", "model_proposal", Some(5000));
+        insert_kind(&db, "pin", "fact", "Lives in Pune", "user_explicit", None);
+        assert_eq!(selected_ids(&db), vec!["pin", "constraint", "preference", "decision", "fact"]);
+    }
+
+    #[test]
+    fn a_repeated_claim_takes_one_line_and_the_audit_says_why() {
+        let (_dir, db) = packet_db();
+        insert(&db, "first", "CI is rerunning on 6a77f0c1 after the test fix", "user_explicit", "active", None);
+        insert(&db, "copy", "ci is rerunning on 6a77f0c1 after the test fix.", "user_explicit", "active", None);
+        insert(&db, "other", "Keep answers short", "user_explicit", "active", None);
+        let selected = selected_ids(&db);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&"other".to_string()));
+        let exclusions = audit_exclusions(&db);
+        assert_eq!(exclusions.iter().filter(|(_, code)| code == EXCLUDE_NEAR_DUPLICATE).count(), 1);
+        assert!(GATE_EXCLUSION_CODES.contains(&EXCLUDE_NEAR_DUPLICATE), "counted with the other gate codes");
+    }
+
+    #[test]
+    fn whole_claims_outrank_lines_that_need_clipping() {
+        let (_dir, db) = packet_db();
+        insert(&db, "long-pin", &format!("Here is what I did {}", "and then more detail ".repeat(30)), "user_explicit", "active", None);
+        insert_kind(&db, "short-fact", "fact", "Works on a Mac mini", "model_proposal", Some(7000));
+        assert_eq!(selected_ids(&db), vec!["short-fact", "long-pin"]);
+    }
+
+    #[test]
+    fn a_line_at_the_cap_is_whole_and_one_past_it_is_clipped() {
+        let prefix = line_prefix("abcdefgh-0000", "fact", "explicit pin");
+        let room = MAX_PACKET_LINE_CHARS - prefix.chars().count();
+        let exact = "é".repeat(room);
+        assert_eq!(clip_body(&exact, prefix.chars().count()), exact, "fits, so whole");
+        let over = "é".repeat(room + 1);
+        let clipped = clip_body(&over, prefix.chars().count());
+        assert!(clipped.ends_with(CLIPPED_MARKER));
+        assert_eq!(prefix.chars().count() + clipped.chars().count(), MAX_PACKET_LINE_CHARS, "uses the whole line");
+    }
+
+    #[test]
+    fn a_conflict_group_member_dropped_over_budget_does_not_shut_out_one_that_fits() {
+        let (_dir, db) = packet_db();
+        // Fill most of the budget with distinct whole lines that outrank the group.
+        for index in 0..12 {
+            insert(&db, &format!("filler-{index:02}"), &format!("filler claim {index} {}", "word ".repeat(52)), "user_explicit", "active", None);
+        }
+        insert_grouped(&db, "group-long", &format!("timezone claim {}", "padding ".repeat(30)), "model_proposal", "active", Some(9000), Some("tz"));
+        insert_grouped(&db, "group-short", "In Asia/Tokyo", "model_proposal", "active", Some(1000), Some("tz"));
+        let selected = selected_ids(&db);
+        assert!(selected.contains(&"group-short".to_string()), "{selected:?}");
+        assert!(!selected.contains(&"group-long".to_string()));
+    }
+
+    #[test]
+    fn an_approved_agent_proposal_reads_as_agent_memory() {
+        let (_dir, db) = packet_db();
+        insert_kind(&db, "agent", "constraint", "Check upstream trackers before a security hunt", "agent_proposal", None);
+        let packet = for_session(&db, "account:local", "session-1").unwrap().unwrap();
+        assert!(packet.text.contains("constraint (agent memory): Check upstream"), "{}", packet.text);
     }
 
     fn audit_exclusions(db: &Connection) -> Vec<(String, String)> {
@@ -888,13 +1029,15 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_drops_whole_records_and_the_floor_is_no_packet() {
+    fn the_budget_drops_whole_lines_and_long_bodies_are_clipped_not_dropped() {
         let (_dir, db) = packet_db();
-        for index in 0..10 {
+        // Fifteen clipped lines are more than the budget holds.
+        for index in 0..15 {
+            // Distinct claims: copies of one body would collapse to one line.
             insert(
                 &db,
                 &format!("big-{index}"),
-                &"x".repeat(700),
+                &format!("record {index} {}", "lorem ".repeat(120)),
                 "user_explicit",
                 "active",
                 None,
@@ -908,11 +1051,12 @@ mod tests {
             "cap plus preamble only"
         );
         assert!(
-            packet.selected.len() < 10,
-            "over budget drops whole records"
+            packet.selected.len() < 15,
+            "over budget drops whole lines"
         );
-        for item in &packet.selected {
-            assert_eq!(item.body.len(), 700, "no record is truncated mid-body");
+        for line in packet.text.lines().skip(1) {
+            assert!(line.chars().count() <= MAX_PACKET_LINE_CHARS, "{line}");
+            assert!(line.ends_with(CLIPPED_MARKER), "a clipped line says so");
         }
         let exclusions = audit_exclusions(&db);
         assert!(exclusions.iter().any(|(_, code)| code == "over_budget"));
@@ -926,11 +1070,17 @@ mod tests {
             "active",
             None,
         );
+        let huge = for_session(&db2, "account:local", "session-1")
+            .unwrap()
+            .expect("a long record is clipped into one line rather than dropped");
+        assert_eq!(huge.selected.len(), 1);
+        assert!(huge.selected[0].body.ends_with(CLIPPED_MARKER));
+        assert!(huge.text.lines().nth(1).unwrap().chars().count() <= MAX_PACKET_LINE_CHARS);
+
+        let (_dir3, db3) = packet_db();
         assert!(
-            for_session(&db2, "account:local", "session-1")
-                .unwrap()
-                .is_none(),
-            "nothing fits: the floor is no packet, not a truncated one"
+            for_session(&db3, "account:local", "session-1").unwrap().is_none(),
+            "an empty scope is no packet"
         );
     }
 
