@@ -1393,12 +1393,13 @@ pub fn gate_and_insert(
                 continue;
             }
         };
+        // Inside one batch only the same text is a repeat. A near duplicate
+        // that is not identical may be the correction of the other, so both
+        // go on to the conflict guard below rather than one being dropped
+        // before it can see the other.
         let body_key = crate::memory_similarity::normalize(&body);
         if memory_ledger::body_already_known(db, &scope_key, &body)?
             || memory_ledger::near_duplicate_of(db, &scope_key, &body)?.is_some()
-            || batch_bodies
-                .iter()
-                .any(|seen: &String| crate::memory_similarity::near_duplicate(seen, &body))
             || !batch_bodies.insert(body_key)
         {
             report.duplicates += 1;
@@ -1964,6 +1965,51 @@ mod tests {
         assert_eq!(packet.selected.len(), 1);
         assert_eq!(packet.selected[0].record_id, record.id);
         assert_eq!(packet.selected[0].body, "Prefers spaces for indentation");
+    }
+
+    #[test]
+    fn a_reordered_correction_in_the_same_batch_keeps_both_for_review() {
+        // Review finding: the correction has the same word set as the claim it
+        // retracts, so dedupe dropped it and the retracted claim activated.
+        let (_dir, db) = extraction_db();
+        auto_apply_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs over spaces for all production Rust code.");
+        insert_message(&db, "s1", "e2", 2, "user.message", "Actually, I prefer spaces over tabs for all production Rust code.");
+        let mut model = CannedModel(fenced(
+            r#"[{"body":"Prefers tabs over spaces for all production Rust code","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct user preference"},
+                {"body":"Prefers spaces over tabs for all production Rust code","kind":"preference","confidenceBps":9500,"rationale":"[e2] Direct user preference"}]"#,
+        ));
+        let (report, _, _) = run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "s1").unwrap();
+        assert_eq!((report.written, report.activated, report.duplicates, report.queued_for_review), (2, 0, 0, 2), "{report:?}");
+        assert!(memory_ledger::list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.is_empty(), "nothing retracted is active");
+    }
+
+    #[test]
+    fn a_reordered_correction_of_an_active_claim_reaches_review() {
+        let (_dir, db) = extraction_db();
+        auto_apply_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        memory_ledger::save(&db, "Prefers tabs over spaces for all production Rust code", None, None).unwrap();
+        insert_message(&db, "s1", "e1", 1, "user.message", "Actually, I prefer spaces over tabs for all production Rust code.");
+        let mut model = CannedModel(fenced(
+            r#"[{"body":"Prefers spaces over tabs for all production Rust code","kind":"preference","confidenceBps":9500,"rationale":"[e1] Direct user preference"}]"#,
+        ));
+        let (report, _, _) = run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "s1").unwrap();
+        assert_eq!((report.written, report.activated, report.duplicates), (1, 0, 0), "a correction is not a repeat: {report:?}");
+    }
+
+    #[test]
+    fn an_identical_candidate_in_the_same_batch_is_still_one_proposal() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let text = fenced(
+            r#"[{"body":"Keeps the main checkout on main","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"},
+                {"body":"keeps the main checkout on main.","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"}]"#,
+        );
+        let report = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap();
+        assert_eq!((report.written, report.duplicates), (1, 1));
     }
 
     #[test]
