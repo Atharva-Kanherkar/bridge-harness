@@ -153,13 +153,13 @@ export function noteDisplayTitle(note: Pick<Note, "title" | "preview">): string 
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
-/** The pages a `[[Title]]` can name, as the core resolves them: by stored
- *  title, case and spacing aside, the oldest page holding a title winning. */
+/** The pages a `[[Title]]` can name, as the core resolves them: by the title
+ *  a list shows (an untitled page by its first line), case and spacing aside,
+ *  the oldest page holding a title winning. */
 export function linkablePages(notes: Note[]): Note[] {
   const held = new Map<string, Note>();
   for (const note of notes) {
-    const key = note.title?.trim().toLowerCase();
-    if (note.kind === "task" || !key) continue;
+    const key = linkKey(noteDisplayTitle(note));
     const other = held.get(key);
     if (!other || note.createdAt < other.createdAt || (note.createdAt === other.createdAt && note.id < other.id)) held.set(key, note);
   }
@@ -167,10 +167,14 @@ export function linkablePages(notes: Note[]): Note[] {
   return notes.filter(note => winners.has(note));
 }
 
-/** The page `[[title]]` opens, if any has that title. */
+/** The page `[[title]]` opens, if any page goes by that title. */
 export function pageTitled(notes: Note[], title: string): Note | undefined {
-  const key = title.trim().toLowerCase();
-  return linkablePages(notes).find(note => note.title!.trim().toLowerCase() === key);
+  const key = linkKey(title);
+  return linkablePages(notes).find(note => linkKey(noteDisplayTitle(note)) === key);
+}
+
+function linkKey(title: string): string {
+  return title.trim().toLowerCase();
 }
 
 /** Markdown as one line of plain text, for a list preview. */

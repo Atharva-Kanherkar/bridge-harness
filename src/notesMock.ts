@@ -338,10 +338,15 @@ function excerptOf(body: string, link: WikiSpan): string {
   return [...line.trim()].filter(character => character.charCodeAt(0) > 31).slice(0, 200).join("");
 }
 
+/** The page `[[key]]` resolves to, as the core's `resolve_one` picks it:
+ *  the oldest page going by that title. */
+function wikiHolder(key: string): MockPage | undefined {
+  return pages.filter(page => !page.deleted && linkKey(noteDisplayTitle(page.note)) === key)
+    .sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt) || a.note.id.localeCompare(b.note.id))[0];
+}
+
 /** Every backlink page `id` has, newest change first. */
 function backlinksOf(id: string): NoteBacklink[] {
-  const target = live(id).note;
-  const title = target.title?.trim().toLowerCase() ?? null;
   const rows: NoteBacklink[] = [];
   for (const page of [...pages].sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt))) {
     if (page.deleted || page.note.id === id) continue;
@@ -349,7 +354,7 @@ function backlinksOf(id: string): NoteBacklink[] {
     for (const link of linksOf(body)) {
       const linked = link.kind === "page"
         ? link.target === id
-        : title !== null && linkKey(link.target) === title;
+        : wikiHolder(linkKey(link.target))?.note.id === id;
       if (!linked) continue;
       rows.push({
         pageId: page.note.id,
@@ -365,12 +370,10 @@ function backlinksOf(id: string): NoteBacklink[] {
 
 /** The pages a rename touches: every page tag pointing at `id`, and wiki
  *  links through the old title only when `id` is where `[[old]]` resolves
- *  (the first page with that title). */
+ *  (the oldest page with that title). */
 function renameRecipients(id: string, oldTitle: string): { id: string; wiki: boolean }[] {
   const key = linkKey(oldTitle);
-  const holder = pages.filter(page => !page.deleted && page.note.title != null && linkKey(page.note.title!) === key)
-    .sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt) || a.note.id.localeCompare(b.note.id))[0];
-  const wiki = !!holder && holder.note.id === id;
+  const wiki = wikiHolder(key)?.note.id === id;
   return pages.filter(page => !page.deleted).flatMap(page => {
     const links = linksOf(page.history[page.history.length - 1]);
     const touched = links.some(link => (link.kind === "page" && link.target === id) || (wiki && link.kind === "wiki" && linkKey(link.target) === key));

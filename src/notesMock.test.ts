@@ -78,6 +78,16 @@ describe("mock notes", () => {
     expect(mockReadPage(first.id).note.title).toBe("Shared");
   });
 
+  it("sends a shared title's backlink to the oldest page only, untitled pages by first line", () => {
+    const oldest = mockCreatePage({ title: "Spec", content: "one" });
+    const newer = mockCreatePage({ title: "Spec", content: "two" });
+    const untitled = mockCreatePage({ content: "Roadmap\nlater" });
+    mockCreatePage({ content: "see [[Spec]] and [[roadmap]]" });
+    expect(mockReadPage(oldest.id).backlinks).toHaveLength(1);
+    expect(mockReadPage(newer.id).backlinks).toHaveLength(0);
+    expect(mockReadPage(untitled.id).backlinks).toHaveLength(1);
+  });
+
   it("merges a stale save with an agent write", () => {
     const note = mockCaptureNote("first line\n");
     const base = mockReadPage(note.id).seq;

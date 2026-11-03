@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../../connectorSurface";
-import { linkablePages, noteDisplayTitle, quoteText } from "../../notesDraft";
+import { linkablePages, noteDisplayTitle, plainPreview, quoteText } from "../../notesDraft";
 import { streamingStructure, streamingTasks, type StreamingStructure } from "../../notesPass";
 import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayload, Session, StructuredView, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
@@ -264,7 +264,8 @@ export function NotePageView(props: NotePageViewProps) {
             title: id => pageTitle?.(id),
             open: onOpenPage,
             openByTitle: onOpenByTitle,
-            pages: () => linkablePages(notes ?? []).map(candidate => ({ id: candidate.id, title: candidate.title!.trim() })),
+            // A blank page has no name to link by; every other one does.
+            pages: () => linkablePages(notes ?? []).filter(candidate => candidate.title?.trim() || plainPreview(candidate.preview)).map(candidate => ({ id: candidate.id, title: noteDisplayTitle(candidate) })),
           }}
           onCreatePage={async title => onCreatePage ? (await flush()) ? onCreatePage(title === null ? note.id : null, title) : null : null}
           onError={onError}

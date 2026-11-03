@@ -87,15 +87,17 @@ describe("plainPreview and quoteText", () => {
 });
 
 describe("wiki link targets", () => {
-  const note = (id: string, title: string | null, createdAt: string, kind: Note["kind"] = "page") => ({ id, title, createdAt, kind, preview: "first line" }) as Note;
-  const notes = [note("b", "Plans", "2026-02-01"), note("a", " plans ", "2026-01-01"), note("u", null, "2026-01-01"), note("t", "Plans", "2025-01-01", "task")];
+  const note = (id: string, title: string | null, createdAt: string, preview = "", kind: Note["kind"] = "page") => ({ id, title, createdAt, kind, preview }) as Note;
+  const notes = [note("b", "Plans", "2026-02-01"), note("a", " plans ", "2026-01-01"), note("u", null, "2025-06-01", "Roadmap\nnext"), note("t", "Errand", "2025-01-01", "", "task")];
 
-  it("offers titled pages only, one per title, the oldest holding it", () => {
-    expect(linkablePages(notes).map(item => item.id)).toEqual(["a"]);
+  it("offers one page per title, the oldest holding it, untitled ones by their first line", () => {
+    expect(linkablePages(notes).map(item => item.id)).toEqual(["a", "u", "t"]);
   });
 
   it("resolves a title the way the core does, case and spacing aside", () => {
     expect(pageTitled(notes, "PLANS")?.id).toBe("a");
-    expect(pageTitled(notes, "first line")).toBeUndefined();
+    expect(pageTitled(notes, "roadmap")?.id).toBe("u");
+    expect(pageTitled(notes, "Errand")?.id).toBe("t");
+    expect(pageTitled(notes, "nothing")).toBeUndefined();
   });
 });
