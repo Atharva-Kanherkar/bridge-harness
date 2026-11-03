@@ -202,3 +202,251 @@ fn packet_eval() {
     }
     assert!(failures.is_empty(), "packet eval gates failed:\n{}", failures.join("\n"));
 }
+
+// ---------------------------------------------------------------------------
+// Live evals. Real provider turns; ignored by default.
+
+const EXTRACTION_CASES: &str = include_str!("../../../testing/evals/memory-extraction/cases.json");
+
+#[derive(Deserialize)]
+struct ExtractionFile {
+    cases: Vec<ExtractionCase>,
+}
+
+#[derive(Deserialize)]
+struct ExtractionCase {
+    name: String,
+    #[serde(default)]
+    pins: Vec<String>,
+    messages: Vec<EvalMessage>,
+    expect: Vec<Expectation>,
+    forbid: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct EvalMessage {
+    role: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct Expectation {
+    all: Vec<String>,
+}
+
+fn eval_harness() -> String {
+    std::env::var("BRIDGE_MEMORY_EVAL_HARNESS").unwrap_or_else(|_| "claude".into())
+}
+
+fn eval_model() -> Option<String> {
+    std::env::var("BRIDGE_MEMORY_EVAL_MODEL").ok().filter(|model| !model.trim().is_empty())
+}
+
+fn eval_registry() -> std::sync::Arc<crate::adapters::AdapterRegistry> {
+    let registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::built_in().expect("adapters"));
+    // Discovery runs in the background; give it a moment, as the notes eval does.
+    std::thread::sleep(std::time::Duration::from_secs(8));
+    registry
+}
+
+/// The extraction prompt and digest, answered by a real hidden turn.
+struct LiveExtraction {
+    registry: std::sync::Arc<crate::adapters::AdapterRegistry>,
+    scratch: std::path::PathBuf,
+}
+
+impl crate::memory_extraction::ExtractionModel for LiveExtraction {
+    fn propose(&mut self, instructions: &str, digest: &str) -> Result<crate::memory_extraction::ExtractionOutput, crate::BridgeError> {
+        let generation = crate::title_jobs_live::one_hidden_turn(&self.registry, &self.scratch, &eval_harness(), eval_model().as_deref(), instructions, digest, None)
+            .map_err(crate::BridgeError::Invalid)?;
+        Ok(crate::memory_extraction::ExtractionOutput { text: generation.text, observed_tokens: generation.tokens, spend_microusd: generation.spend_microusd })
+    }
+}
+
+#[test]
+#[ignore = "runs real provider turns"]
+fn live_extraction() {
+    assert!(std::env::var_os("BRIDGE_MEMORY_EVAL").is_some(), "set BRIDGE_MEMORY_EVAL=1");
+    let cases = serde_json::from_str::<ExtractionFile>(EXTRACTION_CASES).expect("cases.json parses").cases;
+    let mut model = LiveExtraction { registry: eval_registry(), scratch: std::env::temp_dir().join("bridge-memory-eval") };
+    let (mut gold, mut found, mut proposals, mut correct, mut forbidden, mut spend) = (0usize, 0usize, 0usize, 0usize, 0usize, 0i64);
+    for case in &cases {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('eval',NULL,'claude','eval','idle','reported','direct')",
+            [],
+        )
+        .unwrap();
+        for pin in &case.pins {
+            crate::memory_ledger::save(&db, pin, None, None).unwrap();
+        }
+        for (index, message) in case.messages.iter().enumerate() {
+            let kind = if message.role == "user" { "user.message" } else { "assistant.message" };
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES(?1,'eval',NULL,?2,?3,json_object('text',?4),'now')",
+                params![format!("e{}", index + 1), index as i64 + 1, kind, message.text],
+            )
+            .unwrap();
+        }
+        let outcome = crate::memory_extraction::run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "eval");
+        let bodies: Vec<String> = db
+            .prepare("SELECT body FROM memory_records WHERE status='proposed'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|body| body.unwrap().to_lowercase())
+            .collect();
+        if let Ok((_, output, _)) = &outcome {
+            spend += output.spend_microusd;
+        }
+        let matched = case.expect.iter().filter(|expectation| bodies.iter().any(|body| expectation.all.iter().all(|term| body.contains(&term.to_lowercase())))).count();
+        let useful = bodies.iter().filter(|body| case.expect.iter().any(|expectation| expectation.all.iter().all(|term| body.contains(&term.to_lowercase())))).count();
+        let bad = bodies.iter().filter(|body| case.forbid.iter().any(|phrase| body.contains(&phrase.to_lowercase()))).count();
+        gold += case.expect.len();
+        found += matched;
+        proposals += bodies.len();
+        correct += useful;
+        forbidden += bad;
+        let verdict = if matched == case.expect.len() && bad == 0 && useful == bodies.len() { "PASS" } else { "MISS" };
+        println!("{verdict} {:<34} gold {matched}/{} proposals {} forbidden {bad} {}", case.name, case.expect.len(), bodies.len(), outcome.as_ref().err().map(|error| format!("error: {error}")).unwrap_or_default());
+        for body in &bodies {
+            println!("       - {body}");
+        }
+    }
+    let recall = if gold == 0 { 1.0 } else { found as f64 / gold as f64 };
+    let precision = if proposals == 0 { 1.0 } else { correct as f64 / proposals as f64 };
+    println!("recall {found}/{gold} ({:.0}%), precision {correct}/{proposals} ({:.0}%), forbidden {forbidden}, spend ${:.4}", recall * 100.0, precision * 100.0, spend as f64 / 1e6);
+    assert_eq!(forbidden, 0, "a forbidden proposal reached the review queue");
+}
+
+struct ToolsCase {
+    ask: &'static str,
+    /// A body fragment one agent proposal must contain, or None for "proposes nothing".
+    proposal: Option<&'static str>,
+    note: bool,
+    /// The tool whose call the case expects, by name fragment.
+    calls: Option<&'static str>,
+}
+
+fn tools_cases() -> Vec<ToolsCase> {
+    vec![
+        ToolsCase { ask: "From now on, never push directly to main. Keep that in mind in every future chat, not just this one.", proposal: Some("main"), note: false, calls: Some("memory_propose") },
+        ToolsCase { ask: "What is 17 times 23?", proposal: None, note: false, calls: None },
+        ToolsCase { ask: "Write up a short note titled 'Sync options' listing yjs and automerge.", proposal: None, note: true, calls: Some("notes_create") },
+        ToolsCase { ask: "Do you remember anything about how I like my commits written?", proposal: None, note: false, calls: Some("memory_search") },
+        ToolsCase { ask: "Lesson for every future security hunt: always check the upstream tracker before deep-diving a candidate. Make sure later chats know this.", proposal: Some("upstream"), note: false, calls: Some("memory_propose") },
+        ToolsCase { ask: "Thanks, CI is green now and the PR is merged.", proposal: None, note: false, calls: None },
+    ]
+}
+
+#[test]
+#[ignore = "runs real chats with tools"]
+fn live_tools() {
+    use crate::adapters::{ShutdownReason, StartRequest};
+    use std::io::BufRead;
+
+    assert!(std::env::var_os("BRIDGE_MEMORY_TOOLS_EVAL").is_some(), "set BRIDGE_MEMORY_TOOLS_EVAL=1");
+    assert!(
+        std::env::var_os(crate::mcp_apps::BIN_ENV).is_some(),
+        "point {} at a bridged built from this tree, or the chat gets an old tool list",
+        crate::mcp_apps::BIN_ENV
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+    {
+        let db = core.db.lock().unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/memory-eval','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/memory-eval/w','ready','now');",
+        )
+        .unwrap();
+        crate::memory_ledger::save(&db, "Uses Conventional Commits and never cites issue numbers in commit messages", Some("constraint"), None).unwrap();
+    }
+    crate::notes::tool::install(&core);
+    crate::notes::tool::serve_listener().expect("the chat-tools listener");
+    let registry = eval_registry();
+    let cwd = dir.path().join("cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let only: Option<usize> = std::env::var("BRIDGE_MEMORY_TOOLS_EVAL_ONLY").ok().and_then(|value| value.parse().ok());
+
+    let cases = tools_cases();
+    let mut passed = 0;
+    for (index, case) in cases.iter().enumerate() {
+        if only.is_some_and(|only| only != index) {
+            continue;
+        }
+        let session = format!("eval-chat-{index}");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES(?1,'w',?2,'eval','ready')", params![session, eval_harness()])
+            .unwrap();
+        let notes_before = core.notes.list(&Default::default()).unwrap().len();
+        let cwd_text = cwd.to_string_lossy().to_string();
+        let started = registry.start(
+            &eval_harness(),
+            StartRequest {
+                session_id: Some(&session),
+                cwd: &cwd_text,
+                model: eval_model().as_deref(),
+                effort: None,
+                instructions: None,
+                write_mode: Some(crate::delegation::WriteMode::Full),
+                read_only_sandbox: None,
+                briefing: None,
+                interactive: true,
+                account: None,
+                on_progress: None,
+            },
+        );
+        let Ok(started) = started else {
+            println!("FAIL {index} could not start a chat");
+            continue;
+        };
+        let mut runtime = started.runtime;
+        runtime.send_turn(case.ask).unwrap();
+        let mut tools: Vec<String> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+        let mut lines = started.reader.lines();
+        while std::time::Instant::now() < deadline {
+            let Some(Ok(line)) = lines.next() else { break };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let mut done = false;
+            for event in registry.normalize(&eval_harness(), &value) {
+                if event.kind == "tool.started" {
+                    tools.push(event.title.clone().unwrap_or_default());
+                }
+                if event.kind == "turn.completed" || event.kind == "turn.failed" {
+                    done = true;
+                }
+            }
+            if done {
+                break;
+            }
+        }
+        runtime.stop(ShutdownReason::Completed);
+
+        let proposals: Vec<String> = {
+            let db = core.db.lock().unwrap();
+            let mut statement = db
+                .prepare("SELECT lower(body) FROM memory_records WHERE provenance='agent_proposal' AND source_session_id=?1")
+                .unwrap();
+            let rows = statement.query_map(params![session], |row| row.get::<_, String>(0)).unwrap();
+            rows.map(Result::unwrap).collect()
+        };
+        let notes_made = core.notes.list(&Default::default()).unwrap().len() > notes_before;
+        let proposal_ok = match case.proposal {
+            Some(fragment) => proposals.len() == 1 && proposals[0].contains(fragment),
+            None => proposals.is_empty(),
+        };
+        let calls_ok = case.calls.is_none_or(|name| tools.iter().any(|tool| tool.contains(name)));
+        let ok = proposal_ok && notes_made == case.note && calls_ok;
+        passed += usize::from(ok);
+        println!("{} {index} {:?}\n      tools {tools:?}\n      proposals {proposals:?} note {notes_made}", if ok { "PASS" } else { "FAIL" }, case.ask);
+    }
+    let total = if only.is_some() { 1 } else { cases.len() };
+    println!("memory tools: {passed}/{total}");
+    assert_eq!(passed, total);
+}
