@@ -262,6 +262,20 @@ describe("pages under pages", () => {
     expect(rowTitles().some(title => title.includes("Orphaned research"))).toBe(true);
   });
 
+  it("opens the tree down to a nested page when it is opened", async () => {
+    await render();
+    const parentId = mockIdOf(ONBOARDING);
+    const child = mockCreatePage({ title: "Deep research", content: "kept", parentId });
+    await settle(60);
+    expect(rowTitles().some(title => title.includes("Deep research"))).toBe(false);
+    await openNote(ONBOARDING);
+    const pages = host.querySelector("section[aria-label='Pages']")!;
+    await click(buttons(pages).find(node => node.textContent?.startsWith("Deep research")));
+    await settle(60);
+    expect(mockReadPage(child.id).note.parentId).toBe(parentId);
+    expect(rowTitles().some(title => title.includes("Deep research"))).toBe(true);
+  });
+
   it("moves and promotes pages, listing neither itself nor its descendants", async () => {
     await render();
     const onboardId = mockIdOf(ONBOARDING);
@@ -280,9 +294,9 @@ describe("pages under pages", () => {
     await click([...picker.querySelectorAll("button")].find(node => node.textContent?.trim() === "Holding page"));
     await settle(60);
     expect(mockReadPage(onboardId).note).toMatchObject({ parentId: mockIdOf("Holding page"), state: "open" });
-    // It now sits under its parent, one expansion away.
-    await click(button(`Expand the pages under Holding page`));
+    // It now sits under its parent, opened down to it while it is open.
     expect(rowTitles().some(label => label.startsWith(ONBOARDING))).toBe(true);
+    expect(button("Expand the pages under Holding page")?.getAttribute("aria-expanded")).toBe("true");
 
     // Promote an inbox capture to a page.
     const capture = await bridgeApi.captureNote("inbox thought");
@@ -782,6 +796,17 @@ describe("links between pages", () => {
     await settle(60);
     expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Onboarding");
     expect(mockListNotes({ includeArchived: true }).notes.filter(note => note.title === "Onboarding")).toHaveLength(1);
+  });
+
+  it("makes an unresolved wiki link's page once, however fast it is clicked", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    await write(`${shown()}\n\nLater: [[Twice clicked]].\n`);
+    await settle(300);
+    const pill = host.querySelector<HTMLButtonElement>("button[aria-label='Open the page Twice clicked']")!;
+    await act(async () => { pill.click(); pill.click(); });
+    await settle(120);
+    expect(mockListNotes({ includeArchived: true }).notes.filter(note => note.title === "Twice clicked")).toHaveLength(1);
   });
 
   it("opens an unresolved wiki link by making the page", async () => {

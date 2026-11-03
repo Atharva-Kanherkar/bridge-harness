@@ -88,12 +88,14 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   }), []);
   const [listOpen, setListOpen] = useState(readListOpen);
   const [expandedPages, setExpandedPages] = useState<Set<string>>(readExpanded);
-  const toggleExpand = useCallback((id: string) => setExpandedPages(current => {
+  const changeExpanded = useCallback((change: (next: Set<string>) => void) => setExpandedPages(current => {
     const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
+    change(next);
+    if (next.size === current.size && [...next].every(id => current.has(id))) return current;
     try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch { /* storage off */ }
     return next;
   }), []);
+  const toggleExpand = useCallback((id: string) => changeExpanded(next => { if (next.has(id)) next.delete(id); else next.add(id); }), [changeExpanded]);
   const toggleList = useCallback(() => setListOpen(current => {
     try { localStorage.setItem(LIST_OPEN_KEY, current ? "0" : "1"); } catch { /* storage off */ }
     return !current;
@@ -215,19 +217,30 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   };
   // The `/` menu's Page: made under its parent, left closed. A [[ menu makes
   // a page named so at the top level instead.
-  const createPageFor = useCallback(async (parentId: string | null, title: string | null) => {
-    try {
-      const note = await bridgeApi.createNotePage({ title, content: "", ...(parentId ? { parentId } : {}) });
-      await refreshList();
-      return { id: note.id, title: noteDisplayTitle(note) };
-    } catch (error) { fail(error); return null; }
+  // A titled page being made is shared until the list knows it, so a second
+  // click on the same link cannot make it twice.
+  const making = useRef(new Map<string, Promise<{ id: string; title: string } | null>>());
+  const createPageFor = useCallback((parentId: string | null, title: string | null) => {
+    const key = title === null ? null : `${parentId ?? ""}\n${title.trim().toLowerCase()}`;
+    const pending = key === null ? undefined : making.current.get(key);
+    if (pending) return pending;
+    const made = (async () => {
+      try {
+        const note = await bridgeApi.createNotePage({ title, content: "", ...(parentId ? { parentId } : {}) });
+        await refreshList();
+        return { id: note.id, title: noteDisplayTitle(note) };
+      } catch (error) { fail(error); return null; } finally { if (key !== null) making.current.delete(key); }
+    })();
+    if (key !== null) making.current.set(key, made);
+    return made;
   }, [fail, refreshList]);
 
   const notes = list?.notes ?? [];
   const allNotes = everyNote ?? notes;
   const byId = useMemo(() => new Map(allNotes.map(note => [note.id, note])), [allNotes]);
   // A [[ link opens the page titled so, making it first when none is there.
-  // Like the core: by the stored title, case and spacing aside, oldest first.
+  // Like the core: by the title a list shows, case and spacing aside, oldest
+  // first.
   const openByTitle = useCallback((title: string) => {
     const found = pageTitled(allNotes, title);
     if (found) { void open(found.id); return; }
@@ -291,6 +304,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     }
     return chain;
   }, [page, byId]);
+  // Opening a nested page opens the tree down to its row.
+  const ancestorIds = ancestors.map(ancestor => ancestor.id).join(" ");
+  useEffect(() => {
+    if (ancestorIds) changeExpanded(next => { for (const id of ancestorIds.split(" ")) next.add(id); });
+  }, [ancestorIds, changeExpanded]);
 
   return <div className="flex h-full min-h-0 bg-background">
     <aside aria-label="Notes list" className={clsx("min-h-0 w-full shrink-0 flex-col border-r border-border md:w-[18.5rem]", selectedId ? "hidden" : "flex", listOpen ? "md:flex" : "md:hidden")}>
