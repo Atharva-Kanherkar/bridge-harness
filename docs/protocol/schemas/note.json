@@ -14,7 +14,7 @@
       "type": "string"
     },
     "kind": {
-      "description": "`note`, `idea`, `task`, or `question`.",
+      "description": "`note`, `idea`, `task`, `question`, or `database`.",
       "type": "string"
     },
     "lastActor": {

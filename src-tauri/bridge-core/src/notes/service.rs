@@ -12,17 +12,24 @@ use std::sync::{Arc, Mutex};
 use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NoteHistory, NotePage, NotePageChanged, NotePassProgress, NoteTextEdit, NoteVersion, NoteVersionPage, NotesSettings, StructuredView};
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::doc::{self, key, PageDoc, PropsPatch};
+use super::doc::{self, key, OptionDef, PageDoc, PropertyDef, PropertyType, PropsPatch, RecordsPatch, ViewDef};
 use super::ids::{new_id, Hlc};
-use super::{assets, jobs, links, projector, store};
+use super::{assets, database, jobs, links, projector, store};
 use crate::BridgeError;
 
+/// Kinds a model pass may pick for a page it wrote.
 pub const KINDS: [&str; 4] = ["note", "idea", "task", "question"];
+/// Kinds a page may hold. `database` is person-only: a model pass never
+/// chooses it.
+pub const PAGE_KINDS: [&str; 5] = ["note", "idea", "task", "question", "database"];
 pub const STATES: [&str; 5] = ["inbox", "open", "doing", "done", "archived"];
 pub const PERSON: &str = "person";
 pub const FILE_IMPORT: &str = "file-import";
+/// The actor that owns the system database. Never a person or an agent.
+pub const SYSTEM: &str = "system";
 const PREVIEW_CHARS: usize = 280;
 
 /// Called after every committed change.
@@ -88,6 +95,8 @@ pub struct CreatePage {
     pub source_id: Option<String>,
     pub source_excerpt: Option<String>,
     pub state: Option<String>,
+    /// A database's scope: `children` (the default) or `space`.
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -123,6 +132,77 @@ pub struct ListFilter {
     pub parent_id: Option<String>,
     pub include_archived: bool,
     pub limit: Option<usize>,
+}
+
+/// One option, as a person adds it.
+#[derive(Debug, Clone, Default)]
+pub struct NewOption {
+    pub name: String,
+    pub color: Option<String>,
+    /// `status` only.
+    pub group: Option<String>,
+}
+
+/// A property to add to a database.
+#[derive(Debug, Clone, Default)]
+pub struct NewProperty {
+    pub name: String,
+    pub kind: String,
+    pub options: Vec<NewOption>,
+    pub relation: Option<String>,
+    pub date_format: Option<String>,
+}
+
+/// One change to a database's schema.
+#[derive(Debug, Clone)]
+pub enum SchemaOp {
+    Add(NewProperty),
+    Rename { prop: String, name: String },
+    Delete { prop: String },
+    /// Converts every row's value where it can; anything else is cleared.
+    Retype { prop: String, to: String },
+    AddOption { prop: String, name: String, color: Option<String>, group: Option<String> },
+    RenameOption { prop: String, option: String, name: String },
+    DeleteOption { prop: String, option: String },
+}
+
+/// What a schema write did.
+#[derive(Debug, Clone, Default)]
+pub struct SchemaUpdated {
+    /// Properties this call added, as (id, name), in the order they were added.
+    pub added: Vec<(String, String)>,
+    pub warnings: Vec<String>,
+}
+
+fn no_property(prop: &str) -> BridgeError {
+    invalid(format!("no property with id {prop}"))
+}
+
+fn new_options(kind: PropertyType, options: &[NewOption]) -> Result<Vec<OptionDef>, BridgeError> {
+    if !options.is_empty() && !kind.options() {
+        return Err(invalid(format!("{} properties do not take options", kind.as_str())));
+    }
+    let mut def = PropertyDef { name: "property".into(), kind, order: 0, options: Vec::new(), relation: None, date_format: None };
+    for option in options {
+        let name = database::check_option_name(&def, &option.name, None)?;
+        let group = option_group(kind, &option.group)?;
+        def.options.push(OptionDef { id: new_id(), name, color: option.color.clone(), group });
+    }
+    Ok(def.options)
+}
+
+fn option_group(kind: PropertyType, group: &Option<String>) -> Result<Option<String>, BridgeError> {
+    match (kind, group.as_deref()) {
+        (PropertyType::Status, Some(group)) => {
+            if !database::STATUS_GROUPS.contains(&group) {
+                return Err(invalid(format!("a status group must be one of {}", database::STATUS_GROUPS.join(", "))));
+            }
+            Ok(Some(group.to_owned()))
+        }
+        (PropertyType::Status, None) => Ok(Some("todo".to_owned())),
+        (_, Some(_)) => Err(invalid("only a status option has a group")),
+        (_, None) => Ok(None),
+    }
 }
 
 pub struct NotesService {
@@ -180,6 +260,11 @@ impl NotesService {
         // commit and projection) get their files now.
         if let Err(error) = projector::reconcile(&service) {
             eprintln!("[notes] could not mirror pending pages: {error}");
+        }
+        // Every space gets one system database, the page whose views are the
+        // Notes list's tabs. Idempotent: a reopened store finds it already.
+        if let Err(error) = service.ensure_system_database() {
+            eprintln!("[notes] could not create the system database: {error}");
         }
         Ok(service)
     }
@@ -348,8 +433,20 @@ impl NotesService {
         let id = new_id();
         let body = page.content.unwrap_or_default();
         let space = self.space.clone();
+        let scope = page.scope.clone().unwrap_or_else(|| "children".to_owned());
+        if kind == "database" && !database::SCOPES.contains(&scope.as_str()) {
+            return Err(invalid(format!("scope must be one of {}", database::SCOPES.join(", "))));
+        }
+        let views = if kind == "database" { database::default_views() } else { Vec::new() };
         let (note, _, _) = self.write_with(&id, actor, |db, doc, _| {
-            if let Some(parent) = &page.parent_id { validate_parent(db, &space, &id, parent)?; }
+            if let Some(parent) = &page.parent_id {
+                validate_parent(db, &space, &id, parent)?;
+                // A row holds values from its database's schema, so a database
+                // page cannot also be one.
+                if kind == "database" && database::read(db, parent)?.is_some() {
+                    return Err(invalid("a database cannot be a row of another database"));
+                }
+            }
             let patch = PropsPatch::default()
                 .set(key::SPACE, space)
                 .maybe(key::TITLE, title)
@@ -362,7 +459,15 @@ impl NotesService {
                 .maybe(key::EXCERPT, page.source_excerpt)
                 .set(key::CREATED_BY, actor)
                 .set(key::CREATED_AT, now());
-            doc.edit(Some(&body), &patch)
+            if views.is_empty() {
+                doc.edit(Some(&body), &patch)
+            } else {
+                let mut records = RecordsPatch::default().scope(&scope);
+                for (view_id, view) in &views {
+                    records = records.put_view(view_id, view);
+                }
+                doc.edit_page(Some(&body), &patch, &records)
+            }
         })?;
         Ok(note)
     }
@@ -434,6 +539,20 @@ impl NotesService {
         self.check_live(&update.id)?;
         if let Some(kind) = &update.kind {
             check_kind(kind)?;
+            // A database's schema and views live in a doc that only a
+            // database page reads, so the kind changes in creation alone.
+            if kind == "database" {
+                return Err(invalid("a page is created as a database; it cannot become one later"));
+            }
+            let is_database: bool = self.with_db(|db| {
+                Ok(db
+                    .query_row("SELECT kind='database' FROM pages WHERE id=?1", params![update.id], |row| row.get(0))
+                    .optional()?
+                    .unwrap_or(false))
+            })?;
+            if is_database {
+                return Err(invalid("a database keeps its kind"));
+            }
         }
         if let Some(state) = &update.state {
             check_state(state)?;
@@ -520,6 +639,372 @@ impl NotesService {
         Ok(note)
     }
 
+    /// A database's scope, schema and views, or an error when `id` is not a
+    /// database page.
+    pub fn database(&self, id: &str) -> Result<database::DatabaseDoc, BridgeError> {
+        self.with_db(|db| database::read(db, id))?.ok_or_else(|| invalid("this page is not a database"))
+    }
+
+    /// The space's system database: the page whose saved views are the Notes
+    /// list's tabs.
+    pub fn system_database(&self) -> Result<String, BridgeError> {
+        let id: Option<Option<String>> = self.with_db(|db| {
+            Ok(db
+                .query_row("SELECT system_database_id FROM spaces WHERE id=?1", params![self.space], |row| row.get::<_, Option<String>>(0))
+                .optional()?)
+        })?;
+        id.flatten().ok_or_else(|| invalid("this space has no system database"))
+    }
+
+    /// One system database per space, created on open and never twice.
+    fn ensure_system_database(&self) -> Result<(), BridgeError> {
+        let spaces: Vec<(String, Option<String>)> = self.with_db(|db| {
+            let mut statement = db.prepare("SELECT id, system_database_id FROM spaces")?;
+            let rows: Vec<(String, Option<String>)> = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+            Ok(rows)
+        })?;
+        for (space, existing) in spaces {
+            let live = match &existing {
+                Some(id) => self.with_db(|db| {
+                    Ok(db.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND kind='database' AND deleted_at IS NULL)",
+                        params![id],
+                        |row| row.get::<_, bool>(0),
+                    )?)
+                })?,
+                None => false,
+            };
+            if live {
+                continue;
+            }
+            // A crash between creating the page and recording it leaves an
+            // unclaimed system database behind; adopt it instead of growing a
+            // second.
+            let orphan: Option<String> = self.with_db(|db| {
+                Ok(db
+                    .query_row(
+                        "SELECT id FROM pages
+                         WHERE space_id=?1 AND kind='database' AND created_by=?2 AND deleted_at IS NULL
+                           AND id NOT IN (SELECT system_database_id FROM spaces WHERE system_database_id IS NOT NULL)
+                         ORDER BY created_at, id LIMIT 1",
+                        params![space, SYSTEM],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?)
+            })?;
+            let (id, created) = match orphan {
+                Some(orphan) => (orphan, false),
+                None => (self.create_system_database(&space)?, true),
+            };
+            // Claim the space only if nobody else opened the same file first;
+            // a loser drops the database it made so a space keeps exactly one.
+            let claimed = self.with_db(|db| {
+                Ok(db.execute(
+                    "UPDATE spaces SET system_database_id=?2 WHERE id=?1 AND (system_database_id IS NULL OR system_database_id=?3)",
+                    params![space, id, existing],
+                )?)
+            })?;
+            if claimed == 0 && created {
+                self.write(&id, SYSTEM, |live| live.set_props(&PropsPatch::default().set(key::DELETED_AT, now())))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn create_system_database(&self, space: &str) -> Result<String, BridgeError> {
+        let id = new_id();
+        let mut records = RecordsPatch::default().scope("space");
+        for (view_id, view) in database::default_views() {
+            records = records.put_view(&view_id, &view);
+        }
+        let patch = PropsPatch::default()
+            .set(key::SPACE, space.to_owned())
+            .set(key::TITLE, "Notes")
+            .set(key::KIND, "database")
+            .set(key::STATE, "open")
+            .set(key::CREATED_BY, SYSTEM)
+            .set(key::CREATED_AT, now());
+        self.write_with(&id, SYSTEM, |_, live, _| live.edit_page(None, &patch, &records))?;
+        Ok(id)
+    }
+
+    /// Set, or clear with `None`, one or more of a row's property values.
+    ///
+    /// The database is read inside the write's transaction, so a patch is
+    /// validated against the schema as it stands at commit time, and a refused
+    /// patch writes nothing.
+    pub fn set_values(&self, id: &str, patch: &[(String, Option<Value>)], actor: &str) -> Result<Note, BridgeError> {
+        self.check_live(id)?;
+        if patch.is_empty() {
+            return Err(invalid("no values to set"));
+        }
+        let (note, _, _) = self.write_with(id, actor, |db, live, _| {
+            let props = live.props();
+            if props.deleted_at.is_some() {
+                return Err(invalid("note not found"));
+            }
+            if props.kind.as_deref() == Some("database") {
+                return Err(invalid("a database has properties, not values"));
+            }
+            let parent = props.parent_id.clone().ok_or_else(|| invalid("only a row of a database has values"))?;
+            let database = database::read(db, &parent)?.ok_or_else(|| invalid("only a row of a database has values"))?;
+            let mut records = RecordsPatch::default();
+            for (prop_id, value) in patch {
+                let def = database
+                    .schema
+                    .get(prop_id)
+                    .ok_or_else(|| invalid(format!("no property with id {prop_id}; this database has {}", database.property_names())))?;
+                match value {
+                    Some(value) => {
+                        database::validate_value(def, value)?;
+                        records = records.put_value(prop_id, Some(value));
+                    }
+                    None => records = records.put_value(prop_id, None),
+                }
+            }
+            live.edit_records(&records)
+        })?;
+        Ok(note)
+    }
+
+    /// Change a database's schema. Retyping and deleting an option rewrite the
+    /// affected rows' values as attributed writes, so history can undo them.
+    pub fn update_schema(&self, id: &str, ops: &[SchemaOp], actor: &str) -> Result<SchemaUpdated, BridgeError> {
+        self.check_live(id)?;
+        if ops.is_empty() {
+            return Err(invalid("no schema changes"));
+        }
+        let before = self.database(id)?;
+        let mut schema = before.schema.clone();
+        let mut updated = SchemaUpdated::default();
+        let mut retired: Vec<String> = Vec::new();
+        let mut retypes: Vec<(String, String, PropertyDef, PropertyDef, Value)> = Vec::new();
+        let mut dropped: Vec<(String, String)> = Vec::new();
+        // A schema edit that changes how values render leaves every row's file
+        // stale without touching its doc, so those rows are rewritten.
+        let mut rewrite = false;
+
+        for op in ops {
+            match op {
+                SchemaOp::Add(new) => {
+                    let kind = PropertyType::parse(&new.kind)
+                        .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
+                    let name = database::check_name(&schema, &new.name, None)?;
+                    let options = new_options(kind, &new.options)?;
+                    let relation = match &new.relation {
+                        Some(target) if kind == PropertyType::Relation => {
+                            if self.with_db(|db| database::read(db, target))?.is_none() {
+                                return Err(invalid(format!("no database with id {target}")));
+                            }
+                            Some(doc::RelationDef { database_id: target.clone() })
+                        }
+                        Some(_) => return Err(invalid("only a relation names another database")),
+                        None if kind == PropertyType::Relation => return Err(invalid("a relation needs the database it points at")),
+                        None => None,
+                    };
+                    if let Some(format) = &new.date_format {
+                        if kind != PropertyType::Date || !matches!(format.as_str(), "date" | "datetime") {
+                            return Err(invalid("dateFormat is date or datetime, on a date property"));
+                        }
+                    }
+                    let order = schema.values().map(|def| def.order).max().map(|order| order + 1).unwrap_or(0);
+                    let def = PropertyDef { name: name.clone(), kind, order, options, relation, date_format: new.date_format.clone() };
+                    let prop = new_id();
+                    schema.insert(prop.clone(), def);
+                    updated.added.push((prop, name));
+                }
+                SchemaOp::Rename { prop, name } => {
+                    let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                    let name = database::check_name(&schema, name, Some(prop))?;
+                    if old.name != name {
+                        retired.push(old.name.clone());
+                        rewrite = true;
+                        schema.insert(prop.clone(), PropertyDef { name, ..old });
+                    }
+                }
+                SchemaOp::Delete { prop } => {
+                    let old = schema.remove(prop).ok_or_else(|| no_property(prop))?;
+                    retired.push(old.name);
+                    rewrite = true;
+                }
+                SchemaOp::Retype { prop, to } => {
+                    let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                    let kind = PropertyType::parse(to)
+                        .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
+                    if kind == old.kind {
+                        updated.warnings.push(format!("{} is already {}", old.name, kind.as_str()));
+                        continue;
+                    }
+                    if kind == PropertyType::Relation {
+                        return Err(invalid("a relation needs the database it points at; add one instead of retyping"));
+                    }
+                    let mut next = PropertyDef { kind, ..old.clone() };
+                    // The fields that belong to one type do not carry over.
+                    next.relation = None;
+                    next.date_format = if kind == PropertyType::Date { old.date_format.clone() } else { None };
+                    if kind == PropertyType::Status {
+                        for option in &mut next.options {
+                            option.group.get_or_insert_with(|| "todo".to_owned());
+                        }
+                    } else {
+                        for option in &mut next.options {
+                            option.group = None;
+                        }
+                    }
+                    // Every row's current value, so a text -> select retype can
+                    // create all its options before any row is written.
+                    let values = self.row_values(id, prop)?;
+                    for (_, value) in &values {
+                        database::convert(&old, &mut next, value);
+                    }
+                    for (row, value) in values {
+                        retypes.push((row, prop.clone(), old.clone(), next.clone(), value));
+                    }
+                    schema.insert(prop.clone(), next);
+                }
+                SchemaOp::AddOption { prop, name, color, group } => {
+                    let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                    if !def.kind.options() {
+                        return Err(invalid(format!("{} does not have options", def.name)));
+                    }
+                    let name = database::check_option_name(&def, name, None)?;
+                    let group = option_group(def.kind, group)?;
+                    def.options.push(OptionDef { id: new_id(), name, color: color.clone(), group });
+                    schema.insert(prop.clone(), def);
+                }
+                SchemaOp::RenameOption { prop, option, name } => {
+                    let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                    let name = database::check_option_name(&def, name, Some(option))?;
+                    let existing = def.options.iter_mut().find(|entry| &entry.id == option).ok_or_else(|| invalid(format!("{} has no option {option}", def.name)))?;
+                    if existing.name != name {
+                        existing.name = name;
+                        rewrite = true;
+                    }
+                    schema.insert(prop.clone(), def);
+                }
+                SchemaOp::DeleteOption { prop, option } => {
+                    let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                    let position = def.options.iter().position(|entry| &entry.id == option).ok_or_else(|| invalid(format!("{} has no option {option}", def.name)))?;
+                    def.options.remove(position);
+                    dropped.push((prop.clone(), option.clone()));
+                    schema.insert(prop.clone(), def);
+                }
+            }
+        }
+
+        let mut records = RecordsPatch::default();
+        for (prop, def) in &schema {
+            if before.schema.get(prop) != Some(def) {
+                records = records.put_schema(prop, def);
+            }
+        }
+        for prop in before.schema.keys().filter(|prop| !schema.contains_key(*prop)) {
+            records = records.remove_schema(prop);
+        }
+        if records.schema.is_empty() {
+            return Ok(updated);
+        }
+        self.write(id, actor, |live| live.edit_records(&records))?;
+
+        // Values follow the schema in separate attributed writes, one per row.
+        for (row, prop, old, next, value) in retypes {
+            self.convert_row(&row, &prop, &old, &next, &value, actor)?;
+        }
+        for (prop, option) in dropped {
+            self.drop_option(id, &prop, &option, actor)?;
+        }
+        self.with_db(|db| database::reindex_database(db, id))?;
+        if rewrite {
+            for row in self.with_db(|db| database::row_ids(db, id))? {
+                self.project_with(&row, &retired, true)?;
+            }
+        }
+        Ok(updated)
+    }
+
+    /// A property's value on every row, with the row id.
+    fn row_values(&self, database_id: &str, prop: &str) -> Result<Vec<(String, Value)>, BridgeError> {
+        self.with_db(|db| {
+            let mut out = Vec::new();
+            for row in database::row_ids(db, database_id)? {
+                if let Some(value) = doc::load_page(db, &row, None)?.0.values().remove(prop) {
+                    out.push((row, value));
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// One row's converted value, written only when it changed since the scan.
+    fn convert_row(&self, row: &str, prop: &str, old: &PropertyDef, next: &PropertyDef, value: &Value, actor: &str) -> Result<(), BridgeError> {
+        let mut scratch = next.clone();
+        let converted = database::convert(old, &mut scratch, value);
+        if converted.as_ref() == Some(value) {
+            return Ok(());
+        }
+        let converted = converted.filter(|converted| database::validate_value(next, converted).is_ok());
+        self.write(row, actor, |live| {
+            if live.values().get(prop) != Some(value) {
+                return Ok(None);
+            }
+            live.edit_records(&RecordsPatch::default().put_value(prop, converted.as_ref()))
+        })?;
+        Ok(())
+    }
+
+    /// Remove a deleted option from every row that used it, one attributed
+    /// write per row.
+    fn drop_option(&self, database_id: &str, prop: &str, option: &str, actor: &str) -> Result<(), BridgeError> {
+        for (row, value) in self.row_values(database_id, prop)? {
+            let next = match &value {
+                Value::String(id) if id == option => None,
+                Value::Array(items) => {
+                    let kept: Vec<Value> = items.iter().filter(|item| item.as_str() != Some(option)).cloned().collect();
+                    (!kept.is_empty()).then_some(Value::Array(kept))
+                }
+                _ => continue,
+            };
+            self.write(&row, actor, |live| {
+                if live.values().get(prop) != Some(&value) {
+                    return Ok(None);
+                }
+                live.edit_records(&RecordsPatch::default().put_value(prop, next.as_ref()))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Save one view of a database, replacing it when `view_id` names one.
+    pub fn put_view(&self, id: &str, view_id: Option<&str>, view: ViewDef, actor: &str) -> Result<String, BridgeError> {
+        self.check_live(id)?;
+        let database = self.database(id)?;
+        let view_id = view_id.map(str::to_owned).unwrap_or_else(new_id);
+        let mut view = view;
+        view.name = view.name.trim().to_owned();
+        if view.name.is_empty() {
+            return Err(invalid("a view needs a name"));
+        }
+        for property in view.sorts.iter().map(|sort| &sort.property).chain(view.group_by.iter().map(|group| &group.property)).chain(view.date_property.iter()).chain(view.properties.iter().map(|property| &property.id)) {
+            if !database.schema.contains_key(property) && !database::SYSTEM_PROPERTIES.contains(&property.as_str()) && !database::FILTER_ONLY_PROPERTIES.contains(&property.as_str()) {
+                return Err(no_property(property));
+            }
+        }
+        if let Some(sort) = view.sorts.iter().find(|sort| !matches!(sort.direction.as_str(), "asc" | "desc")) {
+            return Err(invalid(format!("a sort direction is asc or desc, not {}", sort.direction)));
+        }
+        self.write(id, actor, |live| live.edit_records(&RecordsPatch::default().put_view(&view_id, &view)))?;
+        Ok(view_id)
+    }
+
+    pub fn delete_view(&self, id: &str, view_id: &str, actor: &str) -> Result<(), BridgeError> {
+        self.check_live(id)?;
+        if !self.database(id)?.views.contains_key(view_id) {
+            return Err(invalid("no such view"));
+        }
+        self.write(id, actor, |live| live.edit_records(&RecordsPatch::default().remove_view(view_id)))?;
+        Ok(())
+    }
+
     /// Tombstone a page and its tasks.
     pub fn delete(&self, id: &str, actor: &str) -> Result<(), BridgeError> {
         self.check_live(id)?;
@@ -592,6 +1077,9 @@ impl NotesService {
             if !filter.include_archived && filter.state.as_deref() != Some("archived") {
                 sql.push_str(" AND state<>'archived'");
             }
+            // The system database is a page like any other, but the Notes list
+            // shows its views instead of it.
+            sql.push_str(" AND id NOT IN (SELECT system_database_id FROM spaces WHERE system_database_id IS NOT NULL)");
             if let Some(query) = query.filter(|_| fts.is_none()) {
                 let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
                 bind(&mut sql, " AND (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')", pattern);
@@ -658,6 +1146,18 @@ impl NotesService {
         };
         for space in spaces {
             links::resolve_space(&transaction, &space)?;
+        }
+        // The values index is rebuilt only once every page exists, so a row
+        // finds its database's schema whatever order the log replays in.
+        transaction.execute("DELETE FROM database_props", [])?;
+        transaction.execute("DELETE FROM page_values", [])?;
+        let databases: Vec<String> = {
+            let mut statement = transaction.prepare("SELECT id FROM pages WHERE kind='database'")?;
+            let ids: Vec<String> = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            ids
+        };
+        for database in databases {
+            database::reindex_database(&transaction, &database)?;
         }
         transaction.commit()?;
         Ok(pages.len())
@@ -733,6 +1233,12 @@ impl NotesService {
     /// earlier snapshot can never overwrite a later one or mistake Bridge's
     /// own previous write for an outside edit.
     pub(crate) fn project(&self, page_id: &str) -> Result<Option<Note>, BridgeError> {
+        self.project_with(page_id, &[], false)
+    }
+
+    /// Mirror a page, rewriting it even when its doc has not changed (`force`),
+    /// and dropping any frontmatter line whose key a rename retired.
+    pub(crate) fn project_with(&self, page_id: &str, retired: &[String], force: bool) -> Result<Option<Note>, BridgeError> {
         let _projection = self.projection_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let row = self.with_db(|db| {
             Ok(db
@@ -748,10 +1254,23 @@ impl NotesService {
                 .optional()?)
         })?;
         let Some((note, deleted, body, hash, projected)) = row else { return Ok(None) };
-        if projected.is_some_and(|projected| projected >= note.seq) {
+        // A rename or a deleted column changes the file without changing the
+        // page, so those projections are never skipped.
+        if !force && retired.is_empty() && projected.is_some_and(|projected| projected >= note.seq) {
             return Ok(Some(note));
         }
-        let input = projector::MirrorInput { note: &note, body: &body, deleted, previous_path: note.path.as_deref(), previous_hash: hash.as_deref() };
+        let records = self.page_records(&note)?;
+        let input = projector::MirrorInput {
+            note: &note,
+            body: &body,
+            deleted,
+            previous_path: note.path.as_deref(),
+            previous_hash: hash.as_deref(),
+            database: records.database.as_deref(),
+            properties: &records.properties,
+            owned: &records.owned,
+            retired,
+        };
         let root = self.root();
         let Some(mirrored) = projector::mirror(&root, &input) else {
             return Ok(Some(note));
@@ -769,10 +1288,37 @@ impl NotesService {
         Ok(Some(Note { path: mirrored.path, ..note }))
     }
 
+    /// The frontmatter a page's file carries beyond the known keys: a database's
+    /// `{scope, schema, views}` JSON, or a row's values by property name.
+    fn page_records(&self, note: &Note) -> Result<MirroredRecords, BridgeError> {
+        self.with_db(|db| {
+            let live = doc::load_page(db, &note.id, None)?.0;
+            if note.kind == "database" {
+                let value = serde_json::json!({
+                    "scope": live.scope().unwrap_or_else(|| "children".to_owned()),
+                    "schema": live.schema(),
+                    "views": live.views(),
+                });
+                return Ok(MirroredRecords { database: Some(serde_json::to_string(&value).unwrap_or_default()), ..Default::default() });
+            }
+            let Some(parent) = note.parent_id.as_deref() else { return Ok(MirroredRecords::default()) };
+            let Some(database) = database::read(db, parent)? else { return Ok(MirroredRecords::default()) };
+            let values = live.values();
+            let mut records = MirroredRecords::default();
+            for (prop, def) in database.ordered() {
+                records.owned.push(def.name.clone());
+                let Some(value) = values.get(prop) else { continue };
+                if let Some(text) = database::render_value(db, &note.space_id, def, value) {
+                    records.properties.push((def.name.clone(), text));
+                }
+            }
+            Ok(records)
+        })
+    }
+
     /// Announce a change made beside the page rather than to it (a stored
     /// structured view), at the page's current sequence.
-    pub fn announce(&self, page_id: &str, actor: &str) -> Result<(), BridgeError> {
-        let seq: i64 = self.with_db(|db| Ok(db.query_row("SELECT seq FROM pages WHERE id=?1", params![page_id], |row| row.get(0))?))?;
+    pub fn announce(&self, page_id: &str, actor: &str) -> Result<(), BridgeError> {        let seq: i64 = self.with_db(|db| Ok(db.query_row("SELECT seq FROM pages WHERE id=?1", params![page_id], |row| row.get(0))?))?;
         let listener = self.listener.lock().unwrap().clone();
         if let Some(listener) = listener {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
@@ -793,6 +1339,17 @@ impl NotesService {
 
 pub(crate) const NOTE_COLUMNS: &str = "id, space_id, parent_id, source_id, title, kind, tags, workspace_id, state, session_ids, source_excerpt, \
      substr(body, 1, 280), path, seq, created_by, last_actor, created_at, updated_at, deleted_at";
+
+/// The frontmatter a page's file carries beyond the keys every page has.
+#[derive(Debug, Clone, Default)]
+struct MirroredRecords {
+    /// A database page's `{scope, schema, views}` JSON.
+    database: Option<String>,
+    /// A row's values, by property name, in schema order.
+    properties: Vec<(String, String)>,
+    /// Every property name the row's schema owns.
+    owned: Vec<String>,
+}
 
 pub(crate) fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
     let list = |index: usize| -> rusqlite::Result<Vec<String>> {
@@ -826,6 +1383,7 @@ pub(crate) fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
 fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor: &str, updated_at: &str, default_space: &str, resolve: bool) -> Result<(), BridgeError> {
     let props = live.props();
     let body = live.body();
+    let space = props.space_id.clone().unwrap_or_else(|| default_space.to_owned());
     let created_at = props.created_at.clone().unwrap_or_else(|| updated_at.to_owned());
     db.execute(
         "INSERT INTO pages(id, space_id, parent_id, source_id, title, kind, tags, workspace_id, state, session_ids, source_excerpt,
@@ -839,7 +1397,7 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
             updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
         params![
             page_id,
-            props.space_id.unwrap_or_else(|| default_space.to_owned()),
+            space,
             props.parent_id,
             props.source_id,
             props.title,
@@ -862,6 +1420,8 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
     links::sync_fts(db, page_id)?;
     if resolve {
         links::sync_page_links(db, page_id)?;
+        // A database's properties, or a row's values, follow every write.
+        database::reindex_page(db, &space, page_id, live)?;
     } else {
         links::write_outbound(db, page_id)?;
     }
@@ -911,10 +1471,10 @@ fn stamp_time(stamp: &str) -> String {
 }
 
 fn check_kind(kind: &str) -> Result<(), BridgeError> {
-    if KINDS.contains(&kind) {
+    if PAGE_KINDS.contains(&kind) {
         Ok(())
     } else {
-        Err(invalid(format!("kind must be one of {}", KINDS.join(", "))))
+        Err(invalid(format!("kind must be one of {}", PAGE_KINDS.join(", "))))
     }
 }
 
@@ -1213,7 +1773,7 @@ pub(crate) mod tests {
         let child = page(&notes, "Child", "");
         let parent = page(&notes, "Parent", "");
         notes.with_db(|db| {
-            db.execute("INSERT INTO spaces VALUES('foreign', 'Other', 'team', 'now')", [])?;
+            db.execute("INSERT INTO spaces(id, name, kind, created_at) VALUES('foreign', 'Other', 'team', 'now')", [])?;
             db.execute("UPDATE pages SET space_id='foreign' WHERE id=?1", [&parent.id])?;
             Ok(())
         }).unwrap();
@@ -1503,7 +2063,7 @@ pub(crate) mod tests {
 
         notes.with_db(|db| Ok(db.execute("DELETE FROM pages", [])?)).unwrap();
         assert!(notes.list(&ListFilter::default()).unwrap().is_empty());
-        assert_eq!(notes.rebuild_index().unwrap(), 3);
+        assert_eq!(notes.rebuild_index().unwrap(), 4, "three pages and the space's system database");
 
         let mut after = notes.list(&ListFilter { include_archived: true, ..Default::default() }).unwrap();
         let mut expected = before.clone();
@@ -1596,5 +2156,250 @@ pub(crate) mod tests {
         assert!(notes.restore_version(&page.id, 999, PERSON).is_err());
         notes.delete(&page.id, PERSON).unwrap();
         assert!(notes.restore_version(&page.id, mine, PERSON).is_err());
+    }
+
+    /// A database with an empty record, a number property and a status
+    /// property with one option.
+    fn reading_list(notes: &NotesService) -> (String, String, String) {
+        let id = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap().id;
+        let updated = notes
+            .update_schema(
+                &id,
+                &[
+                    SchemaOp::Add(NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() }),
+                    SchemaOp::Add(NewProperty {
+                        name: "Status".into(),
+                        kind: "status".into(),
+                        options: vec![NewOption { name: "Reading".into(), ..Default::default() }, NewOption { name: "Done".into(), group: Some("done".into()), ..Default::default() }],
+                        ..Default::default()
+                    }),
+                ],
+                PERSON,
+            )
+            .unwrap();
+        (id, updated.added[0].0.clone(), updated.added[1].0.clone())
+    }
+
+    fn values_of(notes: &NotesService, row: &str) -> std::collections::BTreeMap<String, Value> {
+        notes.with_db(|db| Ok(doc::load_page(db, row, None)?.0.values())).unwrap()
+    }
+
+    #[test]
+    fn set_values_refuses_an_unknown_property_option_or_type_and_writes_nothing() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        let seq = notes.read(&row.id).unwrap().seq;
+        let unknown = notes.set_values(&row.id, &[("nope".into(), Some(serde_json::json!(1)))], PERSON).unwrap_err().to_string();
+        assert!(unknown.contains("Rating") && unknown.contains("Status"), "the error names the valid properties: {unknown}");
+        let option = notes.set_values(&row.id, &[(status.clone(), Some(serde_json::json!("nope")))], PERSON).unwrap_err().to_string();
+        assert!(option.contains("Reading"), "the error names the valid options: {option}");
+        assert!(notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!("five")))], PERSON).is_err());
+        assert!(notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(null)))], PERSON).is_err());
+        assert_eq!(notes.read(&row.id).unwrap().seq, seq, "a refused patch writes nothing");
+        assert!(notes.set_values(&row.id, &[], PERSON).is_err());
+        let loose = notes.capture("not a row", PERSON).unwrap();
+        assert!(notes.set_values(&loose.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).is_err());
+        assert!(notes.set_values(&id, &[(rating, Some(serde_json::json!(5)))], PERSON).is_err());
+    }
+
+    #[test]
+    fn retyping_converts_every_row_in_one_attributed_write() {
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let rows: Vec<String> = [5, 4]
+            .into_iter()
+            .map(|value| {
+                let row = notes.create(CreatePage { title: Some(format!("Book {value}")), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+                notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(value)))], PERSON).unwrap();
+                row.id
+            })
+            .collect();
+        let before: Vec<i64> = rows.iter().map(|row| notes.read(row).unwrap().seq).collect();
+        let actor = agent_actor("claude", "retype");
+        let updated = notes.update_schema(&id, &[SchemaOp::Retype { prop: rating.clone(), to: "text".into() }], &actor).unwrap();
+        assert!(updated.warnings.is_empty());
+        assert_eq!(notes.database(&id).unwrap().schema[&rating].kind, PropertyType::Text);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(notes.read(row).unwrap().seq, before[index] + 1, "exactly one write per row");
+            assert_eq!(notes.history(row).unwrap().versions[0].actor, actor);
+            assert_eq!(values_of(&notes, row)[&rating], serde_json::json!(if index == 0 { "5" } else { "4" }));
+        }
+        let file = std::fs::read_to_string(notes.read(&rows[0]).unwrap().note.path.unwrap()).unwrap();
+        assert!(file.contains("Rating: \"5\""), "{file}");
+    }
+
+    #[test]
+    fn a_schema_rename_and_an_option_add_merge() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let notes = Arc::new(notes);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let operations = [
+            SchemaOp::Rename { prop: rating.clone(), name: "Score".into() },
+            SchemaOp::AddOption { prop: status.clone(), name: "Paused".into(), color: None, group: None },
+        ];
+        let workers: Vec<_> = operations
+            .into_iter()
+            .map(|op| {
+                let (notes, id, barrier) = (notes.clone(), id.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    notes.update_schema(&id, &[op], PERSON).map(|_| ())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        let database = notes.database(&id).unwrap();
+        assert_eq!(database.schema[&rating].name, "Score", "the rename survived the merge");
+        assert!(database.schema[&status].options.iter().any(|option| option.name == "Paused"), "the option survived the merge");
+    }
+
+    #[test]
+    fn the_values_index_survives_a_rebuild_from_the_log() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        let reading = notes.database(&id).unwrap().schema[&status].options[0].id.clone();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(4))), (status.clone(), Some(serde_json::json!(reading)))], PERSON).unwrap();
+        let props: Vec<(String, String)> = notes
+            .with_db(|db| {
+                let mut statement = db.prepare("SELECT prop_id, type FROM database_props ORDER BY prop_id")?;
+                let rows: Vec<(String, String)> = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        let indexed = |row: &str| -> Vec<(String, i64)> {
+            notes
+                .with_db(|db| {
+                    let mut statement = db.prepare("SELECT prop_id, item FROM page_values WHERE page_id=?1 ORDER BY prop_id, item")?;
+                    let rows: Vec<(String, i64)> = statement.query_map(params![row], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+                    Ok(rows)
+                })
+                .unwrap()
+        };
+        let values = indexed(&row.id);
+        notes.with_db(|db| { db.execute("DELETE FROM page_values", [])?; db.execute("DELETE FROM database_props", [])?; Ok(()) }).unwrap();
+        notes.rebuild_index().unwrap();
+        let rebuilt: Vec<(String, String)> = notes
+            .with_db(|db| {
+                let mut statement = db.prepare("SELECT prop_id, type FROM database_props ORDER BY prop_id")?;
+                let rows: Vec<(String, String)> = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(rebuilt, props);
+        assert_eq!(indexed(&row.id), values);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values_of(&notes, &row.id)[&rating], serde_json::json!(4));
+        assert_eq!(notes.database(&id).unwrap().schema.len(), 2);
+    }
+
+    #[test]
+    fn views_save_replace_and_delete_against_the_live_schema() {
+        use crate::notes::doc::{ViewDef, ViewPropertyDef, ViewType};
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let view = |name: &str| ViewDef {
+            name: name.into(),
+            kind: ViewType::Board,
+            order: 10,
+            filter: Some(serde_json::json!({"and": [{"property": "state", "op": "notEquals", "value": "archived"}]})),
+            sorts: vec![],
+            group_by: None,
+            date_property: None,
+            properties: vec![ViewPropertyDef { id: rating.clone(), visible: true, width: Some(200) }],
+        };
+        let view_id = notes.put_view(&id, None, view("Board"), PERSON).unwrap();
+        assert_eq!(notes.database(&id).unwrap().views[&view_id].name, "Board");
+        notes.put_view(&id, Some(&view_id), view("By rating"), PERSON).unwrap();
+        let saved = notes.database(&id).unwrap().views;
+        assert_eq!(saved.len(), 8, "seven seeded views plus one");
+        assert_eq!(saved[&view_id].name, "By rating");
+        assert!(notes.put_view(&id, None, ViewDef { name: "  ".into(), ..view("x") }, PERSON).is_err());
+        assert!(notes.put_view(&id, None, ViewDef { properties: vec![ViewPropertyDef { id: "nope".into(), visible: true, width: None }], ..view("Bad") }, PERSON).is_err());
+        notes.delete_view(&id, &view_id, PERSON).unwrap();
+        assert!(!notes.database(&id).unwrap().views.contains_key(&view_id));
+        assert!(notes.delete_view(&id, &view_id, PERSON).is_err());
+    }
+
+    #[test]
+    fn renaming_an_option_rewrites_the_file_without_touching_the_doc() {
+        let (_dir, notes) = service();
+        let (id, _rating, status) = reading_list(&notes);
+        let reading = notes.database(&id).unwrap().schema[&status].options[0].id.clone();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(status.clone(), Some(serde_json::json!(reading)))], PERSON).unwrap();
+        let page = notes.read(&row.id).unwrap();
+        let path = page.note.path.clone().unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Status: \"Reading\""));
+        notes.update_schema(&id, &[SchemaOp::RenameOption { prop: status, option: reading, name: "Reading now".into() }], PERSON).unwrap();
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(file.contains("Status: \"Reading now\""), "{file}");
+        assert_eq!(notes.read(&row.id).unwrap().seq, page.seq, "an option rename touches no row doc");
+    }
+
+    #[test]
+    fn an_unclaimed_system_database_is_adopted_on_the_next_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let check: crate::notes::service::ProjectCheck = std::sync::Arc::new(|_: &str| true);
+        let notes = NotesService::open(dir.path(), check.clone()).unwrap();
+        let id = notes.system_database().unwrap();
+        // A crash between creating the page and recording it.
+        notes.with_db(|db| Ok(db.execute("UPDATE spaces SET system_database_id=NULL", [])?)).unwrap();
+        drop(notes);
+        let reopened = NotesService::open(dir.path(), check).unwrap();
+        assert_eq!(reopened.system_database().unwrap(), id, "the orphan is adopted, not duplicated");
+        let databases: i64 = reopened.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM pages WHERE kind='database'", [], |row| row.get(0))?)).unwrap();
+        assert_eq!(databases, 1);
+    }
+
+    #[test]
+    fn a_retype_keeps_the_rules_an_add_has() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        assert!(notes.update_schema(&id, &[SchemaOp::Retype { prop: rating.clone(), to: "relation".into() }], PERSON).is_err(), "a relation cannot be retyped into being");
+        // A status keeps groups; anything else drops them.
+        notes.update_schema(&id, &[SchemaOp::Retype { prop: status.clone(), to: "select".into() }], PERSON).unwrap();
+        let def = &notes.database(&id).unwrap().schema[&status];
+        assert!(def.options.iter().all(|option| option.group.is_none()), "a select option has no status group");
+        assert!(def.relation.is_none() && def.date_format.is_none());
+        notes.update_schema(&id, &[SchemaOp::Retype { prop: status.clone(), to: "status".into() }], PERSON).unwrap();
+        let def = &notes.database(&id).unwrap().schema[&status];
+        assert!(def.options.iter().all(|option| option.group.is_some()), "a status option always has a group");
+    }
+
+    #[test]
+    fn a_system_database_in_another_space_indexes_under_its_own_space() {
+        let (dir, notes) = service();
+        notes.with_db(|db| Ok(db.execute("INSERT INTO spaces(id, name, kind, created_at) VALUES('foreign', 'Other', 'team', 'then')", [])?)).unwrap();
+        drop(notes);
+        let check: crate::notes::service::ProjectCheck = std::sync::Arc::new(|_: &str| true);
+        let notes = NotesService::open(dir.path(), check).unwrap();
+        let foreign: String = notes
+            .with_db(|db| Ok(db.query_row("SELECT system_database_id FROM spaces WHERE id='foreign'", [], |row| row.get::<_, String>(0))?))
+            .unwrap();
+        notes.update_schema(&foreign, &[SchemaOp::Add(NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let spaces: Vec<String> = notes
+            .with_db(|db| {
+                let mut statement = db.prepare("SELECT DISTINCT space_id FROM database_props WHERE database_id=?1")?;
+                let rows: Vec<String> = statement.query_map(params![foreign], |row| row.get(0))?.collect::<Result<_, _>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(spaces, vec!["foreign"], "one row per property, under the database's own space");
+    }
+
+    #[test]
+    fn a_seeded_database_indexes_every_row() {
+        let (_dir, notes) = service();
+        let id = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap().id;
+        crate::notes::database::tests::seed_rows(&notes, &id, 25);
+        let indexed: i64 = notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM page_values WHERE database_id=?1", params![id], |row| row.get(0))?)).unwrap();
+        assert_eq!(indexed, 25);
+        let rows = notes.with_db(|db| crate::notes::database::row_ids(db, &id)).unwrap();
+        assert_eq!(rows.len(), 25);
     }
 }
