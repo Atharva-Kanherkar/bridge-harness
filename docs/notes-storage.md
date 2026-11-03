@@ -42,7 +42,7 @@ backend capabilities in the frontend phase.
 Turn into tasks receives the note's text and its existing tasks, including each
 task's ID, title, and source excerpt. The extractor prioritizes new outcomes and
 omits tracked work. If it returns tracked work anyway, `existingTaskId` names the
-supplied task ID; `null` identifies a new outcome. A rewritten title or shorter
+supplied task ID; `null` or a blank string identifies a new outcome. A rewritten title or shorter
 quote can therefore reuse a task, while separate outcomes sharing one sentence
 can become separate tasks. Source excerpts ground suggestions in the note;
 quotes alone do not determine whether two outcomes are the same work.
@@ -53,7 +53,11 @@ malformed, or unknown identity decisions reject the reply before any tasks are
 created. Accepting replies is serialized; if the set of task IDs changed during
 generation, the reply must be regenerated against the current tasks. Each reply
 allows at most 20 proposed new tasks; matched existing tasks do not use that
-budget.
+budget. While a reply streams, entries naming an existing task are not drawn
+as drafts, so a restated task never flashes as a second row.
+
+`live_task_reruns` in `notes/evals.rs` scores reruns against real models: tracked
+work the person renamed must not come back as new, and appended work must be found.
 
 ## Linked task lifecycle
 
@@ -66,7 +70,8 @@ A linked task row offers Open chat instead of Start and follows its newest
 linked chat's live status, including Running, Needs you, Ready to review,
 Finished, Failed, and Stopped. If the chat details have not loaded, the row says
 Chat linked. Chat completion does not mark a task Done; finishing or reopening
-the task requires an explicit state change. Done and Archived remain
+the task requires an explicit state change. Reopening a linked task returns it
+to Doing; reopening an unlinked one returns it to Open. Done and Archived remain
 authoritative over the chat status.
 
 An unfinished task's own page offers New chat when it already has a chat link.
