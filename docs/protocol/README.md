@@ -47,7 +47,7 @@ directory's sessions, stores, PTYs, and provider processes:
   validated against the contracted types (wrong casing, unknown fields, and
   out-of-set enum values fail with `invalid_params`), then routed to
   `bridge_core::api` — the same bodies the Tauri shell calls.
-- **Limits.** Frames over 1 MiB → `invalid_request`, connection closed.
+- **Limits.** Frames over 32 MiB → `invalid_request`, connection closed.
   Connections beyond the cap → one **2004 `overloaded`** frame, closed.
   Requests per connection are sequential; backpressure is the socket.
 - **Events.** One event hub per daemon subscribes to the core bus and fans
@@ -91,7 +91,7 @@ daemon binds nothing but the Unix socket and the health listener.
   loopback address requires `--allow-remote-bind`, intended for a TLS
   terminator or tunnel in front of it; the token must never cross a network in
   the clear.
-- **Limits.** Shared with the socket, not duplicated: the 1 MiB frame cap
+- **Limits.** Shared with the socket, not duplicated: the 32 MiB frame cap
   (an oversized message closes the connection), the connection cap (beyond it,
   HTTP 503 with the `overloaded` error body instead of an upgrade), and the
   handshake deadline. Binary messages are not part of the protocol and close

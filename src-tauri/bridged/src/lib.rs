@@ -50,8 +50,9 @@ pub use remote::{RemoteConfig, RemoteListener};
 pub use server::{serve, serve_with_remote};
 
 /// Hard cap on a single request frame (one line). A frame beyond this is
-/// answered with `invalid_request` and the connection is closed.
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// answered with `invalid_request` and the connection is closed. Sized for a
+/// turn carrying several pasted images inline as base64.
+pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 
 /// Concurrent connection cap. Connections beyond it receive one `overloaded`
 /// error frame and are closed without a handshake.

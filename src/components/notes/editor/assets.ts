@@ -1,4 +1,4 @@
-// Images on a page: uploaded in parts (a request frame is capped at 1 MiB),
+// Images on a page: uploaded in parts (a request frame is capped at 32 MiB),
 // stored by the core under `assets/<hash>.<ext>` beside the page files, and
 // read back once per session.
 

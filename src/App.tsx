@@ -18,7 +18,7 @@ import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
-import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
+import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
@@ -2498,9 +2498,8 @@ function AppContent() {
   // prefix skips this session entirely — see `openHarnessShortcut`.
   // The composer's paste policy: clipboard images become removable preview
   // attachments (and the paste is intercepted before text insertion); every
-  // other paste — text, file-less markup — falls through untouched. Sized
-  // before decode: a silent multi-second paste for a huge screenshot reads as
-  // broken, so the user hears why instead.
+  // other paste — text, file-less markup — falls through untouched. Images
+  // too large for a provider are resized on the way in, never refused.
   const handleComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = event.clipboardData?.items;
     if (!items) return;
@@ -2510,14 +2509,9 @@ function AppContent() {
     attachComposerFiles(files);
   };
   const attachComposerFiles = (files: Array<{ type: string; size?: number }>) => {
-    if (files.some(isPasteTooLarge)) {
-      setError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
-      return;
-    }
     void Promise.all(files.map(async file => ({
       id: crypto.randomUUID(),
-      mediaType: mediaTypeOf(file),
-      dataUri: await readAsDataUri(file),
+      ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setError(errorMessage(error)));
@@ -4078,15 +4072,10 @@ function Welcome({ adapters, accounts, account, harness, model, slashCommands, s
     attachFiles(files);
   };
   const attachFiles = (files: Array<{ type: string; size?: number }>) => {
-    if (files.some(isPasteTooLarge)) {
-      setComposerError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
-      return;
-    }
     setComposerError(undefined);
     void Promise.all(files.map(async file => ({
       id: crypto.randomUUID(),
-      mediaType: mediaTypeOf(file),
-      dataUri: await readAsDataUri(file),
+      ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(errorMessage(error)));

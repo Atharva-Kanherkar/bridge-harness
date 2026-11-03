@@ -38,7 +38,7 @@ One daemon owns a data directory. To share data with the desktop app, start the 
 - **Errors.** Every rejection is a string, and RPC errors use the same `{"code","kind","message"}` envelope as the desktop host, so `errorMessage()` renders them identically.
 - **Refusal is final.** A wrong token (`unauthorized`) or an incompatible protocol stops reconnecting and is shown as the error, never replaced by mock data.
 - **Short pools.** `bridged` caps Unix and WebSocket clients together at 32. Only the first socket is required. Near the cap the pool runs on whichever sockets authenticated, with events and calls sharing them as the desktop does.
-- **Frame limit.** A request over the daemon's 1 MiB message limit is refused in the tab, as `bridge-client` refuses it on the desktop. Sent, it would make the daemon close the socket and take every other call on the pool down with it.
+- **Frame limit.** A request over the daemon's 32 MiB message limit is refused in the tab, as `bridge-client` refuses it on the desktop. Sent, it would make the daemon close the socket and take every other call on the pool down with it.
 - **Late daemon.** If the tab opened before the daemon was up, attaching re-reads health, model setup, state and config, and clears an error that only said the daemon was unreachable.
 - **Back/forward cache.** The pool closes on `pagehide` and reconnects when the page is shown from the cache, so a page you navigated away from holds no daemon slots.
 - **Links.** If the in-app router takes longer than 250 ms to decide, a blank tab is reserved while the click still counts. It closes if the router takes the link and navigates there if not, so a slow lookup never leaves a link dead.
