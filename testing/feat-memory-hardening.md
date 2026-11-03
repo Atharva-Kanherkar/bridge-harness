@@ -67,7 +67,8 @@ are follow-ups. They change model cost and routing and need their own evals.
 - `memory_similarity` is the one definition of "same claim" for writes and
   for the packet: `normalize`, `terms`, `jaccard_bps`, `near_duplicate`
   (Jaccard of content terms at or above 80%, with at least three terms each
-  side). It is deterministic, symmetric, and reflexive on non-empty text.
+  side, plus the order and polarity rules under Review amendments). It is
+  deterministic, symmetric, and reflexive on non-empty text.
 - Extraction and agent proposals refuse a near duplicate of an active,
   proposed, or rejected record in scope, counted as `duplicates`. A
   rejected claim does not come back in different words.
@@ -122,6 +123,28 @@ are follow-ups. They change model cost and routing and need their own evals.
   deferred tools. Workers and other harnesses get no such line.
 - An approved agent proposal reads as "agent memory" in the packet and as an
   accepted suggestion, not a pin, in the Memory dialog.
+
+## Review amendments
+
+- **Order and polarity are part of a claim.** `near_duplicate` also needs the
+  ordered word pairs to overlap (bigram Jaccard at or above 50%) and the two
+  sides to carry the same negations, so "prefers tabs over spaces" and
+  "prefers spaces over tabs", or "uses X" and "never uses X", are different
+  claims. Inside one extraction batch only textually identical candidates
+  are dropped; a near duplicate that is not identical may be a correction, so
+  both reach the conflict guard and neither is activated automatically.
+- **Identifier punctuation is part of a pin.** `normalize` folds case and
+  whitespace and drops trailing sentence punctuation (`. , ; : ! ?`) only, and
+  terms keep characters like `+` and `#`: "Use C++" and "Use C#" are two pins.
+- **An expired proposal that never held can come back.** The exact-text veto
+  skips `expired` rows whose interval is empty, so a proposal the TTL swept
+  unreviewed can be proposed again by extraction or an agent. Rejected
+  records still suppress a repeat.
+- **Clipping needs a way back to the full text.** The packet clips long lines
+  only for a recipient that has `memory_search` (the chats that also get the
+  session-frame line). Cursor chats, workers, and any host without the
+  chat-tools route get whole records, as before, with no marker pointing at a
+  tool they lack.
 
 ## Fuzz and mutation
 
