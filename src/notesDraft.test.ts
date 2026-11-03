@@ -72,6 +72,12 @@ describe("noteDisplayTitle", () => {
     expect(noteDisplayTitle({ title: "", preview: "   \n" })).toBe("Untitled");
     expect(noteDisplayTitle({ title: null, preview: "x".repeat(120) })).toHaveLength(80);
   });
+
+  it("counts characters, not UTF-16 units, the way the core cuts a long line", () => {
+    const line = `${"a".repeat(77)}🚀🚀`;
+    expect(noteDisplayTitle({ title: null, preview: line })).toBe(line);
+    expect([...noteDisplayTitle({ title: null, preview: `${line}🚀🚀` })]).toHaveLength(80);
+  });
 });
 
 describe("plainPreview and quoteText", () => {

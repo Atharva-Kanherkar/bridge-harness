@@ -150,7 +150,9 @@ export function noteDisplayTitle(note: Pick<Note, "title" | "preview">): string 
   if (title) return title;
   const line = note.preview.split("\n").map(part => part.replace(/^#+\s*/, "").trim()).find(Boolean);
   if (!line) return "Untitled";
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+  // Characters, not UTF-16 units, as the core counts them.
+  const characters = [...line];
+  return characters.length > 80 ? `${characters.slice(0, 79).join("")}…` : line;
 }
 
 /** The pages a `[[Title]]` can name, as the core resolves them: by the title
