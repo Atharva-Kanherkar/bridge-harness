@@ -174,6 +174,32 @@ pub struct SchemaUpdated {
     pub warnings: Vec<String>,
 }
 
+impl SchemaOp {
+    /// The property this op changes, for the one-change-per-property rule.
+    pub fn property(&self) -> Option<&String> {
+        match self {
+            Self::Add(_) => None,
+            Self::Rename { prop, .. } | Self::Delete { prop } | Self::Retype { prop, .. } | Self::AddOption { prop, .. } | Self::RenameOption { prop, .. } | Self::DeleteOption { prop, .. } => Some(prop),
+        }
+    }
+}
+
+/// The work a validated schema batch leaves to write after the commit.
+#[derive(Default)]
+struct SchemaPlan {
+    updated: SchemaUpdated,
+    /// (row, property, old def, new def, value as it stood before the batch)
+    retypes: Vec<(String, String, PropertyDef, PropertyDef, Value)>,
+    /// (property, option) values to remove after a deleted option.
+    dropped: Vec<(String, String)>,
+    /// (property, def) whose new name may already be in the rows' files.
+    imported: Vec<(String, PropertyDef)>,
+    /// Old names to retire, with the property that owned them.
+    retire: Vec<(String, String)>,
+    /// Whether the rows' files must be rewritten with the new schema.
+    rewrite: bool,
+}
+
 fn no_property(prop: &str) -> BridgeError {
     invalid(format!("no property with id {prop}"))
 }
@@ -426,7 +452,11 @@ impl NotesService {
             self.check_project(workspace)?;
         }
         if let Some(parent) = &page.parent_id {
+            self.check_not_system(parent)?;
             self.check_live(parent)?;
+        }
+        if page.scope.as_deref() == Some("space") && actor != SYSTEM {
+            return Err(invalid("only Bridge owns the space-wide database"));
         }
         let title = page.title.map(|title| title.trim().to_owned()).filter(|title| !title.is_empty());
         let tags = normalize_tags(&page.tags);
@@ -442,7 +472,7 @@ impl NotesService {
             if let Some(parent) = &page.parent_id {
                 validate_parent(db, &space, &id, parent)?;
                 // A row holds values from its database's schema, so a database
-                // page cannot also be one.
+                // cannot also be one. `validate_parent` covers the move path.
                 if kind == "database" && database::read(db, parent)?.is_some() {
                     return Err(invalid("a database cannot be a row of another database"));
                 }
@@ -474,6 +504,7 @@ impl NotesService {
 
     pub fn edit(&self, edit: EditPage, actor: &str) -> Result<NoteEditResult, BridgeError> {
         self.check_live(&edit.id)?;
+        self.check_not_system(&edit.id)?;
         let modes = [edit.text.is_some(), !edit.edits.is_empty(), edit.append.is_some()];
         if modes.iter().filter(|mode| **mode).count() != 1 {
             return Err(invalid("send exactly one of text, edits or append"));
@@ -537,6 +568,7 @@ impl NotesService {
 
     pub fn update(&self, update: UpdateNote, actor: &str) -> Result<Note, BridgeError> {
         self.check_live(&update.id)?;
+        self.check_not_system(&update.id)?;
         if let Some(kind) = &update.kind {
             check_kind(kind)?;
             // A database's schema and views live in a doc that only a
@@ -748,6 +780,7 @@ impl NotesService {
             }
             let parent = props.parent_id.clone().ok_or_else(|| invalid("only a row of a database has values"))?;
             let database = database::read(db, &parent)?.ok_or_else(|| invalid("only a row of a database has values"))?;
+            let space = props.space_id.clone().unwrap_or_else(|| self.space.clone());
             let mut records = RecordsPatch::default();
             for (prop_id, value) in patch {
                 let def = database
@@ -757,6 +790,19 @@ impl NotesService {
                 match value {
                     Some(value) => {
                         database::validate_value(def, value)?;
+                        if def.kind == PropertyType::Relation {
+                            let target = def.relation.as_ref().map(|relation| relation.database_id.clone()).ok_or_else(|| invalid(format!("{} names no database", def.name)))?;
+                            for id in value.as_array().into_iter().flatten().filter_map(Value::as_str) {
+                                let exists: bool = db.query_row(
+                                    "SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND parent_id=?2 AND space_id=?3 AND deleted_at IS NULL)",
+                                    params![id, target, space],
+                                    |row| row.get(0),
+                                )?;
+                                if !exists {
+                                    return Err(invalid(format!("{} names {id}, which is not a row of that database", def.name)));
+                                }
+                            }
+                        }
                         records = records.put_value(prop_id, Some(value));
                     }
                     None => records = records.put_value(prop_id, None),
@@ -769,172 +815,229 @@ impl NotesService {
 
     /// Change a database's schema. Retyping and deleting an option rewrite the
     /// affected rows' values as attributed writes, so history can undo them.
+    ///
+    /// Validation runs inside the write's transaction against the schema as it
+    /// stands at commit time, so two callers cannot add the same name. The
+    /// schema and the row writes are separate page commits: if a later step
+    /// fails, the schema stays changed and the caller gets the error, and
+    /// re-running the same ops is safe (a retype that is already done warns).
     pub fn update_schema(&self, id: &str, ops: &[SchemaOp], actor: &str) -> Result<SchemaUpdated, BridgeError> {
         self.check_live(id)?;
         if ops.is_empty() {
             return Err(invalid("no schema changes"));
         }
-        let before = self.database(id)?;
-        let mut schema = before.schema.clone();
-        let mut updated = SchemaUpdated::default();
-        let mut retired: Vec<String> = Vec::new();
-        let mut retypes: Vec<(String, String, PropertyDef, PropertyDef, Value)> = Vec::new();
-        let mut dropped: Vec<(String, String)> = Vec::new();
-        // A schema edit that changes how values render leaves every row's file
-        // stale without touching its doc, so those rows are rewritten.
-        let mut rewrite = false;
-
+        // One change per property per call, so a plan never converts a
+        // property the same batch removes or renames away.
+        let mut seen = std::collections::BTreeSet::new();
         for op in ops {
-            match op {
-                SchemaOp::Add(new) => {
-                    let kind = PropertyType::parse(&new.kind)
-                        .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
-                    let name = database::check_name(&schema, &new.name, None)?;
-                    let options = new_options(kind, &new.options)?;
-                    let relation = match &new.relation {
-                        Some(target) if kind == PropertyType::Relation => {
-                            if self.with_db(|db| database::read(db, target))?.is_none() {
-                                return Err(invalid(format!("no database with id {target}")));
+            if let Some(prop) = op.property() {
+                if !seen.insert(prop) {
+                    return Err(invalid("this batch changes the same property twice"));
+                }
+            }
+        }
+        let mut plan: Option<SchemaPlan> = None;
+        let (_, _, changed) = self.write_with(id, actor, |db, live, _| {
+            let props = live.props();
+            if props.deleted_at.is_some() {
+                return Err(invalid("note not found"));
+            }
+            if props.kind.as_deref() != Some("database") {
+                return Err(invalid("this page is not a database"));
+            }
+            let before = live.schema();
+            let mut schema = before.clone();
+            let mut next = SchemaPlan { rewrite: false, ..Default::default() };
+            for op in ops {
+                match op {
+                    SchemaOp::Add(new) => {
+                        let kind = PropertyType::parse(&new.kind)
+                            .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
+                        let name = database::check_name(&schema, &new.name, None)?;
+                        let options = new_options(kind, &new.options)?;
+                        let relation = match &new.relation {
+                            Some(target) if kind == PropertyType::Relation => {
+                                if database::read(db, target)?.is_none() {
+                                    return Err(invalid(format!("no database with id {target}")));
+                                }
+                                Some(doc::RelationDef { database_id: target.clone() })
                             }
-                            Some(doc::RelationDef { database_id: target.clone() })
+                            Some(_) => return Err(invalid("only a relation names another database")),
+                            None if kind == PropertyType::Relation => return Err(invalid("a relation needs the database it points at")),
+                            None => None,
+                        };
+                        if let Some(format) = &new.date_format {
+                            if kind != PropertyType::Date || !matches!(format.as_str(), "date" | "datetime") {
+                                return Err(invalid("dateFormat is date or datetime, on a date property"));
+                            }
                         }
-                        Some(_) => return Err(invalid("only a relation names another database")),
-                        None if kind == PropertyType::Relation => return Err(invalid("a relation needs the database it points at")),
-                        None => None,
-                    };
-                    if let Some(format) = &new.date_format {
-                        if kind != PropertyType::Date || !matches!(format.as_str(), "date" | "datetime") {
-                            return Err(invalid("dateFormat is date or datetime, on a date property"));
-                        }
+                        let order = schema.values().map(|def| def.order).max().map(|order| order + 1).unwrap_or(0);
+                        let def = PropertyDef { name: name.clone(), kind, order, options, relation, date_format: new.date_format.clone() };
+                        let prop = new_id();
+                        schema.insert(prop.clone(), def.clone());
+                        next.updated.added.push((prop.clone(), name));
+                        next.imported.push((prop, def));
                     }
-                    let order = schema.values().map(|def| def.order).max().map(|order| order + 1).unwrap_or(0);
-                    let def = PropertyDef { name: name.clone(), kind, order, options, relation, date_format: new.date_format.clone() };
-                    let prop = new_id();
-                    schema.insert(prop.clone(), def);
-                    updated.added.push((prop, name));
-                }
-                SchemaOp::Rename { prop, name } => {
-                    let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
-                    let name = database::check_name(&schema, name, Some(prop))?;
-                    if old.name != name {
-                        retired.push(old.name.clone());
-                        rewrite = true;
-                        schema.insert(prop.clone(), PropertyDef { name, ..old });
-                    }
-                }
-                SchemaOp::Delete { prop } => {
-                    let old = schema.remove(prop).ok_or_else(|| no_property(prop))?;
-                    retired.push(old.name);
-                    rewrite = true;
-                }
-                SchemaOp::Retype { prop, to } => {
-                    let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
-                    let kind = PropertyType::parse(to)
-                        .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
-                    if kind == old.kind {
-                        updated.warnings.push(format!("{} is already {}", old.name, kind.as_str()));
-                        continue;
-                    }
-                    if kind == PropertyType::Relation {
-                        return Err(invalid("a relation needs the database it points at; add one instead of retyping"));
-                    }
-                    let mut next = PropertyDef { kind, ..old.clone() };
-                    // The fields that belong to one type do not carry over.
-                    next.relation = None;
-                    next.date_format = if kind == PropertyType::Date { old.date_format.clone() } else { None };
-                    if kind == PropertyType::Status {
-                        for option in &mut next.options {
-                            option.group.get_or_insert_with(|| "todo".to_owned());
-                        }
-                    } else {
-                        for option in &mut next.options {
-                            option.group = None;
+                    SchemaOp::Rename { prop, name } => {
+                        let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                        let name = database::check_name(&schema, name, Some(prop))?;
+                        if old.name != name {
+                            next.retire.push((old.name.clone(), prop.clone()));
+                            next.rewrite = true;
+                            let def = PropertyDef { name, ..old };
+                            schema.insert(prop.clone(), def.clone());
+                            next.imported.push((prop.clone(), def));
                         }
                     }
-                    // Every row's current value, so a text -> select retype can
-                    // create all its options before any row is written.
-                    let values = self.row_values(id, prop)?;
-                    for (_, value) in &values {
-                        database::convert(&old, &mut next, value);
+                    SchemaOp::Delete { prop } => {
+                        let old = schema.remove(prop).ok_or_else(|| no_property(prop))?;
+                        next.retire.push((old.name, prop.clone()));
+                        next.rewrite = true;
                     }
-                    for (row, value) in values {
-                        retypes.push((row, prop.clone(), old.clone(), next.clone(), value));
+                    SchemaOp::Retype { prop, to } => {
+                        let old = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                        let kind = PropertyType::parse(to)
+                            .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
+                        if kind == old.kind {
+                            next.updated.warnings.push(format!("{} is already {}", old.name, kind.as_str()));
+                            continue;
+                        }
+                        if kind == PropertyType::Relation {
+                            return Err(invalid("a relation needs the database it points at; add one instead of retyping"));
+                        }
+                        let mut converted = PropertyDef { kind, ..old.clone() };
+                        // The fields that belong to one type do not carry over.
+                        converted.relation = None;
+                        converted.date_format = if kind == PropertyType::Date { old.date_format.clone() } else { None };
+                        if kind == PropertyType::Status {
+                            for option in &mut converted.options {
+                                option.group.get_or_insert_with(|| "todo".to_owned());
+                            }
+                        } else {
+                            for option in &mut converted.options {
+                                option.group = None;
+                            }
+                        }
+                        // Every row's current value, so a text -> select retype
+                        // can create all its options before any row is written.
+                        let values = database::row_values(db, id, prop)?;
+                        for (_, value) in &values {
+                            database::convert(&old, &mut converted, value);
+                        }
+                        for (row, value) in values {
+                            next.retypes.push((row, prop.clone(), old.clone(), converted.clone(), value));
+                        }
+                        schema.insert(prop.clone(), converted);
                     }
-                    schema.insert(prop.clone(), next);
-                }
-                SchemaOp::AddOption { prop, name, color, group } => {
-                    let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
-                    if !def.kind.options() {
-                        return Err(invalid(format!("{} does not have options", def.name)));
+                    SchemaOp::AddOption { prop, name, color, group } => {
+                        let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                        if !def.kind.options() {
+                            return Err(invalid(format!("{} does not have options", def.name)));
+                        }
+                        let name = database::check_option_name(&def, name, None)?;
+                        let group = option_group(def.kind, group)?;
+                        def.options.push(OptionDef { id: new_id(), name, color: color.clone(), group });
+                        schema.insert(prop.clone(), def);
                     }
-                    let name = database::check_option_name(&def, name, None)?;
-                    let group = option_group(def.kind, group)?;
-                    def.options.push(OptionDef { id: new_id(), name, color: color.clone(), group });
-                    schema.insert(prop.clone(), def);
-                }
-                SchemaOp::RenameOption { prop, option, name } => {
-                    let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
-                    let name = database::check_option_name(&def, name, Some(option))?;
-                    let existing = def.options.iter_mut().find(|entry| &entry.id == option).ok_or_else(|| invalid(format!("{} has no option {option}", def.name)))?;
-                    if existing.name != name {
-                        existing.name = name;
-                        rewrite = true;
+                    SchemaOp::RenameOption { prop, option, name } => {
+                        let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                        let name = database::check_option_name(&def, name, Some(option))?;
+                        let existing = def.options.iter_mut().find(|entry| &entry.id == option).ok_or_else(|| invalid(format!("{} has no option {option}", def.name)))?;
+                        if existing.name != name {
+                            existing.name = name;
+                            next.rewrite = true;
+                        }
+                        schema.insert(prop.clone(), def);
                     }
-                    schema.insert(prop.clone(), def);
-                }
-                SchemaOp::DeleteOption { prop, option } => {
-                    let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
-                    let position = def.options.iter().position(|entry| &entry.id == option).ok_or_else(|| invalid(format!("{} has no option {option}", def.name)))?;
-                    def.options.remove(position);
-                    dropped.push((prop.clone(), option.clone()));
-                    schema.insert(prop.clone(), def);
+                    SchemaOp::DeleteOption { prop, option } => {
+                        let mut def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                        let position = def.options.iter().position(|entry| &entry.id == option).ok_or_else(|| invalid(format!("{} has no option {option}", def.name)))?;
+                        def.options.remove(position);
+                        next.dropped.push((prop.clone(), option.clone()));
+                        schema.insert(prop.clone(), def);
+                    }
                 }
             }
-        }
 
-        let mut records = RecordsPatch::default();
-        for (prop, def) in &schema {
-            if before.schema.get(prop) != Some(def) {
-                records = records.put_schema(prop, def);
+            let mut records = RecordsPatch::default();
+            for (prop, def) in &schema {
+                if before.get(prop) != Some(def) {
+                    records = records.put_schema(prop, def);
+                }
             }
+            for prop in before.keys().filter(|prop| !schema.contains_key(*prop)) {
+                records = records.remove_schema(prop);
+            }
+            for (old, prop) in &next.retire {
+                records = records.retire(old, prop);
+            }
+            // A name that is live again is no longer retired.
+            let live_names: std::collections::BTreeSet<String> = schema.values().map(|def| def.name.to_lowercase()).collect();
+            for name in live.retired().keys() {
+                if live_names.contains(&name.to_lowercase()) {
+                    records = records.restore_name(name);
+                }
+            }
+            if records.is_empty() {
+                return Ok(None);
+            }
+            plan = Some(next);
+            live.edit_records(&records)
+        })?;
+        let Some(plan) = plan else { return Ok(SchemaUpdated::default()) };
+        if !changed {
+            return Ok(plan.updated);
         }
-        for prop in before.schema.keys().filter(|prop| !schema.contains_key(*prop)) {
-            records = records.remove_schema(prop);
+        // Lines a row's file already had for a newly added or renamed property
+        // are the person's existing data; they come in before the next
+        // projection would drop them.
+        for (prop, def) in &plan.imported {
+            self.import_file_values(id, prop, def, actor)?;
         }
-        if records.schema.is_empty() {
-            return Ok(updated);
-        }
-        self.write(id, actor, |live| live.edit_records(&records))?;
-
         // Values follow the schema in separate attributed writes, one per row.
-        for (row, prop, old, next, value) in retypes {
+        for (row, prop, old, next, value) in plan.retypes {
             self.convert_row(&row, &prop, &old, &next, &value, actor)?;
         }
-        for (prop, option) in dropped {
+        for (prop, option) in plan.dropped {
             self.drop_option(id, &prop, &option, actor)?;
         }
         self.with_db(|db| database::reindex_database(db, id))?;
-        if rewrite {
-            for row in self.with_db(|db| database::row_ids(db, id))? {
-                self.project_with(&row, &retired, true)?;
+        if plan.rewrite {
+            // The rows' docs did not change, so their files are stale without
+            // being behind on a sequence. The maintenance pass rewrites them
+            // with the retired names in hand, off this request's path.
+            self.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=NULL WHERE parent_id=?1 AND deleted_at IS NULL", params![id])?))?;
+        }
+        Ok(plan.updated)
+    }
+
+    /// Import lines a row's file already had for a property just added or
+    /// renamed, so an existing foreign key or old name becomes the cell.
+    fn import_file_values(&self, database_id: &str, prop: &str, def: &PropertyDef, actor: &str) -> Result<(), BridgeError> {
+        let (space, rows): (String, Vec<(String, Option<String>)>) = self.with_db(|db| {
+            let space = db.query_row("SELECT space_id FROM pages WHERE id=?1", params![database_id], |row| row.get(0))?;
+            let mut statement = db.prepare("SELECT id, path FROM pages WHERE parent_id=?1 AND deleted_at IS NULL")?;
+            let rows: Vec<(String, Option<String>)> = statement.query_map(params![database_id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+            Ok((space, rows))
+        })?;
+        for (row, path) in rows {
+            let Some(path) = path else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let (front, _) = super::markdown::parse(&text);
+            let key = def.name.to_lowercase();
+            let Some(line) = front.unknown.iter().find(|line| line.split_once(':').is_some_and(|(name, _)| name.trim().to_lowercase() == key)) else { continue };
+            let Some((_, raw)) = line.split_once(':') else { continue };
+            match self.with_db(|db| Ok(database::parse_value(db, &space, def, raw)))? {
+                Some(value) => {
+                    self.set_values(&row, &[(prop.to_owned(), Some(value))], actor)?;
+                }
+                None => eprintln!("[notes] left {raw} of {row} unimported: it is not a valid {}", def.kind.as_str()),
             }
         }
-        Ok(updated)
+        Ok(())
     }
 
     /// A property's value on every row, with the row id.
-    fn row_values(&self, database_id: &str, prop: &str) -> Result<Vec<(String, Value)>, BridgeError> {
-        self.with_db(|db| {
-            let mut out = Vec::new();
-            for row in database::row_ids(db, database_id)? {
-                if let Some(value) = doc::load_page(db, &row, None)?.0.values().remove(prop) {
-                    out.push((row, value));
-                }
-            }
-            Ok(out)
-        })
-    }
-
     /// One row's converted value, written only when it changed since the scan.
     fn convert_row(&self, row: &str, prop: &str, old: &PropertyDef, next: &PropertyDef, value: &Value, actor: &str) -> Result<(), BridgeError> {
         let mut scratch = next.clone();
@@ -955,7 +1058,7 @@ impl NotesService {
     /// Remove a deleted option from every row that used it, one attributed
     /// write per row.
     fn drop_option(&self, database_id: &str, prop: &str, option: &str, actor: &str) -> Result<(), BridgeError> {
-        for (row, value) in self.row_values(database_id, prop)? {
+        for (row, value) in self.with_db(|db| database::row_values(db, database_id, prop))? {
             let next = match &value {
                 Value::String(id) if id == option => None,
                 Value::Array(items) => {
@@ -1008,6 +1111,7 @@ impl NotesService {
     /// Tombstone a page and its tasks.
     pub fn delete(&self, id: &str, actor: &str) -> Result<(), BridgeError> {
         self.check_live(id)?;
+        self.check_not_system(id)?;
         let tasks: Vec<String> = self.with_db(|db| {
             let mut statement = db.prepare("SELECT id FROM pages WHERE parent_id=?1 AND kind='task' AND deleted_at IS NULL")?;
             let ids = statement.query_map(params![id], |row| row.get(0))?.collect::<Result<_, _>>()?;
@@ -1152,7 +1256,7 @@ impl NotesService {
         transaction.execute("DELETE FROM database_props", [])?;
         transaction.execute("DELETE FROM page_values", [])?;
         let databases: Vec<String> = {
-            let mut statement = transaction.prepare("SELECT id FROM pages WHERE kind='database'")?;
+            let mut statement = transaction.prepare("SELECT id FROM pages WHERE kind='database' AND deleted_at IS NULL")?;
             let ids: Vec<String> = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
             ids
         };
@@ -1179,6 +1283,19 @@ impl NotesService {
             Ok(())
         } else {
             Err(invalid("note not found"))
+        }
+    }
+
+    /// The system database is the Notes list's own record: Bridge owns its
+    /// identity and lifetime, a person owns its views.
+    fn check_not_system(&self, id: &str) -> Result<(), BridgeError> {
+        let system: bool = self.with_db(|db| {
+            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM spaces WHERE system_database_id=?1)", params![id], |row| row.get(0))?)
+        })?;
+        if system {
+            Err(invalid("the Notes database is managed by Bridge"))
+        } else {
+            Ok(())
         }
     }
 
@@ -1233,12 +1350,6 @@ impl NotesService {
     /// earlier snapshot can never overwrite a later one or mistake Bridge's
     /// own previous write for an outside edit.
     pub(crate) fn project(&self, page_id: &str) -> Result<Option<Note>, BridgeError> {
-        self.project_with(page_id, &[], false)
-    }
-
-    /// Mirror a page, rewriting it even when its doc has not changed (`force`),
-    /// and dropping any frontmatter line whose key a rename retired.
-    pub(crate) fn project_with(&self, page_id: &str, retired: &[String], force: bool) -> Result<Option<Note>, BridgeError> {
         let _projection = self.projection_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let row = self.with_db(|db| {
             Ok(db
@@ -1254,9 +1365,12 @@ impl NotesService {
                 .optional()?)
         })?;
         let Some((note, deleted, body, hash, projected)) = row else { return Ok(None) };
-        // A rename or a deleted column changes the file without changing the
-        // page, so those projections are never skipped.
-        if !force && retired.is_empty() && projected.is_some_and(|projected| projected >= note.seq) {
+        // The system database is a record, not a page: it has no file.
+        if note.created_by == SYSTEM && note.kind == "database" {
+            self.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=?2, path=NULL, content_hash=NULL WHERE id=?1", params![note.id, note.seq])?))?;
+            return Ok(Some(note));
+        }
+        if projected.is_some_and(|projected| projected >= note.seq) {
             return Ok(Some(note));
         }
         let records = self.page_records(&note)?;
@@ -1269,7 +1383,7 @@ impl NotesService {
             database: records.database.as_deref(),
             properties: &records.properties,
             owned: &records.owned,
-            retired,
+            retired: &records.retired,
         };
         let root = self.root();
         let Some(mirrored) = projector::mirror(&root, &input) else {
@@ -1304,7 +1418,7 @@ impl NotesService {
             let Some(parent) = note.parent_id.as_deref() else { return Ok(MirroredRecords::default()) };
             let Some(database) = database::read(db, parent)? else { return Ok(MirroredRecords::default()) };
             let values = live.values();
-            let mut records = MirroredRecords::default();
+            let mut records = MirroredRecords { retired: database.retired.keys().cloned().collect(), ..Default::default() };
             for (prop, def) in database.ordered() {
                 records.owned.push(def.name.clone());
                 let Some(value) = values.get(prop) else { continue };
@@ -1318,7 +1432,8 @@ impl NotesService {
 
     /// Announce a change made beside the page rather than to it (a stored
     /// structured view), at the page's current sequence.
-    pub fn announce(&self, page_id: &str, actor: &str) -> Result<(), BridgeError> {        let seq: i64 = self.with_db(|db| Ok(db.query_row("SELECT seq FROM pages WHERE id=?1", params![page_id], |row| row.get(0))?))?;
+    pub fn announce(&self, page_id: &str, actor: &str) -> Result<(), BridgeError> {
+        let seq: i64 = self.with_db(|db| Ok(db.query_row("SELECT seq FROM pages WHERE id=?1", params![page_id], |row| row.get(0))?))?;
         let listener = self.listener.lock().unwrap().clone();
         if let Some(listener) = listener {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
@@ -1349,6 +1464,8 @@ struct MirroredRecords {
     properties: Vec<(String, String)>,
     /// Every property name the row's schema owns.
     owned: Vec<String>,
+    /// Old property names a rename or a delete retired.
+    retired: Vec<String>,
 }
 
 pub(crate) fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
@@ -1384,6 +1501,7 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
     let props = live.props();
     let body = live.body();
     let space = props.space_id.clone().unwrap_or_else(|| default_space.to_owned());
+    let system = props.created_by.as_deref() == Some(SYSTEM) && props.kind.as_deref() == Some("database");
     let created_at = props.created_at.clone().unwrap_or_else(|| updated_at.to_owned());
     db.execute(
         "INSERT INTO pages(id, space_id, parent_id, source_id, title, kind, tags, workspace_id, state, session_ids, source_excerpt,
@@ -1425,12 +1543,32 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
     } else {
         links::write_outbound(db, page_id)?;
     }
+    // The system database is a record, not a page: it resolves no link and
+    // answers no search.
+    if system {
+        db.execute("UPDATE pages SET link_key=NULL WHERE id=?1", params![page_id])?;
+        db.execute("DELETE FROM pages_fts WHERE rowid=(SELECT fts_rowid FROM pages_fts_map WHERE page_id=?1)", params![page_id])?;
+        db.execute("DELETE FROM pages_fts_map WHERE page_id=?1", params![page_id])?;
+        db.execute("DELETE FROM page_links WHERE from_page_id=?1 OR to_page_id=?1", params![page_id])?;
+    }
     Ok(())
 }
 
 /// Bound both malformed existing trees and proposed cycles; reject moves
 /// whose ancestry cannot be verified rather than silently accepting them.
 fn validate_parent(db: &Connection, space: &str, id: &str, parent: &str) -> Result<(), BridgeError> {
+    // A database is not a row: its own schema and its parent's would clash.
+    let moved: Option<String> = db
+        .query_row("SELECT kind FROM pages WHERE id=?1 AND deleted_at IS NULL", params![id], |row| row.get(0))
+        .optional()?;
+    if moved.as_deref() == Some("database") {
+        let parent_kind: Option<String> = db
+            .query_row("SELECT kind FROM pages WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL", params![parent, space], |row| row.get(0))
+            .optional()?;
+        if parent_kind.as_deref() == Some("database") {
+            return Err(invalid("a database cannot be a row of another database"));
+        }
+    }
     let mut next = Some(parent.to_owned());
     let mut seen = std::collections::HashSet::new();
     for _ in 0..64 {
@@ -2336,6 +2474,7 @@ pub(crate) mod tests {
         let path = page.note.path.clone().unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().contains("Status: \"Reading\""));
         notes.update_schema(&id, &[SchemaOp::RenameOption { prop: status, option: reading, name: "Reading now".into() }], PERSON).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
         let file = std::fs::read_to_string(&path).unwrap();
         assert!(file.contains("Status: \"Reading now\""), "{file}");
         assert_eq!(notes.read(&row.id).unwrap().seq, page.seq, "an option rename touches no row doc");
@@ -2390,6 +2529,139 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(spaces, vec!["foreign"], "one row per property, under the database's own space");
+    }
+
+    #[test]
+    fn writing_a_database_keeps_its_rows_indexed() {
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let indexed = |notes: &NotesService| -> i64 {
+            notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM page_values WHERE database_id=?1", params![id], |row| row.get(0))?)).unwrap()
+        };
+        assert_eq!(indexed(&notes), 1);
+        notes.update(UpdateNote { id: id.clone(), title: Some("Books".into()), ..Default::default() }, PERSON).unwrap();
+        assert_eq!(indexed(&notes), 1, "renaming a database must not empty its rows' values");
+        let view = crate::notes::doc::ViewDef {
+            name: "Board".into(),
+            kind: crate::notes::doc::ViewType::Board,
+            order: 9,
+            filter: None,
+            sorts: vec![],
+            group_by: None,
+            date_property: None,
+            properties: vec![],
+        };
+        let view_id = notes.put_view(&id, None, view, PERSON).unwrap();
+        assert_eq!(indexed(&notes), 1, "saving a view must not empty the rows' values");
+        notes.delete_view(&id, &view_id, PERSON).unwrap();
+        assert_eq!(indexed(&notes), 1);
+    }
+
+    #[test]
+    fn the_system_database_is_not_a_page_a_person_can_reach() {
+        let (_dir, notes) = service();
+        let system = notes.system_database().unwrap();
+        assert_eq!(notes.read(&system).unwrap().note.path, None, "the record has no file");
+        let named = notes.create(CreatePage { title: Some("Notes".into()), ..Default::default() }, PERSON).unwrap();
+        let linker = notes.create(CreatePage { title: Some("Linker".into()), content: Some("see [[Notes]]".into()), ..Default::default() }, PERSON).unwrap();
+        assert_eq!(notes.read(&named.id).unwrap().backlinks[0].page_id, linker.id, "[[Notes]] is the person's page");
+        assert!(notes.list(&ListFilter { query: Some("Notes".into()), ..Default::default() }).unwrap().iter().all(|note| note.id != system));
+        assert!(notes.delete(&system, PERSON).is_err());
+        assert!(notes.update(UpdateNote { id: system.clone(), state: Some("archived".into()), ..Default::default() }, PERSON).is_err());
+        assert!(notes.update(UpdateNote { id: system.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).is_err());
+        assert!(notes.edit(EditPage { id: system.clone(), text: Some("x".into()), ..Default::default() }, PERSON).is_err());
+        assert!(notes.create(CreatePage { title: Some("Row".into()), parent_id: Some(system.clone()), ..Default::default() }, PERSON).is_err());
+        assert!(notes.update_schema(&system, &[SchemaOp::Add(NewProperty { name: "Extra".into(), kind: "text".into(), ..Default::default() })], PERSON).is_ok(), "a person owns the views");
+        assert!(notes.create(CreatePage { title: Some("Mine".into()), kind: Some("database".into()), scope: Some("space".into()), ..Default::default() }, PERSON).is_err());
+    }
+
+    #[test]
+    fn a_database_cannot_become_a_row_of_another_database() {
+        let (_dir, notes) = service();
+        let first = reading_list(&notes).0;
+        let second = reading_list(&notes).0;
+        assert!(notes.update(UpdateNote { id: second, parent_id: Some(first), ..Default::default() }, PERSON).is_err());
+    }
+
+    #[test]
+    fn concurrent_adds_of_one_name_leave_one_property() {
+        let (_dir, notes) = service();
+        let id = crate::notes::database::tests::database(&notes, "Books");
+        let notes = Arc::new(notes);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let (notes, id, barrier) = (notes.clone(), id.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    notes.update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).is_ok()
+                })
+            })
+            .collect();
+        let wins = workers.into_iter().map(|worker| worker.join().unwrap()).filter(|ok| *ok).count();
+        assert_eq!(wins, 1, "one add wins the name, the other is refused");
+        assert_eq!(notes.database(&id).unwrap().schema.len(), 1);
+    }
+
+    #[test]
+    fn a_batch_cannot_change_the_same_property_twice() {
+        let (_dir, notes) = service();
+        let (id, rating, _) = reading_list(&notes);
+        assert!(notes.update_schema(&id, &[SchemaOp::Retype { prop: rating.clone(), to: "text".into() }, SchemaOp::Delete { prop: rating.clone() }], PERSON).is_err());
+        assert!(notes.update_schema(&id, &[SchemaOp::Rename { prop: rating.clone(), name: "Score".into() }, SchemaOp::AddOption { prop: rating, name: "x".into(), color: None, group: None }], PERSON).is_err());
+    }
+
+    #[test]
+    fn a_deleted_database_leaves_no_index_after_a_rebuild() {
+        let (_dir, notes) = service();
+        let id = crate::notes::database::tests::database(&notes, "Gone");
+        crate::notes::database::tests::property(&notes, &id, "Rating", PropertyType::Number);
+        let props = |notes: &NotesService| -> i64 {
+            notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM database_props WHERE database_id=?1", params![id], |row| row.get(0))?)).unwrap()
+        };
+        notes.delete(&id, PERSON).unwrap();
+        assert_eq!(props(&notes), 0);
+        // A deleted row leaves no values behind either.
+        let other = crate::notes::database::tests::database(&notes, "Kept");
+        let rating = crate::notes::database::tests::property(&notes, &other, "Rating", PropertyType::Number);
+        let row = notes.create(CreatePage { title: Some("Row".into()), parent_id: Some(other.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating, Some(serde_json::json!(1)))], PERSON).unwrap();
+        notes.delete(&row.id, PERSON).unwrap();
+        notes.rebuild_index().unwrap();
+        assert_eq!(props(&notes), 0, "a rebuild must not resurrect a deleted database's properties");
+        let values: i64 = notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM page_values WHERE page_id=?1", params![row.id], |r| r.get(0))?)).unwrap();
+        assert_eq!(values, 0, "a rebuild must not resurrect a deleted row's values");
+    }
+
+    #[test]
+    fn a_relation_names_rows_of_its_own_database() {
+        let (_dir, notes) = service();
+        let library = crate::notes::database::tests::database(&notes, "Library");
+        let book = notes.create(CreatePage { title: Some("Book".into()), parent_id: Some(library.clone()), ..Default::default() }, PERSON).unwrap();
+        let loose = notes.capture("not a row", PERSON).unwrap();
+        let (id, _rating, _status) = reading_list(&notes);
+        let added = notes.update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Related".into(), kind: "relation".into(), relation: Some(library), ..Default::default() })], PERSON).unwrap();
+        let related = added.added[0].0.clone();
+        let row = notes.create(CreatePage { title: Some("Row".into()), parent_id: Some(id), ..Default::default() }, PERSON).unwrap();
+        assert!(notes.set_values(&row.id, &[(related.clone(), Some(serde_json::json!(["nope"])))], PERSON).is_err());
+        assert!(notes.set_values(&row.id, &[(related.clone(), Some(serde_json::json!([loose.id])))], PERSON).is_err(), "a page outside the database is not a row");
+        notes.set_values(&row.id, &[(related, Some(serde_json::json!([book.id])))], PERSON).unwrap();
+    }
+
+    #[test]
+    fn adding_a_property_takes_the_value_the_file_already_had() {
+        let (_dir, notes) = service();
+        let id = crate::notes::database::tests::database(&notes, "Books");
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        let path = notes.read(&row.id).unwrap().note.path.unwrap();
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\nPriority: \"urgent\"\n---\n")).unwrap();
+        crate::notes::projector::import_changes(&notes).unwrap();
+        let added = notes.update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Priority".into(), kind: "text".into(), ..Default::default() })], PERSON).unwrap();
+        assert_eq!(values_of(&notes, &row.id)[&added.added[0].0], serde_json::json!("urgent"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Priority: \"urgent\""));
     }
 
     #[test]

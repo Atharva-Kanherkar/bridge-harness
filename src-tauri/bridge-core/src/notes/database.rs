@@ -38,6 +38,8 @@ pub struct DatabaseDoc {
     pub scope: String,
     pub schema: BTreeMap<String, PropertyDef>,
     pub views: BTreeMap<String, ViewDef>,
+    /// Old property names, mapping each to the property id that owned it.
+    pub retired: BTreeMap<String, String>,
 }
 
 impl DatabaseDoc {
@@ -71,6 +73,7 @@ pub fn read(db: &Connection, id: &str) -> Result<Option<DatabaseDoc>, BridgeErro
         scope: page.scope().unwrap_or_else(|| "children".to_owned()),
         schema: page.schema(),
         views: page.views(),
+        retired: page.retired(),
     }))
 }
 
@@ -95,6 +98,17 @@ pub fn row_ids(db: &Connection, database_id: &str) -> Result<Vec<String>, Bridge
     Ok(ids)
 }
 
+/// One property's value on every row that has one, with the row id.
+pub fn row_values(db: &Connection, database_id: &str, prop: &str) -> Result<Vec<(String, Value)>, BridgeError> {
+    let mut out = Vec::new();
+    for row in row_ids(db, database_id)? {
+        if let Some(value) = doc::load_page(db, &row, None)?.0.values().remove(prop) {
+            out.push((row, value));
+        }
+    }
+    Ok(out)
+}
+
 /// A property name, trimmed, or the reason it cannot be used.
 pub fn check_name(schema: &BTreeMap<String, PropertyDef>, name: &str, except: Option<&str>) -> Result<String, BridgeError> {
     let name = name.trim();
@@ -105,18 +119,24 @@ pub fn check_name(schema: &BTreeMap<String, PropertyDef>, name: &str, except: Op
         return Err(invalid("a property name is at most 80 characters"));
     }
     // The name becomes a plain YAML key in every row's file.
-    if name.chars().any(|character| matches!(character, ':' | '#' | '[' | ']' | '{' | '}' | ',' | '&' | '*' | '?' | '|' | '>' | '!' | '@' | '`' | '"' | '\'' | '%' | '\n' | '\r' | '\t')) {
+    let lowered = name.to_lowercase();
+    if name.starts_with(['-', '?', ':', '#', '&', '*', '!', '|', '>', '@', '`']) || name.chars().any(|character| matches!(character, ':' | '#' | '[' | ']' | '{' | '}' | ',' | '&' | '*' | '?' | '|' | '>' | '!' | '@' | '`' | '"' | '\'' | '%' | '\n' | '\r' | '\t')) {
         return Err(invalid(format!("{name} cannot be a property name: it needs to be a plain YAML key")));
     }
-    let lowered = name.to_lowercase();
+    // YAML reads these as booleans, null or numbers, not as a key a person can read back.
+    if matches!(lowered.as_str(), "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~") || lowered.parse::<f64>().is_ok() {
+        return Err(invalid(format!("{name} cannot be a property name: YAML would not read it as one")));
+    }
     if SYSTEM_PROPERTIES.iter().any(|id| id.to_lowercase() == lowered) {
         return Err(invalid(format!("{name} is a system property; choose another name")));
     }
-    if super::markdown::KNOWN.iter().any(|key| *key == lowered) {
+    if super::markdown::KNOWN.iter().any(|key| key.to_lowercase() == lowered) {
         return Err(invalid(format!("{name} is reserved in the page's frontmatter; choose another name")));
     }
-    if schema.values().any(|def| def.name.eq_ignore_ascii_case(name)) && !schema.iter().any(|(id, def)| Some(id.as_str()) == except && def.name.eq_ignore_ascii_case(name)) {
-        return Err(invalid(format!("this database already has a property named {name}")));
+    for (id, def) in schema {
+        if Some(id.as_str()) != except && def.name.to_lowercase() == lowered {
+            return Err(invalid(format!("this database already has a property named {name}")));
+        }
     }
     Ok(name.to_owned())
 }
@@ -127,7 +147,8 @@ pub fn check_option_name(def: &PropertyDef, name: &str, except: Option<&str>) ->
     if name.is_empty() {
         return Err(invalid(format!("{} needs a name for its option", def.name)));
     }
-    if def.options.iter().any(|option| option.name.eq_ignore_ascii_case(name) && Some(option.id.as_str()) != except) {
+    let lowered = name.to_lowercase();
+    if def.options.iter().any(|option| option.name.to_lowercase() == lowered && Some(option.id.as_str()) != except) {
         return Err(invalid(format!("{} already has an option named {name}", def.name)));
     }
     Ok(name.to_owned())
@@ -153,38 +174,48 @@ pub fn validate_value(def: &PropertyDef, value: &Value) -> Result<(), BridgeErro
         }
         PropertyType::MultiSelect => {
             let items = value.as_array().ok_or_else(|| bad("a list of options"))?;
+            let mut seen = std::collections::BTreeSet::new();
             for item in items {
                 let id = item.as_str().ok_or_else(|| bad("a list of options"))?;
                 if def.option(id).is_none() {
                     return Err(invalid(format!("{} has no option {id}; choose one of {}", def.name, option_names(def))));
                 }
+                if !seen.insert(id) {
+                    return Err(invalid(format!("{} lists the same option twice", def.name)));
+                }
             }
             Ok(())
         }
         PropertyType::Date => {
-            if let Some(raw) = value.as_str() {
-                return check_date(raw).then_some(()).ok_or_else(|| invalid(format!("{} is not a date: {raw}", def.name)));
-            }
-            let object = value.as_object().ok_or_else(|| bad("a date"))?;
+            let object = value.as_object().ok_or_else(|| invalid(format!("{} is {{start, end?}}, not {}", def.name, value)))?;
             let start = object.get("start").and_then(Value::as_str).ok_or_else(|| bad("a date with a start"))?;
-            if !check_date(start) {
+            let Some(start_at) = instant(start) else {
                 return Err(invalid(format!("{} starts at a non-date: {start}", def.name)));
-            }
+            };
             if let Some(end) = object.get("end") {
                 let end = end.as_str().ok_or_else(|| bad("a date"))?;
-                if !check_date(end) {
+                let Some(end_at) = instant(end) else {
                     return Err(invalid(format!("{} ends at a non-date: {end}", def.name)));
+                };
+                if end_at < start_at {
+                    return Err(invalid(format!("{} ends before it starts", def.name)));
                 }
+            }
+            if object.keys().any(|key| !matches!(key.as_str(), "start" | "end")) {
+                return Err(bad("a date with only start and end"));
             }
             Ok(())
         }
         PropertyType::Relation => {
             let items = value.as_array().ok_or_else(|| bad("a list of page ids"))?;
-            if items.iter().all(|item| item.as_str().is_some_and(|id| !id.trim().is_empty())) {
-                Ok(())
-            } else {
-                Err(bad("a list of page ids"))
+            let mut seen = std::collections::BTreeSet::new();
+            for item in items {
+                let id = item.as_str().filter(|id| !id.trim().is_empty()).ok_or_else(|| bad("a list of page ids"))?;
+                if !seen.insert(id) {
+                    return Err(invalid(format!("{} lists the same page twice", def.name)));
+                }
             }
+            Ok(())
         }
     }
 }
@@ -201,20 +232,28 @@ fn option_names(def: &PropertyDef) -> String {
 
 /// `YYYY-MM-DD` or RFC 3339.
 pub fn check_date(raw: &str) -> bool {
-    let raw = raw.trim();
-    if raw.len() == 10 {
-        return chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").is_ok();
-    }
-    chrono::DateTime::parse_from_rfc3339(raw).is_ok()
+    instant(raw).is_some()
 }
 
-/// The `YYYY-MM-DD` an index row stores for a date or datetime.
-fn date_key(raw: &str) -> Option<String> {
+/// A date or a datetime as one comparable instant. A bare day is midnight UTC.
+pub fn instant(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     let raw = raw.trim();
-    if !check_date(raw) {
-        return None;
+    if raw.len() == 10 {
+        let day = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()?;
+        return Some(chrono::DateTime::from_naive_utc_and_offset(day.and_hms_opt(0, 0, 0)?, chrono::Utc));
     }
-    Some(raw[..10].to_owned())
+    Some(chrono::DateTime::parse_from_rfc3339(raw).ok()?.with_timezone(&chrono::Utc))
+}
+
+/// The `date_v` an index row stores. A `datetime` keeps its instant in UTC; a
+/// `date` keeps its day.
+fn date_key(def: &PropertyDef, raw: &str) -> Option<String> {
+    let at = instant(raw)?;
+    if def.date_format.as_deref() == Some("datetime") {
+        Some(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    } else {
+        Some(at.date_naive().format("%Y-%m-%d").to_string())
+    }
 }
 
 /// The value a retype produces. `None` clears the cell. A retype to `select`
@@ -270,15 +309,13 @@ pub(crate) fn reindex_page(db: &Connection, space: &str, page_id: &str, live: &d
     db.execute("DELETE FROM page_values WHERE space_id=?1 AND page_id=?2", params![space, page_id])?;
     db.execute("DELETE FROM database_props WHERE space_id=?1 AND database_id=?2", params![space, page_id])?;
     let props = live.props();
-    // A database that was deleted (or stopped being one) leaves no values
-    // behind for the rows it used to own.
-    if props.kind.as_deref() == Some("database") || props.deleted_at.is_some() {
-        db.execute("DELETE FROM page_values WHERE space_id=?1 AND database_id=?2", params![space, page_id])?;
-    }
     if props.deleted_at.is_some() {
+        // A tombstoned database leaves no values behind for the rows it owned.
+        db.execute("DELETE FROM page_values WHERE space_id=?1 AND database_id=?2", params![space, page_id])?;
         return Ok(());
     }
     if props.kind.as_deref() == Some("database") {
+        // The rows keep their values; only this database's own records change.
         return write_props(db, space, page_id, &live.schema());
     }
     let Some(parent) = props.parent_id else { return Ok(()) };
@@ -352,8 +389,7 @@ fn scalar_rows(def: &PropertyDef, value: &Value) -> Vec<ScalarRow> {
     match def.kind {
         PropertyType::Number => value.as_f64().map(|number| vec![row(0, None, Some(number), None)]).unwrap_or_default(),
         PropertyType::Date => {
-            let raw = value.as_str().map(str::to_owned).or_else(|| value.get("start").and_then(Value::as_str).map(str::to_owned));
-            let key = raw.as_deref().and_then(date_key);
+            let key = value.get("start").and_then(Value::as_str).and_then(|start| date_key(def, start));
             key.map(|key| vec![row(0, None, None, Some(key))]).unwrap_or_default()
         }
         PropertyType::MultiSelect | PropertyType::Relation => value
@@ -392,10 +428,13 @@ pub fn render_value(db: &Connection, space: &str, def: &PropertyDef, value: &Val
             let names: Vec<&str> = value.as_array()?.iter().filter_map(|item| def.option(item.as_str()?).map(|option| option.name.as_str())).collect();
             serde_json::to_string(&names).ok()
         }
-        PropertyType::Date => match value {
-            Value::String(raw) => Some(super::markdown::scalar(raw)),
-            _ => serde_json::to_string(value).ok(),
-        },
+        PropertyType::Date => {
+            let start = value.get("start")?.as_str()?;
+            match value.get("end").and_then(Value::as_str) {
+                Some(end) => serde_json::to_string(&json!({ "start": start, "end": end })).ok(),
+                None => Some(super::markdown::scalar(start)),
+            }
+        }
         PropertyType::Relation => {
             let titles: Vec<String> = value.as_array()?.iter().filter_map(Value::as_str).map(|id| relation_target(db, space, def, id)).collect();
             serde_json::to_string(&titles).ok()
@@ -481,14 +520,13 @@ pub fn parse_value(db: &Connection, space: &str, def: &PropertyDef, raw: &str) -
         }
         PropertyType::Date => {
             let raw = raw.trim();
-            if raw.starts_with('{') {
-                let value: Value = serde_json::from_str(raw).ok()?;
-                validate_value(def, &value).ok()?;
-                Some(value)
+            let value = if raw.starts_with('{') {
+                serde_json::from_str::<Value>(raw).ok()?
             } else {
-                let raw = super::markdown::read_scalar(raw)?;
-                check_date(&raw).then(|| json!(raw))
-            }
+                json!({ "start": super::markdown::read_scalar(raw)? })
+            };
+            validate_value(def, &value).ok()?;
+            Some(value)
         }
         PropertyType::Relation => {
             let items = super::markdown::read_list(raw);
@@ -501,6 +539,11 @@ pub fn parse_value(db: &Connection, space: &str, def: &PropertyDef, raw: &str) -
 // ---------------------------------------------------------------------------
 // The system database
 // ---------------------------------------------------------------------------
+
+/// The filter operators a saved view may use. #888 owns the executor and its
+/// per-type rules; this table is what the seeded views are written against and
+/// what their test validates, so the two cannot drift silently.
+pub const FILTER_OPS: [&str; 6] = ["is", "isNot", "isAnyOf", "isNoneOf", "isEmpty", "isNotEmpty"];
 
 /// The views every space starts with, reproducing the Notes list's tabs.
 ///
@@ -528,7 +571,7 @@ pub fn default_views() -> Vec<(String, ViewDef)> {
     let all = |item: Value| json!({ "and": [item] });
     let and = |items: Vec<Value>| json!({ "and": items });
     let or = |items: Vec<Value>| json!({ "or": items });
-    let not_archived = || condition("state", "notEquals", Some(json!("archived")));
+    let not_archived = || condition("state", "isNot", Some(json!("archived")));
     vec![
         (
             new_id(),
@@ -537,25 +580,36 @@ pub fn default_views() -> Vec<(String, ViewDef)> {
                 0,
                 and(vec![
                     not_archived(),
-                    or(vec![condition("kind", "notEquals", Some(json!("task"))), condition("parent", "isEmpty", None)]),
+                    or(vec![condition("kind", "isNot", Some(json!("task"))), condition("parent", "isEmpty", None)]),
                 ]),
             ),
         ),
-        (new_id(), view("Inbox", 1, all(condition("state", "equals", Some(json!("inbox")))))),
         (
             new_id(),
-            view("Pages", 2, and(vec![condition("kind", "notEquals", Some(json!("task"))), not_archived()])),
+            view(
+                "Inbox",
+                1,
+                and(vec![
+                    condition("state", "is", Some(json!("inbox"))),
+                    // Today's Inbox never shows a task that sits under a page.
+                    or(vec![condition("kind", "isNot", Some(json!("task"))), condition("parent", "isEmpty", None)]),
+                ]),
+            ),
         ),
         (
             new_id(),
-            view("Tasks", 3, and(vec![condition("kind", "equals", Some(json!("task"))), not_archived()])),
+            view("Pages", 2, and(vec![condition("kind", "isNot", Some(json!("task"))), not_archived()])),
         ),
-        (new_id(), view("Ideas", 4, all(condition("kind", "equals", Some(json!("idea")))))),
         (
             new_id(),
-            view("In progress with an agent", 5, and(vec![condition("state", "equals", Some(json!("doing"))), condition("chats", "isNotEmpty", None)])),
+            view("Tasks", 3, and(vec![condition("kind", "is", Some(json!("task"))), not_archived()])),
         ),
-        (new_id(), view("Archived", 6, all(condition("state", "equals", Some(json!("archived")))))),
+        (new_id(), view("Ideas", 4, all(condition("kind", "is", Some(json!("idea")))))),
+        (
+            new_id(),
+            view("In progress with an agent", 5, and(vec![condition("state", "is", Some(json!("doing"))), condition("chats", "isNotEmpty", None)])),
+        ),
+        (new_id(), view("Archived", 6, all(condition("state", "is", Some(json!("archived")))))),
     ]
 }
 
@@ -609,10 +663,12 @@ pub(crate) mod tests {
             (PropertyType::Url, json!("https://bridge.dev"), json!(false)),
             (PropertyType::Number, json!(4.5), json!("4.5")),
             (PropertyType::Checkbox, json!(true), json!("true")),
-            (PropertyType::Date, json!("2026-11-10"), json!("10 November")),
-            (PropertyType::Date, json!({"start": "2026-11-10", "end": "2026-11-12"}), json!({"end": "2026-11-12"})),
+            (PropertyType::Date, json!({"start": "2026-11-10"}), json!("2026-11-10")),
+            (PropertyType::Date, json!({"start": "2026-11-10", "end": "2026-11-12"}), json!({"start": "2026-11-12", "end": "2026-11-01"})),
             (PropertyType::Relation, json!(["page-1"]), json!([" "])),
             (PropertyType::MultiSelect, json!(["todo"]), json!(["todo", "done", "elsewhere"])),
+            (PropertyType::MultiSelect, json!(["todo"]), json!(["todo", "todo"])),
+            (PropertyType::Relation, json!(["page-1"]), json!(["page-1", "page-1"])),
         ] {
             let def = PropertyDef { name: "F".into(), kind, order: 0, options: status.options.clone(), relation: None, date_format: None };
             assert!(validate_value(&def, &good).is_ok(), "{kind:?} refused {good}");
@@ -662,10 +718,23 @@ pub(crate) mod tests {
         schema.insert("p1".to_owned(), PropertyDef { name: "Rating".into(), kind: PropertyType::Number, order: 0, options: vec![], relation: None, date_format: None });
         assert_eq!(check_name(&schema, "  Due  ", None).unwrap(), "Due");
         assert_eq!(check_name(&schema, "rating", Some("p1")).unwrap(), "rating", "its own name is not a duplicate");
-        for bad in ["rating", "Title", "state", "createdBy", "id", "parent", "tags", "database", ""] {
+        for bad in ["rating", "Title", "state", "createdBy", "id", "parent", "tags", "database", "", "- Due", "true", "null", "2026"] {
             assert!(check_name(&schema, bad, None).is_err(), "{bad} was accepted");
         }
+        assert!(check_name(&schema, "Été", None).is_ok());
+        schema.insert("p2".to_owned(), PropertyDef { name: "Été".into(), kind: PropertyType::Text, order: 1, options: vec![], relation: None, date_format: None });
+        assert!(check_name(&schema, "été", None).is_err(), "one Unicode fold for every comparison");
+        schema.remove("p2");
         assert!(check_name(&schema, "Stars & Stripes", None).is_err(), "a name has to be a plain YAML key");
+    }
+
+    #[test]
+    fn a_datetime_indexes_its_instant_and_a_date_its_day() {
+        let date = PropertyDef { name: "Due".into(), kind: PropertyType::Date, order: 0, options: vec![], relation: None, date_format: Some("date".into()) };
+        let datetime = PropertyDef { date_format: Some("datetime".into()), ..date.clone() };
+        let evening = json!({"start": "2026-11-10T23:30:00-08:00"});
+        assert_eq!(scalar_rows(&date, &evening)[0].date.as_deref(), Some("2026-11-11"), "a day in the value's own offset");
+        assert_eq!(scalar_rows(&datetime, &evening)[0].date.as_deref(), Some("2026-11-11T07:30:00.000Z"), "a datetime keeps its instant");
     }
 
     #[test]
@@ -774,45 +843,84 @@ pub(crate) mod tests {
         assert_eq!(reopened.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM pages WHERE kind='database'", [], |r| r.get::<_, i64>(0))?)).unwrap(), 1);
     }
 
+    /// A reference evaluator for the seeded filters. #888's executor is the
+    /// real one; this is here so the seeded views can be checked against
+    /// today's Notes list on a fixture instead of against their own text.
+    fn matches(filter: &Value, note: &bridge_protocol::messages::Note) -> bool {
+        if let Some(items) = filter.get("and").and_then(Value::as_array) {
+            return items.iter().all(|item| matches(item, note));
+        }
+        if let Some(items) = filter.get("or").and_then(Value::as_array) {
+            return items.iter().any(|item| matches(item, note));
+        }
+        let property = filter.get("property").and_then(Value::as_str).unwrap_or_default();
+        let op = filter.get("op").and_then(Value::as_str).unwrap_or_default();
+        assert!(FILTER_OPS.contains(&op), "a seeded view uses an operator the grammar does not have: {op}");
+        let wanted = filter.get("value").and_then(Value::as_str);
+        let actual: Option<String> = match property {
+            "state" => Some(note.state.clone()),
+            "kind" => Some(note.kind.clone()),
+            "parent" => note.parent_id.clone(),
+            "chats" => (!note.session_ids.is_empty()).then(|| "some".to_owned()),
+            other => panic!("a seeded view filters on {other}, which the evaluator does not know"),
+        };
+        match op {
+            "is" => actual.as_deref() == wanted,
+            "isNot" => actual.as_deref() != wanted,
+            "isEmpty" => actual.is_none(),
+            "isNotEmpty" => actual.is_some(),
+            other => panic!("unhandled op {other}"),
+        }
+    }
+
     #[test]
     fn the_seeded_views_reproduce_the_notes_list_tabs() {
+        use crate::notes::service::{CreatePage, ListFilter};
+        let (_dir, notes) = service();
+        let page = notes.create(CreatePage { title: Some("Plan".into()), ..Default::default() }, PERSON).unwrap();
+        notes.create(CreatePage { title: Some("Inbox".into()), state: Some("inbox".into()), ..Default::default() }, PERSON).unwrap();
+        notes.create(CreatePage { title: Some("Child task".into()), kind: Some("task".into()), parent_id: Some(page.id.clone()), state: Some("inbox".into()), ..Default::default() }, PERSON).unwrap();
+        notes.create(CreatePage { title: Some("Top task".into()), kind: Some("task".into()), ..Default::default() }, PERSON).unwrap();
+        notes.create(CreatePage { title: Some("Old".into()), state: Some("archived".into()), ..Default::default() }, PERSON).unwrap();
+        notes.create(CreatePage { title: Some("An idea".into()), kind: Some("idea".into()), ..Default::default() }, PERSON).unwrap();
+        let working = notes.create(CreatePage { title: Some("With an agent".into()), kind: Some("task".into()), state: Some("doing".into()), ..Default::default() }, PERSON).unwrap();
+        notes.update(crate::notes::service::UpdateNote { id: working.id, add_session_id: Some("chat".into()), ..Default::default() }, PERSON).unwrap();
+
+        let all = notes.list(&ListFilter { include_archived: true, ..Default::default() }).unwrap();
+        // Today's NotesScreen list logic, ported.
+        let child_task = |note: &bridge_protocol::messages::Note| note.parent_id.is_some() && note.kind == "task";
+        let today = |tab: &str| -> std::collections::BTreeSet<String> {
+            all.iter()
+                .filter(|note| match tab {
+                    "archived" => note.state == "archived",
+                    _ if note.state == "archived" => false,
+                    "tasks" => note.kind == "task",
+                    "pages" => note.kind != "task",
+                    _ => !child_task(note) && (tab == "all" || note.state == "inbox"),
+                })
+                .map(|note| note.id.clone())
+                .collect()
+        };
         let views = default_views();
-        let by_name = |name: &str| views.iter().find(|(_, view)| view.name == name).unwrap().1.clone();
-        let all = by_name("All");
-        assert_eq!(
-            all.filter,
-            Some(json!({"and": [
-                {"property": "state", "op": "notEquals", "value": "archived"},
-                {"or": [
-                    {"property": "kind", "op": "notEquals", "value": "task"},
-                    {"property": "parent", "op": "isEmpty"}
-                ]}
-            ]}))
-        );
-        assert_eq!(by_name("Inbox").filter, Some(json!({"and": [{"property": "state", "op": "equals", "value": "inbox"}]})));
-        assert_eq!(
-            by_name("Pages").filter,
-            Some(json!({"and": [
-                {"property": "kind", "op": "notEquals", "value": "task"},
-                {"property": "state", "op": "notEquals", "value": "archived"}
-            ]}))
-        );
-        assert_eq!(
-            by_name("Tasks").filter,
-            Some(json!({"and": [
-                {"property": "kind", "op": "equals", "value": "task"},
-                {"property": "state", "op": "notEquals", "value": "archived"}
-            ]}))
-        );
-        assert_eq!(by_name("Ideas").filter, Some(json!({"and": [{"property": "kind", "op": "equals", "value": "idea"}]})));
-        assert_eq!(
-            by_name("In progress with an agent").filter,
-            Some(json!({"and": [
-                {"property": "state", "op": "equals", "value": "doing"},
-                {"property": "chats", "op": "isNotEmpty"}
-            ]}))
-        );
-        assert_eq!(by_name("Archived").filter, Some(json!({"and": [{"property": "state", "op": "equals", "value": "archived"}]})));
+        let view = |name: &str| views.iter().find(|(_, view)| view.name == name).unwrap().1.clone();
+        for (name, tab) in [("All", "all"), ("Inbox", "inbox"), ("Pages", "pages"), ("Tasks", "tasks"), ("Archived", "archived")] {
+            let actual: std::collections::BTreeSet<String> = all
+                .iter()
+                .filter(|note| matches(view(name).filter.as_ref().unwrap(), note))
+                .map(|note| note.id.clone())
+                .collect();
+            assert_eq!(actual, today(tab), "{name} does not match today's {tab} list");
+        }
+        let ideas: std::collections::BTreeSet<String> = all.iter().filter(|note| note.kind == "idea").map(|note| note.id.clone()).collect();
+        let actual: std::collections::BTreeSet<String> = all.iter().filter(|note| matches(view("Ideas").filter.as_ref().unwrap(), note)).map(|note| note.id.clone()).collect();
+        assert_eq!(actual, ideas, "Ideas");
+        let doing: std::collections::BTreeSet<String> = all.iter().filter(|note| note.state == "doing" && !note.session_ids.is_empty()).map(|note| note.id.clone()).collect();
+        let actual: std::collections::BTreeSet<String> = all
+            .iter()
+            .filter(|note| matches(view("In progress with an agent").filter.as_ref().unwrap(), note))
+            .map(|note| note.id.clone())
+            .collect();
+        assert_eq!(actual, doing, "In progress with an agent");
         assert_eq!(views.len(), 7);
     }
 }

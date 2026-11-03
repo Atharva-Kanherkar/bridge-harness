@@ -12,6 +12,11 @@
 //! current doc it merges with whatever an agent wrote in the meantime instead
 //! of overwriting it. Every doc instance gets a random client id, so the
 //! rebuilt base and the live doc never share one.
+//!
+//! Database records are one map entry per property, per view and per value, so
+//! edits to different entries merge. A property's options live inside that
+//! property's entry: two people changing the same property at once are
+//! last-writer-wins, and the later update is the one a replay ends with.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -27,6 +32,9 @@ pub const PROPS: &str = "props";
 pub const DATABASE: &str = "database";
 pub const SCHEMA: &str = "schema";
 pub const VIEWS: &str = "views";
+/// Old property names a rename or a delete retired, mapping the name to the
+/// property id. Files still carrying the old line drop it on their next write.
+pub const RETIRED: &str = "retired";
 /// Row pages: one map entry per property id, holding its JSON value.
 pub const VALUES: &str = "values";
 /// The one entry of `Y.Map("database")`.
@@ -190,7 +198,8 @@ impl PropertyDef {
     }
 
     pub fn option_by_name(&self, name: &str) -> Option<&OptionDef> {
-        self.options.iter().find(|option| option.name.eq_ignore_ascii_case(name.trim()))
+        let name = name.trim().to_lowercase();
+        self.options.iter().find(|option| option.name.to_lowercase() == name)
     }
 }
 
@@ -272,6 +281,8 @@ pub struct RecordsPatch {
     pub schema: Vec<(String, Option<String>)>,
     pub views: Vec<(String, Option<String>)>,
     pub values: Vec<(String, Option<String>)>,
+    /// Retired property names, keyed by the name, holding the property id.
+    pub retired: Vec<(String, Option<String>)>,
 }
 
 impl RecordsPatch {
@@ -300,6 +311,18 @@ impl RecordsPatch {
         self
     }
 
+    /// Remember an old property name so files stop writing it.
+    pub fn retire(mut self, name: &str, prop: &str) -> Self {
+        self.retired.push((name.to_owned(), Some(json_string(&prop))));
+        self
+    }
+
+    /// Forget a retired name once no schema uses it and no file should.
+    pub fn restore_name(mut self, name: &str) -> Self {
+        self.retired.push((name.to_owned(), None));
+        self
+    }
+
     /// Set (`Some`) or clear (`None`) one property's value.
     pub fn put_value(mut self, id: &str, value: Option<&serde_json::Value>) -> Self {
         self.values.push((id.to_owned(), value.map(json_string)));
@@ -307,7 +330,7 @@ impl RecordsPatch {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.scope.is_none() && self.schema.is_empty() && self.views.is_empty() && self.values.is_empty()
+        self.scope.is_none() && self.schema.is_empty() && self.views.is_empty() && self.values.is_empty() && self.retired.is_empty()
     }
 }
 
@@ -468,6 +491,11 @@ impl PageDoc {
         self.records(VALUES).into_iter().filter_map(|(id, json)| Some((id, serde_json::from_str(&json).ok()?))).collect()
     }
 
+    /// The old property names a rename or a delete retired.
+    pub fn retired(&self) -> std::collections::BTreeMap<String, String> {
+        self.records(RETIRED).into_iter().filter_map(|(name, json)| Some((name, serde_json::from_str(&json).ok()?))).collect()
+    }
+
     /// Change the scope, schema, views or values in one transaction. Maps a
     /// patch does not touch are not created, so a plain page never grows empty
     /// shared types.
@@ -511,6 +539,7 @@ impl PageDoc {
             schema: (!patch.schema.is_empty()).then(|| self.doc.get_or_insert_map(SCHEMA)),
             views: (!patch.views.is_empty()).then(|| self.doc.get_or_insert_map(VIEWS)),
             values: (!patch.values.is_empty()).then(|| self.doc.get_or_insert_map(VALUES)),
+            retired: (!patch.retired.is_empty()).then(|| self.doc.get_or_insert_map(RETIRED)),
         }
     }
 
@@ -525,6 +554,7 @@ struct RecordMaps {
     schema: Option<yrs::MapRef>,
     views: Option<yrs::MapRef>,
     values: Option<yrs::MapRef>,
+    retired: Option<yrs::MapRef>,
 }
 
 fn apply_records(txn: &mut TransactionMut, maps: &RecordMaps, patch: &RecordsPatch) {
@@ -544,7 +574,7 @@ fn apply_records(txn: &mut TransactionMut, maps: &RecordMaps, patch: &RecordsPat
             }
         }
     }
-    for (map, entries) in [(&maps.schema, &patch.schema), (&maps.views, &patch.views), (&maps.values, &patch.values)] {
+    for (map, entries) in [(&maps.schema, &patch.schema), (&maps.views, &patch.views), (&maps.values, &patch.values), (&maps.retired, &patch.retired)] {
         let Some(map) = map else { continue };
         for (key, value) in entries {
             let was = match map.get(&*txn, key.as_str()) {
@@ -810,8 +840,39 @@ mod tests {
     }
 
     #[test]
-    fn records_replay_and_a_plain_page_grows_no_empty_maps() {
-        let (_dir, db) = db();
+    fn same_property_edits_are_last_writer_wins() {
+        let status = PropertyDef {
+            name: "Status".into(),
+            kind: PropertyType::Status,
+            order: 0,
+            options: vec![OptionDef { id: "todo".into(), name: "To do".into(), color: None, group: Some("todo".into()) }],
+            relation: None,
+            date_format: None,
+        };
+        let base = PageDoc::new();
+        let base_update = base.edit_records(&RecordsPatch::default().put_schema("status", &status)).unwrap().expect("a base");
+        let left = PageDoc::new();
+        let right = PageDoc::new();
+        left.apply(&base_update).unwrap();
+        right.apply(&base_update).unwrap();
+        let renamed = left.edit_records(&RecordsPatch::default().put_schema("status", &PropertyDef { name: "State".into(), ..status.clone() })).unwrap().unwrap();
+        let more = right
+            .edit_records(&RecordsPatch::default().put_schema(
+                "status",
+                &PropertyDef { options: vec![status.options[0].clone(), OptionDef { id: "done".into(), name: "Done".into(), color: None, group: Some("done".into()) }], ..status.clone() },
+            ))
+            .unwrap()
+            .unwrap();
+        left.apply(&more).unwrap();
+        right.apply(&renamed).unwrap();
+        assert_eq!(left.schema(), right.schema(), "two clients converge on one value");
+        let def = left.schema().remove("status").unwrap();
+        assert!(def.name == "Status" || def.name == "State", "one of the two edits wins the entry: {def:?}");
+        assert!(def.options.len() == 1 || def.options.len() == 2, "{def:?}");
+    }
+
+    #[test]
+    fn records_replay_and_a_plain_page_grows_no_empty_maps() {        let (_dir, db) = db();
         let page = PageDoc::new();
         log(&db, "p1", page.set_body("words").unwrap());
         assert!(page.edit_records(&RecordsPatch::default()).unwrap().is_none(), "an empty patch writes nothing");

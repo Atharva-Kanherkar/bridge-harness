@@ -137,8 +137,8 @@ pub fn mirror(root: &Path, input: &MirrorInput<'_>) -> Option<Mirrored> {
         // value under the name the schema no longer uses. A line the document
         // now owns is written from the document, so the file's copy goes.
         .filter(|line| {
-            let key = line_key(line);
-            !input.retired.iter().any(|name| key.eq_ignore_ascii_case(name)) && !input.owned.iter().any(|name| key.eq_ignore_ascii_case(name))
+            let key = line_key(line).to_lowercase();
+            !input.retired.iter().any(|name| name.to_lowercase() == key) && !input.owned.iter().any(|name| name.to_lowercase() == key)
         })
         .collect();
     let contents = markdown::render(&frontmatter(input.note, unknown, input.database, input.properties), input.body);
@@ -221,7 +221,7 @@ fn apply_import(
             for line in &front.unknown {
                 let Some((key, raw)) = line.split_once(':') else { continue };
                 let key = key.trim();
-                let Some((prop, def)) = ordered.iter().find(|(_, def)| def.name.eq_ignore_ascii_case(key)) else { continue };
+                let Some((prop, def)) = ordered.iter().find(|(_, def)| def.name.to_lowercase() == key.to_lowercase()) else { continue };
                 let parsed = super::database::parse_value(db, &page.note.space_id, def, raw).filter(|value| super::database::validate_value(def, value).is_ok());
                 let Some(value) = parsed else {
                     // The line stays in the file; nothing is written.
@@ -553,7 +553,7 @@ mod tests {
         let values = vec![
             (prop("Rating"), Some(serde_json::json!(5))),
             (prop("Status"), Some(serde_json::json!(reading))),
-            (prop("Due"), Some(serde_json::json!("2026-11-10"))),
+            (prop("Due"), Some(serde_json::json!({"start": "2026-11-10"}))),
             (prop("Finished"), Some(serde_json::json!(true))),
             (prop("Link"), Some(serde_json::json!("https://bridge.dev"))),
             (prop("Related"), Some(serde_json::json!([chapter.id.clone()]))),
@@ -589,9 +589,11 @@ mod tests {
         assert_eq!(notes.read(&row.id).unwrap().seq, page.seq);
         assert!(std::fs::read_to_string(&path).unwrap().contains("Rating: three"));
 
-        // A rename rewrites the key in the file and writes no row doc.
+        // A rename rewrites the key in the file, off the request path, and
+        // writes no row doc.
         let seq = notes.read(&row.id).unwrap().seq;
         notes.update_schema(&list.id, &[SchemaOp::Rename { prop: prop("Rating"), name: "Score".into() }], PERSON).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
         let renamed = std::fs::read_to_string(&path).unwrap();
         assert!(renamed.contains("Score: 3"), "{renamed}");
         assert!(!renamed.contains("Rating:"), "{renamed}");
@@ -610,6 +612,20 @@ mod tests {
         assert!(database.contains("kind: \"database\""));
         assert!(database.contains("database: {\"scope\":\"children\""), "{database}");
         assert!(database.contains("\"name\":\"Rating\"") || database.contains("\"name\":\"Score\""), "{database}");
+    }
+
+    #[test]
+    fn a_foreign_database_key_on_a_plain_page_survives() {
+        let (_dir, notes) = service();
+        let page = notes.create(CreatePage { title: Some("Plain".into()), content: Some("body\n".into()), ..Default::default() }, PERSON).unwrap();
+        let path = PathBuf::from(page.path.clone().unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\ndatabase: \"obsidian-thing\"\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        notes.update(UpdateNote { id: page.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("database: \"obsidian-thing\""), "a foreign key is not Bridge's record: {after}");
+        assert!(after.contains("title: \"Renamed\""), "{after}");
     }
 
     #[test]

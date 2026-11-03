@@ -21,8 +21,10 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
 
 ### Doc keys (one `Y.Map` per kind of entry)
 - Database page: `Y.Map("database")` holds `scope` (`children` or `space`); `Y.Map("schema")` maps
-  property id to `PropertyDef`; `Y.Map("views")` maps view id to `ViewDef`. One entry per key, so
-  two people editing different columns or views merge cleanly.
+  property id to `PropertyDef`; `Y.Map("views")` maps view id to `ViewDef`; `Y.Map("retired")` maps
+  an old property name to the id that owned it, so a rename reaches files that still use it. One
+  entry per key, so two people editing different columns or views merge cleanly. Options live inside
+  their property's entry: two people changing the same property at once are last-writer-wins.
 - Row page: `Y.Map("values")` maps property id to a JSON value. A row belongs to the database it
   is the child of (`parent_id`).
 - Replaying `page_updates` reproduces the database meta, every property, every view and every
@@ -43,10 +45,11 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
 
 ### Values
 - `text`, `url`: a JSON string. `number`: a finite JSON number. `select`, `status`: an option id.
-  `multiSelect`: an array of option ids. `date`: `{start, end?}` where each is `YYYY-MM-DD` or
-  RFC 3339. `checkbox`: a boolean. `relation`: an array of page ids.
-- A value for an unknown property id, an unknown option id, the wrong JSON type or a non-finite
-  number is refused and writes nothing.
+  `multiSelect`: an array of unique option ids. `date`: `{start, end?}` where each is `YYYY-MM-DD`
+  or RFC 3339 and `end` is not before `start`. `checkbox`: a boolean. `relation`: an array of
+  unique page ids, each a live row of the database the property names.
+- A value for an unknown property id, an unknown option id, the wrong JSON type, a non-finite
+  number or a repeated list item is refused, and a refused patch writes nothing.
 - A value whose property was deleted stays in the doc but is not indexed or projected.
 
 ### Retype conversion
@@ -56,20 +59,30 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
   conversion cannot invent one. Retyping to `status` gives every option a group; retyping away
   from `status` drops them.
 - Each converted row is one attributed write, so `page_history` can restore the old values.
+- A batch may change a property once. Validation runs inside the write's transaction, so two
+  callers cannot add the same name; the schema commits first and the row writes follow, so a
+  failure after the commit leaves the schema changed and returns the error (re-running the same
+  ops is safe, and a retype that already ran warns).
 
 ### Index maintenance
 - `database_props` and `page_values` match the docs after every write: set, clear, row
   reparenting, property deletion and retype.
 - `text_v` holds text, url, option id, `"true"`/`"false"`, or the related page id; `num_v` the
-  number; `date_v` the normalized start date. One row per scalar item, `item` being 0 for scalars
-  and the array index for `multiSelect` and `relation`.
-- Dropping both tables and calling `rebuild_index` restores them exactly.
+  number; `date_v` the day for a `date` and the UTC instant for a `datetime`. One row per scalar
+  item, `item` being 0 for scalars and the array index for `multiSelect` and `relation`.
+- Writing a database page itself (a rename, a view) never touches its rows' indexed values.
+- Dropping both tables and calling `rebuild_index` restores them exactly, for live pages only: a
+  deleted database or row leaves nothing behind.
 
 ### System database
 - Every space has exactly one database page with `scope: "space"`, title "Notes" and
   `created_by = "system"`, created idempotently on open and recorded in `spaces.system_database_id`.
   An unclaimed one left by a crash is adopted on the next open rather than duplicated.
-- It is hidden from `notes/list_notes` (and therefore from the page tree).
+- It is a record, not a page: no Markdown file, no `link_key`, no search row, no link edges, and
+  `[[Notes]]` resolves to a person's page. It is hidden from `notes/list_notes` (and therefore
+  from the page tree), and Bridge refuses to delete, archive, retitle, edit or reparent it, or to
+  put a page under it. Its views are the person's: `put_view` and `delete_view` work on it.
+- Only `create_system_database` may use `scope: "space"`; a caller that asks for it is refused.
 - It is seeded with these views, reproducing today's `NotesScreen` lists:
 
 | View | Predicate |
@@ -98,10 +111,15 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
   database schema, and parses each value by type. It compares the file with the page as the file
   was written from, so a value set in Bridge while an outside edit waits is not reverted.
 - A key that names no property stays in `Frontmatter.unknown` verbatim, and a foreign key survives
-  every rewrite. A value that does not parse is logged and the document's value wins on the next
-  projection, exactly as an invalid `state:` or `kind:` already behaves; it writes nothing.
-- A rename rewrites the key in every row's file and writes no row doc. A renamed option rewrites
-  the files that use it.
+  every rewrite, including a `database:` key on a page that is not a database. A value that does
+  not parse is logged and the document's value wins on the next projection, exactly as an invalid
+  `state:` or `kind:` already behaves; it writes nothing. There is no `page_history` notice yet;
+  the log line is the notice this phase has.
+- Adding or renaming a property imports a line the rows' files already had for that name, so an
+  existing key becomes the cell instead of being dropped.
+- A rename rewrites the key in every row's file and writes no row doc. The rewrite runs on the
+  maintenance pass (the rows are marked stale), not inside the request. A renamed option does the
+  same.
 - `database` is a reserved frontmatter key: a property cannot be named it.
 
 ## Unit Tests
@@ -111,15 +129,20 @@ Rust, `#[cfg(test)]` beside the code:
 - `store::tests`: the migration from a populated v3 fixture, the v4 index list, the new `kind`
   check, and the refusal of a v5 file.
 - `doc::tests`: records replay, one map entry per property/view, concurrent schema edits to
-  different properties.
-- `database::tests`: value validation for every type; retype conversion for every listed pair;
-  the name rules; `page_values` maintenance on set, clear, reparent, delete and retype;
-  `rebuild_index` parity; the seeded system views and the hidden system database; `seed_rows`
-  used by #888's performance gate.
+  different properties, and last-writer-wins for two edits to one property.
+- `database::tests`: value validation for every type (dates, duplicates, ranges); retype
+  conversion for every listed pair; the name rules including YAML scalars and one Unicode fold;
+  `page_values` maintenance on set, clear, reparent, delete and retype; `rebuild_index` parity
+  including deleted pages; the seeded views evaluated against a fixture space and compared with
+  a port of today's `NotesScreen` filters; `seed_rows` used by #888's performance gate.
 - `markdown::tests`: `database:` and property lines round-trip, unknown keys survive.
-- `projector::tests`: a frontmatter round trip with every type; a relation title resolving; an
-  import of a hand-edited row file including invalid values kept as unknown; a rename rewriting
-  files but not docs.
+- `projector::tests`: a frontmatter round trip with every type; a relation title resolving or an
+  id when it is ambiguous; an import of a hand-edited row file; a foreign `database:` key kept on
+  a plain page; a rename rewriting files but not docs.
+- `service::tests`: the system database's guards, no file and no link target; writes to a
+  database keeping its rows indexed; concurrent adds of one name leaving one property; a batch
+  touching one property twice refused; relations naming only rows of their database; a deleted
+  database and a deleted row leaving no index after a rebuild.
 
 ## Integration / Functional Tests
 
