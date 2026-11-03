@@ -334,7 +334,7 @@ fn tools_cases() -> Vec<ToolsCase> {
     vec![
         ToolsCase { ask: "From now on, never push directly to main. Keep that in mind in every future chat, not just this one.", proposal: Some("main"), note: false, calls: Some("memory_propose") },
         ToolsCase { ask: "What is 17 times 23?", proposal: None, note: false, calls: None },
-        ToolsCase { ask: "Write up a short note titled 'Sync options' listing yjs and automerge.", proposal: None, note: true, calls: Some("notes_create") },
+        ToolsCase { ask: "Save a note in my notes titled 'Sync options' that lists yjs and automerge.", proposal: None, note: true, calls: Some("notes_create") },
         ToolsCase { ask: "Do you remember anything about how I like my commits written?", proposal: None, note: false, calls: Some("memory_search") },
         ToolsCase { ask: "Lesson for every future security hunt: always check the upstream tracker before deep-diving a candidate. Make sure later chats know this.", proposal: Some("upstream"), note: false, calls: Some("memory_propose") },
         ToolsCase { ask: "Thanks, CI is green now and the PR is merged.", proposal: None, note: false, calls: None },
