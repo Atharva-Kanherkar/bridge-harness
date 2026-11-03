@@ -41,10 +41,11 @@ Nothing here injects a pin into a prompt.
 - Assistant message bubbles only. Worker rows, tool cards, activity groups,
   reasoning, approvals, and the user's own bubble carry no button.
 - `aria-label="Remember this"`.
-- At or under 4000 characters: saves directly with the session id as
-  `sourceSessionId`. The open dialog live-updates through `memory-changed`.
-- Over 4000: opens the dialog with the **full** text pre-filled and issues no
-  save. Never a clip, never a truncated write.
+- Any length: opens the dialog with the **full** text pre-filled as a draft
+  and issues no save. The person cuts it down to the claim worth keeping and
+  picks a kind. Never a clip, never a truncated write, never a verbatim save
+  (amended by `feat-memory-hardening.md`: one-click saves of whole replies
+  were the junk that filled every packet).
 
 ## Slash popover badging
 

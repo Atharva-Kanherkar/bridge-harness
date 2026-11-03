@@ -93,7 +93,7 @@ import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { ForkDialog } from "./components/ForkDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
-import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
+import { MemoryDialog } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { ProviderSignInDialog } from "./components/ProviderSignInDialog";
@@ -2833,13 +2833,33 @@ function AppContent() {
     return () => { active = false; off?.(); };
   }, [session?.id]);
 
-  // "Remember this" on an assistant message. Over the cap the dialog opens with
-  // the full text for the user to trim — never a clip, never a truncated save.
-  const rememberMessage = useCallback(async (text: string) => {
-    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); setView("memory"); return; }
-    try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
-    catch (e) { setError(errorMessage(e)); }
-  }, [session?.id]);
+  // Proposals waiting for review, for the sidebar badge. Re-read on every
+  // memory-changed hint; a failed read leaves the last count rather than a toast.
+  const [memoryPending, setMemoryPending] = useState(0);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    const load = () => {
+      bridgeApi.listMemoryRecords("account:local", "proposed")
+        .then(result => { if (active) setMemoryPending(result.records.length); })
+        .catch(() => undefined);
+    };
+    load();
+    void bridgeApi.onMemoryChanged(load).then(fn => {
+      if (!active) { fn(); return; }
+      off = fn;
+    }).catch(() => undefined);
+    return () => { active = false; off?.(); };
+  }, []);
+
+  // "Remember this" on an assistant message opens Memory with the reply as a
+  // draft to cut down to the one thing worth keeping. It never saves the reply:
+  // a one-click verbatim save is how status updates ended up in every chat's
+  // memory, ahead of the rules that were meant to be there.
+  const rememberMessage = useCallback((text: string) => {
+    setMemoryDraft(text);
+    setView("memory");
+  }, []);
 
   /// Send guidance into a running worker.
   ///
@@ -3238,6 +3258,7 @@ function AppContent() {
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       memoryActive={view === "memory"}
+      memoryPending={memoryPending}
       notesActive={view === "notes"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}

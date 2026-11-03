@@ -5,7 +5,7 @@ import type { MemoryRecallStats, MemoryRecord } from "./types";
 
 /** The five lifecycle states a memory record can carry — the storage status
  *  crossed with provenance. An active user pin reads as `pinned`; an accepted
- *  model proposal as `active`. */
+ *  model or agent proposal as `active`. */
 export type MemoryRecordState = "pinned" | "active" | "proposed" | "superseded" | "tombstoned";
 
 /** Mirrors the packet budget gate in `memory_packet.rs`. */
@@ -19,7 +19,7 @@ export function recordState(record: MemoryRecord): MemoryRecordState {
     case "superseded": return "superseded";
     case "deleted": return "tombstoned";
     default:
-      return record.provenance === "model_proposal" ? "active" : "pinned";
+      return record.provenance === "model_proposal" || record.provenance === "agent_proposal" ? "active" : "pinned";
   }
 }
 

@@ -369,12 +369,15 @@ function ActionRow({
   active = false,
   disabled = false,
   chord,
+  badge,
 }: {
   icon: LucideIcon;
   label: string;
   onClick: () => void;
   active?: boolean;
   disabled?: boolean;
+  /** A count of things waiting on the person, read after the label. */
+  badge?: { count: string; label: string };
   /** Advertise the row's binding in its tooltip, read from the keymap so the
    *  two cannot disagree. The accessible name stays the plain label. */
   chord?: CommandId;
@@ -385,7 +388,7 @@ function ActionRow({
       onClick={onClick}
       disabled={disabled}
       title={chord ? `${label}  ${chordLabel(chord)}` : label}
-      aria-label={label}
+      aria-label={badge ? `${label}, ${badge.label}` : label}
       aria-current={active ? "page" : undefined}
       className={cn(
         "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-[13px] tracking-[-0.008em] transition-colors",
@@ -395,9 +398,21 @@ function ActionRow({
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       {label}
+      {badge && <span aria-hidden="true" className="ml-auto rounded-full bg-foreground/10 px-1.5 text-caption tabular-nums text-muted-foreground">{badge.count}</span>}
     </button>
   );
 }
+
+/** The list read is capped, so a full page reads as "50+" rather than a count
+ *  that stops at the cap and looks exact. */
+export function pendingBadge(pending: number): { count: string; label: string } | undefined {
+  if (pending <= 0) return undefined;
+  const count = pending >= MAX_MEMORY_LIST ? `${MAX_MEMORY_LIST}+` : String(pending);
+  return { count, label: `${count} ${pending === 1 ? "proposal" : "proposals"} to review` };
+}
+
+/** `MAX_MEMORY_LIST_LIMIT` in bridge-protocol: one list read returns at most this many. */
+const MAX_MEMORY_LIST = 50;
 
 export type BridgeSidebarProps = {
   /** Every top-level session. The rail derives both the project tree and the
@@ -413,6 +428,8 @@ export type BridgeSidebarProps = {
   activeSessionId?: string;
   projectsActive: boolean;
   memoryActive?: boolean;
+  /** Memory proposals waiting for review. Nothing shows at zero. */
+  memoryPending?: number;
   marketplaceActive: boolean;
   usageActive?: boolean;
   gitplaceActive?: boolean;
@@ -479,6 +496,7 @@ export function BridgeSidebar({
   activeSessionId,
   projectsActive,
   memoryActive = false,
+  memoryPending = 0,
   notesActive = false,
   marketplaceActive,
   usageActive = false,
@@ -818,7 +836,7 @@ export function BridgeSidebar({
           {/* A terminal for every stream of work: named for what it is. */}
           <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
-          <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+          <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} badge={pendingBadge(memoryPending)} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
           {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
         </nav>

@@ -122,6 +122,7 @@ export type {
   MemoryCapabilities,
   ProviderMemoryCommand,
   MemoryExtractionSettings,
+  MemoryConsolidationSettings,
   MemoryExtractionRun,
   MemoryInjectionSettings,
   MemoryPacketAudit,
