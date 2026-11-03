@@ -130,7 +130,14 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
       suppressContentEditableWarning
       spellCheck="false"
       aria-label="Caption"
-      onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+      onKeyDown={event => {
+        if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
+        // Select all means the caption, not the page around it.
+        if (event.key === "a" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          getSelection()?.selectAllChildren(event.currentTarget);
+        }
+      }}
       onBlur={commitCaption}
       data-empty={caption ? undefined : ""}
       // An empty caption shows while the image is selected or in use, with a

@@ -377,6 +377,13 @@ describe("NoteEditor", () => {
     expect(titled.querySelector("button[aria-label^='Resize']")).toBeNull();
   });
 
+  it("selects only the caption on select all inside it", async () => {
+    await mount("Intro words\n\n![Old plan](assets/0123456789abcdef.png)\n");
+    const caption = host.querySelector<HTMLElement>("figcaption[aria-label='Caption']")!;
+    await act(async () => { caption.dispatchEvent(new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true })); });
+    expect(getSelection()?.toString()).toBe("Old plan");
+  });
+
   it("resizes an image from its handles, clamping to at least 120px", async () => {
     const { onChange } = await mount("Intro\n\n![Plan](assets/0123456789abcdef.png)\n");
     const handle = host.querySelector<HTMLButtonElement>("button[aria-label='Resize from the right edge']")!;
