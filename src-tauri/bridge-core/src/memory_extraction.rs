@@ -2000,6 +2000,19 @@ mod tests {
     }
 
     #[test]
+    fn extraction_can_propose_again_what_the_ttl_swept_unreviewed() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "direct");
+        let text = fenced(r#"[{"body":"Keeps the main checkout on main","kind":"fact","confidenceBps":8000,"rationale":"[e1] said so"}]"#);
+        assert_eq!(gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap().written, 1);
+        let later = Utc::now() + Duration::days(memory_ledger::PROPOSAL_TTL_DAYS + 1);
+        assert_eq!(memory_ledger::sweep_stale_proposals(&db, later).unwrap().len(), 1);
+        let again = gate_and_insert(&db, ACCOUNT_MEMORY_SCOPE, "s1", MODE_PROPOSE, &text).unwrap();
+        assert_eq!((again.written, again.duplicates), (1, 0), "an expired proposal never held, so it is not known");
+    }
+
+    #[test]
     fn an_identical_candidate_in_the_same_batch_is_still_one_proposal() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);

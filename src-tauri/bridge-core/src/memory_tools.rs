@@ -307,6 +307,30 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_the_ttl_swept_unreviewed_can_be_proposed_again() {
+        let (_dir, db) = tools_db();
+        let args = propose_args("Check upstream trackers before a security hunt");
+        let first = run(&db, "chat", true, PROPOSE, &args).unwrap();
+        let first_id = first.result["proposed"]["id"].as_str().unwrap().to_owned();
+        let later = chrono::Utc::now() + chrono::Duration::days(memory_ledger::PROPOSAL_TTL_DAYS + 1);
+        assert_eq!(memory_ledger::sweep_stale_proposals(&db, later).unwrap(), vec![first_id.clone()]);
+        let again = run(&db, "chat", true, PROPOSE, &args).unwrap();
+        assert_eq!(again.result["written"], true, "{}", again.result);
+        assert_ne!(again.result["proposed"]["id"], first_id, "a fresh proposal, back in review");
+        assert_eq!(memory_ledger::list(&db, ACCOUNT_MEMORY_SCOPE, Some("proposed")).unwrap().records.len(), 1);
+    }
+
+    #[test]
+    fn a_rejected_proposal_still_suppresses_a_repeat() {
+        let (_dir, db) = tools_db();
+        let args = propose_args("Check upstream trackers before a security hunt");
+        let first = run(&db, "chat", true, PROPOSE, &args).unwrap();
+        memory_ledger::reject(&db, first.result["proposed"]["id"].as_str().unwrap()).unwrap();
+        let again = run(&db, "chat", true, PROPOSE, &args).unwrap();
+        assert_eq!(again.result["written"], false);
+    }
+
+    #[test]
     fn one_chat_proposes_at_most_five() {
         let (_dir, db) = tools_db();
         let topics = ["release trains", "database migrations", "code review", "deploy windows", "incident reviews", "pairing"];

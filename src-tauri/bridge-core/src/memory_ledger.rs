@@ -473,6 +473,12 @@ fn insert_proposal_as(
 
 /// Case-insensitive body match against every non-deleted record in scope, so
 /// the extractor cannot re-propose what already exists in any state but gone.
+///
+/// A proposal the TTL swept unreviewed is the exception: it is `expired` with
+/// an empty interval, so it never held, nobody decided against it, and it can
+/// no longer be approved. Vetoing a repeat would leave the claim with no way
+/// back into review. A rejection still vetoes, and so does a record that held
+/// and then expired.
 pub(crate) fn body_already_known(
     db: &Connection,
     scope_key: &str,
@@ -482,6 +488,7 @@ pub(crate) fn body_already_known(
         .query_row(
             "SELECT 1 FROM memory_records
              WHERE scope_key=?1 AND status<>'deleted' AND lower(trim(body))=lower(trim(?2))
+               AND NOT (status='expired' AND valid_to IS valid_from)
              LIMIT 1",
             params![scope_key, body],
             |row| row.get(0),
@@ -1104,6 +1111,24 @@ mod tests {
         assert_ne!(csharp.id, cpp.id);
         assert_eq!(csharp.body, "Use C#", "the second pin is kept as typed");
         assert_eq!(count(&db, "active"), 2);
+    }
+
+    #[test]
+    fn only_an_expired_record_that_never_held_drops_out_of_the_known_bodies() {
+        let (_dir, db) = ledger_db();
+        let insert = |id: &str, valid_to: &str| {
+            db.execute(
+                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                     valid_from, valid_to, created_at, updated_at)
+                 VALUES(?1, ?2, 'fact', ?1, 'model_proposal', 'expired', '2026-09-01T00:00:00+00:00', ?3, 'now', 'now')",
+                params![id, ACCOUNT_MEMORY_SCOPE, valid_to],
+            )
+            .unwrap();
+        };
+        insert("swept proposal", "2026-09-01T00:00:00+00:00");
+        insert("held then expired", "2026-10-01T00:00:00+00:00");
+        assert!(!body_already_known(&db, ACCOUNT_MEMORY_SCOPE, "swept proposal").unwrap());
+        assert!(body_already_known(&db, ACCOUNT_MEMORY_SCOPE, "held then expired").unwrap());
     }
 
     #[test]
