@@ -1152,12 +1152,6 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 .note-editor .ProseMirror-gapcursor::after { border-top-color: var(--color-foreground); }
 .note-dropcursor { background: var(--color-ring) !important; }
-/* React node views render through a full-width wrapper; an image and its
-   handles and selection outline hug the picture, not the column. */
-.react-renderer.node-image {
-  width: fit-content;
-  margin-inline: auto;
-}
 
 /* ── Code ───────────────────────────────────────────────────────────────── */
 

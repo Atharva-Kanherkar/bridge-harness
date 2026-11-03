@@ -42,6 +42,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   const [failed, setFailed] = useState(false);
   const [live, setLive] = useState<number | null>(null);
   const figure = useRef<HTMLElement>(null);
+  const captionBox = useRef<HTMLElement>(null);
   // A drag in progress, dropped without saving if the view goes first.
   const dragging = useRef<(() => void) | null>(null);
   useEffect(() => () => dragging.current?.(), []);
@@ -57,6 +58,12 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   const resizable = !title.trim() || imageWidthOf(title) != null;
   const width = live ?? (resizable ? imageWidthOf(title) : null);
   const caption = String(node.attrs.alt ?? "");
+  // The browser edits the caption's text, so React never renders into it:
+  // the box takes the alt text only when it changes from outside.
+  useEffect(() => {
+    const box = captionBox.current;
+    if (box && box.textContent !== caption) box.textContent = caption;
+  }, [caption]);
   const commitCaption = (event: FocusEvent<HTMLElement>) => {
     const text = (event.currentTarget.textContent ?? "").replace(/\n/g, " ");
     if (text !== caption) updateAttributes({ alt: text });
@@ -118,6 +125,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
       </>}
     </span>
     <figcaption
+      ref={captionBox}
       contentEditable
       suppressContentEditableWarning
       spellCheck="false"
@@ -128,12 +136,13 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
       // An empty caption shows while the image is selected or in use, with a
       // prompt to type one.
       className={clsx("mt-1.5 text-center text-[12.5px] leading-relaxed text-muted-foreground outline-none empty:before:text-faint empty:before:content-['Add_a_caption'] focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring", !selected && "data-[empty]:hidden group-focus-within:data-[empty]:block")}
-    >{caption}</figcaption>
+    />
   </NodeViewWrapper>;
 }
 
 export const NoteImage = Image.extend({
-  addNodeView() { return ReactNodeViewRenderer(ImageView); },
+  // The wrapper hugs the picture, so its handles and outline do too.
+  addNodeView() { return ReactNodeViewRenderer(ImageView, { className: "mx-auto w-fit max-w-full" }); },
 });
 
 function PageLinkView({ node, selected }: ReactNodeViewProps) {
@@ -159,8 +168,9 @@ export const NotePageLink = PageLink.extend({
 
 function WikiLinkView({ node }: ReactNodeViewProps) {
   const pages = useContext(EditorPagesContext);
-  const target = String(node.attrs.target ?? "");
-  const alias = node.attrs.alias == null ? null : String(node.attrs.alias);
+  // Spacing is kept in the Markdown, not in what the pill says or opens.
+  const target = String(node.attrs.target ?? "").trim();
+  const alias = node.attrs.alias == null ? null : String(node.attrs.alias).trim() || null;
   return <NodeViewWrapper as="span" className="inline">
     <button
       type="button"
