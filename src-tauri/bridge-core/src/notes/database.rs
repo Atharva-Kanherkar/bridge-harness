@@ -733,7 +733,7 @@ pub(crate) mod tests {
         let date = PropertyDef { name: "Due".into(), kind: PropertyType::Date, order: 0, options: vec![], relation: None, date_format: Some("date".into()) };
         let datetime = PropertyDef { date_format: Some("datetime".into()), ..date.clone() };
         let evening = json!({"start": "2026-11-10T23:30:00-08:00"});
-        assert_eq!(scalar_rows(&date, &evening)[0].date.as_deref(), Some("2026-11-11"), "a day in the value's own offset");
+        assert_eq!(scalar_rows(&date, &evening)[0].date.as_deref(), Some("2026-11-11"), "a date property indexes the UTC day of the instant");
         assert_eq!(scalar_rows(&datetime, &evening)[0].date.as_deref(), Some("2026-11-11T07:30:00.000Z"), "a datetime keeps its instant");
     }
 

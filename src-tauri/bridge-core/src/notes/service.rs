@@ -175,12 +175,17 @@ pub struct SchemaUpdated {
 }
 
 impl SchemaOp {
-    /// The property this op changes, for the one-change-per-property rule.
+    /// The property this op changes, for the batch rule.
     pub fn property(&self) -> Option<&String> {
         match self {
             Self::Add(_) => None,
             Self::Rename { prop, .. } | Self::Delete { prop } | Self::Retype { prop, .. } | Self::AddOption { prop, .. } | Self::RenameOption { prop, .. } | Self::DeleteOption { prop, .. } => Some(prop),
         }
+    }
+
+    /// An option edit changes one property's options, not its shape.
+    pub fn is_option(&self) -> bool {
+        matches!(self, Self::AddOption { .. } | Self::RenameOption { .. } | Self::DeleteOption { .. })
     }
 }
 
@@ -452,7 +457,6 @@ impl NotesService {
             self.check_project(workspace)?;
         }
         if let Some(parent) = &page.parent_id {
-            self.check_not_system(parent)?;
             self.check_live(parent)?;
         }
         if page.scope.as_deref() == Some("space") && actor != SYSTEM {
@@ -770,6 +774,7 @@ impl NotesService {
         if patch.is_empty() {
             return Err(invalid("no values to set"));
         }
+        let mut cleared: Vec<String> = Vec::new();
         let (note, _, _) = self.write_with(id, actor, |db, live, _| {
             let props = live.props();
             if props.deleted_at.is_some() {
@@ -781,6 +786,7 @@ impl NotesService {
             let parent = props.parent_id.clone().ok_or_else(|| invalid("only a row of a database has values"))?;
             let database = database::read(db, &parent)?.ok_or_else(|| invalid("only a row of a database has values"))?;
             let space = props.space_id.clone().unwrap_or_else(|| self.space.clone());
+            let current = live.values();
             let mut records = RecordsPatch::default();
             for (prop_id, value) in patch {
                 let def = database
@@ -805,11 +811,21 @@ impl NotesService {
                         }
                         records = records.put_value(prop_id, Some(value));
                     }
-                    None => records = records.put_value(prop_id, None),
+                    None => {
+                        if current.contains_key(prop_id) {
+                            cleared.push(def.name.clone());
+                        }
+                        records = records.put_value(prop_id, None);
+                    }
                 }
             }
             live.edit_records(&records)
         })?;
+        if !cleared.is_empty() {
+            // The old line is still in the file; the regular projection kept it
+            // because the document no longer has a value for the property.
+            self.project_with(id, &cleared, true)?;
+        }
         Ok(note)
     }
 
@@ -826,13 +842,20 @@ impl NotesService {
         if ops.is_empty() {
             return Err(invalid("no schema changes"));
         }
-        // One change per property per call, so a plan never converts a
-        // property the same batch removes or renames away.
-        let mut seen = std::collections::BTreeSet::new();
+        // A batch may change a property once, unless every change to it is an
+        // option edit: those fold into one def in order. Two structural changes
+        // to one property, or an option edit beside one, could not be planned
+        // against one shape.
+        let mut seen: std::collections::BTreeMap<&str, bool> = std::collections::BTreeMap::new();
         for op in ops {
-            if let Some(prop) = op.property() {
-                if !seen.insert(prop) {
-                    return Err(invalid("this batch changes the same property twice"));
+            let Some(prop) = op.property() else { continue };
+            let structural = !op.is_option();
+            match seen.get(prop.as_str()) {
+                Some(true) => return Err(invalid("this batch changes the same property twice")),
+                Some(false) if structural => return Err(invalid("this batch changes the same property twice")),
+                Some(false) => {}
+                None => {
+                    seen.insert(prop, structural);
                 }
             }
         }
@@ -900,6 +923,15 @@ impl NotesService {
                             .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
                         if kind == old.kind {
                             next.updated.warnings.push(format!("{} is already {}", old.name, kind.as_str()));
+                            // A retype that failed part way leaves values of the
+                            // old type behind. Re-running repairs them instead of
+                            // warning past values nothing can render.
+                            let values = database::row_values(db, id, prop)?;
+                            for (row, value) in values {
+                                if database::validate_value(&old, &value).is_err() {
+                                    next.retypes.push((row, prop.clone(), old.clone(), old.clone(), value));
+                                }
+                            }
                             continue;
                         }
                         if kind == PropertyType::Relation {
@@ -979,34 +1011,40 @@ impl NotesService {
                 }
             }
             if records.is_empty() {
+                // A same-type retype repairs stranded values without a schema
+                // change, so the plan still has work to do.
+                plan = Some(next);
                 return Ok(None);
             }
             plan = Some(next);
             live.edit_records(&records)
         })?;
         let Some(plan) = plan else { return Ok(SchemaUpdated::default()) };
-        if !changed {
-            return Ok(plan.updated);
-        }
-        // Lines a row's file already had for a newly added or renamed property
-        // are the person's existing data; they come in before the next
-        // projection would drop them.
-        for (prop, def) in &plan.imported {
-            self.import_file_values(id, prop, def, actor)?;
+        if changed {
+            // Lines a row's file already had for a newly added or renamed
+            // property are the person's existing data; they come in before the
+            // next projection would drop them.
+            for (prop, def) in &plan.imported {
+                self.import_file_values(id, prop, def, actor)?;
+            }
         }
         // Values follow the schema in separate attributed writes, one per row.
+        // These also run when only a repair is left to do.
         for (row, prop, old, next, value) in plan.retypes {
             self.convert_row(&row, &prop, &old, &next, &value, actor)?;
         }
         for (prop, option) in plan.dropped {
             self.drop_option(id, &prop, &option, actor)?;
         }
-        self.with_db(|db| database::reindex_database(db, id))?;
-        if plan.rewrite {
-            // The rows' docs did not change, so their files are stale without
-            // being behind on a sequence. The maintenance pass rewrites them
-            // with the retired names in hand, off this request's path.
-            self.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=NULL WHERE parent_id=?1 AND deleted_at IS NULL", params![id])?))?;
+        if changed {
+            self.with_db(|db| database::reindex_database(db, id))?;
+            if plan.rewrite {
+                // The rows' docs did not change, so their files are stale
+                // without being behind on a sequence. The maintenance pass
+                // rewrites them with the retired names in hand, off this
+                // request's path.
+                self.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=NULL WHERE parent_id=?1 AND deleted_at IS NULL", params![id])?))?;
+            }
         }
         Ok(plan.updated)
     }
@@ -1052,12 +1090,17 @@ impl NotesService {
             }
             live.edit_records(&RecordsPatch::default().put_value(prop, converted.as_ref()))
         })?;
+        if converted.is_none() {
+            // The file still carries the old line for a value the write cleared.
+            self.project_with(row, std::slice::from_ref(&next.name), true)?;
+        }
         Ok(())
     }
 
     /// Remove a deleted option from every row that used it, one attributed
     /// write per row.
     fn drop_option(&self, database_id: &str, prop: &str, option: &str, actor: &str) -> Result<(), BridgeError> {
+        let name = self.with_db(|db| database::read(db, database_id))?.and_then(|database| database.schema.get(prop).map(|def| def.name.clone()));
         for (row, value) in self.with_db(|db| database::row_values(db, database_id, prop))? {
             let next = match &value {
                 Value::String(id) if id == option => None,
@@ -1073,6 +1116,11 @@ impl NotesService {
                 }
                 live.edit_records(&RecordsPatch::default().put_value(prop, next.as_ref()))
             })?;
+            if next.is_none() {
+                if let Some(name) = &name {
+                    self.project_with(&row, std::slice::from_ref(name), true)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1350,6 +1398,13 @@ impl NotesService {
     /// earlier snapshot can never overwrite a later one or mistake Bridge's
     /// own previous write for an outside edit.
     pub(crate) fn project(&self, page_id: &str) -> Result<Option<Note>, BridgeError> {
+        self.project_with(page_id, &[], false)
+    }
+
+    /// Mirror a page. `drop` names carry values this write cleared, whose old
+    /// lines must leave the file; `force` rewrites a file whose doc has not
+    /// moved (a reconcile after a pending outside edit).
+    pub(crate) fn project_with(&self, page_id: &str, drop: &[String], force: bool) -> Result<Option<Note>, BridgeError> {
         let _projection = self.projection_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let row = self.with_db(|db| {
             Ok(db
@@ -1370,7 +1425,7 @@ impl NotesService {
             self.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=?2, path=NULL, content_hash=NULL WHERE id=?1", params![note.id, note.seq])?))?;
             return Ok(Some(note));
         }
-        if projected.is_some_and(|projected| projected >= note.seq) {
+        if !force && projected.is_some_and(|projected| projected >= note.seq) {
             return Ok(Some(note));
         }
         let records = self.page_records(&note)?;
@@ -1384,6 +1439,7 @@ impl NotesService {
             properties: &records.properties,
             owned: &records.owned,
             retired: &records.retired,
+            drop,
         };
         let root = self.root();
         let Some(mirrored) = projector::mirror(&root, &input) else {
@@ -1418,13 +1474,18 @@ impl NotesService {
             let Some(parent) = note.parent_id.as_deref() else { return Ok(MirroredRecords::default()) };
             let Some(database) = database::read(db, parent)? else { return Ok(MirroredRecords::default()) };
             let values = live.values();
-            let mut records = MirroredRecords { retired: database.retired.keys().cloned().collect(), ..Default::default() };
+            let mut records = MirroredRecords::default();
+            let mut rendered: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
             for (prop, def) in database.ordered() {
                 records.owned.push(def.name.clone());
                 let Some(value) = values.get(prop) else { continue };
                 if let Some(text) = database::render_value(db, &note.space_id, def, value) {
+                    rendered.insert(prop.clone(), text.clone());
                     records.properties.push((def.name.clone(), text));
                 }
+            }
+            for (old, prop) in &database.retired {
+                records.retired.push((old.clone(), rendered.get(prop).cloned()));
             }
             Ok(records)
         })
@@ -1464,8 +1525,9 @@ struct MirroredRecords {
     properties: Vec<(String, String)>,
     /// Every property name the row's schema owns.
     owned: Vec<String>,
-    /// Old property names a rename or a delete retired.
-    retired: Vec<String>,
+    /// Old names a rename or a delete retired, with the value the document
+    /// writes under the property's current name (`None` when it is gone).
+    retired: Vec<(String, Option<String>)>,
 }
 
 pub(crate) fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
@@ -1557,6 +1619,12 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
 /// Bound both malformed existing trees and proposed cycles; reject moves
 /// whose ancestry cannot be verified rather than silently accepting them.
 fn validate_parent(db: &Connection, space: &str, id: &str, parent: &str) -> Result<(), BridgeError> {
+    // The space-wide record takes no children: a page under it would count as
+    // a row of the Notes list's own database.
+    let is_system: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM spaces WHERE system_database_id=?1)", params![parent], |row| row.get(0))?;
+    if is_system {
+        return Err(invalid("the Notes database is managed by Bridge"));
+    }
     // A database is not a row: its own schema and its parent's would clash.
     let moved: Option<String> = db
         .query_row("SELECT kind FROM pages WHERE id=?1 AND deleted_at IS NULL", params![id], |row| row.get(0))
@@ -2573,6 +2641,8 @@ pub(crate) mod tests {
         assert!(notes.update(UpdateNote { id: system.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).is_err());
         assert!(notes.edit(EditPage { id: system.clone(), text: Some("x".into()), ..Default::default() }, PERSON).is_err());
         assert!(notes.create(CreatePage { title: Some("Row".into()), parent_id: Some(system.clone()), ..Default::default() }, PERSON).is_err());
+        let loose = notes.capture("move me", PERSON).unwrap();
+        assert!(notes.update(UpdateNote { id: loose.id, parent_id: Some(system.clone()), ..Default::default() }, PERSON).is_err(), "a move under the record is refused too");
         assert!(notes.update_schema(&system, &[SchemaOp::Add(NewProperty { name: "Extra".into(), kind: "text".into(), ..Default::default() })], PERSON).is_ok(), "a person owns the views");
         assert!(notes.create(CreatePage { title: Some("Mine".into()), kind: Some("database".into()), scope: Some("space".into()), ..Default::default() }, PERSON).is_err());
     }
@@ -2662,6 +2732,35 @@ pub(crate) mod tests {
         let added = notes.update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Priority".into(), kind: "text".into(), ..Default::default() })], PERSON).unwrap();
         assert_eq!(values_of(&notes, &row.id)[&added.added[0].0], serde_json::json!("urgent"));
         assert!(std::fs::read_to_string(&path).unwrap().contains("Priority: \"urgent\""));
+    }
+
+    #[test]
+    fn retyping_again_repairs_values_of_the_old_type() {
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        // A retype that failed part way leaves a text value behind in a number column.
+        notes.write(&row.id, PERSON, |live| live.edit_records(&RecordsPatch::default().put_value(&rating, Some(&serde_json::json!("five"))))).unwrap();
+        assert_eq!(values_of(&notes, &row.id)[&rating], serde_json::json!("five"));
+        let updated = notes.update_schema(&id, &[SchemaOp::Retype { prop: rating.clone(), to: "number".into() }], PERSON).unwrap();
+        assert!(updated.warnings.iter().any(|warning| warning.contains("already")), "{updated:?}");
+        assert!(!values_of(&notes, &row.id).contains_key(&rating), "the stranded value is cleared, not left invisible");
+    }
+
+    #[test]
+    fn option_edits_on_one_property_fold_into_one_batch() {
+        let (_dir, notes) = service();
+        let (id, _rating, status) = reading_list(&notes);
+        notes.update_schema(
+            &id,
+            &[
+                SchemaOp::AddOption { prop: status.clone(), name: "Paused".into(), color: None, group: None },
+                SchemaOp::AddOption { prop: status.clone(), name: "Dropped".into(), color: None, group: None },
+            ],
+            PERSON,
+        )
+        .unwrap();
+        assert_eq!(notes.database(&id).unwrap().schema[&status].options.len(), 4);
     }
 
     #[test]

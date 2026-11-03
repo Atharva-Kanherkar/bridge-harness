@@ -31,11 +31,13 @@ pub struct MirrorInput<'a> {
     pub database: Option<&'a str>,
     /// A row's values, by property name, in schema order.
     pub properties: &'a [(String, String)],
-    /// Every property name the row's schema owns, so a cleared cell's old line
-    /// leaves the file.
+    /// Every property name the row's schema owns.
     pub owned: &'a [String],
-    /// Property names a rename retired, whose lines leave the file.
-    pub retired: &'a [String],
+    /// A renamed or deleted property's old name, and, when the property is
+    /// still live, the value the document now writes for it.
+    pub retired: &'a [(String, Option<String>)],
+    /// Names whose value this write cleared, whose old line leaves the file.
+    pub drop: &'a [String],
 }
 
 /// What the projector did: the file and the hash of what it wrote.
@@ -138,7 +140,23 @@ pub fn mirror(root: &Path, input: &MirrorInput<'_>) -> Option<Mirrored> {
         // now owns is written from the document, so the file's copy goes.
         .filter(|line| {
             let key = line_key(line).to_lowercase();
-            !input.retired.iter().any(|name| name.to_lowercase() == key) && !input.owned.iter().any(|name| name.to_lowercase() == key)
+            if input.drop.iter().any(|name| name.to_lowercase() == key) {
+                return false;
+            }
+            if input.owned.iter().any(|name| name.to_lowercase() == key) {
+                // A live property owns its line unless the document has no
+                // value: then the line is the only copy of a value that
+                // predates the property (or could not be parsed for it).
+                return !input.properties.iter().any(|(name, _)| name.to_lowercase() == key);
+            }
+            match input.retired.iter().find(|(name, _)| name.to_lowercase() == key) {
+                // Drop a stale copy only when the document writes the same
+                // value under the property's current name. Anything else is a
+                // foreign key, and every foreign key stays.
+                Some((_, Some(value))) => line.split_once(':').is_none_or(|(_, raw)| raw.trim() != value.trim()),
+                Some((_, None)) => true,
+                None => true,
+            }
         })
         .collect();
     let contents = markdown::render(&frontmatter(input.note, unknown, input.database, input.properties), input.body);
@@ -230,6 +248,16 @@ fn apply_import(
                 };
                 if current.get(*prop) != Some(&value) {
                     patch.push(((*prop).clone(), Some(value)));
+                }
+            }
+            // A property the page had a value for and the file no longer names
+            // is a clear. A line that predates the property has no base value,
+            // so it stays foreign instead of being deleted.
+            let present: std::collections::BTreeSet<String> =
+                front.unknown.iter().filter_map(|line| line.split_once(':').map(|(key, _)| key.trim().to_lowercase())).collect();
+            for (prop, def) in &ordered {
+                if current.contains_key(*prop) && !present.contains(&def.name.to_lowercase()) {
+                    patch.push(((*prop).clone(), None));
                 }
             }
             Ok(patch)
@@ -596,7 +624,8 @@ mod tests {
         crate::notes::projector::reconcile(&notes).unwrap();
         let renamed = std::fs::read_to_string(&path).unwrap();
         assert!(renamed.contains("Score: 3"), "{renamed}");
-        assert!(!renamed.contains("Rating:"), "{renamed}");
+        assert!(!renamed.contains("Rating: 3"), "the value moved to the new name: {renamed}");
+        assert!(renamed.contains("Rating: three"), "a refused edit stays as a foreign key: {renamed}");
         assert_eq!(notes.read(&row.id).unwrap().seq, seq, "a rename touches no row doc");
 
         // Clearing a cell removes its line; a foreign key survives.
@@ -620,12 +649,70 @@ mod tests {
         let page = notes.create(CreatePage { title: Some("Plain".into()), content: Some("body\n".into()), ..Default::default() }, PERSON).unwrap();
         let path = PathBuf::from(page.path.clone().unwrap());
         let file = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, file.replace("\n---\n", "\ndatabase: \"obsidian-thing\"\n---\n")).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\naliases: [\"a\"]\ndatabase: \"obsidian-thing\"\ncssclass: wide\n---\n")).unwrap();
         import_changes(&notes).unwrap();
         notes.update(UpdateNote { id: page.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("database: \"obsidian-thing\""), "a foreign key is not Bridge's record: {after}");
         assert!(after.contains("title: \"Renamed\""), "{after}");
+        let (aliases, database, cssclass) = (after.find("aliases:").unwrap(), after.find("database:").unwrap(), after.find("cssclass:").unwrap());
+        assert!(aliases < database && database < cssclass, "a foreign key keeps its place: {after}");
+    }
+
+    #[test]
+    fn a_item_deleted_from_the_file_clears_the_cell() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let rating = added.added[0].0.clone();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(file.contains("Rating: 5"), "{file}");
+        std::fs::write(&path, file.replace("Rating: 5\n", "")).unwrap();
+        import_changes(&notes).unwrap();
+        let stored = notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.values())).unwrap();
+        assert!(!stored.contains_key(&rating), "deleting the line clears the cell");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Rating:"), "and the doc does not write it back");
+    }
+
+    #[test]
+    fn a_foreign_key_the_new_property_cannot_parse_stays_in_the_file() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\nPriority: \"urgent\"\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Priority".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let stored = notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.values())).unwrap();
+        assert!(!stored.contains_key(&added.added[0].0), "a number column takes no text");
+        notes.update(crate::notes::service::UpdateNote { id: row.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("Priority: \"urgent\""), "the person's only copy stays: {after}");
+    }
+
+    #[test]
+    fn a_retired_name_does_not_delete_a_later_foreign_key() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let rating = added.added[0].0.clone();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Rename { prop: rating, name: "Score".into() }], PERSON).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Rating:"), "the stale copy goes");
+        // Later, the person writes a key that happens to reuse the old name.
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\nrating: \"from obsidian\"\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        notes.update(crate::notes::service::UpdateNote { id: row.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("rating: \"from obsidian\""), "a retired name is not a permanent delete list: {after}");
     }
 
     #[test]

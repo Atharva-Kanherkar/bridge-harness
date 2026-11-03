@@ -872,7 +872,8 @@ mod tests {
     }
 
     #[test]
-    fn records_replay_and_a_plain_page_grows_no_empty_maps() {        let (_dir, db) = db();
+    fn records_replay_and_a_plain_page_grows_no_empty_maps() {
+        let (_dir, db) = db();
         let page = PageDoc::new();
         log(&db, "p1", page.set_body("words").unwrap());
         assert!(page.edit_records(&RecordsPatch::default()).unwrap().is_none(), "an empty patch writes nothing");

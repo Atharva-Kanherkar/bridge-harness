@@ -59,17 +59,20 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
   conversion cannot invent one. Retyping to `status` gives every option a group; retyping away
   from `status` drops them.
 - Each converted row is one attributed write, so `page_history` can restore the old values.
-- A batch may change a property once. Validation runs inside the write's transaction, so two
-  callers cannot add the same name; the schema commits first and the row writes follow, so a
-  failure after the commit leaves the schema changed and returns the error (re-running the same
-  ops is safe, and a retype that already ran warns).
+- A batch may change a property once, except option edits, which fold into one def in order.
+  Validation runs inside the write's transaction, so two callers cannot add the same name; the
+  schema commits first and the row writes follow, so a failure after the commit leaves the schema
+  changed and returns the error. Re-running the same retype repairs the rows it did not reach:
+  a value that does not fit the current type is cleared and the file is rewritten.
 
 ### Index maintenance
 - `database_props` and `page_values` match the docs after every write: set, clear, row
   reparenting, property deletion and retype.
 - `text_v` holds text, url, option id, `"true"`/`"false"`, or the related page id; `num_v` the
-  number; `date_v` the day for a `date` and the UTC instant for a `datetime`. One row per scalar
-  item, `item` being 0 for scalars and the array index for `multiSelect` and `relation`.
+  number; `date_v` the UTC day of the instant for a `date` and the instant itself for a
+  `datetime`. A `date` value holding a time is placed on its UTC day, so a calendar view (#890)
+  must use the instant rather than the indexed day when it shows one. One row per scalar item,
+  `item` being 0 for scalars and the array index for `multiSelect` and `relation`.
 - Writing a database page itself (a rename, a view) never touches its rows' indexed values.
 - Dropping both tables and calling `rebuild_index` restores them exactly, for live pages only: a
   deleted database or row leaves nothing behind.
@@ -81,7 +84,8 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
 - It is a record, not a page: no Markdown file, no `link_key`, no search row, no link edges, and
   `[[Notes]]` resolves to a person's page. It is hidden from `notes/list_notes` (and therefore
   from the page tree), and Bridge refuses to delete, archive, retitle, edit or reparent it, or to
-  put a page under it. Its views are the person's: `put_view` and `delete_view` work on it.
+  put a page under it, whether by `create` or by a move. Its views are the person's: `put_view`
+  and `delete_view` work on it.
 - Only `create_system_database` may use `scope: "space"`; a caller that asks for it is refused.
 - It is seeded with these views, reproducing today's `NotesScreen` lists:
 
@@ -110,16 +114,22 @@ reachable through `NotesService`, the `notes.db` schema, or the Markdown project
 - Import maps frontmatter names to property ids by name, case-insensitively, against the row's
   database schema, and parses each value by type. It compares the file with the page as the file
   was written from, so a value set in Bridge while an outside edit waits is not reverted.
-- A key that names no property stays in `Frontmatter.unknown` verbatim, and a foreign key survives
-  every rewrite, including a `database:` key on a page that is not a database. A value that does
-  not parse is logged and the document's value wins on the next projection, exactly as an invalid
-  `state:` or `kind:` already behaves; it writes nothing. There is no `page_history` notice yet;
-  the log line is the notice this phase has.
+- A property the page had a value for and the file no longer names is a clear. A line that
+  predates the property has no base value, so it stays as a foreign key; that is also true when
+  the value cannot be parsed for the type the new property has, because it is the person's only
+  copy until they set the cell.
+- Every foreign key survives every rewrite, including a `database:` key on a page that is not a
+  database (which keeps its place) and an old name reused later by another tool. A value that
+  does not parse for a property the document already has is logged and the document's value wins
+  on the next projection, exactly as an invalid `state:` or `kind:` already behaves; it writes
+  nothing. There is no `page_history` notice yet; the log line is the notice this phase has, and
+  the follow-up issue tracks the surface.
 - Adding or renaming a property imports a line the rows' files already had for that name, so an
   existing key becomes the cell instead of being dropped.
 - A rename rewrites the key in every row's file and writes no row doc. The rewrite runs on the
-  maintenance pass (the rows are marked stale), not inside the request. A renamed option does the
-  same.
+  maintenance pass (the rows are marked stale), not inside the request. A stale line goes only
+  when the document writes the same value under the property's new name; a line the person edited
+  is kept as a foreign key. A renamed option does the same.
 - `database` is a reserved frontmatter key: a property cannot be named it.
 
 ## Unit Tests

@@ -85,8 +85,8 @@ fn top_level_blocks(header: &str) -> Vec<Vec<&str>> {
 /// all body.
 pub fn parse(text: &str) -> (Frontmatter, String) {
     let mut front = Frontmatter::default();
-    // The verbatim `database:` block, kept until `kind` is known.
-    let mut database_block: Option<String> = None;
+    // The verbatim `database:` block and where it sat, kept until `kind` is known.
+    let mut database_block: Option<(usize, String)> = None;
     // Either line ending: editors on Windows, and some sync tools, save CRLF.
     let opening = if text.starts_with("---\r\n") {
         5
@@ -131,7 +131,7 @@ pub fn parse(text: &str) -> (Frontmatter, String) {
             ("updated", false) => front.updated = read_scalar(value),
             ("database", false) => {
                 front.database = read_scalar(value);
-                database_block = Some(block.join("\n"));
+                database_block = Some((front.unknown.len(), block.join("\n")));
             }
             // Anything else, including a known key written in a form this
             // reader does not interpret, is kept verbatim rather than guessed at.
@@ -142,8 +142,8 @@ pub fn parse(text: &str) -> (Frontmatter, String) {
     // page it is a foreign key, kept byte for byte.
     if front.kind.as_deref() != Some("database") {
         front.database = None;
-        if let Some(block) = database_block {
-            front.unknown.push(block);
+        if let Some((at, block)) = database_block {
+            front.unknown.insert(at.min(front.unknown.len()), block);
         }
     }
     (front, text[body_start..].to_owned())
