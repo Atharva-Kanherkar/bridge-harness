@@ -146,6 +146,10 @@ fn launch_session_context(
         capabilities.push_str("\n\n");
         capabilities.push_str(delegation::prompt_change_protocol(true));
     }
+    if let Some(guidance) = crate::memory_tools::session_guidance(&state.db.lock().unwrap(), session_id) {
+        capabilities.push_str("\n\n");
+        capabilities.push_str(guidance);
+    }
     session_context::build(
         &capabilities,
         compiled_memory_packet(state, session_id).as_deref(),

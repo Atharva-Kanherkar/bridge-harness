@@ -32,11 +32,16 @@ are follow-ups. They change model cost and routing and need their own evals.
   (status updates, one-off task details, assistant claims). Prompt changes
   report these numbers.
 - `memory_evals::live_tools` (ignored, `BRIDGE_MEMORY_TOOLS_EVAL=1`) starts
-  real chats with the Bridge tools attached and scores what the agent did to
-  the ledger and to Notes: a durable rule the person states becomes one
-  `agent_proposal`; an ordinary task proposes nothing; "write this up as a
-  note" creates a note and no memory; "what do you remember about X" calls
-  `memory_search` before answering.
+  real chats with the Bridge tools attached, sends each turn with the
+  session-context frame a Bridge launch sends (capability lines and memory
+  packet), and scores what the agent did: a durable rule the person states
+  becomes one `agent_proposal`; an ordinary question or a status update
+  proposes nothing; a note request proposes no memory (where the note lands is
+  the notes eval's business); "what do you remember" calls `memory_search` or
+  answers from the packet. Any call to another server's memory tool fails the
+  case, because nothing written there reaches Codex or OpenCode chats or the
+  review queue. The eval runs with the person's own connectors, so it measures
+  the competition real chats face.
 
 ## Slice 1: stop the silent spend
 
@@ -108,6 +113,13 @@ are follow-ups. They change model cost and routing and need their own evals.
   with the existing id instead of a new row.
 - Tool descriptions carry the when and when-not rubric. `notes_create` says
   it is not for the agent's own memory or rules for future sessions.
+- A top-level chat on a harness that attaches the `bridge` server (Claude,
+  Codex, OpenCode), in a host that serves the chat-tools route, gets one line
+  in its session-capabilities section naming `memory_search` and
+  `memory_propose` as Bridge memory, to use over other memory tools. Tool
+  descriptions alone lost to another connected memory server about half the
+  time; the frame is in the conversation, read before the agent searches its
+  deferred tools. Workers and other harnesses get no such line.
 - An approved agent proposal reads as "agent memory" in the packet and as an
   accepted suggestion, not a pin, in the Memory dialog.
 

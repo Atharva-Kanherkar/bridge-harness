@@ -325,26 +325,37 @@ struct ToolsCase {
     ask: &'static str,
     /// A body fragment one agent proposal must contain, or None for "proposes nothing".
     proposal: Option<&'static str>,
-    note: bool,
-    /// The tool whose call the case expects, by name fragment.
+    /// Passes when the agent called a Bridge tool whose name contains this, or
+    /// its reply contains `or_reply` (an answer read from the packet is a
+    /// correct way to say what is remembered).
     calls: Option<&'static str>,
+    or_reply: Option<&'static str>,
+}
+
+/// A memory tool from any other server. Using one for something later Bridge
+/// chats should know is the failure the eval exists to catch: nothing written
+/// there reaches Codex or OpenCode chats or the review queue.
+fn foreign_memory_tool(name: &str) -> bool {
+    let lowered = name.to_lowercase();
+    !lowered.starts_with("mcp__bridge__") && ["memory", "remember", "recall"].iter().any(|word| lowered.contains(word))
 }
 
 fn tools_cases() -> Vec<ToolsCase> {
     vec![
-        ToolsCase { ask: "From now on, never push directly to main. Keep that in mind in every future chat, not just this one.", proposal: Some("main"), note: false, calls: Some("memory_propose") },
-        ToolsCase { ask: "What is 17 times 23?", proposal: None, note: false, calls: None },
-        ToolsCase { ask: "Save a note in my notes titled 'Sync options' that lists yjs and automerge.", proposal: None, note: true, calls: Some("notes_create") },
-        ToolsCase { ask: "Do you remember anything about how I like my commits written?", proposal: None, note: false, calls: Some("memory_search") },
-        ToolsCase { ask: "Lesson for every future security hunt: always check the upstream tracker before deep-diving a candidate. Make sure later chats know this.", proposal: Some("upstream"), note: false, calls: Some("memory_propose") },
-        ToolsCase { ask: "Thanks, CI is green now and the PR is merged.", proposal: None, note: false, calls: None },
+        ToolsCase { ask: "From now on, never push directly to main. Keep that in mind in every future chat, not just this one.", proposal: Some("main"), calls: Some("memory_propose"), or_reply: None },
+        ToolsCase { ask: "What is 17 times 23?", proposal: None, calls: None, or_reply: None },
+        // Where the note lands is the notes eval's business; here it must not become memory.
+        ToolsCase { ask: "Save a note in my notes titled 'Sync options' that lists yjs and automerge.", proposal: None, calls: None, or_reply: None },
+        ToolsCase { ask: "Do you remember anything about how I like my commits written?", proposal: None, calls: Some("memory_search"), or_reply: Some("conventional") },
+        ToolsCase { ask: "Lesson for every future security hunt: always check the upstream tracker before deep-diving a candidate. Make sure later chats know this.", proposal: Some("upstream"), calls: Some("memory_propose"), or_reply: None },
+        ToolsCase { ask: "Thanks, CI is green now and the PR is merged.", proposal: None, calls: None, or_reply: None },
     ]
 }
 
 #[test]
 #[ignore = "runs real chats with tools"]
 fn live_tools() {
-    use crate::adapters::{ShutdownReason, StartRequest};
+    use crate::adapters::{ShutdownReason, StartRequest, TurnContext};
     use std::io::BufRead;
 
     assert!(std::env::var_os("BRIDGE_MEMORY_TOOLS_EVAL").is_some(), "set BRIDGE_MEMORY_TOOLS_EVAL=1");
@@ -373,17 +384,21 @@ fn live_tools() {
 
     let cases = tools_cases();
     let mut passed = 0;
+    let mut foreign_calls = 0;
     for (index, case) in cases.iter().enumerate() {
         if only.is_some_and(|only| only != index) {
             continue;
         }
         let session = format!("eval-chat-{index}");
-        core.db
-            .lock()
-            .unwrap()
-            .execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES(?1,'w',?2,'eval','ready')", params![session, eval_harness()])
-            .unwrap();
-        let notes_before = core.notes.list(&Default::default()).unwrap().len();
+        // The frame a Bridge launch sends: the capability lines this chat is
+        // owed and its memory packet, in the conversation beside the message.
+        let frame = {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES(?1,'w',?2,'eval','ready')", params![session, eval_harness()])
+                .unwrap();
+            let guidance = crate::memory_tools::session_guidance(&db, &session).unwrap_or_default();
+            crate::session_context::build(guidance, crate::memory_packet::for_compile(&db, &session).unwrap().as_deref())
+        };
         let cwd_text = cwd.to_string_lossy().to_string();
         let started = registry.start(
             &eval_harness(),
@@ -406,8 +421,10 @@ fn live_tools() {
             continue;
         };
         let mut runtime = started.runtime;
-        runtime.send_turn(case.ask).unwrap();
+        let context = TurnContext { session: frame.as_ref().map(crate::session_context::SessionContext::text), credentials: None };
+        runtime.send_turn_with_context(case.ask, context).unwrap();
         let mut tools: Vec<String> = Vec::new();
+        let mut reply = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         let mut lines = started.reader.lines();
         while std::time::Instant::now() < deadline {
@@ -417,6 +434,9 @@ fn live_tools() {
             for event in registry.normalize(&eval_harness(), &value) {
                 if event.kind == "tool.started" {
                     tools.push(event.title.clone().unwrap_or_default());
+                }
+                if event.kind == "message.completed" && event.role.as_deref() == Some("assistant") {
+                    reply.push_str(event.text.as_deref().unwrap_or_default());
                 }
                 if event.kind == "turn.completed" || event.kind == "turn.failed" {
                     done = true;
@@ -436,17 +456,21 @@ fn live_tools() {
             let rows = statement.query_map(params![session], |row| row.get::<_, String>(0)).unwrap();
             rows.map(Result::unwrap).collect()
         };
-        let notes_made = core.notes.list(&Default::default()).unwrap().len() > notes_before;
+        let foreign: Vec<&String> = tools.iter().filter(|tool| foreign_memory_tool(tool)).collect();
+        foreign_calls += foreign.len();
         let proposal_ok = match case.proposal {
             Some(fragment) => proposals.len() == 1 && proposals[0].contains(fragment),
             None => proposals.is_empty(),
         };
-        let calls_ok = case.calls.is_none_or(|name| tools.iter().any(|tool| tool.contains(name)));
-        let ok = proposal_ok && notes_made == case.note && calls_ok;
+        let calls_ok = case.calls.is_none_or(|name| {
+            tools.iter().any(|tool| tool.starts_with("mcp__bridge__") && tool.contains(name))
+                || case.or_reply.is_some_and(|phrase| reply.to_lowercase().contains(phrase))
+        });
+        let ok = proposal_ok && calls_ok && foreign.is_empty();
         passed += usize::from(ok);
-        println!("{} {index} {:?}\n      tools {tools:?}\n      proposals {proposals:?} note {notes_made}", if ok { "PASS" } else { "FAIL" }, case.ask);
+        println!("{} {index} {:?}\n      tools {tools:?}\n      proposals {proposals:?}", if ok { "PASS" } else { "FAIL" }, case.ask);
     }
     let total = if only.is_some() { 1 } else { cases.len() };
-    println!("memory tools: {passed}/{total}");
+    println!("memory tools: {passed}/{total}, foreign memory tool calls {foreign_calls}");
     assert_eq!(passed, total);
 }

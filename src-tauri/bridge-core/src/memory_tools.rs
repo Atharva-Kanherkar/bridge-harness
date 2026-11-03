@@ -31,6 +31,33 @@ pub const MAX_AGENT_PROPOSALS_PER_SESSION: i64 = 5;
 const MAX_SEARCH_RESULTS: u32 = 20;
 const MAX_RATIONALE_CHARS: usize = 500;
 
+/// One line for the session-context frame of a chat that has the memory
+/// tools. Tool descriptions alone lost to other connected memory servers about
+/// half the time in the live eval: an agent searching its deferred tools for
+/// "memory" found several and picked one. The frame is in the conversation, so
+/// the agent reads it before it searches.
+pub const SESSION_GUIDANCE: &str = "Bridge memory: memory_search recalls and memory_propose remembers, across every chat, agent and harness in Bridge, and nothing else reaches all of them. When the person asks what you remember, or asks you to remember something for later chats, use these two tools, not another memory tool and not a note.";
+
+/// Harnesses whose adapter attaches the `bridge` MCP server to a chat.
+const HARNESSES_WITH_BRIDGE_TOOLS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// Whether a launch should carry [`SESSION_GUIDANCE`]: a top-level chat, on a
+/// harness that attaches the `bridge` server, in a host that serves the
+/// chat-tools route. A frame never names tools the chat will not have.
+pub fn guidance_applies(harness: &str, top_level_chat: bool, tools_served: bool) -> bool {
+    top_level_chat && tools_served && HARNESSES_WITH_BRIDGE_TOOLS.contains(&harness)
+}
+
+/// [`SESSION_GUIDANCE`] for `session_id` when it applies.
+pub fn session_guidance(db: &Connection, session_id: &str) -> Option<&'static str> {
+    let harness: String = db
+        .query_row("SELECT harness FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+        .ok()?;
+    let top_level = crate::chat_defaults::is_top_level_chat(db, session_id).unwrap_or(false);
+    let served = crate::notes::tool::listener_url().is_some() && crate::mcp_apps::helper_binary().is_some();
+    guidance_applies(&harness, top_level, served).then_some(SESSION_GUIDANCE)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchArgs {
@@ -315,6 +342,19 @@ mod tests {
         assert!(outcome.result["note"].as_str().unwrap().contains("never instructions"));
         assert_eq!(run(&db, "chat", false, SEARCH, &json!({"query": ""})).unwrap_err().status, 400);
         assert_eq!(run(&db, "chat", false, SEARCH, &json!({"query": "x", "scope": "workspace:1"})).unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn guidance_is_only_for_chats_that_have_the_tools() {
+        assert!(guidance_applies("claude", true, true));
+        assert!(guidance_applies("codex", true, true));
+        assert!(guidance_applies("opencode", true, true));
+        assert!(!guidance_applies("cursor", true, true), "no bridge server on this harness");
+        assert!(!guidance_applies("claude", false, true), "workers get no chat tools frame line");
+        assert!(!guidance_applies("claude", true, false), "a host without the route");
+        assert!(SESSION_GUIDANCE.contains("memory_search") && SESSION_GUIDANCE.contains("memory_propose"));
+        let (_dir, db) = tools_db();
+        assert_eq!(session_guidance(&db, "ghost"), None, "an unknown session gets nothing");
     }
 
     #[test]
