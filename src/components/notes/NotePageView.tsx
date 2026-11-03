@@ -4,11 +4,11 @@
 // view sits beside it, and the page's tasks below; both fill in live while
 // their pass streams. Keyed by page id, so the draft starts fresh per page.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../../connectorSurface";
-import { noteDisplayTitle, quoteText } from "../../notesDraft";
+import { linkablePages, noteDisplayTitle, quoteText } from "../../notesDraft";
 import { streamingStructure, streamingTasks, type StreamingStructure } from "../../notesPass";
 import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayload, Session, StructuredView, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
@@ -87,12 +87,13 @@ export interface NotePageViewProps {
  *  descendants (a cycle stops the walk). */
 function moveTargetsOf(notes: Note[] | undefined, self: string): Note[] {
   const list = notes ?? [];
+  const parentOf = new Map(list.map(item => [item.id, item.parentId ?? null]));
   return list.filter(candidate => {
     if (candidate.kind === "task" || candidate.id === self) return false;
     let id: string | null = candidate.parentId ?? null;
     for (let guard = 0; id && guard < 64; guard += 1) {
       if (id === self || id === candidate.id) return false;
-      id = list.find(item => item.id === id)?.parentId ?? null;
+      id = parentOf.get(id) ?? null;
     }
     return true;
   });
@@ -168,16 +169,17 @@ export function NotePageView(props: NotePageViewProps) {
   };
   const structureText = streamed("structure", structureJob);
   const tasksText = streamed("tasks", tasksJob);
+  const moveTargets = useMemo(() => moveTargetsOf(notes, note.id), [notes, note.id]);
 
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
         {onToggleList && !listOpen && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
         <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
-        {ancestors.map(ancestor => <>
-          <ChevronRight key={`before-${ancestor.id}`} size={13} className="shrink-0 text-faint" aria-hidden="true" />
-          <button key={ancestor.id} type="button" onClick={() => onOpenPage(ancestor.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(ancestor)}</button>
-        </>)}
+        {ancestors.map(ancestor => <Fragment key={ancestor.id}>
+          <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
+          <button type="button" onClick={() => onOpenPage(ancestor.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(ancestor)}</button>
+        </Fragment>)}
         <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
         <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{noteDisplayTitle({ title: note.title, preview: draft.text || note.preview })}</span>
       </nav>
@@ -186,7 +188,7 @@ export function NotePageView(props: NotePageViewProps) {
       <MoreMenu
         note={note}
         taskCount={page.tasks.length}
-        moveTargets={moveTargetsOf(notes, note.id)}
+        moveTargets={moveTargets}
         onPromote={note.state === "inbox" ? () => void update({ id: note.id, state: "open" }) : undefined}
         onMove={parentId => void update({ id: note.id, ...(parentId ? { parentId } : { clearParent: true }) })}
         onHistory={() => setHistoryOpen(true)}
@@ -262,8 +264,7 @@ export function NotePageView(props: NotePageViewProps) {
             title: id => pageTitle?.(id),
             open: onOpenPage,
             openByTitle: onOpenByTitle,
-            pages: () => (notes ?? []).filter(candidate => candidate.kind !== "task").map(candidate => ({ id: candidate.id, title: noteDisplayTitle(candidate) })),
-            createByTitle: async title => (onCreatePage && (await flush())) ? onCreatePage(null, title) : null,
+            pages: () => linkablePages(notes ?? []).map(candidate => ({ id: candidate.id, title: candidate.title!.trim() })),
           }}
           onCreatePage={async title => onCreatePage ? (await flush()) ? onCreatePage(title === null ? note.id : null, title) : null : null}
           onError={onError}
