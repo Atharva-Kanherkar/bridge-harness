@@ -145,6 +145,9 @@ pub struct ListFilter {
 #[derive(Debug, Clone, Default)]
 pub struct CreateDatabase {
     pub title: Option<String>,
+    /// The database page's own words and tags, written with it.
+    pub content: Option<String>,
+    pub tags: Vec<String>,
     pub parent_id: Option<String>,
     pub workspace_id: Option<String>,
     pub properties: Vec<NewProperty>,
@@ -1465,6 +1468,8 @@ impl NotesService {
         self.create(
             CreatePage {
                 title: create.title,
+                content: create.content,
+                tags: create.tags,
                 parent_id: create.parent_id,
                 workspace_id: create.workspace_id,
                 kind: Some("database".into()),

@@ -7024,7 +7024,7 @@ pub fn create_database(core: &Arc<BridgeCore>, params: &wire::CreateDatabasePara
         .map(|(index, view)| wire::view_input(&bridge_protocol::messages::NoteViewInput { order: view.order.or(Some(index as i64)), ..view.clone() }, None).map(|(_, view)| view))
         .collect::<Result<Vec<_>, _>>()?;
     let note = core.notes.create_database(
-        crate::notes::service::CreateDatabase { title: params.title.clone(), parent_id: params.parent_id.clone(), workspace_id: params.workspace_id.clone(), properties, views },
+        crate::notes::service::CreateDatabase { title: params.title.clone(), parent_id: params.parent_id.clone(), workspace_id: params.workspace_id.clone(), properties, views, ..Default::default() },
         crate::notes::service::PERSON,
     )?;
     core.notes.read(&note.id)

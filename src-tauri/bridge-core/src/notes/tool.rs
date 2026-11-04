@@ -282,12 +282,14 @@ pub fn run(notes: &NotesService, access: Access, actor: &str, tool: &str, args: 
                     return Err(bad("asDatabase makes a database; database and properties make a row. Pass one or the other"));
                 }
                 let properties = tool_db::new_properties(notes, spec)?;
+                // Everything else a page takes goes in the same creating write,
+                // so the response is the database as stored.
                 let note = notes
-                    .create_database(CreateDatabase { title: Some(title), parent_id: text(args, "parentId"), properties, ..Default::default() }, actor)
+                    .create_database(
+                        CreateDatabase { title: Some(title), content: text(args, "content"), tags: strings(args, "tags").unwrap_or_default(), parent_id: text(args, "parentId"), properties, ..Default::default() },
+                        actor,
+                    )
                     .map_err(service_error)?;
-                if let Some(content) = text(args, "content").filter(|content| !content.is_empty()) {
-                    notes.edit(EditPage { id: note.id.clone(), append: Some(NoteAppend { content, position: "end".into() }), ..Default::default() }, actor).map_err(service_error)?;
-                }
                 let database = notes.database(&note.id).map_err(service_error)?;
                 return Ok(json!({"created": summary(&note), "path": note.path, "database": tool_db::schema(&database)}));
             }
@@ -813,6 +815,19 @@ mod tests {
         assert_eq!(notes.history(id).unwrap().versions.len(), 1, "the row and its cells are one write");
         assert_eq!(made["created"]["seq"], 1, "the response is the stored row: {made}");
         assert_eq!(made["properties"]["Rating"], 4);
+    }
+
+    #[test]
+    fn as_database_keeps_tags_and_content_and_returns_the_stored_note() {
+        let (_dir, notes) = service();
+        let made = run(&notes, Access::Write, "agent:claude:chat-1", "notes_create", &json!({"title": "Books", "tags": ["books"], "content": "Read carefully", "asDatabase": {"properties": [{"name": "Rating", "type": "number"}]}})).unwrap();
+        let id = made["created"]["id"].as_str().unwrap();
+        let stored = notes.read(id).unwrap();
+        assert_eq!(stored.note.tags, vec!["books".to_owned()]);
+        assert_eq!(stored.markdown, "Read carefully");
+        assert_eq!(made["created"]["seq"], stored.seq, "the response is the note as stored: {made}");
+        assert_eq!(made["created"]["preview"], "Read carefully");
+        assert_eq!(notes.history(id).unwrap().versions.len(), 1, "made in one write");
     }
 }
 
