@@ -827,9 +827,19 @@ fn plan(space: &str, database: &DatabaseDoc, spec: &QuerySpec) -> Result<Plan, B
     for constraint in &spec.constraints {
         conditions.push(compile_filter(&scope, &mut sql, constraint, 0, &mut 0)?);
     }
-    if let Some(fts) = spec.query.as_deref().map(str::trim).filter(|query| !query.is_empty()).and_then(links::fts_query) {
-        let fts = sql.bind(fts);
-        conditions.push(format!("pages.id IN (SELECT page_id FROM pages_fts WHERE pages_fts MATCH {fts})"));
+    if let Some(query) = spec.query.as_deref().map(str::trim).filter(|query| !query.is_empty()) {
+        match links::fts_query(query) {
+            Some(fts) => {
+                let fts = sql.bind(fts);
+                conditions.push(format!("pages.id IN (SELECT page_id FROM pages_fts WHERE pages_fts MATCH {fts})"));
+            }
+            // No word to search for (only symbols): a literal match, as the
+            // notes list falls back to, never no filter at all.
+            None => {
+                let pattern = sql.bind(format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+                conditions.push(format!("(COALESCE(pages.title, '') LIKE {pattern} ESCAPE '\\' OR pages.body LIKE {pattern} ESCAPE '\\')"));
+            }
+        }
     }
     let mut order: Vec<String> = Vec::new();
     for (index, sort) in sorts.iter().enumerate() {

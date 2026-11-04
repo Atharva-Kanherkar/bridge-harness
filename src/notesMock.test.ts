@@ -353,5 +353,11 @@ describe("mock databases", () => {
     const hits = mockQueryDatabase({ databaseId: page.note.id, filter: { property: "tags", op: "contains", value: " #Research" } });
     expect(hits.rows.map(row => row.note.title)).toEqual(["Paper"]);
   });
+
+  it("searches literally when free text has no word", () => {
+    const page = mockCreateDatabase({ title: "Symbols" });
+    for (const title of ["Robot 🤖", "Ordinary"]) mockCreatePage({ title, parentId: page.note.id });
+    expect(mockQueryDatabase({ databaseId: page.note.id, query: "🤖" }).rows.map(row => row.note.title)).toEqual(["Robot 🤖"]);
+  });
 });
 

@@ -133,6 +133,9 @@ export function mockNotesAgentWrite(pageId: string | null, text: string, session
 /** Every word of the query matches the start of a word in the title or body,
  *  the way the core's FTS prefix queries read (`runs` finds `running`). */
 function searchHaystack(needle: string, text: string): boolean {
+  // No word to search for (only symbols): a literal, ASCII-folded match, as
+  // the core falls back to.
+  if (needle.trim() && !/[\p{L}\p{N}]/u.test(needle)) return asciiLower(text).includes(asciiLower(needle.trim()));
   const words = needle.toLowerCase().trim().split(/\s+/).filter(Boolean);
   if (!words.length) return true;
   const tokens = text.toLowerCase().split(/[^\p{L}\p{N}]+/u);

@@ -933,3 +933,13 @@ fn titles_sort_by_code_point_as_the_mock_does() {
     let titles: Vec<String> = result.rows.iter().map(|row| row.note.title.clone().unwrap()).collect();
     assert_eq!(titles, vec!["🚀 launch", "ﬁle", "日本語メモ", "Émile", "plain"], "the same order src/notesMock.test.ts pins");
 }
+
+#[test]
+fn free_text_without_a_word_searches_literally() {
+    let fixture = fixture(0, 13);
+    for title in ["Robot 🤖", "Ordinary"] {
+        fixture.notes.create(CreatePage { title: Some(title.into()), parent_id: Some(fixture.db.clone()), ..Default::default() }, PERSON).unwrap();
+    }
+    let result = query(&fixture, QuerySpec { query: Some("🤖".into()), ..Default::default() });
+    assert_eq!(result.rows.iter().map(|row| row.note.title.clone().unwrap()).collect::<Vec<_>>(), vec!["Robot 🤖"], "a query with no word token is still a filter");
+}
