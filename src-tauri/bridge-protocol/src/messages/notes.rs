@@ -17,7 +17,7 @@ pub struct Note {
     /// Set on a note split out of another note's structured view.
     pub source_id: Option<String>,
     pub title: Option<String>,
-    /// `note`, `idea`, `task`, or `question`.
+    /// `note`, `idea`, `task`, `question`, or `database`.
     pub kind: String,
     pub tags: Vec<String>,
     /// The linked project, if the person chose one.

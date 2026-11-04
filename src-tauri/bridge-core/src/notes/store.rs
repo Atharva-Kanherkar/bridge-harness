@@ -16,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::ids::new_id;
 use crate::BridgeError;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 pub const FILE_NAME: &str = "notes.db";
 
 const SCHEMA_V1: &str = "
@@ -142,6 +142,69 @@ CREATE INDEX idx_page_links_to ON page_links(space_id, to_page_id);
 CREATE INDEX idx_page_links_key ON page_links(space_id, target_key);
 ";
 
+/// v4: database pages, their properties, the values index and the system
+/// database. `pages` is rebuilt because SQLite cannot change a `CHECK` in
+/// place and the new kind has to be accepted.
+const SCHEMA_V4: &str = "
+CREATE TABLE pages_v4(
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    parent_id TEXT,
+    source_id TEXT,
+    title TEXT,
+    kind TEXT NOT NULL DEFAULT 'note' CHECK(kind IN ('note','idea','task','question','database')),
+    tags TEXT NOT NULL DEFAULT '[]',
+    workspace_id TEXT,
+    state TEXT NOT NULL CHECK(state IN ('inbox','open','doing','done','archived')),
+    session_ids TEXT NOT NULL DEFAULT '[]',
+    source_excerpt TEXT,
+    path TEXT,
+    content_hash TEXT,
+    projected_seq INTEGER,
+    body TEXT NOT NULL DEFAULT '',
+    body_hash TEXT NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    last_actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT,
+    link_key TEXT
+);
+INSERT INTO pages_v4(id, space_id, parent_id, source_id, title, kind, tags, workspace_id, state, session_ids, source_excerpt, path, content_hash, projected_seq, body, body_hash, seq, created_by, last_actor, created_at, updated_at, deleted_at, link_key)
+SELECT id, space_id, parent_id, source_id, title, kind, tags, workspace_id, state, session_ids, source_excerpt, path, content_hash, projected_seq, body, body_hash, seq, created_by, last_actor, created_at, updated_at, deleted_at, link_key
+FROM pages;
+DROP TABLE pages;
+ALTER TABLE pages_v4 RENAME TO pages;
+CREATE INDEX idx_pages_space_state ON pages(space_id, state, updated_at);
+CREATE INDEX idx_pages_parent ON pages(parent_id);
+CREATE INDEX idx_pages_link_key ON pages(space_id, link_key);
+ALTER TABLE spaces ADD COLUMN system_database_id TEXT;
+CREATE TABLE database_props(
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    database_id TEXT NOT NULL,
+    prop_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    def TEXT NOT NULL,
+    PRIMARY KEY(space_id, database_id, prop_id)
+);
+CREATE TABLE page_values(
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    database_id TEXT NOT NULL,
+    page_id TEXT NOT NULL,
+    prop_id TEXT NOT NULL,
+    item INTEGER NOT NULL,
+    text_v TEXT,
+    num_v REAL,
+    date_v TEXT,
+    PRIMARY KEY(space_id, page_id, prop_id, item)
+);
+CREATE INDEX idx_page_values_num ON page_values(space_id, database_id, prop_id, num_v);
+CREATE INDEX idx_page_values_text ON page_values(space_id, database_id, prop_id, text_v);
+CREATE INDEX idx_page_values_date ON page_values(space_id, database_id, prop_id, date_v);
+";
+
 /// Open (or create) `notes.db` at `path` and bring it to [`SCHEMA_VERSION`].
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -183,6 +246,7 @@ fn migrate(connection: &mut Connection) -> Result<(), BridgeError> {
                 transaction.execute_batch(SCHEMA_V3)?;
                 super::links::backfill(&transaction)?;
             }
+            4 => transaction.execute_batch(SCHEMA_V4)?,
             _ => unreachable!("every version up to SCHEMA_VERSION has an arm"),
         }
         transaction.execute(
@@ -257,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_and_v2_migrate_to_v3_with_fts_and_link_backfill() {
+    fn v1_and_v2_migrate_to_v4_with_fts_and_link_backfill() {
         for version in [1, 2] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(FILE_NAME);
@@ -273,7 +337,7 @@ mod tests {
             drop(db);
             let db = open(&path).unwrap();
             let schema: i64 = db.query_row("SELECT max(version) FROM notes_schema_version", [], |r| r.get(0)).unwrap();
-            assert_eq!(schema, 3);
+            assert_eq!(schema, SCHEMA_VERSION);
             let hits: String = db.query_row("SELECT page_id FROM pages_fts WHERE pages_fts MATCH 'runs'", [], |r| r.get(0)).unwrap();
             assert_eq!(hits, "target");
             let backlinks = super::super::links::read_backlinks(&db, "space", "target").unwrap();
@@ -282,6 +346,75 @@ mod tests {
             assert!(tables(&db).contains(&"assets".into()));
             assert_eq!(db.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
         }
+    }
+
+    /// A v3 file with every kind of row, so the `pages` rebuild has something
+    /// to lose.
+    fn v3_fixture(path: &Path) -> Connection {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch(SCHEMA_V1).unwrap();
+        db.execute_batch(SCHEMA_V2).unwrap();
+        db.execute_batch(SCHEMA_V3).unwrap();
+        db.execute_batch("CREATE TABLE notes_schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)").unwrap();
+        db.execute("INSERT INTO notes_schema_version VALUES(3, 'then')", []).unwrap();
+        db.execute("INSERT INTO spaces VALUES('space', 'Personal', 'personal', 'then')", []).unwrap();
+        for (id, kind, title, body, deleted) in [("plan", "note", "Plan", "ship [[Target]]", false), ("task", "task", "Buy domain", "- [ ] domain", false), ("gone", "idea", "Gone", "old", true)] {
+            db.execute(
+                "INSERT INTO pages(id,space_id,parent_id,title,kind,state,body,body_hash,seq,created_by,last_actor,created_at,updated_at,deleted_at,link_key)
+                 VALUES(?1,'space',?2,?3,?4,'open',?5,'h',7,'person','person','then','then',?6,lower(?3))",
+                params![id, (id == "task").then_some("plan"), title, kind, body, deleted.then_some("then")],
+            ).unwrap();
+            db.execute("INSERT INTO page_updates(page_id, seq, hlc, actor, device_id, update_bytes) VALUES(?1, 1, '1-0-dev', 'person', 'dev', x'00')", [id]).unwrap();
+        }
+        db.execute("INSERT INTO page_links(space_id, from_page_id, to_page_id, target_title, target_key, kind, excerpt) VALUES('space','plan',NULL,'Target','target','wiki','ship')", []).unwrap();
+        db.execute("INSERT INTO assets(space_id, hash, mime, ext, size, bytes, created_at) VALUES('space','h1','image/png','png',3,x'010203','then')", []).unwrap();
+        db.execute("INSERT INTO pages_fts(page_id, space_id, title, body, tags) VALUES('plan','space','Plan','ship [[Target]]','[]')", []).unwrap();
+        db.execute("INSERT INTO pages_fts_map(fts_rowid, page_id) VALUES(last_insert_rowid(),'plan')", []).unwrap();
+        db
+    }
+
+    #[test]
+    fn v3_migrates_to_v4_and_keeps_every_row_and_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let fixture = v3_fixture(&path);
+        drop(fixture);
+        let db = open(&path).unwrap();
+        assert_eq!(db.query_row("SELECT max(version) FROM notes_schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), 4);
+        assert_eq!(db.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert_eq!(db.query_row("SELECT count(*) FROM page_updates", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert_eq!(db.query_row("SELECT count(*) FROM page_links", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(db.query_row("SELECT count(*) FROM assets", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(db.query_row("SELECT count(*) FROM pages_fts_map", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let (title, link_key, seq, deleted): (String, String, i64, Option<String>) = db
+            .query_row("SELECT title, link_key, seq, deleted_at FROM pages WHERE id='task'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        assert_eq!((title.as_str(), link_key.as_str(), seq, deleted), ("Buy domain", "buy domain", 7, None));
+        assert_eq!(db.query_row("SELECT parent_id FROM pages WHERE id='task'", [], |r| r.get::<_, Option<String>>(0)).unwrap().as_deref(), Some("plan"));
+        let names = tables(&db);
+        for table in ["database_props", "page_values"] {
+            assert!(names.contains(&table.to_string()), "missing {table}");
+        }
+        for index in ["idx_pages_space_state", "idx_pages_parent", "idx_pages_link_key", "idx_page_values_num", "idx_page_values_text", "idx_page_values_date"] {
+            let found: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1", [index], |r| r.get(0)).unwrap();
+            assert_eq!(found, 1, "missing index {index}");
+        }
+        // The rebuilt table accepts the new kind and still refuses the others.
+        db.execute("INSERT INTO pages(id,space_id,kind,state,body_hash,created_by,last_actor,created_at,updated_at) VALUES('db','space','database','open','h','person','person','then','then')", []).unwrap();
+        assert!(db.execute("INSERT INTO pages(id,space_id,kind,state,body_hash,created_by,last_actor,created_at,updated_at) VALUES('bad','space','essay','open','h','person','person','then','then')", []).is_err());
+        assert_eq!(db.query_row("SELECT count(*) FROM spaces WHERE system_database_id IS NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_newer_schema_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE notes_schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)").unwrap();
+        db.execute("INSERT INTO notes_schema_version VALUES(?1, 'later')", [SCHEMA_VERSION + 1]).unwrap();
+        drop(db);
+        let error = open(&path).unwrap_err().to_string();
+        assert!(error.contains("newer than this build understands"), "{error}");
     }
 
     #[test]

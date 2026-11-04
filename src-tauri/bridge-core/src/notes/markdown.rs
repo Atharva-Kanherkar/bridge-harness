@@ -9,7 +9,7 @@
 use serde_json::Value;
 
 /// Keys Bridge writes and reads, in the order it writes them.
-pub const KNOWN: [&str; 9] = ["id", "title", "kind", "tags", "project", "state", "parent", "created", "updated"];
+pub const KNOWN: [&str; 10] = ["id", "title", "kind", "tags", "project", "state", "parent", "created", "updated", "database"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Frontmatter {
@@ -22,15 +22,19 @@ pub struct Frontmatter {
     pub parent: Option<String>,
     pub created: Option<String>,
     pub updated: Option<String>,
+    /// A database page's `{scope, schema, views}` as one JSON line.
+    pub database: Option<String>,
+    /// A row's values, by property name, in schema order.
+    pub properties: Vec<(String, String)>,
     /// Lines for keys Bridge does not know, verbatim.
     pub unknown: Vec<String>,
 }
 
-fn scalar(value: &str) -> String {
+pub(crate) fn scalar(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
 }
 
-fn read_scalar(raw: &str) -> Option<String> {
+pub(crate) fn read_scalar(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() || raw == "null" || raw == "~" {
         return None;
@@ -44,7 +48,7 @@ fn read_scalar(raw: &str) -> Option<String> {
     Some(raw.to_owned())
 }
 
-fn read_list(raw: &str) -> Vec<String> {
+pub(crate) fn read_list(raw: &str) -> Vec<String> {
     let raw = raw.trim();
     if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(raw) {
         return items.into_iter().filter_map(|item| item.as_str().map(str::to_owned)).collect();
@@ -81,6 +85,8 @@ fn top_level_blocks(header: &str) -> Vec<Vec<&str>> {
 /// all body.
 pub fn parse(text: &str) -> (Frontmatter, String) {
     let mut front = Frontmatter::default();
+    // The verbatim `database:` block and where it sat, kept until `kind` is known.
+    let mut database_block: Option<(usize, String)> = None;
     // Either line ending: editors on Windows, and some sync tools, save CRLF.
     let opening = if text.starts_with("---\r\n") {
         5
@@ -123,9 +129,21 @@ pub fn parse(text: &str) -> (Frontmatter, String) {
             ("parent", false) => front.parent = read_scalar(value),
             ("created", false) => front.created = read_scalar(value),
             ("updated", false) => front.updated = read_scalar(value),
+            ("database", false) => {
+                front.database = read_scalar(value);
+                database_block = Some((front.unknown.len(), block.join("\n")));
+            }
             // Anything else, including a known key written in a form this
             // reader does not interpret, is kept verbatim rather than guessed at.
             _ => front.unknown.push(block.join("\n")),
+        }
+    }
+    // `database:` is Bridge's own record only on a database page. On any other
+    // page it is a foreign key, kept byte for byte.
+    if front.kind.as_deref() != Some("database") {
+        front.database = None;
+        if let Some((at, block)) = database_block {
+            front.unknown.insert(at.min(front.unknown.len()), block);
         }
     }
     (front, text[body_start..].to_owned())
@@ -150,6 +168,12 @@ pub fn render(front: &Frontmatter, body: &str) -> String {
     line("parent", optional(&front.parent));
     line("created", optional(&front.created));
     line("updated", optional(&front.updated));
+    if let Some(database) = &front.database {
+        line("database", database.clone());
+    }
+    for (name, value) in &front.properties {
+        line(name, value.clone());
+    }
     for unknown in &front.unknown {
         out.push_str(unknown);
         out.push('\n');
@@ -175,6 +199,8 @@ mod tests {
             parent: None,
             created: Some("2026-10-30T10:00:00.000Z".into()),
             updated: Some("2026-10-30T11:00:00.000Z".into()),
+            database: None,
+            properties: vec![],
             unknown: vec![],
         };
         let body = "Your words\n\n- with a typo: teh\n---\nnot frontmatter\n";
@@ -226,5 +252,33 @@ mod tests {
         let (front, body) = parse("just words\n");
         assert_eq!(front, Frontmatter::default());
         assert_eq!(body, "just words\n");
+    }
+
+    #[test]
+    fn database_and_property_lines_round_trip_in_order() {
+        let front = Frontmatter {
+            id: Some("row".into()),
+            title: Some("DDIA".into()),
+            kind: Some("note".into()),
+            database: None,
+            properties: vec![("Rating".into(), "5".into()), ("Due".into(), "\"2026-11-10\"".into())],
+            unknown: vec!["aliases: [\"ddia\"]".into()],
+            ..Default::default()
+        };
+        let file = render(&front, "your words\n");
+        assert!(file.contains("updated: null\nRating: 5\nDue: \"2026-11-10\"\naliases: [\"ddia\"]\n---\n"), "{file}");
+        let (parsed, body) = parse(&file);
+        assert_eq!(body, "your words\n");
+        assert_eq!(parsed.properties, vec![] as Vec<(String, String)>, "a property line is only a property with a schema");
+        assert_eq!(parsed.unknown, vec!["Rating: 5".to_owned(), "Due: \"2026-11-10\"".to_owned(), "aliases: [\"ddia\"]".to_owned()]);
+        let database = Frontmatter {
+            kind: Some("database".into()),
+            database: Some("{\"scope\":\"space\",\"schema\":{},\"views\":{}}".into()),
+            ..Default::default()
+        };
+        let round = render(&database, "");
+        assert!(round.contains("database: {\"scope\":\"space\""), "{round}");
+        assert!(round.contains("kind: \"database\"\n"), "{round}");
+        assert_eq!(parse(&round).0.database.as_deref(), Some("{\"scope\":\"space\",\"schema\":{},\"views\":{}}"));
     }
 }

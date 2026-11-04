@@ -27,6 +27,18 @@ pub struct MirrorInput<'a> {
     /// The file and hash Bridge last wrote for this page, if any.
     pub previous_path: Option<&'a str>,
     pub previous_hash: Option<&'a str>,
+    /// A database page's `{scope, schema, views}` JSON.
+    pub database: Option<&'a str>,
+    /// A row's values, by property name, in schema order.
+    pub properties: &'a [(String, String)],
+    /// Every property name the row's schema owns.
+    pub owned: &'a [String],
+    /// A renamed or deleted property's old name, and, when the property is
+    /// still live, the value the document now writes for it.
+    pub retired: &'a [(String, Option<String>)],
+    /// Cleared cells whose stale line has not left the file yet: the property
+    /// name and the rendered value the line must match to be dropped.
+    pub drop: &'a [(String, Option<String>)],
 }
 
 /// What the projector did: the file and the hash of what it wrote.
@@ -63,7 +75,7 @@ pub fn file_name(note: &bridge_protocol::messages::Note, body: &str) -> String {
     format!("{}-{}.md", slug(&basis), tail)
 }
 
-fn frontmatter(note: &bridge_protocol::messages::Note, unknown: Vec<String>) -> Frontmatter {
+fn frontmatter(note: &bridge_protocol::messages::Note, unknown: Vec<String>, database: Option<&str>, properties: &[(String, String)]) -> Frontmatter {
     Frontmatter {
         id: Some(note.id.clone()),
         title: note.title.clone(),
@@ -74,8 +86,15 @@ fn frontmatter(note: &bridge_protocol::messages::Note, unknown: Vec<String>) -> 
         parent: note.parent_id.clone(),
         created: Some(note.created_at.clone()),
         updated: Some(note.updated_at.clone()),
+        database: database.map(str::to_owned),
+        properties: properties.to_vec(),
         unknown,
     }
+}
+
+/// The key of a `key: value` frontmatter line.
+fn line_key(line: &str) -> &str {
+    line.split_once(':').map(|(key, _)| key.trim()).unwrap_or("")
 }
 
 fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
@@ -113,8 +132,41 @@ pub fn mirror(root: &Path, input: &MirrorInput<'_>) -> Option<Mirrored> {
         return Some(Mirrored { path: None, hash: None });
     }
     let path = previous.unwrap_or_else(|| root.join(file_name(input.note, input.body)));
-    let unknown = std::fs::read_to_string(&path).map(|text| markdown::parse(&text).0.unknown).unwrap_or_default();
-    let contents = markdown::render(&frontmatter(input.note, unknown), input.body);
+    let unknown = std::fs::read_to_string(&path)
+        .map(|text| markdown::parse(&text).0.unknown)
+        .unwrap_or_default()
+        .into_iter()
+        // A renamed column's old line is not a foreign key; it is the same
+        // value under the name the schema no longer uses. A line the document
+        // now owns is written from the document, so the file's copy goes.
+        .filter(|line| {
+            let key = line_key(line).to_lowercase();
+            let raw = || line.split_once(':').map(|(_, value)| value.trim());
+            if let Some((_, stale)) = input.drop.iter().find(|(name, _)| name.to_lowercase() == key) {
+                // Drop the line only while it still says the value the person
+                // cleared; anything else is a new edit waiting to import.
+                return match (stale, raw()) {
+                    (Some(stale), Some(raw)) => raw != stale.trim(),
+                    _ => true,
+                };
+            }
+            if input.owned.iter().any(|name| name.to_lowercase() == key) {
+                // A live property owns its line unless the document has no
+                // value: then the line is the only copy of a value that
+                // predates the property (or could not be parsed for it).
+                return !input.properties.iter().any(|(name, _)| name.to_lowercase() == key);
+            }
+            match input.retired.iter().find(|(name, _)| name.to_lowercase() == key) {
+                // Drop a stale copy only when the document writes the same
+                // value under the property's current name. Anything else is a
+                // foreign key, and every foreign key stays.
+                Some((_, Some(value))) => line.split_once(':').is_none_or(|(_, raw)| raw.trim() != value.trim()),
+                Some((_, None)) => true,
+                None => true,
+            }
+        })
+        .collect();
+    let contents = markdown::render(&frontmatter(input.note, unknown, input.database, input.properties), input.body);
     match write_atomically(&path, &contents) {
         Ok(()) => Some(Mirrored { path: Some(path.to_string_lossy().into_owned()), hash: Some(file_hash(&contents)) }),
         Err(error) => {
@@ -144,22 +196,23 @@ fn apply_import(
     // file changed relative to that version is an edit. Comparing with the
     // latest page would treat stale frontmatter as new and undo concurrent
     // property changes.
-    let base = notes.with_db(|db| Ok(super::doc::load_page(db, id, Some(projected_seq))?.0.props()))?;
+    let base = notes.with_db(|db| Ok(super::doc::load_page(db, id, Some(projected_seq))?.0))?;
+    let base_props = base.props();
     let mut update = UpdateNote { id: id.to_owned(), ..Default::default() };
     let mut wants = false;
-    if front.title != base.title {
+    if front.title != base_props.title {
         update.title = Some(front.title.clone().unwrap_or_default());
         wants = true;
     }
-    if let Some(kind) = front.kind.filter(|kind| KINDS.contains(&kind.as_str()) && Some(kind) != base.kind.as_ref()) {
+    if let Some(kind) = front.kind.filter(|kind| KINDS.contains(&kind.as_str()) && Some(kind) != base_props.kind.as_ref()) {
         update.kind = Some(kind);
         wants = true;
     }
-    if let Some(state) = front.state.filter(|state| STATES.contains(&state.as_str()) && Some(state) != base.state.as_ref()) {
+    if let Some(state) = front.state.filter(|state| STATES.contains(&state.as_str()) && Some(state) != base_props.state.as_ref()) {
         update.state = Some(state);
         wants = true;
     }
-    if front.tags != base.tags {
+    if front.tags != base_props.tags {
         update.tags = Some(front.tags);
         wants = true;
     }
@@ -169,7 +222,7 @@ fn apply_import(
     }
     // The project link, through the same validated update. An id that names
     // no project is left out rather than failing the rest of the import.
-    if front.project != base.workspace_id {
+    if front.project != base_props.workspace_id {
         let change = match &front.project {
             Some(workspace) => UpdateNote { id: id.to_owned(), workspace_id: Some(workspace.clone()), ..Default::default() },
             None => UpdateNote { id: id.to_owned(), clear_workspace: true, ..Default::default() },
@@ -177,6 +230,52 @@ fn apply_import(
         match notes.update(change, FILE_IMPORT) {
             Ok(_) => touched = true,
             Err(error) => eprintln!("[notes] kept the project of {id}: {error}"),
+        }
+    }
+    // A row's values are frontmatter keys named after its database's
+    // properties. A key that names no property, or a value that does not
+    // parse, stays in `Frontmatter.unknown` and is written back verbatim.
+    if let Some(parent) = page.note.parent_id.as_deref() {
+        let values = notes.with_db(|db| {
+            let Some(database) = super::database::read(db, parent)? else { return Ok(Vec::new()) };
+            // Compared against the file's own base, like every other property,
+            // so a value the person changed in Bridge is not reverted here.
+            let current = base.values();
+            let ordered = database.ordered();
+            let mut patch: Vec<(String, Option<serde_json::Value>)> = Vec::new();
+            for line in &front.unknown {
+                let Some((key, raw)) = line.split_once(':') else { continue };
+                let key = key.trim();
+                let Some((prop, def)) = ordered.iter().find(|(_, def)| def.name.to_lowercase() == key.to_lowercase()) else { continue };
+                let parsed = super::database::parse_value(db, &page.note.space_id, def, raw).filter(|value| super::database::validate_value(def, value).is_ok());
+                let Some(value) = parsed else {
+                    // The line stays in the file; nothing is written.
+                    eprintln!("[notes] kept {key} of {id} verbatim: it is not a valid {}", def.kind.as_str());
+                    continue;
+                };
+                // Compared with the file's base, not the cleared value: a stale
+                // copy of a clear still matches the base it was written from, so
+                // it writes nothing. A line that says the cleared value after the
+                // projection dropped it was typed back in, and it imports.
+                if current.get(*prop) != Some(&value) {
+                    patch.push(((*prop).clone(), Some(value)));
+                }
+            }
+            // A property the page had a value for and the file no longer names
+            // is a clear. A line that predates the property has no base value,
+            // so it stays foreign instead of being deleted.
+            let present: std::collections::BTreeSet<String> =
+                front.unknown.iter().filter_map(|line| line.split_once(':').map(|(key, _)| key.trim().to_lowercase())).collect();
+            for (prop, def) in &ordered {
+                if current.contains_key(*prop) && !present.contains(&def.name.to_lowercase()) {
+                    patch.push(((*prop).clone(), None));
+                }
+            }
+            Ok(patch)
+        })?;
+        if !values.is_empty() {
+            notes.set_values(id, &values, FILE_IMPORT)?;
+            touched = true;
         }
     }
     Ok(touched)
@@ -458,8 +557,198 @@ mod tests {
     }
 
     #[test]
-    fn an_outside_edit_merges_with_a_write_made_before_import() {
+    fn a_row_file_writes_every_value_by_name_and_imports_it_back() {
+        use crate::notes::service::{NewOption, NewProperty, SchemaOp};
         let (_dir, notes) = service();
+        let library = notes.create(CreatePage { title: Some("Library".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let chapter = notes.create(CreatePage { title: Some("Designing Data-Intensive Applications".into()), parent_id: Some(library.id.clone()), ..Default::default() }, PERSON).unwrap();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes
+            .update_schema(
+                &list.id,
+                &[
+                    SchemaOp::Add(NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() }),
+                    SchemaOp::Add(NewProperty {
+                        name: "Status".into(),
+                        kind: "status".into(),
+                        options: vec![NewOption { name: "Reading".into(), ..Default::default() }, NewOption { name: "Done".into(), group: Some("done".into()), ..Default::default() }],
+                        ..Default::default()
+                    }),
+                    SchemaOp::Add(NewProperty { name: "Due".into(), kind: "date".into(), ..Default::default() }),
+                    SchemaOp::Add(NewProperty { name: "Finished".into(), kind: "checkbox".into(), ..Default::default() }),
+                    SchemaOp::Add(NewProperty { name: "Link".into(), kind: "url".into(), ..Default::default() }),
+                    SchemaOp::Add(NewProperty { name: "Related".into(), kind: "relation".into(), relation: Some(library.id.clone()), ..Default::default() }),
+                    SchemaOp::Add(NewProperty { name: "Note".into(), kind: "text".into(), ..Default::default() }),
+                    SchemaOp::Add(NewProperty { name: "Labels".into(), kind: "multiSelect".into(), options: vec![NewOption { name: "Fiction".into(), ..Default::default() }, NewOption { name: "Tech".into(), ..Default::default() }], ..Default::default() }),
+                ],
+                PERSON,
+            )
+            .unwrap();
+        let prop = |name: &str| added.added.iter().find(|(_, added)| added == name).unwrap().0.clone();
+        let schema = notes.database(&list.id).unwrap();
+        let reading = schema.schema[&prop("Status")].options[0].id.clone();
+        let (fiction, tech) = (schema.schema[&prop("Labels")].options[0].id.clone(), schema.schema[&prop("Labels")].options[1].id.clone());
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        let values = vec![
+            (prop("Rating"), Some(serde_json::json!(5))),
+            (prop("Status"), Some(serde_json::json!(reading))),
+            (prop("Due"), Some(serde_json::json!({"start": "2026-11-10"}))),
+            (prop("Finished"), Some(serde_json::json!(true))),
+            (prop("Link"), Some(serde_json::json!("https://bridge.dev"))),
+            (prop("Related"), Some(serde_json::json!([chapter.id.clone()]))),
+            (prop("Note"), Some(serde_json::json!("the best book"))),
+            (prop("Labels"), Some(serde_json::json!([fiction, tech]))),
+        ];
+        notes.set_values(&row.id, &values, PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        // One line per property, by name, in schema order, after the known keys.
+        let order: Vec<usize> = ["Rating: 5", "Status: \"Reading\"", "Due: \"2026-11-10\"", "Finished: true", "Link: \"https://bridge.dev\"", "Related: [\"[[Designing Data-Intensive Applications]]\"]", "Note: \"the best book\"", "Labels: [\"Fiction\",\"Tech\"]"]
+            .iter()
+            .map(|line| file.find(line).unwrap_or_else(|| panic!("missing {line} in {file}")))
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{file}");
+        assert!(file.find("updated:").unwrap() < order[0]);
+
+        // An edit in the file lands in the same doc state as set_values.
+        let before = notes.read(&row.id).unwrap().seq;
+        std::fs::write(&path, file.replace("Rating: 5", "Rating: 3")).unwrap();
+        assert_eq!(import_changes(&notes).unwrap(), 1);
+        let page = notes.read(&row.id).unwrap();
+        assert_eq!(page.seq, before + 1);
+        let stored = notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.values())).unwrap();
+        assert_eq!(stored[&prop("Rating")], serde_json::json!(3));
+        assert_eq!(page.note.last_actor, FILE_IMPORT);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Rating: 3"));
+
+        // A value that does not parse is left in the file and changes nothing.
+        let accepted = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, accepted.replace("Rating: 3", "Rating: three")).unwrap();
+        import_changes(&notes).unwrap();
+        assert_eq!(notes.read(&row.id).unwrap().seq, page.seq);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Rating: three"));
+
+        // A rename rewrites the key in the file, off the request path, and
+        // writes no row doc.
+        let seq = notes.read(&row.id).unwrap().seq;
+        notes.update_schema(&list.id, &[SchemaOp::Rename { prop: prop("Rating"), name: "Score".into() }], PERSON).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
+        let renamed = std::fs::read_to_string(&path).unwrap();
+        assert!(renamed.contains("Score: 3"), "{renamed}");
+        assert!(!renamed.contains("Rating: 3"), "the value moved to the new name: {renamed}");
+        assert!(renamed.contains("Rating: three"), "a refused edit stays as a foreign key: {renamed}");
+        assert_eq!(notes.read(&row.id).unwrap().seq, seq, "a rename touches no row doc");
+
+        // Clearing a cell removes its line; a foreign key survives.
+        std::fs::write(&path, renamed.replace("\n---\n", "\naliases: [\"ddia\"]\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        notes.set_values(&row.id, &[(prop("Rating"), None)], PERSON).unwrap();
+        let cleared = std::fs::read_to_string(&path).unwrap();
+        assert!(!cleared.contains("Score:"), "{cleared}");
+        assert!(cleared.contains("aliases: [\"ddia\"]"), "{cleared}");
+
+        // The database page's own file carries its schema and views.
+        let database = std::fs::read_to_string(notes.read(&list.id).unwrap().note.path.unwrap()).unwrap();
+        assert!(database.contains("kind: \"database\""));
+        assert!(database.contains("database: {\"scope\":\"children\""), "{database}");
+        assert!(database.contains("\"name\":\"Rating\"") || database.contains("\"name\":\"Score\""), "{database}");
+    }
+
+    #[test]
+    fn a_foreign_database_key_on_a_plain_page_survives() {
+        let (_dir, notes) = service();
+        let page = notes.create(CreatePage { title: Some("Plain".into()), content: Some("body\n".into()), ..Default::default() }, PERSON).unwrap();
+        let path = PathBuf::from(page.path.clone().unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\naliases: [\"a\"]\ndatabase: \"obsidian-thing\"\ncssclass: wide\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        notes.update(UpdateNote { id: page.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("database: \"obsidian-thing\""), "a foreign key is not Bridge's record: {after}");
+        assert!(after.contains("title: \"Renamed\""), "{after}");
+        let (aliases, database, cssclass) = (after.find("aliases:").unwrap(), after.find("database:").unwrap(), after.find("cssclass:").unwrap());
+        assert!(aliases < database && database < cssclass, "a foreign key keeps its place: {after}");
+    }
+
+    #[test]
+    fn a_item_deleted_from_the_file_clears_the_cell() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let rating = added.added[0].0.clone();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(file.contains("Rating: 5"), "{file}");
+        std::fs::write(&path, file.replace("Rating: 5\n", "")).unwrap();
+        import_changes(&notes).unwrap();
+        let stored = notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.values())).unwrap();
+        assert!(!stored.contains_key(&rating), "deleting the line clears the cell");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Rating:"), "and the doc does not write it back");
+    }
+
+    #[test]
+    fn a_foreign_key_the_new_property_cannot_parse_stays_in_the_file() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\nPriority: \"urgent\"\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Priority".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let stored = notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.values())).unwrap();
+        assert!(!stored.contains_key(&added.added[0].0), "a number column takes no text");
+        notes.update(crate::notes::service::UpdateNote { id: row.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("Priority: \"urgent\""), "the person's only copy stays: {after}");
+    }
+
+    #[test]
+    fn a_retired_name_does_not_delete_a_later_foreign_key() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let rating = added.added[0].0.clone();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Rename { prop: rating, name: "Score".into() }], PERSON).unwrap();
+        crate::notes::projector::reconcile(&notes).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Rating:"), "the stale copy goes");
+        // Later, the person writes a key that happens to reuse the old name.
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\nrating: \"from obsidian\"\n---\n")).unwrap();
+        import_changes(&notes).unwrap();
+        notes.update(crate::notes::service::UpdateNote { id: row.id.clone(), title: Some("Renamed".into()), ..Default::default() }, PERSON).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("rating: \"from obsidian\""), "a retired name is not a permanent delete list: {after}");
+    }
+
+    #[test]
+    fn an_outside_edit_does_not_revert_a_value_set_in_bridge() {
+        let (_dir, notes) = service();
+        let list = notes.create(CreatePage { title: Some("Reading list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes.update_schema(&list.id, &[crate::notes::service::SchemaOp::Add(crate::notes::service::NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() })], PERSON).unwrap();
+        let rating = added.added[0].0.clone();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(3)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        // Someone edits the body in another editor; the file is now dirty.
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("\n---\n", "\n---\n\nedited in vim\n")).unwrap();
+        // The person rates it 4 in Bridge while that edit waits to be imported.
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(4)))], PERSON).unwrap();
+        import_changes(&notes).unwrap();
+        let stored = notes.with_db(|db| Ok(crate::notes::doc::load_page(db, &row.id, None)?.0.values())).unwrap();
+        assert_eq!(stored[&rating], serde_json::json!(4), "the import must not revert a value set in Bridge");
+        assert!(notes.read(&row.id).unwrap().markdown.contains("edited in vim"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Rating: 4"));
+    }
+
+    #[test]
+    fn an_outside_edit_merges_with_a_write_made_before_import() {        let (_dir, notes) = service();
         let note = notes.create(CreatePage { content: Some("top\n".into()), ..Default::default() }, PERSON).unwrap();
         let path = PathBuf::from(note.path.clone().unwrap());
         let original = std::fs::read_to_string(&path).unwrap();
