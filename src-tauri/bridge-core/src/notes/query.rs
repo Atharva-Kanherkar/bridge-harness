@@ -18,7 +18,7 @@ use base64::Engine;
 use bridge_protocol::messages::Note;
 use chrono::{Datelike, Duration, NaiveDate};
 use rusqlite::types::Value as Sql;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use super::database::{self, DatabaseDoc};
@@ -897,7 +897,7 @@ pub fn run(db: &Connection, space: &str, database: &DatabaseDoc, spec: &QuerySpe
             wanted.extend(ids.iter().map(String::as_str));
         }
     }
-    let rows = load_rows(db, &wanted)?;
+    let rows = load_rows(db, Some(database), &wanted)?;
     let pick = |id: &str| rows.get(id).cloned();
     Ok(QueryResult {
         rows: page.iter().filter_map(|row| pick(&row.id)).collect(),
@@ -974,17 +974,26 @@ fn bucket_rows(ordered: &[Ordered], grouping: &Grouping, group_limit: usize) -> 
     buckets
 }
 
-/// Notes and their cells for the given ids, keyed by id.
-fn load_rows(db: &Connection, ids: &[&str]) -> Result<BTreeMap<String, Row>, BridgeError> {
+/// Notes and their cells for the given ids, keyed by id. Only the cells of
+/// properties the database still has: a deleted property's cell stays in the
+/// row's doc but is not a value of the row, as on a page read. Each id's doc
+/// is decoded once, however many groups it appears in.
+fn load_rows(db: &Connection, database: Option<&DatabaseDoc>, ids: &[&str]) -> Result<BTreeMap<String, Row>, BridgeError> {
+    let mut unique: Vec<&str> = ids.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
     let mut rows = BTreeMap::new();
-    let mut statement = db.prepare(&format!("SELECT {NOTE_COLUMNS} FROM pages WHERE id=?1"))?;
-    for id in ids {
-        if rows.contains_key(*id) {
-            continue;
+    for chunk in unique.chunks(500) {
+        let marks = (1..=chunk.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(", ");
+        let mut statement = db.prepare(&format!("SELECT {NOTE_COLUMNS} FROM pages WHERE id IN ({marks})"))?;
+        let notes: Vec<Note> = statement.query_map(rusqlite::params_from_iter(chunk.iter()), note_from_row)?.collect::<Result<_, _>>()?;
+        for note in notes {
+            let mut values = doc::load_page(db, &note.id, None)?.0.values();
+            if let Some(database) = database {
+                values.retain(|prop, _| database.schema.contains_key(prop));
+            }
+            rows.insert(note.id.clone(), Row { note, values });
         }
-        let Some(note) = statement.query_row(params![id], note_from_row).optional()? else { continue };
-        let values = doc::load_page(db, id, None)?.0.values();
-        rows.insert((*id).to_owned(), Row { note, values });
     }
     Ok(rows)
 }

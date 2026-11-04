@@ -292,7 +292,7 @@ pub(crate) fn reference(filter: &Value, row: &Row, database: &DatabaseDoc, today
 
 fn all_rows(fixture: &Fixture) -> Vec<Row> {
     let ids: Vec<&str> = fixture.rows.iter().map(String::as_str).collect();
-    fixture.notes.with_db(|db| super::load_rows(db, &ids)).unwrap().into_values().collect()
+    { let database = fixture.doc(); fixture.notes.with_db(|db| super::load_rows(db, Some(&database), &ids)).unwrap().into_values().collect() }
 }
 
 fn ids_of(rows: &[Row]) -> BTreeSet<String> {
@@ -780,6 +780,14 @@ fn performance_gate() {
     let bound = if cfg!(debug_assertions) { std::time::Duration::from_secs(2) } else { std::time::Duration::from_millis(200) };
     eprintln!("[performance_gate] best of five: {best:?} (bound {bound:?})");
     assert!(best < bound, "1000-row query took {best:?}, over {bound:?}");
+    // The heaviest call a board can make: the largest page and the largest
+    // groups, so every row's doc is decoded once.
+    let widest = QuerySpec { limit: Some(MAX_LIMIT), group_limit: Some(MAX_GROUP_LIMIT), ..spec };
+    let started = std::time::Instant::now();
+    let result = notes.query_database(&id, &widest).unwrap();
+    let elapsed = started.elapsed();
+    eprintln!("[performance_gate] widest call ({} rows, {} grouped): {elapsed:?}", result.rows.len(), result.groups.as_ref().map_or(0, |groups| groups.iter().map(|group| group.rows.len()).sum::<usize>()));
+    assert!(elapsed < bound * 3, "the widest call took {elapsed:?}");
 }
 
 /// Names in a shared case, as ids: properties, and option names in the
@@ -901,4 +909,27 @@ fn the_shared_fixture_matches() {
             assert_eq!(actual, expected, "{name}");
         }
     }
+}
+
+#[test]
+fn a_deleted_propertys_cells_are_not_row_values() {
+    let fixture = fixture(5, 11);
+    let note = fixture.props["Note"].clone();
+    fixture.notes.set_values(&fixture.rows[0], &[(note.clone(), Some(json!("kept in the doc")))], PERSON).unwrap();
+    fixture.notes.update_schema(&fixture.db, &[SchemaOp::Delete { prop: note.clone() }], PERSON).unwrap();
+    let result = query(&fixture, QuerySpec { group_by: Some(GroupByDef { property: fixture.props["Status"].clone(), date_bucket: None }), ..Default::default() });
+    assert!(result.rows.iter().all(|row| !row.values.contains_key(&note)), "rows carry only live properties");
+    assert!(result.groups.unwrap().iter().flat_map(|group| group.rows.iter()).all(|row| !row.values.contains_key(&note)));
+}
+
+
+#[test]
+fn titles_sort_by_code_point_as_the_mock_does() {
+    let fixture = fixture(0, 12);
+    for title in ["日本語メモ", "Émile", "plain", "🚀 launch", "ﬁle"] {
+        fixture.notes.create(CreatePage { title: Some(title.into()), parent_id: Some(fixture.db.clone()), ..Default::default() }, PERSON).unwrap();
+    }
+    let result = query(&fixture, QuerySpec { sorts: Some(vec![SortDef { property: "title".into(), direction: "desc".into() }]), ..Default::default() });
+    let titles: Vec<String> = result.rows.iter().map(|row| row.note.title.clone().unwrap()).collect();
+    assert_eq!(titles, vec!["🚀 launch", "ﬁle", "日本語メモ", "Émile", "plain"], "the same order src/notesMock.test.ts pins");
 }

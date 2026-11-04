@@ -35,29 +35,28 @@ fn database_titles(notes: &NotesService) -> Result<String, ToolError> {
     let titles: Vec<String> = notes
         .with_db(|db| {
             let mut statement = db.prepare(
-                "SELECT COALESCE(title, 'Untitled') FROM pages WHERE kind='database' AND deleted_at IS NULL
+                "SELECT COALESCE(title, 'Untitled') FROM pages WHERE kind='database' AND deleted_at IS NULL AND space_id=?1
                  AND id NOT IN (SELECT system_database_id FROM spaces WHERE system_database_id IS NOT NULL) ORDER BY title",
             )?;
-            let titles = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            let titles = statement.query_map(params![notes.space()], |row| row.get(0))?.collect::<Result<_, _>>()?;
             Ok(titles)
         })
         .map_err(service)?;
     Ok(if titles.is_empty() { "none yet".to_owned() } else { titles.join(", ") })
 }
 
-/// A database named by id or by title (resolved like `[[title]]`).
+/// A database of this space named by id or by title (resolved like
+/// `[[title]]`).
 pub fn find_database(notes: &NotesService, reference: &str) -> Result<DatabaseDoc, ToolError> {
     let reference = reference.trim();
     let system = notes.system_database().ok();
     let found: Option<String> = notes
         .with_db(|db| {
-            if let Some(database) = database::read(db, reference)? {
-                return Ok(Some(database.id));
-            }
             Ok(db
                 .query_row(
-                    "SELECT id FROM pages WHERE kind='database' AND deleted_at IS NULL AND link_key=?1 ORDER BY created_at, id LIMIT 1",
-                    params![links::link_key(reference)],
+                    "SELECT id FROM pages WHERE kind='database' AND deleted_at IS NULL AND space_id=?1 AND (id=?2 OR link_key=?3)
+                     ORDER BY id<>?2, created_at, id LIMIT 1",
+                    params![notes.space(), reference, links::link_key(reference)],
                     |row| row.get(0),
                 )
                 .optional()?)

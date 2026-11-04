@@ -99,6 +99,8 @@ pub struct CreatePage {
     pub scope: Option<String>,
     /// A database's first views; one "Table" view when empty.
     pub views: Vec<ViewDef>,
+    /// A database's first properties, checked and written with the page.
+    pub properties: Vec<NewProperty>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -150,10 +152,6 @@ pub struct CreateDatabase {
 
 /// Most views one database holds.
 pub const MAX_VIEWS: usize = 50;
-
-fn view_id_is_new(database: &database::DatabaseDoc, view_id: &str) -> bool {
-    !database.views.contains_key(view_id)
-}
 
 /// One option of a `SetOptions` list. `color` and `group` left out keep what
 /// an existing option had.
@@ -256,6 +254,76 @@ fn new_options(kind: PropertyType, options: &[NewOption]) -> Result<Vec<OptionDe
         def.options.push(OptionDef { id: new_id(), name, color: option.color.clone(), group });
     }
     Ok(def.options)
+}
+
+/// A new property, checked against the schema it joins and placed last.
+fn build_property(db: &Connection, schema: &std::collections::BTreeMap<String, PropertyDef>, new: &NewProperty) -> Result<PropertyDef, BridgeError> {
+    let kind = PropertyType::parse(&new.kind).ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
+    let name = database::check_name(schema, &new.name, None)?;
+    let options = new_options(kind, &new.options)?;
+    let relation = match &new.relation {
+        Some(target) if kind == PropertyType::Relation => {
+            if database::read(db, target)?.is_none() {
+                return Err(invalid(format!("no database with id {target}")));
+            }
+            Some(doc::RelationDef { database_id: target.clone() })
+        }
+        Some(_) => return Err(invalid("only a relation names another database")),
+        None if kind == PropertyType::Relation => return Err(invalid("a relation needs the database it points at")),
+        None => None,
+    };
+    if let Some(format) = &new.date_format {
+        if kind != PropertyType::Date || !matches!(format.as_str(), "date" | "datetime") {
+            return Err(invalid("dateFormat is date or datetime, on a date property"));
+        }
+    }
+    let order = schema.values().map(|def| def.order).max().map(|order| order + 1).unwrap_or(0);
+    Ok(PropertyDef { name, kind, order, options, relation, date_format: new.date_format.clone() })
+}
+
+/// One cell a row may hold: a value its property takes, and for a relation,
+/// live rows of the database it points at.
+fn check_cell<'a>(db: &Connection, space: &str, database: &'a database::DatabaseDoc, prop_id: &str, value: Option<&Value>) -> Result<&'a PropertyDef, BridgeError> {
+    let def = database
+        .schema
+        .get(prop_id)
+        .ok_or_else(|| invalid(format!("no property with id {prop_id}; this database has {}", database.property_names())))?;
+    let Some(value) = value else { return Ok(def) };
+    database::validate_value(def, value)?;
+    if def.kind == PropertyType::Relation {
+        let target = def.relation.as_ref().map(|relation| relation.database_id.clone()).ok_or_else(|| invalid(format!("{} names no database", def.name)))?;
+        for id in value.as_array().into_iter().flatten().filter_map(Value::as_str) {
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND parent_id=?2 AND space_id=?3 AND deleted_at IS NULL)",
+                params![id, target, space],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(invalid(format!("{} names {id}, which is not a row of that database", def.name)));
+            }
+        }
+    }
+    Ok(def)
+}
+
+/// A view a database can save: it compiles, and its date property is a date.
+fn check_view_def(space: &str, database: &database::DatabaseDoc, view: &ViewDef) -> Result<(), BridgeError> {
+    if view.name.trim().is_empty() {
+        return Err(invalid("a view needs a name"));
+    }
+    for property in view.sorts.iter().map(|sort| &sort.property).chain(view.group_by.iter().map(|group| &group.property)).chain(view.date_property.iter()).chain(view.properties.iter().map(|property| &property.id)) {
+        if !database.schema.contains_key(property) && !database::SYSTEM_PROPERTIES.contains(&property.as_str()) && !database::FILTER_ONLY_PROPERTIES.contains(&property.as_str()) {
+            return Err(no_property(property));
+        }
+    }
+    super::query::check_view(space, database, view.filter.as_ref(), &view.sorts, view.group_by.as_ref())?;
+    if let Some(date) = &view.date_property {
+        let is_date = database.schema.get(date).is_some_and(|def| def.kind == PropertyType::Date) || matches!(date.as_str(), "created" | "updated");
+        if !is_date {
+            return Err(invalid(format!("{date} is not a date property")));
+        }
+    }
+    Ok(())
 }
 
 fn option_group(kind: PropertyType, group: &Option<String>) -> Result<Option<String>, BridgeError> {
@@ -503,6 +571,7 @@ impl NotesService {
         let id = new_id();
         let body = page.content.unwrap_or_default();
         let space = self.space.clone();
+        let space_name = self.space.clone();
         let scope = page.scope.clone().unwrap_or_else(|| "children".to_owned());
         if kind == "database" && !database::SCOPES.contains(&scope.as_str()) {
             return Err(invalid(format!("scope must be one of {}", database::SCOPES.join(", "))));
@@ -511,9 +580,12 @@ impl NotesService {
         // database a person makes starts with one table.
         let views: Vec<(String, ViewDef)> = match kind.as_str() {
             "database" if page.views.is_empty() => vec![(new_id(), database::table_view())],
-            "database" => page.views.iter().map(|view| (new_id(), view.clone())).collect(),
+            "database" => page.views.iter().map(|view| (new_id(), ViewDef { name: view.name.trim().to_owned(), ..view.clone() })).collect(),
             _ => Vec::new(),
         };
+        if kind != "database" && !page.properties.is_empty() {
+            return Err(invalid("only a database has properties"));
+        }
         let (note, _, _) = self.write_with(&id, actor, |db, doc, _| {
             if let Some(parent) = &page.parent_id {
                 validate_parent(db, &space, &id, parent)?;
@@ -538,8 +610,20 @@ impl NotesService {
             if views.is_empty() {
                 doc.edit(Some(&body), &patch)
             } else {
+                // Properties and views are checked here, against the schema they
+                // make, so the page and its records land in one write or none.
+                let mut schema = std::collections::BTreeMap::new();
+                for property in &page.properties {
+                    let def = build_property(db, &schema, property)?;
+                    schema.insert(new_id(), def);
+                }
+                let draft = database::DatabaseDoc { id: id.clone(), scope: scope.clone(), schema: schema.clone(), views: Default::default(), retired: Default::default() };
                 let mut records = RecordsPatch::default().scope(&scope);
+                for (prop, def) in &schema {
+                    records = records.put_schema(prop, def);
+                }
                 for (view_id, view) in &views {
+                    check_view_def(&space_name, &draft, view)?;
                     records = records.put_view(view_id, view);
                 }
                 doc.edit_page(Some(&body), &patch, &records)
@@ -648,6 +732,24 @@ impl NotesService {
             || update.workspace_id.is_some() || update.clear_workspace || update.state.is_some() || update.add_session_id.is_some();
         if !values.is_empty() && !props_change {
             return self.set_values(&update.id, &values, actor);
+        }
+        // Properties and cells are two commits, so the cells are checked first,
+        // against the database the page will belong to: a refused cell writes
+        // nothing at all.
+        if !values.is_empty() {
+            self.with_db(|db| {
+                let current: Option<String> = db.query_row("SELECT parent_id FROM pages WHERE id=?1", params![update.id], |row| row.get(0)).optional()?.flatten();
+                let parent = if update.clear_parent { None } else { update.parent_id.clone().or(current) };
+                let database = match parent {
+                    Some(parent) => database::read(db, &parent)?,
+                    None => None,
+                }
+                .ok_or_else(|| invalid("only a row of a database has values"))?;
+                for (prop, value) in &values {
+                    check_cell(db, &self.space, &database, prop, value.as_ref())?;
+                }
+                Ok(())
+            })?;
         }
         let _rename = update.title.is_some().then(|| self.rename_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let mut rename = None;
@@ -852,26 +954,9 @@ impl NotesService {
             let current = live.values();
             let mut records = RecordsPatch::default();
             for (prop_id, value) in patch {
-                let def = database
-                    .schema
-                    .get(prop_id)
-                    .ok_or_else(|| invalid(format!("no property with id {prop_id}; this database has {}", database.property_names())))?;
+                check_cell(db, &space, &database, prop_id, value.as_ref())?;
                 match value {
                     Some(value) => {
-                        database::validate_value(def, value)?;
-                        if def.kind == PropertyType::Relation {
-                            let target = def.relation.as_ref().map(|relation| relation.database_id.clone()).ok_or_else(|| invalid(format!("{} names no database", def.name)))?;
-                            for id in value.as_array().into_iter().flatten().filter_map(Value::as_str) {
-                                let exists: bool = db.query_row(
-                                    "SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND parent_id=?2 AND space_id=?3 AND deleted_at IS NULL)",
-                                    params![id, target, space],
-                                    |row| row.get(0),
-                                )?;
-                                if !exists {
-                                    return Err(invalid(format!("{} names {id}, which is not a row of that database", def.name)));
-                                }
-                            }
-                        }
                         records = records.put_value(prop_id, Some(value)).settle_value(prop_id);
                     }
                     None => {
@@ -932,28 +1017,8 @@ impl NotesService {
             for op in ops {
                 match op {
                     SchemaOp::Add(new) => {
-                        let kind = PropertyType::parse(&new.kind)
-                            .ok_or_else(|| invalid(format!("type must be one of {}", database::PROPERTY_TYPES.join(", "))))?;
-                        let name = database::check_name(&schema, &new.name, None)?;
-                        let options = new_options(kind, &new.options)?;
-                        let relation = match &new.relation {
-                            Some(target) if kind == PropertyType::Relation => {
-                                if database::read(db, target)?.is_none() {
-                                    return Err(invalid(format!("no database with id {target}")));
-                                }
-                                Some(doc::RelationDef { database_id: target.clone() })
-                            }
-                            Some(_) => return Err(invalid("only a relation names another database")),
-                            None if kind == PropertyType::Relation => return Err(invalid("a relation needs the database it points at")),
-                            None => None,
-                        };
-                        if let Some(format) = &new.date_format {
-                            if kind != PropertyType::Date || !matches!(format.as_str(), "date" | "datetime") {
-                                return Err(invalid("dateFormat is date or datetime, on a date property"));
-                            }
-                        }
-                        let order = schema.values().map(|def| def.order).max().map(|order| order + 1).unwrap_or(0);
-                        let def = PropertyDef { name: name.clone(), kind, order, options, relation, date_format: new.date_format.clone() };
+                        let def = build_property(db, &schema, new)?;
+                        let name = def.name.clone();
                         let prop = new_id();
                         schema.insert(prop.clone(), def.clone());
                         next.updated.added.push((prop.clone(), name.clone()));
@@ -1248,76 +1313,62 @@ impl NotesService {
         let view_id = view_id.map(str::to_owned).unwrap_or_else(new_id);
         let mut view = view;
         view.name = view.name.trim().to_owned();
-        if view.name.is_empty() {
-            return Err(invalid("a view needs a name"));
-        }
-        for property in view.sorts.iter().map(|sort| &sort.property).chain(view.group_by.iter().map(|group| &group.property)).chain(view.date_property.iter()).chain(view.properties.iter().map(|property| &property.id)) {
-            if !database.schema.contains_key(property) && !database::SYSTEM_PROPERTIES.contains(&property.as_str()) && !database::FILTER_ONLY_PROPERTIES.contains(&property.as_str()) {
-                return Err(no_property(property));
+        check_view_def(&self.space, &database, &view)?;
+        // The count is checked against the live doc inside the write, so two
+        // saves at once cannot pass the same check.
+        self.write(id, actor, |live| {
+            let views = live.views();
+            if !views.contains_key(&view_id) && views.len() >= MAX_VIEWS {
+                return Err(invalid(format!("a database holds at most {MAX_VIEWS} views")));
             }
-        }
-        // A saved view always compiles: its filter, sorts and grouping are
-        // checked by the planner that will run them.
-        super::query::check_view(&self.space, &database, view.filter.as_ref(), &view.sorts, view.group_by.as_ref())?;
-        if let Some(date) = &view.date_property {
-            let is_date = database.schema.get(date).is_some_and(|def| def.kind == PropertyType::Date) || matches!(date.as_str(), "created" | "updated");
-            if !is_date {
-                return Err(invalid(format!("{date} is not a date property")));
-            }
-        }
-        if view_id_is_new(&database, &view_id) && database.views.len() >= MAX_VIEWS {
-            return Err(invalid(format!("a database holds at most {MAX_VIEWS} views")));
-        }
-        self.write(id, actor, |live| live.edit_records(&RecordsPatch::default().put_view(&view_id, &view)))?;
+            live.edit_records(&RecordsPatch::default().put_view(&view_id, &view))
+        })?;
         Ok(view_id)
     }
 
-    /// Make a database with its first properties and views. With no
+    /// Make a database with its first properties and views, in the one write
+    /// that makes the page: a refused property or view makes nothing. With no
     /// properties it gets a Status with To do, In progress and Done; with no
-    /// views, one table. A property or view that is refused leaves nothing
-    /// behind: the half-made database is deleted.
+    /// views, one table.
     pub fn create_database(&self, create: CreateDatabase, actor: &str) -> Result<Note, BridgeError> {
-        let note = self.create(
-            CreatePage { title: create.title, parent_id: create.parent_id, workspace_id: create.workspace_id, kind: Some("database".into()), ..Default::default() },
-            actor,
-        )?;
+        if create.views.len() > MAX_VIEWS {
+            return Err(invalid(format!("a database holds at most {MAX_VIEWS} views")));
+        }
         let properties = if create.properties.is_empty() {
             let option = |name: &str, group: &str| NewOption { name: name.into(), group: Some(group.into()), ..Default::default() };
             vec![NewProperty { name: "Status".into(), kind: "status".into(), options: vec![option("To do", "todo"), option("In progress", "inProgress"), option("Done", "done")], ..Default::default() }]
         } else {
             create.properties
         };
-        let finish = || -> Result<(), BridgeError> {
-            let ops: Vec<SchemaOp> = properties.into_iter().map(SchemaOp::Add).collect();
-            self.update_schema(&note.id, &ops, actor)?;
-            if !create.views.is_empty() {
-                let seeded: Vec<String> = self.database(&note.id)?.views.into_keys().collect();
-                for view in create.views {
-                    self.put_view(&note.id, None, view, actor)?;
-                }
-                for view in seeded {
-                    self.write(&note.id, actor, |live| live.edit_records(&RecordsPatch::default().remove_view(&view)))?;
-                }
-            }
-            Ok(())
-        };
-        if let Err(error) = finish() {
-            let _ = self.delete(&note.id, actor);
-            return Err(error);
-        }
-        Ok(self.read(&note.id)?.note)
+        self.create(
+            CreatePage {
+                title: create.title,
+                parent_id: create.parent_id,
+                workspace_id: create.workspace_id,
+                kind: Some("database".into()),
+                properties,
+                views: create.views,
+                ..Default::default()
+            },
+            actor,
+        )
     }
 
     pub fn delete_view(&self, id: &str, view_id: &str, actor: &str) -> Result<(), BridgeError> {
         self.check_live(id)?;
-        let views = self.database(id)?.views;
-        if !views.contains_key(view_id) {
-            return Err(invalid("no such view"));
-        }
-        if views.len() == 1 {
-            return Err(invalid("a database keeps at least one view"));
-        }
-        self.write(id, actor, |live| live.edit_records(&RecordsPatch::default().remove_view(view_id)))?;
+        self.database(id)?;
+        // Checked inside the write: two deletes at once cannot both see two
+        // views and leave none.
+        self.write(id, actor, |live| {
+            let views = live.views();
+            if !views.contains_key(view_id) {
+                return Err(invalid("no such view"));
+            }
+            if views.len() == 1 {
+                return Err(invalid("a database keeps at least one view"));
+            }
+            live.edit_records(&RecordsPatch::default().remove_view(view_id))
+        })?;
         Ok(())
     }
 
@@ -2686,6 +2737,75 @@ pub(crate) mod tests {
         let plain = notes.create(CreatePage { title: Some("Plain".into()), ..Default::default() }, PERSON).unwrap();
         let page = notes.read(&plain.id).unwrap();
         assert_eq!((page.database, page.database_id, page.values), (None, None, None));
+    }
+
+    #[test]
+    fn a_refused_cell_in_an_update_writes_nothing() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        let seq = notes.read(&row.id).unwrap().seq;
+        let error = notes
+            .update(UpdateNote { id: row.id.clone(), title: Some("Renamed".into()), state: Some("done".into()), values: vec![(rating.clone(), Some(serde_json::json!(4))), (status, Some(serde_json::json!("nope")))], ..Default::default() }, PERSON)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Reading"), "{error}");
+        let page = notes.read(&row.id).unwrap();
+        assert_eq!((page.seq, page.note.title.as_deref(), page.note.state.as_str()), (seq, Some("DDIA"), "open"), "neither the properties nor the cells changed");
+        // Moving a page into a database and setting its cells is one request:
+        // the cells are checked against the database it moves into.
+        let loose = notes.create(CreatePage { title: Some("SICP".into()), ..Default::default() }, PERSON).unwrap();
+        notes.update(UpdateNote { id: loose.id.clone(), parent_id: Some(id.clone()), values: vec![(rating.clone(), Some(serde_json::json!(3)))], ..Default::default() }, PERSON).unwrap();
+        assert_eq!(values_of(&notes, &loose.id)[&rating], serde_json::json!(3));
+        assert!(notes.update(UpdateNote { id: loose.id, clear_parent: true, values: vec![(rating, Some(serde_json::json!(1)))], ..Default::default() }, PERSON).is_err(), "a page leaving its database takes no cells");
+    }
+
+    #[test]
+    fn create_database_is_one_write_that_refuses_whole() {
+        let (_dir, notes) = service();
+        let before = notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM pages", [], |row| row.get::<_, i64>(0))?)).unwrap();
+        let bad_view = ViewDef { name: "Bad".into(), kind: ViewType::List, order: 0, filter: Some(serde_json::json!({"property": "title", "op": "gt", "value": 1})), sorts: vec![], group_by: None, date_property: None, properties: vec![] };
+        assert!(notes.create_database(CreateDatabase { title: Some("A".into()), views: vec![bad_view], ..Default::default() }, PERSON).is_err());
+        assert!(notes.create_database(CreateDatabase { title: Some("B".into()), properties: vec![NewProperty { name: "A".into(), kind: "text".into(), ..Default::default() }, NewProperty { name: "a".into(), kind: "text".into(), ..Default::default() }], ..Default::default() }, PERSON).is_err());
+        let after = notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM pages", [], |row| row.get::<_, i64>(0))?)).unwrap();
+        assert_eq!(after, before, "no page, not even a tombstone");
+        // Fifty views fit: none is a seeded extra.
+        let fifty: Vec<ViewDef> = (0..MAX_VIEWS).map(|index| ViewDef { name: format!("View {index}"), kind: ViewType::Table, order: index as i64, filter: None, sorts: vec![], group_by: None, date_property: None, properties: vec![] }).collect();
+        let note = notes.create_database(CreateDatabase { title: Some("Many".into()), views: fifty, ..Default::default() }, PERSON).unwrap();
+        assert_eq!(notes.database(&note.id).unwrap().views.len(), MAX_VIEWS);
+        assert_eq!(notes.history(&note.id).unwrap().versions.len(), 1, "made in one write");
+    }
+
+    #[test]
+    fn two_deletes_at_once_keep_a_view() {
+        let (_dir, notes) = service();
+        let (id, _rating, _status) = reading_list(&notes);
+        let view = ViewDef { name: "Second".into(), kind: ViewType::List, order: 1, filter: None, sorts: vec![], group_by: None, date_property: None, properties: vec![] };
+        notes.put_view(&id, None, view, PERSON).unwrap();
+        let notes = Arc::new(notes);
+        for _ in 0..10 {
+            let views: Vec<String> = notes.database(&id).unwrap().views.into_keys().collect();
+            if views.len() < 2 {
+                let view = ViewDef { name: "Again".into(), kind: ViewType::List, order: 2, filter: None, sorts: vec![], group_by: None, date_property: None, properties: vec![] };
+                notes.put_view(&id, None, view, PERSON).unwrap();
+                continue;
+            }
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let handles: Vec<_> = views
+                .into_iter()
+                .take(2)
+                .map(|view| {
+                    let (notes, id, barrier) = (notes.clone(), id.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        notes.delete_view(&id, &view, PERSON).is_ok()
+                    })
+                })
+                .collect();
+            let deleted = handles.into_iter().map(|handle| handle.join().unwrap()).filter(|ok| *ok).count();
+            assert_eq!(deleted, 1, "exactly one of two racing deletes wins");
+            assert_eq!(notes.database(&id).unwrap().views.len(), 1);
+        }
     }
 
     #[test]

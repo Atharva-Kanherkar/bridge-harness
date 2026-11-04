@@ -746,4 +746,26 @@ mod tests {
         assert_eq!(notes.query_database(&id, &QuerySpec::default()).unwrap().total, 3);
         assert_eq!(Access::ReadOnly.tools(), vec!["notes_search", "notes_read", "memory_search"], "the matrix is unchanged");
     }
+
+    #[test]
+    fn a_database_from_another_space_is_never_found() {
+        let (_dir, notes) = service();
+        reading_list(&notes);
+        notes
+            .with_db(|db| {
+                db.execute("INSERT INTO spaces(id, name, kind, created_at) VALUES('other', 'Team', 'team', '2000-01-01')", [])?;
+                db.execute(
+                    "INSERT INTO pages(id, space_id, title, kind, state, body_hash, created_by, last_actor, created_at, updated_at, link_key)
+                     VALUES('foreign', 'other', 'Reading list', 'database', 'open', 'h', 'person', 'person', '2000-01-01', '2000-01-01', 'reading list')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let found = run(&notes, Access::Write, "agent:claude:chat-1", "notes_search", &json!({"database": "Reading list"})).unwrap();
+        assert_eq!(found["total"], 3, "this space's database, not the older one elsewhere: {found}");
+        let error = run(&notes, Access::Write, "agent:claude:chat-1", "notes_search", &json!({"database": "foreign"})).unwrap_err();
+        assert!(error.message.contains("the databases are Reading list") && !error.message.contains("Team"), "{}", error.message);
+    }
 }
+
