@@ -19,8 +19,8 @@ import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
 import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
-import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, UpdateNoteParams } from "./protocol/generated/protocol";
-import { mockCaptureNote, mockCreatePage, mockDeleteNote, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
+import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
+import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
@@ -2440,6 +2440,26 @@ export const bridgeApi = {
   updateNote: async (params: UpdateNoteParams): Promise<Note> => {
     if (hasBackend()) return call("notes/update_note", params);
     return mockUpdateNote(params);
+  },
+  createDatabase: async (params: CreateDatabaseParams): Promise<NotePage> => {
+    if (hasBackend()) return call("notes/create_database", params);
+    return mockCreateDatabase(params);
+  },
+  updateDatabaseSchema: async (params: UpdateSchemaParams): Promise<NoteDatabase> => {
+    if (hasBackend()) return call("notes/update_schema", params);
+    return mockUpdateSchema(params);
+  },
+  saveDatabaseView: async (params: SaveViewParams): Promise<NoteDatabaseView> => {
+    if (hasBackend()) return call("notes/save_view", params);
+    return mockSaveView(params);
+  },
+  deleteDatabaseView: async (params: DeleteViewParams): Promise<void> => {
+    if (hasBackend()) { await call("notes/delete_view", params); return; }
+    mockDeleteView(params);
+  },
+  queryDatabase: async (params: QueryDatabaseParams): Promise<DatabaseQueryResult> => {
+    if (hasBackend()) return call("notes/query_database", params);
+    return mockQueryDatabase(params);
   },
   deleteNote: async (id: string): Promise<void> => {
     if (hasBackend()) { await call("notes/delete_note", { id }); return; }

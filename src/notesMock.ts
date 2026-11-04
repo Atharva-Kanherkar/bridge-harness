@@ -5,7 +5,7 @@
 // core does, and images kept by path.
 
 import { rebaseDraft, noteDisplayTitle } from "./notesDraft";
-import type { CreatePageParams, EditPageParams, ListNotesParams, NoteBacklink, NoteJobQueued, SaveNotesSettingsParams, SplitItemParams, StructureNoteParams, UpdateNoteParams } from "./protocol/generated/protocol";
+import type { CreateDatabaseParams, CreatePageParams, DatabaseGroup, DatabaseQueryResult, DatabaseRow, DeleteViewParams, EditPageParams, ListNotesParams, NoteBacklink, NoteDatabase, NoteDatabaseView, NoteJobQueued, NoteOption, NoteProperty, NoteSort, NoteViewInput, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, SplitItemParams, StructureNoteParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NoteJob, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage, StructuredView } from "./types";
 
 const ROOT = "/Users/you/Library/Application Support/Bridge/notes";
@@ -19,9 +19,21 @@ interface MockPage {
   log: { actor: string; at: string; title: string | null }[];
   structured?: { view: Omit<StructuredView, "stale">; body: string };
   deleted: boolean;
+  /** A database page's records: its scope, properties and views by id. */
+  database?: MockDatabase;
+  /** A row's cells by property id. */
+  values?: Record<string, unknown>;
+}
+
+interface MockDatabase {
+  scope: "children" | "space";
+  properties: Record<string, NoteProperty>;
+  views: Record<string, NoteDatabaseView>;
 }
 
 let pages: MockPage[] = [];
+/** The database whose saved views are the Notes list's tabs. */
+let systemDatabaseId = "";
 let jobs: NoteJob[] = [];
 let settings: NotesSettings = { autoStructure: false, root: ROOT };
 let passDelay = 700;
@@ -77,6 +89,7 @@ function seed() {
   pages = [];
   jobs = [];
   settings = { autoStructure: false, root: ROOT };
+  seedSystemDatabase();
   make(
     "# Local-first sync libraries\n\nThree worth a look, from a quick survey:\n\n1. **Yjs**: CRDTs with bindings for every editor; the most used.\n2. **Automerge**: JSON-like documents, a Rust core, strong history.\n3. **Electric SQL**: Postgres sync into local SQLite.\n\nYjs fits a page editor best today.\n",
     "agent:claude:session-1w",
@@ -136,8 +149,9 @@ export function mockListNotes(params: ListNotesParams = {}): NotesList {
     .filter(page => params.parentId === undefined || params.parentId === null || page.note.parentId === params.parentId)
     .filter(page => !params.tags?.length || params.tags.every(tag => page.note.tags.includes(tag)))
     .filter(page => !query || searchHaystack(query, `${page.note.title ?? ""}\n${page.history[page.history.length - 1]}`))
+    .filter(page => page.note.id !== systemDatabaseId)
     .map(page => clone(page.note));
-  return { notes, jobs: clone(jobs), root: settings.root };
+  return { notes, jobs: clone(jobs), root: settings.root, systemDatabaseId };
 }
 
 export function mockReadPage(id: string): NotePage {
@@ -145,7 +159,14 @@ export function mockReadPage(id: string): NotePage {
   const markdown = page.history[page.history.length - 1];
   const structured = page.structured ? { ...clone(page.structured.view), stale: page.structured.body !== markdown } : null;
   const tasks = pages.filter(candidate => !candidate.deleted && candidate.note.parentId === id && candidate.note.kind === "task").map(candidate => clone(candidate.note)).reverse();
-  return { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: backlinksOf(id) };
+  const read: NotePage = { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: backlinksOf(id) };
+  if (page.database) read.database = databaseOf(page);
+  const parent = rowDatabase(page);
+  if (parent) {
+    read.databaseId = parent.note.id;
+    read.values = Object.fromEntries(Object.entries(page.values ?? {}).filter(([prop]) => prop in parent.database!.properties).map(([prop, value]) => [prop, clone(value)]));
+  }
+  return read;
 }
 
 export function mockCaptureNote(body: string): Note {
@@ -191,6 +212,9 @@ export function mockEditPage(params: EditPageParams): NoteEditResult {
 
 export function mockUpdateNote(params: UpdateNoteParams): Note {
   const page = live(params.id);
+  if (page.note.id === systemDatabaseId) throw new Error("the Notes database is managed by Bridge");
+  // Cells are checked before anything is written, as the core's set_values.
+  const cells = params.values ? checkCells(page, params.values) : null;
   const props: Partial<Note> = {};
   if (params.clearParent && params.parentId != null) throw new Error("parentId and clearParent are mutually exclusive");
   if (params.parentId != null) {
@@ -224,6 +248,7 @@ export function mockUpdateNote(params: UpdateNoteParams): Note {
   const newTitle = props.title ?? null;
   const rename = previousTitle && newTitle && newTitle !== previousTitle ? { from: previousTitle, to: newTitle } : null;
   const renameRequests = rename ? renameRecipients(page.note.id, rename.from) : [];
+  if (cells) page.values = cells;
   commit(page, page.history[page.history.length - 1], PERSON, props);
   for (const request of renameRequests) {
     const source = live(request.id);
@@ -349,7 +374,7 @@ function excerptOf(body: string, link: WikiSpan): string {
 /** The page `[[key]]` resolves to, as the core's `resolve_one` picks it:
  *  the oldest page going by that title. */
 function wikiHolder(key: string): MockPage | undefined {
-  return pages.filter(page => !page.deleted && linkKey(noteDisplayTitle(page.note)) === key)
+  return pages.filter(page => !page.deleted && page.note.id !== systemDatabaseId && linkKey(noteDisplayTitle(page.note)) === key)
     .sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt) || a.note.id.localeCompare(b.note.id))[0];
 }
 
@@ -580,4 +605,635 @@ export function mockReadAsset(path: string): NoteAssetData {
   const asset = assets.get(path);
   if (!asset) throw new Error(`no asset at ${path}`);
   return { ...asset };
+}
+
+// ---------------------------------------------------------------------------
+// Databases: the mock's side of the core's `notes/query.rs` and the database
+// methods. The rules match the core's exactly; the shared cases in
+// `testing/fixtures/notes-query-cases.json` hold the two together.
+// ---------------------------------------------------------------------------
+
+const SYSTEM_PROPERTIES = ["title", "kind", "state", "tags", "project", "chats", "parent", "created", "updated", "createdBy"];
+const KINDS = ["note", "idea", "task", "question", "database"];
+const STATES = ["inbox", "open", "doing", "done", "archived"];
+const STATUS_GROUPS = ["todo", "inProgress", "done"];
+const PROPERTY_TYPES = ["text", "number", "select", "multiSelect", "date", "checkbox", "url", "relation", "status"];
+const OPTION_TYPES = ["select", "multiSelect", "status"];
+
+/** The seven Notes list views, as the core seeds them. */
+function systemViews(): Record<string, NoteDatabaseView> {
+  const condition = (property: string, op: string, value?: unknown) => (value === undefined ? { property, op } : { property, op, value });
+  const notArchived = condition("state", "isNot", "archived");
+  const notChildTask = { or: [condition("kind", "isNot", "task"), condition("parent", "isEmpty")] };
+  const views: [string, unknown][] = [
+    ["All", { and: [notArchived, notChildTask] }],
+    ["Inbox", { and: [condition("state", "is", "inbox"), notChildTask] }],
+    ["Pages", { and: [condition("kind", "isNot", "task"), notArchived] }],
+    ["Tasks", { and: [condition("kind", "is", "task"), notArchived] }],
+    ["Ideas", { and: [condition("kind", "is", "idea")] }],
+    ["In progress with an agent", { and: [condition("state", "is", "doing"), condition("chats", "isNotEmpty")] }],
+    ["Archived", { and: [condition("state", "is", "archived")] }],
+  ];
+  return Object.fromEntries(views.map(([name, filter], order) => {
+    const id = nextId("view");
+    return [id, { id, name, type: "list", order, filter }];
+  }));
+}
+
+function seedSystemDatabase() {
+  const now = stamp();
+  const page: MockPage = {
+    note: {
+      id: nextId("database"), spaceId: "personal", kind: "database", state: "open", tags: [], sessionIds: [], title: "Notes",
+      createdAt: now, updatedAt: now, createdBy: "system", lastActor: "system", preview: "", seq: 1,
+      path: null, parentId: null, sourceExcerpt: null, sourceId: null, workspaceId: null,
+    },
+    history: [""],
+    log: [{ actor: "system", at: now, title: "Notes" }],
+    deleted: false,
+    database: { scope: "space", properties: {}, views: systemViews() },
+  };
+  pages.push(page);
+  systemDatabaseId = page.note.id;
+}
+
+const byOrder = <T extends { order: number; id: string }>(items: T[]) => [...items].sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+function databaseOf(page: MockPage): NoteDatabase {
+  const database = page.database!;
+  return clone({ id: page.note.id, scope: database.scope, properties: byOrder(Object.values(database.properties)), views: byOrder(Object.values(database.views)) });
+}
+
+/** The live database a page is a row of. */
+function rowDatabase(page: MockPage): MockPage | undefined {
+  if (!page.note.parentId) return undefined;
+  const parent = pages.find(candidate => candidate.note.id === page.note.parentId && !candidate.deleted);
+  return parent?.database ? parent : undefined;
+}
+
+function liveDatabase(id: string): MockPage {
+  const page = live(id);
+  if (!page.database) throw new Error("this page is not a database");
+  return page;
+}
+
+const fold = (text: string) => text.trim().toLowerCase();
+const asciiLower = (text: string) => text.replace(/[A-Z]/g, character => character.toLowerCase());
+
+function checkName(properties: Record<string, NoteProperty>, name: string, except?: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("a property needs a name");
+  if (SYSTEM_PROPERTIES.some(system => fold(system) === fold(trimmed)) || ["id", "database"].includes(fold(trimmed))) throw new Error(`${trimmed} is reserved; choose another name`);
+  if (Object.values(properties).some(property => property.id !== except && fold(property.name) === fold(trimmed))) throw new Error(`this database already has a property named ${trimmed}`);
+  return trimmed;
+}
+
+function newOptions(type: string, options: { name: string; color?: string | null; group?: string | null }[] | null | undefined): NoteOption[] {
+  const built: NoteOption[] = [];
+  for (const option of options ?? []) {
+    const name = option.name.trim();
+    if (!name || built.some(existing => fold(existing.name) === fold(name))) throw new Error(`an option needs a unique name: ${option.name}`);
+    const group = type === "status" ? option.group ?? "todo" : null;
+    if (group && !STATUS_GROUPS.includes(group)) throw new Error(`a status group must be one of ${STATUS_GROUPS.join(", ")}`);
+    built.push({ id: nextId("option"), name, ...(option.color ? { color: option.color } : {}), ...(group ? { group } : {}) });
+  }
+  return built;
+}
+
+const optionNames = (property: NoteProperty) => (property.options ?? []).map(option => option.name).join(", ") || "no options yet";
+
+/** A value the property takes, or the reason it does not. */
+function checkValue(property: NoteProperty, value: unknown): void {
+  const bad = (wanted: string) => new Error(`${property.name} is ${wanted}`);
+  const option = (id: unknown) => {
+    if (typeof id !== "string" || !(property.options ?? []).some(candidate => candidate.id === id)) throw new Error(`${property.name} has no option ${String(id)}; choose one of ${optionNames(property)}`);
+  };
+  switch (property.type) {
+    case "text": case "url": if (typeof value !== "string") throw bad("text"); return;
+    case "number": if (typeof value !== "number" || !Number.isFinite(value)) throw bad("a finite number"); return;
+    case "checkbox": if (typeof value !== "boolean") throw bad("true or false"); return;
+    case "select": case "status": option(value); return;
+    case "multiSelect": case "relation": {
+      if (!Array.isArray(value) || value.some(item => typeof item !== "string")) throw bad("a list");
+      if (new Set(value).size !== value.length) throw new Error(`${property.name} lists the same item twice`);
+      if (property.type === "multiSelect") value.forEach(option);
+      return;
+    }
+    case "date": {
+      const date = value as { start?: unknown; end?: unknown } | null;
+      if (!date || typeof date !== "object" || typeof date.start !== "string" || Number.isNaN(Date.parse(date.start))) throw bad("{start, end?}");
+      if (date.end !== undefined && (typeof date.end !== "string" || Date.parse(date.end) < Date.parse(date.start))) throw new Error(`${property.name} ends before it starts`);
+      return;
+    }
+  }
+}
+
+/** A row's cells after a patch, checked whole: a refused patch writes nothing. */
+function checkCells(page: MockPage, patch: Record<string, unknown>): Record<string, unknown> {
+  const parent = rowDatabase(page);
+  if (!parent) throw new Error("only a row of a database has values");
+  const properties = parent.database!.properties;
+  const next = { ...(page.values ?? {}) };
+  for (const [prop, value] of Object.entries(patch)) {
+    const property = properties[prop];
+    if (!property) throw new Error(`no property with id ${prop}; this database has ${Object.values(properties).map(candidate => candidate.name).sort().join(", ")}`);
+    if (value === null) {
+      delete next[prop];
+    } else {
+      checkValue(property, value);
+      next[prop] = clone(value);
+    }
+  }
+  return next;
+}
+
+function viewOf(input: NoteViewInput, database: MockDatabase): NoteDatabaseView {
+  if (!["table", "board", "calendar", "list"].includes(input.type)) throw new Error(`a view is table, board, calendar or list, not ${input.type}`);
+  const name = input.name.trim();
+  if (!name) throw new Error("a view needs a name");
+  const existing = input.id ? database.views[input.id] : undefined;
+  const order = input.order ?? existing?.order ?? Math.max(-1, ...Object.values(database.views).map(view => view.order)) + 1;
+  const view: NoteDatabaseView = { id: input.id ?? nextId("view"), name, type: input.type, order };
+  if (input.filter != null) view.filter = clone(input.filter);
+  if (input.sorts?.length) view.sorts = clone(input.sorts);
+  if (input.groupBy) view.groupBy = clone(input.groupBy);
+  if (input.dateProperty) view.dateProperty = input.dateProperty;
+  if (input.properties?.length) view.properties = clone(input.properties);
+  return view;
+}
+
+export function mockCreateDatabase(params: CreateDatabaseParams): NotePage {
+  if (params.parentId) {
+    const parent = live(params.parentId);
+    if (parent.database) throw new Error("a database cannot be a row of another database");
+  }
+  const properties: Record<string, NoteProperty> = {};
+  const inputs = params.properties?.length ? params.properties : [{ name: "Status", type: "status", options: [{ name: "To do", group: "todo" }, { name: "In progress", group: "inProgress" }, { name: "Done", group: "done" }] }];
+  inputs.forEach((input, order) => {
+    if (!PROPERTY_TYPES.includes(input.type)) throw new Error(`type must be one of ${PROPERTY_TYPES.join(", ")}`);
+    const name = checkName(properties, input.name);
+    const id = nextId("prop");
+    properties[id] = { id, name, type: input.type, order, ...(OPTION_TYPES.includes(input.type) ? { options: newOptions(input.type, input.options) } : {}), ...(input.relation ? { relation: { databaseId: input.relation } } : {}), ...(input.dateFormat ? { dateFormat: input.dateFormat } : {}) };
+  });
+  const database: MockDatabase = { scope: "children", properties, views: {} };
+  const views = params.views?.length ? params.views : [{ name: "Table", type: "table" }];
+  views.forEach((input, order) => {
+    const view = viewOf({ ...input, order: input.order ?? order }, database);
+    database.views[view.id] = view;
+  });
+  const page = make("", PERSON, { title: params.title?.trim() || null, kind: "database", state: "open", parentId: params.parentId ?? null, workspaceId: params.workspaceId ?? null });
+  page.database = database;
+  return mockReadPage(page.note.id);
+}
+
+export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
+  const page = liveDatabase(params.id);
+  const properties = clone(page.database!.properties);
+  const cleared: { prop: string; options?: string[]; retype?: { from: NoteProperty; to: NoteProperty } }[] = [];
+  const touched = new Set<string>();
+  for (const change of params.changes) {
+    if (change.op !== "add" && change.op !== "reorder") {
+      const structural = change.op !== "setOptions";
+      if (touched.has(change.propertyId) || (structural && touched.has(`${change.propertyId}:option`))) throw new Error("this batch changes the same property twice");
+      touched.add(structural ? change.propertyId : `${change.propertyId}:option`);
+    }
+    const need = (id: string) => {
+      const property = properties[id];
+      if (!property) throw new Error(`no property with id ${id}`);
+      return property;
+    };
+    switch (change.op) {
+      case "add": {
+        if (!PROPERTY_TYPES.includes(change.property.type)) throw new Error(`type must be one of ${PROPERTY_TYPES.join(", ")}`);
+        const id = nextId("prop");
+        const order = Math.max(-1, ...Object.values(properties).map(property => property.order)) + 1;
+        properties[id] = { id, name: checkName(properties, change.property.name), type: change.property.type, order, ...(OPTION_TYPES.includes(change.property.type) ? { options: newOptions(change.property.type, change.property.options) } : {}), ...(change.property.relation ? { relation: { databaseId: change.property.relation } } : {}), ...(change.property.dateFormat ? { dateFormat: change.property.dateFormat } : {}) };
+        break;
+      }
+      case "rename": need(change.propertyId).name = checkName(properties, change.name, change.propertyId); break;
+      case "delete": need(change.propertyId); delete properties[change.propertyId]; break;
+      case "retype": {
+        const from = clone(need(change.propertyId));
+        if (!PROPERTY_TYPES.includes(change.type)) throw new Error(`type must be one of ${PROPERTY_TYPES.join(", ")}`);
+        if (change.type === "relation") throw new Error("a relation needs the database it points at; add one instead of retyping");
+        const to: NoteProperty = { ...from, type: change.type, options: OPTION_TYPES.includes(change.type) ? (from.options ?? []).map(option => ({ ...option, group: change.type === "status" ? option.group ?? "todo" : undefined })) : undefined };
+        delete to.relation;
+        properties[change.propertyId] = to;
+        cleared.push({ prop: change.propertyId, retype: { from, to } });
+        break;
+      }
+      case "setOptions": {
+        const property = need(change.propertyId);
+        if (!OPTION_TYPES.includes(property.type)) throw new Error(`${property.name} does not have options`);
+        const built: NoteOption[] = [];
+        for (const input of change.options) {
+          const existing = input.id ? (property.options ?? []).find(option => option.id === input.id) : undefined;
+          if (input.id && !existing) throw new Error(`${property.name} has no option ${input.id}`);
+          const name = input.name.trim();
+          if (!name || built.some(option => fold(option.name) === fold(name))) throw new Error(`${property.name} already has an option named ${name}`);
+          const group = property.type === "status" ? input.group ?? existing?.group ?? "todo" : undefined;
+          const color = input.color ?? existing?.color;
+          built.push({ id: existing?.id ?? nextId("option"), name, ...(color ? { color } : {}), ...(group ? { group } : {}) });
+        }
+        const gone = (property.options ?? []).filter(option => !built.some(kept => kept.id === option.id)).map(option => option.id);
+        property.options = built;
+        if (gone.length) cleared.push({ prop: change.propertyId, options: gone });
+        break;
+      }
+      case "reorder": {
+        const ids = Object.keys(properties);
+        if (new Set(change.propertyIds).size !== change.propertyIds.length || change.propertyIds.length !== ids.length || change.propertyIds.some(id => !properties[id])) throw new Error(`reorder names every property once: ${ids.join(", ")}`);
+        change.propertyIds.forEach((id, order) => { properties[id].order = order; });
+        break;
+      }
+    }
+  }
+  page.database!.properties = properties;
+  commit(page, page.history[page.history.length - 1], PERSON);
+  // Values follow the schema: a dropped option leaves its rows, and a retype
+  // converts what it can and clears the rest.
+  for (const { prop, options, retype } of cleared) {
+    for (const row of pages.filter(candidate => !candidate.deleted && candidate.note.parentId === page.note.id && candidate.values && prop in candidate.values)) {
+      const value = row.values![prop];
+      let next: unknown = value;
+      if (options) next = Array.isArray(value) ? value.filter(item => !options.includes(item as string)) : options.includes(value as string) ? undefined : value;
+      if (retype) next = convertValue(retype.from, retype.to, value);
+      if (Array.isArray(next) && !next.length) next = undefined;
+      if (next === undefined) delete row.values![prop];
+      else row.values![prop] = next;
+      commit(row, row.history[row.history.length - 1], PERSON);
+    }
+  }
+  return databaseOf(page);
+}
+
+/** What a retype makes of one value, as the core's `convert`. */
+function convertValue(from: NoteProperty, to: NoteProperty, value: unknown): unknown {
+  const optionName = (id: unknown) => (from.options ?? []).find(option => option.id === id)?.name;
+  const optionId = (name: string) => {
+    const found = (to.options ?? []).find(option => fold(option.name) === fold(name));
+    if (found) return found.id;
+    const created: NoteOption = { id: nextId("option"), name: name.trim(), ...(to.type === "status" ? { group: "todo" } : {}) };
+    to.options = [...(to.options ?? []), created];
+    return created.id;
+  };
+  const pair = `${from.type}>${to.type}`;
+  if (pair === "number>text") return typeof value === "number" ? String(value) : undefined;
+  if (pair === "text>number") { const number = Number(String(value).trim()); return String(value).trim() && Number.isFinite(number) ? number : undefined; }
+  if (pair === "select>text" || pair === "status>text") return optionName(value);
+  if (pair === "text>select" || pair === "text>status") return typeof value === "string" && value.trim() ? optionId(value) : undefined;
+  if (pair === "select>multiSelect") return typeof value === "string" ? [value] : undefined;
+  if (pair === "checkbox>text") return typeof value === "boolean" ? String(value) : undefined;
+  if (pair === "text>checkbox") return { true: true, false: false }[fold(String(value)) as "true" | "false"];
+  return undefined;
+}
+
+export function mockSaveView(params: SaveViewParams): NoteDatabaseView {
+  const page = liveDatabase(params.databaseId);
+  if (params.view.id && !page.database!.views[params.view.id]) throw new Error(`no view ${params.view.id} to replace`);
+  const view = viewOf(params.view, page.database!);
+  // A saved view always compiles, as the core checks it.
+  checkQuery({ database: page, today: new Date().toISOString().slice(0, 10) }, view.filter, view.sorts ?? [], view.groupBy ?? null);
+  page.database!.views[view.id] = view;
+  commit(page, page.history[page.history.length - 1], PERSON);
+  return clone(view);
+}
+
+export function mockDeleteView(params: DeleteViewParams): void {
+  const page = liveDatabase(params.databaseId);
+  const views = page.database!.views;
+  if (!views[params.viewId]) throw new Error("no such view");
+  if (Object.keys(views).length === 1) throw new Error("a database keeps at least one view");
+  delete views[params.viewId];
+  commit(page, page.history[page.history.length - 1], PERSON);
+}
+
+// The planner's rules, run over the mock pages.
+
+type Cell = string | number | null;
+
+interface Plan {
+  database: MockPage;
+  today: string;
+}
+
+const dayOf = (raw: string): string | null => {
+  const time = Date.parse(raw.length === 10 ? `${raw}T00:00:00Z` : raw);
+  return Number.isNaN(time) ? null : new Date(time).toISOString().slice(0, 10);
+};
+const addDays = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+function withinRange(value: string, today: string): [string, string] {
+  const weekday = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
+  switch (value) {
+    case "pastWeek": return [addDays(today, -7), today];
+    case "nextWeek": return [today, addDays(today, 7)];
+    case "thisWeek": return [addDays(today, -weekday), addDays(today, 6 - weekday)];
+    case "thisMonth": {
+      const [year, month] = today.split("-").map(Number);
+      const last = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+      return [`${today.slice(0, 7)}-01`, last];
+    }
+    case "pastMonth": return [addDays(today, -30), today];
+    case "nextMonth": return [today, addDays(today, 30)];
+  }
+  throw new Error("within takes one of pastWeek, nextWeek, thisWeek, thisMonth, pastMonth, nextMonth");
+}
+
+const NEGATIONS: Record<string, string> = { notContains: "contains", notEquals: "equals", ne: "eq", isNot: "is", isNoneOf: "isAnyOf", isEmpty: "isNotEmpty" };
+
+function family(property: NoteProperty | string): string {
+  if (typeof property === "string") {
+    return ({ title: "text", createdBy: "text", kind: "choice", state: "choice", project: "choice", tags: "list", chats: "chats", parent: "parent", created: "date", updated: "date" } as Record<string, string>)[property];
+  }
+  return ({ text: "text", url: "text", number: "number", date: "date", select: "choice", status: "choice", multiSelect: "list", relation: "list", checkbox: "checkbox" } as Record<string, string>)[property.type];
+}
+
+const OPS: Record<string, string[]> = {
+  text: ["contains", "notContains", "equals", "notEquals", "startsWith", "isEmpty", "isNotEmpty"],
+  number: ["eq", "ne", "lt", "lte", "gt", "gte", "isEmpty", "isNotEmpty"],
+  date: ["before", "after", "onOrBefore", "onOrAfter", "equals", "isEmpty", "isNotEmpty", "within"],
+  choice: ["is", "isNot", "isAnyOf", "isNoneOf", "isEmpty", "isNotEmpty"],
+  list: ["contains", "notContains", "containsAny", "isEmpty", "isNotEmpty"],
+  checkbox: ["is"],
+  chats: ["isEmpty", "isNotEmpty"],
+  parent: ["isEmpty", "isNotEmpty", "equals", "notEquals"],
+};
+
+function resolveProperty(plan: Plan, id: string): NoteProperty | string {
+  const property = plan.database.database!.properties[id];
+  if (property) return property;
+  if (SYSTEM_PROPERTIES.includes(id)) return id;
+  const names = [...byOrder(Object.values(plan.database.database!.properties)).map(candidate => `${candidate.name} (${candidate.id})`), ...SYSTEM_PROPERTIES];
+  throw new Error(`no property ${id}; this database has ${names.join(", ")}`);
+}
+
+/** Check a filter, sorts and grouping without a row, as the core does when it
+ *  compiles a query: an empty database refuses a bad view too. */
+function checkQuery(plan: Plan, filter: unknown, sorts: NoteSort[], groupBy: { property: string; dateBucket?: string | null } | null) {
+  const count = { n: 0 };
+  const walk = (tree: unknown, depth: number) => {
+    const node = tree as Record<string, unknown>;
+    if (!node || typeof node !== "object") throw new Error("a filter is {and: [...]}, {or: [...]} or {property, op, value}");
+    for (const key of ["and", "or"]) {
+      if (key in node) {
+        if (depth >= 2) throw new Error("filter groups nest at most two levels");
+        (node[key] as unknown[]).forEach(item => walk(item, depth + 1));
+        return;
+      }
+    }
+    if (++count.n > 20) throw new Error("a filter holds at most 20 conditions");
+    const property = resolveProperty(plan, node.property as string);
+    const ops = typeof property !== "string" && property.type === "status" ? [...OPS.choice, "inGroup"] : OPS[family(property)];
+    if (!ops.includes(node.op as string)) throw new Error(`${typeof property === "string" ? property : property.name} takes ${ops.join(", ")}, not ${String(node.op)}`);
+  };
+  if (filter != null) walk(filter, 0);
+  for (const sort of sorts) {
+    const property = resolveProperty(plan, sort.property);
+    if (!["asc", "desc"].includes(sort.direction)) throw new Error(`a sort direction is asc or desc, not ${sort.direction}`);
+    if (typeof property === "string" ? ["tags", "chats", "parent"].includes(property) : ["multiSelect", "relation"].includes(property.type)) throw new Error(`${typeof property === "string" ? property : property.name} cannot be sorted`);
+  }
+  if (groupBy) {
+    const property = resolveProperty(plan, groupBy.property);
+    const groupable = typeof property === "string" ? ["kind", "state", "project", "created", "updated"].includes(property) : ["select", "status", "multiSelect", "checkbox", "date"].includes(property.type);
+    if (!groupable) throw new Error(`${typeof property === "string" ? property : property.name} cannot be grouped`);
+  }
+}
+
+/** Whether one row matches a filter tree. */
+function matches(plan: Plan, row: MockPage, tree: unknown, depth = 0, count = { n: 0 }): boolean {
+  const node = tree as Record<string, unknown>;
+  for (const key of ["and", "or"] as const) {
+    if (key in node) {
+      if (depth >= 2) throw new Error("filter groups nest at most two levels");
+      const items = node[key] as unknown[];
+      if (!items.length) return true;
+      const results = items.map(item => matches(plan, row, item, depth + 1, count));
+      return key === "and" ? results.every(Boolean) : results.some(Boolean);
+    }
+  }
+  if (++count.n > 20) throw new Error("a filter holds at most 20 conditions");
+  const id = node.property as string;
+  const op = node.op as string;
+  const value = node.value;
+  const property = resolveProperty(plan, id);
+  const kind = family(property);
+  const ops = typeof property !== "string" && property.type === "status" ? [...OPS.choice, "inGroup"] : OPS[kind];
+  if (!ops.includes(op)) throw new Error(`${typeof property === "string" ? property : property.name} takes ${ops.join(", ")}, not ${op}`);
+  const positive = NEGATIONS[op] ?? op;
+  const negate = op in NEGATIONS;
+  const note = row.note;
+  const cell = typeof property === "string" ? undefined : row.values?.[property.id];
+  const text = (raw: string | null | undefined): boolean => {
+    const present = raw != null && raw !== "";
+    if (positive === "isNotEmpty") return present;
+    if (!present) return false;
+    const needle = asciiLower(String(value ?? ""));
+    const folded = asciiLower(raw!);
+    return positive === "contains" ? folded.includes(needle) : positive === "equals" ? folded === needle : folded.startsWith(needle);
+  };
+  const date = (day: string | null): boolean => {
+    if (positive === "isNotEmpty") return day !== null;
+    if (day === null) return false;
+    if (positive === "within") { const [from, to] = withinRange(String(value), plan.today); return day >= from && day <= to; }
+    const wanted = dayOf(String(value));
+    if (wanted === null) throw new Error(`${op} takes YYYY-MM-DD or an RFC 3339 time`);
+    return { before: day < wanted, after: day > wanted, onOrBefore: day <= wanted, onOrAfter: day >= wanted, equals: day === wanted }[positive as "before"]!;
+  };
+  const choice = (raw: string | null | undefined, groupOf?: (id: string) => string | undefined): boolean => {
+    const present = raw != null && raw !== "";
+    if (positive === "isNotEmpty") return present;
+    if (!present) return false;
+    if (positive === "is") return raw === value;
+    if (positive === "isAnyOf") return (value as string[]).includes(raw!);
+    return groupOf?.(raw!) === value;
+  };
+  const list = (items: string[]): boolean => {
+    if (positive === "isNotEmpty") return items.length > 0;
+    if (positive === "contains") return items.includes(value as string);
+    return (value as string[]).some(wanted => items.includes(wanted));
+  };
+  let result: boolean;
+  if (typeof property === "string") {
+    switch (property) {
+      case "title": result = text(note.title); break;
+      case "createdBy": result = text(note.createdBy); break;
+      case "kind": result = choice(note.kind); break;
+      case "state": result = choice(note.state); break;
+      case "project": result = choice(note.workspaceId); break;
+      case "tags": result = list(note.tags); break;
+      case "chats": result = note.sessionIds.length > 0; break;
+      case "parent": result = positive === "isNotEmpty" ? note.parentId != null : note.parentId === value; break;
+      default: result = date(dayOf(property === "created" ? note.createdAt : note.updatedAt));
+    }
+  } else {
+    switch (property.type) {
+      case "text": case "url": result = text(typeof cell === "string" ? cell : null); break;
+      case "number": {
+        if (typeof cell !== "number") { result = false; break; }
+        const wanted = value as number;
+        result = positive === "isNotEmpty" || ({ eq: cell === wanted, lt: cell < wanted, lte: cell <= wanted, gt: cell > wanted, gte: cell >= wanted }[positive as "eq"] ?? false);
+        break;
+      }
+      case "date": { const start = (cell as { start?: string } | undefined)?.start; result = date(start ? dayOf(start) : null); break; }
+      case "select": case "status": result = choice(cell as string | undefined, option => property.options?.find(candidate => candidate.id === option)?.group ?? undefined); break;
+      case "multiSelect": case "relation": result = list(Array.isArray(cell) ? cell as string[] : []); break;
+      default: result = cell === true ? value === true : value === false;
+    }
+  }
+  return result !== negate;
+}
+
+/** A sort key as the core's SQL computes it; null is an empty value. */
+function sortKey(plan: Plan, row: MockPage, id: string): Cell {
+  const property = resolveProperty(plan, id);
+  const note = row.note;
+  if (typeof property === "string") {
+    switch (property) {
+      case "title": return note.title ? asciiLower(note.title) : null;
+      case "createdBy": return note.createdBy ? asciiLower(note.createdBy) : null;
+      case "kind": return KINDS.includes(note.kind) ? KINDS.indexOf(note.kind) : null;
+      case "state": return STATES.includes(note.state) ? STATES.indexOf(note.state) : null;
+      case "project": return note.workspaceId ?? null;
+      case "created": return note.createdAt;
+      case "updated": return note.updatedAt;
+    }
+    throw new Error(`${property} cannot be sorted`);
+  }
+  const cell = row.values?.[property.id];
+  switch (property.type) {
+    case "text": case "url": return typeof cell === "string" && cell ? asciiLower(cell) : null;
+    case "number": return typeof cell === "number" ? cell : null;
+    case "date": return dateKey(property, cell);
+    case "checkbox": return cell === true ? "true" : "false";
+    case "select": case "status": { const index = (property.options ?? []).findIndex(option => option.id === cell); return index < 0 ? null : index; }
+  }
+  throw new Error(`${property.name} holds a list and cannot be sorted`);
+}
+
+/** The core's `date_v`: a datetime's UTC instant, a date's UTC day. */
+function dateKey(property: NoteProperty, cell: unknown): string | null {
+  const start = (cell as { start?: string } | undefined)?.start;
+  if (!start) return null;
+  const time = Date.parse(start.length === 10 ? `${start}T00:00:00Z` : start);
+  if (Number.isNaN(time)) return null;
+  const iso = new Date(time).toISOString();
+  return property.dateFormat === "datetime" ? iso : iso.slice(0, 10);
+}
+
+function compareKeys(left: Cell[], right: Cell[], descending: boolean[], a: Note, b: Note): number {
+  for (let index = 0; index < left.length; index++) {
+    const [x, y] = [left[index], right[index]];
+    if (x === null && y === null) continue;
+    if (x === null) return 1;
+    if (y === null) return -1;
+    const order = x < y ? -1 : x > y ? 1 : 0;
+    if (order) return descending[index] ? -order : order;
+  }
+  if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+const encodeCursor = (keys: Cell[], note: Note) => btoa(JSON.stringify({ k: keys, u: note.updatedAt, i: note.id })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function decodeCursor(cursor: string, sorts: number): { k: Cell[]; u: string; i: string } {
+  try {
+    const body = JSON.parse(atob(cursor.replace(/-/g, "+").replace(/_/g, "/")));
+    if (Array.isArray(body.k) && body.k.length === sorts && typeof body.u === "string" && typeof body.i === "string") return body;
+  } catch { /* fall through */ }
+  throw new Error("this cursor does not belong to this query");
+}
+
+function groupKeys(plan: Plan, row: MockPage, group: { property: string; dateBucket?: string | null }): string[] {
+  const property = resolveProperty(plan, group.property);
+  const bucket = (raw: string | null) => {
+    if (!raw) return [];
+    const day = raw.slice(0, 10);
+    if (group.dateBucket === "month") return [day.slice(0, 7)];
+    if (group.dateBucket === "week") { const weekday = (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7; return [addDays(day, -weekday)]; }
+    return [day];
+  };
+  if (typeof property === "string") {
+    if (property === "kind") return [row.note.kind];
+    if (property === "state") return [row.note.state];
+    if (property === "project") return row.note.workspaceId ? [row.note.workspaceId] : [];
+    if (property === "created") return bucket(row.note.createdAt);
+    if (property === "updated") return bucket(row.note.updatedAt);
+    throw new Error(`${property} cannot be grouped`);
+  }
+  const cell = row.values?.[property.id];
+  switch (property.type) {
+    case "select": case "status": return typeof cell === "string" ? [cell] : [];
+    case "multiSelect": return Array.isArray(cell) ? cell as string[] : [];
+    case "checkbox": return [cell === true ? "true" : "false"];
+    case "date": return bucket(dateKey(property, cell));
+  }
+  throw new Error(`${property.name} cannot be grouped; group by a select, status, multi-select, checkbox or date`);
+}
+
+function buckets(plan: Plan, rows: MockPage[], group: { property: string; dateBucket?: string | null }, limit: number): DatabaseGroup[] {
+  const property = resolveProperty(plan, group.property);
+  const title = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+  let fixed: [string, string][] | null = null;
+  let none = true;
+  if (typeof property === "string") {
+    if (property === "kind") fixed = KINDS.map(kind => [kind, title(kind)]);
+    if (property === "state") fixed = STATES.map(state => [state, title(state)]);
+  } else if (OPTION_TYPES.includes(property.type)) {
+    fixed = (property.options ?? []).map(option => [option.id, option.name]);
+  } else if (property.type === "checkbox") {
+    fixed = [["true", "Checked"], ["false", "Unchecked"]];
+    none = false;
+  }
+  const keyed = rows.map(row => ({ row, keys: groupKeys(plan, row, group) }));
+  const keys: [string, string][] = fixed ?? [...new Set(keyed.flatMap(entry => entry.keys))].sort().map(key => [key, key]);
+  const out: DatabaseGroup[] = keys.map(([key, label]) => ({ key, label, count: 0, rows: [] }));
+  if (none) out.push({ key: "", label: "No value", count: 0, rows: [] });
+  for (const { row, keys: rowKeys } of keyed) {
+    const known = rowKeys.filter(key => key && out.some(entry => entry.key === key));
+    for (const key of known.length ? known : [""]) {
+      const entry = out.find(candidate => candidate.key === key);
+      if (!entry) continue;
+      entry.count += 1;
+      if (entry.rows.length < limit) entry.rows.push(rowOf(row));
+    }
+  }
+  return fixed && none ? out : out.filter(entry => entry.key !== "" || entry.count > 0);
+}
+
+function rowOf(page: MockPage): DatabaseRow {
+  return { note: clone(page.note), values: clone(page.values ?? {}) };
+}
+
+export function mockQueryDatabase(params: QueryDatabaseParams): DatabaseQueryResult {
+  const database = liveDatabase(params.databaseId);
+  const view = params.viewId ? database.database!.views[params.viewId] : undefined;
+  if (params.viewId && !view) throw new Error(`no view ${params.viewId}; this database has ${Object.values(database.database!.views).map(candidate => `${candidate.name} (${candidate.id})`).join(", ")}`);
+  const filter = params.filter ?? view?.filter;
+  const sorts: NoteSort[] = params.sorts ?? view?.sorts ?? [];
+  const groupBy = params.groupBy ?? view?.groupBy ?? null;
+  if (sorts.length > 5) throw new Error("a query sorts by at most 5 properties");
+  const today = params.today ?? new Date().toISOString().slice(0, 10);
+  const plan: Plan = { database, today };
+  checkQuery(plan, filter, sorts, groupBy);
+  const query = params.query?.trim();
+  const candidates = pages.filter(page => !page.deleted && (database.database!.scope === "space" ? page.note.id !== database.note.id : page.note.parentId === database.note.id));
+  const rows = candidates
+    .filter(page => !query || searchHaystack(query, `${page.note.title ?? ""}\n${page.history[page.history.length - 1]}`))
+    .filter(page => filter == null || matches(plan, page, filter));
+  const descending = sorts.map(sort => sort.direction === "desc");
+  const keyed = rows.map(page => ({ page, keys: sorts.map(sort => sortKey(plan, page, sort.property)) }));
+  keyed.sort((a, b) => compareKeys(a.keys, b.keys, descending, a.page.note, b.page.note));
+  const limit = Math.min(Math.max(params.limit ?? 100, 1), 500);
+  let start = 0;
+  if (params.cursor) {
+    const cursor = decodeCursor(params.cursor, sorts.length);
+    const anchor = { updatedAt: cursor.u, id: cursor.i } as Note;
+    start = keyed.findIndex(entry => compareKeys(entry.keys, cursor.k, descending, entry.page.note, anchor) > 0);
+    if (start < 0) start = keyed.length;
+  }
+  const page = keyed.slice(start, start + limit);
+  const result: DatabaseQueryResult = { rows: page.map(entry => rowOf(entry.page)), total: keyed.length };
+  if (start + page.length < keyed.length && page.length) result.nextCursor = encodeCursor(page[page.length - 1].keys, page[page.length - 1].page.note);
+  if (groupBy) result.groups = buckets(plan, keyed.map(entry => entry.page), groupBy, Math.min(Math.max(params.groupLimit ?? 50, 1), 200));
+  return result;
 }

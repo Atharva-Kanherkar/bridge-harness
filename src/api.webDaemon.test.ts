@@ -127,3 +127,18 @@ describe("api.ts over a web daemon", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
+describe("notes database methods over a web daemon", () => {
+  it("call their wire methods with the params as given", async () => {
+    const daemon = fakeDaemon(() => ({}));
+    daemon.pin();
+    await bridgeApi.createDatabase({ title: "Books" });
+    await bridgeApi.updateDatabaseSchema({ id: "db", changes: [{ op: "delete", propertyId: "p" }] });
+    await bridgeApi.saveDatabaseView({ databaseId: "db", view: { name: "Top", type: "list" } });
+    await bridgeApi.deleteDatabaseView({ databaseId: "db", viewId: "v" });
+    await bridgeApi.queryDatabase({ databaseId: "db", limit: 10 });
+    expect(daemon.client.call.mock.calls.map(([method]) => method)).toEqual(["notes/create_database", "notes/update_schema", "notes/save_view", "notes/delete_view", "notes/query_database"]);
+    expect(daemon.client.call).toHaveBeenCalledWith("notes/query_database", { databaseId: "db", limit: 10 });
+  });
+});
+

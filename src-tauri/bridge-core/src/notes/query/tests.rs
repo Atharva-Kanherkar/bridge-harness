@@ -781,3 +781,124 @@ fn performance_gate() {
     eprintln!("[performance_gate] best of five: {best:?} (bound {bound:?})");
     assert!(best < bound, "1000-row query took {best:?}, over {bound:?}");
 }
+
+/// Names in a shared case, as ids: properties, and option names in the
+/// values of the ops that take options.
+fn named_filter(tree: &Value, database: &DatabaseDoc) -> Value {
+    if let Some(object) = tree.as_object() {
+        for key in ["and", "or"] {
+            if let Some(items) = object.get(key).and_then(Value::as_array) {
+                return json!({ key: items.iter().map(|item| named_filter(item, database)).collect::<Vec<_>>() });
+            }
+        }
+    }
+    let name = tree["property"].as_str().unwrap();
+    let found = database.schema.iter().find(|(_, def)| def.name == name);
+    let mut condition = json!({"property": found.map(|(id, _)| id.clone()).unwrap_or_else(|| name.to_owned()), "op": tree["op"]});
+    if let Some(value) = tree.get("value") {
+        let option = |raw: &Value| -> Value {
+            match (found, raw.as_str()) {
+                (Some((_, def)), Some(name)) if def.kind.options() => def.option_by_name(name).map(|option| json!(option.id)).unwrap_or_else(|| raw.clone()),
+                _ => raw.clone(),
+            }
+        };
+        condition["value"] = match (tree["op"].as_str().unwrap(), value) {
+            ("inGroup", value) => value.clone(),
+            (_, Value::Array(items)) => Value::Array(items.iter().map(option).collect()),
+            (_, value) => option(value),
+        };
+    }
+    condition
+}
+
+#[test]
+fn the_shared_fixture_matches() {
+    let cases: Value = serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testing/fixtures/notes-query-cases.json")).unwrap()).unwrap();
+    let (_dir, notes) = service();
+    let db = notes.create(CreatePage { title: Some("Fixture".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap().id;
+    let ops: Vec<SchemaOp> = cases["schema"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|property| {
+            let opts: Vec<NewOption> = property["options"]
+                .as_array()
+                .map(|options| {
+                    options
+                        .iter()
+                        .map(|option| match option {
+                            Value::Array(pair) => NewOption { name: pair[0].as_str().unwrap().into(), group: Some(pair[1].as_str().unwrap().into()), ..Default::default() },
+                            other => NewOption { name: other.as_str().unwrap().into(), ..Default::default() },
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            SchemaOp::Add(NewProperty {
+                name: property["name"].as_str().unwrap().into(),
+                kind: property["type"].as_str().unwrap().into(),
+                options: opts,
+                date_format: property["dateFormat"].as_str().map(str::to_owned),
+                ..Default::default()
+            })
+        })
+        .collect();
+    notes.update_schema(&db, &ops, PERSON).unwrap();
+    let database = notes.database(&db).unwrap();
+    for row in cases["rows"].as_array().unwrap() {
+        let id = notes
+            .create(
+                CreatePage {
+                    title: Some(row["title"].as_str().unwrap().into()),
+                    parent_id: Some(db.clone()),
+                    kind: Some(row["kind"].as_str().unwrap().into()),
+                    state: Some(row["state"].as_str().unwrap().into()),
+                    tags: row["tags"].as_array().unwrap().iter().map(|tag| tag.as_str().unwrap().to_owned()).collect(),
+                    ..Default::default()
+                },
+                PERSON,
+            )
+            .unwrap()
+            .id;
+        let values: Vec<(String, Option<Value>)> = row["values"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, value)| {
+                let (prop, def) = database.schema.iter().find(|(_, def)| &def.name == name).unwrap();
+                let option = |raw: &Value| json!(def.option_by_name(raw.as_str().unwrap()).unwrap().id);
+                let value = match def.kind {
+                    PropertyType::Select | PropertyType::Status => option(value),
+                    PropertyType::MultiSelect => Value::Array(value.as_array().unwrap().iter().map(option).collect()),
+                    PropertyType::Date => json!({"start": value}),
+                    _ => value.clone(),
+                };
+                (prop.clone(), Some(value))
+            })
+            .collect();
+        if !values.is_empty() {
+            notes.set_values(&id, &values, PERSON).unwrap();
+        }
+    }
+    for case in cases["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let property = |raw: &str| database.schema.iter().find(|(_, def)| def.name == raw).map(|(id, _)| id.clone()).unwrap_or_else(|| raw.to_owned());
+        let spec = QuerySpec {
+            filter: case.get("filter").map(|filter| named_filter(filter, &database)),
+            sorts: case.get("sorts").map(|sorts| {
+                sorts.as_array().unwrap().iter().map(|sort| SortDef { property: property(sort["property"].as_str().unwrap()), direction: sort["direction"].as_str().unwrap().into() }).collect()
+            }),
+            group_by: case.get("groupBy").map(|group| GroupByDef { property: property(group["property"].as_str().unwrap()), date_bucket: group["dateBucket"].as_str().map(str::to_owned) }),
+            today: Some(cases["today"].as_str().unwrap().into()),
+            limit: Some(MAX_LIMIT),
+            ..Default::default()
+        };
+        let result = notes.query_database(&db, &spec).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let titles: Vec<String> = result.rows.iter().map(|row| row.note.title.clone().unwrap()).collect();
+        assert_eq!(titles, case["expect"].as_array().unwrap().iter().map(|title| title.as_str().unwrap().to_owned()).collect::<Vec<_>>(), "{name}");
+        if let Some(groups) = case.get("groups") {
+            let actual: Vec<(String, usize)> = result.groups.unwrap().into_iter().map(|group| (group.label, group.count)).collect();
+            let expected: Vec<(String, usize)> = groups.as_array().unwrap().iter().map(|pair| (pair[0].as_str().unwrap().to_owned(), pair[1].as_u64().unwrap() as usize)).collect();
+            assert_eq!(actual, expected, "{name}");
+        }
+    }
+}
