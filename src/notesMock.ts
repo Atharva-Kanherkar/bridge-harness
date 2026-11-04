@@ -813,6 +813,9 @@ export function mockCreateDatabase(params: CreateDatabaseParams): NotePage {
     // The caller cannot know the ids made here, so a first view may name its
     // properties and options, as the core resolves them.
     const view = viewOf({ ...resolveViewNames(input, properties), order: input.order ?? order }, database);
+    // Checked against the draft before anything is made, as the core checks
+    // first views inside its creating write.
+    checkView({ database } as MockPage, view);
     database.views[view.id] = view;
   });
   const page = make("", PERSON, { title: params.title?.trim() || null, kind: "database", state: "open", parentId: params.parentId ?? null, workspaceId: params.workspaceId ?? null });
@@ -944,12 +947,25 @@ function convertValue(from: NoteProperty, to: NoteProperty, value: unknown): unk
   return undefined;
 }
 
+/** A view a database can hold, as the core's `check_view_def`: its columns,
+ *  sorts and grouping name real properties, it compiles, and a calendar's
+ *  date property is a date. */
+function checkView(page: MockPage, view: NoteDatabaseView) {
+  const properties = page.database!.properties;
+  const known = (id: string) => id in properties || SYSTEM_PROPERTIES.includes(id);
+  for (const id of [...(view.sorts ?? []).map(sort => sort.property), ...(view.groupBy ? [view.groupBy.property] : []), ...(view.dateProperty ? [view.dateProperty] : []), ...(view.properties ?? []).map(column => column.id)]) {
+    if (!known(id)) throw new Error(`no property with id ${id}`);
+  }
+  checkQuery({ database: page, today: new Date().toISOString().slice(0, 10) }, view.filter, view.sorts ?? [], view.groupBy ?? null);
+  if (view.dateProperty && !(properties[view.dateProperty]?.type === "date" || ["created", "updated"].includes(view.dateProperty))) throw new Error(`${view.dateProperty} is not a date property`);
+}
+
 export function mockSaveView(params: SaveViewParams): NoteDatabaseView {
   const page = liveDatabase(params.databaseId);
   if (params.view.id && !page.database!.views[params.view.id]) throw new Error(`no view ${params.view.id} to replace`);
   const view = viewOf(params.view, page.database!);
   // A saved view always compiles, as the core checks it.
-  checkQuery({ database: page, today: new Date().toISOString().slice(0, 10) }, view.filter, view.sorts ?? [], view.groupBy ?? null);
+  checkView(page, view);
   page.database!.views[view.id] = view;
   commit(page, page.history[page.history.length - 1], PERSON);
   return clone(view);

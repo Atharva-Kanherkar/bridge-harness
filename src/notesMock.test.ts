@@ -384,5 +384,13 @@ describe("mock databases", () => {
     mockUpdateSchema({ id: page.note.id, changes: [{ op: "retype", propertyId: rating.id, type: "number" }, { op: "retype", propertyId: genre.id, type: "select" }] });
     expect(mockReadPage(row.id).values).toEqual({ [rating.id]: 5, [genre.id]: genre.options![0].id });
   });
+
+  it("refuses a database whose first views would not run, making nothing", () => {
+    const before = mockListNotes({ includeArchived: true }).notes.length;
+    expect(() => mockCreateDatabase({ title: "Broken", views: [{ name: "Broken", type: "list", filter: { property: "title", op: "gt", value: 1 } }] })).toThrow("title takes");
+    expect(() => mockCreateDatabase({ title: "Broken", properties: [{ name: "Rating", type: "number" }], views: [{ name: "Calendar", type: "calendar", dateProperty: "Rating" }] })).toThrow("not a date property");
+    expect(() => mockCreateDatabase({ title: "Broken", views: [{ name: "Cols", type: "table", properties: [{ id: "ghost", visible: true }] }] })).toThrow("no property with id ghost");
+    expect(mockListNotes({ includeArchived: true }).notes.length).toBe(before);
+  });
 });
 
