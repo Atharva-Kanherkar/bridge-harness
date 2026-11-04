@@ -767,6 +767,33 @@ function viewOf(input: NoteViewInput, database: MockDatabase): NoteDatabaseView 
   return view;
 }
 
+/** A view input whose property and option references may be names, with each
+ *  name of a property in `properties` (or one of its options) made its id. */
+function resolveViewNames(view: NoteViewInput, properties: Record<string, NoteProperty>): NoteViewInput {
+  const property = (reference: string) => properties[reference] ? reference : Object.values(properties).find(candidate => fold(candidate.name) === fold(reference))?.id ?? reference;
+  const filter = (tree: unknown): unknown => {
+    const node = tree as Record<string, unknown>;
+    for (const key of ["and", "or"]) if (Array.isArray(node?.[key])) return { [key]: (node[key] as unknown[]).map(filter) };
+    if (typeof node?.property !== "string") return tree;
+    const id = property(node.property);
+    const condition: Record<string, unknown> = { ...node, property: id };
+    const def = properties[id];
+    if (def && OPTION_TYPES.includes(def.type) && "value" in node && node.op !== "inGroup") {
+      const option = (raw: unknown) => typeof raw === "string" && !(def.options ?? []).some(candidate => candidate.id === raw) ? (def.options ?? []).find(candidate => fold(candidate.name) === fold(raw))?.id ?? raw : raw;
+      condition.value = Array.isArray(node.value) ? node.value.map(option) : option(node.value);
+    }
+    return condition;
+  };
+  return {
+    ...view,
+    ...(view.filter != null ? { filter: filter(view.filter) } : {}),
+    ...(view.sorts ? { sorts: view.sorts.map(sort => ({ ...sort, property: property(sort.property) })) } : {}),
+    ...(view.groupBy ? { groupBy: { ...view.groupBy, property: property(view.groupBy.property) } } : {}),
+    ...(view.dateProperty ? { dateProperty: property(view.dateProperty) } : {}),
+    ...(view.properties ? { properties: view.properties.map(column => ({ ...column, id: property(column.id) })) } : {}),
+  };
+}
+
 export function mockCreateDatabase(params: CreateDatabaseParams): NotePage {
   if (params.parentId) {
     const parent = live(params.parentId);
@@ -783,7 +810,9 @@ export function mockCreateDatabase(params: CreateDatabaseParams): NotePage {
   const database: MockDatabase = { scope: "children", properties, views: {} };
   const views = params.views?.length ? params.views : [{ name: "Table", type: "table" }];
   views.forEach((input, order) => {
-    const view = viewOf({ ...input, order: input.order ?? order }, database);
+    // The caller cannot know the ids made here, so a first view may name its
+    // properties and options, as the core resolves them.
+    const view = viewOf({ ...resolveViewNames(input, properties), order: input.order ?? order }, database);
     database.views[view.id] = view;
   });
   const page = make("", PERSON, { title: params.title?.trim() || null, kind: "database", state: "open", parentId: params.parentId ?? null, workspaceId: params.workspaceId ?? null });

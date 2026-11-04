@@ -359,5 +359,21 @@ describe("mock databases", () => {
     for (const title of ["Robot 🤖", "Ordinary"]) mockCreatePage({ title, parentId: page.note.id });
     expect(mockQueryDatabase({ databaseId: page.note.id, query: "🤖" }).rows.map(row => row.note.title)).toEqual(["Robot 🤖"]);
   });
+
+  it("lets first views name the properties being created", () => {
+    const page = mockCreateDatabase({
+      title: "Books",
+      properties: [{ name: "Due", type: "date" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }] }],
+      views: [
+        { name: "Calendar", type: "calendar", dateProperty: "Due" },
+        { name: "Board", type: "board", filter: { property: "genre", op: "is", value: "Fiction" }, groupBy: { property: "Genre" }, sorts: [{ property: "Due", direction: "asc" }] },
+      ],
+    });
+    const [due, genre] = page.database!.properties;
+    const [calendar, board] = page.database!.views;
+    expect(calendar.dateProperty).toBe(due.id);
+    expect(board.filter).toEqual({ property: genre.id, op: "is", value: genre.options![0].id });
+    expect([board.groupBy!.property, board.sorts![0].property]).toEqual([genre.id, due.id]);
+  });
 });
 

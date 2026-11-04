@@ -330,6 +330,52 @@ fn cells_records(db: &Connection, space: &str, database: &database::DatabaseDoc,
     Ok(records)
 }
 
+/// A view whose property and option references may be names, with each name
+/// of a property in `schema` (or of one of its options) swapped for its id.
+fn resolve_view_names(view: &ViewDef, schema: &std::collections::BTreeMap<String, PropertyDef>) -> ViewDef {
+    let fold = |text: &str| text.trim().to_lowercase();
+    let property = |reference: &str| -> String {
+        if schema.contains_key(reference) {
+            return reference.to_owned();
+        }
+        schema.iter().find(|(_, def)| fold(&def.name) == fold(reference)).map(|(id, _)| id.clone()).unwrap_or_else(|| reference.to_owned())
+    };
+    fn filter(tree: &Value, schema: &std::collections::BTreeMap<String, PropertyDef>, property: &dyn Fn(&str) -> String) -> Value {
+        if let Some(object) = tree.as_object() {
+            for key in ["and", "or"] {
+                if let Some(items) = object.get(key).and_then(Value::as_array) {
+                    return serde_json::json!({ key: items.iter().map(|item| filter(item, schema, property)).collect::<Vec<_>>() });
+                }
+            }
+        }
+        let mut condition = tree.clone();
+        let Some(name) = tree.get("property").and_then(Value::as_str) else { return condition };
+        let id = property(name);
+        condition["property"] = Value::String(id.clone());
+        if let (Some(def), Some(value)) = (schema.get(&id).filter(|def| def.kind.options()), tree.get("value")) {
+            if tree.get("op").and_then(Value::as_str) != Some("inGroup") {
+                let option = |raw: &Value| match raw.as_str() {
+                    Some(raw) if def.option(raw).is_none() => def.option_by_name(raw).map(|option| Value::String(option.id.clone())).unwrap_or_else(|| Value::String(raw.to_owned())),
+                    _ => raw.clone(),
+                };
+                condition["value"] = match value {
+                    Value::Array(items) => Value::Array(items.iter().map(option).collect()),
+                    other => option(other),
+                };
+            }
+        }
+        condition
+    }
+    ViewDef {
+        filter: view.filter.as_ref().map(|tree| filter(tree, schema, &property)),
+        sorts: view.sorts.iter().map(|sort| doc::SortDef { property: property(&sort.property), direction: sort.direction.clone() }).collect(),
+        group_by: view.group_by.as_ref().map(|group| doc::GroupByDef { property: property(&group.property), date_bucket: group.date_bucket.clone() }),
+        date_property: view.date_property.as_deref().map(property),
+        properties: view.properties.iter().map(|column| doc::ViewPropertyDef { id: property(&column.id), ..column.clone() }).collect(),
+        ..view.clone()
+    }
+}
+
 /// A view with every part the schema in `draft` cannot run taken out.
 fn prune_view(space: &str, draft: &database::DatabaseDoc, view: &ViewDef) -> ViewDef {
     let runs = |filter: &Value| super::query::check_view(space, draft, Some(filter), &[], None).is_ok();
@@ -687,8 +733,11 @@ impl NotesService {
                     records = records.put_schema(prop, def);
                 }
                 for (view_id, view) in &views {
-                    check_view_def(&space_name, &draft, view)?;
-                    records = records.put_view(view_id, view);
+                    // The caller cannot know the ids made in this write, so a
+                    // first view may name its properties and options.
+                    let view = resolve_view_names(view, &schema);
+                    check_view_def(&space_name, &draft, &view)?;
+                    records = records.put_view(view_id, &view);
                 }
                 doc.edit_page(Some(&body), &patch, &records)
             }
@@ -2917,6 +2966,45 @@ pub(crate) mod tests {
         assert!(error.contains("not a row of that database"), "{error}");
         let after = notes.read(&page.id).unwrap();
         assert_eq!((after.seq, after.note.parent_id.as_deref()), (moved.seq, Some(list.as_str())), "neither the move nor the cell landed");
+    }
+
+    #[test]
+    fn initial_views_name_the_properties_being_created() {
+        use crate::notes::doc::{GroupByDef, SortDef, ViewPropertyDef};
+        let (_dir, notes) = service();
+        let blank = |name: &str, kind: ViewType| ViewDef { name: name.into(), kind, order: 0, filter: None, sorts: vec![], group_by: None, date_property: None, properties: vec![] };
+        let calendar = ViewDef { date_property: Some("Due".into()), ..blank("Calendar", ViewType::Calendar) };
+        let board = ViewDef {
+            filter: Some(serde_json::json!({"property": "genre", "op": "is", "value": "Fiction"})),
+            sorts: vec![SortDef { property: "Due".into(), direction: "asc".into() }],
+            group_by: Some(GroupByDef { property: "Genre".into(), date_bucket: None }),
+            properties: vec![ViewPropertyDef { id: "Due".into(), visible: true, width: None }],
+            ..blank("Board", ViewType::Board)
+        };
+        let note = notes
+            .create_database(
+                CreateDatabase {
+                    title: Some("Books".into()),
+                    properties: vec![
+                        NewProperty { name: "Due".into(), kind: "date".into(), ..Default::default() },
+                        NewProperty { name: "Genre".into(), kind: "select".into(), options: vec![NewOption { name: "Fiction".into(), ..Default::default() }], ..Default::default() },
+                    ],
+                    views: vec![calendar, board],
+                    ..Default::default()
+                },
+                PERSON,
+            )
+            .unwrap();
+        let database = notes.database(&note.id).unwrap();
+        let id_of = |name: &str| database.ordered().into_iter().find(|(_, def)| def.name == name).unwrap().0.clone();
+        let (due, genre) = (id_of("Due"), id_of("Genre"));
+        let fiction = database.schema[&genre].options[0].id.clone();
+        let view = |name: &str| database.views.values().find(|view| view.name == name).unwrap().clone();
+        assert_eq!(view("Calendar").date_property, Some(due.clone()));
+        let board = view("Board");
+        assert_eq!(board.filter, Some(serde_json::json!({"property": genre, "op": "is", "value": fiction})), "names resolve to the generated ids");
+        assert_eq!((board.sorts[0].property.clone(), board.group_by.unwrap().property, board.properties[0].id.clone()), (due.clone(), genre, due));
+        assert!(notes.query_database(&note.id, &crate::notes::query::QuerySpec { view_id: Some(database.views.iter().find(|(_, view)| view.name == "Board").unwrap().0.clone()), ..Default::default() }).is_ok());
     }
 
     #[test]

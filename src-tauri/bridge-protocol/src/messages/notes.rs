@@ -517,6 +517,8 @@ pub struct CreateDatabaseParams {
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub properties: Option<Vec<NotePropertyInput>>,
+    /// First views. They may name the properties being created, and their
+    /// options, by name: the ids are made in the same write.
     #[serde(default)]
     pub views: Option<Vec<NoteViewInput>>,
 }

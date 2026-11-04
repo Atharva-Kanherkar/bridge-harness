@@ -243,6 +243,7 @@
     },
     "views": {
       "default": null,
+      "description": "First views. They may name the properties being created, and their options, by name: the ids are made in the same write.",
       "items": {
         "$ref": "#/definitions/NoteViewInput"
       },
