@@ -943,3 +943,20 @@ fn free_text_without_a_word_searches_literally() {
     let result = query(&fixture, QuerySpec { query: Some("🤖".into()), ..Default::default() });
     assert_eq!(result.rows.iter().map(|row| row.note.title.clone().unwrap()).collect::<Vec<_>>(), vec!["Robot 🤖"], "a query with no word token is still a filter");
 }
+
+#[test]
+fn an_out_of_range_day_is_refused_without_poisoning_the_lock() {
+    let fixture = fixture(2, 14);
+    for today in ["+262142-12-31", "262142-12-31", "0000-00-00"] {
+        let error = fixture
+            .notes
+            .query_database(&fixture.db, &QuerySpec { filter: Some(json!({"property": "created", "op": "within", "value": "nextWeek"})), today: Some(today.into()), ..Default::default() })
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("YYYY-MM-DD"), "{today}: {error}");
+    }
+    // The last day there is still compares and shifts without overflow.
+    let result = fixture.notes.query_database(&fixture.db, &QuerySpec { filter: Some(json!({"property": "created", "op": "within", "value": "nextWeek"})), today: Some("9999-12-31".into()), ..Default::default() });
+    assert!(result.is_ok(), "{result:?}");
+    assert!(fixture.notes.list(&crate::notes::service::ListFilter::default()).is_ok(), "the notes database is still usable");
+}

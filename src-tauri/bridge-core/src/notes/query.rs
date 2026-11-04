@@ -283,42 +283,61 @@ fn day(date: NaiveDate) -> String {
 }
 
 /// The inclusive days a `within` value covers.
+/// `date` moved by `days`, or `None` past the dates chrono can hold. Every day
+/// shift goes through here: an overflow is a refused query, never a panic
+/// under the notes database lock.
+pub fn shift(date: NaiveDate, days: i64) -> Option<NaiveDate> {
+    date.checked_add_signed(Duration::days(days))
+}
+
+/// The inclusive days a `within` value covers; `None` for an unknown value or
+/// a range past the representable dates.
 pub fn within_range(value: &str, today: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
     Some(match value {
-        "pastWeek" => (today - Duration::days(7), today),
-        "nextWeek" => (today, today + Duration::days(7)),
+        "pastWeek" => (shift(today, -7)?, today),
+        "nextWeek" => (today, shift(today, 7)?),
         "thisWeek" => {
-            let monday = today - Duration::days(today.weekday().num_days_from_monday() as i64);
-            (monday, monday + Duration::days(6))
+            let monday = shift(today, -(today.weekday().num_days_from_monday() as i64))?;
+            (monday, shift(monday, 6)?)
         }
         "thisMonth" => {
             let first = today.with_day(1)?;
             let next = if first.month() == 12 { NaiveDate::from_ymd_opt(first.year() + 1, 1, 1)? } else { NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1)? };
-            (first, next - Duration::days(1))
+            (first, shift(next, -1)?)
         }
-        "pastMonth" => (today - Duration::days(30), today),
-        "nextMonth" => (today, today + Duration::days(30)),
+        "pastMonth" => (shift(today, -30)?, today),
+        "nextMonth" => (today, shift(today, 30)?),
         _ => return None,
     })
+}
+
+/// A day as the API spells one: `YYYY-MM-DD` with a four-digit year.
+pub fn parse_day(raw: &str) -> Option<NaiveDate> {
+    let raw = raw.trim();
+    let shaped = raw.len() == 10 && raw.bytes().enumerate().all(|(index, byte)| if index == 4 || index == 7 { byte == b'-' } else { byte.is_ascii_digit() });
+    shaped.then(|| NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()).flatten()
 }
 
 /// A day comparison on a column of `YYYY-MM-DD` or RFC 3339 strings. Every
 /// form is a range on the raw column, so an index can answer it.
 fn day_predicate(sql: &mut Statement, column: &str, op: &str, value: Option<&Value>, name: &str, today: NaiveDate) -> Result<String, BridgeError> {
-    let next = |date: NaiveDate| day(date + Duration::days(1));
+    let next = |date: NaiveDate| shift(date, 1).map(day).ok_or_else(|| invalid(format!("{op} on {name} takes a day before the end of time")));
     Ok(match op {
         "before" => format!("{column} < {}", sql.bind(day(day_of(op, value, name)?))),
-        "after" => format!("{column} >= {}", sql.bind(next(day_of(op, value, name)?))),
-        "onOrBefore" => format!("{column} < {}", sql.bind(next(day_of(op, value, name)?))),
+        "after" => format!("{column} >= {}", sql.bind(next(day_of(op, value, name)?)?)),
+        "onOrBefore" => format!("{column} < {}", sql.bind(next(day_of(op, value, name)?)?)),
         "onOrAfter" => format!("{column} >= {}", sql.bind(day(day_of(op, value, name)?))),
         "equals" => {
             let date = day_of(op, value, name)?;
-            format!("({column} >= {} AND {column} < {})", sql.bind(day(date)), sql.bind(next(date)))
+            format!("({column} >= {} AND {column} < {})", sql.bind(day(date)), sql.bind(next(date)?))
         }
         "within" => {
             let raw = value.and_then(Value::as_str).unwrap_or_default();
-            let (from, to) = within_range(raw, today).ok_or_else(|| invalid(format!("within takes one of {}", WITHIN.join(", "))))?;
-            format!("({column} >= {} AND {column} < {})", sql.bind(day(from)), sql.bind(next(to)))
+            if !WITHIN.contains(&raw) {
+                return Err(invalid(format!("within takes one of {}", WITHIN.join(", "))));
+            }
+            let (from, to) = within_range(raw, today).ok_or_else(|| invalid(format!("within {raw} runs past the last day there is")))?;
+            format!("({column} >= {} AND {column} < {})", sql.bind(day(from)), sql.bind(next(to)?))
         }
         _ => unreachable!("ops are checked before compiling"),
     })
@@ -648,7 +667,7 @@ fn title_case(word: &str) -> String {
 pub fn bucket_of(raw: &str, bucket: &str) -> Option<String> {
     let date = NaiveDate::parse_from_str(raw.get(..10)?, "%Y-%m-%d").ok()?;
     Some(match bucket {
-        "week" => day(date - Duration::days(date.weekday().num_days_from_monday() as i64)),
+        "week" => day(shift(date, -(date.weekday().num_days_from_monday() as i64))?),
         "month" => date.format("%Y-%m").to_string(),
         _ => day(date),
     })
@@ -789,7 +808,7 @@ fn plan(space: &str, database: &DatabaseDoc, spec: &QuerySpec) -> Result<Plan, B
     let group_by = spec.group_by.clone().or_else(|| view.as_ref().and_then(|view| view.group_by.clone()));
     check_sorts(&sorts)?;
     let today = match &spec.today {
-        Some(raw) => NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").map_err(|_| invalid(format!("today is YYYY-MM-DD, not {raw}")))?,
+        Some(raw) => parse_day(raw).ok_or_else(|| invalid(format!("today is YYYY-MM-DD, not {raw}")))?,
         None => chrono::Utc::now().date_naive(),
     };
     let scope = Scope { space, database, today };
