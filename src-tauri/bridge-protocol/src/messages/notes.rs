@@ -544,8 +544,11 @@ pub struct DeleteViewParams {
     pub view_id: String,
 }
 
-/// Filter, sort, group and page a database's rows. A view supplies what the
-/// call leaves out.
+/// Filter, sort, group and page a database's rows. A `viewId` supplies each of
+/// `filter`, `sorts` and `groupBy` the call leaves out; `null` is the same as
+/// leaving a field out. An explicit `sorts: []` or `filter: {and: []}` replaces
+/// the view's. To run a view without its grouping, query without `viewId` and
+/// pass the view's filter and sorts.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryDatabaseParams {
