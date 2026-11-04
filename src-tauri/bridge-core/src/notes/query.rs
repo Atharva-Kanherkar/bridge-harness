@@ -102,6 +102,21 @@ enum System {
 }
 
 impl System {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Kind => "kind",
+            Self::State => "state",
+            Self::Tags => "tags",
+            Self::Project => "project",
+            Self::Chats => "chats",
+            Self::Parent => "parent",
+            Self::Created => "created",
+            Self::Updated => "updated",
+            Self::CreatedBy => "createdBy",
+        }
+    }
+
     fn parse(id: &str) -> Option<Self> {
         Some(match id {
             "title" => Self::Title,
@@ -177,7 +192,7 @@ impl Prop<'_> {
     fn name(&self) -> String {
         match self {
             Prop::Value(_, def) => def.name.clone(),
-            Prop::System(_) => "this property".to_owned(),
+            Prop::System(system) => system.id().to_owned(),
         }
     }
 }

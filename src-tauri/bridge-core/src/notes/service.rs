@@ -97,6 +97,8 @@ pub struct CreatePage {
     pub state: Option<String>,
     /// A database's scope: `children` (the default) or `space`.
     pub scope: Option<String>,
+    /// A database's first views; one "Table" view when empty.
+    pub views: Vec<ViewDef>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,6 +123,8 @@ pub struct UpdateNote {
     pub clear_workspace: bool,
     pub state: Option<String>,
     pub add_session_id: Option<String>,
+    /// Cells to set (`Some`) or clear (`None`) by property id, on a row.
+    pub values: Vec<(String, Option<Value>)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -132,6 +136,33 @@ pub struct ListFilter {
     pub parent_id: Option<String>,
     pub include_archived: bool,
     pub limit: Option<usize>,
+}
+
+/// What `create_database` makes.
+#[derive(Debug, Clone, Default)]
+pub struct CreateDatabase {
+    pub title: Option<String>,
+    pub parent_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub properties: Vec<NewProperty>,
+    pub views: Vec<ViewDef>,
+}
+
+/// Most views one database holds.
+pub const MAX_VIEWS: usize = 50;
+
+fn view_id_is_new(database: &database::DatabaseDoc, view_id: &str) -> bool {
+    !database.views.contains_key(view_id)
+}
+
+/// One option of a `SetOptions` list. `color` and `group` left out keep what
+/// an existing option had.
+#[derive(Debug, Clone, Default)]
+pub struct OptionInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub color: Option<String>,
+    pub group: Option<String>,
 }
 
 /// One option, as a person adds it.
@@ -162,6 +193,11 @@ pub enum SchemaOp {
     /// Converts every row's value where it can; anything else is cleared.
     Retype { prop: String, to: String },
     AddOption { prop: String, name: String, color: Option<String>, group: Option<String> },
+    /// Replace a property's whole option list. An entry without an id is new,
+    /// an id left out is deleted (its values cleared), and order is list order.
+    SetOptions { prop: String, options: Vec<OptionInput> },
+    /// The schema order: every property, once.
+    Reorder { props: Vec<String> },
     RenameOption { prop: String, option: String, name: String },
     DeleteOption { prop: String, option: String },
 }
@@ -178,14 +214,14 @@ impl SchemaOp {
     /// The property this op changes, for the batch rule.
     pub fn property(&self) -> Option<&String> {
         match self {
-            Self::Add(_) => None,
-            Self::Rename { prop, .. } | Self::Delete { prop } | Self::Retype { prop, .. } | Self::AddOption { prop, .. } | Self::RenameOption { prop, .. } | Self::DeleteOption { prop, .. } => Some(prop),
+            Self::Add(_) | Self::Reorder { .. } => None,
+            Self::Rename { prop, .. } | Self::Delete { prop } | Self::Retype { prop, .. } | Self::AddOption { prop, .. } | Self::SetOptions { prop, .. } | Self::RenameOption { prop, .. } | Self::DeleteOption { prop, .. } => Some(prop),
         }
     }
 
     /// An option edit changes one property's options, not its shape.
     pub fn is_option(&self) -> bool {
-        matches!(self, Self::AddOption { .. } | Self::RenameOption { .. } | Self::DeleteOption { .. })
+        matches!(self, Self::AddOption { .. } | Self::SetOptions { .. } | Self::RenameOption { .. } | Self::DeleteOption { .. })
     }
 }
 
@@ -471,7 +507,13 @@ impl NotesService {
         if kind == "database" && !database::SCOPES.contains(&scope.as_str()) {
             return Err(invalid(format!("scope must be one of {}", database::SCOPES.join(", "))));
         }
-        let views = if kind == "database" { database::default_views() } else { Vec::new() };
+        // The Notes list's seven views belong to the system database alone; a
+        // database a person makes starts with one table.
+        let views: Vec<(String, ViewDef)> = match kind.as_str() {
+            "database" if page.views.is_empty() => vec![(new_id(), database::table_view())],
+            "database" => page.views.iter().map(|view| (new_id(), view.clone())).collect(),
+            _ => Vec::new(),
+        };
         let (note, _, _) = self.write_with(&id, actor, |db, doc, _| {
             if let Some(parent) = &page.parent_id {
                 validate_parent(db, &space, &id, parent)?;
@@ -570,7 +612,7 @@ impl NotesService {
         Ok(NoteEditResult { note, seq, warnings })
     }
 
-    pub fn update(&self, update: UpdateNote, actor: &str) -> Result<Note, BridgeError> {
+    pub fn update(&self, mut update: UpdateNote, actor: &str) -> Result<Note, BridgeError> {
         self.check_live(&update.id)?;
         self.check_not_system(&update.id)?;
         if let Some(kind) = &update.kind {
@@ -598,6 +640,14 @@ impl NotesService {
         }
         if update.clear_parent && update.parent_id.is_some() {
             return Err(invalid("parentId and clearParent are mutually exclusive"));
+        }
+        // Cells go through `set_values`, the one path that checks them against
+        // the row's database; an update that only sets cells writes nothing else.
+        let values = std::mem::take(&mut update.values);
+        let props_change = update.parent_id.is_some() || update.clear_parent || update.title.is_some() || update.kind.is_some() || update.tags.is_some()
+            || update.workspace_id.is_some() || update.clear_workspace || update.state.is_some() || update.add_session_id.is_some();
+        if !values.is_empty() && !props_change {
+            return self.set_values(&update.id, &values, actor);
         }
         let _rename = update.title.is_some().then(|| self.rename_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let mut rename = None;
@@ -669,8 +719,14 @@ impl NotesService {
                     live.edit(Some(&rewritten), &PropsPatch::default())
                 })?;
             }
+            if !values.is_empty() {
+                return self.set_values(&update.id, &values, actor);
+            }
             // A self-link can change the renamed page again during propagation.
             return Ok(self.read(&update.id)?.note);
+        }
+        if !values.is_empty() {
+            return self.set_values(&update.id, &values, actor);
         }
         Ok(note)
     }
@@ -994,6 +1050,53 @@ impl NotesService {
                         next.dropped.push((prop.clone(), option.clone()));
                         schema.insert(prop.clone(), def);
                     }
+                    SchemaOp::SetOptions { prop, options } => {
+                        let def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
+                        if !def.kind.options() {
+                            return Err(invalid(format!("{} does not have options", def.name)));
+                        }
+                        let mut built = PropertyDef { options: Vec::new(), ..def.clone() };
+                        for input in options {
+                            let existing = match &input.id {
+                                Some(id) => Some(def.option(id).ok_or_else(|| invalid(format!("{} has no option {id}", def.name)))?.clone()),
+                                None => None,
+                            };
+                            if let Some(existing) = &existing {
+                                if built.option(&existing.id).is_some() {
+                                    return Err(invalid(format!("{} lists option {} twice", def.name, existing.id)));
+                                }
+                            }
+                            let name = database::check_option_name(&built, &input.name, None)?;
+                            let group = match (&input.group, &existing) {
+                                (None, Some(existing)) if def.kind == PropertyType::Status => existing.group.clone(),
+                                (group, _) => option_group(def.kind, group)?,
+                            };
+                            let color = input.color.clone().or_else(|| existing.as_ref().and_then(|existing| existing.color.clone()));
+                            if existing.as_ref().is_some_and(|existing| existing.name != name) {
+                                next.rewrite = true;
+                            }
+                            let id = existing.map(|existing| existing.id).unwrap_or_else(new_id);
+                            built.options.push(OptionDef { id, name, color, group });
+                        }
+                        for gone in def.options.iter().filter(|option| built.option(&option.id).is_none()) {
+                            next.dropped.push((prop.clone(), gone.id.clone()));
+                        }
+                        schema.insert(prop.clone(), built);
+                    }
+                    SchemaOp::Reorder { props } => {
+                        let named: std::collections::BTreeSet<&String> = props.iter().collect();
+                        if named.len() != props.len() || named.len() != schema.len() || props.iter().any(|prop| !schema.contains_key(prop)) {
+                            return Err(invalid(format!("reorder names every property once: {}", schema.keys().cloned().collect::<Vec<_>>().join(", "))));
+                        }
+                        for (order, prop) in props.iter().enumerate() {
+                            if let Some(def) = schema.get_mut(prop) {
+                                if def.order != order as i64 {
+                                    def.order = order as i64;
+                                    next.rewrite = true;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1153,17 +1256,66 @@ impl NotesService {
                 return Err(no_property(property));
             }
         }
-        if let Some(sort) = view.sorts.iter().find(|sort| !matches!(sort.direction.as_str(), "asc" | "desc")) {
-            return Err(invalid(format!("a sort direction is asc or desc, not {}", sort.direction)));
+        // A saved view always compiles: its filter, sorts and grouping are
+        // checked by the planner that will run them.
+        super::query::check_view(&self.space, &database, view.filter.as_ref(), &view.sorts, view.group_by.as_ref())?;
+        if let Some(date) = &view.date_property {
+            let is_date = database.schema.get(date).is_some_and(|def| def.kind == PropertyType::Date) || matches!(date.as_str(), "created" | "updated");
+            if !is_date {
+                return Err(invalid(format!("{date} is not a date property")));
+            }
+        }
+        if view_id_is_new(&database, &view_id) && database.views.len() >= MAX_VIEWS {
+            return Err(invalid(format!("a database holds at most {MAX_VIEWS} views")));
         }
         self.write(id, actor, |live| live.edit_records(&RecordsPatch::default().put_view(&view_id, &view)))?;
         Ok(view_id)
     }
 
+    /// Make a database with its first properties and views. With no
+    /// properties it gets a Status with To do, In progress and Done; with no
+    /// views, one table. A property or view that is refused leaves nothing
+    /// behind: the half-made database is deleted.
+    pub fn create_database(&self, create: CreateDatabase, actor: &str) -> Result<Note, BridgeError> {
+        let note = self.create(
+            CreatePage { title: create.title, parent_id: create.parent_id, workspace_id: create.workspace_id, kind: Some("database".into()), ..Default::default() },
+            actor,
+        )?;
+        let properties = if create.properties.is_empty() {
+            let option = |name: &str, group: &str| NewOption { name: name.into(), group: Some(group.into()), ..Default::default() };
+            vec![NewProperty { name: "Status".into(), kind: "status".into(), options: vec![option("To do", "todo"), option("In progress", "inProgress"), option("Done", "done")], ..Default::default() }]
+        } else {
+            create.properties
+        };
+        let finish = || -> Result<(), BridgeError> {
+            let ops: Vec<SchemaOp> = properties.into_iter().map(SchemaOp::Add).collect();
+            self.update_schema(&note.id, &ops, actor)?;
+            if !create.views.is_empty() {
+                let seeded: Vec<String> = self.database(&note.id)?.views.into_keys().collect();
+                for view in create.views {
+                    self.put_view(&note.id, None, view, actor)?;
+                }
+                for view in seeded {
+                    self.write(&note.id, actor, |live| live.edit_records(&RecordsPatch::default().remove_view(&view)))?;
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = finish() {
+            let _ = self.delete(&note.id, actor);
+            return Err(error);
+        }
+        Ok(self.read(&note.id)?.note)
+    }
+
     pub fn delete_view(&self, id: &str, view_id: &str, actor: &str) -> Result<(), BridgeError> {
         self.check_live(id)?;
-        if !self.database(id)?.views.contains_key(view_id) {
+        let views = self.database(id)?.views;
+        if !views.contains_key(view_id) {
             return Err(invalid("no such view"));
+        }
+        if views.len() == 1 {
+            return Err(invalid("a database keeps at least one view"));
         }
         self.write(id, actor, |live| live.edit_records(&RecordsPatch::default().remove_view(view_id)))?;
         Ok(())
@@ -1754,6 +1906,7 @@ fn check_children_kept(before: &str, after: &str, allow: bool) -> Result<(), Bri
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::notes::doc::ViewType;
 
     pub(crate) fn service() -> (tempfile::TempDir, NotesService) {
         let dir = tempfile::tempdir().unwrap();
@@ -2404,6 +2557,117 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn create_database_seeds_status_and_a_table_view() {
+        let (_dir, notes) = service();
+        let note = notes.create_database(CreateDatabase { title: Some("Reading list".into()), ..Default::default() }, PERSON).unwrap();
+        assert_eq!(note.kind, "database");
+        let database = notes.database(&note.id).unwrap();
+        let (_, status) = database.ordered().into_iter().next().unwrap();
+        assert_eq!((status.name.as_str(), status.kind), ("Status", PropertyType::Status));
+        assert_eq!(status.options.iter().map(|option| (option.name.as_str(), option.group.as_deref())).collect::<Vec<_>>(), vec![("To do", Some("todo")), ("In progress", Some("inProgress")), ("Done", Some("done"))]);
+        assert_eq!(database.views.values().map(|view| (view.name.as_str(), view.kind)).collect::<Vec<_>>(), vec![("Table", ViewType::Table)]);
+
+        // Given properties and views replace the defaults.
+        let board = ViewDef { name: "Board".into(), kind: ViewType::Board, order: 0, filter: None, sorts: vec![], group_by: Some(doc::GroupByDef { property: "state".into(), date_bucket: None }), date_property: None, properties: vec![] };
+        let note = notes
+            .create_database(CreateDatabase { title: Some("Books".into()), properties: vec![NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() }], views: vec![board], ..Default::default() }, PERSON)
+            .unwrap();
+        let database = notes.database(&note.id).unwrap();
+        assert_eq!(database.schema.values().map(|def| def.name.as_str()).collect::<Vec<_>>(), vec!["Rating"]);
+        assert_eq!(database.views.values().map(|view| view.name.as_str()).collect::<Vec<_>>(), vec!["Board"]);
+
+        // A refused property leaves no half-made database behind.
+        let before = notes.list(&ListFilter::default()).unwrap().len();
+        assert!(notes.create_database(CreateDatabase { title: Some("Bad".into()), properties: vec![NewProperty { name: "title".into(), kind: "text".into(), ..Default::default() }], ..Default::default() }, PERSON).is_err());
+        assert_eq!(notes.list(&ListFilter::default()).unwrap().len(), before);
+    }
+
+    #[test]
+    fn set_options_diffs_into_add_rename_delete_and_order() {
+        let (_dir, notes) = service();
+        let (id, _rating, status) = reading_list(&notes);
+        let options = notes.database(&id).unwrap().schema[&status].options.clone();
+        let (reading, done) = (options[0].clone(), options[1].clone());
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(status.clone(), Some(serde_json::json!(reading.id)))], PERSON).unwrap();
+        let done_row = notes.create(CreatePage { title: Some("SICP".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&done_row.id, &[(status.clone(), Some(serde_json::json!(done.id)))], PERSON).unwrap();
+
+        // Done first and renamed, Reading deleted, a new Paused option in between.
+        notes
+            .update_schema(
+                &id,
+                &[SchemaOp::SetOptions {
+                    prop: status.clone(),
+                    options: vec![
+                        OptionInput { id: Some(done.id.clone()), name: "Finished".into(), ..Default::default() },
+                        OptionInput { name: "Paused".into(), group: Some("inProgress".into()), ..Default::default() },
+                    ],
+                }],
+                PERSON,
+            )
+            .unwrap();
+        let def = notes.database(&id).unwrap().schema[&status].clone();
+        assert_eq!(def.options.iter().map(|option| option.name.as_str()).collect::<Vec<_>>(), vec!["Finished", "Paused"]);
+        assert_eq!(def.options[0].id, done.id, "a kept option keeps its id, so its values stay");
+        assert_eq!(def.options[0].group.as_deref(), Some("done"), "a group left out stays");
+        assert_eq!(def.options[1].group.as_deref(), Some("inProgress"));
+        assert!(!values_of(&notes, &row.id).contains_key(&status), "a deleted option's values are cleared");
+        assert_eq!(values_of(&notes, &done_row.id)[&status], serde_json::json!(done.id));
+
+        // Two option edits on one property fold; a duplicate name or an unknown id is refused.
+        assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { name: "A".into(), ..Default::default() }, OptionInput { name: "a".into(), ..Default::default() }] }], PERSON).is_err());
+        assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { id: Some("ghost".into()), name: "A".into(), ..Default::default() }] }], PERSON).is_err());
+        assert_eq!(notes.database(&id).unwrap().schema[&status].options.len(), 2, "a refused batch changes nothing");
+    }
+
+    #[test]
+    fn reorder_must_name_every_property() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        notes.update_schema(&id, &[SchemaOp::Reorder { props: vec![status.clone(), rating.clone()] }], PERSON).unwrap();
+        let ordered: Vec<String> = notes.database(&id).unwrap().ordered().into_iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ordered, vec![status.clone(), rating.clone()]);
+        for bad in [vec![status.clone()], vec![status.clone(), status.clone()], vec![status.clone(), "ghost".into()]] {
+            let error = notes.update_schema(&id, &[SchemaOp::Reorder { props: bad }], PERSON).unwrap_err().to_string();
+            assert!(error.contains("every property once"), "{error}");
+        }
+    }
+
+    #[test]
+    fn the_last_view_cannot_be_deleted_and_a_saved_view_must_compile() {
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let only = notes.database(&id).unwrap().views.into_keys().collect::<Vec<_>>();
+        assert_eq!(only.len(), 1);
+        let error = notes.delete_view(&id, &only[0], PERSON).unwrap_err().to_string();
+        assert!(error.contains("at least one view"), "{error}");
+        let view = |filter: serde_json::Value| ViewDef { name: "Mine".into(), kind: ViewType::List, order: 1, filter: Some(filter), sorts: vec![], group_by: None, date_property: None, properties: vec![] };
+        let error = notes.put_view(&id, None, view(serde_json::json!({"property": rating, "op": "contains", "value": "x"})), PERSON).unwrap_err().to_string();
+        assert!(error.contains("eq, ne"), "{error}");
+        let mine = notes.put_view(&id, None, view(serde_json::json!({"property": rating, "op": "gte", "value": 3})), PERSON).unwrap();
+        notes.delete_view(&id, &only[0], PERSON).unwrap();
+        assert_eq!(notes.database(&id).unwrap().views.into_keys().collect::<Vec<_>>(), vec![mine]);
+        let calendar = ViewDef { date_property: Some(rating), kind: ViewType::Calendar, ..view(serde_json::json!({"and": []})) };
+        assert!(notes.put_view(&id, None, calendar, PERSON).unwrap_err().to_string().contains("not a date"));
+    }
+
+    #[test]
+    fn update_with_values_sets_and_clears() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.update(UpdateNote { id: row.id.clone(), values: vec![(rating.clone(), Some(serde_json::json!(4)))], ..Default::default() }, PERSON).unwrap();
+        assert_eq!(values_of(&notes, &row.id)[&rating], serde_json::json!(4));
+        // Properties and cells in one call, and a clear.
+        let note = notes.update(UpdateNote { id: row.id.clone(), title: Some("Designing Data-Intensive Applications".into()), values: vec![(rating.clone(), None)], ..Default::default() }, PERSON).unwrap();
+        assert_eq!(note.title.as_deref(), Some("Designing Data-Intensive Applications"));
+        assert!(!values_of(&notes, &row.id).contains_key(&rating));
+        let error = notes.update(UpdateNote { id: row.id.clone(), values: vec![(status, Some(serde_json::json!("nope")))], ..Default::default() }, PERSON).unwrap_err().to_string();
+        assert!(error.contains("Reading"), "{error}");
+    }
+
+    #[test]
     fn set_values_refuses_an_unknown_property_option_or_type_and_writes_nothing() {
         let (_dir, notes) = service();
         let (id, rating, status) = reading_list(&notes);
@@ -2525,7 +2789,7 @@ pub(crate) mod tests {
             name: name.into(),
             kind: ViewType::Board,
             order: 10,
-            filter: Some(serde_json::json!({"and": [{"property": "state", "op": "notEquals", "value": "archived"}]})),
+            filter: Some(serde_json::json!({"and": [{"property": "state", "op": "isNot", "value": "archived"}]})),
             sorts: vec![],
             group_by: None,
             date_property: None,
@@ -2535,7 +2799,7 @@ pub(crate) mod tests {
         assert_eq!(notes.database(&id).unwrap().views[&view_id].name, "Board");
         notes.put_view(&id, Some(&view_id), view("By rating"), PERSON).unwrap();
         let saved = notes.database(&id).unwrap().views;
-        assert_eq!(saved.len(), 8, "seven seeded views plus one");
+        assert_eq!(saved.len(), 2, "the seeded table plus one");
         assert_eq!(saved[&view_id].name, "By rating");
         assert!(notes.put_view(&id, None, ViewDef { name: "  ".into(), ..view("x") }, PERSON).is_err());
         assert!(notes.put_view(&id, None, ViewDef { properties: vec![ViewPropertyDef { id: "nope".into(), visible: true, width: None }], ..view("Bad") }, PERSON).is_err());

@@ -558,6 +558,11 @@ pub fn parse_value(db: &Connection, space: &str, def: &PropertyDef, raw: &str) -
 /// what their test validates, so the two cannot drift silently.
 pub const FILTER_OPS: [&str; 6] = ["is", "isNot", "isAnyOf", "isNoneOf", "isEmpty", "isNotEmpty"];
 
+/// The one view a database a person makes starts with.
+pub fn table_view() -> ViewDef {
+    ViewDef { name: "Table".into(), kind: ViewType::Table, order: 0, filter: None, sorts: Vec::new(), group_by: None, date_property: None, properties: Vec::new() }
+}
+
 /// The views every space starts with, reproducing the Notes list's tabs.
 ///
 /// A view executor hides the system database itself the same way

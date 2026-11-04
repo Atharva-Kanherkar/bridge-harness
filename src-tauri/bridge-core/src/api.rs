@@ -7002,6 +7002,7 @@ pub(crate) fn notes_update_note(params: &wire::UpdateNoteParams) -> crate::notes
         clear_workspace: params.clear_workspace.unwrap_or(false),
         state: params.state.clone(),
         add_session_id: params.add_session_id.clone(),
+        values: Vec::new(),
     }
 }
 
