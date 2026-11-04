@@ -681,6 +681,14 @@ impl NotesService {
         self.with_db(|db| database::read(db, id))?.ok_or_else(|| invalid("this page is not a database"))
     }
 
+    /// Filter, sort, group and page one database's rows from the index.
+    pub fn query_database(&self, id: &str, spec: &super::query::QuerySpec) -> Result<super::query::QueryResult, BridgeError> {
+        self.with_db(|db| {
+            let database = database::read(db, id)?.ok_or_else(|| invalid("this page is not a database"))?;
+            super::query::run(db, &self.space, &database, spec)
+        })
+    }
+
     /// The space's system database: the page whose saved views are the Notes
     /// list's tabs.
     pub fn system_database(&self) -> Result<String, BridgeError> {

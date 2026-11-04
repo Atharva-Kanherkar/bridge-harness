@@ -20,6 +20,7 @@ pub mod live;
 pub mod links;
 pub mod markdown;
 pub mod projector;
+pub mod query;
 pub mod service;
 pub mod store;
 pub mod structure;
