@@ -43,6 +43,10 @@ pub const WITHIN: [&str; 6] = ["pastWeek", "nextWeek", "thisWeek", "thisMonth", 
 pub struct QuerySpec {
     pub view_id: Option<String>,
     pub filter: Option<Value>,
+    /// Conditions a caller adds around the filter (a tool's `kind` or `state`,
+    /// archived pages left out). Each compiles on its own, so they cost the
+    /// filter neither a level nor a condition.
+    pub constraints: Vec<Value>,
     pub sorts: Option<Vec<SortDef>>,
     pub group_by: Option<GroupByDef>,
     pub group_limit: Option<usize>,
@@ -817,6 +821,9 @@ fn plan(space: &str, database: &DatabaseDoc, spec: &QuerySpec) -> Result<Plan, B
     }
     if let Some(filter) = &filter {
         conditions.push(compile_filter(&scope, &mut sql, filter, 0, &mut 0)?);
+    }
+    for constraint in &spec.constraints {
+        conditions.push(compile_filter(&scope, &mut sql, constraint, 0, &mut 0)?);
     }
     if let Some(fts) = spec.query.as_deref().map(str::trim).filter(|query| !query.is_empty()).and_then(links::fts_query) {
         let fts = sql.bind(fts);

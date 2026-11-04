@@ -124,6 +124,7 @@ pub fn query_spec(params: &wire::QueryDatabaseParams) -> super::query::QuerySpec
     super::query::QuerySpec {
         view_id: params.view_id.clone(),
         filter: params.filter.clone(),
+        constraints: Vec::new(),
         sorts: params.sorts.clone().map(|sorts| sorts.into_iter().map(|sort| SortDef { property: sort.property, direction: sort.direction }).collect()),
         group_by: params.group_by.clone().map(|group| GroupByDef { property: group.property, date_bucket: group.date_bucket }),
         group_limit: params.group_limit.map(|limit| limit as usize),

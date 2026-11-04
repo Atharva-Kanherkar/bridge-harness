@@ -194,10 +194,14 @@ pub fn run(notes: &NotesService, access: Access, actor: &str, tool: &str, args: 
                 Some(reference) => Some(tool_db::find_database(notes, &reference)?),
                 None => None,
             };
+            // The caller's where is the filter, whole; what this tool adds sits
+            // beside it, so the documented depth and condition budget stay the
+            // caller's.
+            let filter = match args.get("where") {
+                Some(tree) => Some(tool_db::filter(notes, database.as_ref(), tree)?),
+                None => None,
+            };
             let mut conditions: Vec<Value> = Vec::new();
-            if let Some(tree) = args.get("where") {
-                conditions.push(tool_db::filter(notes, database.as_ref(), tree)?);
-            }
             for (property, key) in [("kind", "kind"), ("state", "state")] {
                 if let Some(value) = text(args, key) {
                     conditions.push(json!({"property": property, "op": "is", "value": value}));
@@ -208,7 +212,7 @@ pub fn run(notes: &NotesService, access: Access, actor: &str, tool: &str, args: 
             }
             // Across every page, archived ones stay out unless asked for, as in
             // a plain search.
-            if database.is_none() && !names_state(&Value::Array(conditions.clone())) {
+            if database.is_none() && !names_state(&Value::Array(conditions.iter().chain(filter.iter()).cloned().collect())) {
                 conditions.push(json!({"property": "state", "op": "isNot", "value": "archived"}));
             }
             let sorts = match args.get("sort") {
@@ -220,7 +224,7 @@ pub fn run(notes: &NotesService, access: Access, actor: &str, tool: &str, args: 
                 None => notes.database(&notes.system_database().map_err(service_error)?).map_err(service_error)?,
             };
             let result = notes
-                .query_database(&target.id, &QuerySpec { filter: Some(json!({"and": conditions})), sorts, query: text(args, "query"), limit: Some(limit), ..Default::default() })
+                .query_database(&target.id, &QuerySpec { filter, constraints: conditions, sorts, query: text(args, "query"), limit: Some(limit), ..Default::default() })
                 .map_err(service_error)?;
             let pages: Vec<Value> = result
                 .rows
@@ -766,6 +770,24 @@ mod tests {
         assert_eq!(found["total"], 3, "this space's database, not the older one elsewhere: {found}");
         let error = run(&notes, Access::Write, "agent:claude:chat-1", "notes_search", &json!({"database": "foreign"})).unwrap_err();
         assert!(error.message.contains("the databases are Reading list") && !error.message.contains("Team"), "{}", error.message);
+    }
+
+    #[test]
+    fn search_keeps_the_callers_full_filter_allowance() {
+        let (_dir, notes) = service();
+        reading_list(&notes);
+        let actor = "agent:claude:chat-1";
+        let two_levels = json!({"and": [{"or": [{"property": "Rating", "op": "gte", "value": 5}, {"property": "Status", "op": "is", "value": "To read"}]}]});
+        let found = run(&notes, Access::Write, actor, "notes_search", &json!({"database": "Reading list", "where": two_levels, "kind": "note"})).unwrap();
+        assert_eq!(found["total"], 2, "{found}");
+        // Across every page: the implicit archive rule does not cost a level.
+        let across = json!({"and": [{"or": [{"property": "kind", "op": "is", "value": "database"}, {"property": "title", "op": "equals", "value": "DDIA"}]}]});
+        let found = run(&notes, Access::Write, actor, "notes_search", &json!({"where": across})).unwrap();
+        assert_eq!(found["total"], 2, "{found}");
+        // Nor a condition: twenty of the caller's own fit beside the implicit ones.
+        let twenty: Vec<Value> = (0..20).map(|_| json!({"property": "title", "op": "isNotEmpty"})).collect();
+        let found = run(&notes, Access::Write, actor, "notes_search", &json!({"where": {"and": twenty}, "state": "open", "tags": ["x"]})).unwrap();
+        assert_eq!(found["total"], 0, "{found}");
     }
 }
 
