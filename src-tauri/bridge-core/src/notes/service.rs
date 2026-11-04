@@ -282,8 +282,10 @@ fn build_property(db: &Connection, schema: &std::collections::BTreeMap<String, P
 }
 
 /// One cell a row may hold: a value its property takes, and for a relation,
-/// live rows of the database it points at.
-fn check_cell<'a>(db: &Connection, space: &str, database: &'a database::DatabaseDoc, prop_id: &str, value: Option<&Value>) -> Result<&'a PropertyDef, BridgeError> {
+/// live rows of the database it points at. `row` is the page being written
+/// with the parent it has once the write lands, since the index does not
+/// know a move until it commits.
+fn check_cell<'a>(db: &Connection, space: &str, database: &'a database::DatabaseDoc, prop_id: &str, value: Option<&Value>, row: (&str, Option<&str>)) -> Result<&'a PropertyDef, BridgeError> {
     let def = database
         .schema
         .get(prop_id)
@@ -293,17 +295,39 @@ fn check_cell<'a>(db: &Connection, space: &str, database: &'a database::Database
     if def.kind == PropertyType::Relation {
         let target = def.relation.as_ref().map(|relation| relation.database_id.clone()).ok_or_else(|| invalid(format!("{} names no database", def.name)))?;
         for id in value.as_array().into_iter().flatten().filter_map(Value::as_str) {
-            let exists: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND parent_id=?2 AND space_id=?3 AND deleted_at IS NULL)",
-                params![id, target, space],
-                |row| row.get(0),
-            )?;
+            let exists: bool = if id == row.0 {
+                row.1 == Some(target.as_str())
+            } else {
+                db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pages WHERE id=?1 AND parent_id=?2 AND space_id=?3 AND deleted_at IS NULL)",
+                    params![id, target, space],
+                    |row| row.get(0),
+                )?
+            };
             if !exists {
                 return Err(invalid(format!("{} names {id}, which is not a row of that database", def.name)));
             }
         }
     }
     Ok(def)
+}
+
+/// The records a cells patch writes, each cell checked against `database`.
+fn cells_records(db: &Connection, space: &str, database: &database::DatabaseDoc, current: &std::collections::BTreeMap<String, Value>, patch: &[(String, Option<Value>)], row: (&str, Option<&str>)) -> Result<RecordsPatch, BridgeError> {
+    let mut records = RecordsPatch::default();
+    for (prop_id, value) in patch {
+        check_cell(db, space, database, prop_id, value.as_ref(), row)?;
+        match value {
+            Some(value) => records = records.put_value(prop_id, Some(value)).settle_value(prop_id),
+            None => {
+                if let Some(value) = current.get(prop_id) {
+                    records = records.clear_value(prop_id, value);
+                }
+                records = records.put_value(prop_id, None);
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// A view a database can save: it compiles, and its date property is a date.
@@ -733,24 +757,6 @@ impl NotesService {
         if !values.is_empty() && !props_change {
             return self.set_values(&update.id, &values, actor);
         }
-        // Properties and cells are two commits, so the cells are checked first,
-        // against the database the page will belong to: a refused cell writes
-        // nothing at all.
-        if !values.is_empty() {
-            self.with_db(|db| {
-                let current: Option<String> = db.query_row("SELECT parent_id FROM pages WHERE id=?1", params![update.id], |row| row.get(0)).optional()?.flatten();
-                let parent = if update.clear_parent { None } else { update.parent_id.clone().or(current) };
-                let database = match parent {
-                    Some(parent) => database::read(db, &parent)?,
-                    None => None,
-                }
-                .ok_or_else(|| invalid("only a row of a database has values"))?;
-                for (prop, value) in &values {
-                    check_cell(db, &self.space, &database, prop, value.as_ref())?;
-                }
-                Ok(())
-            })?;
-        }
         let _rename = update.title.is_some().then(|| self.rename_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let mut rename = None;
         let (note, _, _) = self.write_with(&update.id, actor, |db, live, _| {
@@ -809,7 +815,24 @@ impl NotesService {
                 }
                 patch = patch.list(key::SESSIONS, &sessions);
             }
-            live.set_props(&patch)
+            // Cells land in the same write as the properties, checked against
+            // the database the page belongs to once this write lands: a move and
+            // its cells are one change, and a refused cell writes nothing.
+            if values.is_empty() {
+                return live.set_props(&patch);
+            }
+            let parent = if update.clear_parent { None } else { update.parent_id.clone().or_else(|| props.parent_id.clone()) };
+            let database = match &parent {
+                Some(parent) => database::read(db, parent)?,
+                None => None,
+            }
+            .ok_or_else(|| invalid("only a row of a database has values"))?;
+            if props.kind.as_deref() == Some("database") {
+                return Err(invalid("a database has properties, not values"));
+            }
+            let space = props.space_id.clone().unwrap_or_else(|| self.space.clone());
+            let records = cells_records(db, &space, &database, &live.values(), &values, (&update.id, parent.as_deref()))?;
+            live.edit_page(None, &patch, &records)
         })?;
         if let Some((old, new, incoming)) = rename {
             for (id, wiki) in incoming {
@@ -821,14 +844,8 @@ impl NotesService {
                     live.edit(Some(&rewritten), &PropsPatch::default())
                 })?;
             }
-            if !values.is_empty() {
-                return self.set_values(&update.id, &values, actor);
-            }
             // A self-link can change the renamed page again during propagation.
             return Ok(self.read(&update.id)?.note);
-        }
-        if !values.is_empty() {
-            return self.set_values(&update.id, &values, actor);
         }
         Ok(note)
     }
@@ -951,22 +968,7 @@ impl NotesService {
             let parent = props.parent_id.clone().ok_or_else(|| invalid("only a row of a database has values"))?;
             let database = database::read(db, &parent)?.ok_or_else(|| invalid("only a row of a database has values"))?;
             let space = props.space_id.clone().unwrap_or_else(|| self.space.clone());
-            let current = live.values();
-            let mut records = RecordsPatch::default();
-            for (prop_id, value) in patch {
-                check_cell(db, &space, &database, prop_id, value.as_ref())?;
-                match value {
-                    Some(value) => {
-                        records = records.put_value(prop_id, Some(value)).settle_value(prop_id);
-                    }
-                    None => {
-                        if let Some(value) = current.get(prop_id) {
-                            records = records.clear_value(prop_id, value);
-                        }
-                        records = records.put_value(prop_id, None);
-                    }
-                }
-            }
+            let records = cells_records(db, &space, &database, &live.values(), patch, (id, Some(parent.as_str())))?;
             live.edit_records(&records)
         })?;
         Ok(note)
@@ -2758,6 +2760,32 @@ pub(crate) mod tests {
         notes.update(UpdateNote { id: loose.id.clone(), parent_id: Some(id.clone()), values: vec![(rating.clone(), Some(serde_json::json!(3)))], ..Default::default() }, PERSON).unwrap();
         assert_eq!(values_of(&notes, &loose.id)[&rating], serde_json::json!(3));
         assert!(notes.update(UpdateNote { id: loose.id, clear_parent: true, values: vec![(rating, Some(serde_json::json!(1)))], ..Default::default() }, PERSON).is_err(), "a page leaving its database takes no cells");
+    }
+
+    #[test]
+    fn a_move_and_its_cells_are_one_write() {
+        let (_dir, notes) = service();
+        let (list, _rating, _status) = reading_list(&notes);
+        // A database whose relation points at itself.
+        let related = notes.update_schema(&list, &[SchemaOp::Add(NewProperty { name: "Related".into(), kind: "relation".into(), relation: Some(list.clone()), ..Default::default() })], PERSON).unwrap().added[0].0.clone();
+        let other = notes.create(CreatePage { title: Some("Other list".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap().id;
+        let back = notes.update_schema(&other, &[SchemaOp::Add(NewProperty { name: "Back".into(), kind: "relation".into(), relation: Some(list.clone()), ..Default::default() })], PERSON).unwrap().added[0].0.clone();
+
+        // Moving a page in and linking it to itself: it is a row once the move lands.
+        let page = notes.create(CreatePage { title: Some("Self".into()), ..Default::default() }, PERSON).unwrap();
+        let seq = notes.read(&page.id).unwrap().seq;
+        notes.update(UpdateNote { id: page.id.clone(), parent_id: Some(list.clone()), values: vec![(related.clone(), Some(serde_json::json!([page.id])))], ..Default::default() }, PERSON).unwrap();
+        let moved = notes.read(&page.id).unwrap();
+        assert_eq!(moved.seq, seq + 1, "one write");
+        assert_eq!(moved.note.parent_id.as_deref(), Some(list.as_str()));
+        assert_eq!(values_of(&notes, &page.id)[&related], serde_json::json!([page.id]));
+
+        // Moving it out while pointing at itself in the old database: it is no
+        // longer a row there, so the cell is refused and the move does not land.
+        let error = notes.update(UpdateNote { id: page.id.clone(), parent_id: Some(other.clone()), values: vec![(back, Some(serde_json::json!([page.id])))], ..Default::default() }, PERSON).unwrap_err().to_string();
+        assert!(error.contains("not a row of that database"), "{error}");
+        let after = notes.read(&page.id).unwrap();
+        assert_eq!((after.seq, after.note.parent_id.as_deref()), (moved.seq, Some(list.as_str())), "neither the move nor the cell landed");
     }
 
     #[test]
