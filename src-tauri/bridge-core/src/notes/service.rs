@@ -100,7 +100,8 @@ pub struct CreatePage {
     /// A database's first views; one "Table" view when empty.
     pub views: Vec<ViewDef>,
     /// A database's first properties, checked and written with the page.
-    pub properties: Vec<NewProperty>,
+    pub properties: Vec<NewProperty>,    /// A row's first cells by property id, checked and written with the page.
+    pub values: Vec<(String, Option<Value>)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -696,6 +697,9 @@ impl NotesService {
         if kind != "database" && !page.properties.is_empty() {
             return Err(invalid("only a database has properties"));
         }
+        if kind == "database" && !page.values.is_empty() {
+            return Err(invalid("a database has properties, not values"));
+        }
         let (note, _, _) = self.write_with(&id, actor, |db, doc, _| {
             if let Some(parent) = &page.parent_id {
                 validate_parent(db, &space, &id, parent)?;
@@ -712,12 +716,19 @@ impl NotesService {
                 .list(key::TAGS, &tags)
                 .maybe(key::WORKSPACE, page.workspace_id)
                 .set(key::STATE, state)
-                .maybe(key::PARENT, page.parent_id)
+                .maybe(key::PARENT, page.parent_id.clone())
                 .maybe(key::SOURCE, page.source_id)
                 .maybe(key::EXCERPT, page.source_excerpt)
                 .set(key::CREATED_BY, actor)
                 .set(key::CREATED_AT, now());
-            if views.is_empty() {
+            if !page.values.is_empty() {
+                // A row's first cells are checked against its database here and
+                // land with the page: a refused cell makes no row.
+                let parent = page.parent_id.as_deref().ok_or_else(|| invalid("only a row of a database has values"))?;
+                let database = database::read(db, parent)?.ok_or_else(|| invalid("only a row of a database has values"))?;
+                let records = cells_records(db, &space_name, &database, &Default::default(), &page.values, (&id, Some(parent)))?;
+                doc.edit_page(Some(&body), &patch, &records)
+            } else if views.is_empty() {
                 doc.edit(Some(&body), &patch)
             } else {
                 // Properties and views are checked here, against the schema they
@@ -3005,6 +3016,22 @@ pub(crate) mod tests {
         assert_eq!(board.filter, Some(serde_json::json!({"property": genre, "op": "is", "value": fiction})), "names resolve to the generated ids");
         assert_eq!((board.sorts[0].property.clone(), board.group_by.unwrap().property, board.properties[0].id.clone()), (due.clone(), genre, due));
         assert!(notes.query_database(&note.id, &crate::notes::query::QuerySpec { view_id: Some(database.views.iter().find(|(_, view)| view.name == "Board").unwrap().0.clone()), ..Default::default() }).is_ok());
+    }
+
+    #[test]
+    fn a_row_and_its_first_cells_are_one_write() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let pages = |notes: &NotesService| notes.with_db(|db| Ok(db.query_row("SELECT COUNT(*) FROM pages", [], |row| row.get::<_, i64>(0))?)).unwrap();
+        let before = pages(&notes);
+        let refused = notes.create(CreatePage { title: Some("Book".into()), parent_id: Some(id.clone()), values: vec![(rating.clone(), Some(serde_json::json!(4))), (status, Some(serde_json::json!("nope")))], ..Default::default() }, PERSON);
+        assert!(refused.is_err());
+        assert_eq!(pages(&notes), before, "a refused cell makes no row");
+        let row = notes.create(CreatePage { title: Some("Book".into()), parent_id: Some(id.clone()), values: vec![(rating.clone(), Some(serde_json::json!(4)))], ..Default::default() }, PERSON).unwrap();
+        assert_eq!(notes.history(&row.id).unwrap().versions.len(), 1, "made with its cells in one write");
+        assert_eq!(values_of(&notes, &row.id)[&rating], serde_json::json!(4));
+        let loose = notes.create(CreatePage { title: Some("Loose".into()), values: vec![(rating, Some(serde_json::json!(1)))], ..Default::default() }, PERSON);
+        assert!(loose.unwrap_err().to_string().contains("only a row"));
     }
 
     #[test]

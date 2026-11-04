@@ -317,12 +317,13 @@ pub fn run(notes: &NotesService, access: Access, actor: &str, tool: &str, args: 
                         kind: text(args, "kind"),
                         tags: strings(args, "tags").unwrap_or_default(),
                         state: Some(if parent.is_some() { "open" } else { "inbox" }.into()),
+                        // The cells land in the write that makes the row.
+                        values: cells,
                         ..Default::default()
                     },
                     actor,
                 )
                 .map_err(service_error)?;
-            let note = if cells.is_empty() { note } else { notes.set_values(&note.id, &cells, actor).map_err(service_error)? };
             let mut created = json!({"created": summary(&note), "path": note.path});
             if let Some(database) = &database {
                 let values = notes.read(&note.id).map_err(service_error)?.values.unwrap_or_default();
@@ -801,6 +802,17 @@ mod tests {
         assert_eq!(sorted["pages"].as_array().unwrap().len(), 1, "adding a sort does not change what tags mean: {sorted}");
         let filtered = run(&notes, Access::Write, actor, "notes_search", &json!({"where": {"property": "tags", "op": "containsAny", "value": [" #RESEARCH "]}})).unwrap();
         assert_eq!(filtered["pages"].as_array().unwrap().len(), 1, "{filtered}");
+    }
+
+    #[test]
+    fn create_writes_a_row_with_its_properties_in_one_write() {
+        let (_dir, notes) = service();
+        reading_list(&notes);
+        let made = run(&notes, Access::Write, "agent:claude:chat-1", "notes_create", &json!({"title": "Neuromancer", "database": "Reading list", "properties": {"Rating": 4}})).unwrap();
+        let id = made["created"]["id"].as_str().unwrap();
+        assert_eq!(notes.history(id).unwrap().versions.len(), 1, "the row and its cells are one write");
+        assert_eq!(made["created"]["seq"], 1, "the response is the stored row: {made}");
+        assert_eq!(made["properties"]["Rating"], 4);
     }
 }
 
