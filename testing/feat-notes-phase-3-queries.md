@@ -186,3 +186,24 @@ N/A: no UI in this branch (#889, #890). The mock path is covered by vitest below
 - Run the daemon and call `notes/create_database`, `notes/update_schema`, `notes/query_database`
   with `bridge exec --json` or the socket. Not required for merge: the `bridged` round trip
   covers it.
+
+## Amendments after review (PR #895)
+
+Each item below came out of review and has a regression test that fails without its fix.
+
+- **Option cleanup is repaired on retry.** `setOptions` and `deleteOption` clear every row value that names an option the property no longer has, on every run, including a run that changes no schema. A retry after an interrupted cleanup finishes it.
+- **Saved views follow schema edits.** The same write that changes a schema also prunes every view against the new schema:
+  - A condition naming a removed property or option is dropped. A list keeps its surviving options and is dropped only when none are left. A group that empties is dropped.
+  - A condition whose op the retyped property no longer takes is dropped.
+  - Sorts, the grouping, the date property and visible-property entries that no longer apply are removed.
+  
+  A saved view is therefore always queryable.
+- **`notes_search` keeps the caller's full filter allowance.** Its implicit constraints (`kind`, `state`, `tags`, archived pages left out) compile beside the caller's `where` and count toward neither its two-level depth nor its 20 conditions.
+- **Tags are normalized everywhere.** Tag values are trimmed, have their `#` dropped and are folded, in the tool's top-level `tags` and in every `tags` condition, exactly as `notes/list_notes` treats them.
+- **Free text with no word token searches literally.** A non-empty `query` with no word token (for example `🤖`) matches title or body text by substring with ASCII case folding, the same fallback `notes/list_notes` uses. It is never ignored.
+- **Initial views can name new properties.** A `create_database` view may name a property being created, and its options, by name. They resolve to the generated ids inside the creating write.
+- **A row and its first cells are one write.** `notes_create` with `database` and `properties` makes the row and its cells in one write. A refused cell makes nothing.
+- **`asDatabase` keeps what else was passed.** It keeps `tags` and `content` in the same creating write, and the response is the note as stored.
+- **`today` is a real day.** It is `YYYY-MM-DD` with a four-digit year. Relative ranges and day bounds use checked arithmetic, and a date out of range is refused with `invalid_params`. Nothing panics while the notes database lock is held.
+- **The mock matches the core in two more places.** A same-type retype keeps valid cells and repairs stranded ones by their shape, as the core does. Initial views are validated against the draft schema before the database is made.
+- **`groupBy: null` is the same as leaving `groupBy` out.** A `viewId` supplies each field the call leaves out, and the wire can't tell `null` from absent. To run a saved view without its grouping, query without `viewId` and pass the view's filter and sorts. An explicit `sorts: []` and an explicit `filter: {and: []}` already replace the view's.
