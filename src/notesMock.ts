@@ -891,7 +891,7 @@ export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
       const value = row.values![prop];
       let next: unknown = value;
       if (options) next = Array.isArray(value) ? value.filter(item => !options.includes(item as string)) : options.includes(value as string) ? undefined : value;
-      if (retype) next = convertValue(retype.from, retype.to, value);
+      if (retype) next = retype.from.type === retype.to.type ? repairValue(retype.to, value) : convertValue(retype.from, retype.to, value);
       if (Array.isArray(next) && !next.length) next = undefined;
       if (next === undefined) delete row.values![prop];
       else row.values![prop] = next;
@@ -899,6 +899,28 @@ export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
     }
   }
   return databaseOf(page);
+}
+
+/** A same-type retype, as the core's: a valid cell stays, and one a part-run
+ *  retype left behind is converted from the type its shape says it came
+ *  from, or cleared. */
+function repairValue(to: NoteProperty, value: unknown): unknown {
+  try {
+    checkValue(to, value);
+    return value;
+  } catch {
+    const shape = typeof value === "number" ? "number" : typeof value === "boolean" ? "checkbox" : typeof value === "string" ? "text" : Array.isArray(value) ? "multiSelect" : value && typeof value === "object" && "start" in value ? "date" : null;
+    if (!shape) return undefined;
+    // Converted into a scratch copy and checked against the real property, as
+    // the core does: a repair never adds options to the schema.
+    const converted = convertValue({ ...to, type: shape }, { ...to, options: [...(to.options ?? [])] }, value);
+    try {
+      checkValue(to, converted);
+      return converted;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 /** What a retype makes of one value, as the core's `convert`. */

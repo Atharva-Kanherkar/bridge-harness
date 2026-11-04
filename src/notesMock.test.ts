@@ -375,5 +375,14 @@ describe("mock databases", () => {
     expect(board.filter).toEqual({ property: genre.id, op: "is", value: genre.options![0].id });
     expect([board.groupBy!.property, board.sorts![0].property]).toEqual([genre.id, due.id]);
   });
+
+  it("keeps valid cells when a property is retyped to the type it has", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }] }] });
+    const [rating, genre] = page.database!.properties;
+    const row = mockCreatePage({ title: "DDIA", parentId: page.note.id });
+    mockUpdateNote({ id: row.id, values: { [rating.id]: 5, [genre.id]: genre.options![0].id } });
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "retype", propertyId: rating.id, type: "number" }, { op: "retype", propertyId: genre.id, type: "select" }] });
+    expect(mockReadPage(row.id).values).toEqual({ [rating.id]: 5, [genre.id]: genre.options![0].id });
+  });
 });
 
