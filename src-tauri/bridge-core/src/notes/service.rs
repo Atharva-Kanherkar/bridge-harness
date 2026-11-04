@@ -1145,9 +1145,19 @@ impl NotesService {
                             let id = existing.map(|existing| existing.id).unwrap_or_else(new_id);
                             built.options.push(OptionDef { id, name, color, group });
                         }
-                        for gone in def.options.iter().filter(|option| built.option(&option.id).is_none()) {
-                            next.dropped.push((prop.clone(), gone.id.clone()));
+                        // Every option a row still names that the new list lacks: the
+                        // ones this call drops, and any an interrupted earlier
+                        // cleanup left behind, so a retry finishes it.
+                        let mut stale: std::collections::BTreeSet<String> = def.options.iter().filter(|option| built.option(&option.id).is_none()).map(|option| option.id.clone()).collect();
+                        for (_, value) in database::row_values(db, id, prop)? {
+                            let named: Vec<String> = match value {
+                                Value::String(option) => vec![option],
+                                Value::Array(items) => items.into_iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+                                _ => Vec::new(),
+                            };
+                            stale.extend(named.into_iter().filter(|option| built.option(option).is_none()));
                         }
+                        next.dropped.extend(stale.into_iter().map(|option| (prop.clone(), option)));
                         schema.insert(prop.clone(), built);
                     }
                     SchemaOp::Reorder { props } => {
@@ -2685,6 +2695,24 @@ pub(crate) mod tests {
         assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { name: "A".into(), ..Default::default() }, OptionInput { name: "a".into(), ..Default::default() }] }], PERSON).is_err());
         assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { id: Some("ghost".into()), name: "A".into(), ..Default::default() }] }], PERSON).is_err());
         assert_eq!(notes.database(&id).unwrap().schema[&status].options.len(), 2, "a refused batch changes nothing");
+    }
+
+    #[test]
+    fn set_options_finishes_an_interrupted_cleanup_on_retry() {
+        let (_dir, notes) = service();
+        let (id, _rating, status) = reading_list(&notes);
+        let options = notes.database(&id).unwrap().schema[&status].options.clone();
+        let (reading, done) = (options[0].clone(), options[1].clone());
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        let keep_done = || vec![OptionInput { id: Some(done.id.clone()), name: done.name.clone(), ..Default::default() }];
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done() }], PERSON).unwrap();
+        // The state an interrupted cleanup leaves: the schema no longer has
+        // Reading, but a row still names it.
+        notes.write(&row.id, PERSON, |live| live.edit_records(&RecordsPatch::default().put_value(&status, Some(&serde_json::json!(reading.id))))).unwrap();
+        assert_eq!(values_of(&notes, &row.id)[&status], serde_json::json!(reading.id));
+        // Retrying the same request finishes it, though the schema is unchanged.
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done() }], PERSON).unwrap();
+        assert!(!values_of(&notes, &row.id).contains_key(&status), "the stale option is cleared on retry");
     }
 
     #[test]
