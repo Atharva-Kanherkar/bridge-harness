@@ -26,4 +26,5 @@ pub mod store;
 pub mod structure;
 pub mod tasks;
 pub mod tool;
+pub mod tool_db;
 pub mod wire;
