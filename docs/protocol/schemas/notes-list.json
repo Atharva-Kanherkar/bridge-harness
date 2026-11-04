@@ -181,6 +181,13 @@
     "root": {
       "description": "The folder pages are mirrored to.",
       "type": "string"
+    },
+    "systemDatabaseId": {
+      "description": "The database whose saved views are the Notes list's tabs.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

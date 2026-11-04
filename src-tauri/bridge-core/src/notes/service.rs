@@ -1371,7 +1371,20 @@ impl NotesService {
             ))?;
             let tasks = statement.query_map(params![id], note_from_row)?.collect::<Result<_, _>>()?;
             let backlinks = links::read_backlinks(db, &note.space_id, id)?;
-            Ok(NotePage { seq: note.seq, note, markdown: body, structured, tasks, backlinks })
+            // A database carries its records; a row its cells, only those its
+            // database still has a property for.
+            let database = if note.kind == "database" { database::read(db, id)?.map(|doc| super::wire::database(&doc)) } else { None };
+            let database_id = database::database_of(db, id)?;
+            let values = match &database_id {
+                Some(parent) => {
+                    let schema = database::read(db, parent)?.map(|doc| doc.schema).unwrap_or_default();
+                    let mut values = doc::load_page(db, id, None)?.0.values();
+                    values.retain(|prop, _| schema.contains_key(prop));
+                    Some(values)
+                }
+                None => None,
+            };
+            Ok(NotePage { seq: note.seq, note, markdown: body, structured, tasks, backlinks, database, database_id, values })
         })
     }
 
@@ -2650,6 +2663,29 @@ pub(crate) mod tests {
         assert_eq!(notes.database(&id).unwrap().views.into_keys().collect::<Vec<_>>(), vec![mine]);
         let calendar = ViewDef { date_property: Some(rating), kind: ViewType::Calendar, ..view(serde_json::json!({"and": []})) };
         assert!(notes.put_view(&id, None, calendar, PERSON).unwrap_err().to_string().contains("not a date"));
+    }
+
+    #[test]
+    fn read_carries_the_database_or_the_row_values() {
+        let (_dir, notes) = service();
+        let (id, rating, status) = reading_list(&notes);
+        let page = notes.read(&id).unwrap();
+        let database = page.database.expect("a database page carries its records");
+        assert_eq!(database.properties.iter().map(|property| property.name.as_str()).collect::<Vec<_>>(), vec!["Rating", "Status"]);
+        assert_eq!(database.properties[0].id, rating);
+        assert_eq!(database.views.len(), 1);
+        assert_eq!((page.database_id, page.values), (None, None));
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        // A deleted property's cell stays in the doc but not on the page.
+        notes.update_schema(&id, &[SchemaOp::Delete { prop: status.clone() }], PERSON).unwrap();
+        let page = notes.read(&row.id).unwrap();
+        assert_eq!(page.database_id.as_deref(), Some(id.as_str()));
+        assert_eq!(page.values, Some([(rating, serde_json::json!(5))].into_iter().collect()));
+        assert!(page.database.is_none());
+        let plain = notes.create(CreatePage { title: Some("Plain".into()), ..Default::default() }, PERSON).unwrap();
+        let page = notes.read(&plain.id).unwrap();
+        assert_eq!((page.database, page.database_id, page.values), (None, None, None));
     }
 
     #[test]

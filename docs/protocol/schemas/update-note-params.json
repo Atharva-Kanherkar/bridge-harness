@@ -63,6 +63,15 @@
         "null"
       ]
     },
+    "values": {
+      "additionalProperties": true,
+      "default": null,
+      "description": "Set (a value) or clear (`null`) a row's cells, by property id.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
     "workspaceId": {
       "default": null,
       "type": [

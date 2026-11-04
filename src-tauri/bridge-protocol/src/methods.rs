@@ -229,6 +229,11 @@ methods![
     (ReadAsset, "notes", "read_asset"),
     (GetNotesSettings, "notes", "get_notes_settings"),
     (SaveNotesSettings, "notes", "save_notes_settings"),
+    (CreateDatabase, "notes", "create_database"),
+    (UpdateSchema, "notes", "update_schema"),
+    (SaveView, "notes", "save_view"),
+    (DeleteView, "notes", "delete_view"),
+    (QueryDatabase, "notes", "query_database"),
     // token and cost usage
     (UsageSummary, "usage", "summary"),
     (ListUsagePriceOverrides, "usage", "list_price_overrides"),

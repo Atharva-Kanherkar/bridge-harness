@@ -222,3 +222,75 @@ fn links_search_rename_and_parent_moves_round_trip_through_the_daemon() {
     accept_loop.join().unwrap();
     daemon.shutdown(Duration::from_secs(5));
 }
+
+#[test]
+fn databases_round_trip_over_the_socket() {
+    let fixture = tempfile::tempdir().unwrap();
+    seed(fixture.path());
+    let (daemon, listener) = Daemon::start(DaemonConfig {
+        data_dir: fixture.path().to_path_buf(), socket_path: None, health_addr: None,
+        browser_extension_path: fixture.path().join("no-extension"), handshake_timeout: Duration::from_millis(400),
+    }).unwrap();
+    let daemon = std::sync::Arc::new(daemon);
+    let server = daemon.clone();
+    let accept_loop = std::thread::spawn(move || bridged::serve(&server, listener).unwrap());
+    let mut client = Client::connect(&daemon.socket_path, &daemon.state.auth_token);
+
+    let created = client.call(1, "notes/create_database", json!({"title": "Reading list", "properties": [{"name": "Rating", "type": "number"}]}));
+    let database = created["result"]["database"].clone();
+    assert_eq!(database["properties"][0]["name"], "Rating", "{created}");
+    assert_eq!(database["views"][0]["name"], "Table");
+    let id = created["result"]["note"]["id"].as_str().unwrap().to_owned();
+    let rating = database["properties"][0]["id"].as_str().unwrap().to_owned();
+
+    let schema = client.call(2, "notes/update_schema", json!({"id": id, "changes": [
+        {"op": "add", "property": {"name": "Status", "type": "status", "options": [{"name": "Reading", "group": "inProgress"}, {"name": "Done", "group": "done"}]}},
+        {"op": "rename", "propertyId": rating, "name": "Score"},
+    ]}));
+    let properties = schema["result"]["properties"].as_array().unwrap_or_else(|| panic!("{schema}"));
+    assert_eq!(properties.iter().map(|property| property["name"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Score", "Status"]);
+    let done = properties[1]["options"][1]["id"].as_str().unwrap().to_owned();
+    let status = properties[1]["id"].as_str().unwrap().to_owned();
+
+    let mut rows = Vec::new();
+    for (index, (title, score)) in [("DDIA", 5), ("SICP", 3), ("TAOCP", 4)].iter().enumerate() {
+        let row = client.call(10 + index as i64, "notes/create_page", json!({"title": title, "parentId": id}));
+        let row = row["result"]["id"].as_str().unwrap().to_owned();
+        let set = client.call(20 + index as i64, "notes/update_note", json!({"id": row, "values": {rating.clone(): score, status.clone(): done}}));
+        assert!(set.get("error").is_none(), "{set}");
+        rows.push(row);
+    }
+    let cleared = client.call(30, "notes/update_note", json!({"id": rows[2], "values": {status.clone(): null}}));
+    assert!(cleared.get("error").is_none(), "{cleared}");
+    let read = client.call(31, "notes/read_page", json!({"id": rows[0]}));
+    assert_eq!(read["result"]["databaseId"], id);
+    assert_eq!(read["result"]["values"][&rating], 5.0);
+
+    let view = client.call(40, "notes/save_view", json!({"databaseId": id, "view": {"name": "Top", "type": "list", "filter": {"property": rating, "op": "gte", "value": 4}, "sorts": [{"property": rating, "direction": "desc"}]}}));
+    let view_id = view["result"]["id"].as_str().unwrap_or_else(|| panic!("{view}")).to_owned();
+    let query = client.call(41, "notes/query_database", json!({"databaseId": id, "viewId": view_id, "groupBy": {"property": status}}));
+    let result = &query["result"];
+    assert_eq!(result["total"], 2, "{query}");
+    assert_eq!(result["rows"].as_array().unwrap().iter().map(|row| row["note"]["title"].as_str().unwrap()).collect::<Vec<_>>(), vec!["DDIA", "TAOCP"]);
+    assert_eq!(result["groups"].as_array().unwrap().iter().map(|group| (group["label"].as_str().unwrap(), group["count"].as_u64().unwrap())).collect::<Vec<_>>(), vec![("Reading", 0), ("Done", 1), ("No value", 1)]);
+    let paged = client.call(42, "notes/query_database", json!({"databaseId": id, "limit": 2}));
+    let cursor = paged["result"]["nextCursor"].as_str().unwrap().to_owned();
+    let rest = client.call(43, "notes/query_database", json!({"databaseId": id, "limit": 2, "cursor": cursor}));
+    assert_eq!(rest["result"]["rows"].as_array().unwrap().len(), 1);
+    assert!(rest["result"].get("nextCursor").is_none());
+
+    let bad = client.call(44, "notes/query_database", json!({"databaseId": id, "filter": {"property": "Score", "op": "gte", "value": 4}}));
+    assert!(bad["error"]["message"].as_str().unwrap().contains("Score ("), "a name is not an id; the error lists both: {bad}");
+    let deleted = client.call(45, "notes/delete_view", json!({"databaseId": id, "viewId": view_id}));
+    assert!(deleted.get("error").is_none(), "{deleted}");
+    let last = client.call(46, "notes/read_page", json!({"id": id}));
+    let table = last["result"]["database"]["views"][0]["id"].as_str().unwrap().to_owned();
+    let refused = client.call(47, "notes/delete_view", json!({"databaseId": id, "viewId": table}));
+    assert!(refused.get("error").is_some(), "{refused}");
+    let listed = client.call(48, "notes/list_notes", json!({}));
+    assert!(listed["result"]["systemDatabaseId"].is_string(), "{listed}");
+
+    daemon.state.shutting_down.store(true, Ordering::SeqCst);
+    accept_loop.join().unwrap();
+    daemon.shutdown(Duration::from_secs(5));
+}

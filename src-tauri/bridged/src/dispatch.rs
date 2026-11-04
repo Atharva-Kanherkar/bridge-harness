@@ -603,6 +603,26 @@ pub fn dispatch(
             let p: wire::DeleteNoteParams = decode(method, params)?;
             reply(api::delete_note(core, &p))
         }
+        MethodName::CreateDatabase => {
+            let p: wire::CreateDatabaseParams = decode(method, params)?;
+            reply(api::create_database(core, &p))
+        }
+        MethodName::UpdateSchema => {
+            let p: wire::UpdateSchemaParams = decode(method, params)?;
+            reply(api::update_schema(core, &p))
+        }
+        MethodName::SaveView => {
+            let p: wire::SaveViewParams = decode(method, params)?;
+            reply(api::save_view(core, &p))
+        }
+        MethodName::DeleteView => {
+            let p: wire::DeleteViewParams = decode(method, params)?;
+            reply(api::delete_view(core, &p))
+        }
+        MethodName::QueryDatabase => {
+            let p: wire::QueryDatabaseParams = decode(method, params)?;
+            reply(api::query_database(core, &p))
+        }
         MethodName::StructureNote => {
             let p: wire::StructureNoteParams = decode(method, params)?;
             reply(api::structure_note(core, &p))

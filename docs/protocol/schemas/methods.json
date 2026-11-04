@@ -1185,6 +1185,41 @@
       "resultSchema": "notes-settings.json"
     },
     {
+      "command": "create_database",
+      "domain": "notes",
+      "method": "notes/create_database",
+      "paramsSchema": "create-database-params.json",
+      "resultSchema": "note-page.json"
+    },
+    {
+      "command": "update_schema",
+      "domain": "notes",
+      "method": "notes/update_schema",
+      "paramsSchema": "update-schema-params.json",
+      "resultSchema": "note-database.json"
+    },
+    {
+      "command": "save_view",
+      "domain": "notes",
+      "method": "notes/save_view",
+      "paramsSchema": "save-view-params.json",
+      "resultSchema": "note-database-view.json"
+    },
+    {
+      "command": "delete_view",
+      "domain": "notes",
+      "method": "notes/delete_view",
+      "paramsSchema": "delete-view-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "query_database",
+      "domain": "notes",
+      "method": "notes/query_database",
+      "paramsSchema": "query-database-params.json",
+      "resultSchema": "database-query-result.json"
+    },
+    {
       "command": "summary",
       "domain": "usage",
       "method": "usage/summary",
