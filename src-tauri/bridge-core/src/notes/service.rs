@@ -330,6 +330,46 @@ fn cells_records(db: &Connection, space: &str, database: &database::DatabaseDoc,
     Ok(records)
 }
 
+/// A view with every part the schema in `draft` cannot run taken out.
+fn prune_view(space: &str, draft: &database::DatabaseDoc, view: &ViewDef) -> ViewDef {
+    let runs = |filter: &Value| super::query::check_view(space, draft, Some(filter), &[], None).is_ok();
+    fn prune(filter: &Value, runs: &dyn Fn(&Value) -> bool) -> Option<Value> {
+        let object = filter.as_object()?;
+        for key in ["and", "or"] {
+            if let Some(items) = object.get(key).and_then(Value::as_array) {
+                if items.is_empty() {
+                    return Some(filter.clone());
+                }
+                let kept: Vec<Value> = items.iter().filter_map(|item| prune(item, runs)).collect();
+                return (!kept.is_empty()).then(|| serde_json::json!({ key: kept }));
+            }
+        }
+        if runs(filter) {
+            return Some(filter.clone());
+        }
+        // A list keeps the items that still run, if any do.
+        let items = filter.get("value").and_then(Value::as_array)?;
+        let one = |item: &Value| {
+            let mut single = filter.clone();
+            single["value"] = serde_json::json!([item]);
+            runs(&single)
+        };
+        let kept: Vec<Value> = items.iter().filter(|item| one(item)).cloned().collect();
+        let mut narrowed = filter.clone();
+        narrowed["value"] = Value::Array(kept.clone());
+        (!kept.is_empty() && runs(&narrowed)).then_some(narrowed)
+    }
+    let known = |id: &str| draft.schema.contains_key(id) || database::SYSTEM_PROPERTIES.contains(&id) || database::FILTER_ONLY_PROPERTIES.contains(&id);
+    ViewDef {
+        filter: view.filter.as_ref().and_then(|filter| prune(filter, &runs)),
+        sorts: view.sorts.iter().filter(|sort| super::query::check_view(space, draft, None, std::slice::from_ref(sort), None).is_ok()).cloned().collect(),
+        group_by: view.group_by.clone().filter(|group| super::query::check_view(space, draft, None, &[], Some(group)).is_ok()),
+        date_property: view.date_property.clone().filter(|date| draft.schema.get(date).is_some_and(|def| def.kind == PropertyType::Date) || matches!(date.as_str(), "created" | "updated")),
+        properties: view.properties.iter().filter(|property| known(&property.id)).cloned().collect(),
+        ..view.clone()
+    }
+}
+
 /// A view a database can save: it compiles, and its date property is a date.
 fn check_view_def(space: &str, database: &database::DatabaseDoc, view: &ViewDef) -> Result<(), BridgeError> {
     if view.name.trim().is_empty() {
@@ -1188,6 +1228,16 @@ impl NotesService {
             }
             for (old, prop) in &next.retire {
                 records = records.retire(old, prop);
+            }
+            // Every saved view follows the new schema in this same write, so a
+            // view is always queryable: what names a removed property or option,
+            // or asks of a property what its new type cannot do, goes.
+            let draft = database::DatabaseDoc { id: id.to_owned(), scope: live.scope().unwrap_or_else(|| "children".to_owned()), schema: schema.clone(), views: Default::default(), retired: Default::default() };
+            for (view_id, view) in live.views() {
+                let pruned = prune_view(&self.space, &draft, &view);
+                if pruned != view {
+                    records = records.put_view(&view_id, &pruned);
+                }
             }
             // A name that is live again is no longer retired.
             let live_names: std::collections::BTreeSet<String> = schema.values().map(|def| def.name.to_lowercase()).collect();
@@ -2713,6 +2763,59 @@ pub(crate) mod tests {
         // Retrying the same request finishes it, though the schema is unchanged.
         notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done() }], PERSON).unwrap();
         assert!(!values_of(&notes, &row.id).contains_key(&status), "the stale option is cleared on retry");
+    }
+
+    #[test]
+    fn saved_views_stay_queryable_after_schema_edits() {
+        use crate::notes::doc::{GroupByDef, SortDef, ViewPropertyDef};
+        use crate::notes::query::QuerySpec;
+        let (_dir, notes) = service();
+        let (id, rating, _status) = reading_list(&notes);
+        let genre = notes
+            .update_schema(&id, &[SchemaOp::Add(NewProperty { name: "Genre".into(), kind: "select".into(), options: vec![NewOption { name: "Fiction".into(), ..Default::default() }, NewOption { name: "Tech".into(), ..Default::default() }], ..Default::default() })], PERSON)
+            .unwrap()
+            .added[0]
+            .0
+            .clone();
+        let options = notes.database(&id).unwrap().schema[&genre].options.clone();
+        let (fiction, tech) = (options[0].id.clone(), options[1].id.clone());
+        let view = ViewDef {
+            name: "Picked".into(),
+            kind: ViewType::Board,
+            order: 1,
+            filter: Some(serde_json::json!({"and": [
+                {"property": genre, "op": "is", "value": fiction},
+                {"property": genre, "op": "isAnyOf", "value": [fiction, tech]},
+                {"property": rating, "op": "gte", "value": 3},
+            ]})),
+            sorts: vec![SortDef { property: rating.clone(), direction: "desc".into() }, SortDef { property: "title".into(), direction: "asc".into() }],
+            group_by: Some(GroupByDef { property: genre.clone(), date_bucket: None }),
+            date_property: None,
+            properties: vec![ViewPropertyDef { id: rating.clone(), visible: true, width: None }, ViewPropertyDef { id: genre.clone(), visible: true, width: None }],
+        };
+        let view_id = notes.put_view(&id, None, view, PERSON).unwrap();
+        let query = |notes: &NotesService| notes.query_database(&id, &QuerySpec { view_id: Some(view_id.clone()), ..Default::default() });
+        let saved = |notes: &NotesService| notes.database(&id).unwrap().views[&view_id].clone();
+
+        // Removing an option drops the condition that named it alone and keeps
+        // the survivor of a list.
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: genre.clone(), options: vec![OptionInput { id: Some(tech.clone()), name: "Tech".into(), ..Default::default() }] }], PERSON).unwrap();
+        assert!(query(&notes).is_ok(), "{:?}", query(&notes).err());
+        assert_eq!(saved(&notes).filter, Some(serde_json::json!({"and": [{"property": genre, "op": "isAnyOf", "value": [tech]}, {"property": rating, "op": "gte", "value": 3}]})));
+
+        // Deleting a property drops its condition, sort and column.
+        notes.update_schema(&id, &[SchemaOp::Delete { prop: rating.clone() }], PERSON).unwrap();
+        assert!(query(&notes).is_ok(), "{:?}", query(&notes).err());
+        let view = saved(&notes);
+        assert_eq!(view.filter, Some(serde_json::json!({"and": [{"property": genre, "op": "isAnyOf", "value": [tech]}]})));
+        assert_eq!(view.sorts.iter().map(|sort| sort.property.as_str()).collect::<Vec<_>>(), vec!["title"]);
+        assert_eq!(view.properties.iter().map(|property| property.id.as_str()).collect::<Vec<_>>(), vec![genre.as_str()]);
+
+        // Retyping to text: a list op and a grouping the type cannot take go.
+        notes.update_schema(&id, &[SchemaOp::Retype { prop: genre.clone(), to: "text".into() }], PERSON).unwrap();
+        assert!(query(&notes).is_ok(), "{:?}", query(&notes).err());
+        let view = saved(&notes);
+        assert_eq!((view.filter, view.group_by), (None, None));
     }
 
     #[test]
