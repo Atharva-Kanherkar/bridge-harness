@@ -213,8 +213,10 @@ export function mockEditPage(params: EditPageParams): NoteEditResult {
 export function mockUpdateNote(params: UpdateNoteParams): Note {
   const page = live(params.id);
   if (page.note.id === systemDatabaseId) throw new Error("the Notes database is managed by Bridge");
-  // Cells are checked before anything is written, as the core's set_values.
-  const cells = params.values ? checkCells(page, params.values) : null;
+  // Cells are checked before anything is written, against the database the
+  // page will belong to after this update, as the core does.
+  const targetParent = params.clearParent ? null : params.parentId ?? page.note.parentId ?? null;
+  const cells = params.values ? checkCells(page, params.values, targetParent) : null;
   const props: Partial<Note> = {};
   if (params.clearParent && params.parentId != null) throw new Error("parentId and clearParent are mutually exclusive");
   if (params.parentId != null) {
@@ -729,8 +731,8 @@ function checkValue(property: NoteProperty, value: unknown): void {
 }
 
 /** A row's cells after a patch, checked whole: a refused patch writes nothing. */
-function checkCells(page: MockPage, patch: Record<string, unknown>): Record<string, unknown> {
-  const parent = rowDatabase(page);
+function checkCells(page: MockPage, patch: Record<string, unknown>, parentId: string | null): Record<string, unknown> {
+  const parent = parentId ? pages.find(candidate => candidate.note.id === parentId && !candidate.deleted && candidate.database) : undefined;
   if (!parent) throw new Error("only a row of a database has values");
   const properties = parent.database!.properties;
   const next = { ...(page.values ?? {}) };
@@ -974,18 +976,25 @@ function checkQuery(plan: Plan, filter: unknown, sorts: NoteSort[], groupBy: { p
   const count = { n: 0 };
   const walk = (tree: unknown, depth: number) => {
     const node = tree as Record<string, unknown>;
-    if (!node || typeof node !== "object") throw new Error("a filter is {and: [...]}, {or: [...]} or {property, op, value}");
+    if (!node || typeof node !== "object" || Array.isArray(node)) throw new Error("a filter is {and: [...]}, {or: [...]} or {property, op, value}");
     for (const key of ["and", "or"]) {
       if (key in node) {
+        if (Object.keys(node).length !== 1) throw new Error(`a ${key} group holds only its list`);
         if (depth >= 2) throw new Error("filter groups nest at most two levels");
+        if (!Array.isArray(node[key])) throw new Error(`${key} takes a list`);
         (node[key] as unknown[]).forEach(item => walk(item, depth + 1));
         return;
       }
     }
     if (++count.n > 20) throw new Error("a filter holds at most 20 conditions");
+    const extra = Object.keys(node).find(key => !["property", "op", "value"].includes(key));
+    if (extra) throw new Error(`a condition has property, op and value, not ${extra}`);
     const property = resolveProperty(plan, node.property as string);
+    const name = typeof property === "string" ? property : property.name;
+    const op = node.op as string;
     const ops = typeof property !== "string" && property.type === "status" ? [...OPS.choice, "inGroup"] : OPS[family(property)];
-    if (!ops.includes(node.op as string)) throw new Error(`${typeof property === "string" ? property : property.name} takes ${ops.join(", ")}, not ${String(node.op)}`);
+    if (!ops.includes(op)) throw new Error(`${name} takes ${ops.join(", ")}, not ${String(op)}`);
+    checkConditionValue(property, name, op, node.value, plan.today);
   };
   if (filter != null) walk(filter, 0);
   for (const sort of sorts) {
@@ -994,9 +1003,63 @@ function checkQuery(plan: Plan, filter: unknown, sorts: NoteSort[], groupBy: { p
     if (typeof property === "string" ? ["tags", "chats", "parent"].includes(property) : ["multiSelect", "relation"].includes(property.type)) throw new Error(`${typeof property === "string" ? property : property.name} cannot be sorted`);
   }
   if (groupBy) {
+    if (groupBy.dateBucket != null && !["day", "week", "month"].includes(groupBy.dateBucket)) throw new Error("dateBucket is day, week or month");
     const property = resolveProperty(plan, groupBy.property);
     const groupable = typeof property === "string" ? ["kind", "state", "project", "created", "updated"].includes(property) : ["select", "status", "multiSelect", "checkbox", "date"].includes(property.type);
     if (!groupable) throw new Error(`${typeof property === "string" ? property : property.name} cannot be grouped`);
+  }
+}
+
+/** A condition's value has the shape its op takes, and names options that
+ *  exist, as the core refuses otherwise. */
+function checkConditionValue(property: NoteProperty | string, name: string, op: string, value: unknown, today: string) {
+  const kind = family(property);
+  const positive = NEGATIONS[op] ?? op;
+  if (positive === "isNotEmpty") return;
+  const known = typeof property === "string"
+    ? ({ kind: KINDS, state: STATES } as Record<string, string[]>)[property]
+    : OPTION_TYPES.includes(property.type) ? (property.options ?? []).map(option => option.id) : undefined;
+  const choices = typeof property === "string" ? known?.join(", ") : (property.options ?? []).map(option => `${option.name} (${option.id})`).join(", ");
+  const option = (id: unknown) => {
+    if (typeof id !== "string") throw new Error(`${op} on ${name} takes text`);
+    if (known && !known.includes(id)) throw new Error(`${name} has no option ${id}; choose one of ${choices}`);
+  };
+  const list = (): unknown[] => {
+    if (!Array.isArray(value)) throw new Error(`${op} on ${name} takes a list`);
+    return value;
+  };
+  switch (kind) {
+    case "text": case "parent":
+      if (typeof value !== "string") throw new Error(`${op} on ${name} takes text`);
+      return;
+    case "number":
+      if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${op} on ${name} takes a number`);
+      return;
+    case "date":
+      if (positive === "within") { withinRange(String(value), today); return; }
+      if (typeof value !== "string" || dayOf(value) === null) throw new Error(`${op} on ${name} takes YYYY-MM-DD or an RFC 3339 time`);
+      return;
+    case "checkbox":
+      if (typeof value !== "boolean") throw new Error(`is on ${name} takes true or false`);
+      return;
+    case "choice":
+      if (positive === "inGroup") {
+        if (!STATUS_GROUPS.includes(value as string)) throw new Error(`inGroup takes one of ${STATUS_GROUPS.join(", ")}`);
+        return;
+      }
+      if (positive === "isAnyOf") list().forEach(option);
+      else option(value);
+      return;
+    case "list": {
+      const relation = typeof property !== "string" && property.type === "relation";
+      // Options must exist; a relation's pages and a tag are free text.
+      const each = relation || property === "tags"
+        ? (item: unknown) => { if (typeof item !== "string") throw new Error(`${op} on ${name} takes text`); }
+        : option;
+      if (positive === "containsAny") list().forEach(each);
+      else each(value);
+      return;
+    }
   }
 }
 
@@ -1121,23 +1184,45 @@ function dateKey(property: NoteProperty, cell: unknown): string | null {
   return property.dateFormat === "datetime" ? iso : iso.slice(0, 10);
 }
 
+/** Text in code point order, which is the core's UTF-8 byte order; plain
+ *  `<` compares UTF-16 units and puts an emoji before U+E000 to U+FFFF. */
+function compareText(x: string, y: string): number {
+  const [a, b] = [Array.from(x), Array.from(y)];
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    const difference = a[index].codePointAt(0)! - b[index].codePointAt(0)!;
+    if (difference) return difference < 0 ? -1 : 1;
+  }
+  return a.length - b.length < 0 ? -1 : a.length > b.length ? 1 : 0;
+}
+
 function compareKeys(left: Cell[], right: Cell[], descending: boolean[], a: Note, b: Note): number {
   for (let index = 0; index < left.length; index++) {
     const [x, y] = [left[index], right[index]];
     if (x === null && y === null) continue;
     if (x === null) return 1;
     if (y === null) return -1;
-    const order = x < y ? -1 : x > y ? 1 : 0;
+    const order = typeof x === "string" && typeof y === "string" ? compareText(x, y) : x < y ? -1 : x > y ? 1 : 0;
     if (order) return descending[index] ? -order : order;
   }
   if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 }
 
-const encodeCursor = (keys: Cell[], note: Note) => btoa(JSON.stringify({ k: keys, u: note.updatedAt, i: note.id })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+/** URL-safe base64 of UTF-8, as the core writes a cursor: a title key in any
+ *  script survives, where `btoa` alone takes only Latin-1. */
+function base64Url(text: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromBase64Url(text: string): string {
+  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  return new TextDecoder().decode(Uint8Array.from(binary, character => character.charCodeAt(0)));
+}
+const encodeCursor = (keys: Cell[], note: Note) => base64Url(JSON.stringify({ k: keys, u: note.updatedAt, i: note.id }));
 function decodeCursor(cursor: string, sorts: number): { k: Cell[]; u: string; i: string } {
   try {
-    const body = JSON.parse(atob(cursor.replace(/-/g, "+").replace(/_/g, "/")));
+    const body = JSON.parse(fromBase64Url(cursor));
     if (Array.isArray(body.k) && body.k.length === sorts && typeof body.u === "string" && typeof body.i === "string") return body;
   } catch { /* fall through */ }
   throw new Error("this cursor does not belong to this query");
@@ -1194,14 +1279,16 @@ function buckets(plan: Plan, rows: MockPage[], group: { property: string; dateBu
       const entry = out.find(candidate => candidate.key === key);
       if (!entry) continue;
       entry.count += 1;
-      if (entry.rows.length < limit) entry.rows.push(rowOf(row));
+      if (entry.rows.length < limit) entry.rows.push(rowOf(row, plan.database));
     }
   }
   return fixed && none ? out : out.filter(entry => entry.key !== "" || entry.count > 0);
 }
 
-function rowOf(page: MockPage): DatabaseRow {
-  return { note: clone(page.note), values: clone(page.values ?? {}) };
+/** A row with the cells of the properties its database still has. */
+function rowOf(page: MockPage, database: MockPage): DatabaseRow {
+  const properties = database.database!.properties;
+  return { note: clone(page.note), values: Object.fromEntries(Object.entries(page.values ?? {}).filter(([prop]) => prop in properties).map(([prop, value]) => [prop, clone(value)])) };
 }
 
 export function mockQueryDatabase(params: QueryDatabaseParams): DatabaseQueryResult {
@@ -1213,6 +1300,7 @@ export function mockQueryDatabase(params: QueryDatabaseParams): DatabaseQueryRes
   const groupBy = params.groupBy ?? view?.groupBy ?? null;
   if (sorts.length > 5) throw new Error("a query sorts by at most 5 properties");
   const today = params.today ?? new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today) || dayOf(today) !== today) throw new Error(`today is YYYY-MM-DD, not ${today}`);
   const plan: Plan = { database, today };
   checkQuery(plan, filter, sorts, groupBy);
   const query = params.query?.trim();
@@ -1232,7 +1320,7 @@ export function mockQueryDatabase(params: QueryDatabaseParams): DatabaseQueryRes
     if (start < 0) start = keyed.length;
   }
   const page = keyed.slice(start, start + limit);
-  const result: DatabaseQueryResult = { rows: page.map(entry => rowOf(entry.page)), total: keyed.length };
+  const result: DatabaseQueryResult = { rows: page.map(entry => rowOf(entry.page, database)), total: keyed.length };
   if (start + page.length < keyed.length && page.length) result.nextCursor = encodeCursor(page[page.length - 1].keys, page[page.length - 1].page.note);
   if (groupBy) result.groups = buckets(plan, keyed.map(entry => entry.page), groupBy, Math.min(Math.max(params.groupLimit ?? 50, 1), 200));
   return result;

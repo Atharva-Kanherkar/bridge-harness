@@ -312,4 +312,39 @@ describe("mock databases", () => {
     const listed = mockListNotes().notes.filter(note => note.state === "inbox" && !(note.parentId && note.kind === "task")).map(note => note.id).sort();
     expect(mockQueryDatabase({ databaseId: systemDatabaseId!, viewId: inbox.id, limit: 500 }).rows.map(row => row.note.id).sort()).toEqual(listed);
   });
+
+  it("pages by a title in any script, refuses what the core refuses, and returns only live cells", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }] }, { name: "Due", type: "date" }, { name: "Status", type: "status", options: [{ name: "Done", group: "done" }] }] });
+    const [rating, genre, , status] = page.database!.properties;
+    // Titles fold ASCII case only and sort by code point, the core's UTF-8
+    // byte order: 🚀 (U+1F680) after ﬁ (U+FB01), which UTF-16 would reverse.
+    for (const title of ["日本語メモ", "Émile", "plain", "🚀 launch", "ﬁle"]) mockCreatePage({ title, parentId: page.note.id });
+    const first = mockQueryDatabase({ databaseId: page.note.id, sorts: [{ property: "title", direction: "desc" }], limit: 1 });
+    const rest = mockQueryDatabase({ databaseId: page.note.id, sorts: [{ property: "title", direction: "desc" }], limit: 5, cursor: first.nextCursor });
+    expect([...first.rows, ...rest.rows].map(row => row.note.title)).toEqual(["🚀 launch", "ﬁle", "日本語メモ", "Émile", "plain"]);
+
+    const refuse = (params: Partial<Parameters<typeof mockQueryDatabase>[0]>, message: string) =>
+      expect(() => mockQueryDatabase({ databaseId: page.note.id, ...params }), message).toThrow(message);
+    refuse({ filter: { property: rating.id, op: "eq", value: "5" } }, "takes a number");
+    refuse({ filter: { property: genre.id, op: "is", value: "ghost" } }, "choose one of Fiction");
+    refuse({ filter: { property: genre.id, op: "isAnyOf", value: genre.options![0].id } }, "takes a list");
+    refuse({ filter: { property: status.id, op: "inGroup", value: "Done" } }, "inGroup takes one of");
+    refuse({ filter: { property: "kind", op: "is", value: "essay" } }, "choose one of note");
+    refuse({ filter: { property: "title", op: "contains", value: 3 } }, "takes text");
+    refuse({ filter: { and: [], property: "x" } }, "holds only its list");
+    refuse({ filter: { property: "title", op: "isEmpty", extra: 1 } }, "not extra");
+    refuse({ groupBy: { property: page.database!.properties[2].id, dateBucket: "year" } }, "day, week or month");
+    refuse({ today: "11/04/2026" }, "YYYY-MM-DD");
+
+    // A page moved into the database takes cells in the same update.
+    const loose = mockCreatePage({ title: "Loose" });
+    mockUpdateNote({ id: loose.id, parentId: page.note.id, values: { [rating.id]: 3 } });
+    expect(mockReadPage(loose.id).values).toEqual({ [rating.id]: 3 });
+    // A deleted property's cell is not a row value.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "delete", propertyId: rating.id }] });
+    const rows = mockQueryDatabase({ databaseId: page.note.id, groupBy: { property: genre.id } });
+    expect(rows.rows.every(row => !(rating.id in row.values))).toBe(true);
+    expect(rows.groups!.flatMap(group => group.rows).every(row => !(rating.id in row.values))).toBe(true);
+  });
 });
+

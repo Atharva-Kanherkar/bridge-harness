@@ -259,8 +259,6 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }
 
-/** `notes/page_changed`: a page committed a change. A refetch hint; `actor`
- *  is `person`, `agent:<harness>:<session>`, `file-import` or `model:*`. */
 /** A database filter: the generated contract carries it as JSON. Refined here
  *  to the grammar the core's planner accepts (`notes/query.rs`). */
 export type DatabaseFilter =
@@ -268,6 +266,8 @@ export type DatabaseFilter =
   | { or: DatabaseFilter[] }
   | { property: string; op: string; value?: unknown };
 
+/** `notes/page_changed`: a page committed a change. A refetch hint; `actor`
+ *  is `person`, `agent:<harness>:<session>`, `file-import` or `model:*`. */
 export interface NotePageChangedPayload { pageId: string; actor: string; seq: number }
 /** `notes/pass_progress`: a Structure or Turn into tasks reply so far. */
 export interface NotePassProgressPayload { jobId: string; pageId: string; kind: string; text: string }
