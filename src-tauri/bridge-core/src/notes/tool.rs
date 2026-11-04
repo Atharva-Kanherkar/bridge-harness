@@ -789,5 +789,18 @@ mod tests {
         let found = run(&notes, Access::Write, actor, "notes_search", &json!({"where": {"and": twenty}, "state": "open", "tags": ["x"]})).unwrap();
         assert_eq!(found["total"], 0, "{found}");
     }
+
+    #[test]
+    fn search_normalizes_tags_whichever_path_it_takes() {
+        let (_dir, notes) = service();
+        notes.create(CreatePage { title: Some("Paper".into()), tags: vec!["research".into()], ..Default::default() }, crate::notes::service::PERSON).unwrap();
+        let actor = "agent:claude:chat-1";
+        let plain = run(&notes, Access::Write, actor, "notes_search", &json!({"tags": ["#Research"]})).unwrap();
+        assert_eq!(plain["pages"].as_array().unwrap().len(), 1);
+        let sorted = run(&notes, Access::Write, actor, "notes_search", &json!({"tags": ["#Research"], "sort": []})).unwrap();
+        assert_eq!(sorted["pages"].as_array().unwrap().len(), 1, "adding a sort does not change what tags mean: {sorted}");
+        let filtered = run(&notes, Access::Write, actor, "notes_search", &json!({"where": {"property": "tags", "op": "containsAny", "value": [" #RESEARCH "]}})).unwrap();
+        assert_eq!(filtered["pages"].as_array().unwrap().len(), 1, "{filtered}");
+    }
 }
 

@@ -346,5 +346,12 @@ describe("mock databases", () => {
     expect(rows.rows.every(row => !(rating.id in row.values))).toBe(true);
     expect(rows.groups!.flatMap(group => group.rows).every(row => !(rating.id in row.values))).toBe(true);
   });
+
+  it("normalizes tag values in a filter, as the core and the notes list do", () => {
+    const page = mockCreateDatabase({ title: "Tagged" });
+    mockCreatePage({ title: "Paper", parentId: page.note.id, tags: ["research"] });
+    const hits = mockQueryDatabase({ databaseId: page.note.id, filter: { property: "tags", op: "contains", value: " #Research" } });
+    expect(hits.rows.map(row => row.note.title)).toEqual(["Paper"]);
+  });
 });
 

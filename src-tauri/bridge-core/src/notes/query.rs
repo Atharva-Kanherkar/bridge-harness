@@ -479,10 +479,12 @@ fn compile_condition(scope: &Scope<'_>, sql: &mut Statement, condition: &serde_j
             System::Tags => match positive {
                 "isNotEmpty" => "pages.tags <> '[]'".to_owned(),
                 _ => {
-                    let tags = match positive {
+                    // Tags are stored trimmed, without `#`, folded; a value is
+                    // read the same way, as the notes list reads one.
+                    let tags = super::service::normalize_tags(&match positive {
                         "containsAny" => text_list(op, value, &name)?,
                         _ => vec![text_value(op, value, &name)?],
-                    };
+                    });
                     if tags.is_empty() {
                         "0".to_owned()
                     } else {

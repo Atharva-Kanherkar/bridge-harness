@@ -1124,7 +1124,13 @@ function matches(plan: Plan, row: MockPage, tree: unknown, depth = 0, count = { 
       case "kind": result = choice(note.kind); break;
       case "state": result = choice(note.state); break;
       case "project": result = choice(note.workspaceId); break;
-      case "tags": result = list(note.tags); break;
+      case "tags": {
+        // Tag values read as stored tags are kept: trimmed, without `#`, folded.
+        const tag = (raw: unknown) => String(raw).trim().replace(/^#+/, "").toLowerCase();
+        const wanted = Array.isArray(value) ? value.map(tag) : tag(value);
+        result = positive === "isNotEmpty" ? note.tags.length > 0 : positive === "contains" ? note.tags.includes(wanted as string) : (wanted as string[]).some(item => note.tags.includes(item));
+        break;
+      }
       case "chats": result = note.sessionIds.length > 0; break;
       case "parent": result = positive === "isNotEmpty" ? note.parentId != null : note.parentId === value; break;
       default: result = date(dayOf(property === "created" ? note.createdAt : note.updatedAt));
