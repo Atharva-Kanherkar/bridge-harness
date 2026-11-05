@@ -200,6 +200,14 @@ describe("filterChats", () => {
     expect(filterChats([...chats, inProject], { query: "agentclash" })).toEqual([]);
   });
 
+  it("matches the detail only a longer rung of the title ladder carries", () => {
+    const laddered = chat("l", {
+      title: "SQLite WAL growth",
+      titleLadder: ["WAL", "SQLite WAL growth", "Why the SQLite WAL keeps growing in bridged"],
+    });
+    expect(filterChats([...chats, laddered], { query: "bridged" }).map(item => item.id)).toEqual(["l"]);
+  });
+
   it("treats a blank query as no query", () => {
     expect(filterChats(chats, { query: "   " })).toHaveLength(3);
     expect(filterChats(chats)).toHaveLength(3);
