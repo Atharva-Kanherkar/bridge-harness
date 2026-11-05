@@ -4,6 +4,7 @@ import {  Archive, Check, Clock, Bot,
  Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
+import { FittedTitle } from "./FittedTitle";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
@@ -91,7 +92,9 @@ function ChatRow({
   liveAgents?: number;
 }) {
   const name = chatName(chat);
-  const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
+  // The hover names the chat in full: the ladder's longest rung, whatever width shows.
+  const full = chat.titleLadder?.at(-1) ?? name;
+  const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
   const status = rowStatus(chat.status, liveAgents);
   return (
     <span className={cn(
@@ -115,7 +118,11 @@ function ChatRow({
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-        <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        <FittedTitle
+          title={name}
+          ladder={chat.title ? chat.titleLadder : undefined}
+          className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}
+        />
         {/* The fork origin is extra context, not a replacement for the status
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}

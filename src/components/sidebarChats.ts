@@ -249,7 +249,9 @@ export function filterChats(
     if (agent !== "all" && chat.harness !== agent) return false;
     if (!needle) return true;
     const project = workspaceTitle?.(chat.workspaceId) ?? "";
-    const haystack = `${chatName(chat)} ${chat.label} ${harnessLabel(chat.harness)} ${chat.model ?? ""} ${project}`.toLowerCase();
+    // The ladder's longer rungs carry detail the title drops, so they are searched too.
+    const ladder = chat.titleLadder?.join(" ") ?? "";
+    const haystack = `${chatName(chat)} ${ladder} ${chat.label} ${harnessLabel(chat.harness)} ${chat.model ?? ""} ${project}`.toLowerCase();
     return haystack.includes(needle);
   });
 }
