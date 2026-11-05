@@ -523,6 +523,10 @@ pub struct Session {
     /// The extra Claude or Codex account this chat signs in with
     /// (`provider_accounts`); `None` is the user's own login.
     pub account: Option<String>,
+    /// `title` at several lengths, shortest first (`title_jobs`). Only served
+    /// while it still belongs to the stored title.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub title_ladder: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

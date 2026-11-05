@@ -1067,6 +1067,7 @@ fn populated_session() -> model::Session {
         fork_parent_session_id: Some("s-0".into()),
         fork_parent_entry_id: Some("e-9".into()),
         account: Some("personal".into()),
+        title_ladder: vec!["Tests".into(), "Fix tests".into(), "Fix the flaky auth tests".into()],
     }
 }
 

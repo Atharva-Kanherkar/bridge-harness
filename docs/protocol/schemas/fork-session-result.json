@@ -561,6 +561,13 @@
             "null"
           ]
         },
+        "titleLadder": {
+          "description": "`title` at several lengths, shortest first, all naming the same task, so a list can show the longest one that fits. Empty when the chat has none, or its title changed since they were written.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "usagePercent": {
           "anyOf": [
             {
