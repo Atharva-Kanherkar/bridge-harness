@@ -282,6 +282,38 @@ describe("mock databases", () => {
     expect(() => mockUpdateSchema({ id: page.note.id, changes: [{ op: "reorder", propertyIds: [rating.id] }] })).toThrow("every property once");
   });
 
+  it("keeps saved views queryable through schema edits, as the core prunes them", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }, { name: "Tech" }] }] });
+    const [rating, genre] = page.database!.properties;
+    const [fiction, tech] = genre.options!;
+    const view = mockSaveView({ databaseId: page.note.id, view: {
+      name: "Picked", type: "board",
+      filter: { and: [{ property: genre.id, op: "is", value: fiction.id }, { property: genre.id, op: "isAnyOf", value: [fiction.id, tech.id] }, { property: rating.id, op: "gte", value: 3 }] },
+      sorts: [{ property: rating.id, direction: "desc" }, { property: "title", direction: "asc" }],
+      groupBy: { property: genre.id },
+      properties: [{ id: rating.id, visible: true }, { id: genre.id, visible: true }],
+    } });
+    const query = () => mockQueryDatabase({ databaseId: page.note.id, viewId: view.id });
+    const saved = () => mockReadPage(page.note.id).database!.views.find(candidate => candidate.id === view.id)!;
+
+    // Removing an option drops the condition that named it alone and keeps the survivor of a list.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "setOptions", propertyId: genre.id, options: [{ id: tech.id, name: "Tech" }] }] });
+    expect(query).not.toThrow();
+    expect(saved().filter).toEqual({ and: [{ property: genre.id, op: "isAnyOf", value: [tech.id] }, { property: rating.id, op: "gte", value: 3 }] });
+
+    // Deleting a property drops its condition, sort and column.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "delete", propertyId: rating.id }] });
+    expect(query).not.toThrow();
+    expect(saved().filter).toEqual({ and: [{ property: genre.id, op: "isAnyOf", value: [tech.id] }] });
+    expect((saved().sorts ?? []).map(sort => sort.property)).toEqual(["title"]);
+    expect((saved().properties ?? []).map(column => column.id)).toEqual([genre.id]);
+
+    // Retyping to text: a list op and a grouping the type cannot take go.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "retype", propertyId: genre.id, type: "text" }] });
+    expect(query).not.toThrow();
+    expect([saved().filter ?? null, saved().groupBy ?? null]).toEqual([null, null]);
+  });
+
   it("saves and deletes views, keeping one, and refuses a view that would not run", () => {
     const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }] });
     const [rating] = page.database!.properties;

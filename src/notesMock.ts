@@ -886,6 +886,8 @@ export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
     }
   }
   page.database!.properties = properties;
+  // Every saved view follows the new schema in this same write, as the core's.
+  for (const [id, view] of Object.entries(page.database!.views)) page.database!.views[id] = pruneView(page, view);
   commit(page, page.history[page.history.length - 1], PERSON);
   // Values follow the schema: a dropped option leaves its rows, and a retype
   // converts what it can and clears the rest.
@@ -902,6 +904,53 @@ export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
     }
   }
   return databaseOf(page);
+}
+
+/** A view with every part the database's schema cannot run taken out, as the
+ *  core's `prune_view`: a condition naming a removed property or option, or
+ *  an op the property's type no longer takes, goes; a list keeps the items
+ *  that still run; a group that empties goes. */
+function pruneView(page: MockPage, view: NoteDatabaseView): NoteDatabaseView {
+  const properties = page.database!.properties;
+  const plan = { database: page, today: new Date().toISOString().slice(0, 10) };
+  const runs = (filter: unknown, sorts: NoteSort[] = [], groupBy: NoteDatabaseView["groupBy"] = null) => {
+    try {
+      checkQuery(plan, filter ?? { and: [] }, sorts, groupBy ?? null);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const prune = (filter: unknown): unknown => {
+    if (!filter || typeof filter !== "object" || Array.isArray(filter)) return undefined;
+    const node = filter as Record<string, unknown>;
+    for (const key of ["and", "or"]) {
+      const items = node[key];
+      if (Array.isArray(items)) {
+        if (!items.length) return filter;
+        const kept = items.map(prune).filter(item => item !== undefined);
+        return kept.length ? { [key]: kept } : undefined;
+      }
+    }
+    if (runs(filter)) return filter;
+    if (!Array.isArray(node.value)) return undefined;
+    const kept = node.value.filter(item => runs({ ...node, value: [item] }));
+    const narrowed = { ...node, value: kept };
+    return kept.length && runs(narrowed) ? narrowed : undefined;
+  };
+  const known = (id: string) => id in properties || SYSTEM_PROPERTIES.includes(id);
+  const filter = view.filter == null ? undefined : prune(view.filter);
+  const groupBy = view.groupBy && runs(undefined, [], view.groupBy) ? view.groupBy : undefined;
+  const dateProperty = view.dateProperty && (properties[view.dateProperty]?.type === "date" || ["created", "updated"].includes(view.dateProperty)) ? view.dateProperty : undefined;
+  const { filter: _filter, groupBy: _groupBy, dateProperty: _dateProperty, ...rest } = view;
+  return {
+    ...rest,
+    ...(filter === undefined ? {} : { filter }),
+    sorts: (view.sorts ?? []).filter(sort => runs(undefined, [sort])),
+    ...(groupBy ? { groupBy } : {}),
+    ...(dateProperty ? { dateProperty } : {}),
+    properties: (view.properties ?? []).filter(column => known(column.id)),
+  };
 }
 
 /** A same-type retype, as the core's: a valid cell stays, and one a part-run
