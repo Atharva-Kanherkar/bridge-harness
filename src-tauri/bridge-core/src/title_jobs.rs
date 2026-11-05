@@ -445,13 +445,16 @@ pub const INSTRUCTIONS: &str = "You name chats for a sidebar list. Each request 
 
 For every conversation, write a title of two to five words that names its task or topic, so the person can find that chat again in a list of forty.
 
-Then write the title's ladder: the same title at five lengths, shortest first, so a sidebar can show the longest one that fits its width.
-1. One or two words: the bare subject.
-2. Two or three words.
-3. Three to five words. It may be the title itself.
-4. Five to seven words.
-5. Seven to ten words: the most specific, with a detail the excerpts give, such as the file, the symptom or the goal.
+Then write the title's ladder: the same title at five lengths, shortest first, so a sidebar can show the longest one that fits its width. The sidebar shows from about 15 to about 55 characters, so the ladder has to reach both ends.
+1. One or two words, at most 15 characters: the bare subject.
+2. Two or three words, about 20 characters.
+3. Three to five words, about 30 characters. It may be the title itself.
+4. Five to seven words, about 40 characters.
+5. Seven to ten words, 45 to 60 characters: the most specific, with details the excerpts give, such as the file, the symptom, the cause or the goal. Reach that length only with what the excerpts say; never pad with words that add nothing (\"application\", \"environment\", \"for improvements\") or invent a detail.
 Every rung names the same task as the title. A longer rung adds detail and a shorter one drops it; none changes the subject, and each is a title, not a sentence.
+
+For example, a chat about moving a docs site from Docusaurus to Astro without breaking old links:
+\"Docs migration\", \"Docs site migration\", \"Docusaurus to Astro migration\", \"Move the docs site from Docusaurus to Astro\", \"Move the docs site from Docusaurus to Astro and keep old links\"
 
 A conversation that has a current_title is already named. Keep that title exactly, and write its ladder around it.
 
