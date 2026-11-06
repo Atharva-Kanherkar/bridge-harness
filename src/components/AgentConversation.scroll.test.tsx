@@ -148,6 +148,41 @@ describe("AgentConversation scroll placement", () => {
     expect(el.scrollTop).toBe(0);
   });
 
+  const jumpButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Jump to latest message"]');
+
+  // Scrolling back down by hand through a long chat was the only way back.
+  it("offers a jump to the latest message once the reader scrolls away", async () => {
+    const session = chat("jump");
+    const entries = history("jump", 40);
+    const el = await show({ session, forestEntries: entries, activeLeafId: entries[entries.length - 1].id }, 40);
+    expect(jumpButton()).toBeNull();
+
+    await scrollTo(el, 0);
+    expect(jumpButton()).not.toBeNull();
+
+    // Back at the bottom by hand: nothing left to jump to.
+    await scrollTo(el, bottom());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+    expect(jumpButton()).toBeNull();
+  });
+
+  it("jumps instantly to the latest message and resumes following", async () => {
+    const session = chat("resume");
+    const entries = history("resume", 20);
+    const el = await show({ session, forestEntries: entries, activeLeafId: entries[entries.length - 1].id }, 20);
+    await scrollTo(el, 0);
+
+    scrolls = [];
+    await act(async () => { jumpButton()!.click(); });
+    expect(el.scrollTop).toBe(bottom());
+    expect(scrolls.at(-1)?.behavior).toBe("instant");
+
+    // Pinned again: the next reply carries the reader down with it.
+    const longer = history("resume", 60);
+    await show({ session, forestEntries: longer, activeLeafId: longer[longer.length - 1].id }, 60);
+    expect(el.scrollTop).toBe(bottom());
+  });
+
   it("restores the last-read position when a chat is reopened", async () => {
     const first = chat("first");
     const firstEntries = history("first", 40);
