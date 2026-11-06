@@ -63,6 +63,24 @@ export function windowOf(count: number, scrollTop: number, height: number): [num
   return [start, Math.max(start, end)];
 }
 
+/** What to draw: rows by index, with a spacer for every run left out. */
+export function drawnRows(count: number, start: number, end: number, pinned: number | null): ({ gap: true; from: number; to: number } | { gap: false; index: number })[] {
+  const indices = Array.from({ length: end - start }, (_, offset) => start + offset);
+  if (pinned !== null && pinned >= 0 && pinned < count && (pinned < start || pinned >= end)) {
+    indices.push(pinned);
+    indices.sort((a, b) => a - b);
+  }
+  const parts: ({ gap: true; from: number; to: number } | { gap: false; index: number })[] = [];
+  let next = 0;
+  for (const index of indices) {
+    if (index > next) parts.push({ gap: true, from: next, to: index });
+    parts.push({ gap: false, index });
+    next = index + 1;
+  }
+  if (next < count) parts.push({ gap: true, from: next, to: count });
+  return parts;
+}
+
 export function DatabaseTable({ database, view, rows, host, actions, onCommit, onNewRow, onOpenRow, bounded = false }: DatabaseTableProps) {
   const columns = useMemo(() => columnsOf(database, view), [database, view]);
   const visible = useMemo(() => columns.filter(column => column.visible), [columns]);
@@ -107,6 +125,10 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
 
 
   const [start, end] = windowOf(rows.length, scrollTop, height);
+  // The window, plus the row being edited wherever it is, so scrolling or a
+  // reorder never unmounts an open editor and its draft. Spacers keep every
+  // drawn row at its own height.
+  const drawn = useMemo(() => drawnRows(rows.length, start, end, editing && selected ? selected.row : null), [rows.length, start, end, editing, selected]);
   const totalWidth = visible.reduce((sum, column) => sum + widthOf(column), 0) + ADD_WIDTH;
 
   /** Bring a row into the scrolled window. */
@@ -245,9 +267,10 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
             <AddProperty hidden={showable} onAdd={(name, type) => { setAdding(false); actions.addProperty(name, type); }} onShow={column => { setAdding(false); actions.show(column); }} />
           </AddColumn>
         </div>
-        {start > 0 && <div aria-hidden="true" style={{ height: start * ROW_HEIGHT }} />}
-        {rows.slice(start, end).map((row, offset) => {
-          const index = start + offset;
+        {drawn.map(part => {
+          if (part.gap) return <div key={`gap-${part.from}`} aria-hidden="true" style={{ height: (part.to - part.from) * ROW_HEIGHT }} />;
+          const index = part.index;
+          const row = rows[index];
           return <div key={row.note.id} role="row" aria-rowindex={index + 2} className="group flex h-9 border-b border-border last:border-b-0">
             {visible.map((column, col) => {
               const isSelected = selected?.row === index && selected.col === col;
@@ -283,7 +306,6 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
             })}
           </div>;
         })}
-        {end < rows.length && <div aria-hidden="true" style={{ height: (rows.length - end) * ROW_HEIGHT }} />}
         {!rows.length && <p className="m-0 px-3 py-6 text-[13px] text-muted-foreground">No rows yet</p>}
       </div>
     </div>

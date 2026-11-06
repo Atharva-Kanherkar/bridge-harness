@@ -357,5 +357,30 @@ describe("DatabaseTable", () => {
     rerender({ view: { id: "v", name: "Table", type: "table", order: 0, properties: [{ id: "a", visible: false }, { id: "b", visible: false }] } });
     expect(selected()).toBeNull();
   });
+
+  it.each(["scroll", "reorder"])("keeps an open editor and its draft when its row leaves the window by %s", mode => {
+    const database: NoteDatabase = { id: "db", scope: "children", views: [], properties: [{ id: "t", name: "Text", type: "text", order: 0 }] };
+    const many = Array.from({ length: 1000 }, (_, index) => row(index, { t: `value ${index}` }));
+    const { props, rerender } = mount({ database, view: undefined, rows: many });
+    act(() => grid().focus());
+    click(cell(0, 1));
+    press("Enter");
+    type(input("Text"), "unsaved change");
+    const box = input("Text");
+    const scroller = grid().parentElement!;
+    const scrollTo = (top: number) => act(() => { scroller.scrollTop = top; scroller.dispatchEvent(new Event("scroll")); });
+    if (mode === "reorder") rerender({ rows: [...many.slice(1), many[0]] });
+    else scrollTo(999 * ROW_HEIGHT);
+    expect(input("Text")).toBe(box);
+    expect(box.value).toBe("unsaved change");
+    // Drawn at its own place: the full height still adds up.
+    const heights = [...grid().children].slice(1).reduce((sum, child) => sum + ((child as HTMLElement).style.height ? parseFloat((child as HTMLElement).style.height) : ROW_HEIGHT), 0);
+    expect(heights).toBe(1000 * ROW_HEIGHT);
+    scrollTo(mode === "reorder" ? 999 * ROW_HEIGHT : 0);
+    expect(input("Text")).toBe(box);
+    expect(props.onCommit).not.toHaveBeenCalled();
+    act(() => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(props.onCommit).toHaveBeenCalledWith(many[0], expect.objectContaining({ id: "t" }), "unsaved change");
+  });
 });
 
