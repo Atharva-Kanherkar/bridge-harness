@@ -52,7 +52,8 @@ export const typeIcon = (type: string, size = 13) => {
 };
 
 const EDITABLE_BY_TYPING = new Set(["title", "text", "number", "url"]);
-const READ_ONLY = new Set(["created", "updated", "chats"]);
+// No editor at all. Chats is read-only too, but opens its links.
+const READ_ONLY = new Set(["created", "updated"]);
 
 /** The rows to draw for a scroll position: the visible ones plus `OVERSCAN`
  *  on each side. */

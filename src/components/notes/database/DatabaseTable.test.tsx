@@ -309,5 +309,29 @@ describe("DatabaseTable", () => {
     expect(input("Title")).not.toBeNull();
     expect(document.activeElement).toBe(input("Title"));
   });
+
+  it("opens a Chats cell's links, which open their chats", () => {
+    const onOpenChat = vi.fn();
+    const linked = { note: { ...note("r0", "DDIA"), sessionIds: ["s1"] }, values: {} };
+    mount({
+      view: { ...VIEW, properties: [{ id: "chats", visible: true }] },
+      rows: [linked],
+      host: { ...cellHost, chatTitle: id => (id === "s1" ? "Research chat" : undefined), onOpenChat },
+    });
+    const chats = [...document.querySelectorAll("[role=columnheader]")].findIndex(header => header.getAttribute("aria-label") === "Chats");
+    expect(cell(0, chats).textContent).toBe("1 chat");
+    act(() => grid().focus());
+    click(cell(0, chats));
+    press("Enter");
+    const link = [...document.querySelectorAll<HTMLButtonElement>("[role=dialog] button")].find(button => button.textContent === "Research chat");
+    expect(link).toBeDefined();
+    click(link!);
+    expect(onOpenChat).toHaveBeenCalledWith("s1");
+    // A click on the selected cell opens them too; the value stays read-only.
+    act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    click(cell(0, chats));
+    expect([...document.querySelectorAll("[role=dialog] button")].some(button => button.textContent === "Research chat")).toBe(true);
+    expect(document.querySelector("[role=gridcell] input")).toBeNull();
+  });
 });
 
