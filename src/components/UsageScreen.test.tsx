@@ -237,13 +237,14 @@ describe("UsageScreen", () => {
     expect(summarySpy).toHaveBeenCalledTimes(2);
   });
 
-  it("marks the displayed number partial while history is still loading", async () => {
+  it("hides figures while history is still loading", async () => {
     const pending = deferred<ScanHistoryResult>();
     scanSpy.mockReturnValueOnce(pending.promise);
     await mount();
-    expect(text()).toContain("Partial total");
     expect(text()).toContain("Loading history");
-    expect(text()).toContain("$4.50");
+    expect(text()).toContain("Numbers appear only when loading finishes");
+    expect(text()).not.toContain("Partial total");
+    expect(text()).not.toContain("$4.50");
     await act(async () => { pending.resolve(batch("complete", 5, "end")); });
   });
 
@@ -293,15 +294,17 @@ describe("UsageScreen", () => {
     expect(text()).toContain("Partial total");
   });
 
-  it("keeps the subtotal partial until the post-import summary arrives", async () => {
+  it("hides the subtotal until the post-import summary arrives", async () => {
     const pending = deferred<UsageSummaryResult>();
     summarySpy.mockImplementationOnce(async params => summaryFor(params)).mockReturnValueOnce(pending.promise);
     vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, coverageState: "complete" }]);
     await mount();
-    expect(text()).toContain("$4.50");
-    expect(text()).toContain("Partial total");
+    expect(text()).toContain("Updating usage");
+    expect(text()).not.toContain("$4.50");
+    expect(text()).not.toContain("Partial total");
     await act(async () => { pending.resolve(summaryFor(summarySpy.mock.calls[1][0])); });
     expect(text()).not.toContain("Partial total");
+    expect(text()).toContain("$4.50");
   });
 
   it("does not leave an old subtotal visible when the post-import summary fails", async () => {
