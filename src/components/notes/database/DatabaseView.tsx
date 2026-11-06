@@ -116,11 +116,16 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     let alive = true;
     let stop: (() => void) | undefined;
     let burst: ReturnType<typeof setTimeout> | undefined;
+    // Whether any event in the burst named the database, not just the last:
+    // a retype writes the database, then each row it converts.
+    let schemaChanged = false;
     void bridgeApi.onNotesPageChanged(payload => {
       if (payload.pageId === hostPageId) return;
+      if (payload.pageId === databaseId) schemaChanged = true;
       clearTimeout(burst);
       burst = setTimeout(() => {
-        if (payload.pageId === databaseId && !given) void readDatabase();
+        if (schemaChanged && !given) void readDatabase();
+        schemaChanged = false;
         void query();
       }, COALESCE_MS);
     }).then(unlisten => { if (alive) stop = unlisten; else unlisten(); });

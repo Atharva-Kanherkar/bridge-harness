@@ -186,5 +186,20 @@ describe("DatabaseView", () => {
     expect(box()?.value).toBe("9");
     expect(box()!.closest("[role=row]")!.getAttribute("aria-rowindex")).toBe(String(150 + 2));
   });
+
+  it("re-reads the schema when a burst names the database before its rows", async () => {
+    const { id, rating } = books();
+    const row = mockCreatePage({ title: "DDIA", parentId: id });
+    mockUpdateNote({ id: row.id, values: { [rating]: 4 } });
+    await mount({ databaseId: id });
+    expect(ratingCell(0).textContent).toBe("4");
+    // The retype writes the database, then each converted row: one burst
+    // whose last event names a row.
+    mockUpdateSchema({ id, changes: [{ op: "retype", propertyId: rating, type: "text" }] });
+    await settle();
+    expect(mockReadPage(row.id).values).toEqual({ [rating]: "4" });
+    expect(ratingCell(0).textContent).toBe("4");
+    expect(document.querySelector("[role=columnheader][aria-label='Rating'] svg.lucide-text")).not.toBeNull();
+  });
 });
 
