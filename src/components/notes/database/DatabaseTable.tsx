@@ -140,6 +140,9 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    // Only the grid's own focus navigates: a header button, a cell's Open
+    // button or an editor keeps its keys.
+    if (event.target !== event.currentTarget) return;
     if (editing || !rows.length || !visible.length) return;
     const at = selected ?? { row: 0, col: 0 };
     const lastRow = rows.length - 1;

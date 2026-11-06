@@ -283,5 +283,20 @@ describe("DatabaseTable", () => {
     click(input("Note"));
     expect(input("Note")).not.toBeNull();
   });
+
+  it("leaves a header button's keys to the button", () => {
+    const { props } = mount();
+    act(() => grid().focus());
+    click(cell(0, 3));
+    const header = document.querySelector("[role=columnheader][aria-label='Rating'] button") as HTMLButtonElement;
+    act(() => header.focus());
+    const keyOn = (target: Element, key: string) => act(() => { target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+    keyOn(header, " ");
+    keyOn(header, "Enter");
+    keyOn(header, "ArrowDown");
+    expect(props.onCommit).not.toHaveBeenCalled();
+    expect(document.querySelector("[role=gridcell] input")).toBeNull();
+    expect(selected()).toEqual([0, 3]);
+  });
 });
 
