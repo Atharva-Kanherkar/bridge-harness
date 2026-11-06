@@ -109,8 +109,10 @@ saved view CRUD belong to #890.
   active view.
 - Loading: the first query asks for 100 rows. While `nextCursor` is set, later pages of 500 are
   fetched in the background and appended, so the first paint never waits for the whole table.
-- Re-query: after each write, and on every `notes/page_changed` (coalesced to one read per 30 ms).
-  A newer query always replaces an older one, and an older answer never lands after a newer one.
+- Re-query: after each write, and on every `notes/page_changed` (coalesced to one read per 30 ms),
+  except for the page that holds an embed (`hostPageId`): its own saves change no row, so typing
+  around an embedded table reads nothing. A newer query always replaces an older one, and an older
+  answer never lands after a newer one.
 - Optimistic cells: a committed value shows at once and stays until the next query answers.
   A refused write puts the cell back and reports the error through `onError`.
 - View tabs: one per `database.views`, in order, each with its type's icon. Only `table` views
@@ -195,6 +197,7 @@ saved view CRUD belong to #890.
   - `shows a committed value at once and puts it back when the write is refused`
   - `re-queries on page_changed, and an older answer never replaces a newer one`
   - `shows a later-update notice for a non-table view`
+  - `an embed ignores its host page's own saves`
 - `NotePageView` via `NotesScreen.test.tsx`:
   - `a database page shows its table above a collapsed description`
   - `a row page lists its properties and an edit there updates the table`
