@@ -16,6 +16,7 @@ import type { DatabaseRow, NoteDatabase, NoteDatabaseView, NoteProperty, NoteSch
 import { DatabaseTable, type TableActions } from "./DatabaseTable";
 import type { CellHost } from "./PropertyCell";
 import { columnsOf, viewInputOf, withColumn, type Column } from "./formatValue";
+import { saveOptions } from "./schemaWrites";
 
 export const FIRST_PAGE = 100;
 export const LATER_PAGE = 500;
@@ -190,14 +191,14 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const actions: TableActions = useMemo(() => ({
     rename: (property, name) => void change([{ op: "rename", propertyId: property.id, name }]),
     retype: (property, type) => void change([{ op: "retype", propertyId: property.id, type }]),
-    setOptions: (property, options) => void change([{ op: "setOptions", propertyId: property.id, options }]),
+    setOptions: (property, options, seen) => void saveOptions(databaseId, property.id, options, seen).then(next => { setDatabase(next); void query(); }, fail),
     remove: property => void change([{ op: "delete", propertyId: property.id }]),
     addProperty: (name, type) => void change([{ op: "add", property: { name, type, ...(type === "status" ? { options: [{ name: "To do", group: "todo" }, { name: "In progress", group: "inProgress" }, { name: "Done", group: "done" }] } : {}) } }]),
     sort: (column, direction) => void saveView({ sorts: [{ property: column.id, direction }] }),
     hide: column => void saveView({ properties: withColumn(columns, column.id, { visible: false }) }),
     show: column => void saveView({ properties: withColumn(columns, column.id, { visible: true }) }),
     resize: (column, width) => void saveView({ properties: withColumn(columns, column.id, { width }) }),
-  }), [change, saveView, columns]);
+  }), [databaseId, change, saveView, columns, query, fail]);
 
   const newRow = useCallback(async () => {
     try {

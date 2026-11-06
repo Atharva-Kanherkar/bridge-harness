@@ -15,7 +15,8 @@ import { OPTION_TYPES, PROPERTY_TYPES, STATUS_GROUPS, TYPE_LABELS, retypeNote, t
 export interface ColumnActions {
   rename: (property: NoteProperty, name: string) => void;
   retype: (property: NoteProperty, type: string) => void;
-  setOptions: (property: NoteProperty, options: NoteOptionInput[]) => void;
+  /** `seen`: the option ids the editor opened with, so options added since are kept. */
+  setOptions: (property: NoteProperty, options: NoteOptionInput[], seen: string[]) => void;
   sort: (column: Column, direction: "asc" | "desc") => void;
   hide: (column: Column) => void;
   remove: (property: NoteProperty) => void;
@@ -58,7 +59,7 @@ export function ColumnMenu({ column, rowsWithValue, actions, onClose }: { column
     </div>;
   }
   if (page === "options" && property) {
-    return <OptionsEditor property={property} onBack={() => setPage("main")} onSave={options => done(() => actions.setOptions(property, options))} />;
+    return <OptionsEditor property={property} onBack={() => setPage("main")} onSave={(options, seen) => done(() => actions.setOptions(property, options, seen))} />;
   }
   if (page === "delete" && property) {
     return <div role="alertdialog" aria-label={`Delete ${property.name}`} className="p-1.5">
@@ -108,9 +109,10 @@ interface Draft { key: string; id?: string; name: string; group?: string | null;
 /** Every option of a select, multi-select or status, edited as one list:
  *  saved whole, in its order. A new option carries no id; a missing one is
  *  deleted, and its values cleared, by the core. */
-export function OptionsEditor({ property, onSave, onBack }: { property: NoteProperty; onSave: (options: NoteOptionInput[]) => void; onBack: () => void }) {
+export function OptionsEditor({ property, onSave, onBack }: { property: NoteProperty; onSave: (options: NoteOptionInput[], seen: string[]) => void; onBack: () => void }) {
   const status = property.type === "status";
   const counter = useRef(0);
+  const [seen] = useState(() => (property.options ?? []).map(option => option.id));
   const [drafts, setDrafts] = useState<Draft[]>(() => (property.options ?? []).map(option => ({ key: option.id, id: option.id, name: option.name, group: option.group, color: option.color })));
   const [adding, setAdding] = useState("");
   const patch = (key: string, change: Partial<Draft>) => setDrafts(current => current.map(draft => draft.key === key ? { ...draft, ...change } : draft));
@@ -130,7 +132,7 @@ export function OptionsEditor({ property, onSave, onBack }: { property: NoteProp
   const problem = names.some(name => !name) ? "Every option needs a name." : new Set(names).size !== names.length ? "Two options have the same name." : null;
   const save = () => {
     if (problem) return;
-    onSave(drafts.map(draft => ({ ...(draft.id ? { id: draft.id } : {}), name: draft.name.trim(), ...(draft.color ? { color: draft.color } : {}), ...(status ? { group: draft.group ?? "todo" } : {}) })));
+    onSave(drafts.map(draft => ({ ...(draft.id ? { id: draft.id } : {}), name: draft.name.trim(), ...(draft.color ? { color: draft.color } : {}), ...(status ? { group: draft.group ?? "todo" } : {}) })), seen);
   };
   return <div aria-label={`${property.name} options`}>
     <Back onClick={onBack}>Options</Back>

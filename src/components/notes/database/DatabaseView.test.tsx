@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../../api";
-import { mockCreateDatabase, mockCreatePage, mockSaveView, mockUpdateNote, resetMockNotes } from "../../../notesMock";
+import { mockCreateDatabase, mockCreatePage, mockReadPage, mockSaveView, mockUpdateNote, mockUpdateSchema, resetMockNotes } from "../../../notesMock";
 import type { DatabaseQueryResult } from "../../../types";
 import { DatabaseView, FIRST_PAGE, LATER_PAGE, type DatabaseViewProps } from "./DatabaseView";
 
@@ -138,5 +138,23 @@ describe("DatabaseView", () => {
     mockCreatePage({ title: "A row", parentId: id });
     await settle();
     expect(query).toHaveBeenCalled();
+  });
+
+  it("keeps an option someone else added while the options editor was open", async () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Genre", type: "select", options: [{ name: "Fiction" }] }] });
+    const genre = made.database!.properties[0];
+    const other = mockCreatePage({ title: "Other", parentId: made.note.id });
+    await mount({ databaseId: made.note.id });
+    act(() => (document.querySelector("[role=columnheader][aria-label='Genre'] button") as HTMLElement).click());
+    act(() => [...document.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find(item => item.textContent === "Edit options")!.click());
+    // Another writer adds Tech and uses it while the editor is open.
+    const stored = mockUpdateSchema({ id: made.note.id, changes: [{ op: "setOptions", propertyId: genre.id, options: [{ id: genre.options![0].id, name: "Fiction" }, { name: "Tech" }] }] });
+    const tech = stored.properties[0].options!.find(option => option.name === "Tech")!.id;
+    mockUpdateNote({ id: other.id, values: { [genre.id]: tech } });
+    await settle();
+    await act(async () => { [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Save options")!.click(); });
+    await settle();
+    expect(mockReadPage(made.note.id).database!.properties[0].options!.map(option => option.name)).toEqual(["Fiction", "Tech"]);
+    expect(mockReadPage(other.id).values).toEqual({ [genre.id]: tech });
   });
 });

@@ -194,7 +194,7 @@ describe("DatabaseTable", () => {
     act(() => { input("New option").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
     click(document.querySelector("button[aria-label='Move History up']")!);
     click(menuItem("Save options"));
-    expect(props.actions.setOptions).toHaveBeenCalledWith(genre, [{ name: "History" }, { id: "o-fic", name: "Novels" }]);
+    expect(props.actions.setOptions).toHaveBeenCalledWith(genre, [{ name: "History" }, { id: "o-fic", name: "Novels" }], ["o-fic", "o-tech"]);
 
     openMenu("Rating");
     click(menuItem("Delete property"));
