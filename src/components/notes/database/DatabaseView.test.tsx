@@ -201,5 +201,33 @@ describe("DatabaseView", () => {
     expect(ratingCell(0).textContent).toBe("4");
     expect(document.querySelector("[role=columnheader][aria-label='Rating'] svg.lucide-text")).not.toBeNull();
   });
+
+  it("composes overlapping view edits and keeps them in order", async () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select" }] });
+    await mount({ databaseId: made.note.id });
+    const real = bridgeApi.saveDatabaseView.bind(bridgeApi);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let first = true;
+    vi.spyOn(bridgeApi, "saveDatabaseView").mockImplementation(async params => {
+      if (first) { first = false; await gate; }
+      return real(params);
+    });
+    const hide = (name: string) => {
+      act(() => (document.querySelector(`[role=columnheader][aria-label='${name}'] button`) as HTMLElement).click());
+      act(() => [...document.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find(item => item.textContent === "Hide")!.click());
+    };
+    hide("Rating");
+    // Hidden at once, before the save answers; the next edit builds on it.
+    expect(document.querySelector("[role=columnheader][aria-label='Rating']")).toBeNull();
+    hide("Genre");
+    expect(document.querySelector("[role=columnheader][aria-label='Genre']")).toBeNull();
+    await act(async () => { release(); });
+    await settle();
+    const stored = mockReadPage(made.note.id).database!.views[0].properties!;
+    const visible = Object.fromEntries(stored.map(entry => [entry.id, entry.visible]));
+    expect(visible).toEqual({ title: true, [made.database!.properties[0].id]: false, [made.database!.properties[1].id]: false });
+    expect([...document.querySelectorAll("[role=columnheader]")].map(header => header.getAttribute("aria-label"))).toEqual(["Title"]);
+  });
 });
 

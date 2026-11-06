@@ -43,6 +43,7 @@ export interface DatabaseViewProps {
 interface Pending { row: string; key: string; value: unknown; after: number }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const withView = (database: NoteDatabase, view: NoteDatabaseView): NoteDatabase => ({ ...database, views: database.views.map(candidate => candidate.id === view.id ? view : candidate) });
 
 export function DatabaseView({ databaseId, database: given, viewId, bounded = false, hostPageId, workspaces, chatTitle, onOpenChat, onOpenPage, onError }: DatabaseViewProps) {
   const [database, setDatabase] = useState<NoteDatabase | null>(given ?? null);
@@ -58,12 +59,14 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   latest.current = { onError };
   const fail = useCallback((error: unknown) => latest.current.onError(message(error)), []);
 
-  useEffect(() => { if (given) setDatabase(given); }, [given]);
+  /** The newest view edit not yet saved, kept over any read that lands first. */
+  const viewDraft = useRef<NoteDatabaseView | null>(null);
+  useEffect(() => { if (given) setDatabase(viewDraft.current ? withView(given, viewDraft.current) : given); }, [given]);
 
   const readDatabase = useCallback(async () => {
     try {
       const page = await bridgeApi.readNotePage(databaseId);
-      if (page.database) setDatabase(page.database);
+      if (page.database) setDatabase(viewDraft.current ? withView(page.database, viewDraft.current) : page.database);
     } catch (error) { fail(error); }
   }, [databaseId, fail]);
   useEffect(() => { if (!given) void readDatabase(); }, [given, readDatabase]);
@@ -182,15 +185,37 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     } catch (error) { fail(error); return null; }
   }, [databaseId, query, fail]);
 
-  const columns = useMemo(() => database ? columnsOf(database, view) : [], [database, view]);
-  const saveView = useCallback(async (patch: Partial<NoteViewInput>) => {
-    if (!view) return;
-    try {
-      const saved = await bridgeApi.saveDatabaseView({ databaseId, view: { ...viewInputOf(view), ...patch } });
-      setDatabase(current => current && { ...current, views: current.views.map(candidate => candidate.id === saved.id ? saved : candidate) });
+  // View edits apply at once, each built on the one before it (still unsaved
+  // or not), and save in order; only the newest answer replaces the view.
+  const latestDatabase = useRef(database);
+  latestDatabase.current = database;
+  const latestView = useRef(view);
+  latestView.current = view;
+  const saves = useRef<Promise<unknown>>(Promise.resolve());
+  const saveSeq = useRef(0);
+  const saveView = useCallback((patch: (base: NoteDatabaseView, columns: Column[]) => Partial<NoteViewInput>) => {
+    const current = latestDatabase.current;
+    const shown = latestView.current;
+    if (!current || !shown) return;
+    const base = viewDraft.current?.id === shown.id ? viewDraft.current : shown;
+    const input: NoteViewInput = { ...viewInputOf(base), ...patch(base, columnsOf(current, base)) };
+    const optimistic: NoteDatabaseView = {
+      id: base.id, name: input.name, type: input.type, order: input.order ?? base.order, filter: input.filter,
+      sorts: input.sorts ?? [], groupBy: input.groupBy ?? null, dateProperty: input.dateProperty ?? null, properties: input.properties ?? [],
+    };
+    viewDraft.current = optimistic;
+    setDatabase(held => held && withView(held, optimistic));
+    const mine = ++saveSeq.current;
+    saves.current = saves.current.then(() => bridgeApi.saveDatabaseView({ databaseId, view: input })).then(saved => {
+      if (mine !== saveSeq.current) return;
+      viewDraft.current = null;
+      setDatabase(held => held && withView(held, saved));
       void query();
-    } catch (error) { fail(error); }
-  }, [databaseId, view, query, fail]);
+    }, error => {
+      if (mine === saveSeq.current) { viewDraft.current = null; void readDatabase(); }
+      fail(error);
+    });
+  }, [databaseId, query, readDatabase, fail]);
 
   const host: CellHost = useMemo(() => ({
     addOption: async (property: NoteProperty, option) => {
@@ -214,11 +239,11 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     setOptions: (property, options, seen) => void saveOptions(databaseId, property.id, options, seen).then(next => { setDatabase(next); void query(); }, fail),
     remove: property => void change([{ op: "delete", propertyId: property.id }]),
     addProperty: (name, type) => void change([{ op: "add", property: { name, type, ...(type === "status" ? { options: [{ name: "To do", group: "todo" }, { name: "In progress", group: "inProgress" }, { name: "Done", group: "done" }] } : {}) } }]),
-    sort: (column, direction) => void saveView({ sorts: [{ property: column.id, direction }] }),
-    hide: column => void saveView({ properties: withColumn(columns, column.id, { visible: false }) }),
-    show: column => void saveView({ properties: withColumn(columns, column.id, { visible: true }) }),
-    resize: (column, width) => void saveView({ properties: withColumn(columns, column.id, { width }) }),
-  }), [databaseId, change, saveView, columns, query, fail]);
+    sort: (column, direction) => saveView(() => ({ sorts: [{ property: column.id, direction }] })),
+    hide: column => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { visible: false }) })),
+    show: column => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { visible: true }) })),
+    resize: (column, width) => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { width }) })),
+  }), [databaseId, change, saveView, query, fail]);
 
   const newRow = useCallback(async () => {
     try {
