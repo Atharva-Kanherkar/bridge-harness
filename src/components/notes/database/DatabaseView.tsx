@@ -1,5 +1,6 @@
-// A database's views over `notes/query_database`: the view tabs, and the
-// active view (a table here; board, calendar and list arrive later).
+// A database's views over `notes/query_database`: the view tabs, the
+// toolbar (an unsaved filter, sort and grouping override), and the active
+// view as a table, board, calendar or list.
 //
 // The server filters and sorts. Every write re-queries, and so does every
 // `notes/page_changed`, coalesced; a newer query always wins over an older
@@ -7,23 +8,28 @@
 // after its write lands, or goes back when the write is refused.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarDays, Kanban, List, Table2 } from "lucide-react";
-// clsx rather than cn: tailwind-merge does not know the text-ui and
-// text-caption sizes, and drops them beside a text color.
-import { clsx } from "clsx";
 import { bridgeApi } from "../../../api";
-import type { DatabaseRow, NoteDatabase, NoteDatabaseView, NoteProperty, NoteSchemaChange, NoteViewInput, Workspace } from "../../../types";
+import type { DatabaseGroup, DatabaseRow, NoteDatabase, NoteDatabaseView, NoteProperty, NoteSchemaChange, NoteViewInput, QueryDatabaseParams, Workspace } from "../../../types";
+import { DatabaseBoard, GROUP_LIMIT } from "./DatabaseBoard";
+import { DatabaseCalendar } from "./DatabaseCalendar";
+import { DatabaseList } from "./DatabaseList";
 import { DatabaseTable, type TableActions } from "./DatabaseTable";
 import type { CellHost } from "./PropertyCell";
 import { columnsOf, viewInputOf, withColumn, type Column } from "./formatValue";
 import { addOption, saveOptions } from "./schemaWrites";
 import { useLatestOnly } from "./useLatestOnly";
+import { useViewOverride } from "./useViewOverride";
+import type { ViewBodyProps } from "./viewBody";
+import { groupableColumns, filterColumns, type FieldColumn } from "./viewModel";
+import { ViewTabs, type ViewActions } from "./ViewTabs";
+import { ViewToolbar } from "./ViewToolbar";
 
 export const FIRST_PAGE = 100;
 export const LATER_PAGE = 500;
 const COALESCE_MS = 30;
 
-const VIEW_ICONS: Record<string, typeof Table2> = { table: Table2, board: Kanban, calendar: CalendarDays, list: List };
+/** How many rows each group of a grouped list carries. */
+const LIST_GROUP_LIMIT = 200;
 
 export interface DatabaseViewProps {
   databaseId: string;
@@ -50,6 +56,10 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const [database, setDatabase] = useState<NoteDatabase | null>(given ?? null);
   const [activeId, setActiveId] = useState<string | null>(viewId ?? null);
   const [rows, setRows] = useState<DatabaseRow[] | null>(null);
+  const [groups, setGroups] = useState<DatabaseGroup[] | null>(null);
+  /** Bumps on every query, so a body with its own reads re-reads. */
+  const [version, setVersion] = useState(0);
+  const override = useViewOverride();
   const [pending, setPending] = useState<Pending[]>([]);
   const [related, setRelated] = useState<Map<string, string>>(new Map());
   const ticket = useRef(0);
@@ -78,6 +88,16 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const views = useMemo(() => [...(database?.views ?? [])].sort((a, b) => a.order - b.order), [database]);
   const view: NoteDatabaseView | undefined = views.find(candidate => candidate.id === activeId) ?? views[0];
   const queryViewId = view?.id ?? null;
+  // The saved view by id, or an override's fields spelled out (without the
+  // view id, so a grouping it drops is really dropped).
+  const effective = view ? override.effective(view) : null;
+  const dirty = view ? override.dirty(view) : false;
+  const groupLimit = view?.type === "list" ? LIST_GROUP_LIMIT : GROUP_LIMIT;
+  const queryKey = JSON.stringify([queryViewId, dirty ? effective : null, groupLimit]);
+  const viewParams = useMemo((): Omit<QueryDatabaseParams, "databaseId" | "limit" | "cursor"> => {
+    const [viewId, spelled, limit] = JSON.parse(queryKey) as [string | null, { filter: unknown; sorts: QueryDatabaseParams["sorts"]; groupBy: QueryDatabaseParams["groupBy"] } | null, number];
+    return spelled ? { filter: spelled.filter, sorts: spelled.sorts, groupBy: spelled.groupBy, groupLimit: limit } : { viewId, groupLimit: limit };
+  }, [queryKey]);
 
   /** The rows, the first page at once and the rest by cursor behind it. */
   const query = useCallback(async () => {
@@ -88,17 +108,20 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       // nothing until it holds every page, so the table never shrinks under
       // a scrolled view or an open editor.
       const refresh = loaded.current;
-      let result = await bridgeApi.queryDatabase({ databaseId, viewId: queryViewId, limit: FIRST_PAGE });
+      let result = await bridgeApi.queryDatabase({ databaseId, ...viewParams, limit: FIRST_PAGE });
       if (mine !== ticket.current) return;
       let all = result.rows;
+      const groupsNow = result.groups ?? null;
       const land = () => {
         setRows(all);
+        setGroups(groupsNow);
+        setVersion(current => current + 1);
         setPending(current => current.filter(item => item.after >= mine));
         loaded.current = true;
       };
       if (!refresh) land();
       while (result.nextCursor) {
-        result = await bridgeApi.queryDatabase({ databaseId, viewId: queryViewId, limit: LATER_PAGE, cursor: result.nextCursor });
+        result = await bridgeApi.queryDatabase({ databaseId, ...viewParams, limit: LATER_PAGE, cursor: result.nextCursor });
         if (mine !== ticket.current) return;
         all = [...all, ...result.rows];
         if (!refresh) setRows(all);
@@ -107,9 +130,9 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     } catch (error) {
       if (mine === ticket.current) fail(error);
     }
-  }, [databaseId, queryViewId, fail]);
+  }, [databaseId, viewParams, fail]);
 
-  useEffect(() => { loaded.current = false; if (database) void query(); }, [database ? database.id : null, queryViewId, query]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loaded.current = false; if (database) void query(); }, [database ? database.id : null, queryKey, query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The first painted row closes the first-paint measure.
   useEffect(() => {
@@ -157,26 +180,30 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     for (const item of mine) {
       if (item.key === "title") note.title = item.value as string;
       else if (item.key === "project") note.workspaceId = item.value as string | null;
+      else if (item.key === "kind" || item.key === "state") note[item.key] = String(item.value);
       else if (item.value === null) delete values[item.key];
       else values[item.key] = item.value;
     }
     return { note, values };
   }), [rows, pending]);
 
-  const commit = useCallback(async (row: DatabaseRow, column: Column, value: unknown) => {
+  const commit = useCallback(async (row: DatabaseRow, column: Pick<Column, "id">, value: unknown): Promise<boolean> => {
     const entry: Pending = { row: row.note.id, key: column.id, value, after: Number.POSITIVE_INFINITY };
     setPending(current => [...current.filter(item => !(item.row === entry.row && item.key === entry.key)), entry]);
     try {
       if (column.id === "title") await bridgeApi.updateNote({ id: row.note.id, title: String(value ?? "") });
       else if (column.id === "project") await bridgeApi.updateNote({ id: row.note.id, ...(value ? { workspaceId: String(value) } : { clearWorkspace: true }) });
+      else if (column.id === "kind" || column.id === "state") await bridgeApi.updateNote({ id: row.note.id, [column.id]: String(value) });
       else await bridgeApi.updateNote({ id: row.note.id, values: { [column.id]: value ?? null } });
       // Held until a query that starts from here lands.
       entry.after = ticket.current;
       setPending(current => [...current]);
       void query();
+      return true;
     } catch (error) {
       setPending(current => current.filter(item => item !== entry));
       fail(error);
+      return false;
     }
   }, [query, fail]);
 
@@ -198,9 +225,9 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   latestView.current = view;
   const saves = useRef<Promise<unknown>>(Promise.resolve());
   const saveSeq = useRef(0);
-  const saveView = useCallback((patch: (base: NoteDatabaseView, columns: Column[]) => Partial<NoteViewInput>) => {
+  const saveView = useCallback((patch: (base: NoteDatabaseView, columns: Column[]) => Partial<NoteViewInput>, target?: NoteDatabaseView) => {
     const current = latestDatabase.current;
-    const shown = latestView.current;
+    const shown = target ?? latestView.current;
     if (!current || !shown) return;
     const base = viewDraft.current?.id === shown.id ? viewDraft.current : shown;
     const input: NoteViewInput = { ...viewInputOf(base), ...patch(base, columnsOf(current, base)) };
@@ -254,29 +281,90 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     resize: (column, width) => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { width }) })),
   }), [databaseId, change, saveView, query, fail, schemaOrder]);
 
-  const newRow = useCallback(async () => {
+  const newRow = useCallback(async (initial?: { column: FieldColumn; value: unknown }) => {
     try {
-      const note = await bridgeApi.createNotePage({ title: null, content: "", parentId: databaseId });
+      const note = await bridgeApi.createNotePage({ title: null, content: "", parentId: databaseId, ...(initial?.column.id === "kind" ? { kind: String(initial.value) } : {}) });
+      if (initial && initial.value !== null && initial.value !== undefined && initial.column.id !== "kind") await commit({ note, values: {} }, initial.column, initial.value);
       void query();
       return note.id;
     } catch (error) { fail(error); return null; }
-  }, [databaseId, query, fail]);
+  }, [databaseId, query, fail, commit]);
+
+  // Views: made, renamed, retyped, duplicated, moved and deleted.
+  const views_ = useRef(views);
+  views_.current = views;
+  const saveOrder = useCallback(async (ordered: NoteDatabaseView[]) => {
+    const moved = ordered.map((candidate, order) => ({ candidate, order })).filter(({ candidate, order }) => candidate.order !== order);
+    setDatabase(current => current && { ...current, views: current.views.map(candidate => { const at = ordered.findIndex(item => item.id === candidate.id); return at < 0 ? candidate : { ...candidate, order: at }; }) });
+    for (const { candidate, order } of moved) await bridgeApi.saveDatabaseView({ databaseId, view: { ...viewInputOf(candidate), order } });
+  }, [databaseId]);
+  const typeDefaults = useCallback((type: string, current?: NoteDatabaseView): Partial<NoteViewInput> => {
+    if (!database) return {};
+    if (type === "board" && !current?.groupBy) return { groupBy: groupableColumns(database).find(column => column.type !== "date") ? { property: groupableColumns(database).find(column => column.type !== "date")!.id } : null };
+    if (type === "calendar" && !current?.dateProperty) return { dateProperty: filterColumns(database).find(column => column.type === "date")?.id ?? "created" };
+    return {};
+  }, [database]);
+  const viewActions: ViewActions = useMemo(() => ({
+    create: (type, name) => void (async () => {
+      try {
+        const order = Math.max(-1, ...views_.current.map(candidate => candidate.order)) + 1;
+        const saved = await bridgeApi.saveDatabaseView({ databaseId, view: { name, type, order, ...typeDefaults(type) } });
+        setDatabase(current => current && { ...current, views: [...current.views, saved] });
+        setActiveId(saved.id);
+      } catch (error) { fail(error); }
+    })(),
+    rename: (target, name) => saveView(() => ({ name }), target),
+    changeType: (target, type) => saveView(() => ({ type, ...typeDefaults(type, target) }), target),
+    duplicate: target => void (async () => {
+      try {
+        const copy = await bridgeApi.saveDatabaseView({ databaseId, view: { ...viewInputOf(target), id: null, name: `${target.name} copy`, order: target.order + 1 } });
+        const ordered = [...views_.current];
+        ordered.splice(ordered.findIndex(candidate => candidate.id === target.id) + 1, 0, copy);
+        setDatabase(current => current && { ...current, views: [...current.views, copy] });
+        await saveOrder(ordered);
+        setActiveId(copy.id);
+      } catch (error) { fail(error); }
+    })(),
+    remove: target => void (async () => {
+      if (views_.current.length <= 1) return;
+      try {
+        await bridgeApi.deleteDatabaseView({ databaseId, viewId: target.id });
+        setDatabase(current => current && { ...current, views: current.views.filter(candidate => candidate.id !== target.id) });
+        setActiveId(current => current === target.id ? null : current);
+      } catch (error) { fail(error); }
+    })(),
+    move: (target, index) => {
+      const ordered = views_.current.filter(candidate => candidate.id !== target.id);
+      ordered.splice(Math.max(0, Math.min(index, ordered.length)), 0, target);
+      void saveOrder(ordered).catch(fail);
+    },
+  }), [databaseId, typeDefaults, saveView, saveOrder, fail]);
+
+  const run = useCallback((params: Omit<QueryDatabaseParams, "databaseId">) => bridgeApi.queryDatabase({ databaseId, ...params }), [databaseId]);
 
   if (!database) return <p role="status" className="m-0 py-3 text-[13px] text-muted-foreground">Loading the database…</p>;
 
+  const body: ViewBodyProps | null = view && effective ? {
+    database, view, query: effective, rows: shown, groups, run, version, host,
+    onCommit: commit, onNewRow: newRow, onOpenRow: onOpenPage,
+  } : null;
   return <section aria-label="Database" className="min-w-0">
-    {views.length > 1 && <div role="tablist" aria-label="Views" className="mb-2 flex flex-wrap gap-0.5">
-      {views.map(candidate => {
-        const Icon = VIEW_ICONS[candidate.type] ?? Table2;
-        return <button key={candidate.id} type="button" role="tab" aria-selected={candidate.id === view?.id} onClick={() => setActiveId(candidate.id)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors", candidate.id === view?.id ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
-          <Icon size={13} strokeWidth={1.75} aria-hidden="true" />{candidate.name}
-        </button>;
-      })}
-    </div>}
-    {view && view.type !== "table"
-      ? <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-[13px] text-muted-foreground">Board, calendar and list views arrive in a later update.</p>
-      : rows === null
-        ? <p role="status" className="m-0 py-3 text-[13px] text-muted-foreground">Loading rows…</p>
-        : <DatabaseTable database={database} view={view} rows={shown} host={host} actions={actions} onCommit={(row, column, value) => void commit(row, column, value)} onNewRow={newRow} onOpenRow={onOpenPage} bounded={bounded} />}
+    <ViewTabs views={views} activeId={view?.id ?? null} onSelect={setActiveId} actions={viewActions} />
+    {view && effective && <ViewToolbar
+      database={database}
+      view={view}
+      query={effective}
+      dirty={dirty}
+      workspaces={workspaces}
+      onChange={patch => override.change(view, patch)}
+      onReset={() => override.reset(view)}
+      onSave={() => void override.save(view, query => saveView(() => ({ filter: query.filter, sorts: query.sorts, groupBy: query.groupBy }), view))}
+    />}
+    {rows === null || !body
+      ? <p role="status" className="m-0 py-3 text-[13px] text-muted-foreground">Loading rows…</p>
+      : view?.type === "board" ? <DatabaseBoard {...body} />
+        : view?.type === "calendar" ? <DatabaseCalendar {...body} />
+          : view?.type === "list" ? <DatabaseList {...body} />
+            : <DatabaseTable database={database} view={view} rows={shown} host={host} actions={actions} onCommit={(row, column, value) => void commit(row, column, value)} onNewRow={() => newRow()} onOpenRow={onOpenPage} bounded={bounded} />}
   </section>;
 }
