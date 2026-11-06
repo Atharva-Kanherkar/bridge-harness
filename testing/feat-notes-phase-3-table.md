@@ -262,3 +262,17 @@ Each item below came out of review and has a regression test that fails without 
   save re-reads the view.
 - **Chats opens.** A Chats cell's value is read-only, but Enter or a click on a selected cell opens
   its links, and each link opens its chat. Only Created and Updated have no editor.
+
+### Second review round (PR #901)
+
+- **A selection names its column by id.** Hiding, showing or reordering other columns never moves an
+  open editor to another property. A selected column that is hidden clears the selection.
+- **An open editor survives leaving the window.** The row being edited is always rendered, at its
+  own position between the spacers, even when scrolling or a reorder puts it outside the window. Its
+  input and draft stay mounted until it commits or cancels.
+- **Option writes are conditional.** Every option-list write sends `base`, the stored ids it was
+  built from. On "changed since they were read" it reads again, re-merges and retries, up to three
+  times, so concurrent additions are never lost (#888 amendment).
+- **Schema reads land in order.** Every schema read or write in `DatabaseView` and `RowProperties`
+  takes a ticket when it starts. An answer older than one already applied is dropped.
+
