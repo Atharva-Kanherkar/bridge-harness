@@ -96,8 +96,57 @@ function seed() {
     { title: "Local-first sync libraries", state: "open", tags: ["research"] },
   );
   make("need to fix the onbaording flow, ppl drop at step 3\n- add a skip button\n- shorter copy on the welcome screen\nalso: pricing page idea, monthly vs yearly toggle", PERSON, {});
+  // `bun run dev` opens on a database to try; tests keep the two pages above.
+  if (import.meta.env.MODE !== "test") seedMockReadingList();
 }
-seed();
+
+/** "Reading list": ten rows across every property type, for `bun run dev`. */
+export function seedMockReadingList(): string {
+  const page = mockCreateDatabase({
+    title: "Reading list",
+    properties: [
+      { name: "Status", type: "status", options: [{ name: "To read", group: "todo" }, { name: "Reading", group: "inProgress" }, { name: "Read", group: "done" }] },
+      { name: "Rating", type: "number" },
+      { name: "Genre", type: "select", options: [{ name: "Systems" }, { name: "Fiction" }, { name: "History" }] },
+      { name: "Labels", type: "multiSelect", options: [{ name: "Short" }, { name: "Long" }, { name: "Gift" }] },
+      { name: "Due", type: "date" },
+      { name: "Owned", type: "checkbox" },
+      { name: "Link", type: "url" },
+      { name: "Note", type: "text" },
+    ],
+  });
+  const id = page.note.id;
+  const related = mockUpdateSchema({ id, changes: [{ op: "add", property: { name: "Pairs with", type: "relation", relation: id } }] });
+  const prop = (name: string) => related.properties.find(property => property.name === name)!;
+  const option = (name: string, choice: string) => prop(name).options!.find(item => item.name === choice)!.id;
+  const books: [string, string, number | null, string | null, string[], string | null, boolean, string | null, string | null][] = [
+    ["Designing Data-Intensive Applications", "Reading", 5, "Systems", ["Long"], "2026-11-20", true, "https://dataintensive.net", "Chapter 5 next"],
+    ["Structure and Interpretation of Computer Programs", "To read", 4, "Systems", ["Long", "Gift"], "2026-12-01", false, null, null],
+    ["The Left Hand of Darkness", "Read", 5, "Fiction", ["Short"], null, true, null, "Reread the ice crossing"],
+    ["A Philosophy of Software Design", "Read", 4, "Systems", ["Short"], "2026-10-28", true, null, null],
+    ["The Dawn of Everything", "To read", null, "History", ["Long"], "2027-01-15", false, null, null],
+    ["Piranesi", "Reading", 4.5, "Fiction", ["Short", "Gift"], "2026-11-12", true, null, null],
+    ["Crafting Interpreters", "To read", null, "Systems", [], null, false, "https://craftinginterpreters.com", null],
+    ["SPQR", "Read", 3.5, "History", [], "2026-09-30", true, null, "Good on the late republic"],
+    ["Klara and the Sun", "To read", null, "Fiction", ["Gift"], null, false, null, null],
+    ["The Mythical Man-Month", "Read", 3, "Systems", ["Short"], null, true, null, null],
+  ];
+  const rows: string[] = [];
+  for (const [title, status, rating, genre, labels, due, owned, link, note] of books) {
+    const row = mockCreatePage({ title, parentId: id });
+    rows.push(row.id);
+    const values: Record<string, unknown> = { [prop("Status").id]: option("Status", status), [prop("Owned").id]: owned };
+    if (rating !== null) values[prop("Rating").id] = rating;
+    if (genre) values[prop("Genre").id] = option("Genre", genre);
+    if (labels.length) values[prop("Labels").id] = labels.map(label => option("Labels", label));
+    if (due) values[prop("Due").id] = { start: due };
+    if (link) values[prop("Link").id] = link;
+    if (note) values[prop("Note").id] = note;
+    mockUpdateNote({ id: row.id, values });
+  }
+  mockUpdateNote({ id: rows[0], values: { [prop("Pairs with").id]: [rows[3]] } });
+  return id;
+}
 
 /** Back to the seeded notes. Tests call this between cases. */
 export function resetMockNotes(): void {
@@ -862,6 +911,9 @@ export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
       case "setOptions": {
         const property = need(change.propertyId);
         if (!OPTION_TYPES.includes(property.type)) throw new Error(`${property.name} does not have options`);
+        // A conditional write: refused unless the stored ids are still the ones the caller read.
+        const stored = (property.options ?? []).map(option => option.id);
+        if (change.base && (change.base.length !== stored.length || change.base.some((id, index) => id !== stored[index]))) throw new Error(`the options of ${property.name} changed since they were read; read them again`);
         const built: NoteOption[] = [];
         for (const input of change.options) {
           const existing = input.id ? (property.options ?? []).find(option => option.id === input.id) : undefined;
@@ -1450,3 +1502,6 @@ export function mockQueryDatabase(params: QueryDatabaseParams): DatabaseQueryRes
   if (groupBy) result.groups = buckets(plan, keyed.map(entry => entry.page), groupBy, Math.min(Math.max(params.groupLimit ?? 50, 1), 200));
   return result;
 }
+
+// Last, so every table and constant the seed reads is defined.
+seed();

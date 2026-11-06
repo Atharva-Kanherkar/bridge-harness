@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, mockUpdateNote, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
+import { mockCreateDatabase, mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, mockUpdateNote, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
 import type { AdapterDescriptor, Session, Workspace } from "../types";
 import type { Editor } from "@tiptap/core";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
@@ -934,3 +934,65 @@ function mockIdOf(text: string): string {
   if (!note) throw new Error(`no note with ${text}`);
   return note.id;
 }
+
+describe("databases", () => {
+  const makeBooks = () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }] });
+    const rating = made.database!.properties[0].id;
+    const row = mockCreatePage({ title: "DDIA", parentId: made.note.id });
+    mockUpdateNote({ id: row.id, values: { [rating]: 4 } });
+    return { id: made.note.id, rating, row: row.id };
+  };
+  const tableTitles = () => [...host.querySelectorAll("[role=grid] [role=row]")].slice(1).map(row => row.querySelector("[role=gridcell]")?.textContent?.replace(/Open$/, ""));
+  const tableCell = (row: number, col: number) => [...host.querySelectorAll("[role=grid] [role=row]")][row + 1].querySelectorAll("[role=gridcell]")[col];
+
+  it("a database page shows its table above a collapsed description", async () => {
+    makeBooks();
+    await render();
+    await openNote("Books");
+    await settle(40);
+    expect(tableTitles()).toEqual(["DDIA"]);
+    expect(tableCell(0, 1)?.textContent).toBe("4");
+    // The rows are the table, not a list of pages, and a database has no Type.
+    expect(host.querySelector("section[aria-label='Pages']")).toBeNull();
+    expect(button("Type", host.querySelector("article dl")!)).toBeUndefined();
+    // The description is one line until asked for.
+    expect(host.querySelector<HTMLElement>(".note-editor")!.closest("[hidden]")).not.toBeNull();
+    await click(button("Add a description"));
+    expect(host.querySelector<HTMLElement>(".note-editor")!.closest("[hidden]")).toBeNull();
+    const article = host.querySelector("article")!;
+    expect(article.querySelector("[role=grid]")!.compareDocumentPosition(article.querySelector(".note-editor")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a row page lists its properties and an edit there updates the table", async () => {
+    const books = makeBooks();
+    await render();
+    await openNote("Books");
+    await settle(40);
+    await click(button("Open DDIA"));
+    await settle(40);
+    const panel = host.querySelector("[aria-label='Row properties']")!;
+    expect(panel.textContent).toContain("Rating");
+    expect(button("Rating", panel)?.textContent).toBe("4");
+    await click(button("Rating", panel));
+    const box = field<HTMLInputElement>("Rating");
+    await typeInto(box, "5");
+    await press(box, "Enter");
+    await settle(40);
+    expect(mockReadPage(books.row).values).toEqual({ [books.rating]: 5 });
+    await openNote("Books");
+    await settle(40);
+    expect(tableCell(0, 1)?.textContent).toBe("5");
+  });
+
+  it("New database makes a database and the tree shows it with a table icon", async () => {
+    await render();
+    await click(button("New database"));
+    await settle(40);
+    expect(host.querySelector("article textarea[aria-label='Title']")).not.toBeNull();
+    expect((host.querySelector("article textarea[aria-label='Title']") as HTMLTextAreaElement).value).toBe("Untitled database");
+    expect(host.querySelector("[role=grid]")).not.toBeNull();
+    const row = buttons(host.querySelector("ul[aria-label='Notes']")!).find(node => node.textContent?.includes("Untitled database"))!;
+    expect(row.querySelector("[aria-label=Database]")).not.toBeNull();
+  });
+});

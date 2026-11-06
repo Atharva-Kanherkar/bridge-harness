@@ -172,6 +172,16 @@
           "additionalProperties": false,
           "description": "Replace the whole option list: no id is new, a missing id is deleted.",
           "properties": {
+            "base": {
+              "description": "The option ids, in order, the caller read. When given, the write is refused unless they are exactly what is stored, so a client that replaces the list can read again and retry instead of deleting options someone else added.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "op": {
               "enum": [
                 "setOptions"

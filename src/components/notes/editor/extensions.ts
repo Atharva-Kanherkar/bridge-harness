@@ -8,7 +8,7 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import Image from "@tiptap/extension-image";
 import { Placeholder } from "@tiptap/extensions";
-import { Callout, NoteBlockMath, NoteInlineMath, PageLink, RawBlock, Toggle, ToggleContent, ToggleSummary, WikiLink } from "./blocks";
+import { Callout, DatabaseEmbed, NoteBlockMath, NoteInlineMath, PageLink, RawBlock, Toggle, ToggleContent, ToggleSummary, WikiLink } from "./blocks";
 
 export interface NoteSchemaOptions {
   placeholder?: string;
@@ -18,11 +18,12 @@ export interface NoteSchemaOptions {
   extra?: AnyExtension[];
   image?: typeof Image;
   pageLink?: typeof PageLink;
+  databaseEmbed?: typeof DatabaseEmbed;
   wikiLink?: typeof WikiLink;
   callout?: typeof Callout;
 }
 
-export function noteExtensions({ placeholder, onMathClick, extra = [], image = Image, pageLink = PageLink, wikiLink = WikiLink, callout = Callout }: NoteSchemaOptions = {}): AnyExtension[] {
+export function noteExtensions({ placeholder, onMathClick, extra = [], image = Image, pageLink = PageLink, databaseEmbed = DatabaseEmbed, wikiLink = WikiLink, callout = Callout }: NoteSchemaOptions = {}): AnyExtension[] {
   return [
     StarterKit.configure({
       heading: { levels: [1, 2, 3] },
@@ -42,6 +43,7 @@ export function noteExtensions({ placeholder, onMathClick, extra = [], image = I
     ToggleSummary,
     ToggleContent,
     pageLink,
+    databaseEmbed,
     wikiLink,
     RawBlock,
     Placeholder.configure({

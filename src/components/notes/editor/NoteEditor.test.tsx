@@ -84,6 +84,7 @@ const EVERY_BLOCK = [
   "$$\n\\int_0^1 x\\,dx\n$$",
   "<page url=\"bridge://p/0190-child\">Child page</page>",
   "<database id=\"d1\"></database>",
+  "<database url=\"bridge://p/0190-db\" view=\"v-board\">Reading &lt;list&gt;</database>",
 ].join("\n\n") + "\n";
 
 describe("NoteEditor", () => {
@@ -154,6 +155,51 @@ describe("NoteEditor", () => {
     expect(onCreatePage).toHaveBeenCalledTimes(1);
     await commit();
     expect(onChange.mock.calls.at(-1)?.[0]).toBe("Intro\n\n<page url=\"bridge://p/0190-new\">Untitled</page>\n");
+  });
+
+  it("a database block round-trips byte for byte beside every other block", async () => {
+    const renderDatabase = vi.fn((id: string, view: string | null) => <p data-testid="table">{id} {view}</p>);
+    const open = vi.fn();
+    const { onChange } = await mount(EVERY_BLOCK, { pages: { title: () => undefined, open, renderDatabase } });
+    expect(renderDatabase).toHaveBeenCalledWith("0190-db", "v-board");
+    expect(host.querySelector("[data-database-frame] [data-testid=table]")?.textContent).toBe("0190-db v-board");
+    expect(host.textContent).toContain("Reading <list>");
+    await act(async () => { [...host.querySelectorAll("button")].find(button => button.textContent === "Open as page")!.click(); });
+    expect(open).toHaveBeenCalledWith("0190-db");
+    await commit();
+    expect(onChange).not.toHaveBeenCalled();
+    // Typing elsewhere keeps the block exactly as written.
+    await typeAfter("Heading two", "!");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe(EVERY_BLOCK.replace("## Heading two", "## Heading two!"));
+    // Written fresh, the block takes the same form.
+    expect(editor().getMarkdown()).toContain("<database url=\"bridge://p/0190-db\" view=\"v-board\">Reading &lt;list&gt;</database>");
+  });
+
+  it("a database tag with other attributes stays raw", async () => {
+    const forms = ["<database id=\"d1\"></database>", "<database url=\"bridge://p/x\" extra=\"1\">T</database>", "<database url=\"bridge://p/x\">\nT\n</database>"];
+    for (const form of forms) {
+      await mount(`Intro\n\n${form}\n`);
+      expect(editor().state.doc.child(1).type.name, form).toBe("rawBlock");
+      expect(editor().state.doc.child(1).attrs.source, form).toBe(form);
+      act(() => root.render(<></>));
+    }
+    await mount("Intro\n\n<database url=\"bridge://p/x\">T</database>\n");
+    expect(editor().state.doc.child(1).type.name).toBe("databaseEmbed");
+    expect(editor().state.doc.child(1).attrs).toEqual({ id: "x", view: null, title: "T" });
+  });
+
+  it("the / menu's Database makes a database under the page and inserts its block", async () => {
+    const onCreateDatabase = vi.fn(async () => ({ id: "0190-db", title: "Untitled database" }));
+    const { onChange } = await mount("Intro\n", { onCreateDatabase });
+    await typeOnNewLine("/database");
+    const options = [...document.querySelectorAll("[role='listbox'][aria-label='Blocks'] [role='option']")].map(node => node.textContent);
+    expect(options).toEqual([expect.stringContaining("Database")]);
+    await key("Enter");
+    await settle();
+    expect(onCreateDatabase).toHaveBeenCalledTimes(1);
+    await commit();
+    expect(onChange.mock.calls.at(-1)?.[0]).toBe("Intro\n\n<database url=\"bridge://p/0190-db\">Untitled database</database>\n");
   });
 
   it("writes a math block from the / menu through the formula editor", async () => {

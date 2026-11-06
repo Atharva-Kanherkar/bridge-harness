@@ -1,14 +1,14 @@
-// How images, child pages and wiki links draw inside the editor.
+// How images, child pages, embedded databases and wiki links draw inside the editor.
 
-import { createContext, useContext, useEffect, useRef, useState, type FocusEvent } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
 import Image from "@tiptap/extension-image";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
-import { FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Table2, TriangleAlert } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { assetUrl } from "./assets";
-import { Callout, CALLOUT_KINDS, PageLink, WikiLink, type CalloutKind } from "./blocks";
+import { Callout, CALLOUT_KINDS, DatabaseEmbed, PageLink, WikiLink, type CalloutKind } from "./blocks";
 
 /** What the views need from the page around the editor. */
 export interface EditorPages {
@@ -18,6 +18,8 @@ export interface EditorPages {
   openByTitle?: (title: string) => void;
   /** The pages a [[ menu can suggest, newest first. */
   pages?: () => { id: string; title: string }[];
+  /** A database's live table, for a `<database>` block. */
+  renderDatabase?: (id: string, view: string | null) => ReactNode;
 }
 export const EditorPagesContext = createContext<EditorPages>({ title: () => undefined, open: () => undefined });
 
@@ -173,6 +175,34 @@ function PageLinkView({ node, selected }: ReactNodeViewProps) {
 
 export const NotePageLink = PageLink.extend({
   addNodeView() { return ReactNodeViewRenderer(PageLinkView); },
+});
+
+function DatabaseEmbedView({ node, selected }: ReactNodeViewProps) {
+  const pages = useContext(EditorPagesContext);
+  const id = String(node.attrs.id ?? "");
+  const view = node.attrs.view == null ? null : String(node.attrs.view);
+  const title = pages.title(id) ?? String(node.attrs.title ?? "");
+  return <NodeViewWrapper data-drag-handle="" className={clsx("my-3 rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}>
+    <div contentEditable={false} className="mb-1.5 flex items-center gap-2">
+      <Table2 size={15} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-foreground">{title || "Untitled database"}</span>
+      <button type="button" onClick={() => pages.open(id)} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+        <ArrowUpRight size={13} aria-hidden="true" />Open as page
+      </button>
+    </div>
+    <div contentEditable={false} data-database-frame="" className="max-h-[480px]">
+      {pages.renderDatabase?.(id, view) ?? <p className="m-0 rounded-lg bg-muted px-3 py-4 text-[13px] text-muted-foreground">{title || "Untitled database"}</p>}
+    </div>
+  </NodeViewWrapper>;
+}
+
+export const NoteDatabaseEmbed = DatabaseEmbed.extend({
+  // The table takes its own clicks and keys; only the title bar selects the block.
+  addNodeView() {
+    return ReactNodeViewRenderer(DatabaseEmbedView, {
+      stopEvent: ({ event }) => !!(event.target as HTMLElement | null)?.closest?.("[data-database-frame]"),
+    });
+  },
 });
 
 function WikiLinkView({ node }: ReactNodeViewProps) {

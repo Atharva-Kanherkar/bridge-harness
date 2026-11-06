@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { Extension, type Editor, type Range } from "@tiptap/core";
 import Suggestion, { type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
-import { ChevronRight, Code2, FileText, Heading1, Heading2, Heading3, Image as ImageIcon, List, ListOrdered, ListTodo, Minus, Quote, Sigma, SquareRadical, Table2, Text as TextIcon, MessageSquareText } from "lucide-react";
+import { ChevronRight, Code2, FileText, Heading1, Heading2, Heading3, Image as ImageIcon, List, ListOrdered, ListTodo, Minus, Quote, Sigma, SquareRadical, Table2, Text as TextIcon, MessageSquareText, Database } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
@@ -16,6 +16,7 @@ export interface BlockHost {
   pickImage: (at: number) => void;
   editMath: (kind: "inline" | "block", at: number) => void;
   createPage: (at: number) => void;
+  createDatabase: (at: number) => void;
 }
 
 export interface BlockChoice {
@@ -47,6 +48,7 @@ export const BLOCK_CHOICES: BlockChoice[] = [
   { id: "math", label: "Math block", hint: "An equation in TeX", keywords: "equation latex katex formula tex", icon: icon(SquareRadical), run: (editor, host) => host.editMath("block", editor.state.selection.from) },
   { id: "inline-math", label: "Inline math", hint: "TeX inside a line", keywords: "equation latex formula tex $", icon: icon(Sigma), run: (editor, host) => host.editMath("inline", editor.state.selection.from) },
   { id: "page", label: "Page", hint: "A page inside this one", keywords: "subpage child doc", icon: icon(FileText), run: (editor, host) => host.createPage(editor.state.selection.from) },
+  { id: "database", label: "Database", hint: "A table of pages with properties", keywords: "table grid rows notion", icon: icon(Database), run: (editor, host) => host.createDatabase(editor.state.selection.from) },
 ];
 
 export function matchChoices(query: string): BlockChoice[] {
