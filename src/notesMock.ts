@@ -146,6 +146,10 @@ export function seedMockReadingList(): string {
     mockUpdateNote({ id: row.id, values });
   }
   mockUpdateNote({ id: rows[0], values: { [prop("Pairs with").id]: [rows[3]] } });
+  // One of each view, so every view type has something to show.
+  mockSaveView({ databaseId: id, view: { name: "Board", type: "board", groupBy: { property: prop("Status").id }, properties: related.properties.map(property => ({ id: property.id, visible: ["Rating", "Genre", "Due"].includes(property.name) })) } });
+  mockSaveView({ databaseId: id, view: { name: "Calendar", type: "calendar", dateProperty: prop("Due").id } });
+  mockSaveView({ databaseId: id, view: { name: "List", type: "list", groupBy: { property: prop("Genre").id } } });
   return id;
 }
 
