@@ -289,7 +289,7 @@ export function NotePageView(props: NotePageViewProps) {
             open: onOpenPage,
             openByTitle: onOpenByTitle,
             pages: () => linkTargets,
-            renderDatabase: (id, viewId) => <DatabaseView databaseId={id} viewId={viewId} bounded workspaces={workspaces} chatTitle={chatTitle} onOpenChat={onOpenChat} onOpenPage={onOpenPage} onError={onError} />,
+            renderDatabase: (id, viewId) => <DatabaseView databaseId={id} viewId={viewId} bounded hostPageId={note.id} workspaces={workspaces} chatTitle={chatTitle} onOpenChat={onOpenChat} onOpenPage={onOpenPage} onError={onError} />,
           }}
           // A child page waits for this one's save; a [[ page stands alone and
           // is made at once, so a click on its new link finds it in flight.

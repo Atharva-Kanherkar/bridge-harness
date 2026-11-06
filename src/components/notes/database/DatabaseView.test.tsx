@@ -126,4 +126,17 @@ describe("DatabaseView", () => {
     await settle();
     expect(document.querySelector("[role=grid]")).not.toBeNull();
   });
+
+  it("an embed ignores its host page's own saves", async () => {
+    const { id } = books();
+    const holder = mockCreatePage({ title: "Holder" });
+    await mount({ databaseId: id, hostPageId: holder.id });
+    const query = vi.spyOn(bridgeApi, "queryDatabase");
+    mockUpdateNote({ id: holder.id, title: "Holder, renamed" });
+    await settle();
+    expect(query).not.toHaveBeenCalled();
+    mockCreatePage({ title: "A row", parentId: id });
+    await settle();
+    expect(query).toHaveBeenCalled();
+  });
 });

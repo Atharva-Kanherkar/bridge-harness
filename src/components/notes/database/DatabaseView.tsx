@@ -30,6 +30,8 @@ export interface DatabaseViewProps {
   viewId?: string | null;
   /** A bounded frame inside another page. */
   bounded?: boolean;
+  /** The page holding an embed: its own saves change no row, so they read nothing. */
+  hostPageId?: string;
   workspaces: Workspace[];
   chatTitle?: (sessionId: string) => string | undefined;
   onOpenChat?: (sessionId: string) => void;
@@ -41,7 +43,7 @@ interface Pending { row: string; key: string; value: unknown; after: number }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export function DatabaseView({ databaseId, database: given, viewId, bounded = false, workspaces, chatTitle, onOpenChat, onOpenPage, onError }: DatabaseViewProps) {
+export function DatabaseView({ databaseId, database: given, viewId, bounded = false, hostPageId, workspaces, chatTitle, onOpenChat, onOpenPage, onError }: DatabaseViewProps) {
   const [database, setDatabase] = useState<NoteDatabase | null>(given ?? null);
   const [activeId, setActiveId] = useState<string | null>(viewId ?? null);
   const [rows, setRows] = useState<DatabaseRow[] | null>(null);
@@ -103,6 +105,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     let stop: (() => void) | undefined;
     let burst: ReturnType<typeof setTimeout> | undefined;
     void bridgeApi.onNotesPageChanged(payload => {
+      if (payload.pageId === hostPageId) return;
       clearTimeout(burst);
       burst = setTimeout(() => {
         if (payload.pageId === databaseId && !given) void readDatabase();
@@ -110,7 +113,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       }, COALESCE_MS);
     }).then(unlisten => { if (alive) stop = unlisten; else unlisten(); });
     return () => { alive = false; clearTimeout(burst); stop?.(); };
-  }, [databaseId, given, readDatabase, query]);
+  }, [databaseId, given, hostPageId, readDatabase, query]);
 
   // Titles of related rows, read once per related database.
   const relationTargets = useMemo(() => [...new Set((database?.properties ?? []).map(property => property.relation?.databaseId).filter((id): id is string => !!id))].sort().join(" "), [database]);
