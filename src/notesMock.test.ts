@@ -4,7 +4,7 @@ import type { NoteProperty } from "./protocol/generated/protocol";
 import {
   mockCreateDatabase, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema,
   mockCaptureNote, mockCreatePage, mockUpdateNote, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesAgentWrite, mockReadPage,
-  mockPageHistory, mockReadVersion, mockRestoreVersion, mockStructureNote, onMockNotesPageChanged, resetMockNotes, setMockNotesPassDelay,
+  mockPageHistory, mockReadVersion, mockRestoreVersion, mockStructureNote, onMockNotesPageChanged, resetMockNotes, seedMockReadingList, setMockNotesPassDelay,
 } from "./notesMock";
 
 beforeEach(() => { resetMockNotes(); vi.useFakeTimers(); setMockNotesPassDelay(10); });
@@ -426,3 +426,20 @@ describe("mock databases", () => {
   });
 });
 
+
+describe("mock dev seed", () => {
+  it("seeds a reading list with ten rows across every property type", () => {
+    const id = seedMockReadingList();
+    const page = mockReadPage(id);
+    expect(page.note.title).toBe("Reading list");
+    expect(page.database!.properties.map(property => property.type).sort()).toEqual(["checkbox", "date", "multiSelect", "number", "relation", "select", "status", "text", "url"]);
+    const rows = mockQueryDatabase({ databaseId: id, limit: 50 }).rows;
+    expect(rows).toHaveLength(10);
+    const filled = new Set(rows.flatMap(row => Object.keys(row.values)));
+    expect(filled.size).toBe(9);
+  });
+
+  it("leaves the test seed without it", () => {
+    expect(mockListNotes({ includeArchived: true }).notes.map(note => note.title)).not.toContain("Reading list");
+  });
+});
