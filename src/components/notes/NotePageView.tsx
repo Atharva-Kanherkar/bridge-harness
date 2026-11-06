@@ -156,6 +156,16 @@ export function NotePageView(props: NotePageViewProps) {
     if (!(await flush())) return false;
     try { await bridgeApi.restoreNoteVersion(note.id, seq); onChanged(); return true; } catch (error) { fail(error); return false; }
   };
+  // The `/` menu's Database: made under this page once what was typed is
+  // stored, and shown inline rather than opened.
+  const createDatabase = async () => {
+    if (!(await flush())) return null;
+    try {
+      const made = await bridgeApi.createDatabase({ title: "Untitled database", parentId: note.id });
+      onChanged();
+      return { id: made.note.id, title: made.note.title ?? "" };
+    } catch (error) { fail(error); return null; }
+  };
   const startSaved = async (target: Note, choice: StartChoice) => (await flush()) && onStart(target, choice);
   const remove = async () => {
     try { await bridgeApi.deleteNote(note.id); onDeleted(); } catch (error) { fail(error); }
@@ -279,10 +289,12 @@ export function NotePageView(props: NotePageViewProps) {
             open: onOpenPage,
             openByTitle: onOpenByTitle,
             pages: () => linkTargets,
+            renderDatabase: (id, viewId) => <DatabaseView databaseId={id} viewId={viewId} bounded workspaces={workspaces} chatTitle={chatTitle} onOpenChat={onOpenChat} onOpenPage={onOpenPage} onError={onError} />,
           }}
           // A child page waits for this one's save; a [[ page stands alone and
           // is made at once, so a click on its new link finds it in flight.
           onCreatePage={async title => !onCreatePage ? null : title !== null ? onCreatePage(null, title) : (await flush()) ? onCreatePage(note.id, null) : null}
+          onCreateDatabase={createDatabase}
           onError={onError}
         />
       </div>

@@ -3,6 +3,7 @@
 //   callout  > [!NOTE] then > text (a GitHub alert)
 //   toggle   <details><summary>Title</summary> … </details>
 //   page     <page url="bridge://p/<id>">Title</page> (a child page)
+//   database <database url="bridge://p/<id>" view="<viewId>">Title</database>
 // Math, tables, to-dos and images come from Tiptap's own extensions; math is
 // read more strictly than Tiptap does, so "$5 and $10" stays prose.
 
@@ -178,6 +179,35 @@ export const PageLink = Node.create({
   renderMarkdown: node => `<page url="bridge://p/${node.attrs?.id ?? ""}">${escapeHtml(String(node.attrs?.title ?? ""))}</page>`,
 });
 
+const DATABASE_TAG = /^ {0,3}<database url="bridge:\/\/p\/([^"\s]+)"(?: view="([^"\s]+)")?>([^<\n]*)<\/database>[ \t]*(?:\n|$)/;
+
+/** A database shown inline, as its table. The node view is set by the editor. */
+export const DatabaseEmbed = Node.create({
+  name: "databaseEmbed",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: true,
+  addAttributes() {
+    return { id: { default: "" }, view: { default: null }, title: { default: "" } };
+  },
+  parseHTML() { return [{ tag: "div[data-database]", getAttrs: element => ({ id: element.getAttribute("data-database"), view: element.getAttribute("data-view"), title: element.textContent ?? "" }) }]; },
+  renderHTML({ node, HTMLAttributes }) {
+    return ["div", mergeAttributes(HTMLAttributes, { "data-database": node.attrs.id, ...(node.attrs.view ? { "data-view": node.attrs.view } : {}) }), node.attrs.title || "Untitled database"];
+  },
+  markdownTokenizer: {
+    name: "databaseEmbed",
+    level: "block",
+    start: (src: string) => src.search(/^ {0,3}<database url="bridge:/m),
+    tokenize: (src: string) => {
+      const match = DATABASE_TAG.exec(src);
+      return match ? { type: "databaseEmbed", raw: match[0], id: match[1], view: match[2] ?? null, title: unescapeHtml(match[3]) } : undefined;
+    },
+  },
+  parseMarkdown: (token, helpers) => helpers.createNode("databaseEmbed", { id: token.id, view: token.view, title: token.title }),
+  renderMarkdown: node => `<database url="bridge://p/${node.attrs?.id ?? ""}"${node.attrs?.view ? ` view="${node.attrs.view}"` : ""}>${escapeHtml(String(node.attrs?.title ?? ""))}</database>`,
+});
+
 /** `[[Target]]` or `[[Target|Alias]]`, all on one line; the same grammar the
  *  core reads (the first `|` splits), so links written elsewhere resolve here
  *  and back. */
@@ -266,7 +296,8 @@ export const RawBlock = Node.create({
     level: "block",
     start: (src: string) => src.search(/^ {0,3}<[!a-z/]/im),
     tokenize: (src: string) => {
-      if (!RAW_START.test(src)) return undefined;
+      // The embed's exact form is the embed's; any other `<database>` stays raw.
+      if (!RAW_START.test(src) || DATABASE_TAG.test(src)) return undefined;
       const comment = /^ {0,3}<!--[\s\S]*?-->[^\n]*(?:\n|$)/.exec(src);
       const block = comment ?? /^[\s\S]*?(?:\n[ \t]*\n|$)/.exec(src);
       if (!block) return undefined;

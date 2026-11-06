@@ -21,7 +21,7 @@ import { SlashMenu, slashCommand, type BlockHost, type SlashMenuHandle, type Sla
 import { SelectionToolbar } from "./toolbar";
 import { WikiMenu, wikiCommand, type WikiMenuHandle, type WikiState } from "./wiki";
 import { BlockHandle } from "./handle";
-import { EditorPagesContext, NoteCallout, NoteImage, NotePageLink, NoteWikiLink, type EditorPages } from "./views";
+import { EditorPagesContext, NoteCallout, NoteDatabaseEmbed, NoteImage, NotePageLink, NoteWikiLink, type EditorPages } from "./views";
 
 export const HAND_OVER_MS = 250;
 
@@ -42,6 +42,8 @@ export interface NoteEditorProps {
   /** Make a page titled so (null: untitled, the `/` menu's Page); resolves to
    *  it, or null if it failed. */
   onCreatePage: (title: string | null) => Promise<{ id: string; title: string } | null>;
+  /** Make a database under this page (the `/` menu's Database); resolves to it, or null. */
+  onCreateDatabase?: () => Promise<{ id: string; title: string } | null>;
   onError: (message: string) => void;
 }
 
@@ -132,6 +134,13 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
         editor.chain().focus().insertContentAt(Math.min(at, editor.state.doc.content.size), { type: "pageLink", attrs: page }).run();
       });
     },
+    createDatabase: at => {
+      void latest.current.onCreateDatabase?.().then(database => {
+        const editor = editorRef.current;
+        if (!database || !editor) return;
+        editor.chain().focus().insertContentAt(Math.min(at, editor.state.doc.content.size), { type: "databaseEmbed", attrs: { id: database.id, view: null, title: database.title } }).run();
+      });
+    },
   });
   const wikiHost = () => ({
     pages: () => latest.current.pages.pages?.() ?? [],
@@ -154,6 +163,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
     extensions: noteExtensions({
       image: NoteImage,
       pageLink: NotePageLink,
+      databaseEmbed: NoteDatabaseEmbed,
       wikiLink: NoteWikiLink,
       callout: NoteCallout,
       onMathClick: (kind, latex, pos) => openMath(kind, pos, latex, true),
