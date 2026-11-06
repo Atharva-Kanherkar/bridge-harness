@@ -4,6 +4,8 @@
 //! they asked; model passes (Structure, Turn into tasks) run only on request
 //! and write beside the body, never into it. Projects are optional everywhere.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +92,238 @@ pub struct NotePage {
     pub structured: Option<StructuredView>,
     pub tasks: Vec<Note>,
     pub backlinks: Vec<NoteBacklink>,
+    /// On a database page: its scope, properties and views.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<NoteDatabase>,
+    /// On a row of a database: the database it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_id: Option<String>,
+    /// On a row: its cells by property id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// One choice of a select, multi-select or status property.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteOption {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Status only: `todo`, `inProgress` or `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+/// The database a relation property points at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteRelation {
+    pub database_id: String,
+}
+
+/// One column of a database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteProperty {
+    pub id: String,
+    pub name: String,
+    /// `text`, `number`, `select`, `multiSelect`, `date`, `checkbox`, `url`,
+    /// `relation` or `status`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub order: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<NoteOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<NoteRelation>,
+    /// Dates only: `date` or `datetime`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_format: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteSort {
+    /// A property id or a system property (`title`, `kind`, `state`, …).
+    pub property: String,
+    /// `asc` or `desc`.
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteGroupBy {
+    pub property: String,
+    /// Dates only: `day`, `week` or `month`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_bucket: Option<String>,
+}
+
+/// How a view shows one property.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteViewProperty {
+    pub id: String,
+    pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+}
+
+/// One saved view of a database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDatabaseView {
+    pub id: String,
+    pub name: String,
+    /// `table`, `board`, `calendar` or `list`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub order: i64,
+    /// The filter tree: `{and: [...]}`, `{or: [...]}` or `{property, op, value?}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sorts: Vec<NoteSort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<NoteGroupBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_property: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<NoteViewProperty>,
+}
+
+/// A database: its properties in order and its views in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDatabase {
+    pub id: String,
+    /// `children` (its rows are its child pages) or `space` (every page).
+    pub scope: String,
+    pub properties: Vec<NoteProperty>,
+    pub views: Vec<NoteDatabaseView>,
+}
+
+/// One row a query matched: the page and its cells by property id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseRow {
+    pub note: Note,
+    pub values: BTreeMap<String, serde_json::Value>,
+}
+
+/// One group of a grouped query, with its first rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseGroup {
+    /// An option id, a fixed value, a date bucket, or `""` for no value.
+    pub key: String,
+    pub label: String,
+    pub count: u32,
+    pub rows: Vec<DatabaseRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseQueryResult {
+    pub rows: Vec<DatabaseRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<DatabaseGroup>>,
+    /// Every matching row, across pages.
+    pub total: u32,
+    /// Absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// An option in a property being added or an options list being replaced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteOptionInput {
+    /// An existing option's id; absent for a new option.
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Status only: `todo`, `inProgress` or `done`.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotePropertyInput {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub options: Option<Vec<NoteOptionInput>>,
+    /// A relation's target database id.
+    #[serde(default)]
+    pub relation: Option<String>,
+    #[serde(default)]
+    pub date_format: Option<String>,
+}
+
+/// A view to save. Without `id` it is created; with one it is replaced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteViewInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub order: Option<i64>,
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+    #[serde(default)]
+    pub sorts: Option<Vec<NoteSort>>,
+    #[serde(default)]
+    pub group_by: Option<NoteGroupBy>,
+    #[serde(default)]
+    pub date_property: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Vec<NoteViewProperty>>,
+}
+
+/// One change to a database's schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "camelCase", deny_unknown_fields)]
+pub enum NoteSchemaChange {
+    Add {
+        property: NotePropertyInput,
+    },
+    Rename {
+        #[serde(rename = "propertyId")]
+        property_id: String,
+        name: String,
+    },
+    /// Convert values where possible; anything else is cleared.
+    Retype {
+        #[serde(rename = "propertyId")]
+        property_id: String,
+        #[serde(rename = "type")]
+        kind: String,
+    },
+    Delete {
+        #[serde(rename = "propertyId")]
+        property_id: String,
+    },
+    /// Replace the whole option list: no id is new, a missing id is deleted.
+    SetOptions {
+        #[serde(rename = "propertyId")]
+        property_id: String,
+        options: Vec<NoteOptionInput>,
+    },
+    /// The schema order, naming every property once.
+    Reorder {
+        #[serde(rename = "propertyIds")]
+        property_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -125,6 +359,9 @@ pub struct NotesList {
     pub jobs: Vec<NoteJob>,
     /// The folder pages are mirrored to.
     pub root: String,
+    /// The database whose saved views are the Notes list's tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_database_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -262,6 +499,80 @@ pub struct UpdateNoteParams {
     /// Record a chat started from this page.
     #[serde(default)]
     pub add_session_id: Option<String>,
+    /// Set (a value) or clear (`null`) a row's cells, by property id.
+    #[serde(default)]
+    pub values: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// Make a database. With no properties it gets a Status; with no views, one
+/// table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateDatabaseParams {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Vec<NotePropertyInput>>,
+    /// First views. They may name the properties being created, and their
+    /// options, by name: the ids are made in the same write.
+    #[serde(default)]
+    pub views: Option<Vec<NoteViewInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateSchemaParams {
+    pub id: String,
+    pub changes: Vec<NoteSchemaChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveViewParams {
+    pub database_id: String,
+    pub view: NoteViewInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteViewParams {
+    pub database_id: String,
+    pub view_id: String,
+}
+
+/// Filter, sort, group and page a database's rows. A `viewId` supplies each of
+/// `filter`, `sorts` and `groupBy` the call leaves out; `null` is the same as
+/// leaving a field out. An explicit `sorts: []` or `filter: {and: []}` replaces
+/// the view's. To run a view without its grouping, query without `viewId` and
+/// pass the view's filter and sorts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryDatabaseParams {
+    pub database_id: String,
+    #[serde(default)]
+    pub view_id: Option<String>,
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+    #[serde(default)]
+    pub sorts: Option<Vec<NoteSort>>,
+    #[serde(default)]
+    pub group_by: Option<NoteGroupBy>,
+    #[serde(default)]
+    pub group_limit: Option<u32>,
+    /// Words to look for, intersected with the filter.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// The caller's local day, `YYYY-MM-DD`, for relative date filters.
+    #[serde(default)]
+    pub today: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

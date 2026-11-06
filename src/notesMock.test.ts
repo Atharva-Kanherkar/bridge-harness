@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import type { NoteProperty } from "./protocol/generated/protocol";
 import {
+  mockCreateDatabase, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema,
   mockCaptureNote, mockCreatePage, mockUpdateNote, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesAgentWrite, mockReadPage,
   mockPageHistory, mockReadVersion, mockRestoreVersion, mockStructureNote, onMockNotesPageChanged, resetMockNotes, setMockNotesPassDelay,
 } from "./notesMock";
@@ -182,3 +185,244 @@ describe("mock history", () => {
     expect(mockRestoreVersion(note.id, 1).warnings).toEqual(["nothing changed"]);
   });
 });
+
+interface SharedCases {
+  today: string;
+  schema: { name: string; type: string; options?: (string | [string, string])[]; dateFormat?: string }[];
+  rows: { title: string; kind: string; state: string; tags: string[]; values: Record<string, unknown> }[];
+  cases: { name: string; filter?: unknown; sorts?: { property: string; direction: string }[]; groupBy?: { property: string; dateBucket?: string }; expect: string[]; groups?: [string, number][] }[];
+}
+
+describe("mock databases", () => {
+  it("mock queries match the shared fixture", () => {
+    const shared = JSON.parse(readFileSync(new URL("../testing/fixtures/notes-query-cases.json", import.meta.url), "utf8")) as SharedCases;
+    const page = mockCreateDatabase({
+      title: "Fixture",
+      properties: shared.schema.map(property => ({
+        name: property.name,
+        type: property.type,
+        dateFormat: property.dateFormat ?? null,
+        options: property.options?.map(option => (Array.isArray(option) ? { name: option[0], group: option[1] } : { name: option })) ?? null,
+      })),
+    });
+    const id = page.note.id;
+    const properties = page.database!.properties;
+    const byName = (name: string): NoteProperty | undefined => properties.find(property => property.name === name);
+    const optionId = (property: NoteProperty, name: unknown) => property.options?.find(option => option.name === name)?.id ?? name;
+    for (const row of shared.rows) {
+      const created = mockCreatePage({ title: row.title, parentId: id, kind: row.kind, tags: row.tags });
+      const values: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(row.values)) {
+        const property = byName(name)!;
+        values[property.id] = property.type === "date" ? { start: value }
+          : property.type === "multiSelect" ? (value as string[]).map(item => optionId(property, item))
+          : ["select", "status"].includes(property.type) ? optionId(property, value)
+          : value;
+      }
+      mockUpdateNote({ id: created.id, state: row.state, ...(Object.keys(values).length ? { values } : {}) });
+    }
+    const named = (tree: unknown): unknown => {
+      const node = tree as Record<string, unknown>;
+      for (const key of ["and", "or"]) if (key in node) return { [key]: (node[key] as unknown[]).map(named) };
+      const property = byName(node.property as string);
+      const condition: Record<string, unknown> = { property: property?.id ?? node.property, op: node.op };
+      if ("value" in node) {
+        const option = (raw: unknown) => (property && ["select", "status", "multiSelect"].includes(property.type) && node.op !== "inGroup" ? optionId(property, raw) : raw);
+        condition.value = Array.isArray(node.value) ? node.value.map(option) : option(node.value);
+      }
+      return condition;
+    };
+    for (const sharedCase of shared.cases) {
+      const property = (name: string) => byName(name)?.id ?? name;
+      const result = mockQueryDatabase({
+        databaseId: id,
+        filter: sharedCase.filter ? named(sharedCase.filter) : null,
+        sorts: sharedCase.sorts?.map(sort => ({ property: property(sort.property), direction: sort.direction })) ?? null,
+        groupBy: sharedCase.groupBy ? { property: property(sharedCase.groupBy.property), dateBucket: sharedCase.groupBy.dateBucket ?? null } : null,
+        today: shared.today,
+        limit: 500,
+      });
+      expect(result.rows.map(row => row.note.title), sharedCase.name).toEqual(sharedCase.expect);
+      if (sharedCase.groups) expect(result.groups!.map(group => [group.label, group.count]), sharedCase.name).toEqual(sharedCase.groups);
+    }
+  });
+
+  it("creates a database with a status and a table, and hides the system database", () => {
+    const page = mockCreateDatabase({ title: "Reading list" });
+    expect(page.note.kind).toBe("database");
+    expect(page.database!.properties.map(property => [property.name, property.type])).toEqual([["Status", "status"]]);
+    expect(page.database!.properties[0].options!.map(option => [option.name, option.group])).toEqual([["To do", "todo"], ["In progress", "inProgress"], ["Done", "done"]]);
+    expect(page.database!.views.map(view => view.name)).toEqual(["Table"]);
+    const list = mockListNotes({ includeArchived: true });
+    expect(list.systemDatabaseId).toBeTruthy();
+    expect(list.notes.some(note => note.id === list.systemDatabaseId)).toBe(false);
+    expect(mockReadPage(list.systemDatabaseId!).database!.views.map(view => view.name)).toEqual(["All", "Inbox", "Pages", "Tasks", "Ideas", "In progress with an agent", "Archived"]);
+  });
+
+  it("changes a schema, keeps option ids, and clears the values of dropped options", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }, { name: "Tech" }] }] });
+    const [rating, genre] = page.database!.properties;
+    const [fiction, tech] = genre.options!;
+    const row = mockCreatePage({ title: "DDIA", parentId: page.note.id });
+    mockUpdateNote({ id: row.id, values: { [rating.id]: 5, [genre.id]: tech.id } });
+    const read = mockReadPage(row.id);
+    expect(read.databaseId).toBe(page.note.id);
+    expect(read.values).toEqual({ [rating.id]: 5, [genre.id]: tech.id });
+    expect(() => mockUpdateNote({ id: row.id, values: { [genre.id]: "nope" } })).toThrow("Fiction, Tech");
+    const schema = mockUpdateSchema({ id: page.note.id, changes: [
+      { op: "rename", propertyId: rating.id, name: "Score" },
+      { op: "setOptions", propertyId: genre.id, options: [{ id: fiction.id, name: "Novels" }, { name: "History" }] },
+      { op: "reorder", propertyIds: [genre.id, rating.id] },
+    ] });
+    expect(schema.properties.map(property => property.name)).toEqual(["Genre", "Score"]);
+    expect(schema.properties[0].options!.map(option => [option.id === fiction.id, option.name])).toEqual([[true, "Novels"], [false, "History"]]);
+    expect(mockReadPage(row.id).values).toEqual({ [rating.id]: 5 });
+    mockUpdateNote({ id: row.id, values: { [rating.id]: null } });
+    expect(mockReadPage(row.id).values).toEqual({});
+    expect(() => mockUpdateSchema({ id: page.note.id, changes: [{ op: "reorder", propertyIds: [rating.id] }] })).toThrow("every property once");
+  });
+
+  it("keeps saved views queryable through schema edits, as the core prunes them", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }, { name: "Tech" }] }] });
+    const [rating, genre] = page.database!.properties;
+    const [fiction, tech] = genre.options!;
+    const view = mockSaveView({ databaseId: page.note.id, view: {
+      name: "Picked", type: "board",
+      filter: { and: [{ property: genre.id, op: "is", value: fiction.id }, { property: genre.id, op: "isAnyOf", value: [fiction.id, tech.id] }, { property: rating.id, op: "gte", value: 3 }] },
+      sorts: [{ property: rating.id, direction: "desc" }, { property: "title", direction: "asc" }],
+      groupBy: { property: genre.id },
+      properties: [{ id: rating.id, visible: true }, { id: genre.id, visible: true }],
+    } });
+    const query = () => mockQueryDatabase({ databaseId: page.note.id, viewId: view.id });
+    const saved = () => mockReadPage(page.note.id).database!.views.find(candidate => candidate.id === view.id)!;
+
+    // Removing an option drops the condition that named it alone and keeps the survivor of a list.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "setOptions", propertyId: genre.id, options: [{ id: tech.id, name: "Tech" }] }] });
+    expect(query).not.toThrow();
+    expect(saved().filter).toEqual({ and: [{ property: genre.id, op: "isAnyOf", value: [tech.id] }, { property: rating.id, op: "gte", value: 3 }] });
+
+    // Deleting a property drops its condition, sort and column.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "delete", propertyId: rating.id }] });
+    expect(query).not.toThrow();
+    expect(saved().filter).toEqual({ and: [{ property: genre.id, op: "isAnyOf", value: [tech.id] }] });
+    expect((saved().sorts ?? []).map(sort => sort.property)).toEqual(["title"]);
+    expect((saved().properties ?? []).map(column => column.id)).toEqual([genre.id]);
+
+    // Retyping to text: a list op and a grouping the type cannot take go.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "retype", propertyId: genre.id, type: "text" }] });
+    expect(query).not.toThrow();
+    expect([saved().filter ?? null, saved().groupBy ?? null]).toEqual([null, null]);
+  });
+
+  it("saves and deletes views, keeping one, and refuses a view that would not run", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }] });
+    const [rating] = page.database!.properties;
+    const view = mockSaveView({ databaseId: page.note.id, view: { name: "Top", type: "board", filter: { property: rating.id, op: "gte", value: 4 } } });
+    expect(mockReadPage(page.note.id).database!.views.map(candidate => candidate.name)).toEqual(["Table", "Top"]);
+    expect(() => mockSaveView({ databaseId: page.note.id, view: { name: "Bad", type: "list", filter: { property: rating.id, op: "contains", value: "x" } } })).toThrow("eq, ne");
+    mockDeleteView({ databaseId: page.note.id, viewId: page.database!.views[0].id });
+    expect(() => mockDeleteView({ databaseId: page.note.id, viewId: view.id })).toThrow("at least one view");
+  });
+
+  it("pages with a cursor and lets the system views reproduce the Notes list", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }] });
+    const rating = page.database!.properties[0].id;
+    for (let index = 0; index < 7; index++) {
+      const row = mockCreatePage({ title: `Book ${index}`, parentId: page.note.id });
+      mockUpdateNote({ id: row.id, values: { [rating]: index % 3 } });
+    }
+    const sorts = [{ property: rating, direction: "asc" }, { property: "title", direction: "asc" }];
+    const first = mockQueryDatabase({ databaseId: page.note.id, sorts, limit: 3 });
+    expect(first.total).toBe(7);
+    const second = mockQueryDatabase({ databaseId: page.note.id, sorts, limit: 3, cursor: first.nextCursor });
+    const third = mockQueryDatabase({ databaseId: page.note.id, sorts, limit: 3, cursor: second.nextCursor });
+    expect([...first.rows, ...second.rows, ...third.rows].map(row => row.note.title)).toEqual(["Book 0", "Book 3", "Book 6", "Book 1", "Book 4", "Book 2", "Book 5"]);
+    expect(third.nextCursor).toBeUndefined();
+
+    const { systemDatabaseId } = mockListNotes();
+    const inbox = mockReadPage(systemDatabaseId!).database!.views.find(view => view.name === "Inbox")!;
+    const listed = mockListNotes().notes.filter(note => note.state === "inbox" && !(note.parentId && note.kind === "task")).map(note => note.id).sort();
+    expect(mockQueryDatabase({ databaseId: systemDatabaseId!, viewId: inbox.id, limit: 500 }).rows.map(row => row.note.id).sort()).toEqual(listed);
+  });
+
+  it("pages by a title in any script, refuses what the core refuses, and returns only live cells", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }] }, { name: "Due", type: "date" }, { name: "Status", type: "status", options: [{ name: "Done", group: "done" }] }] });
+    const [rating, genre, , status] = page.database!.properties;
+    // Titles fold ASCII case only and sort by code point, the core's UTF-8
+    // byte order: 🚀 (U+1F680) after ﬁ (U+FB01), which UTF-16 would reverse.
+    for (const title of ["日本語メモ", "Émile", "plain", "🚀 launch", "ﬁle"]) mockCreatePage({ title, parentId: page.note.id });
+    const first = mockQueryDatabase({ databaseId: page.note.id, sorts: [{ property: "title", direction: "desc" }], limit: 1 });
+    const rest = mockQueryDatabase({ databaseId: page.note.id, sorts: [{ property: "title", direction: "desc" }], limit: 5, cursor: first.nextCursor });
+    expect([...first.rows, ...rest.rows].map(row => row.note.title)).toEqual(["🚀 launch", "ﬁle", "日本語メモ", "Émile", "plain"]);
+
+    const refuse = (params: Partial<Parameters<typeof mockQueryDatabase>[0]>, message: string) =>
+      expect(() => mockQueryDatabase({ databaseId: page.note.id, ...params }), message).toThrow(message);
+    refuse({ filter: { property: rating.id, op: "eq", value: "5" } }, "takes a number");
+    refuse({ filter: { property: genre.id, op: "is", value: "ghost" } }, "choose one of Fiction");
+    refuse({ filter: { property: genre.id, op: "isAnyOf", value: genre.options![0].id } }, "takes a list");
+    refuse({ filter: { property: status.id, op: "inGroup", value: "Done" } }, "inGroup takes one of");
+    refuse({ filter: { property: "kind", op: "is", value: "essay" } }, "choose one of note");
+    refuse({ filter: { property: "title", op: "contains", value: 3 } }, "takes text");
+    refuse({ filter: { and: [], property: "x" } }, "holds only its list");
+    refuse({ filter: { property: "title", op: "isEmpty", extra: 1 } }, "not extra");
+    refuse({ groupBy: { property: page.database!.properties[2].id, dateBucket: "year" } }, "day, week or month");
+    refuse({ today: "11/04/2026" }, "YYYY-MM-DD");
+
+    // A page moved into the database takes cells in the same update.
+    const loose = mockCreatePage({ title: "Loose" });
+    mockUpdateNote({ id: loose.id, parentId: page.note.id, values: { [rating.id]: 3 } });
+    expect(mockReadPage(loose.id).values).toEqual({ [rating.id]: 3 });
+    // A deleted property's cell is not a row value.
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "delete", propertyId: rating.id }] });
+    const rows = mockQueryDatabase({ databaseId: page.note.id, groupBy: { property: genre.id } });
+    expect(rows.rows.every(row => !(rating.id in row.values))).toBe(true);
+    expect(rows.groups!.flatMap(group => group.rows).every(row => !(rating.id in row.values))).toBe(true);
+  });
+
+  it("normalizes tag values in a filter, as the core and the notes list do", () => {
+    const page = mockCreateDatabase({ title: "Tagged" });
+    mockCreatePage({ title: "Paper", parentId: page.note.id, tags: ["research"] });
+    const hits = mockQueryDatabase({ databaseId: page.note.id, filter: { property: "tags", op: "contains", value: " #Research" } });
+    expect(hits.rows.map(row => row.note.title)).toEqual(["Paper"]);
+  });
+
+  it("searches literally when free text has no word", () => {
+    const page = mockCreateDatabase({ title: "Symbols" });
+    for (const title of ["Robot 🤖", "Ordinary"]) mockCreatePage({ title, parentId: page.note.id });
+    expect(mockQueryDatabase({ databaseId: page.note.id, query: "🤖" }).rows.map(row => row.note.title)).toEqual(["Robot 🤖"]);
+  });
+
+  it("lets first views name the properties being created", () => {
+    const page = mockCreateDatabase({
+      title: "Books",
+      properties: [{ name: "Due", type: "date" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }] }],
+      views: [
+        { name: "Calendar", type: "calendar", dateProperty: "Due" },
+        { name: "Board", type: "board", filter: { property: "genre", op: "is", value: "Fiction" }, groupBy: { property: "Genre" }, sorts: [{ property: "Due", direction: "asc" }] },
+      ],
+    });
+    const [due, genre] = page.database!.properties;
+    const [calendar, board] = page.database!.views;
+    expect(calendar.dateProperty).toBe(due.id);
+    expect(board.filter).toEqual({ property: genre.id, op: "is", value: genre.options![0].id });
+    expect([board.groupBy!.property, board.sorts![0].property]).toEqual([genre.id, due.id]);
+  });
+
+  it("keeps valid cells when a property is retyped to the type it has", () => {
+    const page = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }] }] });
+    const [rating, genre] = page.database!.properties;
+    const row = mockCreatePage({ title: "DDIA", parentId: page.note.id });
+    mockUpdateNote({ id: row.id, values: { [rating.id]: 5, [genre.id]: genre.options![0].id } });
+    mockUpdateSchema({ id: page.note.id, changes: [{ op: "retype", propertyId: rating.id, type: "number" }, { op: "retype", propertyId: genre.id, type: "select" }] });
+    expect(mockReadPage(row.id).values).toEqual({ [rating.id]: 5, [genre.id]: genre.options![0].id });
+  });
+
+  it("refuses a database whose first views would not run, making nothing", () => {
+    const before = mockListNotes({ includeArchived: true }).notes.length;
+    expect(() => mockCreateDatabase({ title: "Broken", views: [{ name: "Broken", type: "list", filter: { property: "title", op: "gt", value: 1 } }] })).toThrow("title takes");
+    expect(() => mockCreateDatabase({ title: "Broken", properties: [{ name: "Rating", type: "number" }], views: [{ name: "Calendar", type: "calendar", dateProperty: "Rating" }] })).toThrow("not a date property");
+    expect(() => mockCreateDatabase({ title: "Broken", views: [{ name: "Cols", type: "table", properties: [{ id: "ghost", visible: true }] }] })).toThrow("no property with id ghost");
+    expect(mockListNotes({ includeArchived: true }).notes.length).toBe(before);
+  });
+});
+

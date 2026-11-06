@@ -951,9 +951,40 @@ async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edit
 }
 
 #[tauri::command]
-async fn update_note(id: String, parent_id: Option<String>, clear_parent: Option<bool>, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+async fn update_note(id: String, parent_id: Option<String>, clear_parent: Option<bool>, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, values: Option<std::collections::BTreeMap<String, serde_json::Value>>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
     let core = core.inner().clone();
-    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, parent_id, clear_parent: clear_parent.unwrap_or(false), title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
+    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, parent_id, clear_parent: clear_parent.unwrap_or(false), title, kind, tags, workspace_id, clear_workspace, state, add_session_id, values })).await
+}
+
+#[tauri::command]
+async fn create_database(title: Option<String>, parent_id: Option<String>, workspace_id: Option<String>, properties: Option<Vec<bridge_protocol::messages::NotePropertyInput>>, views: Option<Vec<bridge_protocol::messages::NoteViewInput>>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotePage, BridgeError> {
+    let core = core.inner().clone();
+    blocking("create database", move || api::create_database(&core, &bridge_protocol::messages::CreateDatabaseParams { title, parent_id, workspace_id, properties, views })).await
+}
+
+#[tauri::command]
+async fn update_schema(id: String, changes: Vec<bridge_protocol::messages::NoteSchemaChange>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteDatabase, BridgeError> {
+    let core = core.inner().clone();
+    blocking("update schema", move || api::update_schema(&core, &bridge_protocol::messages::UpdateSchemaParams { id, changes })).await
+}
+
+#[tauri::command]
+async fn save_view(database_id: String, view: bridge_protocol::messages::NoteViewInput, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteDatabaseView, BridgeError> {
+    let core = core.inner().clone();
+    blocking("save view", move || api::save_view(&core, &bridge_protocol::messages::SaveViewParams { database_id, view })).await
+}
+
+#[tauri::command]
+async fn delete_view(database_id: String, view_id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnitResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("delete view", move || api::delete_view(&core, &bridge_protocol::messages::DeleteViewParams { database_id, view_id })).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn query_database(database_id: String, view_id: Option<String>, filter: Option<serde_json::Value>, sorts: Option<Vec<bridge_protocol::messages::NoteSort>>, group_by: Option<bridge_protocol::messages::NoteGroupBy>, group_limit: Option<u32>, query: Option<String>, today: Option<String>, limit: Option<u32>, cursor: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DatabaseQueryResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("query database", move || api::query_database(&core, &bridge_protocol::messages::QueryDatabaseParams { database_id, view_id, filter, sorts, group_by, group_limit, query, today, limit, cursor })).await
 }
 
 #[tauri::command]
@@ -3156,6 +3187,11 @@ pub fn run() -> i32 {
             edit_page,
             update_note,
             delete_note,
+            create_database,
+            update_schema,
+            save_view,
+            delete_view,
+            query_database,
             structure_note,
             extract_tasks,
             split_item,
@@ -3841,6 +3877,9 @@ mod tests {
         assert!(!command_parameter_shape_matches(optional_bool.clone(), &schema, true));
         assert!(!command_parameter_shape_matches(optional_bool, &serde_json::json!({"type": "boolean"}), false));
         assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &schema, false));
+        let any_json = serde_json::json!({"default": null});
+        assert!(command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::Json)), &any_json, false));
+        assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &any_json, false));
         let method = bridge_protocol::MethodName::UpdateNote;
         assert!(!bridge_protocol::TypedMethod::params_required_fields(method).unwrap().contains(&"clearParent".to_owned()));
         let fields = bridge_protocol::TypedMethod::params_schema_fields(method).unwrap();
@@ -4058,6 +4097,9 @@ mod tests {
                 );
                 ParameterShape::Optional(Box::new(schema_type_shape(non_null[0], schema)))
             }
+            // No type constraint at all (an optional `serde_json::Value`,
+            // which schemars writes as `{"default": null}`): any JSON value.
+            None if schema.as_object().is_some_and(|object| object.keys().all(|key| matches!(key.as_str(), "default" | "description"))) => ParameterShape::Json,
             _ => panic!("unsupported params schema: {schema}"),
         }
     }

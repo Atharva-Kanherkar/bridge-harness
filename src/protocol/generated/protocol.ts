@@ -176,6 +176,11 @@ export type BridgeMethod =
   | "notes/read_asset"
   | "notes/get_notes_settings"
   | "notes/save_notes_settings"
+  | "notes/create_database"
+  | "notes/update_schema"
+  | "notes/save_view"
+  | "notes/delete_view"
+  | "notes/query_database"
   | "usage/summary"
   | "usage/list_price_overrides"
   | "usage/set_price_override"
@@ -451,6 +456,11 @@ export const BRIDGE_METHODS = [
   { method: "notes/read_asset", domain: "notes", command: "read_asset" },
   { method: "notes/get_notes_settings", domain: "notes", command: "get_notes_settings" },
   { method: "notes/save_notes_settings", domain: "notes", command: "save_notes_settings" },
+  { method: "notes/create_database", domain: "notes", command: "create_database" },
+  { method: "notes/update_schema", domain: "notes", command: "update_schema" },
+  { method: "notes/save_view", domain: "notes", command: "save_view" },
+  { method: "notes/delete_view", domain: "notes", command: "delete_view" },
+  { method: "notes/query_database", domain: "notes", command: "query_database" },
   { method: "usage/summary", domain: "usage", command: "summary" },
   { method: "usage/list_price_overrides", domain: "usage", command: "list_price_overrides" },
   { method: "usage/set_price_override", domain: "usage", command: "set_price_override" },
@@ -786,6 +796,11 @@ export interface BridgeMethodParams {
   "notes/read_asset": ReadAssetParams;
   "notes/get_notes_settings": undefined;
   "notes/save_notes_settings": SaveNotesSettingsParams;
+  "notes/create_database": CreateDatabaseParams;
+  "notes/update_schema": UpdateSchemaParams;
+  "notes/save_view": SaveViewParams;
+  "notes/delete_view": DeleteViewParams;
+  "notes/query_database": QueryDatabaseParams;
   "sessions/archive_chat": ArchiveChatParams;
   "config/get_worker_settings": GetWorkerSettingsParams;
   "config/save_worker_settings": SaveWorkerSettingsParams;
@@ -1082,6 +1097,11 @@ export interface BridgeMethodResults {
   "notes/read_asset": NoteAssetData;
   "notes/get_notes_settings": NotesSettings;
   "notes/save_notes_settings": NotesSettings;
+  "notes/create_database": NotePage;
+  "notes/update_schema": NoteDatabase;
+  "notes/save_view": NoteDatabaseView;
+  "notes/delete_view": UnitResult;
+  "notes/query_database": DatabaseQueryResult;
   "usage/summary": UsageSummaryResult;
   "usage/list_price_overrides": ListUsagePriceOverridesResult;
   "usage/set_price_override": ListUsagePriceOverridesResult;
@@ -1613,6 +1633,18 @@ export type ContinuationFidelity = "native" | "projected_at_boundary" | "project
 
 export type CredentialPolicy = "user-managed" | "api-key-only" | "enterprise-managed";
 
+export interface DatabaseGroup {
+  count: number;
+  key: string;
+  label: string;
+  rows: DatabaseRow[];
+}
+
+export interface DatabaseRow {
+  note: Note;
+  values: Record<string, unknown>;
+}
+
 export type DelegationNotifyLevel = "all" | "actionable" | "results-only";
 
 export interface DeploymentInfo {
@@ -2135,6 +2167,30 @@ export interface NoteBacklink {
   updatedAt: string;
 }
 
+export interface NoteDatabase {
+  id: string;
+  properties: NoteProperty[];
+  scope: string;
+  views: NoteDatabaseView[];
+}
+
+export interface NoteDatabaseView {
+  dateProperty?: string | null;
+  filter?: unknown;
+  groupBy?: NoteGroupBy | null;
+  id: string;
+  name: string;
+  order: number;
+  properties?: NoteViewProperty[];
+  sorts?: NoteSort[];
+  type: string;
+}
+
+export interface NoteGroupBy {
+  dateBucket?: string | null;
+  property: string;
+}
+
 export interface NoteJob {
   createdAt: string;
   detail?: string | null;
@@ -2145,6 +2201,49 @@ export interface NoteJob {
   pageId: string;
   status: string;
   updatedAt: string;
+}
+
+export interface NoteOption {
+  color?: string | null;
+  group?: string | null;
+  id: string;
+  name: string;
+}
+
+export interface NoteOptionInput {
+  color?: string | null;
+  group?: string | null;
+  id?: string | null;
+  name: string;
+}
+
+export interface NoteProperty {
+  dateFormat?: string | null;
+  id: string;
+  name: string;
+  options?: NoteOption[];
+  order: number;
+  relation?: NoteRelation | null;
+  type: string;
+}
+
+export interface NotePropertyInput {
+  dateFormat?: string | null;
+  name: string;
+  options?: NoteOptionInput[] | null;
+  relation?: string | null;
+  type: string;
+}
+
+export interface NoteRelation {
+  databaseId: string;
+}
+
+export type NoteSchemaChange = { op: "add"; property: NotePropertyInput } | { name: string; op: "rename"; propertyId: string } | { op: "retype"; propertyId: string; type: string } | { op: "delete"; propertyId: string } | { op: "setOptions"; options: NoteOptionInput[]; propertyId: string } | { op: "reorder"; propertyIds: string[] };
+
+export interface NoteSort {
+  direction: string;
+  property: string;
 }
 
 export interface NoteTextEdit {
@@ -2160,6 +2259,24 @@ export interface NoteVersion {
   removed: number;
   seq: number;
   title?: string | null;
+}
+
+export interface NoteViewInput {
+  dateProperty?: string | null;
+  filter?: unknown;
+  groupBy?: NoteGroupBy | null;
+  id?: string | null;
+  name: string;
+  order?: number | null;
+  properties?: NoteViewProperty[] | null;
+  sorts?: NoteSort[] | null;
+  type: string;
+}
+
+export interface NoteViewProperty {
+  id: string;
+  visible: boolean;
+  width?: number | null;
 }
 
 export type Params = Record<string, unknown> | unknown[];
@@ -4361,6 +4478,7 @@ export interface NotesList {
   jobs: NoteJob[];
   notes: Note[];
   root: string;
+  systemDatabaseId?: string | null;
 }
 
 export interface ReadPageParams {
@@ -4369,11 +4487,14 @@ export interface ReadPageParams {
 
 export interface NotePage {
   backlinks: NoteBacklink[];
+  database?: NoteDatabase | null;
+  databaseId?: string | null;
   markdown: string;
   note: Note;
   seq: number;
   structured?: StructuredView | null;
   tasks: Note[];
+  values?: Record<string, unknown> | null;
 }
 
 export interface CaptureNoteParams {
@@ -4414,6 +4535,7 @@ export interface UpdateNoteParams {
   state?: string | null;
   tags?: string[] | null;
   title?: string | null;
+  values?: Record<string, unknown> | null;
   workspaceId?: string | null;
 }
 
@@ -4507,6 +4629,49 @@ export interface NotesSettings {
 export interface SaveNotesSettingsParams {
   autoStructure?: boolean | null;
   root?: string | null;
+}
+
+export interface CreateDatabaseParams {
+  parentId?: string | null;
+  properties?: NotePropertyInput[] | null;
+  title?: string | null;
+  views?: NoteViewInput[] | null;
+  workspaceId?: string | null;
+}
+
+export interface UpdateSchemaParams {
+  changes: NoteSchemaChange[];
+  id: string;
+}
+
+export interface SaveViewParams {
+  databaseId: string;
+  view: NoteViewInput;
+}
+
+export interface DeleteViewParams {
+  databaseId: string;
+  viewId: string;
+}
+
+export interface QueryDatabaseParams {
+  cursor?: string | null;
+  databaseId: string;
+  filter?: unknown;
+  groupBy?: NoteGroupBy | null;
+  groupLimit?: number | null;
+  limit?: number | null;
+  query?: string | null;
+  sorts?: NoteSort[] | null;
+  today?: string | null;
+  viewId?: string | null;
+}
+
+export interface DatabaseQueryResult {
+  groups?: DatabaseGroup[] | null;
+  nextCursor?: string | null;
+  rows: DatabaseRow[];
+  total: number;
 }
 
 export interface ArchiveChatParams {

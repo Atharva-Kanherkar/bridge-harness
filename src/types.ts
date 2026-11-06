@@ -51,6 +51,16 @@ export type {
   NoteHistory,
   NoteJob,
   NotePage,
+  NoteDatabase,
+  NoteDatabaseView,
+  NoteProperty,
+  NoteOption,
+  NoteSort,
+  NoteGroupBy,
+  NoteSchemaChange,
+  DatabaseRow,
+  DatabaseGroup,
+  DatabaseQueryResult,
   NoteVersion,
   NoteVersionPage,
   NotesList,
@@ -248,6 +258,13 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }
+
+/** A database filter: the generated contract carries it as JSON. Refined here
+ *  to the grammar the core's planner accepts (`notes/query.rs`). */
+export type DatabaseFilter =
+  | { and: DatabaseFilter[] }
+  | { or: DatabaseFilter[] }
+  | { property: string; op: string; value?: unknown };
 
 /** `notes/page_changed`: a page committed a change. A refetch hint; `actor`
  *  is `person`, `agent:<harness>:<session>`, `file-import` or `model:*`. */

@@ -1,0 +1,134 @@
+{
+  "description": "Shared database query cases. The Rust planner (notes::query::tests::the_shared_fixture_matches) and the mock (src/notesMock.test.ts) both seed this database and must return exactly these titles and groups. Properties and options are named here; each side maps names to its own ids. Every case sorts by title last, so no order rests on timestamps.",
+  "today": "2026-11-12",
+  "schema": [
+    { "name": "Rating", "type": "number" },
+    { "name": "Genre", "type": "select", "options": ["Fiction", "Tech", "History"] },
+    { "name": "Status", "type": "status", "options": [["To do", "todo"], ["Reading", "inProgress"], ["Done", "done"]] },
+    { "name": "Labels", "type": "multiSelect", "options": ["Short", "Long", "Gift"] },
+    { "name": "Due", "type": "date" },
+    { "name": "At", "type": "date", "dateFormat": "datetime" },
+    { "name": "Owned", "type": "checkbox" },
+    { "name": "Note", "type": "text" }
+  ],
+  "rows": [
+    { "title": "Atlas", "kind": "note", "state": "open", "tags": [], "values": { "Rating": 4, "Genre": "Fiction", "Status": "Reading", "Labels": ["Long"], "Due": "2026-11-10", "Owned": true, "Note": "big map" } },
+    { "title": "beacon", "kind": "note", "state": "open", "tags": [], "values": { "Rating": 2.5, "Genre": "Tech", "Status": "Done", "Labels": ["Short", "Gift"], "Due": "2026-11-12", "At": "2026-11-12T23:30:00-08:00", "Note": "Alpha notes" } },
+    { "title": "Cipher", "kind": "task", "state": "inbox", "tags": [], "values": { "Rating": 5, "Genre": "Tech", "Status": "To do", "Due": "2026-12-01", "Owned": false } },
+    { "title": "delta", "kind": "idea", "state": "open", "tags": ["red"], "values": { "Genre": "History", "Labels": [], "At": "2026-11-11T01:00:00Z" } },
+    { "title": "Echo", "kind": "note", "state": "done", "tags": [], "values": { "Rating": 3, "Status": "Done", "Labels": ["Gift"], "Due": "2026-11-03", "Owned": true, "Note": "" } },
+    { "title": "Fable", "kind": "note", "state": "open", "tags": ["red", "blue"], "values": {} },
+    { "title": "Gamma", "kind": "note", "state": "archived", "tags": [], "values": { "Rating": 1, "Genre": "Fiction", "Status": "Reading", "Due": "2026-11-12", "Note": "alphabet soup" } },
+    { "title": "Helix", "kind": "task", "state": "open", "tags": [], "values": { "Rating": 4, "Genre": "Tech", "Labels": ["Long", "Short"], "Due": "2026-11-16", "Owned": true } },
+    { "title": "iris", "kind": "note", "state": "open", "tags": [], "values": { "Rating": 0, "Genre": "Fiction", "Status": "To do", "At": "2026-11-20T10:00:00+02:00" } },
+    { "title": "Juno", "kind": "note", "state": "open", "tags": [], "values": { "Rating": 4, "Status": "Done", "Labels": ["Short"], "Due": "2026-10-31", "Note": "ALPHA" } },
+    { "title": "Kite", "kind": "question", "state": "open", "tags": [], "values": { "Genre": "History", "Owned": false, "Note": "kite runner" } },
+    { "title": "Lumen", "kind": "note", "state": "open", "tags": [], "values": { "Rating": 3.5, "Genre": "Tech", "Status": "Reading", "Labels": ["Gift", "Long"], "Due": "2026-11-09" } }
+  ],
+  "cases": [
+    {
+      "name": "a number comparison, sorted by it descending",
+      "filter": { "property": "Rating", "op": "gte", "value": 3.5 },
+      "sorts": [{ "property": "Rating", "direction": "desc" }, { "property": "title", "direction": "asc" }],
+      "expect": ["Cipher", "Atlas", "Helix", "Juno", "Lumen"]
+    },
+    {
+      "name": "text contains folds ASCII case",
+      "filter": { "property": "Note", "op": "contains", "value": "alpha" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["beacon", "Gamma", "Juno"]
+    },
+    {
+      "name": "a negation matches empty cells",
+      "filter": { "property": "Note", "op": "notContains", "value": "alpha" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["Atlas", "Cipher", "delta", "Echo", "Fable", "Helix", "iris", "Kite", "Lumen"]
+    },
+    {
+      "name": "a select is any of two options",
+      "filter": { "property": "Genre", "op": "isAnyOf", "value": ["Tech", "History"] },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["beacon", "Cipher", "delta", "Helix", "Kite", "Lumen"]
+    },
+    {
+      "name": "a status group and a number negation",
+      "filter": { "and": [{ "property": "Status", "op": "inGroup", "value": "inProgress" }, { "property": "Rating", "op": "ne", "value": 1 }] },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["Atlas", "Lumen"]
+    },
+    {
+      "name": "an or of a label and no labels",
+      "filter": { "or": [{ "property": "Labels", "op": "contains", "value": "Gift" }, { "property": "Labels", "op": "isEmpty" }] },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["beacon", "Cipher", "delta", "Echo", "Fable", "Gamma", "iris", "Kite", "Lumen"]
+    },
+    {
+      "name": "a date within this ISO week",
+      "filter": { "property": "Due", "op": "within", "value": "thisWeek" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["Atlas", "beacon", "Gamma", "Lumen"]
+    },
+    {
+      "name": "a datetime equals its UTC day",
+      "filter": { "property": "At", "op": "equals", "value": "2026-11-13" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["beacon"]
+    },
+    {
+      "name": "an unchecked box includes empty cells",
+      "filter": { "property": "Owned", "op": "is", "value": false },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["beacon", "Cipher", "delta", "Fable", "Gamma", "iris", "Juno", "Kite", "Lumen"]
+    },
+    {
+      "name": "system kind and state",
+      "filter": { "and": [{ "property": "kind", "op": "isNot", "value": "note" }, { "property": "state", "op": "isNot", "value": "archived" }] },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["Cipher", "delta", "Helix", "Kite"]
+    },
+    {
+      "name": "system tags",
+      "filter": { "property": "tags", "op": "contains", "value": "red" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["delta", "Fable"]
+    },
+    {
+      "name": "a status sorts by option order with empty cells last",
+      "sorts": [{ "property": "Status", "direction": "asc" }, { "property": "title", "direction": "asc" }],
+      "expect": ["Cipher", "iris", "Atlas", "Gamma", "Lumen", "beacon", "Echo", "Juno", "delta", "Fable", "Helix", "Kite"]
+    },
+    {
+      "name": "grouped by status",
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "groupBy": { "property": "Status" },
+      "expect": ["Atlas", "beacon", "Cipher", "delta", "Echo", "Fable", "Gamma", "Helix", "iris", "Juno", "Kite", "Lumen"],
+      "groups": [["To do", 2], ["Reading", 3], ["Done", 3], ["No value", 4]]
+    },
+    {
+      "name": "grouped by labels, a row in each of its groups",
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "groupBy": { "property": "Labels" },
+      "expect": ["Atlas", "beacon", "Cipher", "delta", "Echo", "Fable", "Gamma", "Helix", "iris", "Juno", "Kite", "Lumen"],
+      "groups": [["Short", 3], ["Long", 3], ["Gift", 3], ["No value", 6]]
+    },
+    {
+      "name": "grouped by the month of a date",
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "groupBy": { "property": "Due", "dateBucket": "month" },
+      "expect": ["Atlas", "beacon", "Cipher", "delta", "Echo", "Fable", "Gamma", "Helix", "iris", "Juno", "Kite", "Lumen"],
+      "groups": [["2026-10", 1], ["2026-11", 6], ["2026-12", 1], ["No value", 4]]
+    },
+    {
+      "name": "a date before a day",
+      "filter": { "property": "Due", "op": "before", "value": "2026-11-10" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["Echo", "Juno", "Lumen"]
+    },
+    {
+      "name": "an empty number",
+      "filter": { "property": "Rating", "op": "isEmpty" },
+      "sorts": [{ "property": "title", "direction": "asc" }],
+      "expect": ["delta", "Fable", "Kite"]
+    }
+  ]
+}

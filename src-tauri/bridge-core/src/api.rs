@@ -6948,6 +6948,7 @@ pub fn list_notes(core: &Arc<BridgeCore>, params: &wire::ListNotesParams) -> Res
         notes: core.notes.list(&notes_list_filter(params))?,
         jobs: core.notes.with_db(crate::notes::jobs::recent)?,
         root: core.notes.root().to_string_lossy().into_owned(),
+        system_database_id: core.notes.system_database().ok(),
     })
 }
 
@@ -7002,11 +7003,63 @@ pub(crate) fn notes_update_note(params: &wire::UpdateNoteParams) -> crate::notes
         clear_workspace: params.clear_workspace.unwrap_or(false),
         state: params.state.clone(),
         add_session_id: params.add_session_id.clone(),
+        values: params.values.clone().unwrap_or_default().into_iter().map(|(prop, value)| (prop, (!value.is_null()).then_some(value))).collect(),
     }
 }
 
 pub fn update_note(core: &Arc<BridgeCore>, params: &wire::UpdateNoteParams) -> Result<wire::Note, BridgeError> {
     core.notes.update(notes_update_note(params), crate::notes::service::PERSON)
+}
+
+/// Make a database page, with its first properties and views.
+pub fn create_database(core: &Arc<BridgeCore>, params: &wire::CreateDatabaseParams) -> Result<wire::NotePage, BridgeError> {
+    use crate::notes::wire;
+    let properties = params.properties.as_deref().unwrap_or_default().iter().map(wire::new_property).collect::<Result<Vec<_>, _>>()?;
+    let views = params
+        .views
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, view)| wire::view_input(&bridge_protocol::messages::NoteViewInput { order: view.order.or(Some(index as i64)), ..view.clone() }, None).map(|(_, view)| view))
+        .collect::<Result<Vec<_>, _>>()?;
+    let note = core.notes.create_database(
+        crate::notes::service::CreateDatabase { title: params.title.clone(), parent_id: params.parent_id.clone(), workspace_id: params.workspace_id.clone(), properties, views, ..Default::default() },
+        crate::notes::service::PERSON,
+    )?;
+    core.notes.read(&note.id)
+}
+
+/// Change a database's schema in one validated batch.
+pub fn update_schema(core: &Arc<BridgeCore>, params: &wire::UpdateSchemaParams) -> Result<wire::NoteDatabase, BridgeError> {
+    let ops = params.changes.iter().map(crate::notes::wire::schema_op).collect::<Result<Vec<_>, _>>()?;
+    core.notes.update_schema(&params.id, &ops, crate::notes::service::PERSON)?;
+    Ok(crate::notes::wire::database(&core.notes.database(&params.id)?))
+}
+
+/// Save one view: a new one without an id, a replacement with one.
+pub fn save_view(core: &Arc<BridgeCore>, params: &wire::SaveViewParams) -> Result<wire::NoteDatabaseView, BridgeError> {
+    let database = core.notes.database(&params.database_id)?;
+    let (view_id, view) = crate::notes::wire::view_input(&params.view, Some(&database))?;
+    if let Some(view_id) = &view_id {
+        if !database.views.contains_key(view_id) {
+            return Err(BridgeError::Invalid(format!("no view {view_id} to replace")));
+        }
+    }
+    let id = core.notes.put_view(&params.database_id, view_id.as_deref(), view, crate::notes::service::PERSON)?;
+    let saved = core.notes.database(&params.database_id)?;
+    Ok(crate::notes::wire::view(&id, &saved.views[&id]))
+}
+
+pub fn delete_view(core: &Arc<BridgeCore>, params: &wire::DeleteViewParams) -> Result<wire::UnitResult, BridgeError> {
+    core.notes.delete_view(&params.database_id, &params.view_id, crate::notes::service::PERSON)?;
+    Ok(wire::UnitResult(()))
+}
+
+/// Filter, sort, group and page one database's rows.
+pub fn query_database(core: &Arc<BridgeCore>, params: &wire::QueryDatabaseParams) -> Result<wire::DatabaseQueryResult, BridgeError> {
+    let result = core.notes.query_database(&params.database_id, &crate::notes::wire::query_spec(params))?;
+    Ok(crate::notes::wire::query_result(result))
 }
 
 pub fn delete_note(core: &Arc<BridgeCore>, params: &wire::DeleteNoteParams) -> Result<wire::UnitResult, BridgeError> {
