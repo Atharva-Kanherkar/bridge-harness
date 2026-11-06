@@ -248,7 +248,9 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
                 role="gridcell"
                 aria-selected={isSelected}
                 aria-colindex={col + 1}
-                onClick={() => clickCell(index, col)}
+                // A click inside the open editor (its floating panel too, which
+                // React bubbles here through the portal) is the editor's own.
+                onClick={() => { if (!isEditing) clickCell(index, col); }}
                 style={cellStyle(column)}
                 className={clsx(
                   "relative shrink-0 border-r border-border",

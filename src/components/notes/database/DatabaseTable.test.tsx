@@ -254,4 +254,34 @@ describe("DatabaseTable", () => {
     click(menuItem("Add"));
     expect(props.actions.addProperty).toHaveBeenCalledWith("Due", "date");
   });
+
+  it("keeps an open editor through clicks inside it", () => {
+    const database: NoteDatabase = { id: "db", scope: "children", views: [], properties: [
+      { id: "p-due", name: "Due", type: "date", order: 0 },
+      { id: "p-labels", name: "Labels", type: "multiSelect", order: 1, options: [{ id: "s", name: "Short" }, { id: "g", name: "Gift" }] },
+      { id: "p-note", name: "Note", type: "text", order: 2 },
+    ] };
+    const { props } = mount({ database, view: undefined, rows: [row(0)] });
+    act(() => grid().focus());
+    // The date editor's own toggles.
+    click(cell(0, 1));
+    press("Enter");
+    click([...document.querySelectorAll("label")].find(label => label.textContent === "End date")!.querySelector("input")!);
+    expect(document.querySelector("[role=dialog][aria-label='Due editor']")).not.toBeNull();
+    expect(input("Due end")).not.toBeNull();
+    act(() => { input("Due start").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    // A multi-select stays open for the next choice.
+    click(cell(0, 2));
+    press("Enter");
+    click([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.includes("Short"))!);
+    expect(props.onCommit).toHaveBeenLastCalledWith(props.rows[0], expect.objectContaining({ id: "p-labels" }), ["s"]);
+    expect(document.querySelector("[role=dialog][aria-label='Labels editor']")).not.toBeNull();
+    act(() => { (document.querySelector("input[aria-label='Search Labels options']") as HTMLInputElement).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    // A click inside an inline input moves the caret, not the selection.
+    click(cell(0, 3));
+    press("Enter");
+    click(input("Note"));
+    expect(input("Note")).not.toBeNull();
+  });
 });
+
