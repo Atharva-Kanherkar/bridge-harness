@@ -298,5 +298,16 @@ describe("DatabaseTable", () => {
     expect(document.querySelector("[role=gridcell] input")).toBeNull();
     expect(selected()).toEqual([0, 3]);
   });
+
+  it("reveals a new row outside the window before opening its title", async () => {
+    const many = Array.from({ length: 1000 }, (_, index) => row(index));
+    const onNewRow = vi.fn(async () => "r1000");
+    const { rerender } = mount({ rows: many, onNewRow });
+    await act(async () => { menuItem("New").click(); });
+    rerender({ rows: [...many, row(1000)] });
+    expect(selected()).toEqual([1000, 0]);
+    expect(input("Title")).not.toBeNull();
+    expect(document.activeElement).toBe(input("Title"));
+  });
 });
 

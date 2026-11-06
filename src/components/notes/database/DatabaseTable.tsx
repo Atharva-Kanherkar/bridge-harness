@@ -102,15 +102,6 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
     if (focus && (!visible.length || !rows.some(row => row.note.id === focus.id))) { setFocus(null); setEditing(null); }
   }, [focus, rows, visible.length]);
 
-  // A row made by `+ New` is selected, title open, once the query returns it.
-  useEffect(() => {
-    if (!madeId) return;
-    const index = rows.findIndex(row => row.note.id === madeId);
-    if (index < 0) return;
-    setMadeId(null);
-    setFocus({ id: madeId, col: 0 });
-    setEditing({});
-  }, [madeId, rows]);
 
   const [start, end] = windowOf(rows.length, scrollTop, height);
   const totalWidth = visible.reduce((sum, column) => sum + widthOf(column), 0) + ADD_WIDTH;
@@ -125,6 +116,18 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
     else if (top + ROW_HEIGHT > box.scrollTop + box.clientHeight - header) box.scrollTop = top + ROW_HEIGHT - box.clientHeight + header;
     setScrollTop(box.scrollTop);
   }, []);
+
+  // A row made by `+ New` is scrolled into the window, selected and its title
+  // opened, once the query returns it.
+  useEffect(() => {
+    if (!madeId) return;
+    const index = rows.findIndex(row => row.note.id === madeId);
+    if (index < 0) return;
+    setMadeId(null);
+    reveal(index);
+    setFocus({ id: madeId, col: 0 });
+    setEditing({});
+  }, [madeId, rows, reveal]);
 
   const select = (row: number, col: number) => {
     setFocus({ id: rows[row].note.id, col });
