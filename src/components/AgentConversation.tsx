@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
@@ -1303,9 +1303,14 @@ function ScrollFollow({ sessionKey, populated, signature, windowStart, total, co
   // the reader; scroll anchoring is off (WebKit does not implement it), so the
   // height that arrived is added to `scrollTop` before paint.
   const previousFrame = useRef<{ key: string; windowStart: number; total: number; height: number } | null>(null);
+  // `pinned`, mirrored into state so the jump button can render. The ref stays
+  // the source of truth: placement reads it synchronously, mid-commit.
+  const [away, setAway] = useState(false);
+  const jumpTransition = useMotionTransition(MOTION_DURATION.tick);
 
   const place = useCallback((el: HTMLDivElement, top: number, pin: boolean) => {
     pinned.current = pin;
+    setAway(!pin);
     settleUntil.current = Date.now() + SETTLE_MS;
     const target = scrollInstantly(el, top);
     placedTop.current = target;
@@ -1350,6 +1355,7 @@ function ScrollFollow({ sessionKey, populated, signature, windowStart, total, co
       pinned.current = true;
       placedTop.current = null;
       previousFrame.current = null;
+      setAway(false);
     }
     if (populated && !landed.current) land(el);
   }, [land, sessionKey, populated]);
@@ -1404,7 +1410,14 @@ function ScrollFollow({ sessionKey, populated, signature, windowStart, total, co
     return () => observer.disconnect();
   }, [place, sessionKey]);
 
-  return <div ref={attach} className={className} onScroll={event => {
+  // Back to the latest message, instantly and pinned, so live follow resumes
+  // from the same placement the opening landing uses.
+  const jump = useCallback(() => {
+    const el = ref.current;
+    if (el) place(el, el.scrollHeight, true);
+  }, [place]);
+
+  return <><div ref={attach} className={className} onScroll={event => {
     const el = event.currentTarget;
     const placed = placedTop.current;
     placedTop.current = null;
@@ -1412,8 +1425,25 @@ function ScrollFollow({ sessionKey, populated, signature, windowStart, total, co
     // what used to disarm live follow halfway through its own animation.
     if (placed !== null && Math.abs(el.scrollTop - placed) <= 2) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_SLACK;
+    setAway(!pinned.current);
     rememberReadPosition(sessionKey, { top: el.scrollTop, pinned: pinned.current });
-  }}>{children}</div>;
+  }}>{children}</div>
+  {/* A sibling of the scroller, not a child: it holds still while the
+      transcript moves, and clears the host's 2rem bottom fade. */}
+  <AnimatePresence>
+    {away && <motion.button
+      key="jump"
+      type="button"
+      aria-label="Jump to latest message"
+      title="Jump to latest"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 6 }}
+      transition={jumpTransition}
+      onClick={jump}
+      className="u-glass-popover absolute bottom-10 left-1/2 z-10 -ml-4 inline-flex size-8 items-center justify-center rounded-full text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+    ><ArrowDown className="size-4" aria-hidden="true"/></motion.button>}
+  </AnimatePresence></>;
 }
 
 /// *This item is in progress.* A running tool call, a plan step being executed,
