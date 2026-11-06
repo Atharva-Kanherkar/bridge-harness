@@ -6,6 +6,7 @@
 
 import { rebaseDraft, noteDisplayTitle } from "./notesDraft";
 import type { CreateDatabaseParams, CreatePageParams, DatabaseGroup, DatabaseQueryResult, DatabaseRow, DeleteViewParams, EditPageParams, ListNotesParams, NoteBacklink, NoteDatabase, NoteDatabaseView, NoteJobQueued, NoteOption, NoteProperty, NoteSort, NoteViewInput, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, SplitItemParams, StructureNoteParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
+import { SEEDED_VIEWS } from "./notesSystemViews";
 import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NoteJob, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage, StructuredView } from "./types";
 
 const ROOT = "/Users/you/Library/Application Support/Bridge/notes";
@@ -676,21 +677,9 @@ const OPTION_TYPES = ["select", "multiSelect", "status"];
 
 /** The seven Notes list views, as the core seeds them. */
 function systemViews(): Record<string, NoteDatabaseView> {
-  const condition = (property: string, op: string, value?: unknown) => (value === undefined ? { property, op } : { property, op, value });
-  const notArchived = condition("state", "isNot", "archived");
-  const notChildTask = { or: [condition("kind", "isNot", "task"), condition("parent", "isEmpty")] };
-  const views: [string, unknown][] = [
-    ["All", { and: [notArchived, notChildTask] }],
-    ["Inbox", { and: [condition("state", "is", "inbox"), notChildTask] }],
-    ["Pages", { and: [condition("kind", "isNot", "task"), notArchived] }],
-    ["Tasks", { and: [condition("kind", "is", "task"), notArchived] }],
-    ["Ideas", { and: [condition("kind", "is", "idea")] }],
-    ["In progress with an agent", { and: [condition("state", "is", "doing"), condition("chats", "isNotEmpty")] }],
-    ["Archived", { and: [condition("state", "is", "archived")] }],
-  ];
-  return Object.fromEntries(views.map(([name, filter], order) => {
+  return Object.fromEntries(SEEDED_VIEWS.map(({ name, filter }, order) => {
     const id = nextId("view");
-    return [id, { id, name, type: "list", order, filter }];
+    return [id, { id, name, type: "list", order, filter: clone(filter) }];
   }));
 }
 

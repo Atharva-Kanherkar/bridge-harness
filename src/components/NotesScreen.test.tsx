@@ -996,3 +996,75 @@ describe("databases", () => {
     expect(row.querySelector("[aria-label=Database]")).not.toBeNull();
   });
 });
+
+describe("tabs as saved views", () => {
+  const tabNames = () => [...host.querySelectorAll("[role=tablist][aria-label='Filter notes'] [role=tab]")].map(tab => tab.textContent);
+  const tab = (name: string) => buttons().find(node => node.getAttribute("role") === "tab" && node.textContent === name);
+  const menuItem = (name: string) => buttons().find(node => node.getAttribute("role") === "menuitem" && node.textContent?.startsWith(name));
+  // The builders float in the page body, outside the screen's root.
+  const floating = (name: string) => buttons(document.body).find(node => node.getAttribute("aria-label") === name || node.textContent?.trim() === name);
+  const task = (title: string, state: string) => { const made = mockCreatePage({ title, kind: "task", parentId: mockIdOf(ONBOARDING) }); mockUpdateNote({ id: made.id, state }); return made.id; };
+
+  it("the tabs are the system views and show the same lists as before", async () => {
+    task("Ship the skip button", "open");
+    await render();
+    expect(tabNames()).toEqual(["All", "Inbox", "Pages", "Tasks", "Ideas", "In progress with an agent", "Archived"]);
+    // All leaves child tasks under their page, as it always has.
+    expect(rowTitles().some(title => title.includes("Ship the skip button"))).toBe(false);
+    await click(tab("Tasks"));
+    expect(rowTitles()).toHaveLength(1);
+    expect(rowTitles()[0]).toMatch(/^Ship the skip button/);
+    await click(tab("Inbox"));
+    expect(rowTitles().some(title => title.includes(ONBOARDING))).toBe(true);
+    expect(rowTitles().some(title => title.includes("Local-first sync libraries"))).toBe(false);
+  });
+
+  it("editing the Tasks tab narrows it, and Reset to defaults restores it", async () => {
+    task("Ship the skip button", "open");
+    task("Shorten the welcome copy", "doing");
+    await render();
+    await click(tab("Tasks"));
+    expect(rowTitles()).toHaveLength(2);
+    await click(button("Tasks tab menu"));
+    await click(menuItem("Edit view"));
+    await click(button("Filter, 2"));
+    await click(floating("Add a filter"));
+    const choose = async (label: string, value: string) => { const node = document.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement; await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); }); await settle(); };
+    await choose("Filter 3 property", "state");
+    await choose("Filter 3 value", "doing");
+    expect(rowTitles()).toHaveLength(1);
+    expect(rowTitles()[0]).toMatch(/^Shorten the welcome copy/);
+    await click(button("Save for everyone"));
+    expect(rowTitles()).toHaveLength(1);
+    // Saved: a fresh screen shows the narrowed tab.
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render();
+    await click(tab("Tasks"));
+    expect(rowTitles()).toHaveLength(1);
+    await click(button("Notes settings"));
+    await click(button("Reset tabs to defaults"));
+    await settle(40);
+    expect(tabNames()).toEqual(["All", "Inbox", "Pages", "Tasks", "Ideas", "In progress with an agent", "Archived"]);
+    await click(tab("Tasks"));
+    expect(rowTitles()).toHaveLength(2);
+  });
+
+  it("hide removes a tab, but never the last", async () => {
+    await render();
+    await click(tab("Ideas"));
+    await click(button("Ideas tab menu"));
+    await click(menuItem("Hide"));
+    await settle(40);
+    expect(tabNames()).not.toContain("Ideas");
+    for (const name of ["Inbox", "Pages", "Tasks", "In progress with an agent", "Archived"]) {
+      await click(tab(name));
+      await click(button(`${name} tab menu`));
+      await click(menuItem("Hide"));
+      await settle(40);
+    }
+    expect(tabNames()).toEqual(["All"]);
+    await click(button("All tab menu"));
+    expect(menuItem("Hide")?.disabled).toBe(true);
+  });
+});
