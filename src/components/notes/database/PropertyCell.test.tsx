@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 const cellHost = (overrides: Partial<CellHost> = {}): CellHost => ({
-  setOptions: vi.fn(async () => null),
+  addOption: vi.fn(async () => null),
   searchRows: vi.fn(async () => []),
   rowTitle: () => undefined,
   workspaces: [],
@@ -82,10 +82,10 @@ describe("PropertyCell", () => {
     expect(onCommit).not.toHaveBeenCalled();
   });
 
-  it("select picks, clears and creates an option through setOptions", async () => {
+  it("select picks, clears and creates an option against the stored list", async () => {
     const stored = { ...genre, options: [...genre.options!, { id: "o-hist", name: "History" }] };
-    const setOptions = vi.fn(async () => stored);
-    const { onCommit, rerender } = mount({ column: columnOf(genre), value: undefined, host: cellHost({ setOptions }) });
+    const addOption = vi.fn(async () => stored);
+    const { onCommit, rerender } = mount({ column: columnOf(genre), value: undefined, host: cellHost({ addOption }) });
     open("Genre");
     act(() => option("Tech").click());
     expect(onCommit).toHaveBeenLastCalledWith("o-tech");
@@ -97,7 +97,7 @@ describe("PropertyCell", () => {
     type(input("Search Genre options"), "History");
     const create = [...document.querySelectorAll("button")].find(button => button.textContent === "Create History")!;
     await act(async () => { create.click(); });
-    expect(setOptions).toHaveBeenCalledWith(genre, [{ id: "o-fic", name: "Fiction", color: null, group: null }, { id: "o-tech", name: "Tech", color: null, group: null }, { name: "History" }]);
+    expect(addOption).toHaveBeenCalledWith(genre, { name: "History" });
     expect(onCommit).toHaveBeenLastCalledWith("o-hist");
   });
 

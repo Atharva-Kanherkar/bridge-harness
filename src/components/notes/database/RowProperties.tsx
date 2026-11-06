@@ -8,6 +8,7 @@ import type { Note, NoteDatabase, NoteProperty, NotePage, NoteSchemaChange, Work
 import { Floating } from "./Floating";
 import { PropertyCell, type CellHost } from "./PropertyCell";
 import { AddProperty } from "./SchemaMenu";
+import { addOption } from "./schemaWrites";
 import { typeIcon } from "./DatabaseTable";
 
 export interface RowPropertiesProps {
@@ -31,10 +32,19 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
   const addAnchor = useRef<HTMLDivElement>(null);
   const fail = useCallback((error: unknown) => onError(message(error)), [onError]);
   useEffect(() => setValues(page.values ?? {}), [page.values]);
+  // The schema moves without this row's seq: re-read it whenever the database changes.
   useEffect(() => {
     let alive = true;
-    void bridgeApi.readNotePage(databaseId).then(read => { if (alive) setDatabase(read.database ?? null); }, fail);
-    return () => { alive = false; };
+    let stop: (() => void) | undefined;
+    let burst: ReturnType<typeof setTimeout> | undefined;
+    const read = () => void bridgeApi.readNotePage(databaseId).then(next => { if (alive) setDatabase(next.database ?? null); }, fail);
+    read();
+    void bridgeApi.onNotesPageChanged(payload => {
+      if (payload.pageId !== databaseId) return;
+      clearTimeout(burst);
+      burst = setTimeout(read, 30);
+    }).then(unlisten => { if (alive) stop = unlisten; else unlisten(); });
+    return () => { alive = false; clearTimeout(burst); stop?.(); };
   }, [databaseId, page.seq, fail]);
 
   const change = useCallback(async (changes: NoteSchemaChange[]) => {
@@ -46,13 +56,19 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
   }, [databaseId, fail]);
 
   const host: CellHost = useMemo(() => ({
-    setOptions: async (property: NoteProperty, options) => (await change([{ op: "setOptions", propertyId: property.id, options }]))?.properties.find(candidate => candidate.id === property.id) ?? null,
+    addOption: async (property: NoteProperty, option) => {
+      try {
+        const next = await addOption(databaseId, property.id, option);
+        setDatabase(next);
+        return next.properties.find(candidate => candidate.id === property.id) ?? null;
+      } catch (error) { fail(error); return null; }
+    },
     searchRows: async (target, text) => (await bridgeApi.queryDatabase({ databaseId: target, query: text.trim() || null, limit: 20 })).rows.map(row => ({ id: row.note.id, title: row.note.title ?? "" })),
     rowTitle: id => notes?.find(note => note.id === id)?.title ?? undefined,
     workspaces,
     chatTitle,
     onOpenChat,
-  }), [change, notes, workspaces, chatTitle, onOpenChat]);
+  }), [databaseId, fail, notes, workspaces, chatTitle, onOpenChat]);
 
   const commit = async (property: NoteProperty, value: unknown) => {
     const before = values;

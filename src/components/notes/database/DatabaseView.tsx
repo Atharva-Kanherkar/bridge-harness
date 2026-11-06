@@ -16,7 +16,7 @@ import type { DatabaseRow, NoteDatabase, NoteDatabaseView, NoteProperty, NoteSch
 import { DatabaseTable, type TableActions } from "./DatabaseTable";
 import type { CellHost } from "./PropertyCell";
 import { columnsOf, viewInputOf, withColumn, type Column } from "./formatValue";
-import { saveOptions } from "./schemaWrites";
+import { addOption, saveOptions } from "./schemaWrites";
 
 export const FIRST_PAGE = 100;
 export const LATER_PAGE = 500;
@@ -177,16 +177,20 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   }, [databaseId, view, query, fail]);
 
   const host: CellHost = useMemo(() => ({
-    setOptions: async (property: NoteProperty, options) => {
-      const next = await change([{ op: "setOptions", propertyId: property.id, options }]);
-      return next?.properties.find(candidate => candidate.id === property.id) ?? null;
+    addOption: async (property: NoteProperty, option) => {
+      try {
+        const next = await addOption(databaseId, property.id, option);
+        setDatabase(next);
+        void query();
+        return next.properties.find(candidate => candidate.id === property.id) ?? null;
+      } catch (error) { fail(error); return null; }
     },
     searchRows: async (target, text) => (await bridgeApi.queryDatabase({ databaseId: target, query: text.trim() || null, limit: 20 })).rows.map(row => ({ id: row.note.id, title: row.note.title ?? "" })),
     rowTitle: id => related.get(id) ?? rows?.find(row => row.note.id === id)?.note.title ?? undefined,
     workspaces,
     chatTitle,
     onOpenChat,
-  }), [change, related, rows, workspaces, chatTitle, onOpenChat]);
+  }), [databaseId, query, fail, related, rows, workspaces, chatTitle, onOpenChat]);
 
   const actions: TableActions = useMemo(() => ({
     rename: (property, name) => void change([{ op: "rename", propertyId: property.id, name }]),

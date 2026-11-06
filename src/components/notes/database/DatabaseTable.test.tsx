@@ -42,7 +42,7 @@ const row = (index: number, values: Record<string, unknown> = {}): DatabaseRow =
 function actionSpies(): TableActions {
   return { rename: vi.fn(), retype: vi.fn(), setOptions: vi.fn(), sort: vi.fn(), hide: vi.fn(), remove: vi.fn(), resize: vi.fn(), show: vi.fn(), addProperty: vi.fn() };
 }
-const cellHost: CellHost = { setOptions: vi.fn(async () => null), searchRows: vi.fn(async () => []), rowTitle: () => undefined, workspaces: [] };
+const cellHost: CellHost = { addOption: vi.fn(async () => null), searchRows: vi.fn(async () => []), rowTitle: () => undefined, workspaces: [] };
 
 function mount(overrides: Partial<DatabaseTableProps> = {}) {
   const props: DatabaseTableProps = {

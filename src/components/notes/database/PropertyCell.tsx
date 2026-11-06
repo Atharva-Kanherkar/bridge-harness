@@ -19,8 +19,8 @@ import { STATUS_GROUPS, formatValue, type Column } from "./formatValue";
 
 /** What a cell needs from the database around it. */
 export interface CellHost {
-  /** Replace a property's options; resolves to the property as stored, or null if refused. */
-  setOptions: (property: NoteProperty, options: NoteOptionInput[]) => Promise<NoteProperty | null>;
+  /** Add an option to the property's stored list; resolves to the property as stored, or null if refused. */
+  addOption: (property: NoteProperty, option: NoteOptionInput) => Promise<NoteProperty | null>;
   /** Rows of a database matching `query`, for a relation. */
   searchRows: (databaseId: string, query: string) => Promise<{ id: string; title: string }[]>;
   rowTitle: (id: string) => string | null | undefined;
@@ -244,8 +244,8 @@ function OptionPicker({ property, value, seed, host, onPick, onCancel }: { prope
     const name = query.trim();
     if (!name || exact || creating) return;
     setCreating(true);
-    const inputs: NoteOptionInput[] = [...options.map(option => ({ id: option.id, name: option.name, color: option.color ?? null, group: option.group ?? null })), { name, ...(property.type === "status" ? { group: "todo" } : {}) }];
-    const stored = await host.setOptions(property, inputs);
+    // Added to the list as stored, never this picker's copy of it.
+    const stored = await host.addOption(property, { name, ...(property.type === "status" ? { group: "todo" } : {}) });
     setCreating(false);
     const made = stored?.options?.find(option => fold(option.name) === fold(name));
     if (!stored || !made) return;
