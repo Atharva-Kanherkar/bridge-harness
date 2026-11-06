@@ -30,7 +30,7 @@ export interface ViewActions {
 
 export function ViewTabs({ views, activeId, onSelect, actions }: { views: NoteDatabaseView[]; activeId: string | null; onSelect: (id: string) => void; actions: ViewActions }) {
   const [dragging, setDragging] = useState<string | null>(null);
-  return <div role="tablist" aria-label="Views" className="mb-2 flex flex-wrap items-center gap-0.5">
+  return <div role="tablist" aria-label="Database views" className="mb-2 flex flex-wrap items-center gap-0.5">
     {views.map((view, index) => <Tab
       key={view.id}
       view={view}

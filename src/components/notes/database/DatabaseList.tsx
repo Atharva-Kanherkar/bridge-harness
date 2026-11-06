@@ -65,8 +65,9 @@ function Line({ row, columns, host, onOpen }: { row: DatabaseRow; columns: Colum
   const chips = columns.map(column => [column, formatValue(column, cellValue(column, row.note, row.values), context)] as const).filter(([column, text]) => text && !(column.type === "checkbox" && text === "No"));
   return <div role="listitem" className="h-9">
     <button type="button" onClick={onOpen} className="flex h-9 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left transition-colors hover:bg-accent">
-      <span className={clsx("min-w-0 shrink truncate text-[13.5px] font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
-      <span className="flex min-w-0 flex-1 items-center justify-end gap-1.5 overflow-hidden">
+      <span className={clsx("min-w-0 max-w-[60%] shrink-0 truncate text-[13.5px] font-medium", row.note.title ? "text-foreground" : "text-faint")}>{row.note.title || "Untitled"}</span>
+      {/* Right-aligned, and clipped at the right edge when there are more than fit. */}
+      <span className="ml-auto flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
         {chips.map(([column, text]) => <span key={column.id} title={`${column.name}: ${text}`} className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-[11.5px] text-muted-foreground">{column.type === "checkbox" ? column.name : text}</span>)}
       </span>
     </button>
