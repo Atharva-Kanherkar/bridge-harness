@@ -9,6 +9,7 @@ import { Floating } from "./Floating";
 import { PropertyCell, type CellHost } from "./PropertyCell";
 import { AddProperty } from "./SchemaMenu";
 import { addOption } from "./schemaWrites";
+import { useLatestOnly } from "./useLatestOnly";
 import { typeIcon } from "./DatabaseTable";
 
 export interface RowPropertiesProps {
@@ -32,12 +33,17 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
   const addAnchor = useRef<HTMLDivElement>(null);
   const fail = useCallback((error: unknown) => onError(message(error)), [onError]);
   useEffect(() => setValues(page.values ?? {}), [page.values]);
+  // Schema reads and writes land newest first, whatever order they answer in.
+  const schemaOrder = useLatestOnly();
   // The schema moves without this row's seq: re-read it whenever the database changes.
   useEffect(() => {
     let alive = true;
     let stop: (() => void) | undefined;
     let burst: ReturnType<typeof setTimeout> | undefined;
-    const read = () => void bridgeApi.readNotePage(databaseId).then(next => { if (alive) setDatabase(next.database ?? null); }, fail);
+    const read = () => {
+      const ticket = schemaOrder.take();
+      void bridgeApi.readNotePage(databaseId).then(next => { if (alive && schemaOrder.accept(ticket)) setDatabase(next.database ?? null); }, fail);
+    };
     read();
     void bridgeApi.onNotesPageChanged(payload => {
       if (payload.pageId !== databaseId) return;
@@ -45,21 +51,23 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
       burst = setTimeout(read, 30);
     }).then(unlisten => { if (alive) stop = unlisten; else unlisten(); });
     return () => { alive = false; clearTimeout(burst); stop?.(); };
-  }, [databaseId, page.seq, fail]);
+  }, [databaseId, page.seq, fail, schemaOrder]);
 
   const change = useCallback(async (changes: NoteSchemaChange[]) => {
+    const ticket = schemaOrder.take();
     try {
       const next = await bridgeApi.updateDatabaseSchema({ id: databaseId, changes });
-      setDatabase(next);
+      if (schemaOrder.accept(ticket)) setDatabase(next);
       return next;
     } catch (error) { fail(error); return null; }
-  }, [databaseId, fail]);
+  }, [databaseId, fail, schemaOrder]);
 
   const host: CellHost = useMemo(() => ({
     addOption: async (property: NoteProperty, option) => {
+      const ticket = schemaOrder.take();
       try {
         const next = await addOption(databaseId, property.id, option);
-        setDatabase(next);
+        if (schemaOrder.accept(ticket)) setDatabase(next);
         return next.properties.find(candidate => candidate.id === property.id) ?? null;
       } catch (error) { fail(error); return null; }
     },
@@ -68,7 +76,7 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
     workspaces,
     chatTitle,
     onOpenChat,
-  }), [databaseId, fail, notes, workspaces, chatTitle, onOpenChat]);
+  }), [databaseId, fail, schemaOrder, notes, workspaces, chatTitle, onOpenChat]);
 
   const commit = async (property: NoteProperty, value: unknown) => {
     const before = values;

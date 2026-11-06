@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bridgeApi } from "../../../api";
 import { mockCreateDatabase, mockCreatePage, mockReadPage, mockUpdateNote, mockUpdateSchema, resetMockNotes } from "../../../notesMock";
 import { RowProperties } from "./RowProperties";
 
@@ -21,6 +22,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const later = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
 const settle = () => act(async () => { for (let i = 0; i < 6; i += 1) await new Promise(resolve => setTimeout(resolve, 5)); });
 function type(element: HTMLInputElement, text: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -51,4 +53,24 @@ describe("RowProperties", () => {
     const c = mockReadPage(made.note.id).database!.properties[0].options![2].id;
     expect(mockReadPage(mine.id).values).toEqual({ [genre.id]: c });
   });
+
+  it("never lets an older schema read replace a newer one", async () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }] });
+    const rating = made.database!.properties[0].id;
+    const mine = mockCreatePage({ title: "Mine", parentId: made.note.id });
+    await act(async () => { root.render(<RowProperties page={mockReadPage(mine.id)} workspaces={[]} onChanged={vi.fn()} onError={vi.fn()} />); });
+    await later();
+    let release!: () => void;
+    vi.spyOn(bridgeApi, "readNotePage").mockImplementationOnce(page => { const old = mockReadPage(page); return new Promise(resolve => { release = () => resolve(old); }); });
+    mockUpdateSchema({ id: made.note.id, changes: [{ op: "rename", propertyId: rating, name: "Old rename" }] });
+    await later();
+    mockUpdateSchema({ id: made.note.id, changes: [{ op: "rename", propertyId: rating, name: "Newest rename" }] });
+    await later();
+    expect(host.textContent).toContain("Newest rename");
+    await act(async () => { release(); });
+    await later();
+    expect(host.textContent).toContain("Newest rename");
+    expect(host.textContent).not.toContain("Old rename");
+  });
 });
+

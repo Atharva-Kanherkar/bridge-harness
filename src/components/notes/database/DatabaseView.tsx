@@ -17,6 +17,7 @@ import { DatabaseTable, type TableActions } from "./DatabaseTable";
 import type { CellHost } from "./PropertyCell";
 import { columnsOf, viewInputOf, withColumn, type Column } from "./formatValue";
 import { addOption, saveOptions } from "./schemaWrites";
+import { useLatestOnly } from "./useLatestOnly";
 
 export const FIRST_PAGE = 100;
 export const LATER_PAGE = 500;
@@ -63,12 +64,15 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const viewDraft = useRef<NoteDatabaseView | null>(null);
   useEffect(() => { if (given) setDatabase(viewDraft.current ? withView(given, viewDraft.current) : given); }, [given]);
 
+  // Schema reads and writes land newest first, whatever order they answer in.
+  const schemaOrder = useLatestOnly();
   const readDatabase = useCallback(async () => {
+    const ticket = schemaOrder.take();
     try {
       const page = await bridgeApi.readNotePage(databaseId);
-      if (page.database) setDatabase(viewDraft.current ? withView(page.database, viewDraft.current) : page.database);
+      if (page.database && schemaOrder.accept(ticket)) setDatabase(viewDraft.current ? withView(page.database, viewDraft.current) : page.database);
     } catch (error) { fail(error); }
-  }, [databaseId, fail]);
+  }, [databaseId, fail, schemaOrder]);
   useEffect(() => { if (!given) void readDatabase(); }, [given, readDatabase]);
 
   const views = useMemo(() => [...(database?.views ?? [])].sort((a, b) => a.order - b.order), [database]);
@@ -177,13 +181,14 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   }, [query, fail]);
 
   const change = useCallback(async (changes: NoteSchemaChange[]): Promise<NoteDatabase | null> => {
+    const ticket = schemaOrder.take();
     try {
       const next = await bridgeApi.updateDatabaseSchema({ id: databaseId, changes });
-      setDatabase(next);
+      if (schemaOrder.accept(ticket)) setDatabase(next);
       void query();
       return next;
     } catch (error) { fail(error); return null; }
-  }, [databaseId, query, fail]);
+  }, [databaseId, query, fail, schemaOrder]);
 
   // View edits apply at once, each built on the one before it (still unsaved
   // or not), and save in order; only the newest answer replaces the view.
@@ -219,9 +224,10 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
 
   const host: CellHost = useMemo(() => ({
     addOption: async (property: NoteProperty, option) => {
+      const ticket = schemaOrder.take();
       try {
         const next = await addOption(databaseId, property.id, option);
-        setDatabase(next);
+        if (schemaOrder.accept(ticket)) setDatabase(next);
         void query();
         return next.properties.find(candidate => candidate.id === property.id) ?? null;
       } catch (error) { fail(error); return null; }
@@ -231,19 +237,22 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     workspaces,
     chatTitle,
     onOpenChat,
-  }), [databaseId, query, fail, related, rows, workspaces, chatTitle, onOpenChat]);
+  }), [databaseId, query, fail, schemaOrder, related, rows, workspaces, chatTitle, onOpenChat]);
 
   const actions: TableActions = useMemo(() => ({
     rename: (property, name) => void change([{ op: "rename", propertyId: property.id, name }]),
     retype: (property, type) => void change([{ op: "retype", propertyId: property.id, type }]),
-    setOptions: (property, options, seen) => void saveOptions(databaseId, property.id, options, seen).then(next => { setDatabase(next); void query(); }, fail),
+    setOptions: (property, options, seen) => {
+      const ticket = schemaOrder.take();
+      void saveOptions(databaseId, property.id, options, seen).then(next => { if (schemaOrder.accept(ticket)) setDatabase(next); void query(); }, fail);
+    },
     remove: property => void change([{ op: "delete", propertyId: property.id }]),
     addProperty: (name, type) => void change([{ op: "add", property: { name, type, ...(type === "status" ? { options: [{ name: "To do", group: "todo" }, { name: "In progress", group: "inProgress" }, { name: "Done", group: "done" }] } : {}) } }]),
     sort: (column, direction) => saveView(() => ({ sorts: [{ property: column.id, direction }] })),
     hide: column => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { visible: false }) })),
     show: column => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { visible: true }) })),
     resize: (column, width) => saveView((_, columns) => ({ properties: withColumn(columns, column.id, { width }) })),
-  }), [databaseId, change, saveView, query, fail]);
+  }), [databaseId, change, saveView, query, fail, schemaOrder]);
 
   const newRow = useCallback(async () => {
     try {

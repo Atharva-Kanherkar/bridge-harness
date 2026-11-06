@@ -26,6 +26,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const later = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
 const settle = () => act(async () => { for (let i = 0; i < 6; i += 1) await new Promise(resolve => setTimeout(resolve, 5)); });
 
 function books() {
@@ -228,6 +229,21 @@ describe("DatabaseView", () => {
     const visible = Object.fromEntries(stored.map(entry => [entry.id, entry.visible]));
     expect(visible).toEqual({ title: true, [made.database!.properties[0].id]: false, [made.database!.properties[1].id]: false });
     expect([...document.querySelectorAll("[role=columnheader]")].map(header => header.getAttribute("aria-label"))).toEqual(["Title"]);
+  });
+
+  it("never lets an older schema read replace a newer one", async () => {
+    const { id, rating } = books();
+    await mount({ databaseId: id });
+    let release!: () => void;
+    vi.spyOn(bridgeApi, "readNotePage").mockImplementationOnce(page => { const old = mockReadPage(page); return new Promise(resolve => { release = () => resolve(old); }); });
+    mockUpdateSchema({ id, changes: [{ op: "rename", propertyId: rating, name: "Old rename" }] });
+    await later();
+    mockUpdateSchema({ id, changes: [{ op: "rename", propertyId: rating, name: "Newest rename" }] });
+    await later();
+    expect(document.querySelector("[role=columnheader][aria-label='Newest rename']")).not.toBeNull();
+    await act(async () => { release(); });
+    await later();
+    expect(document.querySelector("[role=columnheader][aria-label='Newest rename']")).not.toBeNull();
   });
 });
 
