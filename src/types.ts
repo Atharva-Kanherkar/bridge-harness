@@ -58,6 +58,7 @@ export type {
   NoteOptionInput,
   NotePropertyInput,
   NoteViewProperty,
+  NoteViewInput,
   NoteSort,
   NoteGroupBy,
   NoteSchemaChange,

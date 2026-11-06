@@ -6,8 +6,7 @@
 // In a table cell (`mode: "cell"`) the table owns clicks and keys and opens
 // the editor through `editing`; in a panel the cell is its own button.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowUpRight, Check, Plus } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -15,6 +14,7 @@ import { clsx } from "clsx";
 import { openExternalUrl } from "../../../externalLinks";
 import type { NoteOption, NoteOptionInput, NoteProperty, Workspace } from "../../../types";
 import { MenuLabel, Option, OptionList } from "../NotesUi";
+import { Floating } from "./Floating";
 import { STATUS_GROUPS, formatValue, type Column } from "./formatValue";
 
 /** What a cell needs from the database around it. */
@@ -145,38 +145,6 @@ function Chip({ option, status }: { option: NoteOption; status: boolean }) {
     {status && <span aria-hidden="true" className={clsx("size-1.5 shrink-0 rounded-full", option.group === "done" ? "bg-foreground" : option.group === "inProgress" ? "bg-muted-foreground" : "border border-muted-foreground")} />}
     <span className="truncate">{option.name}</span>
   </span>;
-}
-
-/** A panel that floats over the page at its anchor, so a cell in a scrolling
- *  table is never clipped. Closes on a click outside or Escape. */
-function Floating({ anchor, label, onClose, children }: { anchor: React.RefObject<HTMLElement>; label: string; onClose: () => void; children: ReactNode }) {
-  const panel = useRef<HTMLDivElement>(null);
-  const [place, setPlace] = useState<{ left: number; top?: number; bottom?: number }>({ left: 0, top: 0 });
-  useLayoutEffect(() => {
-    const rect = anchor.current?.getBoundingClientRect();
-    if (!rect) return;
-    const below = rect.bottom + 320 < window.innerHeight || rect.top < 320;
-    setPlace({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), ...(below ? { top: rect.bottom + 4 } : { bottom: window.innerHeight - rect.top + 4 }) });
-  }, [anchor]);
-  useEffect(() => {
-    const outside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!panel.current?.contains(target) && !anchor.current?.contains(target)) onClose();
-    };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
-    document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", escape, true);
-    return () => { document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", escape, true); };
-  }, [anchor, onClose]);
-  // In the body: a transformed pane would make `fixed` relative to itself.
-  return createPortal(<div
-    ref={panel}
-    role="dialog"
-    aria-label={label}
-    style={place}
-    onKeyDown={event => event.stopPropagation()}
-    className="fixed z-50 w-72 rounded-xl bg-popover p-1.5 text-popover-foreground shadow-xl ring-1 ring-border"
-  >{children}</div>, document.body);
 }
 
 function InlineInput({ type, name, initial, mode, onCommit, onCancel }: { type: string; name: string; initial: string; mode: "cell" | "panel"; onCommit: (value: unknown, reason: CloseReason) => void; onCancel: () => void }) {

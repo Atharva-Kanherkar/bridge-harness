@@ -2,7 +2,7 @@
 // and what a retype keeps. Pure, so every view type (#890's board, calendar
 // and list too) draws a value the same way.
 
-import type { Note, NoteDatabase, NoteDatabaseView, NoteProperty } from "../../../types";
+import type { Note, NoteDatabase, NoteDatabaseView, NoteProperty, NoteViewInput, NoteViewProperty } from "../../../types";
 
 export const PROPERTY_TYPES = ["text", "number", "select", "multiSelect", "status", "date", "checkbox", "url", "relation"] as const;
 export const OPTION_TYPES = ["select", "multiSelect", "status"];
@@ -142,4 +142,22 @@ export function retypeNote(from: string, to: string): string {
   if (pair === "text>checkbox") return "Keeps true and false and clears the rest.";
   if (pair === "text>select" || pair === "text>status") return "Keeps every value, adding an option for each one.";
   return "Clears every value.";
+}
+
+/** A saved view as the input that saves it again, every field kept. */
+export function viewInputOf(view: NoteDatabaseView): NoteViewInput {
+  return {
+    id: view.id, name: view.name, type: view.type, order: view.order,
+    filter: view.filter ?? null, sorts: view.sorts ?? [], groupBy: view.groupBy ?? null,
+    dateProperty: view.dateProperty ?? null, properties: view.properties ?? [],
+  };
+}
+
+/** The view's column entries with one column changed: every column in its
+ *  current order, so the saved order is the order shown. A column the view
+ *  does not have yet (a system column being shown) goes last. */
+export function withColumn(columns: Column[], id: string, change: Partial<NoteViewProperty>): NoteViewProperty[] {
+  const entries = columns.map(column => ({ id: column.id, visible: column.visible, width: column.width }));
+  if (!entries.some(entry => entry.id === id)) entries.push({ id, visible: true, width: defaultWidth(id) });
+  return entries.map(entry => entry.id === id ? { ...entry, ...change } : entry);
 }
