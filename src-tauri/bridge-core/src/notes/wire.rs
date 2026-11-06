@@ -75,7 +75,7 @@ pub fn schema_op(change: &wire::NoteSchemaChange) -> Result<SchemaOp, BridgeErro
         wire::NoteSchemaChange::Rename { property_id, name } => SchemaOp::Rename { prop: property_id.clone(), name: name.clone() },
         wire::NoteSchemaChange::Retype { property_id, kind } => SchemaOp::Retype { prop: property_id.clone(), to: kind.clone() },
         wire::NoteSchemaChange::Delete { property_id } => SchemaOp::Delete { prop: property_id.clone() },
-        wire::NoteSchemaChange::SetOptions { property_id, options } => SchemaOp::SetOptions { prop: property_id.clone(), options: option_inputs(options) },
+        wire::NoteSchemaChange::SetOptions { property_id, options, base } => SchemaOp::SetOptions { prop: property_id.clone(), options: option_inputs(options), base: base.clone() },
         wire::NoteSchemaChange::Reorder { property_ids } => SchemaOp::Reorder { props: property_ids.clone() },
     })
 }

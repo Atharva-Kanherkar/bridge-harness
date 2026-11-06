@@ -197,7 +197,10 @@ pub enum SchemaOp {
     AddOption { prop: String, name: String, color: Option<String>, group: Option<String> },
     /// Replace a property's whole option list. An entry without an id is new,
     /// an id left out is deleted (its values cleared), and order is list order.
-    SetOptions { prop: String, options: Vec<OptionInput> },
+    /// `base`, when given, is the option ids (in order) the caller read: the
+    /// write is refused unless they are still exactly what is stored, so two
+    /// writers replacing the list never delete each other's options.
+    SetOptions { prop: String, options: Vec<OptionInput>, base: Option<Vec<String>> },
     /// The schema order: every property, once.
     Reorder { props: Vec<String> },
     RenameOption { prop: String, option: String, name: String },
@@ -1220,10 +1223,13 @@ impl NotesService {
                         next.dropped.push((prop.clone(), option.clone()));
                         schema.insert(prop.clone(), def);
                     }
-                    SchemaOp::SetOptions { prop, options } => {
+                    SchemaOp::SetOptions { prop, options, base } => {
                         let def = schema.get(prop).ok_or_else(|| no_property(prop))?.clone();
                         if !def.kind.options() {
                             return Err(invalid(format!("{} does not have options", def.name)));
+                        }
+                        if base.as_ref().is_some_and(|base| !def.options.iter().map(|option| &option.id).eq(base.iter())) {
+                            return Err(invalid(format!("the options of {} changed since they were read; read them again", def.name)));
                         }
                         let mut built = PropertyDef { options: Vec::new(), ..def.clone() };
                         for input in options {
@@ -2794,6 +2800,7 @@ pub(crate) mod tests {
                         OptionInput { id: Some(done.id.clone()), name: "Finished".into(), ..Default::default() },
                         OptionInput { name: "Paused".into(), group: Some("inProgress".into()), ..Default::default() },
                     ],
+                    base: None,
                 }],
                 PERSON,
             )
@@ -2807,9 +2814,30 @@ pub(crate) mod tests {
         assert_eq!(values_of(&notes, &done_row.id)[&status], serde_json::json!(done.id));
 
         // Two option edits on one property fold; a duplicate name or an unknown id is refused.
-        assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { name: "A".into(), ..Default::default() }, OptionInput { name: "a".into(), ..Default::default() }] }], PERSON).is_err());
-        assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { id: Some("ghost".into()), name: "A".into(), ..Default::default() }] }], PERSON).is_err());
+        assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { name: "A".into(), ..Default::default() }, OptionInput { name: "a".into(), ..Default::default() }], base: None }], PERSON).is_err());
+        assert!(notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: vec![OptionInput { id: Some("ghost".into()), name: "A".into(), ..Default::default() }], base: None }], PERSON).is_err());
         assert_eq!(notes.database(&id).unwrap().schema[&status].options.len(), 2, "a refused batch changes nothing");
+    }
+
+    #[test]
+    fn set_options_with_a_stale_base_is_refused_and_writes_nothing() {
+        let (_dir, notes) = service();
+        let (id, _rating, status) = reading_list(&notes);
+        let read: Vec<String> = notes.database(&id).unwrap().schema[&status].options.iter().map(|option| option.id.clone()).collect();
+        // Someone adds an option after this caller read the list.
+        notes.update_schema(&id, &[SchemaOp::AddOption { prop: status.clone(), name: "Paused".into(), color: None, group: None }], PERSON).unwrap();
+        let stored = notes.database(&id).unwrap().schema[&status].options.clone();
+        let mine: Vec<OptionInput> = stored.iter().filter(|option| read.contains(&option.id)).map(|option| OptionInput { id: Some(option.id.clone()), name: option.name.clone(), ..Default::default() }).chain([OptionInput { name: "Dropped".into(), ..Default::default() }]).collect();
+        let refused = notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: mine.clone(), base: Some(read.clone()) }], PERSON).unwrap_err();
+        assert!(refused.to_string().contains("changed since they were read"), "{refused}");
+        assert_eq!(notes.database(&id).unwrap().schema[&status].options, stored, "nothing written");
+        // Against the ids as stored now, the same list goes through.
+        let now: Vec<String> = stored.iter().map(|option| option.id.clone()).collect();
+        let mut with_paused = mine;
+        with_paused.insert(with_paused.len() - 1, OptionInput { id: Some(stored.last().unwrap().id.clone()), name: "Paused".into(), ..Default::default() });
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: with_paused, base: Some(now) }], PERSON).unwrap();
+        let names: Vec<String> = notes.database(&id).unwrap().schema[&status].options.iter().map(|option| option.name.clone()).collect();
+        assert!(names.contains(&"Paused".to_owned()) && names.contains(&"Dropped".to_owned()), "{names:?}");
     }
 
     #[test]
@@ -2820,13 +2848,13 @@ pub(crate) mod tests {
         let (reading, done) = (options[0].clone(), options[1].clone());
         let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
         let keep_done = || vec![OptionInput { id: Some(done.id.clone()), name: done.name.clone(), ..Default::default() }];
-        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done() }], PERSON).unwrap();
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done(), base: None }], PERSON).unwrap();
         // The state an interrupted cleanup leaves: the schema no longer has
         // Reading, but a row still names it.
         notes.write(&row.id, PERSON, |live| live.edit_records(&RecordsPatch::default().put_value(&status, Some(&serde_json::json!(reading.id))))).unwrap();
         assert_eq!(values_of(&notes, &row.id)[&status], serde_json::json!(reading.id));
         // Retrying the same request finishes it, though the schema is unchanged.
-        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done() }], PERSON).unwrap();
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: status.clone(), options: keep_done(), base: None }], PERSON).unwrap();
         assert!(!values_of(&notes, &row.id).contains_key(&status), "the stale option is cleared on retry");
     }
 
@@ -2864,7 +2892,7 @@ pub(crate) mod tests {
 
         // Removing an option drops the condition that named it alone and keeps
         // the survivor of a list.
-        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: genre.clone(), options: vec![OptionInput { id: Some(tech.clone()), name: "Tech".into(), ..Default::default() }] }], PERSON).unwrap();
+        notes.update_schema(&id, &[SchemaOp::SetOptions { prop: genre.clone(), options: vec![OptionInput { id: Some(tech.clone()), name: "Tech".into(), ..Default::default() }], base: None }], PERSON).unwrap();
         assert!(query(&notes).is_ok(), "{:?}", query(&notes).err());
         assert_eq!(saved(&notes).filter, Some(serde_json::json!({"and": [{"property": genre, "op": "isAnyOf", "value": [tech]}, {"property": rating, "op": "gte", "value": 3}]})));
 

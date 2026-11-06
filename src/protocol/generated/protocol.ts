@@ -2239,7 +2239,7 @@ export interface NoteRelation {
   databaseId: string;
 }
 
-export type NoteSchemaChange = { op: "add"; property: NotePropertyInput } | { name: string; op: "rename"; propertyId: string } | { op: "retype"; propertyId: string; type: string } | { op: "delete"; propertyId: string } | { op: "setOptions"; options: NoteOptionInput[]; propertyId: string } | { op: "reorder"; propertyIds: string[] };
+export type NoteSchemaChange = { op: "add"; property: NotePropertyInput } | { name: string; op: "rename"; propertyId: string } | { op: "retype"; propertyId: string; type: string } | { op: "delete"; propertyId: string } | { base?: string[] | null; op: "setOptions"; options: NoteOptionInput[]; propertyId: string } | { op: "reorder"; propertyIds: string[] };
 
 export interface NoteSort {
   direction: string;

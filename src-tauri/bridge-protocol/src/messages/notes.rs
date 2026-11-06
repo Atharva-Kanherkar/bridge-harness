@@ -318,6 +318,12 @@ pub enum NoteSchemaChange {
         #[serde(rename = "propertyId")]
         property_id: String,
         options: Vec<NoteOptionInput>,
+        /// The option ids, in order, the caller read. When given, the write is
+        /// refused unless they are exactly what is stored, so a client that
+        /// replaces the list can read again and retry instead of deleting
+        /// options someone else added.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<Vec<String>>,
     },
     /// The schema order, naming every property once.
     Reorder {

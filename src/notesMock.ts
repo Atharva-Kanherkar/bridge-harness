@@ -911,6 +911,9 @@ export function mockUpdateSchema(params: UpdateSchemaParams): NoteDatabase {
       case "setOptions": {
         const property = need(change.propertyId);
         if (!OPTION_TYPES.includes(property.type)) throw new Error(`${property.name} does not have options`);
+        // A conditional write: refused unless the stored ids are still the ones the caller read.
+        const stored = (property.options ?? []).map(option => option.id);
+        if (change.base && (change.base.length !== stored.length || change.base.some((id, index) => id !== stored[index]))) throw new Error(`the options of ${property.name} changed since they were read; read them again`);
         const built: NoteOption[] = [];
         for (const input of change.options) {
           const existing = input.id ? (property.options ?? []).find(option => option.id === input.id) : undefined;
