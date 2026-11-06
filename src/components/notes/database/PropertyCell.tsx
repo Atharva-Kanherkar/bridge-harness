@@ -84,11 +84,14 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
     disabled={READ_ONLY.has(type)}
     onClick={() => type === "checkbox" ? onCommit(!(value === true)) : setEditing(!editing)}
     onKeyDown={event => { if (type === "checkbox" && event.key === " ") { event.preventDefault(); onCommit(!(value === true)); } }}
-    className={clsx("-ml-1.5 inline-flex min-h-8 max-w-full items-center rounded-md px-1.5 text-left text-[13px] transition-colors enabled:hover:bg-accent", editing && "bg-accent", text || type === "checkbox" ? "text-foreground" : "text-faint")}
+    className={clsx("-ml-1.5 flex min-h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-[13px] transition-colors enabled:hover:bg-accent", editing && "bg-accent", text || type === "checkbox" ? "text-foreground" : "text-faint")}
   >{children}</button>;
 
-  return <div ref={anchor} className={clsx("relative min-w-0", mode === "cell" ? "h-full" : "inline-block max-w-full")}>
+  const openable = type === "url" && typeof value === "string" && OPENABLE.test(value.trim());
+  return <div ref={anchor} className={clsx("relative min-w-0", mode === "cell" ? "h-full" : "flex items-center gap-1")}>
     {mode === "panel" ? panelButton(text || type === "checkbox" ? display : "Empty") : display}
+    {/* Beside the panel's own button, never inside it. */}
+    {mode === "panel" && openable && <OpenLink url={value} />}
     {editing && !INLINE.has(type) && type !== "checkbox" && !READ_ONLY.has(type) && <Floating anchor={anchor} label={`${column.name} editor`} onClose={cancel}>
       {type === "select" || type === "status" || type === "multiSelect"
         ? <OptionPicker property={column.property!} value={value} seed={seed} host={host} onPick={next => commit(next, "pick")} onCancel={cancel} />
@@ -110,7 +113,7 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
 
 /** The value as a cell or panel reads it. */
 function Display({ column, value, text, host, mode }: { column: PropertyCellProps["column"]; value: unknown; text: string; host: CellHost; mode: "cell" | "panel" }) {
-  const box = mode === "cell" ? "flex h-full min-w-0 items-center px-2 text-[13px]" : "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1 py-1";
+  const box = mode === "cell" ? "flex h-full min-w-0 items-center px-2 text-[13px]" : "flex min-w-0 flex-wrap items-center gap-1 py-1 [overflow-wrap:anywhere]";
   switch (column.type) {
     case "checkbox":
       return <span className={box}><span aria-label={value === true ? "Checked" : "Not checked"} className={clsx("grid size-4 shrink-0 place-items-center rounded border", value === true ? "border-foreground bg-foreground text-background" : "border-border")}>{value === true && <Check size={12} strokeWidth={2.5} aria-hidden="true" />}</span></span>;
@@ -121,23 +124,30 @@ function Display({ column, value, text, host, mode }: { column: PropertyCellProp
     }
     case "url":
       return <span className={clsx(box, "gap-1")}>
-        <span className="min-w-0 truncate underline decoration-border underline-offset-4">{text}</span>
-        {typeof value === "string" && OPENABLE.test(value.trim()) && <button
-          type="button"
-          aria-label={`Open link ${value}`}
-          title="Open link"
-          onClick={event => { event.stopPropagation(); void openExternalUrl(value.trim()); }}
-          onMouseDown={event => event.stopPropagation()}
-          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        ><ArrowUpRight size={13} aria-hidden="true" /></button>}
+        <span className={clsx("min-w-0 underline decoration-border underline-offset-4", mode === "cell" && "truncate")}>{text}</span>
+        {mode === "cell" && typeof value === "string" && OPENABLE.test(value.trim()) && <OpenLink url={value} />}
       </span>;
     case "chats":
       return mode === "panel" && Array.isArray(value) && value.length
         ? <span className={clsx(box, "gap-2")}>{value.map(id => <span key={String(id)} className="truncate">{host.chatTitle?.(String(id)) ?? "A chat"}</span>)}</span>
         : <span className={clsx(box, "truncate")}>{text}</span>;
     default:
-      return <span className={clsx(box, "truncate", column.type === "number" && mode === "cell" && "justify-end tabular-nums")}><span className="min-w-0 truncate">{text}</span></span>;
+      return mode === "cell"
+        ? <span className={clsx(box, column.type === "number" && "justify-end tabular-nums")}><span className="min-w-0 truncate">{text}</span></span>
+        : <span className={box}>{text}</span>;
   }
+}
+
+/** Opens a cell's link the way Bridge opens any outside link. */
+function OpenLink({ url }: { url: string }) {
+  return <button
+    type="button"
+    aria-label={`Open link ${url}`}
+    title="Open link"
+    onClick={event => { event.stopPropagation(); void openExternalUrl(url.trim()); }}
+    onMouseDown={event => event.stopPropagation()}
+    className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+  ><ArrowUpRight size={13} aria-hidden="true" /></button>;
 }
 
 function Chip({ option, status }: { option: NoteOption; status: boolean }) {
