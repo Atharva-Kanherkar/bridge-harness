@@ -72,14 +72,16 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
   const grid = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(0);
-  // The selected cell follows its row by id, so a refresh that reorders or
-  // reloads rows never moves it to another row.
-  const [focus, setFocus] = useState<{ id: string; col: number } | null>(null);
+  // The selected cell names its row and its column by id, so a refresh that
+  // reorders rows, or a column hidden or moved beside it, never moves it (or
+  // an open editor) to another cell.
+  const [focus, setFocus] = useState<{ id: string; column: string } | null>(null);
   const selected = useMemo(() => {
     if (!focus) return null;
     const row = rows.findIndex(candidate => candidate.note.id === focus.id);
-    return row < 0 ? null : { row, col: Math.min(focus.col, Math.max(0, visible.length - 1)) };
-  }, [focus, rows, visible.length]);
+    const col = visible.findIndex(column => column.id === focus.column);
+    return row < 0 || col < 0 ? null : { row, col };
+  }, [focus, rows, visible]);
   const [editing, setEditing] = useState<{ seed?: string } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -100,8 +102,8 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
 
   // The selection stays inside the table as rows and columns come and go.
   useEffect(() => {
-    if (focus && (!visible.length || !rows.some(row => row.note.id === focus.id))) { setFocus(null); setEditing(null); }
-  }, [focus, rows, visible.length]);
+    if (focus && (!visible.some(column => column.id === focus.column) || !rows.some(row => row.note.id === focus.id))) { setFocus(null); setEditing(null); }
+  }, [focus, rows, visible]);
 
 
   const [start, end] = windowOf(rows.length, scrollTop, height);
@@ -126,12 +128,12 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
     if (index < 0) return;
     setMadeId(null);
     reveal(index);
-    setFocus({ id: madeId, col: 0 });
+    setFocus({ id: madeId, column: "title" });
     setEditing({});
   }, [madeId, rows, reveal]);
 
   const select = (row: number, col: number) => {
-    setFocus({ id: rows[row].note.id, col });
+    setFocus({ id: rows[row].note.id, column: visible[col].id });
     setEditing(null);
     reveal(row);
   };

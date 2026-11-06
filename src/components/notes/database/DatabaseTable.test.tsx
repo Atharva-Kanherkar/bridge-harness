@@ -333,5 +333,29 @@ describe("DatabaseTable", () => {
     expect([...document.querySelectorAll("[role=dialog] button")].some(button => button.textContent === "Research chat")).toBe(true);
     expect(document.querySelector("[role=gridcell] input")).toBeNull();
   });
+
+  it("keeps an editor on its property when other columns hide", () => {
+    const database: NoteDatabase = { id: "db", scope: "children", views: [], properties: [
+      { id: "a", name: "A", type: "text", order: 0 },
+      { id: "b", name: "B", type: "text", order: 1 },
+      { id: "c", name: "C", type: "text", order: 2 },
+    ] };
+    const rows = [row(0, { b: "old B", c: "old C" })];
+    const { props, rerender } = mount({ database, view: undefined, rows });
+    act(() => grid().focus());
+    click(cell(0, 2));
+    press("Enter");
+    type(input("B"), "unsaved B");
+    rerender({ view: { id: "v", name: "Table", type: "table", order: 0, properties: [{ id: "a", visible: false }] } });
+    expect(input("B")?.value).toBe("unsaved B");
+    expect(input("C")).toBeNull();
+    type(input("B"), "continued typing");
+    act(() => { input("B").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(props.onCommit).toHaveBeenCalledWith(rows[0], expect.objectContaining({ id: "b" }), "continued typing");
+    // Hiding the selected column itself clears the selection.
+    click(cell(0, 1));
+    rerender({ view: { id: "v", name: "Table", type: "table", order: 0, properties: [{ id: "a", visible: false }, { id: "b", visible: false }] } });
+    expect(selected()).toBeNull();
+  });
 });
 
