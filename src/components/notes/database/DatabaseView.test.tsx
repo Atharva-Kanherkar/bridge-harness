@@ -157,4 +157,34 @@ describe("DatabaseView", () => {
     expect(mockReadPage(made.note.id).database!.properties[0].options!.map(option => option.name)).toEqual(["Fiction", "Tech"]);
     expect(mockReadPage(other.id).values).toEqual({ [genre.id]: tech });
   });
+
+  it("keeps every loaded row and an open editor through a background refresh", async () => {
+    const { id } = books();
+    for (let index = 0; index < 250; index += 1) mockCreatePage({ title: `Book ${String(index).padStart(3, "0")}`, parentId: id });
+    await mount({ databaseId: id });
+    const scroller = document.querySelector("[role=grid]")!.parentElement!;
+    act(() => { scroller.scrollTop = 150 * 36; scroller.dispatchEvent(new Event("scroll")); });
+    const row = [...document.querySelectorAll("[role=row]")].find(candidate => candidate.getAttribute("aria-rowindex") === String(150 + 2))!;
+    const rating = row.querySelectorAll("[role=gridcell]")[1] as HTMLElement;
+    const grid = document.querySelector("[role=grid]") as HTMLElement;
+    act(() => { grid.focus(); rating.click(); });
+    act(() => { grid.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    const box = () => document.querySelector("input[aria-label=Rating]") as HTMLInputElement | null;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box()!, "9"); box()!.dispatchEvent(new Event("input", { bubbles: true })); });
+    // A refresh whose later pages are slow.
+    const real = bridgeApi.queryDatabase.bind(bridgeApi);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(bridgeApi, "queryDatabase").mockImplementation(async params => { if (params.cursor) await gate; return real(params); });
+    mockCreatePage({ title: "Elsewhere" });
+    await settle();
+    expect(grid.getAttribute("aria-rowcount")).toBe("251");
+    expect(box()?.value).toBe("9");
+    await act(async () => { release(); });
+    await settle();
+    expect(grid.getAttribute("aria-rowcount")).toBe("251");
+    expect(box()?.value).toBe("9");
+    expect(box()!.closest("[role=row]")!.getAttribute("aria-rowindex")).toBe(String(150 + 2));
+  });
 });
+

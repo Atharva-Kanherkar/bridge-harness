@@ -52,6 +52,8 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const [related, setRelated] = useState<Map<string, string>>(new Map());
   const ticket = useRef(0);
   const painted = useRef(false);
+  /** Rows of the current view have landed once. */
+  const loaded = useRef(false);
   const latest = useRef({ onError });
   latest.current = { onError };
   const fail = useCallback((error: unknown) => latest.current.onError(message(error)), []);
@@ -75,23 +77,32 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     const mine = ++ticket.current;
     if (!painted.current) performance.mark?.("notes.table.query-start");
     try {
+      // The first load paints its first page at once. A refresh replaces
+      // nothing until it holds every page, so the table never shrinks under
+      // a scrolled view or an open editor.
+      const refresh = loaded.current;
       let result = await bridgeApi.queryDatabase({ databaseId, viewId: queryViewId, limit: FIRST_PAGE });
       if (mine !== ticket.current) return;
       let all = result.rows;
-      setRows(all);
-      setPending(current => current.filter(item => item.after >= mine));
+      const land = () => {
+        setRows(all);
+        setPending(current => current.filter(item => item.after >= mine));
+        loaded.current = true;
+      };
+      if (!refresh) land();
       while (result.nextCursor) {
         result = await bridgeApi.queryDatabase({ databaseId, viewId: queryViewId, limit: LATER_PAGE, cursor: result.nextCursor });
         if (mine !== ticket.current) return;
         all = [...all, ...result.rows];
-        setRows(all);
+        if (!refresh) setRows(all);
       }
+      if (refresh) land();
     } catch (error) {
       if (mine === ticket.current) fail(error);
     }
   }, [databaseId, queryViewId, fail]);
 
-  useEffect(() => { if (database) void query(); }, [database ? database.id : null, queryViewId, query]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loaded.current = false; if (database) void query(); }, [database ? database.id : null, queryViewId, query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The first painted row closes the first-paint measure.
   useEffect(() => {

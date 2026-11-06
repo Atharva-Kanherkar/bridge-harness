@@ -71,7 +71,14 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
   const grid = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(0);
-  const [selected, setSelected] = useState<{ row: number; col: number } | null>(null);
+  // The selected cell follows its row by id, so a refresh that reorders or
+  // reloads rows never moves it to another row.
+  const [focus, setFocus] = useState<{ id: string; col: number } | null>(null);
+  const selected = useMemo(() => {
+    if (!focus) return null;
+    const row = rows.findIndex(candidate => candidate.note.id === focus.id);
+    return row < 0 ? null : { row, col: Math.min(focus.col, Math.max(0, visible.length - 1)) };
+  }, [focus, rows, visible.length]);
   const [editing, setEditing] = useState<{ seed?: string } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -92,8 +99,8 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
 
   // The selection stays inside the table as rows and columns come and go.
   useEffect(() => {
-    setSelected(current => current && (rows.length && visible.length ? { row: Math.min(current.row, rows.length - 1), col: Math.min(current.col, visible.length - 1) } : null));
-  }, [rows.length, visible.length]);
+    if (focus && (!visible.length || !rows.some(row => row.note.id === focus.id))) { setFocus(null); setEditing(null); }
+  }, [focus, rows, visible.length]);
 
   // A row made by `+ New` is selected, title open, once the query returns it.
   useEffect(() => {
@@ -101,7 +108,7 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
     const index = rows.findIndex(row => row.note.id === madeId);
     if (index < 0) return;
     setMadeId(null);
-    setSelected({ row: index, col: 0 });
+    setFocus({ id: madeId, col: 0 });
     setEditing({});
   }, [madeId, rows]);
 
@@ -120,7 +127,7 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
   }, []);
 
   const select = (row: number, col: number) => {
-    setSelected({ row, col });
+    setFocus({ id: rows[row].note.id, col });
     setEditing(null);
     reveal(row);
   };
