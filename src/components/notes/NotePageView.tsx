@@ -24,6 +24,8 @@ import { NoteTasks } from "./NoteTasks";
 import { MenuDivider, Option, OptionList, Pill, Popover, StatusGlyph, useAutoGrow } from "./NotesUi";
 import { NoteEditor, type NoteEditorHandle } from "./editor/NoteEditor";
 import { useNoteDraft, type DraftStatus } from "./useNoteDraft";
+import { DatabaseView } from "./database/DatabaseView";
+import { RowProperties } from "./database/RowProperties";
 
 export const NOTE_KINDS = ["note", "idea", "task", "question"];
 export const NOTE_STATES = ["inbox", "open", "doing", "done", "archived"];
@@ -108,6 +110,8 @@ export function NotePageView(props: NotePageViewProps) {
   const [view, setView] = useState<"words" | "structured">("words");
   const [notice, setNotice] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [describing, setDescribing] = useState(false);
+  useEffect(() => { if (describing) editor.current?.focus("start"); }, [describing]);
   const [progress, setProgress] = useState<Partial<Record<string, NotePassProgressPayload>>>({});
 
   // Typing the editor has not handed over yet goes to the draft first, so a
@@ -209,11 +213,11 @@ export function NotePageView(props: NotePageViewProps) {
             {close => <OptionList label="Status">{NOTE_STATES.map(state => <Option key={state} selected={note.state === state} leading={<StatusGlyph state={state} />} onSelect={() => { close(); void update({ id: note.id, state }); }}>{capital(state)}</Option>)}</OptionList>}
           </PropertyMenu>
         </Property>
-        <Property label="Type">
+        {!page.database && <Property label="Type">
           <PropertyMenu label="Type" value={capital(note.kind)}>
             {close => <OptionList label="Type">{NOTE_KINDS.map(kind => <Option key={kind} selected={note.kind === kind} onSelect={() => { close(); void update({ id: note.id, kind }); }}>{capital(kind)}</Option>)}</OptionList>}
           </PropertyMenu>
-        </Property>
+        </Property>}
         <Property label="Project">
           <PropertyMenu label="Project" value={note.workspaceId ? workspaces.find(workspace => workspace.id === note.workspaceId)?.title ?? "Unknown project" : null}>
             {close => <OptionList label="Project" className="max-h-56 overflow-y-auto">
@@ -226,7 +230,12 @@ export function NotePageView(props: NotePageViewProps) {
           <span className="flex flex-wrap gap-1 py-1">{note.tags.map(tag => <span key={tag} className="rounded-md bg-muted px-1.5 py-0.5 text-[12px] text-foreground">{tag}</span>)}</span>
         </Property>}
         <Author note={note} chatTitle={chatTitle} onOpenChat={onOpenChat} />
+        {page.databaseId && <RowProperties page={page} workspaces={workspaces} notes={notes} chatTitle={chatTitle} onOpenChat={onOpenChat} onChanged={onChanged} onError={onError} />}
       </dl>
+
+      {page.database && <div className="mt-6">
+        <DatabaseView databaseId={note.id} database={page.database} workspaces={workspaces} chatTitle={chatTitle} onOpenChat={onOpenChat} onOpenPage={onOpenPage} onError={onError} />
+      </div>}
 
       <div className="mt-6 flex flex-wrap items-center gap-1 border-b border-border pb-3">
         <div role="tablist" aria-label="Views" className="mr-auto inline-flex rounded-full bg-muted p-0.5">
@@ -254,8 +263,10 @@ export function NotePageView(props: NotePageViewProps) {
       })}
       {notice && <p role="status" className="m-0 mt-3 text-[13px] text-muted-foreground">{notice}</p>}
 
+      {/* A database's words are its description: one line until there are some. */}
+      {page.database && !describing && !draft.text.trim() && view === "words" && <button type="button" onClick={() => setDescribing(true)} className="-ml-1.5 mt-4 inline-flex h-8 items-center rounded-md px-1.5 text-[13px] text-faint transition-colors hover:bg-accent hover:text-foreground">Add a description</button>}
       {/* Hidden rather than unmounted, so the editor keeps its place and undo. */}
-      <div hidden={view !== "words"} className="mt-6">
+      <div hidden={view !== "words" || (!!page.database && !describing && !draft.text.trim())} className="mt-6">
         {draft.changedUnderneath && <p role="status" className="m-0 mb-4 rounded-lg bg-muted px-3 py-2 text-[13px] text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
         <NoteEditor
           ref={editor}

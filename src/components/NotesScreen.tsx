@@ -7,7 +7,7 @@
 // core merge it. The list collapses (`toggle-notes-list`) so the page can take the width.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, PanelLeft, Plus, Search, Settings2 } from "lucide-react";
+import { ChevronRight, PanelLeft, Plus, Search, Settings2, Table2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { taskBrief } from "../notesBrief";
 import { noteDisplayTitle, pageTitled, plainPreview } from "../notesDraft";
@@ -216,6 +216,13 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     void send(key, body);
   };
 
+  const createDatabase = async () => {
+    try {
+      const made = await bridgeApi.createDatabase({ title: "Untitled database" });
+      await refreshList();
+      await open(made.note.id);
+    } catch (error) { fail(error); }
+  };
   const createPage = async () => {
     try {
       const note = await bridgeApi.createNotePage({ title: null, content: "" });
@@ -375,7 +382,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
           {query ? "No notes match." : filter === "tasks" ? "No tasks yet. Open a page and choose Turn into tasks." : filter === "inbox" ? "The Inbox is empty." : filter === "archived" ? "Nothing archived. Set a page's status to Archived to put it here." : "Nothing here yet. Type above and press Enter."}
         </li>}
       </ul>
-      <NotesFooter root={list?.root} onNewPage={() => void createPage()} onError={fail} />
+      <NotesFooter root={list?.root} onNewPage={() => void createPage()} onNewDatabase={() => void createDatabase()} onError={fail} />
     </aside>
 
     <main className={clsx("min-h-0 min-w-0 flex-1 overflow-y-auto", selectedId ? "block" : "hidden md:block")}>
@@ -388,7 +395,8 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         sessions={sessions}
         defaultHarness={defaultHarness}
         chatTitle={chatTitle}
-        childPages={allNotes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
+        // A database's rows are its table, not a list of pages.
+        childPages={page.database ? [] : allNotes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
         ancestors={ancestors}
         startingId={startingId}
         chatOpen={chatOpen}
@@ -460,6 +468,7 @@ function NoteRow({ note, active, parent, project, onOpen }: { note: Note; active
   return <button type="button" aria-current={active ? "true" : undefined} onClick={onOpen} className={clsx("block w-full rounded-lg px-2.5 py-2 text-left transition-colors", active ? "bg-selection" : "hover:bg-accent")}>
     <span className="flex min-w-0 items-center gap-1.5">
       {note.kind === "task" && <StatusGlyph state={note.state} size={12} />}
+      {note.kind === "database" && <Table2 size={13} aria-label="Database" className="shrink-0 text-muted-foreground" />}
       <span className={clsx("min-w-0 flex-1 truncate text-[13.5px] font-medium", note.state === "done" ? "text-muted-foreground line-through" : "text-foreground")}>{title}</span>
       {harness && <span title={`Written by ${harness}`} className="shrink-0"><HarnessMark harness={harness} size={12} /></span>}
       <span className="shrink-0 text-[11px] tabular-nums text-faint">{relativeTime(note.updatedAt)}</span>
@@ -518,7 +527,7 @@ function PageTree({ roots, visibleIds, childrenOf, expanded, activeId, workspace
   })}</>;
 }
 
-function NotesFooter({ root, onNewPage, onError }: { root?: string; onNewPage: () => void; onError: (error: unknown) => void }) {
+function NotesFooter({ root, onNewPage, onNewDatabase, onError }: { root?: string; onNewPage: () => void; onNewDatabase: () => void; onError: (error: unknown) => void }) {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState<NotesSettings | null>(null);
   useEffect(() => {
@@ -531,6 +540,7 @@ function NotesFooter({ root, onNewPage, onError }: { root?: string; onNewPage: (
   };
   return <div className="flex shrink-0 items-center gap-1 px-2 py-2">
     <button type="button" onClick={onNewPage} className="inline-flex h-8 flex-1 items-center gap-2 rounded-lg px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={14} aria-hidden="true" />New page</button>
+    <button type="button" aria-label="New database" title="New database" onClick={onNewDatabase} className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Table2 size={14} aria-hidden="true" /></button>
     <div className="relative">
       <button type="button" aria-label="Notes settings" aria-expanded={open} onClick={() => setOpen(current => !current)} className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Settings2 size={14} aria-hidden="true" /></button>
       <Popover open={open} onClose={() => setOpen(false)} label="Notes settings" side="top" align="end" width="w-72">
