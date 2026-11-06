@@ -230,3 +230,35 @@ saved view CRUD belong to #890.
   painted row. It must be under 200 ms. Scrolling stays at 60 fps in the WebKit timeline.
 - Screenshots in the PR body, dark and light: the table, a header menu, an open select picker, and
   a row page.
+
+## Amendments after review (PR #901)
+
+Each item below came out of review and has a regression test that fails without its fix.
+
+- **Option lists are written against the latest schema.** Saving the options editor reads the
+  property as stored first:
+  - An option someone else added while the editor was open is kept, after the edited list.
+  - An option the editor kept but someone else deleted is dropped.
+  - Creating an option from a cell's picker does the same: it adds to the stored list, never to the
+    picker's copy.
+  - So no write deletes an option the person never saw, or clears another row's value.
+- **A row page's panel follows its database.** The panel re-reads the schema on every
+  `notes/page_changed` for its database, not only when the row's own `seq` moves.
+- **A background refresh never shrinks the table.** The first load paints the first 100 rows and
+  appends the rest. A later re-query fetches every page before it replaces anything, so rows,
+  scroll position and an open editor stay put while it runs. Selection follows its row by id, not by
+  index.
+- **An open editor keeps its own clicks.** A click inside a cell's editor, including one in its
+  floating panel, never changes the selection or closes the editor.
+- **Header buttons keep their own keys.** The grid handles navigation keys only when the grid itself
+  has focus. Space or Enter on a header button activates that button and edits no cell.
+- **A schema change is never lost in a burst.** Coalesced `notes/page_changed` events remember
+  whether any of them named the database, and re-read its schema even when the last event names a
+  row.
+- **A new row is revealed before its title opens.** `+ New` scrolls the new row into the window,
+  then opens its title editor.
+- **View edits compose.** Sort, hide, show and resize apply at once, each built on the previous
+  pending edit. Saves run in order, and only the newest response replaces local state. A refused
+  save re-reads the view.
+- **Chats opens.** A Chats cell's value is read-only, but Enter or a click on a selected cell opens
+  its links, and each link opens its chat. Only Created and Updated have no editor.
