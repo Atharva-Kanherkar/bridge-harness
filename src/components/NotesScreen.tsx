@@ -512,7 +512,7 @@ function PageTree({ roots, visibleIds, childrenOf, expanded, activeId, workspace
           <NoteRow note={note} active={note.id === activeId} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => onOpen(note.id)} />
         </div>
       </div>
-      {openNow && <PageTree
+      {openNow && <ul className="m-0 list-none space-y-px p-0"><PageTree
         roots={kids.filter(child => visibleIds.has(child.id))}
         visibleIds={visibleIds}
         childrenOf={childrenOf}
@@ -522,7 +522,7 @@ function PageTree({ roots, visibleIds, childrenOf, expanded, activeId, workspace
         onToggle={onToggle}
         onOpen={onOpen}
         depth={depth + 1}
-      />}
+      /></ul>}
     </li>;
   })}</>;
 }
