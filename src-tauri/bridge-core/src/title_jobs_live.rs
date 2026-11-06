@@ -32,7 +32,11 @@ const POLL: StdDuration = StdDuration::from_secs(5);
 /// Between batches while a backlog drains, so a backfill of hundreds of chats
 /// never runs turns back to back against a shared account limit.
 const BATCH_PAUSE: StdDuration = StdDuration::from_secs(3);
-const MAX_WALL_SECONDS: i64 = 120;
+/// One title turn's wall clock. Before ladders, Claude Haiku batches of five to
+/// nine chats already took 60 to 120 s (most of it Claude Code's own start);
+/// a ladder roughly doubles the reply, and the eval saw 68 to 108 s for eight
+/// chats with one batch past 120. A background job, so room costs nothing.
+const MAX_WALL_SECONDS: i64 = 240;
 /// Every title run shares one scratch directory, so Claude files them all under
 /// one project instead of minting a directory per run.
 const SCRATCH: &str = "title-runs";

@@ -2626,6 +2626,7 @@ export interface Session {
   startedAt?: string | null;
   status: SessionStatus;
   title?: string | null;
+  titleLadder?: string[];
   usagePercent?: JsSafeI64 | null;
   workspaceId?: string | null;
 }

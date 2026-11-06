@@ -642,6 +642,26 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: home-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* A chat title rewording itself to fit the rail (`FittedTitle`). Only the words
+   the new rung adds come in; the ones it shares with the old rung stay put, so
+   the title reads as growing or shrinking in place. Inline-block, because a
+   transform does not apply to an inline box. Reduced motion shows them at once,
+   delay included. */
+@keyframes title-word-in {
+  from { opacity: 0; filter: blur(3px); transform: translateY(0.2em); }
+  to { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+.title-word-in {
+  display: inline-block;
+  animation: title-word-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--title-word-delay, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .title-word-in { animation: none; }
+}
+
 /* Soft breathing dot used instead of loading spinners. */
 @keyframes thinking-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.72); }
