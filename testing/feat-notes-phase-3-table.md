@@ -145,9 +145,9 @@ saved view CRUD belong to #890.
   ` view="<viewId>"` after the url, parses into a `databaseEmbed` node `{id, view, title}`.
   - It renders back as the same tag, attributes in that order, with the title escaped as
     `pageLink`'s is.
-  - `database` leaves `RAW_START`.
-  - Any other `<database …>` form (different attributes, multiple lines) stays a raw block, kept
-    as written.
+  - `database` stays in `RAW_START`, and the raw-block tokenizer steps aside only when the tag is
+    exactly the embed's form. Any other `<database …>` form (different attributes, multiple
+    lines) stays a raw block, kept as written.
 - An untouched embed round-trips byte for byte through `keepUntouched`.
 - The node view renders `DatabaseView` in a frame with a 420 px maximum height, the title, and an
   "Open as page" action. Deleting the block deletes only the block.
