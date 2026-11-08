@@ -13,6 +13,7 @@ import { UsageFlow } from "./UsageFlow";
 import { UsageMosaic } from "./UsageMosaic";
 import { UsageCalendar } from "./UsageCalendar";
 import type { UsageLayoutProps } from "./UsageLayoutParts";
+import { UsageLoadingState } from "./UsageLayoutParts";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import {
@@ -248,8 +249,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const dashboardSources = preferences.includeImported ? summary?.sources.filter(source => source.origin === "dashboard") ?? [] : [];
   const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported")
     || dashboardSources.some(source => source.coverageState !== "complete" && source.coverageState !== "empty"));
-  const partialTotal = loading || historyIncomplete;
-  const partialLabel = scanning ? "Loading history" : loading ? "Updating usage" : "History incomplete";
+  // A figure is only true once the scan and the summary refetch have both
+  // landed. While either is in flight we hide every total and show a
+  // loading state instead. A settled History incomplete total stays
+  // visible with its badge, because no later load will change it.
+  const isLoadingFigures = scanning || loading;
+  const loadingLabel = scanning ? "Loading history" : loading ? "Updating usage" : null;
+  const settledPartialLabel = !isLoadingFigures && historyIncomplete ? "History incomplete" : null;
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
@@ -275,7 +281,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </select>
       </div>
 
-      {report && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
+      {!isLoadingFigures && report && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
         {incompleteSources.map(source => <li key={source.id}>{source.coverageState === "unsupported"
           ? `${harnessLabel(source.agent)}: ${source.coverageReason ?? "History is unavailable."}`
           : source.coverageState === "stale" || source.coverageState === "unreadable" ? `${harnessLabel(source.agent)} history needs a refresh.`
@@ -286,7 +292,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       </ul>}
 
       {loading && !summary ? <div role="status" className="grid h-56 place-items-center text-caption text-muted-foreground"><LoaderCircle size={16} className="animate-spin" aria-hidden="true" /><span className="sr-only">Loading usage</span></div> : report && <>
-          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} partial={partialTotal ? partialLabel : null} />
+        {isLoadingFigures && loadingLabel ? <UsageLoadingState label={loadingLabel} note={scanNote} /> : <>
+          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} partial={settledPartialLabel} />
           <section className={cn(CARD, "mt-6 py-3")} aria-label="Breakdown table">
             <button type="button" aria-expanded={tableOpen} aria-controls="usage-breakdown-table" onClick={() => setTableOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
               <h2 className="text-ui font-medium text-foreground">Breakdown table</h2>
@@ -295,6 +302,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             </button>
             {tableOpen && <div id="usage-breakdown-table" className="mt-3"><BreakdownTables report={report} window={window_} /></div>}
           </section>
+        </>}
 
         <section className={cn(CARD, "mt-4")} aria-label="History sources">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
