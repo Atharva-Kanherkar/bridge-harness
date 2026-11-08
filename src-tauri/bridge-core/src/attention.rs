@@ -129,6 +129,11 @@ pub enum Effect {
 const REQUEST_KINDS: &[&str] = &["approval.requested", "permission.requested", "question.requested"];
 
 /// Forest kinds that answer one of those requests, by a person or by policy.
+///
+/// Not `delegation.approved` or `delegation.rejected`: `policy::record_decision`
+/// writes those for ordinary routing, with no request id, so treating them as
+/// answers would close a scope approval still waiting on the person. A scope
+/// approval is answered by the `approval.resolved` its resolution writes.
 const RESOLUTION_KINDS: &[&str] = &[
     "approval.resolved",
     "approval.settled",
@@ -136,8 +141,6 @@ const RESOLUTION_KINDS: &[&str] = &[
     "permission.denied",
     "question.resolved",
     "question.rejected",
-    "delegation.approved",
-    "delegation.rejected",
 ];
 
 /// Pure and allocation-free, because the forest append runs it for every
@@ -518,8 +521,8 @@ mod tests {
             ("permission.denied", Some("denied"), Effect::Close),
             ("question.resolved", Some("answered"), Effect::Close),
             ("question.rejected", None, Effect::Close),
-            ("delegation.approved", None, Effect::Close),
-            ("delegation.rejected", None, Effect::Close),
+            ("delegation.approved", None, Effect::Ignore),
+            ("delegation.rejected", None, Effect::Ignore),
             ("turn.started", None, Effect::Ignore),
             ("tool.completed", Some("completed"), Effect::Ignore),
             ("assistant.message", None, Effect::Ignore),
@@ -629,6 +632,20 @@ mod tests {
         assert!(!record(&db, "a", "question.resolved", json!({}), 9));
         let resolved: Vec<bool> = rows(&db).into_iter().map(|row| row.3).collect();
         assert_eq!(resolved, vec![true, true, true]);
+    }
+
+    #[test]
+    fn routing_decisions_leave_a_pending_approval_open() {
+        let db = store();
+        session(&db, "parent", "orchestrator", None, None);
+        // A write-scope approval for one worker is pending...
+        record(&db, "parent", "approval.requested", json!({"approvalId": "scope:1"}), 7);
+        // ...while the same turn routes another worker with no approval at all.
+        assert!(!record(&db, "parent", "delegation.approved", json!({"requestId": "turn-1"}), 8));
+        assert!(!record(&db, "parent", "delegation.rejected", json!({"requestId": "turn-1"}), 9));
+        assert!(!rows(&db)[0].3, "the scope approval is still waiting on the person");
+        assert!(record(&db, "parent", "approval.resolved", json!({"requestEventId": 7}), 10));
+        assert!(rows(&db)[0].3);
     }
 
     #[test]
