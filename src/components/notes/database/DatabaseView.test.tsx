@@ -116,16 +116,78 @@ describe("DatabaseView", () => {
     expect(titles()).toHaveLength(4);
   });
 
-  it("shows a later-update notice for a non-table view", async () => {
-    const { id } = books();
-    const board = mockSaveView({ databaseId: id, view: { name: "Board", type: "board" } });
-    await mount({ databaseId: id, viewId: board.id });
-    expect(document.querySelector("[role=status]")!.textContent).toBe("Board, calendar and list views arrive in a later update.");
-    const tabs = [...document.querySelectorAll("[role=tab]")];
-    expect(tabs.map(tab => [tab.textContent, tab.getAttribute("aria-selected")])).toEqual([["Table", "false"], ["Board", "true"]]);
-    act(() => (tabs[0] as HTMLElement).click());
+  it("routes each view type", async () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Status", type: "status", options: [{ name: "To read", group: "todo" }] }, { name: "Due", type: "date" }] });
+    const [status, due] = made.database!.properties;
+    const board = mockSaveView({ databaseId: made.note.id, view: { name: "Board", type: "board", groupBy: { property: status.id } } });
+    const calendar = mockSaveView({ databaseId: made.note.id, view: { name: "Calendar", type: "calendar", dateProperty: due.id } });
+    const list = mockSaveView({ databaseId: made.note.id, view: { name: "List", type: "list" } });
+    mockCreatePage({ title: "DDIA", parentId: made.note.id });
+    await mount({ databaseId: made.note.id });
+    expect(document.querySelector("[role=grid][aria-label$=table]")).not.toBeNull();
+    const tab = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("[role=tab]")].find(candidate => candidate.textContent === name)!;
+    act(() => tab("Board").click());
     await settle();
-    expect(document.querySelector("[role=grid]")).not.toBeNull();
+    expect(document.querySelector("[aria-label=Board] section[aria-label='No value, 1']")).not.toBeNull();
+    act(() => tab("Calendar").click());
+    await settle();
+    expect(document.querySelector("[aria-label=Calendar]")).not.toBeNull();
+    expect(document.querySelector("aside[aria-label='No date']")!.textContent).toContain("DDIA");
+    act(() => tab("List").click());
+    await settle();
+    expect(document.querySelector("[aria-label=List] [role=listitem]")!.textContent).toContain("DDIA");
+    expect([board.id, calendar.id, list.id].every(Boolean)).toBe(true);
+  });
+
+  it("a nested or filter, two sorts and a grouping apply at once and save for everyone", async () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }, { name: "Genre", type: "select", options: [{ name: "Fiction" }, { name: "Tech" }] }] });
+    const [rating, genre] = made.database!.properties;
+    const [fiction, tech] = genre.options!;
+    const book = (title: string, score: number, kind: string) => { const row = mockCreatePage({ title, parentId: made.note.id }); mockUpdateNote({ id: row.id, values: { [rating.id]: score, [genre.id]: kind } }); };
+    book("A", 5, fiction.id);
+    book("B", 2, tech.id);
+    book("C", 4, tech.id);
+    book("D", 1, fiction.id);
+    await mount({ databaseId: made.note.id });
+    const query = vi.spyOn(bridgeApi, "queryDatabase");
+    const filter = { and: [{ property: rating.id, op: "gte", value: 2 }, { or: [{ property: genre.id, op: "is", value: tech.id }, { property: rating.id, op: "gte", value: 5 }] }] };
+    const view = mockReadPage(made.note.id).database!.views[0];
+    // The override, built in the toolbar's own controls.
+    const click = (element: Element) => act(() => (element as HTMLElement).click());
+    const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(candidate => candidate.textContent?.trim() === name || candidate.getAttribute("aria-label") === name)!;
+    const choose = (label: string, value: string) => act(() => { const select = document.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement; select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const type = (label: string, text: string) => act(() => { const input = document.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    click(button("Filter"));
+    click(button("Add a filter"));
+    choose("Filter 1 op", "gte");
+    type("Filter 1 value", "2");
+    click(button("Add a filter group"));
+    choose("Filter 2.1 property", genre.id);
+    choose("Filter 2.1 value", tech.id);
+    click(button("Add to group"));
+    choose("Filter 2.2 op", "gte");
+    type("Filter 2.2 value", "5");
+    click(button("Filter, 3"));
+    click(button("Sort"));
+    click(button("Add a sort"));
+    choose("Sort 1 property", genre.id);
+    click(button("Add a sort"));
+    choose("Sort 2 property", rating.id);
+    choose("Sort 2 direction", "desc");
+    click(button("Sort, 2"));
+    click(button("Group"));
+    choose("Group by", genre.id);
+    await settle();
+    const last = query.mock.calls.at(-1)![0];
+    expect(last).toMatchObject({ filter, sorts: [{ property: genre.id, direction: "asc" }, { property: rating.id, direction: "desc" }], groupBy: { property: genre.id } });
+    expect(last.viewId).toBeUndefined();
+    expect(titles()).toEqual(["A", "C", "B"]);
+    // Saved for everyone, it is the view itself.
+    await act(async () => { button("Save for everyone").click(); });
+    await settle();
+    const saved = mockReadPage(made.note.id).database!.views.find(candidate => candidate.id === view.id)!;
+    expect(saved).toMatchObject({ filter, sorts: [{ property: genre.id, direction: "asc" }, { property: rating.id, direction: "desc" }], groupBy: { property: genre.id } });
+    expect(button("Save for everyone")).toBeUndefined();
   });
 
   it("an embed ignores its host page's own saves", async () => {
@@ -244,6 +306,28 @@ describe("DatabaseView", () => {
     await act(async () => { release(); });
     await later();
     expect(document.querySelector("[role=columnheader][aria-label='Newest rename']")).not.toBeNull();
+  });
+
+  it("keeps an unsaved override when saving it fails", async () => {
+    const { id, rating } = books();
+    const onError = vi.fn();
+    await mount({ databaseId: id, onError });
+    const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(candidate => candidate.textContent?.trim() === name || candidate.getAttribute("aria-label") === name);
+    act(() => button("Sort")!.click());
+    act(() => button("Add a sort")!.click());
+    expect(button("Save for everyone")).toBeDefined();
+    vi.spyOn(bridgeApi, "saveDatabaseView").mockRejectedValueOnce(new Error("disk full"));
+    await act(async () => { button("Save for everyone")!.click(); });
+    await settle();
+    expect(onError).toHaveBeenCalledWith("disk full");
+    expect(button("Save for everyone")).toBeDefined();
+    expect(button("Sort, 1")).toBeDefined();
+    expect(mockReadPage(id).database!.views[0].sorts ?? []).toEqual([]);
+    // And the retry saves it.
+    await act(async () => { button("Save for everyone")!.click(); });
+    await settle();
+    expect(mockReadPage(id).database!.views[0].sorts).toEqual([{ property: rating, direction: "asc" }]);
+    expect(button("Save for everyone")).toBeUndefined();
   });
 });
 

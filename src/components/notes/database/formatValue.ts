@@ -67,6 +67,8 @@ export function cellValue(column: Pick<Column, "id" | "property">, note: Note, v
   switch (column.id) {
     case "title": return note.title ?? null;
     case "project": return note.workspaceId ?? null;
+    case "kind": return note.kind;
+    case "state": return note.state;
     case "chats": return note.sessionIds;
     case "created": return note.createdAt;
     case "updated": return note.updatedAt;
