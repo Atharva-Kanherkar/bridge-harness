@@ -160,5 +160,24 @@ describe("DatabaseBoard", () => {
     expect(bucketOf("2026-11-12", "week")).toBe("2026-11-09");
     expect(bucketOf("2026-11-12T23:30:00-08:00", "day")).toBe("2026-11-13");
   });
+
+  it("loads a column page once however often Load more is clicked", async () => {
+    const { made, status, option, row } = reading();
+    for (let index = 0; index < 120; index += 1) row(`Book ${String(index).padStart(3, "0")}`, { [status.id]: option("To read") });
+    await mountBoard(made.note.id, status.id);
+    const real = bridgeApi.queryDatabase.bind(bridgeApi);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(bridgeApi, "queryDatabase").mockImplementation(async params => { await gate; return real(params); });
+    const more = () => [...column("To read").querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.startsWith("Load more"))!;
+    act(() => more().click());
+    expect(more().disabled).toBe(true);
+    act(() => more().click());
+    await act(async () => { release(); });
+    await settle();
+    expect(cardsIn("To read")).toHaveLength(100);
+    expect(new Set(cardsIn("To read")).size).toBe(100);
+    expect(more().textContent).toBe("Load more (20)");
+  });
 });
 

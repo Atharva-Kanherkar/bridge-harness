@@ -83,6 +83,9 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
   const [moves, setMoves] = useState<Move[]>([]);
   const [extra, setExtra] = useState<Record<string, { rows: DatabaseRow[]; cursor: string | null }>>({});
   const [dragging, setDragging] = useState<{ row: DatabaseRow; from: string } | null>(null);
+  // One page request per column at a time.
+  const [loading, setLoading] = useState<Set<string>>(new Set());
+  const inFlight = useRef(new Set<string>());
   // A fresh answer from the server supersedes local moves and pages.
   useEffect(() => { setMoves([]); setExtra({}); }, [groups]);
 
@@ -108,20 +111,34 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
   };
 
   const loadMore = async (group: DatabaseGroup, have: number) => {
+    if (inFlight.current.has(group.key)) return;
+    inFlight.current.add(group.key);
+    setLoading(new Set(inFlight.current));
+    try { await fetchMore(group, have); } finally {
+      inFlight.current.delete(group.key);
+      setLoading(new Set(inFlight.current));
+    }
+  };
+  /** Rows not already in the column, by id. */
+  const unseen = (group: DatabaseGroup, held: DatabaseRow[], rows: DatabaseRow[]) => {
+    const ids = new Set([...group.rows, ...held].map(row => row.note.id));
+    return rows.filter(row => !ids.has(row.note.id) && ids.add(row.note.id));
+  };
+  const fetchMore = async (group: DatabaseGroup, have: number) => {
     const page = extra[group.key];
     const filter = composeFilter(query.filter, groupConditions(grouping, group.key, query.groupBy?.dateBucket));
     if (filter === null) {
       // No composed filter fits the planner's limits: the column's rows from
       // the view's own, all at once.
       const rows = (await readAll(run, { filter: query.filter ?? null, sorts: query.sorts })).filter(row => inGroup(grouping, group.key, row, query.groupBy?.dateBucket));
-      setExtra(current => ({ ...current, [group.key]: { rows: rows.slice(group.rows.length), cursor: null } }));
+      setExtra(current => ({ ...current, [group.key]: { rows: unseen(group, [], rows), cursor: null } }));
       return;
     }
     const result = page?.cursor
       ? await run({ filter, sorts: query.sorts, limit: GROUP_LIMIT, cursor: page.cursor })
       : await run({ filter, sorts: query.sorts, limit: have + GROUP_LIMIT });
     const fresh = page?.cursor ? result.rows : result.rows.slice(group.rows.length);
-    setExtra(current => ({ ...current, [group.key]: { rows: [...(current[group.key]?.rows ?? []), ...fresh], cursor: result.nextCursor ?? null } }));
+    setExtra(current => { const held = current[group.key]?.rows ?? []; return { ...current, [group.key]: { rows: [...held, ...unseen(group, held, fresh)], cursor: result.nextCursor ?? null } }; });
   };
 
   return <div aria-label="Board" className="flex gap-3 overflow-x-auto pb-2">
@@ -151,7 +168,7 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
           />
         </li>)}
       </ol>
-      {column.count > column.cards.length && <button type="button" onClick={() => void loadMore(column, column.cards.length)} className="mt-1 h-7 rounded-md text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Load more ({column.count - column.cards.length})</button>}
+      {column.count > column.cards.length && <button type="button" disabled={loading.has(column.key)} onClick={() => void loadMore(column, column.cards.length)} className="mt-1 h-7 rounded-md text-[12px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50">Load more ({column.count - column.cards.length})</button>}
       {movable && <button type="button" aria-label={`New in ${column.label}`} onClick={() => void onNewRow({ column: grouping, value: movedValue(grouping, undefined, "", column.key) })} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />New</button>}
     </section>)}
   </div>;
