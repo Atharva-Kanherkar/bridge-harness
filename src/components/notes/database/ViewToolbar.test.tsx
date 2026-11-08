@@ -2,7 +2,7 @@
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { NoteDatabase, NoteDatabaseView } from "../../../types";
+import type { NoteDatabase, NoteDatabaseView, Workspace } from "../../../types";
 import { FilterBuilder } from "./FilterBuilder";
 import { useViewOverride, type ViewOverride, type ViewQuery } from "./useViewOverride";
 import { ViewToolbar } from "./ViewToolbar";
@@ -154,6 +154,18 @@ describe("FilterBuilder", () => {
     choose(select("Filter 1 property"), "p-pages");
     expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-pages", op: "eq", value: 0 }] });
     expect(input("Filter 1 value").value).toBe("0");
+  });
+
+  it("starts a Project filter on a real project, and shows Choose… for none", () => {
+    const onChange = vi.fn();
+    const workspaces = [{ id: "w1", title: "Only project" }] as unknown as Workspace[];
+    act(() => root.render(<FilterBuilder database={DATABASE} value={null} onChange={onChange} workspaces={workspaces} />));
+    click(button("Add a filter"));
+    choose(select("Filter 1 property"), "project");
+    expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "project", op: "is", value: "w1" }] });
+    act(() => root.render(<FilterBuilder key="none" database={DATABASE} value={{ and: [{ property: "project", op: "is", value: "" }] }} onChange={onChange} workspaces={workspaces} />));
+    expect(select("Filter 1 value").value).toBe("");
+    expect(select("Filter 1 value").selectedOptions[0].textContent).toBe("Choose…");
   });
 
   it("leaves an unfinished number out", () => {

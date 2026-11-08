@@ -30,7 +30,7 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
     onChange(writeFilter(completeOnly(next, columns)));
   };
   const first = columns[0];
-  const add = (path: Path) => apply(addCondition(tree, path, defaultCondition(first)));
+  const add = (path: Path) => apply(addCondition(tree, path, defaultCondition(first, workspaces)));
 
   const rows = (group: Group, path: Path) => group.items.map((item, index) => {
     const at = [...path, index];
@@ -51,7 +51,7 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
       : <p className="m-0 px-1 py-1.5 text-[12.5px] text-muted-foreground">No filters. Every row shows.</p>}
     <div className="flex gap-1">
       <button type="button" disabled={!canAdd(tree)} onClick={() => add([])} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-foreground transition-colors enabled:hover:bg-accent disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter</button>
-      <button type="button" disabled={!canAdd(tree)} onClick={() => apply(addGroup(tree, defaultCondition(first)))} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter group</button>
+      <button type="button" disabled={!canAdd(tree)} onClick={() => apply(addGroup(tree, defaultCondition(first, workspaces)))} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter group</button>
     </div>
   </div>;
 }
@@ -65,10 +65,10 @@ function JoinSwitch({ label, join, onChange }: { label: string; join: "and" | "o
 function ConditionRow({ condition, columns, workspaces, label, onChange, onRemove }: { condition: Condition; columns: FieldColumn[]; workspaces: Workspace[]; label: string; onChange: (condition: Condition) => void; onRemove: () => void }) {
   const column = columns.find(candidate => candidate.id === condition.property) ?? columns[0];
   return <div role="group" aria-label={label} className="flex items-center gap-1">
-    <select aria-label={`${label} property`} value={column.id} onChange={event => onChange(defaultCondition(columns.find(candidate => candidate.id === event.target.value)!))} className={clsx(control, "w-32 shrink-0")}>
+    <select aria-label={`${label} property`} value={column.id} onChange={event => onChange(defaultCondition(columns.find(candidate => candidate.id === event.target.value)!, workspaces))} className={clsx(control, "w-32 shrink-0")}>
       {columns.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
     </select>
-    <select aria-label={`${label} op`} value={condition.op} onChange={event => onChange(retarget(condition, column, event.target.value))} className={clsx(control, "w-36 shrink-0")}>
+    <select aria-label={`${label} op`} value={condition.op} onChange={event => onChange(retarget(condition, column, event.target.value, workspaces))} className={clsx(control, "w-36 shrink-0")}>
       {opsFor(column).map(op => <option key={op} value={op}>{OP_LABELS[op] ?? op}</option>)}
     </select>
     <div className="min-w-0 flex-1">{needsValue(condition.op) && <ValueInput condition={condition} column={column} workspaces={workspaces} label={`${label} value`} onChange={value => onChange({ ...condition, value })} />}</div>
@@ -98,7 +98,12 @@ function ValueInput({ condition, column, workspaces, label, onChange }: { condit
     return <select aria-label={label} value={value === true ? "true" : "false"} onChange={event => onChange(event.target.value === "true")} className={clsx(control, "w-full")}><option value="true">Checked</option><option value="false">Not checked</option></select>;
   }
   if ((family === "choice" || family === "list") && choices.length) {
-    return <select aria-label={label} value={String(value ?? "")} onChange={event => onChange(event.target.value)} className={clsx(control, "w-full")}>{choices.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>;
+    // A value that names no choice shows as unchosen, never as the first one.
+    const chosen = choices.some(([id]) => id === value) ? String(value) : "";
+    return <select aria-label={label} value={chosen} onChange={event => onChange(event.target.value)} className={clsx(control, "w-full")}>
+      {!chosen && <option value="" disabled>Choose…</option>}
+      {choices.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+    </select>;
   }
   if (family === "number") {
     return <NumberInput label={label} value={value} onChange={onChange} />;

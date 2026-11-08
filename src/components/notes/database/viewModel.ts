@@ -74,7 +74,7 @@ export function choicesOf(column: FieldColumn, workspaces: { id: string; title: 
 }
 
 /** An empty value of the shape `op` takes on `column`. */
-export function emptyValue(column: FieldColumn, op: string): unknown {
+export function emptyValue(column: FieldColumn, op: string, workspaces: { id: string; title: string }[] = []): unknown {
   if (!needsValue(op)) return undefined;
   if (op === "within") return "pastWeek";
   if (op === "inGroup") return "todo";
@@ -82,26 +82,26 @@ export function emptyValue(column: FieldColumn, op: string): unknown {
   const family = familyOf(column.type);
   if (family === "number") return 0;
   if (family === "checkbox") return false;
-  if (family === "choice") return choicesOf(column)[0]?.[0] ?? "";
+  if (family === "choice") return choicesOf(column, workspaces)[0]?.[0] ?? "";
   if (family === "list") return choicesOf(column)[0]?.[0] ?? "";
   return "";
 }
 
 /** A fresh condition on `column`: its first op, with an empty value. */
-export function defaultCondition(column: FieldColumn): Condition {
+export function defaultCondition(column: FieldColumn, workspaces: { id: string; title: string }[] = []): Condition {
   const op = opsFor(column)[0];
-  const value = emptyValue(column, op);
+  const value = emptyValue(column, op, workspaces);
   return value === undefined ? { property: column.id, op } : { property: column.id, op, value };
 }
 
 /** The condition with `op`, keeping a value that still fits. */
-export function retarget(condition: Condition, column: FieldColumn, op: string): Condition {
+export function retarget(condition: Condition, column: FieldColumn, op: string, workspaces: { id: string; title: string }[] = []): Condition {
   if (!needsValue(op)) return { property: condition.property, op };
   const before = condition.value;
   let value: unknown;
   if (LIST_OPS.has(op)) value = Array.isArray(before) ? before : before !== undefined && before !== "" ? [before] : [];
-  else if (Array.isArray(before)) value = before[0] ?? emptyValue(column, op);
-  else if (before === undefined || (op === "within") !== (condition.op === "within") || (op === "inGroup") !== (condition.op === "inGroup")) value = emptyValue(column, op);
+  else if (Array.isArray(before)) value = before[0] ?? emptyValue(column, op, workspaces);
+  else if (before === undefined || (op === "within") !== (condition.op === "within") || (op === "inGroup") !== (condition.op === "inGroup")) value = emptyValue(column, op, workspaces);
   else value = before;
   return { property: condition.property, op, value };
 }
