@@ -97,9 +97,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// kind.** A 1.24 client still pairs with a 1.25 daemon: its `AttentionKind`
 /// already carries the `other` fallback, so it decodes `escalation` as
 /// `other` and shows nothing for it rather than failing the read.
+/// **1.26 adds `attention/unread_summary`.** A new client must not pair with
+/// an older daemon, whose unread dots and badge would fail with
+/// `method_not_found`; a 1.25 client still pairs with a 1.26 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 25,
+    minor: 26,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

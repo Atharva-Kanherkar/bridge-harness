@@ -377,7 +377,7 @@ unchanged.
 | `session-output` | transient | Terminal bytes; worthless once stale |
 | `account-usage` | transient | Provider usage tick for the ambient meter |
 | `session-startup` | transient | Cold-start phase observed at a real adapter launch boundary (`{"sessionId", "phase": "spawning"\|"handshake"\|"session_open"}`); never replayed, never timer-driven |
-| `attention/changed` | transient | Refetch hint, payload `null`: the attention ledger may have moved. Sent after any durable `agent-event` that can open or close a row, after `attention/mark_attention_seen`, and again after lag. Reread `attention/list_attention` from your cursor |
+| `attention/changed` | transient | Refetch hint, payload `null`: the attention ledger may have moved. Sent after any durable `agent-event` that can open or close a row, after `attention/mark_attention_seen`, and again after lag. Reread `attention/list_attention` from your cursor, and `attention/unread_summary` |
 | `stream-lagged` | transient | Host-synthesized: this connection's live channel dropped events (`{"missed": n}`); refetch hints follow, replay durable history from your cursors |
 
 The delivery rules are contract: the session forest (SQLite) is the

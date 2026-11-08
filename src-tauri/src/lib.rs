@@ -880,6 +880,11 @@ async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCor
 }
 
 #[tauri::command]
+async fn unread_summary(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnreadSummary, BridgeError> {
+    api::unread_summary(state.inner())
+}
+
+#[tauri::command]
 async fn mark_attention_seen(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::MarkAttentionSeenResult, BridgeError> {
     api::mark_attention_seen(state.inner(), &bridge_protocol::messages::MarkAttentionSeenParams { session_id })
 }
@@ -3190,6 +3195,7 @@ pub fn run() -> i32 {
             save_delegation_notify_settings,
             list_attention,
             mark_attention_seen,
+            unread_summary,
             deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,

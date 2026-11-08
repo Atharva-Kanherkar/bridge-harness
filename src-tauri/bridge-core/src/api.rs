@@ -4327,17 +4327,22 @@ pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams
     })
 }
 
+fn wire_attention_kind(kind: crate::attention::AttentionKind) -> wire::AttentionKind {
+    use crate::attention::AttentionKind;
+    match kind {
+        AttentionKind::Finished => wire::AttentionKind::Finished,
+        AttentionKind::Failed => wire::AttentionKind::Failed,
+        AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
+        AttentionKind::Escalation => wire::AttentionKind::Escalation,
+    }
+}
+
 fn attention_item(row: crate::attention::AttentionRow) -> wire::AttentionItem {
-    use crate::attention::{AttentionKind, Severity};
+    use crate::attention::Severity;
     wire::AttentionItem {
         sequence: row.sequence,
         id: row.id,
-        kind: match row.kind {
-            AttentionKind::Finished => wire::AttentionKind::Finished,
-            AttentionKind::Failed => wire::AttentionKind::Failed,
-            AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
-            AttentionKind::Escalation => wire::AttentionKind::Escalation,
-        },
+        kind: wire_attention_kind(row.kind),
         severity: match row.severity {
             Severity::Informational => wire::AttentionSeverity::Informational,
             Severity::Actionable => wire::AttentionSeverity::Actionable,
@@ -4360,6 +4365,19 @@ pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionS
         core.events.publish(CoreEvent::AttentionChanged);
     }
     Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
+}
+
+/// What is still unread, rolled up to the chats a person sees. Clients reread
+/// it on `attention/changed`.
+pub fn unread_summary(core: &Arc<BridgeCore>) -> Result<wire::UnreadSummary, BridgeError> {
+    let summary = crate::attention::unread_summary(&core.db.lock().unwrap())?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(wire::UnreadSummary {
+        total: count(summary.total()),
+        needs_you: count(summary.needs_you()),
+        by_chat: summary.by_chat.into_iter().map(|(id, kind)| (id, wire_attention_kind(kind))).collect(),
+        by_session: summary.by_session.into_iter().map(|(id, kind)| (id, wire_attention_kind(kind))).collect(),
+    })
 }
 
 pub fn get_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::GetDelegationNotifySettingsParams) -> Result<wire::DelegationNotifySettingsView, BridgeError> {
