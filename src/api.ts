@@ -1,6 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
-import type { ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult } from "./protocol/generated/protocol";
+import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult } from "./protocol/generated/protocol";
 import { mockListAttention, mockMarkAttentionSeen, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
 import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
@@ -3373,6 +3373,12 @@ export const bridgeApi = {
   markAttentionSeen: async (sessionId: string): Promise<MarkAttentionSeenResult> => {
     if (hasBackend()) return call("attention/mark_attention_seen", { sessionId });
     return mockMarkAttentionSeen(sessionId);
+  },
+  /** Deliver a chat's stranded input now, resuming its agent if it stopped. */
+  deliverQueuedInput: async (sessionId: string): Promise<DeliverQueuedInputResult> => {
+    if (hasBackend()) return call("sessions/deliver_queued_input", { sessionId });
+    // The mock has no adapters to strand input behind.
+    return { delivered: false };
   },
   /** Refetch hint: reread `listAttention` from your cursor. Carries no rows. */
   onAttentionChanged: async (handler: () => void): Promise<UnlistenFn> => {

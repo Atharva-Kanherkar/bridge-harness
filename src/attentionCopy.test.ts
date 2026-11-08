@@ -56,6 +56,14 @@ describe("attentionCopy", () => {
   });
 });
 
+describe("escalation copy", () => {
+  it("keeps core's count even when the chat is known", () => {
+    const item = { kind: "escalation" as const, title: "A result is waiting", body: "Ship it · Codex stopped before it read 2 updates" };
+    expect(attentionCopy(item, session())).toEqual({ headline: "A result is waiting", detail: "Ship it · Codex stopped before it read 2 updates", tone: "needs-you" });
+    expect(attentionCopy(item)).toEqual(attentionCopy(item, session()));
+  });
+});
+
 describe("attentionToastKey", () => {
   it("keys by ledger sequence", () => {
     expect(attentionToastKey({ sequence: 42 })).toBe("attention:42");

@@ -19,6 +19,8 @@ export type AttentionToast = {
   // without this, App re-renders that only change unrelated state (e.g. the
   // git-stat poll) would pass a same-key toast through and must NOT restart it.
   firedAt?: number;
+  /** A one-click remedy beside the body, such as delivering stranded input. */
+  actionLabel?: string;
 };
 
 function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
@@ -31,10 +33,11 @@ function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
   return <CircleCheck size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-success" />;
 }
 
-function ToastCard({ toast, onOpen, onDismiss }: {
+function ToastCard({ toast, onOpen, onDismiss, onAction }: {
   toast: AttentionToast;
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
+  onAction?: (toast: AttentionToast) => void;
 }) {
   // `onDismiss` is a fresh closure on every App render (e.g. its ~5s
   // git-stat poll), which is not a reason to restart this timer — only a
@@ -58,6 +61,13 @@ function ToastCard({ toast, onOpen, onDismiss }: {
       <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
       <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">{toast.copy.detail}</span>
     </button>
+    {toast.actionLabel && onAction && <button
+      type="button"
+      onClick={() => onAction(toast)}
+      className="h-7 shrink-0 rounded-md border border-border px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+    >
+      {toast.actionLabel}
+    </button>}
     <button
       type="button"
       onClick={() => onDismiss(toast.key)}
@@ -69,10 +79,11 @@ function ToastCard({ toast, onOpen, onDismiss }: {
   </div>;
 }
 
-export function AttentionToasts({ toasts, onOpen, onDismiss }: {
+export function AttentionToasts({ toasts, onOpen, onDismiss, onAction }: {
   toasts: AttentionToast[];
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
+  onAction?: (toast: AttentionToast) => void;
 }) {
   if (!toasts.length) return null;
   const shown = toasts.slice(-3);
@@ -82,7 +93,7 @@ export function AttentionToasts({ toasts, onOpen, onDismiss }: {
     className="pointer-events-none flex flex-col items-end gap-2"
   >
     {shown.map(toast => (
-      <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} />
+      <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} onAction={onAction} />
     ))}
   </div>;
 }

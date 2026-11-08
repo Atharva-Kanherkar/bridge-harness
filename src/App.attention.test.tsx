@@ -124,4 +124,22 @@ describe("App attention wiring", () => {
     expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
     expect(seen).toHaveBeenCalledWith("b");
   });
+
+  it("offers Deliver now on an escalation and delivers that chat's input", async () => {
+    const deliver = vi.spyOn(bridgeApi, "deliverQueuedInput").mockResolvedValue({ delivered: true });
+    await mountApp();
+    await act(async () => {
+      pushMockAttention({ kind: "escalation", sessionId: "a", title: "A result is waiting", body: "Title a · Claude stopped before it read 1 update" });
+    });
+    await wait(40);
+    expect(toastRegion(container)?.textContent).toContain("A result is waiting");
+    expect(notifyAttention).toHaveBeenCalledWith("A result is waiting", "Title a · Claude stopped before it read 1 update", { sessionId: "a", approvalEventId: null });
+
+    const button = [...container.querySelectorAll('[aria-label="Attention notifications"] button')].find(item => item.textContent === "Deliver now") as HTMLButtonElement;
+    expect(button, "the remedy is on the card").toBeTruthy();
+    await act(async () => { button.click(); });
+    await wait(20);
+    expect(deliver).toHaveBeenCalledWith("a");
+    expect(toastRegion(container)).toBeFalsy();
+  });
 });
