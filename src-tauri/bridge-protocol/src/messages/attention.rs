@@ -137,4 +137,21 @@ mod tests {
         assert_eq!(page.items[0].severity, AttentionSeverity::Other);
         assert_eq!(serde_json::to_value(AttentionKind::NeedsYou).unwrap(), "needsYou");
     }
+
+    #[test]
+    fn a_1_24_client_decodes_escalation_as_other() {
+        // AttentionKind exactly as protocol 1.24 shipped it.
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum AttentionKindV124 {
+            Finished,
+            Failed,
+            NeedsYou,
+            #[serde(other)]
+            Other,
+        }
+        let wire = serde_json::to_value(AttentionKind::Escalation).unwrap();
+        assert_eq!(wire, "escalation");
+        assert_eq!(serde_json::from_value::<AttentionKindV124>(wire).unwrap(), AttentionKindV124::Other);
+    }
 }

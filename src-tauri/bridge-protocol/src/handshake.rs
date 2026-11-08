@@ -94,7 +94,9 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// daemon, whose ledger reads would fail with `method_not_found`; a 1.23
 /// client still pairs with a 1.24 daemon.
 /// **1.25 adds `sessions/deliver_queued_input` and the `escalation` attention
-/// kind.** A 1.24 client still pairs with a 1.25 daemon.
+/// kind.** A 1.24 client still pairs with a 1.25 daemon: its `AttentionKind`
+/// already carries the `other` fallback, so it decodes `escalation` as
+/// `other` and shows nothing for it rather than failing the read.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
     minor: 25,
