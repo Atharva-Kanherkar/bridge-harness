@@ -55,10 +55,12 @@ impl SessionSupervisor {
                 "session {session_id} not found while tracking provider process"
             )));
         }
+        crate::background_activity::interrupt(db, Some(session_id))?;
         Ok(identity)
     }
 
     pub fn clear_adapter_process(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
+        crate::background_activity::interrupt(db, Some(session_id))?;
         db.execute(
             "UPDATE sessions SET adapter_pid=NULL,adapter_process_identity=NULL WHERE id=?1",
             params![session_id],

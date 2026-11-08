@@ -21,6 +21,14 @@ export function query() {
     close() {},
     async *[Symbol.asyncIterator]() {
       if (mode === "error") throw new Error(text);
+      if (mode === "background") {
+        yield { type: "system", subtype: "task_started", task_id: "tests", description: "Rust tests" };
+        yield { type: "result", subtype: "success", result: "still running" };
+        yield { type: "tool_progress", tool_use_id: "call", elapsed_time_seconds: 2 };
+        yield { type: "system", subtype: "task_progress", task_id: "tests", summary: "Running bridge-core" };
+        yield { type: "system", subtype: "task_notification", task_id: "tests", status: "completed", summary: "402 passed" };
+        return;
+      }
       yield { type: "assistant", message: { content: [{ type: "text", text }] } };
       yield { type: "result", subtype: "success", result: "complete" };
     },
@@ -114,4 +122,11 @@ test("a closed parent output pipe terminates the sidecar", { timeout: 15000 }, a
   const result = await runSidecar(t, "success", { closeOutput: true });
   assert.equal(result.signal, null);
   assert.equal(result.code, 1);
+});
+
+
+test("task activity continues to reach Rust after the assistant result", { timeout: 15000 }, async (t) => {
+  const output = frames(await runSidecar(t, "background"), 0);
+  assert.deepEqual(output.map(frame => frame.subtype ?? frame.type), ["task_started", "success", "tool_progress", "task_progress", "task_notification"]);
+  assert.equal(output.at(-1).summary, "402 passed");
 });

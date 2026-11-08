@@ -788,6 +788,9 @@ pub struct PolicyLimits {
 pub struct SessionForestSnapshot {
     pub session_id: String,
     pub entries: Vec<SessionEntry>,
+    /// Latest running process snapshots, independent of the history window.
+    #[serde(default)]
+    pub active_process_entries: Vec<SessionEntry>,
     pub head: Option<SessionHead>,
     pub leaves: Vec<SessionEntry>,
     pub worker_leases: Vec<WorkerLease>,

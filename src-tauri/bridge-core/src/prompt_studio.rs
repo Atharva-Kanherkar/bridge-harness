@@ -625,7 +625,8 @@ mod tests {
         // Independently rebuild the expected compilation from the resolved
         // stack and require byte equality on both envelopes.
         let resolved = crate::prompt_sections::resolve(&db, target, 0).unwrap();
-        let mut expected = prompt_compiler::PromptCompiler::new(resolved.target.compiler_role());
+        let mut expected = prompt_compiler::PromptCompiler::new(resolved.target.compiler_role())
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE);
         for compiled_section in &resolved.sections {
             expected = expected.stable_section(&compiled_section.id, &compiled_section.text);
         }

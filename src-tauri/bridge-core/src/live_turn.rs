@@ -354,11 +354,12 @@ mod prompt_section_tests {
         }
     }
 
-    fn legacy_orchestrator_prompt(
+    fn expected_orchestrator_prompt(
         configured_prompt: &str,
         checkpoint_context: Option<&str>,
     ) -> prompt_compiler::CompiledPrompt {
         let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
             .stable_section("bridge_role", orchestrator::briefing())
             .stable_section("delegation_protocol", delegation::protocol(0))
             .project_rule("configured_project_rules", configured_prompt);
@@ -368,15 +369,16 @@ mod prompt_section_tests {
         compiler.compile().unwrap()
     }
 
-    fn legacy_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
+    fn expected_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
         prompt_compiler::PromptCompiler::new("session")
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
             .stable_section("rendering_note", prompts::chat_rendering_note())
             .project_rule("configured_project_rules", configured_prompt)
             .compile()
             .unwrap()
     }
 
-    fn legacy_worker_prompt(
+    fn expected_worker_prompt(
         directive: &delegation::DelegationRequest,
         depth: i64,
         branch: &str,
@@ -387,6 +389,7 @@ mod prompt_section_tests {
             "worker:{}",
             directive.role.as_str()
         ))
+        .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
         .stable_section(
             "worker_contract",
             delegation::worker_contract(directive.role, depth),
@@ -583,7 +586,7 @@ mod prompt_section_tests {
     }
 
     #[test]
-    fn default_target_stacks_match_legacy_live_bytes() {
+    fn default_target_stacks_include_shared_activity_policy() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
 
@@ -592,7 +595,7 @@ mod prompt_section_tests {
         for checkpoint in [None, Some("Restore this orchestrator checkpoint")] {
             let compiled =
                 compile_orchestrator_prompt(&orchestrator_stack, configured, checkpoint).unwrap();
-            assert_eq!(compiled, legacy_orchestrator_prompt(configured, checkpoint));
+            assert_eq!(compiled, expected_orchestrator_prompt(configured, checkpoint));
             assert_eq!(
                 compiled
                     .instructions()
@@ -605,7 +608,7 @@ mod prompt_section_tests {
         let direct_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
         let direct = compile_session_prompt(&direct_stack, configured, None).unwrap();
-        assert_eq!(direct, legacy_session_prompt(configured));
+        assert_eq!(direct, expected_session_prompt(configured));
         assert!(!direct.instructions().contains("bridge-delegate"));
         assert!(!direct.instructions().contains("worker_contract"));
 
@@ -635,7 +638,7 @@ mod prompt_section_tests {
                 .unwrap();
                 assert_eq!(
                     compiled,
-                    legacy_worker_prompt(
+                    expected_worker_prompt(
                         &directive,
                         1,
                         "bridge/prompt-studio",
@@ -2660,6 +2663,9 @@ fn spawn_reader_thread(
                     &launch_started_at,
                 );
                 return;
+            }
+            if let Ok(events) = crate::background_activity::interrupt(&db, Some(&session_id)) {
+                for event in events { core.events.publish(CoreEvent::Agent(event)); }
             }
             let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id);
             let is_worker = store::worker_runtime(&db, &session_id)

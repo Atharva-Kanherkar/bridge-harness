@@ -24,6 +24,7 @@ pub mod attribution_settings;
 pub mod delegation_notify;
 pub mod automations;
 pub mod backend_binding;
+mod background_activity;
 pub mod binary;
 pub mod briefing_conformance;
 pub mod briefing_policy;

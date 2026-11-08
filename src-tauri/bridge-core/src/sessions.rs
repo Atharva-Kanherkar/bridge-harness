@@ -1668,6 +1668,7 @@ pub fn session_forest_snapshot_with_repository_state(
     let reasons =
         store::workspace_reason_events(db, &workspace_id, store::SNAPSHOT_REASON_WINDOW)?;
     let completion = completion::latest_summary(db, session_id)?;
+    let active_process_entries = crate::background_activity::current(db, session_id)?;
     let overhead_bytes = serde_json::to_vec(&(
         &head,
         &leaves,
@@ -1677,6 +1678,7 @@ pub fn session_forest_snapshot_with_repository_state(
         &usage,
         &reasons,
         &completion,
+        &active_process_entries,
     ))
     .map(|bytes| bytes.len())
     .unwrap_or(store::SNAPSHOT_PAYLOAD_BUDGET_BYTES);
@@ -1709,6 +1711,7 @@ pub fn session_forest_snapshot_with_repository_state(
     Ok(SessionForestSnapshot {
         session_id: session_id.to_owned(),
         entries,
+        active_process_entries,
         head,
         leaves,
         worker_leases,

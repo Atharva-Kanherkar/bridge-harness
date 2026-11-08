@@ -119,6 +119,7 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting')",
         [],
     )?;
+    crate::background_activity::interrupt(&connection, None)?;
     Ok(connection)
 }
 

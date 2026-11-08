@@ -1230,6 +1230,12 @@ fn normalize_item(
                 .join("");
             (!text.is_empty()).then_some(text)
         });
+    // Native execution reports the process identity and emits completion only
+    // when that process exits, including executions yielded back to the model.
+    if item_type == "commandExecution" && !item["processId"].is_null() {
+        event.data["backgroundTask"] = Value::Bool(true);
+        event.data["background"] = Value::Bool(method == "item/started");
+    }
     if item_type == "fileChange" {
         stamp_file_change_fields(&mut event.data);
         if event.title.is_none() {
@@ -1244,11 +1250,15 @@ pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
     normalize_claude_message_with_state(message, &mut ClaudeStreamState::default())
 }
 
+#[path = "claude_activity.rs"]
+mod claude_activity;
+
 #[derive(Debug, Default, Clone)]
 pub struct ClaudeStreamState {
     pub active_message_id: Option<String>,
     pub active_reasoning_id: Option<String>,
     thinking_blocks: std::collections::BTreeMap<String, ClaudeThinkingBlock>,
+    activity: claude_activity::ActivityState,
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
@@ -1405,6 +1415,8 @@ fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option
 
 #[derive(Debug, Clone)]
 struct ClaudeToolCall {
+    name: String,
+    description: Option<String>,
     family: ClaudeToolFamily,
     started_at: Instant,
     /// The Bash command, kept so the completion event can name it — the
@@ -1497,6 +1509,8 @@ fn claude_tool_started(
             }
         })
         .or_insert(ClaudeToolCall {
+            name: name.into(),
+            description: None,
             family,
             started_at: now,
             command: None,
@@ -1507,6 +1521,10 @@ fn claude_tool_started(
     event.status = Some("inProgress".into());
     event.data["phase"] = Value::String(phase.as_str().to_owned());
     let input = block.get("input").cloned().unwrap_or(Value::Null);
+    if let Some(call) = state.tool_calls.get_mut(&tool_id) {
+        call.description = input.get("description").and_then(Value::as_str).map(str::to_owned);
+        if name == "Monitor" { call.command = input.get("command").and_then(Value::as_str).map(str::to_owned); }
+    }
     match family {
         ClaudeToolFamily::Command => {
             if let Some(command) = input.get("command").and_then(Value::as_str) {
@@ -1655,6 +1673,9 @@ pub fn normalize_claude_message_with_state(
     let Some(kind) = message.get("type").and_then(Value::as_str) else {
         return vec![];
     };
+    if let Some(events) = claude_activity::normalize(message, &mut state.activity, &state.tool_calls) {
+        return events;
+    }
     match kind {
         "system" => {
             // A new process starts its running totals from zero.
@@ -1673,7 +1694,9 @@ pub fn normalize_claude_message_with_state(
                 .filter_map(|(id, block)| complete_claude_thinking(id, block))
                 .collect();
             let usage_cumulative = std::mem::take(&mut state.usage_cumulative);
+            let activity = std::mem::take(&mut state.activity);
             *state = ClaudeStreamState::default();
+            state.activity = activity;
             state.usage_cumulative = usage_cumulative;
             events.extend(normalize_claude_result(message, state));
             events
@@ -1961,6 +1984,9 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
         .cloned()
         .unwrap_or_default();
     let mut events = Vec::new();
+    if let Some(notification) = claude_activity::synthetic_notification(message) {
+        events.push(notification);
+    }
     for part in content {
         match part.get("type").and_then(Value::as_str).unwrap_or("") {
             "tool_result" => {
@@ -1970,6 +1996,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     .unwrap_or("tool")
                     .to_owned();
                 let call = state.tool_calls.remove(&tool_id);
+                let (backgrounded, task_events) = claude_activity::launched(message, &tool_id, call.as_ref(), &mut state.activity);
                 let family = call
                     .as_ref()
                     .map(|call| call.family)
@@ -1994,6 +2021,8 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                         .unwrap_or(false)
                     {
                         "failed"
+                    } else if backgrounded {
+                        "backgrounded"
                     } else {
                         "completed"
                     }
@@ -2015,6 +2044,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     event.data["aggregatedOutput"] = Value::String(text.clone());
                 }
                 events.push(event);
+                events.extend(task_events);
             }
             // User text echoes are already persisted by Bridge on send_turn.
             "text" => {}
