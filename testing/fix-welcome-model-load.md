@@ -47,7 +47,7 @@ Opening a new chat must never paint a guess and then correct itself.
 - `src/lastDraftModel.test.ts`
   - `TestReadLastDraftModel_RoundTrips`
   - `TestReadLastDraftModel_IgnoresMalformedPayload`
-  - `TestReadLastDraftModel_IgnoresUnknownHarness`
+  - `TestReadLastDraftModel_KeepsUnknownHarnessForTheResolver`
   - `TestWriteLastDraftModel_NoStorageDoesNotThrow`
 - `src/components/ChatModelControl.test.tsx`
   - `TestChatModelControl_ShowsLoadingStateAfterGracePeriod`
