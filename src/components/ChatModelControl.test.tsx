@@ -928,3 +928,48 @@ describe("ChatModelControl effort styles", () => {
     });
   });
 });
+
+// A new chat's model is resolved by the host, so the first frames have no model
+// and no catalog entry. The pill must not name a guess it is about to replace.
+describe("ChatModelControl while the host resolves the model", () => {
+  const discovering: AdapterDescriptor[] = [{
+    id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
+    models: [], defaultModel: null,
+  }];
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("TestChatModelControl_ShowsLoadingStateAfterGracePeriod", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model={null} loading onChange={vi.fn()} />));
+    expect(trigger().textContent).not.toContain("Loading models");
+    await act(async () => { vi.advanceTimersByTime(600); });
+    expect(trigger().textContent).toContain("Loading models…");
+    expect(trigger().getAttribute("aria-busy")).toBe("true");
+    expect(trigger().getAttribute("aria-label")).toBe("Chat model: loading");
+  });
+
+  it("TestChatModelControl_NoLoadingFlashBeforeGracePeriod", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model={null} loading onChange={vi.fn()} />));
+    await act(async () => { vi.advanceTimersByTime(300); });
+    expect(trigger().textContent).not.toContain("Loading models");
+    expect(trigger().getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("TestChatModelControl_ShowsKnownLabelInsteadOfLoading", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model="opencode-go/kimi" knownLabel="Kimi K2.5" loading onChange={vi.fn()} />));
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    expect(trigger().textContent).toBe("OpenCode · Kimi K2.5");
+    expect(trigger().textContent).not.toContain("Loading models");
+    expect(trigger().getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("TestChatModelControl_LoadingPickerHasNoFakeDefaultRow", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={discovering} harness="opencode" model={null} loading onChange={vi.fn()} />));
+    await act(async () => { vi.advanceTimersByTime(600); });
+    await act(async () => trigger().click());
+    expect(panel().textContent).toContain("Loading models…");
+    expect(panel().querySelector('[role="option"]')).toBeNull();
+    expect(panel().textContent).not.toContain("Default");
+  });
+});
