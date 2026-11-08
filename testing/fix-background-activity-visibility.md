@@ -3,6 +3,7 @@
 ## Functional Behavior
 - Claude task start, progress, background transitions, membership snapshots and terminal notifications produce inspectable normalized activity with stable task identity.
 - A background launch acknowledgement is not a successful test result. Actual completion, failure and stop remain distinct.
+- A persistent summary at the latest reply lists active commands and background processes, their progress, and whether the model is working. It stays visible when the original command row is offscreen, stops when the process finishes, and is hidden in read-only history.
 - Background work remains visibly running after the assistant turn ends; ordinary unfinished tools still stop claiming liveness at turn end.
 - Membership snapshots reconcile missed terminal events without inventing success. Runtime exit and restart clear stale background liveness.
 - Task progress and available output are visible while a group is collapsed. Select a running call when another parallel call already completed.
