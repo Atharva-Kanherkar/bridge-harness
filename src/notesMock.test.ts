@@ -443,3 +443,36 @@ describe("mock dev seed", () => {
     expect(mockListNotes({ includeArchived: true }).notes.map(note => note.title)).not.toContain("Reading list");
   });
 });
+
+describe("mock system views", () => {
+  it("the seeded system views return the old FILTERS lists", () => {
+    const parent = mockCreatePage({ title: "Plans" });
+    mockUpdateNote({ id: parent.id, state: "open" });
+    const childTask = mockCreatePage({ title: "Child task", kind: "task", parentId: parent.id });
+    const looseTask = mockCreatePage({ title: "Loose task", kind: "task" });
+    mockUpdateNote({ id: looseTask.id, state: "doing" });
+    const idea = mockCreatePage({ title: "An idea", kind: "idea" });
+    mockUpdateNote({ id: idea.id, state: "archived" });
+    mockCreatePage({ title: "Child page", parentId: parent.id });
+    expect(childTask.kind).toBe("task");
+    const all = mockListNotes({ includeArchived: true });
+    const views = mockReadPage(all.systemDatabaseId!).database!.views;
+    const ids = (name: string) => mockQueryDatabase({ databaseId: all.systemDatabaseId!, viewId: views.find(view => view.name === name)!.id, limit: 500 }).rows.map(row => row.note.id).sort();
+    // The Notes list's old client-side tabs, as they were written.
+    const isChildTask = (note: { parentId?: string | null; kind: string }) => !!note.parentId && note.kind === "task";
+    const old = (filter: string) => all.notes.filter(note => {
+      if (filter === "archived") return note.state === "archived";
+      if (note.state === "archived") return false;
+      if (filter === "tasks") return note.kind === "task";
+      if (filter === "pages") return note.kind !== "task";
+      return !isChildTask(note) && (filter === "all" || note.state === "inbox");
+    }).map(note => note.id).sort();
+    expect(ids("All")).toEqual(old("all"));
+    expect(ids("Inbox")).toEqual(old("inbox"));
+    expect(ids("Pages")).toEqual(old("pages"));
+    expect(ids("Tasks")).toEqual(old("tasks"));
+    expect(ids("Archived")).toEqual(old("archived"));
+    expect(ids("In progress with an agent")).toEqual([]);
+    expect(ids("Ideas")).toEqual([idea.id]);
+  });
+});

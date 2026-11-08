@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
 import { accountLabel, normalizeAccount, type AccountChoice } from "../providerAccounts";
@@ -72,6 +72,13 @@ export type ChatModelControlProps = {
   onEffortChange?: (effort: string) => void;
   /** Re-probes provider-owned catalogues and repaints from fresh descriptors. */
   onRefresh?: () => Promise<void> | void;
+  /** The host is still resolving which model this chat will use (new-chat
+   *  defaults, or a project switch). Until that settles, the pill says so
+   *  instead of naming the fallback it happened to compute first. */
+  loading?: boolean;
+  /** A label for `model` from an earlier catalog read, so the pill can name the
+   *  model before provider discovery has landed. */
+  knownLabel?: string | null;
 };
 
 const NO_ACCOUNTS: readonly AccountChoice[] = [];
@@ -80,8 +87,12 @@ const NO_ACCOUNTS: readonly AccountChoice[] = [];
 const MAX_POPOVER_HEIGHT = 420;
 const MIN_POPOVER_HEIGHT = 240;
 const VIEWPORT_MARGIN = 12;
+/** How long an unresolved model stays silent before the pill admits it is
+ *  loading. Short enough to explain a slow read, long enough that a local one
+ *  never flashes a spinner. */
+const MODEL_LOADING_DELAY_MS = 600;
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, onRefresh }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, onRefresh, loading, knownLabel }: ChatModelControlProps) {
   const currentAccount = normalizeAccount(harness, account);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -231,7 +242,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const activeAccountLabel = accountLabel(accounts, activeHarness, activeAccount);
   const current = chatAdapters.find(adapter => adapter.id === activeHarness);
   const currentModel = current?.models.find(option => option.id === (activeModel ?? current.defaultModel));
-  const modelLabel = cleanModelLabel(currentModel?.label ?? activeModel ?? "Default");
+  // A label remembered from an earlier catalog read names the model before
+  // discovery lands; the live catalog always wins once it has the entry.
+  const known = knownLabel ? cleanModelLabel(knownLabel) : null;
+  const modelLabel = cleanModelLabel(currentModel?.label ?? known ?? activeModel ?? "Default");
   // Some catalogs bake the provider into the model label ("OpenCode Go ·
   // MiMo V2.5"), and prefixing the harness again read as a stutter:
   // "OpenCode · OpenCode Go · MiMo V2.5". When the model label already opens
@@ -283,10 +297,22 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   };
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
+  // Nothing names this model yet: the host is still resolving the chat's
+  // defaults and no catalog entry or remembered label exists. Say so, after a
+  // short grace period so a fast local read never flashes a spinner.
+  const awaitingModel = !!loading && !currentModel && !known;
+  const [showAwaiting, setShowAwaiting] = useState(false);
+  useEffect(() => {
+    if (!awaitingModel) { setShowAwaiting(false); return; }
+    const timer = setTimeout(() => setShowAwaiting(true), MODEL_LOADING_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingModel]);
   return <div ref={wrapper} className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-[12px] text-foreground/90 enabled:hover:bg-accent")} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-label={`${roleLabel} model: ${harnessName} ${modelLabel}`}>
-      <HarnessMark harness={activeHarness} size={14} />
-      <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-[12px] text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models…" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
+      {showAwaiting
+        ? <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+        : <HarnessMark harness={activeHarness} size={14} />}
+      <span className="whitespace-nowrap overflow-hidden text-ellipsis">{showAwaiting ? "Loading models…" : compactLabel}</span>
       <ChevronDown size={compact ? 14 : 12} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180", disabled && "opacity-40")} aria-hidden="true" />
     </button>
     {open && <>
@@ -326,8 +352,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         </div>
         {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
         <div className={cn("flex min-h-0 flex-1 @max-[410px]/model-picker:flex-col", !twoPane && "flex-col", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "min-h-24 shrink-0")}>
-        <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border @max-[410px]/model-picker:max-h-44 @max-[410px]/model-picker:w-full @max-[410px]/model-picker:border-r-0 @max-[410px]/model-picker:border-b", switchInFlight && "cursor-progress")}>
-          {chatAdapters
+        <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border @max-[410px]/model-picker:max-h-44 @max-[410px]/model-picker:w-full @max-[410px]/model-picker:border-r-0 @max-[410px]/model-picker:border-b", switchInFlight && "cursor-progress")}>
+          {showAwaiting
+            ? <p role="status" className="flex items-center gap-2 px-2 py-3 text-[13px] text-muted-foreground"><LoaderCircle size={13} className="animate-spin" aria-hidden="true" />Loading models…</p>
+            : chatAdapters
             // The user's own login first, then one group per extra account on
             // the same harness, sharing its catalog.
             .flatMap(adapter => [

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use super::doc::{self, key, OptionDef, PageDoc, PropertyDef, PropertyType, PropsPatch, RecordsPatch, ViewDef};
 use super::ids::{new_id, Hlc};
-use super::{assets, database, jobs, links, projector, store};
+use super::{assets, database, jobs, links, notices, projector, store};
 use crate::BridgeError;
 
 /// Kinds a model pass may pick for a page it wrote.
@@ -508,6 +508,15 @@ impl NotesService {
             rename_lock: Mutex::new(()),
             task_lock: Mutex::new(()),
         };
+        // The index is derived from the log. If it lost pages the log still
+        // has, rebuild it before anything reads or mirrors from it.
+        let missing: i64 = service.with_db(|db| {
+            Ok(db.query_row("SELECT COUNT(DISTINCT page_id) FROM page_updates WHERE page_id NOT IN (SELECT id FROM pages)", [], |row| row.get(0))?)
+        })?;
+        if missing > 0 {
+            eprintln!("[notes] the index is missing {missing} pages; rebuilding it from the log");
+            service.rebuild_index()?;
+        }
         // Pages committed but never mirrored (a failed write, a crash between
         // commit and projection) get their files now.
         if let Err(error) = projector::reconcile(&service) {
@@ -938,6 +947,7 @@ impl NotesService {
             }
             let space = props.space_id.clone().unwrap_or_else(|| self.space.clone());
             let records = cells_records(db, &space, &database, &live.values(), &values, (&update.id, parent.as_deref()))?;
+            notices::clear(db, &space, &update.id, &values.iter().map(|(prop, _)| prop.clone()).collect::<Vec<_>>())?;
             live.edit_page(None, &patch, &records)
         })?;
         if let Some((old, new, incoming)) = rename {
@@ -1075,6 +1085,8 @@ impl NotesService {
             let database = database::read(db, &parent)?.ok_or_else(|| invalid("only a row of a database has values"))?;
             let space = props.space_id.clone().unwrap_or_else(|| self.space.clone());
             let records = cells_records(db, &space, &database, &live.values(), patch, (id, Some(parent.as_str())))?;
+            // A cell set here settles whatever the file said about it.
+            notices::clear(db, &space, id, &patch.iter().map(|(prop, _)| prop.clone()).collect::<Vec<_>>())?;
             live.edit_records(&records)
         })?;
         Ok(note)
@@ -1528,6 +1540,7 @@ impl NotesService {
             tombstone_task(task)?;
         }
         self.write(id, actor, |live| live.set_props(&PropsPatch::default().set(key::DELETED_AT, stamp.clone())))?;
+        self.with_db(|db| notices::clear_page(db, id))?;
         // A task moved in before the parent's tombstone still goes with it; the
         // tombstone now refuses further moves.
         let late: Vec<String> = self.with_db(|db| {
@@ -1568,7 +1581,9 @@ impl NotesService {
                 }
                 None => None,
             };
-            Ok(NotePage { seq: note.seq, note, markdown: body, structured, tasks, backlinks, database, database_id, values })
+            // Only a row can hold notices, so no other page pays for the read.
+            let notices = if database_id.is_some() { notices::read(db, &note.space_id, id)? } else { Vec::new() };
+            Ok(NotePage { seq: note.seq, note, markdown: body, structured, tasks, backlinks, database, database_id, values, notices })
         })
     }
 
@@ -1628,6 +1643,9 @@ impl NotesService {
         };
         transaction.execute("DELETE FROM pages_fts", [])?;
         transaction.execute("DELETE FROM page_links", [])?;
+        // Not in the log, so not rebuilt: the next import of a file that still
+        // does not read records them again.
+        transaction.execute("DELETE FROM page_notices", [])?;
         transaction.execute("DELETE FROM pages", [])?;
         let files = projector::find_files(&self.root());
         let pages: Vec<String> = {
@@ -2840,6 +2858,60 @@ pub(crate) mod tests {
         assert!(names.contains(&"Paused".to_owned()) && names.contains(&"Dropped".to_owned()), "{names:?}");
     }
 
+    /// A row of the reading list with a notice on each of its two properties.
+    fn row_with_notices(notes: &NotesService) -> (String, String, String, String) {
+        let (id, rating, status) = reading_list(notes);
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.with_db(|db| {
+            notices::record(db, notes.space(), &row.id, &rating, "three", "number", 1)?;
+            notices::record(db, notes.space(), &row.id, &status, "someday", "status", 1)
+        }).unwrap();
+        (id, row.id, rating, status)
+    }
+
+    #[test]
+    fn setting_the_cell_clears_its_notice() {
+        let (_dir, notes) = service();
+        let (_db, row, rating, status) = row_with_notices(&notes);
+        assert_eq!(notes.read(&row).unwrap().notices.len(), 2);
+        notes.set_values(&row, &[(rating.clone(), Some(serde_json::json!(3)))], PERSON).unwrap();
+        let left: Vec<String> = notes.read(&row).unwrap().notices.into_iter().map(|notice| notice.property_id).collect();
+        assert_eq!(left, vec![status.clone()]);
+        // Through update with values too.
+        let reading = notes.database(&_db).unwrap().schema[&status].options[0].id.clone();
+        notes.update(UpdateNote { id: row.clone(), values: vec![(status, Some(serde_json::json!(reading)))], ..Default::default() }, PERSON).unwrap();
+        assert!(notes.read(&row).unwrap().notices.is_empty());
+    }
+
+    #[test]
+    fn rebuild_index_clears_notices() {
+        let (_dir, notes) = service();
+        let (_db, row, _, _) = row_with_notices(&notes);
+        notes.rebuild_index().unwrap();
+        assert!(notes.read(&row).unwrap().notices.is_empty());
+        assert_eq!(notes.with_db(|db| Ok(db.query_row("SELECT count(*) FROM page_notices", [], |r| r.get::<_, i64>(0))?)).unwrap(), 0);
+    }
+
+    #[test]
+    fn deleting_a_page_deletes_its_notices() {
+        let (_dir, notes) = service();
+        let (_db, row, _, _) = row_with_notices(&notes);
+        notes.delete(&row, PERSON).unwrap();
+        assert_eq!(notes.with_db(|db| Ok(db.query_row("SELECT count(*) FROM page_notices WHERE page_id=?1", [&row], |r| r.get::<_, i64>(0))?)).unwrap(), 0);
+    }
+
+    #[test]
+    fn only_a_row_reads_notices() {
+        let (_dir, notes) = service();
+        let (_db, row, rating, _) = row_with_notices(&notes);
+        let loose = notes.create(CreatePage { title: Some("Loose".into()), ..Default::default() }, PERSON).unwrap();
+        notes.with_db(|db| notices::record(db, notes.space(), &loose.id, &rating, "x", "number", 1)).unwrap();
+        assert!(notes.read(&loose.id).unwrap().notices.is_empty(), "a page that is not a row reads none");
+        let read = notes.read(&row).unwrap().notices;
+        assert_eq!(read.len(), 2);
+        assert_eq!((read[0].kind.as_str(), read.iter().any(|notice| notice.raw == "three" && notice.expected == "number")), ("unreadableValue", true));
+    }
+
     #[test]
     fn set_options_finishes_an_interrupted_cleanup_on_retry() {
         let (_dir, notes) = service();
@@ -3201,6 +3273,31 @@ pub(crate) mod tests {
         let database = notes.database(&id).unwrap();
         assert_eq!(database.schema[&rating].name, "Score", "the rename survived the merge");
         assert!(database.schema[&status].options.iter().any(|option| option.name == "Paused"), "the option survived the merge");
+    }
+
+    #[test]
+    fn a_store_that_lost_its_index_rebuilds_on_open() {
+        use crate::notes::query::QuerySpec;
+        let dir = tempfile::tempdir().unwrap();
+        let open = || NotesService::open(dir.path(), Arc::new(|_: &str| false)).unwrap();
+        let notes = open();
+        let (id, rating, _status) = reading_list(&notes);
+        let view = notes.put_view(&id, None, ViewDef { name: "Top".into(), kind: ViewType::Board, order: 1, filter: None, sorts: vec![], group_by: None, date_property: None, properties: vec![] }, PERSON).unwrap();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(4)))], PERSON).unwrap();
+        drop(notes);
+        // Every index table emptied, as a damaged or truncated notes.db leaves
+        // it; the log is intact.
+        let db = rusqlite::Connection::open(dir.path().join(store::FILE_NAME)).unwrap();
+        db.execute_batch("DELETE FROM pages; DELETE FROM page_values; DELETE FROM database_props; DELETE FROM pages_fts; DELETE FROM page_links;").unwrap();
+        drop(db);
+        let notes = open();
+        let database = notes.database(&id).unwrap();
+        assert!(database.schema.contains_key(&rating));
+        assert!(database.views.contains_key(&view));
+        assert_eq!(notes.read(&row.id).unwrap().values.unwrap()[&rating], serde_json::json!(4));
+        let found = notes.query_database(&id, &QuerySpec { filter: Some(serde_json::json!({"property": rating, "op": "gte", "value": 4})), ..Default::default() }).unwrap();
+        assert_eq!(found.rows.iter().map(|row| row.note.id.clone()).collect::<Vec<_>>(), vec![row.id]);
     }
 
     #[test]

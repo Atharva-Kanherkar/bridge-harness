@@ -16,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::ids::new_id;
 use crate::BridgeError;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 pub const FILE_NAME: &str = "notes.db";
 
 const SCHEMA_V1: &str = "
@@ -226,6 +226,24 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     Ok(connection)
 }
 
+/// v5: notices about a row's file the importer could not read (a value that
+/// does not parse for its property), shown on the row page. Not part of the
+/// change log: `rebuild_index` clears them and the next import records them
+/// again.
+const SCHEMA_V5: &str = "
+CREATE TABLE page_notices(
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    page_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    property TEXT NOT NULL,
+    raw TEXT NOT NULL,
+    expected TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(space_id, page_id, kind, property)
+);
+";
+
 fn migrate(connection: &mut Connection) -> Result<(), BridgeError> {
     let current: i64 = connection.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM notes_schema_version",
@@ -247,6 +265,7 @@ fn migrate(connection: &mut Connection) -> Result<(), BridgeError> {
                 super::links::backfill(&transaction)?;
             }
             4 => transaction.execute_batch(SCHEMA_V4)?,
+            5 => transaction.execute_batch(SCHEMA_V5)?,
             _ => unreachable!("every version up to SCHEMA_VERSION has an arm"),
         }
         transaction.execute(
@@ -380,7 +399,7 @@ mod tests {
         let fixture = v3_fixture(&path);
         drop(fixture);
         let db = open(&path).unwrap();
-        assert_eq!(db.query_row("SELECT max(version) FROM notes_schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), 4);
+        assert_eq!(db.query_row("SELECT max(version) FROM notes_schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
         assert_eq!(db.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
         assert_eq!(db.query_row("SELECT count(*) FROM page_updates", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
         assert_eq!(db.query_row("SELECT count(*) FROM page_links", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
@@ -403,6 +422,20 @@ mod tests {
         db.execute("INSERT INTO pages(id,space_id,kind,state,body_hash,created_by,last_actor,created_at,updated_at) VALUES('db','space','database','open','h','person','person','then','then')", []).unwrap();
         assert!(db.execute("INSERT INTO pages(id,space_id,kind,state,body_hash,created_by,last_actor,created_at,updated_at) VALUES('bad','space','essay','open','h','person','person','then','then')", []).is_err());
         assert_eq!(db.query_row("SELECT count(*) FROM spaces WHERE system_database_id IS NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn migrates_a_v4_store_to_page_notices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        drop(v3_fixture(&path));
+        let db = open(&path).unwrap();
+        assert_eq!(db.query_row("SELECT max(version) FROM notes_schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert!(tables(&db).contains(&"page_notices".to_string()));
+        assert_eq!(db.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap(), 3, "every page kept");
+        db.execute("INSERT INTO page_notices(space_id, page_id, kind, property, raw, expected, seq, created_at) VALUES('space','plan','unreadableValue','p','three','number',1,'now')", []).unwrap();
+        // One notice per page, kind and property.
+        assert!(db.execute("INSERT INTO page_notices(space_id, page_id, kind, property, raw, expected, seq, created_at) VALUES('space','plan','unreadableValue','p','four','number',2,'now')", []).is_err());
     }
 
     #[test]
