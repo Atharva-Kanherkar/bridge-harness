@@ -8,6 +8,16 @@
       "description": "Apply every fixable style rule to the body.",
       "type": "boolean"
     },
+    "attachments": {
+      "description": "Replace the attached images with these local paths (the card sends the list minus one to remove an image).",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "body": {
       "description": "The new body; omitted keeps the current one (for a Fix alone).",
       "type": [

@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use bridge_protocol::messages::{OutgoingFormat, OutgoingLintFinding};
+use bridge_protocol::messages::{OutgoingFormat, OutgoingLintFinding, SLACK_MAX_ELEMENT_CHARS};
 use regex::Regex;
 
 pub const NO_EM_DASH: &str = "no_em_dash";
@@ -16,6 +16,7 @@ pub const NO_AI_ATTRIBUTION: &str = "no_ai_attribution";
 pub const SLACK_TABLE: &str = "slack_table";
 pub const SLACK_HEADING: &str = "slack_heading";
 pub const MAX_LINES: &str = "max_lines";
+pub const SLACK_LENGTH: &str = "slack_length";
 
 /// Slack messages past this many lines get a warning.
 pub const SLACK_MAX_LINES: usize = 15;
@@ -112,6 +113,8 @@ pub fn check(body: &str, format: OutgoingFormat) -> Vec<OutgoingLintFinding> {
             findings.push(finding(NO_AI_ATTRIBUTION, "AI attribution line", Some(number), true, false));
         }
     }
+    // Text pasted into Slack by hand stays raw: tables and headings do not
+    // survive. Through the connector they do, so only the clipboard warns.
     if format == OutgoingFormat::Slack {
         for (index, (line, in_fence)) in lines.iter().enumerate() {
             if *in_fence {
@@ -125,6 +128,20 @@ pub fn check(body: &str, format: OutgoingFormat) -> Vec<OutgoingLintFinding> {
                 findings.push(finding(SLACK_HEADING, "Heading: Slack has none, it will show in bold", Some(index + 1), false, false));
             }
         }
+    }
+    if format == OutgoingFormat::SlackMarkdown {
+        let count = body.chars().count();
+        if count > SLACK_MAX_ELEMENT_CHARS {
+            findings.push(finding(
+                SLACK_LENGTH,
+                format!("{count} characters: Slack takes at most {SLACK_MAX_ELEMENT_CHARS} in one message"),
+                None,
+                false,
+                false,
+            ));
+        }
+    }
+    if matches!(format, OutgoingFormat::Slack | OutgoingFormat::SlackMarkdown) {
         let count = body.trim_end().split('\n').count();
         if count > SLACK_MAX_LINES {
             findings.push(finding(
@@ -211,6 +228,17 @@ mod tests {
         assert_eq!(rules(&findings), vec![MAX_LINES]);
         assert!(findings[0].message.starts_with("16 lines"));
         assert!(!findings[0].fixable);
+    }
+
+    #[test]
+    fn slack_through_the_connector_keeps_tables_and_headings_but_not_length() {
+        let body = "# Status\n| a | b |\n|---|---|\n| 1 | 2 |\n```rust\nfn main() {}\n```";
+        assert!(check(body, OutgoingFormat::SlackMarkdown).is_empty());
+        let long = "x".repeat(SLACK_MAX_ELEMENT_CHARS + 1);
+        let findings = check(&long, OutgoingFormat::SlackMarkdown);
+        assert_eq!(rules(&findings), vec![SLACK_LENGTH]);
+        assert!(findings[0].message.starts_with("5001 characters"));
+        assert!(check(&"x".repeat(SLACK_MAX_ELEMENT_CHARS), OutgoingFormat::SlackMarkdown).is_empty());
     }
 
     #[test]

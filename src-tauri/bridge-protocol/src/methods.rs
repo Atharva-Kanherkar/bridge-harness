@@ -215,6 +215,7 @@ methods![
     (UpdateOutgoing, "outgoing", "update_outgoing"),
     (CopyOutgoing, "outgoing", "copy_outgoing"),
     (DiscardOutgoing, "outgoing", "discard_outgoing"),
+    (ReadOutgoingAttachment, "outgoing", "read_outgoing_attachment"),
     // notes: local pages people and agents both write; model passes on request
     (ListNotes, "notes", "list_notes"),
     (ReadPage, "notes", "read_page"),

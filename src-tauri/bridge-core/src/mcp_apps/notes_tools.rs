@@ -201,7 +201,7 @@ pub fn all_definitions() -> Vec<Value> {
         definition(
             "outgoing_draft",
             "Draft a message",
-            "Draft a message the person will send to someone else: a Slack message or thread reply, a direct message, a GitHub comment or review reply, or text they will paste into another app. Use it whenever the person asks you to write, draft, reply to, answer or tell someone something, instead of printing the message in your reply. Bridge shows it as a card, checked against their style rules (no em dashes, no AI attribution, Slack formatting), that they edit, copy and send themselves; you cannot send it. Write the body as the finished message in Markdown, in the person's voice, with no preamble or sign-off they did not ask for. Do not use it for answers to the person, notes, documents, commit messages, or comments you post yourself with your own tools. One message per call.",
+            "Draft a message the person will send to someone else: a Slack message or thread reply, a direct message, a GitHub comment or review reply, or text they will paste into another app. Use it whenever the person asks you to write, draft, reply to, answer or tell someone something, instead of printing the message in your reply. Bridge shows it as a card, checked against their style rules (no em dashes, no AI attribution, Slack formatting), that they edit, copy and send themselves; you cannot send it. Write the body as the finished message in standard Markdown (tables, headings, lists and fenced code with a language all reach Slack intact), in the person's voice, with no preamble or sign-off they did not ask for. Do not use it for answers to the person, notes, documents, commit messages, or comments you post yourself with your own tools. One message per call.",
             json!({"type": "object", "properties": {
                 "to": {"type": "object", "description": "Exactly one of: {\"slack\": {\"channel\": \"#dev\"}}, {\"slack\": {\"channel\": \"#dev\", \"thread\": \"<message permalink>\"}}, {\"slack\": {\"user\": \"@name\"}}, {\"github\": {\"repo\": \"owner/name\", \"number\": 123}} (add \"replyTo\": <review comment id> to answer a review comment), or {\"clipboard\": \"slack\" | \"github\" | \"plain\"} when they will paste it somewhere else.", "properties": {
                     "slack": {"type": "object", "properties": {
@@ -213,7 +213,8 @@ pub fn all_definitions() -> Vec<Value> {
                     "clipboard": {"type": "string", "enum": ["slack", "github", "plain"]}
                 }, "minProperties": 1, "maxProperties": 1, "additionalProperties": false},
                 "body": {"type": "string", "description": "The finished message in Markdown, at most 8000 characters."},
-                "reason": {"type": "string", "description": "In a few words, why the person wants this message, for example \"tell #dev the deploy finished\"."}
+                "reason": {"type": "string", "description": "In a few words, why the person wants this message, for example \"tell #dev the deploy finished\"."},
+                "attachments": {"type": "array", "maxItems": 4, "items": {"type": "string"}, "description": "Only when the person asks to include an image or screenshot: absolute paths to local PNG, JPEG, GIF or WebP files (10 MB each, at most 4). Not for GitHub destinations; link a hosted image in the body there."}
             }, "required": ["to", "body", "reason"], "additionalProperties": false}),
             false,
         ),

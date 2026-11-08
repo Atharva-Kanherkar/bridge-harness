@@ -11,10 +11,19 @@ use serde::{Deserialize, Serialize};
 /// The longest body a draft may carry, in characters.
 pub const MAX_OUTGOING_BODY_CHARS: usize = 8000;
 
-/// How a destination shows text: Slack mrkdwn, GitHub Markdown, or neither.
+/// The longest body Slack's connector takes in one text element.
+pub const SLACK_MAX_ELEMENT_CHARS: usize = 5000;
+/// Images one draft may carry, and the largest each may be.
+pub const MAX_OUTGOING_ATTACHMENTS: usize = 4;
+pub const MAX_OUTGOING_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+
+/// How a destination takes text. `slackMarkdown` is standard Markdown that
+/// Slack's connector converts itself (tables, headings and fenced code
+/// included); `slack` is mrkdwn, for text pasted into Slack by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum OutgoingFormat {
+    SlackMarkdown,
     Slack,
     Github,
     Plain,
@@ -65,6 +74,18 @@ pub struct OutgoingLintFinding {
     pub fixed: bool,
 }
 
+/// An image a draft carries: a local file, checked to be an image by its
+/// content when attached and again when read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OutgoingAttachment {
+    pub path: String,
+    pub name: String,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub mime: String,
+    pub bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OutgoingMessage {
@@ -79,6 +100,9 @@ pub struct OutgoingMessage {
     /// The body as the destination shows it.
     pub rendered: String,
     pub lint: Vec<OutgoingLintFinding>,
+    /// Images to send with the text, in order.
+    #[serde(default)]
+    pub attachments: Vec<OutgoingAttachment>,
     pub state: OutgoingState,
     /// Bumped on every text change; edits and copies name the revision they saw.
     pub revision: u32,
@@ -113,6 +137,10 @@ pub struct UpdateOutgoingParams {
     /// Apply every fixable style rule to the body.
     #[serde(default)]
     pub apply_fixes: bool,
+    /// Replace the attached images with these local paths (the card sends
+    /// the list minus one to remove an image).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -146,6 +174,20 @@ pub struct DiscardOutgoingParams {
 #[serde(rename_all = "camelCase")]
 pub struct DiscardOutgoingResult {
     pub item: OutgoingMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadOutgoingAttachmentParams {
+    pub id: String,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadOutgoingAttachmentResult {
+    pub mime: String,
+    pub data_base64: String,
 }
 
 #[cfg(test)]

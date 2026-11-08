@@ -1,6 +1,8 @@
-//! A draft's Markdown as its destination shows it.
+//! A draft's Markdown as its destination takes it.
 //!
-//! Slack speaks mrkdwn (`*bold*`, `_italic_`, `<url|text>`, no headings),
+//! Slack's connector takes standard Markdown and converts it itself, so a
+//! Slack channel, thread or DM gets the body as written. Text pasted into
+//! Slack by hand is different: Slack speaks mrkdwn (`*bold*`, `_italic_`, `<url|text>`, no headings),
 //! GitHub speaks Markdown, and a plain destination gets the words with the
 //! markup taken out. Code spans and fences pass through untouched.
 
@@ -64,7 +66,7 @@ fn is_fence(line: &str) -> bool {
 
 /// `body` as `format` shows it.
 pub fn render(body: &str, format: OutgoingFormat) -> String {
-    if format == OutgoingFormat::Github {
+    if matches!(format, OutgoingFormat::Github | OutgoingFormat::SlackMarkdown) {
         return body.to_owned();
     }
     let p = patterns();
@@ -124,6 +126,12 @@ mod tests {
     fn plain_strips_markup_and_keeps_link_targets() {
         let body = "## Note\n**Done**, see [run](https://ci/1) and `cargo test`\n```\nraw *text*\n```";
         assert_eq!(render(body, OutgoingFormat::Plain), "Note\nDone, see run (https://ci/1) and cargo test\nraw *text*");
+    }
+
+    #[test]
+    fn slack_through_the_connector_is_the_body_as_written() {
+        let body = "# Title\n| a |\n|---|\n```python\nprint(1)\n```";
+        assert_eq!(render(body, OutgoingFormat::SlackMarkdown), body);
     }
 
     #[test]

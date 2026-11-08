@@ -124,11 +124,15 @@ pub fn dispatch(
         }
         MethodName::UpdateOutgoing => {
             let p: wire::UpdateOutgoingParams = decode(method, params)?;
-            reply(api::update_outgoing(core, &p.id, p.revision, p.body.as_deref(), p.apply_fixes))
+            reply(api::update_outgoing(core, &p.id, p.revision, p.body.as_deref(), p.apply_fixes, p.attachments.as_deref()))
         }
         MethodName::CopyOutgoing => {
             let p: wire::CopyOutgoingParams = decode(method, params)?;
             reply(api::copy_outgoing(core, &p.id, p.revision))
+        }
+        MethodName::ReadOutgoingAttachment => {
+            let p: wire::ReadOutgoingAttachmentParams = decode(method, params)?;
+            reply(api::read_outgoing_attachment(core, &p.id, p.index))
         }
         MethodName::DiscardOutgoing => {
             let p: wire::DiscardOutgoingParams = decode(method, params)?;

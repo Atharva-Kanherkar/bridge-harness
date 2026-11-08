@@ -12,11 +12,12 @@
 //! older revision is refused, so what the person acts on is always what they
 //! last saw.
 
+pub mod attachments;
 pub mod lint;
 pub mod render;
 
 use bridge_protocol::messages::{
-    OutgoingDestination, OutgoingFormat, OutgoingLintFinding, OutgoingMessage, OutgoingState,
+    OutgoingAttachment, OutgoingDestination, OutgoingFormat, OutgoingLintFinding, OutgoingMessage, OutgoingState,
     MAX_OUTGOING_BODY_CHARS,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -37,6 +38,7 @@ pub fn install_store(db: &Connection) -> Result<(), BridgeError> {
             body TEXT NOT NULL,
             rendered TEXT NOT NULL,
             lint TEXT NOT NULL DEFAULT '[]',
+            attachments TEXT NOT NULL DEFAULT '[]',
             state TEXT NOT NULL,
             revision INTEGER NOT NULL DEFAULT 1,
             reason TEXT NOT NULL,
@@ -52,7 +54,7 @@ pub fn format_of(destination: &OutgoingDestination) -> OutgoingFormat {
     match destination {
         OutgoingDestination::SlackChannel { .. }
         | OutgoingDestination::SlackThread { .. }
-        | OutgoingDestination::SlackDm { .. } => OutgoingFormat::Slack,
+        | OutgoingDestination::SlackDm { .. } => OutgoingFormat::SlackMarkdown,
         OutgoingDestination::GithubComment { .. } | OutgoingDestination::GithubReviewReply { .. } => {
             OutgoingFormat::Github
         }
@@ -73,7 +75,7 @@ pub fn label(destination: &OutgoingDestination) -> String {
         OutgoingDestination::Clipboard { format } => format!(
             "Clipboard \u{b7} {}",
             match format {
-                OutgoingFormat::Slack => "Slack",
+                OutgoingFormat::Slack | OutgoingFormat::SlackMarkdown => "Slack",
                 OutgoingFormat::Github => "GitHub",
                 OutgoingFormat::Plain => "plain text",
             }
@@ -179,7 +181,7 @@ fn parse_state(text: &str) -> OutgoingState {
     }
 }
 
-const COLUMNS: &str = "id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at";
+const COLUMNS: &str = "id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<OutgoingMessage> {
     let destination: OutgoingDestination = serde_json::from_str(&row.get::<_, String>(2)?)
@@ -199,6 +201,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<OutgoingMessage> {
         reason: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        attachments: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
     })
 }
 
@@ -230,10 +233,10 @@ fn fixed_text(body: &str, format: OutgoingFormat) -> (String, Vec<OutgoingLintFi
 
 fn write(db: &Connection, item: &OutgoingMessage) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO outgoing_messages(id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+        "INSERT INTO outgoing_messages(id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
          ON CONFLICT(id) DO UPDATE SET body=excluded.body, rendered=excluded.rendered, lint=excluded.lint,
-           state=excluded.state, revision=excluded.revision, updated_at=excluded.updated_at",
+           state=excluded.state, revision=excluded.revision, updated_at=excluded.updated_at, attachments=excluded.attachments",
         params![
             item.id,
             item.session_id,
@@ -246,9 +249,24 @@ fn write(db: &Connection, item: &OutgoingMessage) -> Result<(), BridgeError> {
             item.reason,
             item.created_at,
             item.updated_at,
+            serde_json::to_string(&item.attachments).map_err(|error| BridgeError::Invalid(error.to_string()))?,
         ],
     )?;
     Ok(())
+}
+
+/// GitHub's API cannot attach an upload to a comment; the image has to be
+/// hosted and linked in the body instead.
+fn attachments_for(destination: &OutgoingDestination, paths: &[String]) -> Result<Vec<OutgoingAttachment>, BridgeError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if matches!(destination, OutgoingDestination::GithubComment { .. } | OutgoingDestination::GithubReviewReply { .. }) {
+        return Err(BridgeError::Invalid(
+            "GitHub comments cannot carry uploaded images; link a hosted image in the body instead".into(),
+        ));
+    }
+    attachments::validate(paths).map_err(BridgeError::Invalid)
 }
 
 /// Store an agent's draft with every fixable rule already applied.
@@ -258,9 +276,11 @@ pub fn create_draft(
     destination: OutgoingDestination,
     body: &str,
     reason: &str,
+    attachment_paths: &[String],
     now: &str,
 ) -> Result<OutgoingMessage, BridgeError> {
     let body = check_body(body).map_err(BridgeError::Invalid)?;
+    let attachments = attachments_for(&destination, attachment_paths)?;
     let format = format_of(&destination);
     let (body, lint) = fixed_text(&body, format);
     let item = OutgoingMessage {
@@ -272,6 +292,7 @@ pub fn create_draft(
         rendered: render::render(&body, format),
         body,
         lint,
+        attachments,
         state: OutgoingState::Draft,
         revision: 1,
         reason: reason.trim().to_owned(),
@@ -301,11 +322,15 @@ pub fn update(
     revision: u32,
     body: Option<&str>,
     apply_fixes: bool,
+    attachment_paths: Option<&[String]>,
     now: &str,
 ) -> Result<OutgoingMessage, BridgeError> {
     let mut item = current(db, id, Some(revision))?;
-    if body.is_none() && !apply_fixes {
+    if body.is_none() && !apply_fixes && attachment_paths.is_none() {
         return Err(BridgeError::Invalid("nothing to change".into()));
+    }
+    if let Some(paths) = attachment_paths {
+        item.attachments = attachments_for(&item.destination, paths)?;
     }
     let text = match body {
         Some(body) => check_body(body).map_err(BridgeError::Invalid)?,
@@ -330,6 +355,16 @@ pub fn copy(db: &Connection, id: &str, revision: u32, now: &str) -> Result<(Stri
     item.updated_at = now.to_owned();
     write(db, &item)?;
     Ok((item.rendered.clone(), item))
+}
+
+/// One attached image as `(mime, base64)`, checked again before it is read.
+pub fn read_attachment(db: &Connection, id: &str, index: u32) -> Result<(String, String), BridgeError> {
+    let item = get(db, id)?.ok_or_else(|| BridgeError::Invalid("that draft no longer exists".into()))?;
+    let attachment = item
+        .attachments
+        .get(index as usize)
+        .ok_or_else(|| BridgeError::Invalid("that draft has no such image".into()))?;
+    attachments::read(attachment).map_err(BridgeError::Invalid)
 }
 
 /// Put a draft away. Discarding twice is not an error.
@@ -390,35 +425,38 @@ pub(crate) mod tests {
     #[test]
     fn agent_draft_applies_fixes_and_records_them() {
         let db = store();
-        let item = create_draft(&db, "chat", slack(), "Deploy is done \u{2014} **all** green", "tell the team", "t1").unwrap();
+        let item = create_draft(&db, "chat", slack(), "Deploy is done \u{2014} **all** green", "tell the team", &[], "t1").unwrap();
         assert_eq!(item.body, "Deploy is done, **all** green");
-        assert_eq!(item.rendered, "Deploy is done, *all* green");
+        // Slack's connector takes the Markdown as written.
+        assert_eq!(item.rendered, "Deploy is done, **all** green");
         assert_eq!(item.lint.len(), 1);
         assert!(item.lint[0].fixed);
-        assert_eq!((item.state, item.revision, item.format), (OutgoingState::Draft, 1, OutgoingFormat::Slack));
+        assert_eq!((item.state, item.revision, item.format), (OutgoingState::Draft, 1, OutgoingFormat::SlackMarkdown));
         assert_eq!(get(&db, &item.id).unwrap().unwrap(), item);
     }
 
     #[test]
     fn stale_revision_is_refused_and_current_one_bumps() {
         let db = store();
-        let item = create_draft(&db, "chat", slack(), "hello", "r", "t1").unwrap();
-        let edited = update(&db, &item.id, 1, Some("hello \u{2014} team"), false, "t2").unwrap();
+        let item = create_draft(&db, "chat", slack(), "hello", "r", &[], "t1").unwrap();
+        let edited = update(&db, &item.id, 1, Some("hello \u{2014} team"), false, None, "t2").unwrap();
         assert_eq!(edited.revision, 2);
         // The person's own words are checked, not rewritten.
         assert_eq!(edited.body, "hello \u{2014} team");
         assert!(edited.lint.iter().any(|finding| finding.fixable && !finding.fixed));
-        assert!(update(&db, &item.id, 1, Some("again"), false, "t3").unwrap_err().to_string().contains("changed since"));
-        let fixed = update(&db, &item.id, 2, None, true, "t4").unwrap();
+        assert!(update(&db, &item.id, 1, Some("again"), false, None, "t3").unwrap_err().to_string().contains("changed since"));
+        let fixed = update(&db, &item.id, 2, None, true, None, "t4").unwrap();
         assert_eq!((fixed.body.as_str(), fixed.revision), ("hello, team", 3));
-        assert!(update(&db, &item.id, 3, None, false, "t5").is_err(), "nothing to change");
-        assert!(update(&db, &item.id, 3, Some("   "), false, "t5").is_err(), "empty");
+        assert!(update(&db, &item.id, 3, None, false, None, "t5").is_err(), "nothing to change");
+        assert!(update(&db, &item.id, 3, Some("   "), false, None, "t5").is_err(), "empty");
     }
 
     #[test]
     fn copy_returns_rendered_text_and_marks_copied() {
         let db = store();
-        let item = create_draft(&db, "chat", slack(), "See [run](https://ci/1)", "r", "t1").unwrap();
+        // Pasted into Slack by hand, the text has to be mrkdwn already.
+        let clipboard = OutgoingDestination::Clipboard { format: OutgoingFormat::Slack };
+        let item = create_draft(&db, "chat", clipboard, "See [run](https://ci/1)", "r", &[], "t1").unwrap();
         let (text, copied) = copy(&db, &item.id, 1, "t2").unwrap();
         assert_eq!(text, "See <https://ci/1|run>");
         assert_eq!((copied.state, copied.revision), (OutgoingState::Copied, 1));
@@ -428,28 +466,50 @@ pub(crate) mod tests {
     #[test]
     fn edit_after_copy_returns_to_draft() {
         let db = store();
-        let item = create_draft(&db, "chat", slack(), "one", "r", "t1").unwrap();
+        let item = create_draft(&db, "chat", slack(), "one", "r", &[], "t1").unwrap();
         copy(&db, &item.id, 1, "t2").unwrap();
-        let edited = update(&db, &item.id, 1, Some("two"), false, "t3").unwrap();
+        let edited = update(&db, &item.id, 1, Some("two"), false, None, "t3").unwrap();
         assert_eq!((edited.state, edited.revision), (OutgoingState::Draft, 2));
     }
 
     #[test]
     fn discarded_items_refuse_edits_and_copies() {
         let db = store();
-        let item = create_draft(&db, "chat", slack(), "one", "r", "t1").unwrap();
+        let item = create_draft(&db, "chat", slack(), "one", "r", &[], "t1").unwrap();
         assert_eq!(discard(&db, &item.id, "t2").unwrap().state, OutgoingState::Discarded);
         assert_eq!(discard(&db, &item.id, "t3").unwrap().updated_at, "t2", "idempotent");
-        assert!(update(&db, &item.id, 1, Some("x"), false, "t4").unwrap_err().to_string().contains("discarded"));
+        assert!(update(&db, &item.id, 1, Some("x"), false, None, "t4").unwrap_err().to_string().contains("discarded"));
         assert!(copy(&db, &item.id, 1, "t4").is_err());
+    }
+
+    #[test]
+    fn images_attach_to_slack_and_clipboard_drafts_but_not_github() {
+        let db = store();
+        let dir = tempfile::tempdir().unwrap();
+        let png = attachments::tests::write(dir.path(), "chart.png", attachments::tests::PNG);
+        let item = create_draft(&db, "chat", slack(), "Here is the chart", "share it", &[png.clone()], "t1").unwrap();
+        assert_eq!(item.attachments.len(), 1);
+        assert_eq!(get(&db, &item.id).unwrap().unwrap().attachments, item.attachments);
+        let (mime, _) = read_attachment(&db, &item.id, 0).unwrap();
+        assert_eq!(mime, "image/png");
+        assert!(read_attachment(&db, &item.id, 1).is_err());
+
+        let github = OutgoingDestination::GithubComment { repo: "o/r".into(), number: 1 };
+        let error = create_draft(&db, "chat", github, "see", "r", &[png], "t2").unwrap_err().to_string();
+        assert!(error.contains("GitHub comments cannot carry"), "{error}");
+        assert_eq!(count_for_session(&db, "chat").unwrap(), 1, "nothing stored for the refused draft");
+
+        // Removing an image is an edit: a new revision with the shorter list.
+        let removed = update(&db, &item.id, 1, None, false, Some(&[]), "t3").unwrap();
+        assert_eq!((removed.attachments.len(), removed.revision), (0, 2));
     }
 
     #[test]
     fn list_is_per_chat_and_oldest_first() {
         let db = store();
-        let first = create_draft(&db, "a", slack(), "1", "r", "t1").unwrap();
-        create_draft(&db, "b", slack(), "2", "r", "t2").unwrap();
-        let third = create_draft(&db, "a", slack(), "3", "r", "t3").unwrap();
+        let first = create_draft(&db, "a", slack(), "1", "r", &[], "t1").unwrap();
+        create_draft(&db, "b", slack(), "2", "r", &[], "t2").unwrap();
+        let third = create_draft(&db, "a", slack(), "3", "r", &[], "t3").unwrap();
         discard(&db, &third.id, "t4").unwrap();
         let ids: Vec<String> = list(&db, "a").unwrap().into_iter().map(|item| item.id).collect();
         assert_eq!(ids, vec![first.id, third.id]);

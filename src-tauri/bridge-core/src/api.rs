@@ -584,10 +584,11 @@ pub fn update_outgoing(
     revision: u32,
     body: Option<&str>,
     apply_fixes: bool,
+    attachments: Option<&[String]>,
 ) -> Result<wire::UpdateOutgoingResult, BridgeError> {
     let item = {
         let db = core.db.lock().unwrap();
-        crate::outgoing::update(&db, id, revision, body, apply_fixes, &chrono::Utc::now().to_rfc3339())?
+        crate::outgoing::update(&db, id, revision, body, apply_fixes, attachments, &chrono::Utc::now().to_rfc3339())?
     };
     outgoing_changed(core, &item);
     Ok(wire::UpdateOutgoingResult { item })
@@ -601,6 +602,13 @@ pub fn copy_outgoing(core: &Arc<BridgeCore>, id: &str, revision: u32) -> Result<
     };
     outgoing_changed(core, &item);
     Ok(wire::CopyOutgoingResult { text, item })
+}
+
+/// One image a draft carries, read and checked again for the card.
+pub fn read_outgoing_attachment(core: &Arc<BridgeCore>, id: &str, index: u32) -> Result<wire::ReadOutgoingAttachmentResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let (mime, data_base64) = crate::outgoing::read_attachment(&db, id, index)?;
+    Ok(wire::ReadOutgoingAttachmentResult { mime, data_base64 })
 }
 
 pub fn discard_outgoing(core: &Arc<BridgeCore>, id: &str) -> Result<wire::DiscardOutgoingResult, BridgeError> {

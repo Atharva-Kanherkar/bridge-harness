@@ -1087,6 +1087,13 @@
       "resultSchema": "discard-outgoing-result.json"
     },
     {
+      "command": "read_outgoing_attachment",
+      "domain": "outgoing",
+      "method": "outgoing/read_outgoing_attachment",
+      "paramsSchema": "read-outgoing-attachment-params.json",
+      "resultSchema": "read-outgoing-attachment-result.json"
+    },
+    {
       "command": "list_notes",
       "domain": "notes",
       "method": "notes/list_notes",

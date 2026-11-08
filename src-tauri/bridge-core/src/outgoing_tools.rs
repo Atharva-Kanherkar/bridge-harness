@@ -29,6 +29,8 @@ struct DraftArgs {
     to: Value,
     body: String,
     reason: String,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 pub struct Outcome {
@@ -52,7 +54,7 @@ pub fn run(db: &Connection, session_id: &str, can_write: bool, tool: &str, args:
         return Err(ToolError { status: 403, message: "Only a top-level chat can draft messages.".into() });
     }
     let args: DraftArgs = serde_json::from_value(args.clone())
-        .map_err(|error| bad(format!("outgoing_draft takes exactly {{to, body, reason}}: {error}")))?;
+        .map_err(|error| bad(format!("outgoing_draft takes {{to, body, reason}} and optionally attachments: {error}")))?;
     let destination = outgoing::parse_destination(&args.to).map_err(bad)?;
     let reason = args.reason.trim();
     if reason.is_empty() || reason.chars().count() > outgoing::MAX_REASON_CHARS {
@@ -72,7 +74,10 @@ pub fn run(db: &Connection, session_id: &str, can_write: bool, tool: &str, args:
         });
     }
     let now = chrono::Utc::now().to_rfc3339();
-    let item = outgoing::create_draft(db, session_id, destination, &args.body, reason, &now).map_err(internal)?;
+    let item = outgoing::create_draft(db, session_id, destination, &args.body, reason, &args.attachments, &now).map_err(|error| match error {
+        crate::BridgeError::Invalid(message) => bad(message),
+        other => internal(other),
+    })?;
     Ok(Outcome {
         result: json!({
             "id": item.id,
@@ -80,6 +85,7 @@ pub fn run(db: &Connection, session_id: &str, can_write: bool, tool: &str, args:
             "destination": item.label,
             "rendered": item.rendered,
             "lint": item.lint,
+            "attachments": item.attachments.iter().map(|attachment| attachment.name.clone()).collect::<Vec<_>>(),
             "note": DRAFT_NOTE,
         }),
         item,
@@ -112,7 +118,7 @@ mod tests {
         call["state"] = json!("sent");
         let error = run(&db, "chat", true, DRAFT, &call).err().unwrap();
         assert_eq!(error.status, 400);
-        assert!(error.message.contains("exactly {to, body, reason}"), "{}", error.message);
+        assert!(error.message.contains("{to, body, reason}"), "{}", error.message);
         let error = run(&db, "chat", true, DRAFT, &json!({"to": {"email": "a"}, "body": "hi", "reason": "r"})).err().unwrap();
         assert!(error.message.contains("to must be exactly one of"), "{}", error.message);
         assert_eq!(outgoing::count_for_session(&db, "chat").unwrap(), 0);
@@ -141,6 +147,21 @@ mod tests {
         }
         assert_eq!(run(&db, "chat", true, DRAFT, &args("one more")).err().unwrap().status, 429);
         assert!(run(&db, "other", true, DRAFT, &args("fine")).is_ok(), "the cap is per chat");
+    }
+
+    #[test]
+    fn images_ride_along_when_the_agent_attaches_them() {
+        let db = outgoing::tests::store();
+        let dir = tempfile::tempdir().unwrap();
+        let png = outgoing::attachments::tests::write(dir.path(), "shot.png", outgoing::attachments::tests::PNG);
+        let mut call = args("Screenshot of the bug");
+        call["attachments"] = json!([png]);
+        let outcome = run(&db, "chat", true, DRAFT, &call).unwrap();
+        assert_eq!(outcome.result["attachments"], json!(["shot.png"]));
+        call["attachments"] = json!(["/etc/hosts"]);
+        let error = run(&db, "chat", true, DRAFT, &call).err().unwrap();
+        assert_eq!(error.status, 400, "a non-image is the agent's mistake, not a server error");
+        assert!(error.message.contains("not a PNG"), "{}", error.message);
     }
 
     #[test]

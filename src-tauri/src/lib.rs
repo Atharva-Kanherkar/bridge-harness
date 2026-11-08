@@ -235,15 +235,21 @@ async fn list_outgoing(session_id: String, state: State<'_, Arc<BridgeCore>>) ->
 }
 
 #[tauri::command]
-async fn update_outgoing(id: String, revision: u32, body: Option<String>, apply_fixes: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::UpdateOutgoingResult, BridgeError> {
+async fn update_outgoing(id: String, revision: u32, body: Option<String>, apply_fixes: bool, attachments: Option<Vec<String>>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::UpdateOutgoingResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("edit drafted message", move || api::update_outgoing(&core, &id, revision, body.as_deref(), apply_fixes)).await
+    blocking("edit drafted message", move || api::update_outgoing(&core, &id, revision, body.as_deref(), apply_fixes, attachments.as_deref())).await
 }
 
 #[tauri::command]
 async fn copy_outgoing(id: String, revision: u32, state: State<'_, Arc<BridgeCore>>) -> Result<wire::CopyOutgoingResult, BridgeError> {
     let core = state.inner().clone();
     blocking("copy drafted message", move || api::copy_outgoing(&core, &id, revision)).await
+}
+
+#[tauri::command]
+async fn read_outgoing_attachment(id: String, index: u32, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ReadOutgoingAttachmentResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("read drafted image", move || api::read_outgoing_attachment(&core, &id, index)).await
 }
 
 #[tauri::command]
@@ -3122,6 +3128,7 @@ pub fn run() -> i32 {
             update_outgoing,
             copy_outgoing,
             discard_outgoing,
+            read_outgoing_attachment,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,

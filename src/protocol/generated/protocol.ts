@@ -162,6 +162,7 @@ export type BridgeMethod =
   | "outgoing/update_outgoing"
   | "outgoing/copy_outgoing"
   | "outgoing/discard_outgoing"
+  | "outgoing/read_outgoing_attachment"
   | "notes/list_notes"
   | "notes/read_page"
   | "notes/capture_note"
@@ -446,6 +447,7 @@ export const BRIDGE_METHODS = [
   { method: "outgoing/update_outgoing", domain: "outgoing", command: "update_outgoing" },
   { method: "outgoing/copy_outgoing", domain: "outgoing", command: "copy_outgoing" },
   { method: "outgoing/discard_outgoing", domain: "outgoing", command: "discard_outgoing" },
+  { method: "outgoing/read_outgoing_attachment", domain: "outgoing", command: "read_outgoing_attachment" },
   { method: "notes/list_notes", domain: "notes", command: "list_notes" },
   { method: "notes/read_page", domain: "notes", command: "read_page" },
   { method: "notes/capture_note", domain: "notes", command: "capture_note" },
@@ -792,6 +794,7 @@ export interface BridgeMethodParams {
   "outgoing/update_outgoing": UpdateOutgoingParams;
   "outgoing/copy_outgoing": CopyOutgoingParams;
   "outgoing/discard_outgoing": DiscardOutgoingParams;
+  "outgoing/read_outgoing_attachment": ReadOutgoingAttachmentParams;
   "notes/list_notes": ListNotesParams;
   "notes/read_page": ReadPageParams;
   "notes/capture_note": CaptureNoteParams;
@@ -1097,6 +1100,7 @@ export interface BridgeMethodResults {
   "outgoing/update_outgoing": UpdateOutgoingResult;
   "outgoing/copy_outgoing": CopyOutgoingResult;
   "outgoing/discard_outgoing": DiscardOutgoingResult;
+  "outgoing/read_outgoing_attachment": ReadOutgoingAttachmentResult;
   "notes/list_notes": NotesList;
   "notes/read_page": NotePage;
   "notes/capture_note": Note;
@@ -2297,9 +2301,16 @@ export interface NoteViewProperty {
   width?: number | null;
 }
 
+export interface OutgoingAttachment {
+  bytes: number;
+  mime: string;
+  name: string;
+  path: string;
+}
+
 export type OutgoingDestination = { channel: string; kind: "slackChannel" } | { channel: string; kind: "slackThread"; thread: string } | { kind: "slackDm"; user: string } | { kind: "githubComment"; number: number; repo: string } | { commentId: number; kind: "githubReviewReply"; number: number; repo: string } | { format: OutgoingFormat; kind: "clipboard" };
 
-export type OutgoingFormat = "slack" | "github" | "plain";
+export type OutgoingFormat = "slackMarkdown" | "slack" | "github" | "plain";
 
 export interface OutgoingLintFinding {
   fixable: boolean;
@@ -2310,6 +2321,7 @@ export interface OutgoingLintFinding {
 }
 
 export interface OutgoingMessage {
+  attachments?: OutgoingAttachment[];
   body: string;
   createdAt: string;
   destination: OutgoingDestination;
@@ -4523,6 +4535,7 @@ export interface ListOutgoingResult {
 
 export interface UpdateOutgoingParams {
   applyFixes?: boolean;
+  attachments?: string[] | null;
   body?: string | null;
   id: string;
   revision: number;
@@ -4548,6 +4561,16 @@ export interface DiscardOutgoingParams {
 
 export interface DiscardOutgoingResult {
   item: OutgoingMessage;
+}
+
+export interface ReadOutgoingAttachmentParams {
+  id: string;
+  index: number;
+}
+
+export interface ReadOutgoingAttachmentResult {
+  dataBase64: string;
+  mime: string;
 }
 
 export interface ListNotesParams {
