@@ -2203,6 +2203,15 @@ export interface NoteJob {
   updatedAt: string;
 }
 
+export interface NoteNotice {
+  createdAt: string;
+  expected: string;
+  kind: string;
+  propertyId: string;
+  raw: string;
+  seq: number;
+}
+
 export interface NoteOption {
   color?: string | null;
   group?: string | null;
@@ -4491,6 +4500,7 @@ export interface NotePage {
   databaseId?: string | null;
   markdown: string;
   note: Note;
+  notices?: NoteNotice[];
   seq: number;
   structured?: StructuredView | null;
   tasks: Note[];

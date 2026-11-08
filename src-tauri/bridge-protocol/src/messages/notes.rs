@@ -101,6 +101,26 @@ pub struct NotePage {
     /// On a row: its cells by property id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub values: Option<BTreeMap<String, serde_json::Value>>,
+    /// On a row: lines of its file the importer could not set, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<NoteNotice>,
+}
+
+/// Something about a page's file the importer could not apply, kept so the
+/// page can say so: today, a frontmatter value its property cannot read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteNotice {
+    /// `unreadableValue`.
+    pub kind: String,
+    pub property_id: String,
+    /// The text after the key, as the file had it.
+    pub raw: String,
+    /// The property's type, which the text did not read as.
+    pub expected: String,
+    /// The page's `seq` when the notice was recorded.
+    pub seq: i64,
+    pub created_at: String,
 }
 
 /// One choice of a select, multi-select or status property.
