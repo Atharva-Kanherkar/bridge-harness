@@ -1616,7 +1616,7 @@ pub fn update_chat_model_with_account(
         }
         let db = core.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         transaction.execute(
             "UPDATE sessions SET effort=?2 WHERE id=?1 AND active_turn_id IS NULL",
             rusqlite::params![session_id, next_effort],

@@ -65,6 +65,15 @@ impl Task {
         event
     }
 
+    fn hidden_event(&self) -> NormalizedEvent {
+        let mut event = self.event();
+        if self.status == "inProgress" {
+            event.kind = "tool.completed".into();
+            event.status = Some("unknown".into());
+        }
+        event
+    }
+
     fn attach(&mut self, tool_id: Option<&str>, calls: &HashMap<String, ClaudeToolCall>) {
         if let Some(id) = tool_id {
             self.tool_id = Some(id.into());
@@ -174,9 +183,7 @@ pub(super) fn normalize(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if task.ambient && !task.passive && was_visible {
-                let mut hidden = task.event();
-                hidden.status = Some("unknown".into());
-                events.push(hidden);
+                events.push(task.hidden_event());
             } else if !task.ambient || task.passive {
                 events.push(task.event());
             }
@@ -193,6 +200,10 @@ pub(super) fn normalize(
     let Some(id) = text(message, "task_id") else {
         return Some(vec![]);
     };
+    let mut was_visible = state
+        .tasks
+        .get(id)
+        .is_some_and(|task| !task.ambient || task.passive);
     // A resumed task can reuse its id. Its new run must not display the old
     // run's report, command, progress or duration as current work.
     if subtype == "task_started"
@@ -202,6 +213,7 @@ pub(super) fn normalize(
             .is_some_and(|task| task.status != "inProgress")
     {
         state.tasks.insert(id.into(), Task::new(id));
+        was_visible = false;
     }
     let task = state
         .tasks
@@ -258,7 +270,11 @@ pub(super) fn normalize(
         _ => {}
     }
     Some(if task.ambient && !task.passive {
-        vec![]
+        if was_visible {
+            vec![task.hidden_event()]
+        } else {
+            vec![]
+        }
     } else {
         vec![task.event()]
     })
@@ -503,6 +519,54 @@ mod tests {
             normalize(&stop, &mut state)[0].status.as_deref(),
             Some("stopped")
         );
+    }
+
+    #[test]
+    fn a_terminal_frame_that_first_marks_a_visible_task_ambient_still_settles_it() {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','ready','reported')", []).unwrap();
+        let mut state = ClaudeStreamState::default();
+        let mut done = task("task_notification");
+        done["status"] = json!("failed");
+        done["summary"] = json!("test example FAILED");
+        done["ambient"] = json!(true);
+        for frame in [task("task_started"), done] {
+            let events = normalize(&frame, &mut state);
+            assert_eq!(events.len(), 1);
+            for event in events {
+                crate::store::session_event(&db, "s", &event, &json!({})).unwrap();
+            }
+        }
+        assert!(crate::background_activity::current(&db, "s").unwrap().is_empty());
+        let terminal = crate::store::session_events_tail(&db, "s", 10).unwrap().pop().unwrap();
+        assert_eq!(terminal.status.as_deref(), Some("failed"));
+        assert_eq!(terminal.text.as_deref(), Some("test example FAILED"));
+        assert!(normalize(&json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}), &mut state).is_empty());
+    }
+
+    #[test]
+    fn progress_and_updates_that_hide_visible_tasks_clear_liveness_without_exposing_housekeeping() {
+        for subtype in ["task_progress", "task_updated"] {
+            let mut state = ClaudeStreamState::default();
+            normalize(&task("task_started"), &mut state);
+            let mut hidden = task(subtype);
+            hidden["ambient"] = json!(true);
+            hidden["patch"] = json!({"status":"running"});
+            let events = normalize(&hidden, &mut state);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, "tool.completed");
+            assert_eq!(events[0].status.as_deref(), Some("unknown"));
+            assert_eq!(events[0].data["background"], false);
+            assert!(normalize(&hidden, &mut state).is_empty());
+
+            let mut done = task("task_notification");
+            done["status"] = json!("completed");
+            done["ambient"] = json!(true);
+            assert!(normalize(&done, &mut state).is_empty());
+            let mut restart = task("task_started");
+            restart["skip_transcript"] = json!(true);
+            assert!(normalize(&restart, &mut state).is_empty(), "a new hidden run has never been visible");
+        }
     }
 
     #[test]

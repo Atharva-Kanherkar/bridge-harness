@@ -927,7 +927,7 @@ impl BridgeCore {
             "completed" | "cancelled" | "failed" | "stopped" => previous_status.as_str(),
             _ => "stopped",
         };
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         transaction.execute(
             "UPDATE sessions SET status=?2,active_turn_id=NULL,
              ended_at=CASE WHEN status=?2 THEN ended_at ELSE ?3 END WHERE id=?1",
@@ -1383,7 +1383,7 @@ impl BridgeCore {
         let session_id = change.session_id.as_str();
         let db = self.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         if persist_chat_model_selection(
             &transaction,
             session_id,

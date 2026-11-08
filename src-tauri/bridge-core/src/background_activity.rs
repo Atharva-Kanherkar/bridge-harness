@@ -1,12 +1,23 @@
 //! Clear claims of live background work when its owning runtime is gone.
 use crate::{agent::NormalizedEvent, model::AgentEvent, store, BridgeError};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use serde_json::Value;
 
 /// Close the latest task snapshots without inferring an outcome. `None` is
 /// startup recovery; a session id is a generation-checked reader exit.
 pub(crate) fn interrupt(
     db: &Connection,
+    session_id: Option<&str>,
+) -> Result<Vec<AgentEvent>, BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let events = interrupt_in_transaction(&transaction, session_id)?;
+    transaction.commit()?;
+    Ok(events)
+}
+
+/// Join a lifecycle change so its task states commit or roll back with it.
+pub(crate) fn interrupt_in_transaction(
+    db: &Transaction<'_>,
     session_id: Option<&str>,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
     // Keep the grouped process set outside the entry lookup. SQLite otherwise
@@ -49,7 +60,7 @@ pub(crate) fn interrupt(
                 .unwrap_or_else(|| serde_json::json!({}));
             event.data["background"] = Value::Bool(false);
             event.data["progress"] = Value::String("Runtime ended. Outcome unavailable.".into());
-            store::session_event(
+            store::session_event_in_transaction(
                 db,
                 &session,
                 &event,
@@ -253,5 +264,37 @@ mod tests {
                 .as_deref(),
             Some("unknown")
         );
+    }
+
+    #[test]
+    fn adapter_cleanup_commits_or_rolls_back_with_its_lifecycle_transaction() {
+        use crate::session_supervisor::SessionSupervisor;
+
+        for commit in [false, true] {
+            let db = store::open(std::path::Path::new(":memory:")).unwrap();
+            db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,adapter_pid,adapter_process_identity) VALUES('s','claude','Chat','working','reported',123,'previous-runtime')", []).unwrap();
+            let mut event = NormalizedEvent::new("tool.started");
+            event.item_id = Some("task".into());
+            event.status = Some("inProgress".into());
+            event.data = json!({"backgroundTask":true,"background":true,"command":"cargo test"});
+            store::session_event(&db, "s", &event, &json!({})).unwrap();
+
+            let transaction = db.unchecked_transaction().unwrap();
+            SessionSupervisor::clear_adapter_process_in_transaction(&transaction, "s").unwrap();
+            assert!(current(&transaction, "s").unwrap().is_empty());
+            let pid: Option<i64> = transaction.query_row("SELECT adapter_pid FROM sessions WHERE id='s'", [], |row| row.get(0)).unwrap();
+            assert_eq!(pid, None);
+            if commit {
+                transaction.commit().unwrap();
+            } else {
+                transaction.rollback().unwrap();
+            }
+
+            assert_eq!(current(&db, "s").unwrap().is_empty(), commit);
+            let pid: Option<i64> = db.query_row("SELECT adapter_pid FROM sessions WHERE id='s'", [], |row| row.get(0)).unwrap();
+            assert_eq!(pid, if commit { None } else { Some(123) });
+            let last = store::session_events_tail(&db, "s", 10).unwrap().pop().unwrap();
+            assert_eq!(last.status.as_deref(), Some(if commit { "unknown" } else { "inProgress" }));
+        }
     }
 }
