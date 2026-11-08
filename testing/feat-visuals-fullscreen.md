@@ -11,7 +11,7 @@ Covered block kinds, all in `src/components/Markdown.tsx`:
 | --- | --- | --- | --- |
 | ` ```diagram ` | `DiagramBlock` → `DiagramFigure` | copy only | copy + fullscreen |
 | ` ```mermaid ` | `MermaidBlock` | copy only | copy + fullscreen |
-| ` ```html ` | `HtmlBlock` | fullscreen already | unchanged behaviour, shared overlay |
+| ` ```html ` | `HtmlBlock` | fullscreen already | unchanged: it keeps its own overlay |
 
 Display math (`$$…$$`) is deliberately out of scope: KaTeX sets its own font
 size, so a wider overlay does not make an equation any larger; its existing
@@ -24,7 +24,9 @@ Rules:
 - Clicking it portals a dialog to `document.body` with
   `role="dialog"` and `aria-label="<kind> fullscreen"`.
 - The overlay shows the visual alone at the overlay's width (100% zoom), not the
-  chat column width, with a caption still visible for diagrams.
+  chat column width, with a caption still visible for diagrams. The shared
+  overlay covers `diagram` and `mermaid`; `html` already had its own, which this
+  change leaves alone.
 - Zoom control: `Zoom out`, a live percentage, `Zoom in`, clamped to 50–300% in
   25% steps. 100% = fit the overlay width. Zooming past the overlay width
   scrolls, it never clips.
