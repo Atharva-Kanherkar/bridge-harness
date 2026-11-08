@@ -63,6 +63,8 @@ export interface NotesScreenProps {
   captureRequest?: number;
   /** A new value collapses or expands the notes list (`toggle-notes-list`). */
   listToggleRequest?: number;
+  /** A new nonce opens that page (a `bridge://p/<id>` link clicked elsewhere). */
+  openRequest?: { id: string; nonce: number };
   /** Start a Bridge chat with `message` as its first turn; resolves to its id. */
   onStartChat: (request: NoteChatRequest) => Promise<string | undefined>;
   onOpenChat: (sessionId: string) => void;
@@ -76,7 +78,7 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 /** The harness that wrote a page, when an agent did. */
 const agentHarness = (note: Note) => /^agent:([^:]+):/.exec(note.lastActor)?.[1] ?? /^agent:([^:]+):/.exec(note.createdBy)?.[1];
 
-export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
+export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, openRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
   const [list, setList] = useState<NotesList | null>(null);
   // Every note, search or not: links, moves and breadcrumbs resolve against
   // all pages, never just the ones a search shows.
@@ -269,6 +271,9 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       showPage(await bridgeApi.readNotePage(id), ticket);
     } catch (error) { fail(error); }
   }, [fail, select, showPage]);
+  useEffect(() => {
+    if (openRequest) void open(openRequest.id);
+  }, [openRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async (key: string, body: string) => {
     try {
