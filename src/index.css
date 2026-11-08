@@ -1277,6 +1277,56 @@ html[data-native-fullscreen] .u-traffic-inset {
   background: var(--color-accent);
 }
 
+/* Two or more hover actions share one anchored row instead of stacking on the
+   same top-right pixel. The buttons stay individual `.rich-block-copy`s so the
+   hover reveal and the look are identical to a single action. The row carries
+   its own surface: these buttons sit on top of a drawing, and the translucent
+   highlight a code block can afford to use would leave the labels illegible
+   over a node. */
+.rich-block-actions {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.1rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 12%, transparent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.rich-block:hover .rich-block-actions,
+.rich-block-actions:focus-within {
+  opacity: 1;
+}
+
+.rich-block-actions .rich-block-copy {
+  position: static;
+  opacity: 1;
+  border: 0;
+  background: transparent;
+}
+
+/* ── Fullscreen visual ──────────────────────────────────────────────────────
+   The overlay's width is the 100% zoom baseline, expressed as the canvas
+   width. Turning that width into an SVG width is what actually makes the
+   labels legible. `max-width: none` has to win over the inline `max-width`
+   Mermaid writes onto its own <svg>, hence the one `!important` here. */
+.visual-fullscreen-canvas svg {
+  width: 100%;
+  height: auto;
+  max-width: none !important;
+}
+
+.visual-fullscreen-canvas figcaption {
+  max-width: 72ch;
+}
+
 /* ── HTML block ─────────────────────────────────────────────────────────── */
 
 .html-block {

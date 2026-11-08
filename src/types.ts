@@ -65,6 +65,7 @@ export type {
   DatabaseRow,
   DatabaseGroup,
   DatabaseQueryResult,
+  QueryDatabaseParams,
   NoteVersion,
   NoteVersionPage,
   NotesList,
