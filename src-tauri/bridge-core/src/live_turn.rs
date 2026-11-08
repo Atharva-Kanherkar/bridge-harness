@@ -12402,7 +12402,37 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         for session_id in sessions {
             drain_queued_input(&core, &session_id);
         }
+        // What is still queued now has no adapter to drain into, or is waiting
+        // on a turn. The first kind is the person's to know about.
+        escalate_stranded_input(&core);
     });
+}
+
+fn escalate_stranded_input(core: &Arc<BridgeCore>) {
+    let live: std::collections::HashSet<String> = core.adapters.lock().unwrap().keys().cloned().collect();
+    let changed = {
+        let db = core.db.lock().unwrap();
+        crate::attention::escalate_stranded(&db, &live, Utc::now()).unwrap_or(false)
+    };
+    if changed {
+        core.events.publish(CoreEvent::AttentionChanged);
+    }
+}
+
+/// Deliver a chat's queued input now, at the person's request: resume its
+/// adapter through the same path their own send takes if it is gone, then
+/// drain. The unattended sweep never does this (#252); a click is not
+/// unattended. Returns whether a row was delivered.
+pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
+    ensure_session_not_archived(core, session_id)?;
+    let queued = session_input::next_queued(&core.db.lock().unwrap(), session_id)?.is_some();
+    if !queued {
+        return Ok(false);
+    }
+    if !core.adapters.lock().unwrap().contains_key(session_id) {
+        resume_for_send(core, session_id)?;
+    }
+    Ok(drain_queued_input(core, session_id))
 }
 
 fn record_recoverable_adapter_failure(
@@ -16210,6 +16240,40 @@ mod submit_input_tests {
             failed_deliveries, 0,
             "an adapter that is not running is a parked queue, not a failure loop"
         );
+    }
+
+    #[test]
+    fn deliver_now_delivers_once() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let sent = attach(&core, false);
+        session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
+
+        assert!(deliver_queued_now(&core, "chat").unwrap());
+        assert!(!deliver_queued_now(&core, "chat").unwrap(), "nothing left to deliver");
+        assert_eq!(sent.lock().unwrap().as_slice(), ["worker report".to_owned()]);
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn deliver_now_resumes_an_adapterless_chat() {
+        let (_fixture, core, _managed_root) = core_with_chat("stopped");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth)
+                 VALUES('ghost',NULL,'no-such-harness','Ghost','stopped','reported','orchestrator',0)",
+                [],
+            )
+            .unwrap();
+        session_input::enqueue(&core.db.lock().unwrap(), "ghost", "worker report", "worker report").unwrap();
+
+        // The click attempts the same resume a send would; this harness cannot
+        // launch, so the reason comes back and the row waits.
+        let message = deliver_queued_now(&core, "ghost").unwrap_err().to_string();
+        assert!(message.contains("could not resume it"), "{message}");
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "ghost").unwrap(), 1);
+        assert!(!deliver_queued_now(&core, "chat").unwrap(), "a chat with nothing queued is not resumed");
     }
 
     #[test]

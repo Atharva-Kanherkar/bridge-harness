@@ -62,6 +62,9 @@ pub enum AttentionKind {
     Failed,
     /// Any visible chat, workers included, is waiting on a person.
     NeedsYou,
+    /// Input queued for a chat whose adapter is gone, waiting past the bound.
+    /// Raised by [`escalate_stranded`], not by a forest entry.
+    Escalation,
 }
 
 impl AttentionKind {
@@ -70,6 +73,7 @@ impl AttentionKind {
             Self::Finished => "finished",
             Self::Failed => "failed",
             Self::NeedsYou => "needs_you",
+            Self::Escalation => "escalation",
         }
     }
 
@@ -78,6 +82,7 @@ impl AttentionKind {
             "finished" => Some(Self::Finished),
             "failed" => Some(Self::Failed),
             "needs_you" => Some(Self::NeedsYou),
+            "escalation" => Some(Self::Escalation),
             _ => None,
         }
     }
@@ -85,7 +90,7 @@ impl AttentionKind {
     pub const fn severity(self) -> Severity {
         match self {
             Self::Finished => Severity::Informational,
-            Self::Failed | Self::NeedsYou => Severity::Actionable,
+            Self::Failed | Self::NeedsYou | Self::Escalation => Severity::Actionable,
         }
     }
 }
@@ -265,7 +270,15 @@ pub fn copy(kind: AttentionKind, session: &SessionFacts) -> (String, String) {
         AttentionKind::NeedsYou => ("Bridge needs you".into(), format!("{who} is waiting for your input")),
         AttentionKind::Failed => ("Turn failed".into(), format!("{who} ended this turn with an error")),
         AttentionKind::Finished => ("Turn completed".into(), format!("{who} finished its turn")),
+        AttentionKind::Escalation => escalation_copy(session, 1),
     }
+}
+
+/// Copy for a stranded queue: who stopped, and how much is waiting for it.
+pub fn escalation_copy(session: &SessionFacts, waiting: i64) -> (String, String) {
+    let who = format!("{} · {}", chat_name(session), harness_label(&session.harness));
+    let updates = if waiting == 1 { "1 update".to_owned() } else { format!("{waiting} updates") };
+    ("A result is waiting".into(), format!("{who} stopped before it read {updates}"))
 }
 
 /// The request a resolution answers, when it says. Typed entries carry
@@ -317,6 +330,17 @@ fn open(
 ) -> Result<i64, BridgeError> {
     let (title, body) = copy(kind, session);
     let approval_event_id = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
+    insert_row(db, session_id, kind, &title, &body, approval_event_id)
+}
+
+fn insert_row(
+    db: &Connection,
+    session_id: &str,
+    kind: AttentionKind,
+    title: &str,
+    body: &str,
+    approval_event_id: Option<i64>,
+) -> Result<i64, BridgeError> {
     db.execute(
         "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,title,body,created_at)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -360,6 +384,73 @@ fn close(db: &Connection, session_id: &str, request: Option<i64>) -> Result<usiz
         )?,
     };
     Ok(changed)
+}
+
+/// How long queued input may wait for a chat with no live adapter before the
+/// person is told.
+pub const STRANDED_AFTER: chrono::Duration = chrono::Duration::seconds(30);
+/// Older leftovers are left alone, so an upgrade does not raise a storm of
+/// escalations for input that went stale long ago.
+pub const STRANDED_LOOKBACK: chrono::Duration = chrono::Duration::hours(24);
+
+/// Tell the person about queued input that is waiting on a chat whose adapter
+/// is gone, and close what has since been delivered. Called by the queued-input
+/// sweep; never starts a provider. Returns whether the ledger changed.
+///
+/// One open escalation per chat: a seen but unresolved one is not raised again,
+/// because the person already knows. It closes once that chat's queue is empty,
+/// whichever route emptied it.
+pub fn escalate_stranded(
+    db: &Connection,
+    live_adapters: &std::collections::HashSet<String>,
+    now: chrono::DateTime<Utc>,
+) -> Result<bool, BridgeError> {
+    let at = now.to_rfc3339();
+    let stranded: Vec<(String, i64)> = {
+        let mut statement = db.prepare(
+            "SELECT q.session_id, COUNT(*) FROM queued_session_input q
+             JOIN sessions s ON s.id=q.session_id
+             WHERE q.state='queued' AND s.archived_at IS NULL
+               AND julianday(q.created_at) <= julianday(?1)
+               AND julianday(q.created_at) >= julianday(?2)
+             GROUP BY q.session_id ORDER BY q.session_id",
+        )?;
+        let rows = statement.query_map(
+            params![(now - STRANDED_AFTER).to_rfc3339(), (now - STRANDED_LOOKBACK).to_rfc3339()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut changed = false;
+    for (session_id, waiting) in stranded {
+        if live_adapters.contains(&session_id) {
+            continue;
+        }
+        let Some(session) = SessionFacts::load(db, &session_id)? else { continue };
+        if crate::work_briefing_config::is_hidden_session_kind(session.kind.as_deref()) {
+            continue;
+        }
+        let open: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attention_events
+             WHERE session_id=?1 AND audience=?2 AND kind='escalation' AND resolved_at IS NULL)",
+            params![session_id, HUMAN],
+            |row| row.get(0),
+        )?;
+        if open {
+            continue;
+        }
+        let (title, body) = escalation_copy(&session, waiting);
+        insert_row(db, &session_id, AttentionKind::Escalation, &title, &body, None)?;
+        changed = true;
+    }
+    let closed = db.execute(
+        "UPDATE attention_events SET resolved_at=?1
+         WHERE audience=?2 AND kind='escalation' AND resolved_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM queued_session_input q
+                           WHERE q.session_id=attention_events.session_id AND q.state='queued')",
+        params![at, HUMAN],
+    )?;
+    Ok(changed || closed > 0)
 }
 
 /// One ledger row as clients see it.
@@ -692,5 +783,111 @@ mod tests {
         assert!(record_in_transaction(&transaction, "s", "turn.completed", &json!({"status": "completed"}), 2).unwrap());
         drop(transaction);
         assert!(rows(&db).is_empty());
+    }
+
+    fn queue_store() -> Connection {
+        let db = store();
+        db.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN archived_at TEXT;
+             CREATE TABLE queued_session_input(id TEXT PRIMARY KEY, sequence INTEGER, session_id TEXT NOT NULL,
+                provider_text TEXT, display_text TEXT, state TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT);",
+        )
+        .unwrap();
+        db
+    }
+
+    fn queued(db: &Connection, id: &str, session_id: &str, state: &str, age: chrono::Duration, now: chrono::DateTime<Utc>) {
+        db.execute(
+            "INSERT INTO queued_session_input(id,sequence,session_id,provider_text,display_text,state,created_at) VALUES(?1,1,?2,'{}','worker report',?3,?4)",
+            params![id, session_id, state, (now - age).to_rfc3339()],
+        )
+        .unwrap();
+    }
+
+    fn escalations(db: &Connection) -> Vec<(String, String, bool)> {
+        db.prepare("SELECT session_id, body, resolved_at IS NOT NULL FROM attention_events WHERE kind='escalation' ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn stranded_session_escalates_once() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, Some("Ship it"));
+        queued(&db, "q1", "orch", "queued", chrono::Duration::seconds(45), now);
+        queued(&db, "q2", "orch", "queued", chrono::Duration::seconds(40), now);
+        let live = std::collections::HashSet::new();
+        assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert!(!escalate_stranded(&db, &live, now + chrono::Duration::seconds(2)).unwrap(), "one open escalation per chat");
+        assert_eq!(escalations(&db), vec![("orch".to_owned(), "Ship it · Codex stopped before it read 2 updates".to_owned(), false)]);
+        let page = list(&db, None, None, false).unwrap();
+        assert_eq!(page.items[0].kind, AttentionKind::Escalation);
+        assert_eq!(page.items[0].severity, Severity::Actionable);
+        assert_eq!(page.items[0].title, "A result is waiting");
+    }
+
+    #[test]
+    fn live_adapter_archived_hidden_and_old_rows_do_not_escalate() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "live", "orchestrator", None, None);
+        session(&db, "archived", "orchestrator", None, None);
+        session(&db, "hidden", "briefing", None, None);
+        session(&db, "fresh", "orchestrator", None, None);
+        session(&db, "stale", "orchestrator", None, None);
+        session(&db, "delivered", "orchestrator", None, None);
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='archived'", []).unwrap();
+        for id in ["live", "archived", "hidden"] {
+            queued(&db, &format!("q-{id}"), id, "queued", chrono::Duration::minutes(5), now);
+        }
+        queued(&db, "q-fresh", "fresh", "queued", chrono::Duration::seconds(10), now);
+        queued(&db, "q-stale", "stale", "queued", chrono::Duration::hours(30), now);
+        queued(&db, "q-delivered", "delivered", "delivered", chrono::Duration::minutes(5), now);
+        queued(&db, "q-gone", "no-such-session", "queued", chrono::Duration::minutes(5), now);
+        let live: std::collections::HashSet<String> = ["live".to_owned()].into();
+        assert!(!escalate_stranded(&db, &live, now).unwrap());
+        assert!(escalations(&db).is_empty());
+    }
+
+    #[test]
+    fn seen_escalation_is_not_raised_again() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(1), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        mark_seen(&db, "orch").unwrap();
+        queued(&db, "q2", "orch", "queued", chrono::Duration::seconds(50), now);
+        assert!(!escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(escalations(&db).len(), 1);
+    }
+
+    #[test]
+    fn escalation_closes_when_the_queue_empties() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(1), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        db.execute("UPDATE queued_session_input SET state='delivered' WHERE id='q1'", []).unwrap();
+        assert!(escalate_stranded(&db, &live, now).unwrap(), "closing is a change");
+        assert_eq!(escalations(&db), vec![("orch".to_owned(), "New chat · Codex stopped before it read 1 update".to_owned(), true)]);
+        // A later strand raises a new one.
+        queued(&db, "q2", "orch", "queued", chrono::Duration::minutes(1), now);
+        assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(escalations(&db).iter().filter(|row| !row.2).count(), 1);
+    }
+
+    #[test]
+    fn escalation_copy_counts_updates() {
+        let facts = SessionFacts { kind: Some("orchestrator".into()), parent_session_id: None, title: Some("Ship it".into()), label: "Orchestrator".into(), harness: "claude".into() };
+        assert_eq!(escalation_copy(&facts, 1), ("A result is waiting".into(), "Ship it · Claude stopped before it read 1 update".into()));
+        assert_eq!(escalation_copy(&facts, 3).1, "Ship it · Claude stopped before it read 3 updates");
     }
 }

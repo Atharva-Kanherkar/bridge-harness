@@ -174,6 +174,9 @@ methods![
     // attention — what a person should know about, decided in core
     (ListAttention, "attention", "list_attention"),
     (MarkAttentionSeen, "attention", "mark_attention_seen"),
+    // Delivering a chat's queued input on request is a session operation the
+    // attention escalation offers; it lives beside its caller for reading.
+    (DeliverQueuedInput, "sessions", "deliver_queued_input"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
     (CancelProviderLogin, "auth", "cancel_provider_login"),

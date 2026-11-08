@@ -93,9 +93,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// the `attention/changed` hint.** A new client must not pair with an older
 /// daemon, whose ledger reads would fail with `method_not_found`; a 1.23
 /// client still pairs with a 1.24 daemon.
+/// **1.25 adds `sessions/deliver_queued_input` and the `escalation` attention
+/// kind.** A 1.24 client still pairs with a 1.25 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 24,
+    minor: 25,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

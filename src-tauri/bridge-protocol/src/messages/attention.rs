@@ -14,6 +14,9 @@ pub enum AttentionKind {
     Failed,
     /// A visible chat, workers included, is waiting on the person.
     NeedsYou,
+    /// Input queued for a chat whose adapter is gone has waited past the
+    /// bound. `sessions/deliver_queued_input` delivers it.
+    Escalation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -77,4 +80,17 @@ pub struct MarkAttentionSeenParams {
 pub struct MarkAttentionSeenResult {
     /// How many rows this call stamped.
     pub updated: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeliverQueuedInputParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliverQueuedInputResult {
+    /// False when nothing was queued, or the queue's claim was already taken.
+    pub delivered: bool,
 }
