@@ -210,6 +210,11 @@ methods![
     (ScanDirectory, "storage", "scan_directory"),
     (DeletePaths, "storage", "delete_paths"),
     (EmptyTrash, "storage", "empty_trash"),
+    // outgoing: messages a chat drafts for a person or a place
+    (ListOutgoing, "outgoing", "list_outgoing"),
+    (UpdateOutgoing, "outgoing", "update_outgoing"),
+    (CopyOutgoing, "outgoing", "copy_outgoing"),
+    (DiscardOutgoing, "outgoing", "discard_outgoing"),
     // notes: local pages people and agents both write; model passes on request
     (ListNotes, "notes", "list_notes"),
     (ReadPage, "notes", "read_page"),

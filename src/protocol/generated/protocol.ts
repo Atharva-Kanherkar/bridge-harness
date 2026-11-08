@@ -158,6 +158,10 @@ export type BridgeMethod =
   | "storage/scan_directory"
   | "storage/delete_paths"
   | "storage/empty_trash"
+  | "outgoing/list_outgoing"
+  | "outgoing/update_outgoing"
+  | "outgoing/copy_outgoing"
+  | "outgoing/discard_outgoing"
   | "notes/list_notes"
   | "notes/read_page"
   | "notes/capture_note"
@@ -438,6 +442,10 @@ export const BRIDGE_METHODS = [
   { method: "storage/scan_directory", domain: "storage", command: "scan_directory" },
   { method: "storage/delete_paths", domain: "storage", command: "delete_paths" },
   { method: "storage/empty_trash", domain: "storage", command: "empty_trash" },
+  { method: "outgoing/list_outgoing", domain: "outgoing", command: "list_outgoing" },
+  { method: "outgoing/update_outgoing", domain: "outgoing", command: "update_outgoing" },
+  { method: "outgoing/copy_outgoing", domain: "outgoing", command: "copy_outgoing" },
+  { method: "outgoing/discard_outgoing", domain: "outgoing", command: "discard_outgoing" },
   { method: "notes/list_notes", domain: "notes", command: "list_notes" },
   { method: "notes/read_page", domain: "notes", command: "read_page" },
   { method: "notes/capture_note", domain: "notes", command: "capture_note" },
@@ -589,6 +597,7 @@ export type BridgeNotification =
   | "connectors/inbox_changed"
   | "notes/page_changed"
   | "notes/pass_progress"
+  | "outgoing/changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -613,6 +622,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "connectors/inbox_changed", delivery: "transient" },
   { notification: "notes/page_changed", delivery: "transient" },
   { notification: "notes/pass_progress", delivery: "transient" },
+  { notification: "outgoing/changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -778,6 +788,10 @@ export interface BridgeMethodParams {
   "storage/scan_directory": ScanDirectoryParams;
   "storage/delete_paths": DeletePathsParams;
   "storage/empty_trash": undefined;
+  "outgoing/list_outgoing": ListOutgoingParams;
+  "outgoing/update_outgoing": UpdateOutgoingParams;
+  "outgoing/copy_outgoing": CopyOutgoingParams;
+  "outgoing/discard_outgoing": DiscardOutgoingParams;
   "notes/list_notes": ListNotesParams;
   "notes/read_page": ReadPageParams;
   "notes/capture_note": CaptureNoteParams;
@@ -1079,6 +1093,10 @@ export interface BridgeMethodResults {
   "storage/scan_directory": DiskListing;
   "storage/delete_paths": DiskDeleteResult;
   "storage/empty_trash": EmptyTrashResult;
+  "outgoing/list_outgoing": ListOutgoingResult;
+  "outgoing/update_outgoing": UpdateOutgoingResult;
+  "outgoing/copy_outgoing": CopyOutgoingResult;
+  "outgoing/discard_outgoing": DiscardOutgoingResult;
   "notes/list_notes": NotesList;
   "notes/read_page": NotePage;
   "notes/capture_note": Note;
@@ -2278,6 +2296,36 @@ export interface NoteViewProperty {
   visible: boolean;
   width?: number | null;
 }
+
+export type OutgoingDestination = { channel: string; kind: "slackChannel" } | { channel: string; kind: "slackThread"; thread: string } | { kind: "slackDm"; user: string } | { kind: "githubComment"; number: number; repo: string } | { commentId: number; kind: "githubReviewReply"; number: number; repo: string } | { format: OutgoingFormat; kind: "clipboard" };
+
+export type OutgoingFormat = "slack" | "github" | "plain";
+
+export interface OutgoingLintFinding {
+  fixable: boolean;
+  fixed: boolean;
+  line?: number | null;
+  message: string;
+  rule: string;
+}
+
+export interface OutgoingMessage {
+  body: string;
+  createdAt: string;
+  destination: OutgoingDestination;
+  format: OutgoingFormat;
+  id: string;
+  label: string;
+  lint: OutgoingLintFinding[];
+  reason: string;
+  rendered: string;
+  revision: number;
+  sessionId: string;
+  state: OutgoingState;
+  updatedAt: string;
+}
+
+export type OutgoingState = "draft" | "copied" | "discarded";
 
 export type Params = Record<string, unknown> | unknown[];
 
@@ -4463,6 +4511,43 @@ export interface DiskDeleteResult {
 export interface EmptyTrashResult {
   detail?: string | null;
   emptied: boolean;
+}
+
+export interface ListOutgoingParams {
+  sessionId: string;
+}
+
+export interface ListOutgoingResult {
+  items: OutgoingMessage[];
+}
+
+export interface UpdateOutgoingParams {
+  applyFixes?: boolean;
+  body?: string | null;
+  id: string;
+  revision: number;
+}
+
+export interface UpdateOutgoingResult {
+  item: OutgoingMessage;
+}
+
+export interface CopyOutgoingParams {
+  id: string;
+  revision: number;
+}
+
+export interface CopyOutgoingResult {
+  item: OutgoingMessage;
+  text: string;
+}
+
+export interface DiscardOutgoingParams {
+  id: string;
+}
+
+export interface DiscardOutgoingResult {
+  item: OutgoingMessage;
 }
 
 export interface ListNotesParams {

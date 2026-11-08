@@ -1059,6 +1059,34 @@
       "resultSchema": "empty-trash-result.json"
     },
     {
+      "command": "list_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/list_outgoing",
+      "paramsSchema": "list-outgoing-params.json",
+      "resultSchema": "list-outgoing-result.json"
+    },
+    {
+      "command": "update_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/update_outgoing",
+      "paramsSchema": "update-outgoing-params.json",
+      "resultSchema": "update-outgoing-result.json"
+    },
+    {
+      "command": "copy_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/copy_outgoing",
+      "paramsSchema": "copy-outgoing-params.json",
+      "resultSchema": "copy-outgoing-result.json"
+    },
+    {
+      "command": "discard_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/discard_outgoing",
+      "paramsSchema": "discard-outgoing-params.json",
+      "resultSchema": "discard-outgoing-result.json"
+    },
+    {
       "command": "list_notes",
       "domain": "notes",
       "method": "notes/list_notes",
