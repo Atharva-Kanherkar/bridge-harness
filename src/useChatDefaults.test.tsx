@@ -32,3 +32,28 @@ it("does not resolve or launch anything when the draft surface is disabled",asyn
   const resolve=vi.spyOn(bridgeApi,"resolveChatSettings");const create=vi.spyOn(bridgeApi,"createConfiguredChat");
   await act(async()=>root.render(<Harness workspace="a" enabled={false}/>));expect(resolve).not.toHaveBeenCalled();expect(create).not.toHaveBeenCalled();
 });
+function Keeping({workspace,overrides={}}:{workspace:string;overrides?:ChatDefaults}){
+  const result=useResolvedChatDraft(workspace,overrides,true);
+  return <div data-testid="state">{`${result.loading?"loading":"settled"}|${result.settings?.model.model??""}`}</div>;
+}
+it("TestUseResolvedChatDraft_KeepsTheLastResolutionForTheSameProject",async()=>{
+  let next!:(s:ResolvedChatSettings)=>void;
+  vi.spyOn(bridgeApi,"resolveChatSettings").mockResolvedValueOnce(settings("kimi")).mockImplementationOnce(()=>new Promise(r=>{next=r;}));
+  await act(async()=>root.render(<Keeping workspace="a"/>));
+  await act(async()=>{});
+  expect(host.textContent).toBe("settled|kimi");
+  // A pick re-resolves the same project: the previous answer stays on screen.
+  await act(async()=>root.render(<Keeping workspace="a" overrides={{model:{harness:"codex",model:"gpt"}}}/>));
+  expect(host.textContent).toBe("loading|kimi");
+  await act(async()=>next(settings("gpt")));
+  expect(host.textContent).toBe("settled|gpt");
+});
+it("TestUseResolvedChatDraft_ClearsWhenTheProjectChanges",async()=>{
+  vi.spyOn(bridgeApi,"resolveChatSettings").mockResolvedValueOnce(settings("kimi")).mockImplementationOnce(()=>new Promise(()=>{}));
+  await act(async()=>root.render(<Keeping workspace="a"/>));
+  await act(async()=>{});
+  expect(host.textContent).toBe("settled|kimi");
+  // Another project's defaults are a different question: do not paint them.
+  await act(async()=>root.render(<Keeping workspace="b"/>));
+  expect(host.textContent).toBe("loading|");
+});

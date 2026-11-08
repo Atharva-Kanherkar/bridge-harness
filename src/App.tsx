@@ -109,7 +109,6 @@ import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus"
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
 import { reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
 import { projectSessionConversationCached } from "./transcript/projectionCache";
-import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
@@ -118,6 +117,8 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
+import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
+import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
 import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
 import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
 import { NotesCopilot } from "./components/notes/NotesCopilot";
@@ -1247,10 +1248,54 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  // The harness/model the last new chat was confirmed on. Read once at mount and
+  // updated through `rememberDraftChoice`, so a new chat paints the real model
+  // before provider catalogs finish discovering instead of a fallback guess.
+  const [lastDraftChoice, setLastDraftChoice] = useState<LastDraftModel | null>(() => readLastDraftModel());
+  const lastDraftChoiceRef = useRef(lastDraftChoice);
+  lastDraftChoiceRef.current = lastDraftChoice;
+  const rememberDraftChoice = useCallback((harness: Harness, model: string | null, label?: string | null) => {
+    const previous = lastDraftChoiceRef.current;
+    const next: LastDraftModel = {
+      harness,
+      model,
+      // Keep the remembered label while the model is unchanged: a catalog that
+      // has not loaded yet must not erase the name the pill is showing.
+      label: label ?? (previous?.harness === harness && previous?.model === model ? previous.label ?? null : null),
+    };
+    if (previous && previous.harness === next.harness && previous.model === next.model && previous.label === next.label) return;
+    writeLastDraftModel(next);
+    lastDraftChoiceRef.current = next;
+    setLastDraftChoice(next);
+  }, []);
+  const catalogLabelFor = useCallback((harness: Harness, model: string | null): string | null =>
+    model ? adapters.find(adapter => adapter.id === harness)?.models.find(option => option.id === model)?.label ?? null : null,
+  [adapters]);
   const resolvedWelcomeWorkspaceId = newChatDraft
     ? newChatDraft.workspaceId
     : resolveNewChatWorkspaceId({ activeWorkspaceId: welcomeWorkspaceId, lastWorkspaceId: readLastWorkspaceId(), workspaces: state.workspaces });
   const draftSettings = useResolvedChatDraft(resolvedWelcomeWorkspaceId, newChatDraft?.overrides ?? {}, adaptersReady && !session && view === "workspace");
+  // Every settled resolution is what the next new chat should start on, and it
+  // carries the catalog label the pill can show before discovery lands.
+  const resolvedDraftHarness = draftSettings.settings?.model.harness as Harness | undefined;
+  const resolvedDraftModel = draftSettings.settings?.model.model ?? null;
+  useEffect(() => {
+    if (!resolvedDraftHarness) return;
+    // A draft carrying an explicit pick is a one-off override, not a default:
+    // remembering it would make the next chat promise a model the host will not
+    // create. Only the host's own answer predicts the next answer.
+    if (newChatDraft?.overrides?.model) return;
+    rememberDraftChoice(resolvedDraftHarness, resolvedDraftModel, catalogLabelFor(resolvedDraftHarness, resolvedDraftModel));
+  }, [resolvedDraftHarness, resolvedDraftModel, catalogLabelFor, rememberDraftChoice, newChatDraft?.overrides?.model]);
+  // What the Welcome pill paints before the host answers: the last confirmed
+  // choice, with the label it was confirmed under. When there is nothing
+  // confirmed yet the pill says it is loading instead of naming a guess.
+  const draftFallback = resolveDraftHarnessModel();
+  const welcomeHarness = resolvedDraftHarness ?? draftFallback.harness;
+  const welcomeModel = resolvedDraftHarness ? resolvedDraftModel : draftFallback.model;
+  const welcomeKnownLabel = lastDraftChoice && lastDraftChoice.harness === welcomeHarness && lastDraftChoice.model === welcomeModel
+    ? lastDraftChoice.label ?? null
+    : null;
   const [chatConfiguration, setChatConfiguration] = useState<{sessionId:string; value:ChatSessionSettings}>();
   const currentChatConfiguration = chatConfiguration?.sessionId === session?.id ? chatConfiguration?.value : undefined;
   useEffect(() => {
@@ -1854,22 +1899,17 @@ function AppContent() {
     }
   }, [refetchWorkBoard]);
   // Preserve the current direct chat's harness/model so switching to OpenCode also
-  // changes the next-chat default; otherwise fall back to the configured standard
-  // profile. Snapshotted at draft-open time, while the session being left is still
-  // selected, so the carry-over survives deselecting it.
+  // changes the next-chat default; otherwise the last confirmed choice, then the
+  // configured standard profile. Snapshotted at draft-open time, while the session
+  // being left is still selected, so the carry-over survives deselecting it.
   function resolveDraftHarnessModel(harnessOverride?: import("./types").AdapterDescriptor): { harness: Harness; model: string | null } {
-    const currentAdapter = session?.kind === "direct"
-      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
-      : undefined;
-    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-    const harness = (preferred?.id as Harness) ?? "codex";
-    const model = harnessOverride
-      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
-      : currentAdapter
-      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
-      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
-    return { harness, model };
+    return resolveNewChatModel({
+      adapters,
+      setup: modelSetup,
+      session,
+      harnessOverride,
+      stored: lastDraftChoiceRef.current,
+    });
   }
 
   // The single create-on-submit path (#350). Turns a draft into a real session —
@@ -3796,8 +3836,10 @@ function AppContent() {
         accessControl={accessControl}
         onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
-        harness={draftSettings.settings?.model.harness ?? resolveDraftHarnessModel().harness}
-        model={draftSettings.settings?.model.model ?? null}
+        harness={welcomeHarness}
+        model={welcomeModel}
+        knownLabel={welcomeKnownLabel}
+        loading={draftSettings.loading}
         accounts={providerAccounts}
         account={draftSettings.settings?.model.account ?? null}
         effort={draftSettings.settings?.effort ?? undefined}
@@ -3970,7 +4012,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, accounts, account, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -3982,6 +4024,10 @@ function Welcome({ adapters, accounts, account, harness, model, slashCommands, s
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
+  /** A remembered label for `model`, shown until the catalog has the entry. */
+  knownLabel?: string | null;
+  /** The host is still resolving this draft's defaults. */
+  loading?: boolean;
   effort?: string;
   onSelectEffort: (effort: string) => void;
   onSelectModel: (harness: Harness, model: string | null, account: string | null) => void;
@@ -4168,7 +4214,7 @@ function Welcome({ adapters, accounts, account, harness, model, slashCommands, s
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
