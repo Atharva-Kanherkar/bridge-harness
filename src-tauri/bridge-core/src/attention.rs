@@ -41,6 +41,7 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
             audience TEXT NOT NULL DEFAULT 'human',
             session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
             approval_event_id INTEGER,
+            request_event_id INTEGER,
             title TEXT NOT NULL,
             body TEXT,
             created_at TEXT NOT NULL,
@@ -300,7 +301,7 @@ pub fn record_in_transaction(
         Effect::Ignore => Ok(false),
         Effect::Open(attention) => {
             let session = session.expect("classify ignores unknown sessions");
-            open(transaction, session_id, attention, &session, entry_sequence)?;
+            open(transaction, session_id, attention, &session, kind, entry_sequence)?;
             Ok(true)
         }
         Effect::Close => Ok(close(transaction, session_id, answered_request(payload))? > 0),
@@ -316,13 +317,29 @@ fn open(
     session_id: &str,
     kind: AttentionKind,
     session: &SessionFacts,
+    forest_kind: &str,
     entry_sequence: i64,
 ) -> Result<i64, BridgeError> {
     let (title, body) = copy(kind, session);
-    let approval_event_id = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
+    let request = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
+    // Only approvals and permissions are answered through resolve_approval; a
+    // question has its own reply channel, so it offers no approval id.
+    let approval = request.filter(|_| matches!(forest_kind, "approval.requested" | "permission.requested"));
+    insert_row(db, session_id, kind, &title, &body, approval, request)
+}
+
+fn insert_row(
+    db: &Connection,
+    session_id: &str,
+    kind: AttentionKind,
+    title: &str,
+    body: &str,
+    approval_event_id: Option<i64>,
+    request_event_id: Option<i64>,
+) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,title,body,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,request_event_id,title,body,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             Uuid::new_v4().to_string(),
             kind.as_str(),
@@ -330,6 +347,7 @@ fn open(
             HUMAN,
             session_id,
             approval_event_id,
+            request_event_id,
             title,
             body,
             now(),
@@ -351,7 +369,7 @@ fn close(db: &Connection, session_id: &str, request: Option<i64>) -> Result<usiz
         Some(request) => db.execute(
             "UPDATE attention_events SET resolved_at=?1
              WHERE session_id=?2 AND audience=?3 AND kind='needs_you' AND resolved_at IS NULL
-               AND approval_event_id=?4",
+               AND request_event_id=?4",
             params![at, session_id, HUMAN, request],
         )?,
         // No request id (Claude's `permission.denied`, Cursor's settle):
@@ -646,6 +664,26 @@ mod tests {
         assert!(!rows(&db)[0].3, "the scope approval is still waiting on the person");
         assert!(record(&db, "parent", "approval.resolved", json!({"requestEventId": 7}), 10));
         assert!(rows(&db)[0].3);
+    }
+
+    #[test]
+    fn question_rows_carry_no_approval_id() {
+        let db = store();
+        session(&db, "s", "direct", None, None);
+        session(&db, "w", "orchestrator", Some("s"), None);
+        record(&db, "s", "question.requested", json!({}), 5);
+        record(&db, "w", "permission.requested", json!({}), 3);
+        let approval_ids: Vec<(String, Option<i64>)> = list(&db, None, None, false)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|row| (row.session_id.unwrap(), row.approval_event_id))
+            .collect();
+        // A question is answered through resolve_question, never resolve_approval.
+        assert_eq!(approval_ids, vec![("s".to_owned(), None), ("w".to_owned(), Some(3))]);
+        // Its request id still matches the answer that closes it.
+        assert!(record(&db, "s", "question.resolved", json!({"data": {"requestEventId": 5}}), 6));
+        assert!(list(&db, None, None, false).unwrap().items[0].resolved_at.is_some());
     }
 
     #[test]
