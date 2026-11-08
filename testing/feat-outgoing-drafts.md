@@ -15,6 +15,7 @@ Slice 1 of #920 (Outgoing). A chat agent drafts a message addressed to a person 
   - Anything else (two families at once, empty strings, a repo without a slash, number 0) is refused with a message saying what is accepted.
 - `body`: 1 to 8,000 characters after trimming. A body holding secret material (the same detector `memory_propose` uses) is refused, and nothing is stored.
 - `reason`: 1 to 300 characters; why the person wants this message.
+- `attachments` (optional): up to 4 absolute paths to local image files, only when the person asked to include an image or screenshot. Each must be a PNG, JPEG, GIF or WebP by its content (magic bytes), not just its extension, and at most 10 MB. Anything else is refused and nothing is stored. GitHub destinations refuse attachments (the API cannot attach uploads to a comment).
 - On success one `outgoing_messages` row is stored with `state = draft`, `revision = 1`, and the tool returns `{ id, state, destination, rendered, lint, note }`. `note` tells the agent the person reviews and sends it themselves and that it should not repeat the text.
 - Agent drafts get every fixable hard rule applied before storing (em dashes, AI attribution lines). Each fix is recorded as a lint finding with `fixed: true`, so the card can say what changed.
 - At most 20 drafts per chat; the 21st is refused (429) so a looping agent cannot flood the store.
@@ -25,27 +26,30 @@ Slice 1 of #920 (Outgoing). A chat agent drafts a message addressed to a person 
 |---|---|---|---|
 | `no_em_dash` | every destination | yes | `a — b` and `a—b` become `a, b`; an em dash in a code span or fence is left alone |
 | `no_ai_attribution` | every destination | yes | lines like `Co-Authored-By: Claude ...`, `Generated with [Claude Code](...)`, `🤖 Generated with ...` are removed |
-| `slack_table` | Slack destinations and Slack clipboard | no | a Markdown table is reported |
-| `slack_heading` | Slack destinations and Slack clipboard | no | a `#` heading is reported (render turns it into bold) |
-| `max_lines` | Slack (15 lines) | no | reported with the count |
+| `slack_table` | Slack clipboard only | no | a Markdown table is reported (a pasted table stays raw pipes) |
+| `slack_heading` | Slack clipboard only | no | a `#` heading is reported (render turns it into bold) |
+| `slack_length` | Slack destinations | no | a body over 5,000 characters is reported (the connector's per-element limit) |
+| `max_lines` | Slack destinations and Slack clipboard (15 lines) | no | reported with the count |
 
 - Lint is a pure function of `(body, format)`. Linting an already-fixed body reports no fixable findings (idempotence).
 - An edit by the person is linted but **not** auto-fixed: findings come back with `fixed: false` and the card offers Fix.
 
 ### Rendering
 
-- `slack`: `**b**` / `__b__` become `*b*`; `*i*` / `_i_` become `_i_`; `~~s~~` becomes `~s~`; `[t](u)` becomes `<u|t>`; `# H` becomes `*H*`; `* ` / `+ ` / `- ` bullets become `• `; fenced code and inline code are untouched.
+- `slackMarkdown` (Slack channel, thread or DM): the body as written. The Slack connector's send tool takes standard Markdown, including tables, headings and fenced code with a language, and converts it itself.
+- `slack` (Slack clipboard): `**b**` / `__b__` become `*b*`; `*i*` / `_i_` become `_i_`; `~~s~~` becomes `~s~`; `[t](u)` becomes `<u|t>`; `# H` becomes `*H*`; `* ` / `+ ` / `- ` bullets become `• `; fenced code and inline code are untouched.
 - `github`: the body as written.
 - `plain`: emphasis markers removed, `[t](u)` becomes `t (u)`, headings lose their `#`, code fences removed but their content kept.
-- The destination picks the format: Slack destinations render `slack`, GitHub destinations render `github`, clipboard uses its own format.
+- The destination picks the format: Slack destinations render `slackMarkdown`, GitHub destinations render `github`, clipboard uses its own format.
 
 ### State machine and revisions
 
 - States in this slice: `draft`, `copied`, `discarded`.
-- `update_outgoing { id, revision, body?, applyFixes? }`: refused when `revision` is not the current one ("this draft changed since you opened it") or the item is `discarded`. On success `revision` increases by one, lint and rendered are recomputed, state returns to `draft` if it was `copied`.
+- `update_outgoing { id, revision, body?, applyFixes?, attachments? }`: `attachments` replaces the list (the card uses it to remove one), validated like the tool's. refused when `revision` is not the current one ("this draft changed since you opened it") or the item is `discarded`. On success `revision` increases by one, lint and rendered are recomputed, state returns to `draft` if it was `copied`.
 - `applyFixes: true` applies every fixable rule to the (new or current) body.
 - `copy_outgoing { id, revision }`: returns `{ text }`, the rendered text for the destination's format, and moves state to `copied`. Refused on a stale revision or a discarded item.
 - `discard_outgoing { id }`: moves to `discarded`; idempotent.
+- `read_outgoing_attachment { id, index }`: the image as `{ mime, dataBase64 }`, re-validated by magic bytes at read time; refused for a missing or changed file.
 - `list_outgoing { sessionId }`: the chat's items, oldest first, discarded included (the card shows them as discarded).
 - Every change publishes `outgoing/changed { sessionId, id }` (transient).
 
@@ -56,6 +60,7 @@ Slice 1 of #920 (Outgoing). A chat agent drafts a message addressed to a person 
 - A drawn card loads the item by id through `list_outgoing` and refetches on `outgoing/changed` for its chat.
 - Shows: destination chip ("Slack · #dev · thread", "Slack · @nina", "GitHub · owner/repo#123", "Clipboard · Slack"), the rendered preview, a chip per lint finding ("Em dash fixed", "Table: Slack shows it as raw text"), and the reason.
 - Actions: Edit (textarea, Save calls `update_outgoing` with the current revision), Fix (shown only when an unfixed fixable finding exists), Copy (calls `copy_outgoing`, writes `text` to the clipboard, shows "Copied"), Discard.
+- Attachments show as thumbnails with the file name, Copy image (puts a PNG on the clipboard) and Remove.
 - No Send button in this slice.
 - Tailwind v4 tokens only; `src/designSystem.test.ts` stays green.
 
