@@ -76,16 +76,29 @@ describe("DatabaseCalendar", () => {
     expect(placedDay("2026-11-12T23:30:00-08:00")).toBe("2026-11-13");
   });
 
+  it("shows a range that starts before the grid and runs into it", async () => {
+    const { made, due, row } = books();
+    row("Long read", { [due.id]: { start: "2026-10-25", end: "2026-11-03" } });
+    row("Old", { [due.id]: { start: "2026-10-01", end: "2026-10-20" } });
+    await act(async () => { root.render(<DatabaseCalendar {...props(made, calendar(due.id))} today="2026-11-05" />); });
+    await settle();
+    expect(titlesOn("2026-10-26")).toEqual(["Long read"]);
+    expect(titlesOn("2026-11-03")).toEqual(["Long read"]);
+    expect(titlesOn("2026-11-04")).toEqual([]);
+    expect(document.querySelector("[role=grid]")!.textContent).not.toContain("Old");
+  });
+
   it("queries each shown month and moves with prev, next and today", async () => {
     const { made, due } = books();
     const query = vi.spyOn(bridgeApi, "queryDatabase");
     await act(async () => { root.render(<DatabaseCalendar {...props(made, calendar(due.id))} today="2026-11-05" />); });
     await settle();
-    expect(query.mock.calls[0][0].filter).toEqual({ and: [{ property: due.id, op: "onOrAfter", value: "2026-10-26" }, { property: due.id, op: "onOrBefore", value: "2026-12-06" }] });
+    // Starts on or before the last shown day; overlap with the grid is kept client-side.
+    expect(query.mock.calls[0][0].filter).toEqual({ and: [{ property: due.id, op: "onOrBefore", value: "2026-12-06" }] });
     act(() => button("Next month").click());
     await settle();
     expect(document.querySelector("[role=grid]")!.getAttribute("aria-label")).toBe("December 2026");
-    expect(query.mock.calls.at(-2)![0].filter).toEqual({ and: [{ property: due.id, op: "onOrAfter", value: "2026-11-30" }, { property: due.id, op: "onOrBefore", value: "2027-01-10" }] });
+    expect(query.mock.calls.at(-2)![0].filter).toEqual({ and: [{ property: due.id, op: "onOrBefore", value: "2027-01-10" }] });
     act(() => button("Previous month").click());
     act(() => button("Previous month").click());
     expect(document.querySelector("[role=grid]")!.getAttribute("aria-label")).toBe("October 2026");

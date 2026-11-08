@@ -68,6 +68,8 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
     const first = days[0];
     const last = days[days.length - 1];
     const startOf = (row: DatabaseRow) => { const value = row.values[dateColumn.id] as { start?: string } | undefined; return value?.start ? placedDay(value.start) : null; };
+    const endOf = (row: DatabaseRow) => { const value = row.values[dateColumn.id] as { start?: string; end?: string } | undefined; return value?.end ? placedDay(value.end) : startOf(row); };
+    const overlaps = (row: DatabaseRow) => { const start = startOf(row); const end = endOf(row); return !!start && !!end && start <= last && end >= first; };
     // Composed within the planner's limits when they allow, else the view's
     // own rows with the window applied here.
     const read = (conditions: { property: string; op: string; value?: unknown }[], limit: number, matches: (row: DatabaseRow) => boolean) => {
@@ -76,8 +78,10 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
         ? run({ filter: composed, sorts: query.sorts, limit }).then(result => result.rows)
         : readAll(run, { filter: query.filter ?? null, sorts: query.sorts }).then(rows => rows.filter(matches));
     };
-    void read([{ property: dateColumn.id, op: "onOrAfter", value: first }, { property: dateColumn.id, op: "onOrBefore", value: last }], 500, row => { const start = startOf(row); return !!start && first <= start && start <= last; })
-      .then(rows => { if (alive) setPlaced(rows); }, () => undefined);
+    // The core indexes a date's start only, so a range that began before the
+    // grid is found by its start alone and kept here if it reaches the grid.
+    void read([{ property: dateColumn.id, op: "onOrBefore", value: last }], 500, overlaps)
+      .then(rows => { if (alive) setPlaced(rows.filter(row => dateColumn.type !== "date" || overlaps(row))); }, () => undefined);
     if (writable) void read([{ property: dateColumn.id, op: "isEmpty" }], 100, row => !startOf(row))
       .then(rows => { if (alive) setUndated(rows); }, () => undefined);
     return () => { alive = false; };
