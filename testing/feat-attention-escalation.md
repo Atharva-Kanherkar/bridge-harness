@@ -112,3 +112,36 @@ Live daemon from this branch with its own data directory:
    `attention/list_attention` returns one `escalation` row.
 2. Call `sessions/deliver_queued_input` for it: `{"delivered": true}`, and
    within one sweep the escalation row has `resolvedAt`.
+
+## Review amendments (review 5817244323)
+
+Locked before the fixes; one commit per finding, each with a regression test
+that fails without it.
+
+1. **Workers are never resumed from here.** A worker resumes only through its
+   orchestrator, inside its pool reservation and with its sandbox and write
+   scope. `deliver_queued_now` refuses a session with a parent (or depth > 0)
+   before touching an adapter, and `escalate_stranded` never raises an
+   escalation for one, so Deliver now is never offered for a worker. Tests:
+   `deliver_now_refuses_a_worker_and_launches_nothing`,
+   `workers_never_escalate`.
+2. **A superseded escalation does not block its replacement.** The "one open
+   escalation" guard counts only rows that are unresolved and not
+   superseded, so a later row for the chat (a failed turn, say) cannot hide
+   the remedy while input is still stranded. Test:
+   `a_superseded_escalation_is_raised_again`.
+3. **Only a handled queue dismisses the card.** `sessions/deliver_queued_input`
+   returns `{ disposition }`: `delivered`, `nothingQueued` (someone else
+   handled it), or `afterCurrentTurn` (the adapter is live and busy, so the
+   ordinary boundary drain will deliver it). When the row is still queued on
+   an idle chat after the attempt (a provider write failure, a busy
+   lifecycle claim), the call returns an error naming that, the row stays
+   queued, and the client keeps the card and shows the error. Tests:
+   `deliver_now_reports_a_failed_write_as_an_error`, and the App test
+   `keeps Deliver now when delivery fails`.
+4. **Protocol compatibility.** With the `other` fallback added in #915, a
+   1.24 client decodes `escalation` as `other` and shows nothing, so 1.25
+   still accepts 1.24 clients; the handshake note says so. Test:
+   `a_1_24_client_decodes_escalation_as_other` (protocol), plus the
+   desktop feed's unknown-kind test.
+
