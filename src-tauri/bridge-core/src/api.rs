@@ -4308,6 +4308,48 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams) -> Result<wire::ListAttentionResult, BridgeError> {
+    let page = crate::attention::list(&core.db.lock().unwrap(), params.after_sequence, params.limit, params.unseen_only)?;
+    Ok(wire::ListAttentionResult {
+        items: page.items.into_iter().map(attention_item).collect(),
+        latest_sequence: page.latest_sequence,
+    })
+}
+
+fn attention_item(row: crate::attention::AttentionRow) -> wire::AttentionItem {
+    use crate::attention::{AttentionKind, Severity};
+    wire::AttentionItem {
+        sequence: row.sequence,
+        id: row.id,
+        kind: match row.kind {
+            AttentionKind::Finished => wire::AttentionKind::Finished,
+            AttentionKind::Failed => wire::AttentionKind::Failed,
+            AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
+        },
+        severity: match row.severity {
+            Severity::Informational => wire::AttentionSeverity::Informational,
+            Severity::Actionable => wire::AttentionSeverity::Actionable,
+        },
+        session_id: row.session_id,
+        approval_event_id: row.approval_event_id,
+        title: row.title,
+        body: row.body,
+        created_at: row.created_at,
+        resolved_at: row.resolved_at,
+        seen_at: row.seen_at,
+    }
+}
+
+/// Seen is a server fact: opening a chat on any client clears it everywhere,
+/// so every client hears about it through `attention/changed`.
+pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionSeenParams) -> Result<wire::MarkAttentionSeenResult, BridgeError> {
+    let updated = crate::attention::mark_seen(&core.db.lock().unwrap(), &params.session_id)?;
+    if updated > 0 {
+        core.events.publish(CoreEvent::AttentionChanged);
+    }
+    Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
+}
+
 pub fn get_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::GetDelegationNotifySettingsParams) -> Result<wire::DelegationNotifySettingsView, BridgeError> {
     crate::delegation_notify::view(&core.db.lock().unwrap(), params.session_id.as_deref())
 }

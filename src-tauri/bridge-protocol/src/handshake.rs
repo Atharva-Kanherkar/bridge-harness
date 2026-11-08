@@ -89,9 +89,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `method_not_found`; a 1.21 client still pairs with a 1.22 daemon.
 /// **1.23 adds personal project defaults and enforced session-scoped access.**
 /// Older clients cannot display that authority, so both directions require 1.23.
+/// **1.24 adds `attention/list_attention`, `attention/mark_attention_seen` and
+/// the `attention/changed` hint.** A new client must not pair with an older
+/// daemon, whose ledger reads would fail with `method_not_found`; a 1.23
+/// client still pairs with a 1.24 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 23,
+    minor: 24,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

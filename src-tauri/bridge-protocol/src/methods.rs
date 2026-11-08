@@ -171,6 +171,9 @@ methods![
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),
+    // attention — what a person should know about, decided in core
+    (ListAttention, "attention", "list_attention"),
+    (MarkAttentionSeen, "attention", "mark_attention_seen"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
     (CancelProviderLogin, "auth", "cancel_provider_login"),

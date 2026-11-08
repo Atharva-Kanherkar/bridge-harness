@@ -23,6 +23,7 @@
 
 mod agents;
 mod approvals;
+mod attention;
 mod auth;
 mod automations;
 mod browser;
@@ -58,6 +59,7 @@ mod worktrees;
 
 pub use agents::*;
 pub use approvals::*;
+pub use attention::*;
 pub use auth::*;
 pub use automations::*;
 pub use browser::*;
@@ -288,6 +290,9 @@ typed_methods![
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),
+    // attention
+    (ListAttention, ListAttentionParams, ListAttentionResult),
+    (MarkAttentionSeen, MarkAttentionSeenParams, MarkAttentionSeenResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
     (CancelProviderLogin, CancelProviderLoginParams, UnitResult),
