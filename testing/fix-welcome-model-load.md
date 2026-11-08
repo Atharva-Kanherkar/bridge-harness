@@ -24,9 +24,12 @@ Opening a new chat must never paint a guess and then correct itself.
   has not landed yet). Once the catalog is non-empty and no longer lists the id,
   the stored entry is dropped and resolution continues from the profile, so a
   retired model is never sent to a provider.
-- Every draft creation (`openNewChat`, `openWorkspaceDraft`) and every submit
-  stores the harness/model it used, together with the catalog label when one is
-  known. An explicit pick in the Welcome picker stores immediately.
+- The host's resolution of a draft that carries no explicit model override is
+  stored as the next chat's starting choice, together with its catalog label.
+- An explicit pick in the Welcome picker is a one-off override for that draft and
+  is never stored as the next chat's default. The next chat must not promise a
+  model the host would not create, which is the same class of bug as naming a
+  fallback it is about to drop.
 - `ChatModelControl` shows a loading state when the selected adapter has no
   catalog yet **and** no label is known for the selected model:
   - the pill reads `Loading models…`, carries a spinner, and sets
@@ -73,7 +76,9 @@ Opening a new chat must never paint a guess and then correct itself.
 - `src/App.test.tsx`
   - A stored new-chat choice paints the Welcome pill on first mount while every
     adapter catalog is empty, and the pill never reads `Default` or a raw id.
-  - Picking a model on the Welcome surface writes the choice to storage.
+  - A resolved draft with no override is stored as the next chat's choice.
+  - A one-off pick on the Welcome surface is not stored as the next chat's
+    default.
   - With no stored choice and empty catalogs, the Welcome pill becomes
     `Loading models…` after the grace period and settles to the catalog label.
 
