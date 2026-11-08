@@ -67,8 +67,10 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
     let alive = true;
     const first = days[0];
     const last = days[days.length - 1];
-    const startOf = (row: DatabaseRow) => { const value = row.values[dateColumn.id] as { start?: string } | undefined; return value?.start ? placedDay(value.start) : null; };
-    const endOf = (row: DatabaseRow) => { const value = row.values[dateColumn.id] as { start?: string; end?: string } | undefined; return value?.end ? placedDay(value.end) : startOf(row); };
+    // A date property's value, or the page's own timestamp for Created and Updated.
+    const dateOf = (row: DatabaseRow) => dateColumn.type === "created" ? { start: row.note.createdAt } : dateColumn.type === "updated" ? { start: row.note.updatedAt } : row.values[dateColumn.id] as { start?: string; end?: string } | undefined;
+    const startOf = (row: DatabaseRow) => { const value = dateOf(row); return value?.start ? placedDay(value.start) : null; };
+    const endOf = (row: DatabaseRow) => { const value = dateOf(row); return value?.end ? placedDay(value.end) : startOf(row); };
     const overlaps = (row: DatabaseRow) => { const start = startOf(row); const end = endOf(row); return !!start && !!end && start <= last && end >= first; };
     // Composed within the planner's limits when they allow, else the view's
     // own rows with the window applied here.

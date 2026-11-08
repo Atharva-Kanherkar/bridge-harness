@@ -179,6 +179,20 @@ describe("composed filters", () => {
   });
 });
 
+describe("calendar fallback", () => {
+  it("places Created rows when the window cannot be composed", async () => {
+    const { made, row } = books();
+    const id = row("Fresh", {});
+    const day = mockReadPage(id).note.createdAt.slice(0, 10);
+    const view: NoteDatabaseView = { id: "cal", name: "Calendar", type: "calendar", order: 0, dateProperty: "created" };
+    const given = props(made, view);
+    const full = { and: Array.from({ length: 20 }, (_, index) => ({ property: "title", op: "notContains", value: `zz${index}` })) };
+    await act(async () => { root.render(<DatabaseCalendar {...given} query={{ ...given.query, filter: full }} today={day} />); });
+    await settle();
+    expect(titlesOn(new Date(mockReadPage(id).note.createdAt).toISOString().slice(0, 10))).toContain("Fresh");
+  });
+});
+
 describe("DatabaseList", () => {
   const list = (groupBy: string | null): NoteDatabaseView => ({ id: "list", name: "List", type: "list", order: 0, groupBy: groupBy ? { property: groupBy } : null });
 
