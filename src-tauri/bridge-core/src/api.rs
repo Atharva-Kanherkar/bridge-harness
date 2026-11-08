@@ -567,6 +567,51 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
 /// The pull requests attached to one chat, newest first, with live state.
 /// Reading (re)arms the poller, so a reopened chat resumes background updates
 /// without the GitHub pane being open.
+/// A chat's drafted messages, oldest first.
+pub fn list_outgoing(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ListOutgoingResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    Ok(wire::ListOutgoingResult { items: crate::outgoing::list(&db, session_id)? })
+}
+
+fn outgoing_changed(core: &Arc<BridgeCore>, item: &wire::OutgoingMessage) {
+    core.events.publish(CoreEvent::OutgoingChanged { session_id: item.session_id.clone(), id: item.id.clone() });
+}
+
+/// The person's edit or Fix of a draft, against the revision they saw.
+pub fn update_outgoing(
+    core: &Arc<BridgeCore>,
+    id: &str,
+    revision: u32,
+    body: Option<&str>,
+    apply_fixes: bool,
+) -> Result<wire::UpdateOutgoingResult, BridgeError> {
+    let item = {
+        let db = core.db.lock().unwrap();
+        crate::outgoing::update(&db, id, revision, body, apply_fixes, &chrono::Utc::now().to_rfc3339())?
+    };
+    outgoing_changed(core, &item);
+    Ok(wire::UpdateOutgoingResult { item })
+}
+
+/// The text to put on the clipboard; the client writes it there.
+pub fn copy_outgoing(core: &Arc<BridgeCore>, id: &str, revision: u32) -> Result<wire::CopyOutgoingResult, BridgeError> {
+    let (text, item) = {
+        let db = core.db.lock().unwrap();
+        crate::outgoing::copy(&db, id, revision, &chrono::Utc::now().to_rfc3339())?
+    };
+    outgoing_changed(core, &item);
+    Ok(wire::CopyOutgoingResult { text, item })
+}
+
+pub fn discard_outgoing(core: &Arc<BridgeCore>, id: &str) -> Result<wire::DiscardOutgoingResult, BridgeError> {
+    let item = {
+        let db = core.db.lock().unwrap();
+        crate::outgoing::discard(&db, id, &chrono::Utc::now().to_rfc3339())?
+    };
+    outgoing_changed(core, &item);
+    Ok(wire::DiscardOutgoingResult { item })
+}
+
 pub fn github_session_prs(
     core: &Arc<BridgeCore>,
     session_id: &str,
