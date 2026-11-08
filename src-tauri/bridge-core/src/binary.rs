@@ -1,10 +1,12 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Mutex, OnceLock},
+    time::SystemTime,
 };
 
 fn fallback_directories(home: Option<&Path>) -> Vec<PathBuf> {
@@ -124,12 +126,57 @@ pub fn version(name: &str) -> Option<String> {
 ///
 /// Separate from [`version`] so a caller that already chose which copy to launch
 /// reports that copy's version rather than whatever happens to be on PATH.
+///
+/// Memoized per file version. Spawning the probe is not cheap: Codex and Claude
+/// are Node launchers, so one call is a process launch, and every adapter
+/// descriptor builds one. Health, new-chat resolution and model-profile saves all
+/// build descriptors, so an unmemoized probe was paid several times per new chat.
+/// A replaced binary has a new fingerprint and is probed again.
 pub fn version_at(binary: &Path) -> Option<String> {
-    version_at_with_environment(
+    let fingerprint = file_fingerprint(binary);
+    if let Some(fingerprint) = fingerprint {
+        let cached = version_probes()
+            .lock()
+            .unwrap()
+            .get(binary)
+            .filter(|probe| probe.fingerprint == fingerprint)
+            .map(|probe| probe.version.clone());
+        if let Some(version) = cached {
+            return version;
+        }
+    }
+    let version = version_at_with_environment(
         binary,
         env::var_os("PATH").as_deref(),
         env::var_os("HOME").as_deref().map(Path::new),
-    )
+    );
+    if let Some(fingerprint) = fingerprint {
+        version_probes().lock().unwrap().insert(
+            binary.to_path_buf(),
+            VersionProbe {
+                fingerprint,
+                version: version.clone(),
+            },
+        );
+    }
+    version
+}
+
+/// Size and modification time. Enough to notice a provider payload being
+/// replaced while Bridge runs, which a path-only cache would miss.
+fn file_fingerprint(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
+struct VersionProbe {
+    fingerprint: (u64, Option<SystemTime>),
+    version: Option<String>,
+}
+
+fn version_probes() -> &'static Mutex<HashMap<PathBuf, VersionProbe>> {
+    static PROBES: OnceLock<Mutex<HashMap<PathBuf, VersionProbe>>> = OnceLock::new();
+    PROBES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn version_at_with_environment(binary: &Path, existing_path: Option<&OsStr>, home: Option<&Path>) -> Option<String> {
@@ -241,6 +288,48 @@ mod tests {
             version_at_with_environment(&launcher, Some(OsStr::new("/usr/bin:/bin")), Some(home.path())).as_deref(),
             Some("codex-cli 1.2.3")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_runs_once_per_binary_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("probes");
+        let binary = dir.path().join("codex-fixture");
+        let script = |version: &str| format!(
+            "#!/bin/sh\nprintf x >> '{}'\nprintf '{version}\\n'\n",
+            counter.display(),
+        );
+        fs::write(&binary, script("codex-cli 1.0.0")).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&binary, permissions).unwrap();
+
+        // Descriptors are built several times per new chat; the probe must be
+        // paid once, not once per read.
+        assert_eq!(version_at(&binary).as_deref(), Some("codex-cli 1.0.0"));
+        assert_eq!(version_at(&binary).as_deref(), Some("codex-cli 1.0.0"));
+        assert_eq!(fs::read_to_string(&counter).unwrap(), "x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_rereads_a_replaced_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("codex-fixture");
+        let script = |version: &str| format!("#!/bin/sh\nprintf '{version}\\n'\n");
+        fs::write(&binary, script("codex-cli 1.0.0")).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&binary, permissions).unwrap();
+        assert_eq!(version_at(&binary).as_deref(), Some("codex-cli 1.0.0"));
+
+        // An in-place upgrade replaces the payload; the new fingerprint has to
+        // win over the recorded answer.
+        fs::write(&binary, script("codex-cli 2.0.0-beta")).unwrap();
+        assert_eq!(version_at(&binary).as_deref(), Some("codex-cli 2.0.0-beta"));
     }
 
     #[cfg(unix)]
