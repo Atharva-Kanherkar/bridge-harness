@@ -58,6 +58,8 @@ kind is not hidden (`work_briefing_config::is_hidden_session_kind`):
     (`orchestrator`, `bridge orchestrator`, `new chat`, `chat`) shown as "New chat".
   - `<Harness>` mirrors `harnessLabel` in `src/utils.ts`.
 - A forest write that rolls back leaves no attention row.
+- An attention write that fails never fails the forest entry: it runs in a
+  savepoint, is rolled back on its own, and is logged.
 - Only `audience = 'human'` rows exist in this PR; the column is there for #911.
 
 Wire:
@@ -89,6 +91,7 @@ Wire:
 - `attention::tests::mark_seen_stamps_only_that_session`
 - `store` test: `session_event_in_transaction` writes the row; rolling the
   transaction back leaves none (`forest_write_and_attention_row_commit_together`).
+- `store` test: `a_failing_attention_write_never_costs_the_forest_entry`.
 - `store` test: a typed `SessionForest` append of `approval.requested` writes a
   `needs_you` row (`typed_forest_approval_opens_needs_you`).
 - `events` test: publishing an `Agent` event of a trigger kind also delivers
