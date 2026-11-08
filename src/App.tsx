@@ -737,10 +737,13 @@ function AppContent() {
     void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
   }, []);
   useAttentionFeed(showAttention);
-  // Opening a chat is seeing it, on every client.
+  // Opening a chat is seeing it, on every client. Keyed on the view too: the
+  // selection survives a trip to Memory or Settings, and coming back to the
+  // chat is seeing what landed meanwhile. `openSession` also stamps directly,
+  // for an open that changes neither.
   useEffect(() => {
-    if (selectedSessionId) void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
-  }, [selectedSessionId]);
+    if (selectedSessionId && view === "workspace") void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
+  }, [selectedSessionId, view]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -1623,6 +1626,7 @@ function AppContent() {
   // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
+    void bridgeApi.markAttentionSeen(id).catch(() => undefined);
     setView("workspace");
     setParadigm("single");
     setNewChatDraft(null);

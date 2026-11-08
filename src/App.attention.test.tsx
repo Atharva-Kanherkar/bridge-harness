@@ -142,4 +142,33 @@ describe("App attention wiring", () => {
     expect(deliver).toHaveBeenCalledWith("a");
     expect(toastRegion(container)).toBeFalsy();
   });
+
+  it("marks the chat seen when its toast reopens the retained selection", async () => {
+    const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
+    await mountApp();
+    await act(async () => { (container.querySelector('button[title^="Title b"]') as HTMLButtonElement).click(); });
+    await wait(20);
+    // Away to Memory; the chat stays selected underneath.
+    const memory = [...container.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Memory")) as HTMLButtonElement;
+    expect(memory, "the Memory entry in the sidebar").toBeTruthy();
+    await act(async () => { memory.click(); });
+    await wait(20);
+    seen.mockClear();
+
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+    await wait(40);
+    const toastButton = container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]') as HTMLButtonElement;
+    await act(async () => { toastButton.click(); });
+    await wait(20);
+    expect(seen).toHaveBeenCalledWith("b");
+  });
+
+  it("passes no approval id for a question", async () => {
+    await mountApp();
+    // Core gives a question no approval id: it is answered through
+    // resolve_question, so the Linux banner must offer Open only.
+    await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you", approvalEventId: null }); });
+    await wait(NEEDS_YOU_HOLD_MS + 100);
+    expect(notifyAttention).toHaveBeenCalledWith("Bridge needs you", "Worker w · Claude is waiting for your input", { sessionId: "w", approvalEventId: null });
+  });
 });

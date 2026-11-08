@@ -1280,9 +1280,9 @@ export interface AttentionItem {
   title: string;
 }
 
-export type AttentionKind = "finished" | "failed" | "needsYou" | "escalation";
+export type AttentionKind = "finished" | "failed" | "needsYou" | "escalation" | "other";
 
-export type AttentionSeverity = "informational" | "actionable";
+export type AttentionSeverity = "informational" | "actionable" | "other";
 
 export interface AttributionSettings {
   hideAiAttribution?: boolean;

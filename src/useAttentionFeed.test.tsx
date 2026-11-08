@@ -64,6 +64,47 @@ describe("useAttentionFeed", () => {
     expect(arrived).toHaveLength(1);
   });
 
+  it("keeps a row announced while the launch read is pending", async () => {
+    let releaseLaunch: () => void = () => undefined;
+    const launch = new Promise<void>(resolve => { releaseLaunch = resolve; });
+    let first = true;
+    vi.spyOn(bridgeApi, "listAttention").mockImplementation(async params => {
+      if (first) {
+        first = false;
+        await launch;
+      }
+      return mockListAttention(params);
+    });
+    pushMockAttention({ kind: "finished", sessionId: "before", title: "Turn completed" });
+    await act(async () => { root.render(<Probe onArrive={item => arrived.push(item)} />); });
+    await settle(5);
+    // Written after launch, announced while the launch read is still out.
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "after", title: "Turn completed" }); });
+    await act(async () => { releaseLaunch(); });
+    await settle(30);
+    expect(arrived.map(item => item.sessionId)).toEqual(["after"]);
+  });
+
+  it("recovers after the first read fails and delivers what arrived meanwhile", async () => {
+    let failed = false;
+    const reads = vi.spyOn(bridgeApi, "listAttention").mockImplementation(async params => {
+      if (!failed) {
+        failed = true;
+        throw new Error("daemon is starting");
+      }
+      return mockListAttention(params);
+    });
+    await mount();
+    expect(reads).toHaveBeenCalledTimes(1);
+    // The backend is back; the next hint must not fall on deaf ears.
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "a", title: "Turn completed" }); });
+    await settle(30);
+    await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+    await settle(30);
+    expect(reads.mock.calls.length).toBeGreaterThan(1);
+    expect(arrived.map(item => item.sessionId)).toEqual(["a", "b"]);
+  });
+
   it("drops a request answered within the hold and delivers one still open", async () => {
     await mount();
     await act(async () => {
@@ -109,6 +150,16 @@ describe("useAttentionFeed", () => {
     await settle(30);
     expect(arrived).toHaveLength(101);
     expect(reads.mock.calls.slice(0, 2).map(([params]) => params?.afterSequence)).toEqual([0, 100]);
+  });
+
+  it("skips kinds it does not know", async () => {
+    await mount();
+    await act(async () => {
+      pushMockAttention({ kind: "other", sessionId: "newer", title: "Something new" });
+      pushMockAttention({ kind: "laterKind" as AttentionItem["kind"], sessionId: "newest", title: "Later" });
+    });
+    await settle(HOLD_MS * 3);
+    expect(arrived).toEqual([]);
   });
 
   it("cancels a pending hold on unmount", async () => {

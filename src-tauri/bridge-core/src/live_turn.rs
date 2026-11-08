@@ -3354,6 +3354,17 @@ fn handle_agent_value_timed(
                         serde_json::json!("compaction"),
                     );
                 }
+            } else if checkpoint_turn_active {
+                // The frames a checkpoint keeps for the supervisor (its boundary,
+                // a failure) are still Bridge's maintenance, not the person's
+                // turn. Not `bridgeInternalOrigin`: the transcript hides that,
+                // and the boundary must stay visible to it.
+                if !normalized_event.data.is_object() {
+                    normalized_event.data = serde_json::json!({});
+                }
+                if let Some(data) = normalized_event.data.as_object_mut() {
+                    data.insert("bridgeCheckpointTurn".into(), serde_json::json!(true));
+                }
             }
             if is_checkpoint_reply {
                 checkpoint_response_seen = true;
@@ -12391,8 +12402,10 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
             );
         }
     }
+    let mut attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
+        publish_attention_if_moved(&core, &mut attention_seen);
         prepare_pending_worker_results(&core);
         recover_prompt_mutation_feedback(&core);
         let sessions = {
@@ -12433,6 +12446,21 @@ pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<bo
         resume_for_send(core, session_id)?;
     }
     Ok(drain_queued_input(core, session_id))
+}
+
+/// The guarantee behind `attention/changed`. The event bus derives the hint
+/// from published agent events, but some writes publish none (a typed scope
+/// approval from `policy::record_decision`, for one). The ledger's revision
+/// moves with every committed change, so comparing it each sweep catches
+/// those within one interval, and never before their commit.
+pub(crate) fn publish_attention_if_moved(core: &Arc<BridgeCore>, seen: &mut i64) -> bool {
+    let Ok(revision) = crate::attention::revision(&core.db.lock().unwrap()) else { return false };
+    if revision == *seen {
+        return false;
+    }
+    *seen = revision;
+    core.events.publish(CoreEvent::AttentionChanged);
+    true
 }
 
 fn record_recoverable_adapter_failure(
@@ -15052,6 +15080,50 @@ mod submit_input_tests {
         let db = core.db.lock().unwrap();
         let leaked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE payload LIKE '%bridgeStreamTiming%')", [], |row| row.get(0)).unwrap();
         assert!(!leaked);
+    }
+
+    #[test]
+    fn typed_approval_without_an_agent_event_still_hints() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let mut seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap();
+        let mut published = core.events.subscribe();
+        // policy::record_decision appends a scope approval through the typed
+        // forest and publishes no agent event for it.
+        crate::session_forest::SessionForest::new(&core.db.lock().unwrap())
+            .append("chat", crate::session_forest::EntryKind::ApprovalRequested, serde_json::json!({"approvalId": "scope:1"}))
+            .unwrap();
+        assert!(published.try_recv().is_err(), "nothing was published for the typed write");
+
+        assert!(publish_attention_if_moved(&core, &mut seen), "the sweep sees the committed ledger move");
+        assert!(matches!(published.try_recv(), Ok(CoreEvent::AttentionChanged)));
+        assert!(!publish_attention_if_moved(&core, &mut seen), "and says so once");
+
+        // A seen stamp moves no sequence, but it is still news to other clients.
+        crate::attention::mark_seen(&core.db.lock().unwrap(), "chat").unwrap();
+        assert!(publish_attention_if_moved(&core, &mut seen));
+    }
+
+    #[test]
+    fn a_checkpoint_turn_raises_no_attention() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let finished = |core: &Arc<BridgeCore>| -> i64 {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM attention_events WHERE session_id='chat' AND kind='finished'", [], |row| row.get(0))
+                .unwrap()
+        };
+        // The status is the maintenance-turn tombstone a checkpoint turn keeps
+        // until its own boundary.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='checkpointing' WHERE id='chat'", []).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+        assert_eq!(finished(&core), 0, "a checkpoint's boundary is maintenance, not the person's turn");
+
+        // The same chat's own turn still raises one.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='working' WHERE id='chat'", []).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-2".into()))), &codex_turn_completed());
+        assert_eq!(finished(&core), 1);
     }
 
     #[test]
