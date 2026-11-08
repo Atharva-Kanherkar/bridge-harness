@@ -106,3 +106,33 @@ Against a desktop build from this branch (release bundle, launched from
 2. An orchestrator delegates; a worker finishes: no toast. The orchestrator
    finishes: one toast.
 3. Quit and relaunch: no toasts for earlier events.
+
+## Review amendments (review 5817244230, and the client half of 5817244323)
+
+Locked before the fixes; one commit per finding, each with a regression test
+that fails without it.
+
+1. **Rows announced while the launch cursor loads are kept.** The feed
+   records `mountedAt`, subscribes, then initializes: it reads
+   `latestSequence`, then the last page before it, and delivers rows on that
+   page created at or after `mountedAt`. The cursor starts at
+   `latestSequence`. Rows from before launch are still never replayed; a row
+   written after launch but before the cursor existed is no longer lost.
+   Test: `keeps a row announced while the launch read is pending`.
+2. **A failed launch read is retried.** Initialization retries with backoff
+   (1 s doubling to 30 s) and on every hint while it has no cursor, and the
+   `mountedAt` rule above delivers what arrived during the outage. Test:
+   `recovers after the first read fails and delivers what arrived meanwhile`.
+3. **Opening a chat marks it seen, even when it was already selected.**
+   `openSession` calls `markAttentionSeen` itself, so a toast click that
+   returns to the retained selection (from Memory, say) stamps the new row.
+   Test: `marks the chat seen when its toast reopens the retained selection`.
+4. **Questions offer no approval actions.** Fixed in core (#915: questions
+   carry no `approvalEventId`); the client passes the row's id through
+   unchanged, so a question's banner gets Open only. Test:
+   `passes no approval id for a question`.
+5. **Kinds this client does not know are skipped.** The feed delivers only
+   `finished`, `failed` and `needsYou`; `other` (and any string it does not
+   recognize) is dropped rather than rendered as "Turn completed". Test:
+   `skips kinds it does not know`.
+
