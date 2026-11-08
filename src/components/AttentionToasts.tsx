@@ -52,22 +52,25 @@ function ToastCard({ toast, onOpen, onDismiss, onAction }: {
 
   return <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
     <ToneIcon tone={toast.copy.tone} />
-    <button
-      type="button"
-      onClick={() => onOpen(toast)}
-      className="min-w-0 flex-1 text-left"
-      aria-label={`${toast.copy.headline} — open the chat`}
-    >
-      <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
-      <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">{toast.copy.detail}</span>
-    </button>
-    {toast.actionLabel && onAction && <button
-      type="button"
-      onClick={() => onAction(toast)}
-      className="h-7 shrink-0 rounded-md border border-border px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
-    >
-      {toast.actionLabel}
-    </button>}
+    <div className="min-w-0 flex-1">
+      <button
+        type="button"
+        onClick={() => onOpen(toast)}
+        className="block w-full text-left"
+        aria-label={`${toast.copy.headline} — open the chat`}
+      >
+        <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
+        {/* A remedy needs its reason read in full, so that detail may wrap. */}
+        <span className={cn("mt-0.5 block text-[12px] text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
+      </button>
+      {toast.actionLabel && onAction && <button
+        type="button"
+        onClick={() => onAction(toast)}
+        className="mt-2 h-7 rounded-md border border-border px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+      >
+        {toast.actionLabel}
+      </button>}
+    </div>
     <button
       type="button"
       onClick={() => onDismiss(toast.key)}
