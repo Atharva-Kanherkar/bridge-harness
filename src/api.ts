@@ -22,6 +22,8 @@ import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, Not
 import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
+import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
+import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
@@ -604,7 +606,12 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-15b", "session-1", 19, "user.message", { text: "Chart what this week cost, by harness. Where did the spike come from?", itemId: "user-visual" }, "entry-14b"),
   forestEntry("entry-16b", "session-1", 20, "tool.completed", { status: "completed", title: "mcp__bridge__visualize", data: { type: "tool_use", name: "mcp__bridge__visualize", input: MOCK_VISUAL, aggregatedOutput: "Shown to the user inline: \"Daily spend by harness\" (stacked-bar, 21 rows). Do not restate its values in prose; say what matters and why." } }, "entry-15b"),
   forestEntry("entry-17b", "session-1", 21, "assistant.message", { text: "The spike is Sep 30, at roughly three times the daily average, and most of it is Claude: one long refactor that compacted twice." }, "entry-16b"),
-  forestEntry("entry-raw", "session-1", 22, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-17b")
+  // A message drafted by Bridge's own `outgoing_draft` tool, so `bun run dev`
+  // shows the Outgoing card the way a Claude chat delivers it.
+  forestEntry("entry-18b", "session-1", 22, "user.message", { text: "Tell #dev in the deploy thread that staging is done and I'll watch errors before promoting.", itemId: "user-outgoing" }, "entry-17b"),
+  forestEntry("entry-19b", "session-1", 23, "tool.completed", { status: "completed", title: "mcp__bridge__outgoing_draft", data: { type: "tool_use", name: "mcp__bridge__outgoing_draft", input: { to: { slack: { channel: "#dev", thread: "https://acme.slack.com/archives/C01/p1730000000" } }, body: "Deploy to staging is done \u2014 all checks green.", reason: "tell #dev the staging deploy finished" }, aggregatedOutput: JSON.stringify({ id: MOCK_OUTGOING_ID, state: "draft", destination: "Slack \u00b7 #dev \u00b7 thread" }) } }, "entry-18b"),
+  forestEntry("entry-20b", "session-1", 24, "assistant.message", { text: "Drafted a reply for the #dev deploy thread. Edit or copy it from the card." }, "entry-19b"),
+  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -1643,6 +1650,18 @@ export const bridgeApi = {
     hasBackend() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
   /** Attach a chat to a PR by URL or number; verified server-side against the
    * chat's workspace repository. */
+  /** A chat's drafted messages, oldest first, discarded ones included. */
+  listOutgoing: (sessionId: string): Promise<ListOutgoingResult> =>
+    hasBackend() ? call("outgoing/list_outgoing", { sessionId }) : Promise.resolve(mockListOutgoing(sessionId)),
+  /** Edit a draft and/or apply its fixable style rules, against the revision
+   * the editor saw. A stale revision is refused. */
+  updateOutgoing: (id: string, revision: number, body?: string, applyFixes = false): Promise<UpdateOutgoingResult> =>
+    hasBackend() ? call("outgoing/update_outgoing", { id, revision, body, applyFixes }) : mockUpdateOutgoing(id, revision, body, applyFixes),
+  /** The rendered text to put on the clipboard; marks the draft copied. */
+  copyOutgoing: (id: string, revision: number): Promise<CopyOutgoingResult> =>
+    hasBackend() ? call("outgoing/copy_outgoing", { id, revision }) : mockCopyOutgoing(id, revision),
+  discardOutgoing: (id: string): Promise<DiscardOutgoingResult> =>
+    hasBackend() ? call("outgoing/discard_outgoing", { id }) : mockDiscardOutgoing(id),
   githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
     hasBackend() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
   searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
@@ -3393,6 +3412,10 @@ export const bridgeApi = {
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
+  },
+  onOutgoingChanged: async (handler: (payload: { sessionId: string; id: string }) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<{ sessionId: string; id: string }>("outgoing/changed", handler);
+    return onMockOutgoingChanged(handler);
   },
   onGithubSessionPrsChanged: async (handler: (payload: { sessionId: string }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
