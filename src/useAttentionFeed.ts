@@ -15,8 +15,11 @@ const SHOWN_KINDS: ReadonlySet<string> = new Set<AttentionItem["kind"]>(["finish
 /**
  * Follows the core attention ledger and hands each new row to `onArrive`.
  *
- * The cursor starts at the ledger's newest sequence on mount, so nothing that
- * happened before launch is replayed. Each `attention/changed` hint reads
+ * Launch is a moment, not a sequence: rows created before mount are never
+ * replayed, and rows created after it are delivered even when they landed
+ * before the cursor existed (the launch read was slow, or failed and was
+ * retried). The cursor then starts at the ledger's newest sequence. Each
+ * `attention/changed` hint reads
  * from the cursor; reads never overlap, and a hint that lands mid-read buys
  * exactly one more read. Seen, resolved and session-less rows are skipped. A
  * `needsYou` row is held, then re-read, and arrives only if it is still the
@@ -28,6 +31,7 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
 
   useEffect(() => {
     let active = true;
+    const mountedAt = Date.now();
     let cursor: number | null = null;
     let reading = false;
     let readAgain = false;
@@ -92,15 +96,23 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
     };
 
     void (async () => {
-      // Subscribe before taking the boot cursor, so a row written in between
-      // is read rather than lost.
+      // Subscribe before taking the cursor, so a row written in between is
+      // read rather than lost.
       try {
         const off = await bridgeApi.onAttentionChanged(() => { void read(); });
         if (!active) { off(); return; }
         unlisten = off;
-        const boot = await bridgeApi.listAttention({ limit: 1 });
+        const head = await bridgeApi.listAttention({ limit: 1 });
         if (!active) return;
-        cursor = boot.latestSequence;
+        const latest = head.latestSequence;
+        // The cursor is about to skip everything up to `latest`; deliver what
+        // on its last page was created after launch.
+        const recent = await bridgeApi.listAttention({ afterSequence: Math.max(0, latest - PAGE_SIZE), limit: PAGE_SIZE });
+        if (!active) return;
+        cursor = latest;
+        recent.items
+          .filter(item => item.sequence <= latest && Date.parse(item.createdAt) > mountedAt)
+          .forEach(consider);
         if (readAgain) void read();
       } catch {
         // No ledger on this backend; nothing to follow.

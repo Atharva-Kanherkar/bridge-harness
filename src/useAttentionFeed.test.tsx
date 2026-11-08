@@ -64,6 +64,27 @@ describe("useAttentionFeed", () => {
     expect(arrived).toHaveLength(1);
   });
 
+  it("keeps a row announced while the launch read is pending", async () => {
+    let releaseLaunch: () => void = () => undefined;
+    const launch = new Promise<void>(resolve => { releaseLaunch = resolve; });
+    let first = true;
+    vi.spyOn(bridgeApi, "listAttention").mockImplementation(async params => {
+      if (first) {
+        first = false;
+        await launch;
+      }
+      return mockListAttention(params);
+    });
+    pushMockAttention({ kind: "finished", sessionId: "before", title: "Turn completed" });
+    await act(async () => { root.render(<Probe onArrive={item => arrived.push(item)} />); });
+    await settle(5);
+    // Written after launch, announced while the launch read is still out.
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "after", title: "Turn completed" }); });
+    await act(async () => { releaseLaunch(); });
+    await settle(30);
+    expect(arrived.map(item => item.sessionId)).toEqual(["after"]);
+  });
+
   it("drops a request answered within the hold and delivers one still open", async () => {
     await mount();
     await act(async () => {
