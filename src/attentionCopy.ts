@@ -12,6 +12,8 @@ const TONES: Record<AttentionItem["kind"], AttentionCopy["tone"]> = {
   needsYou: "needs-you",
   finished: "completed",
   failed: "failed",
+  // Never shown: the feed drops kinds it does not know.
+  other: "completed",
 };
 
 /**

@@ -111,6 +111,16 @@ describe("useAttentionFeed", () => {
     expect(reads.mock.calls.slice(0, 2).map(([params]) => params?.afterSequence)).toEqual([0, 100]);
   });
 
+  it("skips kinds it does not know", async () => {
+    await mount();
+    await act(async () => {
+      pushMockAttention({ kind: "other", sessionId: "newer", title: "Something new" });
+      pushMockAttention({ kind: "laterKind" as AttentionItem["kind"], sessionId: "newest", title: "Later" });
+    });
+    await settle(HOLD_MS * 3);
+    expect(arrived).toEqual([]);
+  });
+
   it("cancels a pending hold on unmount", async () => {
     await mount();
     await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "s", title: "Bridge needs you" }); });

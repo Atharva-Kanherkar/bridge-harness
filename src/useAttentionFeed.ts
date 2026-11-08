@@ -7,6 +7,10 @@ import type { AttentionItem } from "./types";
  * past that is what keeps it from flashing a toast. */
 export const NEEDS_YOU_HOLD_MS = 1_000;
 const PAGE_SIZE = 100;
+/** What this client knows how to show. A newer daemon's kinds arrive as
+ * `other` (or, from a TypeScript peer, as a string this build has never seen)
+ * and are skipped rather than shown as something they are not. */
+const SHOWN_KINDS: ReadonlySet<string> = new Set<AttentionItem["kind"]>(["finished", "failed", "needsYou"]);
 
 /**
  * Follows the core attention ledger and hands each new row to `onArrive`.
@@ -46,7 +50,7 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
     };
 
     const consider = (item: AttentionItem) => {
-      if (item.seenAt || item.resolvedAt || !item.sessionId) return;
+      if (item.seenAt || item.resolvedAt || !item.sessionId || !SHOWN_KINDS.has(item.kind)) return;
       if (item.kind !== "needsYou") {
         deliver(item);
         return;
