@@ -88,4 +88,34 @@ describe("VisualFullscreen", () => {
     act(() => { (document.body.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
     expect(closed).toBe(1);
   });
+
+  it("closes on Escape, like every other overlay in the app", () => {
+    let closed = 0;
+    act(() => {
+      root.render(
+        <VisualFullscreen open onClose={() => { closed += 1; }} label="diagram">
+          <svg />
+        </VisualFullscreen>,
+      );
+    });
+    act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(closed).toBe(1);
+  });
+
+  it("starts the next open at fit-the-window, not the last look", () => {
+    act(() => {
+      root.render(
+        <VisualFullscreen open onClose={() => {}} label="diagram">
+          <svg />
+        </VisualFullscreen>,
+      );
+    });
+    act(() => { (document.body.querySelector('[aria-label="Zoom in"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain("125%");
+    act(() => { (document.body.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+
+    act(() => { root.render(<VisualFullscreen open={false} onClose={() => {}} label="diagram"><svg /></VisualFullscreen>); });
+    act(() => { root.render(<VisualFullscreen open onClose={() => {}} label="diagram"><svg /></VisualFullscreen>); });
+    expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain("100%");
+  });
 });
