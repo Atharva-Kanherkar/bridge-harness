@@ -12430,11 +12430,22 @@ fn escalate_stranded_input(core: &Arc<BridgeCore>) {
     let _ = crate::attention::escalate_stranded(&db, &live, Utc::now());
 }
 
+/// What Deliver now did. Every variant means the queue is handled, so the
+/// card can go; a failure is an error instead, so it stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedDelivery {
+    Delivered,
+    /// Nothing was queued, or another drain had already claimed it.
+    NothingQueued,
+    /// The adapter is live and mid-turn; the ordinary boundary drain delivers.
+    AfterCurrentTurn,
+}
+
 /// Deliver a chat's queued input now, at the person's request: resume its
 /// adapter through the same path their own send takes if it is gone, then
 /// drain. The unattended sweep never does this (#252); a click is not
-/// unattended. Returns whether a row was delivered.
-pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
+/// unattended.
+pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<QueuedDelivery, BridgeError> {
     ensure_session_not_archived(core, session_id)?;
     // A worker resumes only through its orchestrator, inside its pool
     // reservation and with its sandbox and write scope. `resume_for_send` is
@@ -12451,12 +12462,31 @@ pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<bo
     }
     let queued = session_input::next_queued(&core.db.lock().unwrap(), session_id)?.is_some();
     if !queued {
-        return Ok(false);
+        return Ok(QueuedDelivery::NothingQueued);
     }
     if !core.adapters.lock().unwrap().contains_key(session_id) {
         resume_for_send(core, session_id)?;
     }
-    Ok(drain_queued_input(core, session_id))
+    if drain_queued_input(core, session_id) {
+        return Ok(QueuedDelivery::Delivered);
+    }
+    // The drain answers only "delivered or not". Tell the cases apart, because
+    // only a handled queue may take the remedy away.
+    let db = core.db.lock().unwrap();
+    if session_input::next_queued(&db, session_id)?.is_none() {
+        return Ok(QueuedDelivery::NothingQueued);
+    }
+    let mid_turn: bool = db.query_row(
+        "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing') FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if mid_turn && core.adapters.lock().unwrap().contains_key(session_id) {
+        return Ok(QueuedDelivery::AfterCurrentTurn);
+    }
+    Err(BridgeError::Invalid(
+        "Bridge could not hand the waiting input to the agent; it is still queued. Try again.".into(),
+    ))
 }
 
 /// The guarantee behind `attention/changed`. The event bus derives the hint
@@ -16331,10 +16361,25 @@ mod submit_input_tests {
         let sent = attach(&core, false);
         session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
 
-        assert!(deliver_queued_now(&core, "chat").unwrap());
-        assert!(!deliver_queued_now(&core, "chat").unwrap(), "nothing left to deliver");
+        assert_eq!(deliver_queued_now(&core, "chat").unwrap(), QueuedDelivery::Delivered);
+        assert_eq!(deliver_queued_now(&core, "chat").unwrap(), QueuedDelivery::NothingQueued, "nothing left to deliver");
         assert_eq!(sent.lock().unwrap().as_slice(), ["worker report".to_owned()]);
         assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn deliver_now_reports_a_failed_write_as_an_error() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_handles(&core, false);
+        handles.refuse.store(true, Ordering::SeqCst);
+        session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
+
+        // The drain swallows the provider error and releases the row; the
+        // person must hear that it failed, not see their remedy vanish.
+        let message = deliver_queued_now(&core, "chat").unwrap_err().to_string();
+        assert!(message.contains("still queued"), "{message}");
+        assert!(handles.sent.lock().unwrap().is_empty());
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 1);
     }
 
     #[test]
@@ -16378,7 +16423,7 @@ mod submit_input_tests {
         let message = deliver_queued_now(&core, "ghost").unwrap_err().to_string();
         assert!(message.contains("could not resume it"), "{message}");
         assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "ghost").unwrap(), 1);
-        assert!(!deliver_queued_now(&core, "chat").unwrap(), "a chat with nothing queued is not resumed");
+        assert_eq!(deliver_queued_now(&core, "chat").unwrap(), QueuedDelivery::NothingQueued, "a chat with nothing queued is not resumed");
     }
 
     #[test]

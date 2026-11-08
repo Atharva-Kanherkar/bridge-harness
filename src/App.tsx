@@ -3871,6 +3871,8 @@ function AppContent() {
       onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
       onAction={toast => {
         // The only remedy so far: deliver input stranded behind a stopped agent.
+        // Any answer means the queue is handled; a failure rejects, and the
+        // card stays so the person can try again.
         void bridgeApi.deliverQueuedInput(toast.sessionId)
           .then(() => setAttentionToasts(current => current.filter(item => item.key !== toast.key)))
           .catch(error => setError(errorMessage(error)));

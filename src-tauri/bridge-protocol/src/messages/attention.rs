@@ -96,11 +96,25 @@ pub struct DeliverQueuedInputParams {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// What Deliver now did. Each value means the queue is handled; a delivery
+/// that failed is an error instead, and the input stays queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum QueuedInputDelivery {
+    Delivered,
+    /// Nothing was queued, or another drain had already claimed it.
+    NothingQueued,
+    /// The agent is live and mid-turn; its next boundary delivers the input.
+    AfterCurrentTurn,
+    /// A value added after this client was built.
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliverQueuedInputResult {
-    /// False when nothing was queued, or the queue's claim was already taken.
-    pub delivered: bool,
+    pub disposition: QueuedInputDelivery,
 }
 
 #[cfg(test)]

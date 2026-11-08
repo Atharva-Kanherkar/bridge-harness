@@ -2460,6 +2460,8 @@ export interface PullRequestSummary {
 
 export type QuestionAction = "answer" | "decline" | "cancel";
 
+export type QueuedInputDelivery = "delivered" | "nothingQueued" | "afterCurrentTurn" | "other";
+
 export interface QueuedWorkerRequest {
   actualModel: string;
   attemptCount: JsSafeI64;
@@ -4277,7 +4279,7 @@ export interface DeliverQueuedInputParams {
 }
 
 export interface DeliverQueuedInputResult {
-  delivered: boolean;
+  disposition: QueuedInputDelivery;
 }
 
 export interface StartProviderLoginParams {

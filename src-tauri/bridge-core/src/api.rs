@@ -4310,7 +4310,13 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
 
 /// Deliver a chat's queued input now, resuming its adapter if it is gone.
 pub fn deliver_queued_input(core: &Arc<BridgeCore>, params: &wire::DeliverQueuedInputParams) -> Result<wire::DeliverQueuedInputResult, BridgeError> {
-    Ok(wire::DeliverQueuedInputResult { delivered: crate::live_turn::deliver_queued_now(core, &params.session_id)? })
+    use crate::live_turn::QueuedDelivery;
+    let disposition = match crate::live_turn::deliver_queued_now(core, &params.session_id)? {
+        QueuedDelivery::Delivered => wire::QueuedInputDelivery::Delivered,
+        QueuedDelivery::NothingQueued => wire::QueuedInputDelivery::NothingQueued,
+        QueuedDelivery::AfterCurrentTurn => wire::QueuedInputDelivery::AfterCurrentTurn,
+    };
+    Ok(wire::DeliverQueuedInputResult { disposition })
 }
 
 pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams) -> Result<wire::ListAttentionResult, BridgeError> {

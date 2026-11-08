@@ -3378,7 +3378,7 @@ export const bridgeApi = {
   deliverQueuedInput: async (sessionId: string): Promise<DeliverQueuedInputResult> => {
     if (hasBackend()) return call("sessions/deliver_queued_input", { sessionId });
     // The mock has no adapters to strand input behind.
-    return { delivered: false };
+    return { disposition: "nothingQueued" };
   },
   /** Refetch hint: reread `listAttention` from your cursor. Carries no rows. */
   onAttentionChanged: async (handler: () => void): Promise<UnlistenFn> => {

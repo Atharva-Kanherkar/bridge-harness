@@ -1373,7 +1373,7 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
 
         let nothing = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s"}))).unwrap();
-        assert_eq!(nothing, json!({"delivered": false}), "nothing queued, nothing resumed");
+        assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
         let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
             .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
