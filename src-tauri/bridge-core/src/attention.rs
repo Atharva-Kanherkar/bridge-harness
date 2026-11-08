@@ -471,6 +471,21 @@ pub fn escalate_stranded(
     live_adapters: &std::collections::HashSet<String>,
     now: chrono::DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
+    // One transaction, so the revision moves with exactly what it covers.
+    let transaction = db.unchecked_transaction()?;
+    let changed = escalate_stranded_in(&transaction, live_adapters, now)?;
+    if changed {
+        bump(&transaction)?;
+    }
+    transaction.commit()?;
+    Ok(changed)
+}
+
+fn escalate_stranded_in(
+    db: &Connection,
+    live_adapters: &std::collections::HashSet<String>,
+    now: chrono::DateTime<Utc>,
+) -> Result<bool, BridgeError> {
     let at = now.to_rfc3339();
     let stranded: Vec<(String, i64)> = {
         let mut statement = db.prepare(
@@ -968,8 +983,11 @@ mod tests {
         queued(&db, "q1", "orch", "queued", chrono::Duration::seconds(45), now);
         queued(&db, "q2", "orch", "queued", chrono::Duration::seconds(40), now);
         let live = std::collections::HashSet::new();
+        let before = revision(&db).unwrap();
         assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(revision(&db).unwrap(), before + 1, "the sweep's publisher sees escalations move the ledger");
         assert!(!escalate_stranded(&db, &live, now + chrono::Duration::seconds(2)).unwrap(), "one open escalation per chat");
+        assert_eq!(revision(&db).unwrap(), before + 1);
         assert_eq!(escalations(&db), vec![("orch".to_owned(), "Ship it · Codex stopped before it read 2 updates".to_owned(), false)]);
         let page = list(&db, None, None, false).unwrap();
         assert_eq!(page.items[0].kind, AttentionKind::Escalation);

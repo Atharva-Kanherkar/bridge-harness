@@ -12405,7 +12405,6 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
     let mut attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
-        publish_attention_if_moved(&core, &mut attention_seen);
         prepare_pending_worker_results(&core);
         recover_prompt_mutation_feedback(&core);
         let sessions = {
@@ -12418,18 +12417,17 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         // What is still queued now has no adapter to drain into, or is waiting
         // on a turn. The first kind is the person's to know about.
         escalate_stranded_input(&core);
+        // Last, so this tick's escalations and anything committed without an
+        // agent event go out as one hint.
+        publish_attention_if_moved(&core, &mut attention_seen);
     });
 }
 
 fn escalate_stranded_input(core: &Arc<BridgeCore>) {
     let live: std::collections::HashSet<String> = core.adapters.lock().unwrap().keys().cloned().collect();
-    let changed = {
-        let db = core.db.lock().unwrap();
-        crate::attention::escalate_stranded(&db, &live, Utc::now()).unwrap_or(false)
-    };
-    if changed {
-        core.events.publish(CoreEvent::AttentionChanged);
-    }
+    let db = core.db.lock().unwrap();
+    // Its changes move the ledger revision; the sweep's next step publishes.
+    let _ = crate::attention::escalate_stranded(&db, &live, Utc::now());
 }
 
 /// Deliver a chat's queued input now, at the person's request: resume its
