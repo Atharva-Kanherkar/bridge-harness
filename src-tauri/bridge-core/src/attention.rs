@@ -302,6 +302,12 @@ pub fn record_in_transaction(
     if effect == Effect::Ignore {
         return Ok(false);
     }
+    // A checkpoint turn's boundary and failures are maintenance. Its own
+    // requests and answers still count: they are real.
+    let checkpoint = payload.pointer("/data/bridgeCheckpointTurn").and_then(serde_json::Value::as_bool) == Some(true);
+    if checkpoint && matches!(effect, Effect::Open(AttentionKind::Finished | AttentionKind::Failed)) {
+        return Ok(false);
+    }
     let session = SessionFacts::load(transaction, session_id)?;
     match classify(effect, session.as_ref()) {
         Effect::Ignore => Ok(false),
@@ -738,6 +744,16 @@ mod tests {
         // Once seen, the next failure is news again.
         mark_seen(&db, "a").unwrap();
         assert!(record(&db, "a", "error", json!({"status": "failed"}), 9));
+    }
+
+    #[test]
+    fn checkpoint_boundaries_open_nothing_but_their_requests_do() {
+        let db = store();
+        session(&db, "s", "direct", None, None);
+        let marked = |status: &str| json!({"status": status, "data": {"bridgeCheckpointTurn": true}});
+        assert!(!record(&db, "s", "turn.completed", marked("completed"), 3));
+        assert!(!record(&db, "s", "error", marked("failed"), 4));
+        assert!(record(&db, "s", "permission.requested", json!({"data": {"bridgeCheckpointTurn": true}}), 5));
     }
 
     #[test]

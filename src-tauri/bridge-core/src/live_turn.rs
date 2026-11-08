@@ -3354,6 +3354,17 @@ fn handle_agent_value_timed(
                         serde_json::json!("compaction"),
                     );
                 }
+            } else if checkpoint_turn_active {
+                // The frames a checkpoint keeps for the supervisor (its boundary,
+                // a failure) are still Bridge's maintenance, not the person's
+                // turn. Not `bridgeInternalOrigin`: the transcript hides that,
+                // and the boundary must stay visible to it.
+                if !normalized_event.data.is_object() {
+                    normalized_event.data = serde_json::json!({});
+                }
+                if let Some(data) = normalized_event.data.as_object_mut() {
+                    data.insert("bridgeCheckpointTurn".into(), serde_json::json!(true));
+                }
             }
             if is_checkpoint_reply {
                 checkpoint_response_seen = true;
@@ -15022,6 +15033,29 @@ mod submit_input_tests {
         let db = core.db.lock().unwrap();
         let leaked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE payload LIKE '%bridgeStreamTiming%')", [], |row| row.get(0)).unwrap();
         assert!(!leaked);
+    }
+
+    #[test]
+    fn a_checkpoint_turn_raises_no_attention() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let finished = |core: &Arc<BridgeCore>| -> i64 {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM attention_events WHERE session_id='chat' AND kind='finished'", [], |row| row.get(0))
+                .unwrap()
+        };
+        // The status is the maintenance-turn tombstone a checkpoint turn keeps
+        // until its own boundary.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='checkpointing' WHERE id='chat'", []).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+        assert_eq!(finished(&core), 0, "a checkpoint's boundary is maintenance, not the person's turn");
+
+        // The same chat's own turn still raises one.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='working' WHERE id='chat'", []).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-2".into()))), &codex_turn_completed());
+        assert_eq!(finished(&core), 1);
     }
 
     #[test]
