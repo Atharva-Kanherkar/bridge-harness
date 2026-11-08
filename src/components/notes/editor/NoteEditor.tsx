@@ -21,7 +21,7 @@ import { SlashMenu, slashCommand, type BlockHost, type SlashMenuHandle, type Sla
 import { SelectionToolbar } from "./toolbar";
 import { WikiMenu, wikiCommand, type WikiMenuHandle, type WikiState } from "./wiki";
 import { BlockHandle } from "./handle";
-import { EditorPagesContext, NoteCallout, NoteDatabaseEmbed, NoteImage, NotePageLink, NoteWikiLink, type EditorPages } from "./views";
+import { EditorPagesContext, NoteCallout, NoteCodeBlock, NoteDatabaseEmbed, NoteImage, NotePageLink, NoteWikiLink, type EditorPages } from "./views";
 
 export const HAND_OVER_MS = 250;
 
@@ -166,6 +166,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
       databaseEmbed: NoteDatabaseEmbed,
       wikiLink: NoteWikiLink,
       callout: NoteCallout,
+      codeBlock: NoteCodeBlock,
       onMathClick: (kind, latex, pos) => openMath(kind, pos, latex, true),
       extra: [slashCommand(setSlash, menuKeys, () => host.current), wikiCommand(setWiki, menuKeys, wikiHost)],
     }),
