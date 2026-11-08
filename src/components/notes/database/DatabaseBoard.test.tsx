@@ -203,5 +203,20 @@ describe("DatabaseBoard", () => {
     await settle();
     expect(cardsIn("To read")).toEqual(["Fresh"]);
   });
+
+  it.each(["kind", "state"])("pages a %s column in the fallback too", async field => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Note", type: "text" }] });
+    for (let index = 0; index < 60; index += 1) mockCreatePage({ title: `Row ${index}`, parentId: made.note.id });
+    const database = mockReadPage(made.note.id).database!;
+    const full = { and: Array.from({ length: 20 }, (_, index) => ({ property: "title", op: "notContains", value: `zz${index}` })) };
+    const groups = mockQueryDatabase({ databaseId: made.note.id, filter: full, groupBy: { property: field }, groupLimit: 50 }).groups!;
+    const run = (params: Omit<QueryDatabaseParams, "databaseId">) => bridgeApi.queryDatabase({ databaseId: made.note.id, ...params });
+    const body = { database, view: { id: "v", name: "Board", type: "board", order: 0, groupBy: { property: field } }, rows: [], run, version: 0, host: { addOption: vi.fn(async () => null), searchRows: vi.fn(async () => []), rowTitle: () => undefined, workspaces: [] }, onCommit: vi.fn(async () => true), onNewRow: vi.fn(async () => null), onOpenRow: vi.fn() };
+    await act(async () => { root.render(<DatabaseBoard {...body} query={{ filter: full, sorts: [], groupBy: { property: field } }} groups={groups} />); });
+    const full60 = groups.find(group => group.count === 60)!;
+    await act(async () => { [...column(full60.label).querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Load more (10)")!.click(); });
+    await settle();
+    expect(cardsIn(full60.label)).toHaveLength(60);
+  });
 });
 
