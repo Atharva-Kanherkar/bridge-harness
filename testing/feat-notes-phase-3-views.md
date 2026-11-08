@@ -251,3 +251,13 @@ Each item below came out of review and has a regression test that fails without 
   replaces the page list used for links, breadcrumbs and child pages.
 - **An empty list still measures its scroller.** The list's scroller stays mounted when it has no
   rows, so rows that arrive later are windowed against the real height.
+
+### Second review round (PR #903)
+
+- **The fallback reads page fields too.**
+  - The calendar's client-side window reads `created` and `updated` from the page.
+  - The board's client-side grouping reads `kind` and `state` from the page, as the planner does.
+- **An empty group stays true when composing.** A filter whose top `or` holds an empty group matches
+  every row, so composing into it treats the base as no filter and adds only the new conditions.
+- **Filter rows keep their identity.** Each row keeps a stable key through edits, so unfinished text
+  (`4x`) stays with its own condition when a row above it is removed.
