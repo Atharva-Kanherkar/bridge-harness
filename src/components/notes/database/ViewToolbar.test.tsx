@@ -144,6 +144,18 @@ describe("FilterBuilder", () => {
     expect(onChange).toHaveBeenLastCalledWith({ or: [{ property: "p-note", op: "contains", value: "x" }, { and: [{ property: "p-rating", op: "eq", value: 0 }, { property: "p-rating", op: "eq", value: 0 }] }] });
   });
 
+  it("shows the number each row applies when rows change under it", () => {
+    const database: NoteDatabase = { ...DATABASE, properties: [...DATABASE.properties, { id: "p-pages", name: "Pages", type: "number", order: 4 }] };
+    const onChange = vi.fn();
+    act(() => root.render(<FilterBuilder database={database} value={{ and: [{ property: "p-rating", op: "gte", value: 5 }, { property: "p-rating", op: "lte", value: 10 }] }} onChange={onChange} />));
+    click(button("Remove filter 1"));
+    expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-rating", op: "lte", value: 10 }] });
+    expect(input("Filter 1 value").value).toBe("10");
+    choose(select("Filter 1 property"), "p-pages");
+    expect(onChange).toHaveBeenLastCalledWith({ and: [{ property: "p-pages", op: "eq", value: 0 }] });
+    expect(input("Filter 1 value").value).toBe("0");
+  });
+
   it("leaves an unfinished number out", () => {
     const onChange = mount({ and: [{ property: "p-rating", op: "gte", value: 3 }] });
     type(input("Filter 1 value"), "4x");

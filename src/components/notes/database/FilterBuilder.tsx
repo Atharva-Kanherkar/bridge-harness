@@ -2,7 +2,7 @@
 // group one level deep, and/or per group. It keeps its own tree so a half-typed
 // number stays on screen, and hands out only complete conditions.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -114,6 +114,12 @@ function ValueInput({ condition, column, workspaces, label, onChange }: { condit
 function NumberInput({ label, value, onChange }: { label: string; value: unknown; onChange: (value: unknown) => void }) {
   const [text, setText] = useState(typeof value === "number" && Number.isFinite(value) ? String(value) : "");
   const parsed = text.trim() === "" ? Number.NaN : Number(text);
+  // The row's condition can change under the field (a row above removed, the
+  // property switched): show the number it now applies. Half-typed text that
+  // is not yet a number stays.
+  useEffect(() => {
+    if (typeof value === "number" && Number.isFinite(value) && value !== parsed) setText(String(value));
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
   return <input
     aria-label={label}
     inputMode="decimal"
