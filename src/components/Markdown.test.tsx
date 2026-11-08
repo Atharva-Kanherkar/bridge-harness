@@ -497,7 +497,7 @@ describe("link scheme allowlist", () => {
   });
 
   it("keeps a bridge link that is not a page as text", () => {
-    for (const url of ["bridge://p/not-an-id", "bridge://x/01a1bc34-8f0f-7013-a72c-51e46d404d3c", "bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c/x"]) {
+    for (const url of ["bridge://p/a.b", "bridge://x/01a1bc34-8f0f-7013-a72c-51e46d404d3c", "bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c/x"]) {
       const html = renderToStaticMarkup(<Markdown text={`[page](${url})`} />);
       expect(html, url).not.toContain("<a ");
       expect(html).toContain("page");
