@@ -7,7 +7,7 @@ import { mockCreateDatabase, mockCreatePage, mockReadPage, mockQueryDatabase, mo
 import type { DatabaseRow, NoteDatabaseView, QueryDatabaseParams } from "../../../types";
 import { DatabaseCalendar, droppedValue, monthDays, placedDay } from "./DatabaseCalendar";
 import { DatabaseList } from "./DatabaseList";
-import type { ViewBodyProps } from "./viewBody";
+import { composeFilter, type ViewBodyProps } from "./viewBody";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -231,3 +231,17 @@ describe("DatabaseList", () => {
   });
 });
 
+
+describe("composeFilter and empty groups", () => {
+  it("keeps an empty group true when composing into an or", () => {
+    const { made } = books();
+    mockCreatePage({ title: "Chosen", parentId: made.note.id });
+    mockCreatePage({ title: "Other", parentId: made.note.id });
+    const base = { or: [{ or: [] }, { property: "title", op: "contains", value: "Chosen" }] };
+    const titles = (filter: unknown) => mockQueryDatabase({ databaseId: made.note.id, filter }).rows.map(row => row.note.title).sort();
+    expect(titles(base)).toEqual(["Chosen", "Other"]);
+    const composed = composeFilter(base, [{ property: "title", op: "contains", value: "Other" }]);
+    expect(titles(composed)).toEqual(["Other"]);
+    expect(titles(composeFilter({ or: [{ and: [] }, { property: "title", op: "contains", value: "Chosen" }] }, [{ property: "title", op: "contains", value: "Other" }]))).toEqual(["Other"]);
+  });
+});

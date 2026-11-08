@@ -30,8 +30,11 @@ export interface ViewBodyProps {
  *  reads `base` alone and applies the conditions to the rows itself. */
 export function composeFilter(base: unknown, conditions: Condition[]): unknown | null {
   const top = readFilter(base);
+  // An empty group is true, so a top `or` holding one matches every row: the
+  // base adds nothing then, and distributing would drop that true branch.
+  const alwaysTrue = top.join === "or" && top.items.some(item => isGroup(item) && !item.items.length);
   let composed: Group;
-  if (!top.items.length) composed = { join: "and", items: conditions };
+  if (!top.items.length || alwaysTrue) composed = { join: "and", items: conditions };
   else if (top.join === "and") composed = { join: "and", items: [...top.items, ...conditions] };
   else composed = {
     join: "or",
