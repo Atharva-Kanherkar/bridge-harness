@@ -1,9 +1,16 @@
-# fix/welcome-model-load — Test Contract
+# fix/welcome-model-load: Test Contract
 
 ## Functional Behavior
 
 Opening a new chat must never paint a guess and then correct itself.
 
+- A provider CLI's `--version` probe runs once per binary file version, not once
+  per adapter descriptor. Health reads, new-chat resolution and model-profile
+  saves reuse the recorded answer. A replaced payload (a provider update) has a
+  new fingerprint and is re-probed, so an in-place upgrade is still reported.
+- The draft-settings resolver keeps the last resolution for the same project
+  while it re-resolves new choices, so a model or worktree pick does not blank
+  the pill or flip a toggle back mid-request. A change of project still clears.
 - A new chat's harness/model is resolved in this order:
   1. an explicit `$harness` override (unchanged),
   2. the current direct session's harness/model (unchanged carry-over),
@@ -54,6 +61,12 @@ Opening a new chat must never paint a guess and then correct itself.
   - `TestChatModelControl_NoLoadingFlashBeforeGracePeriod`
   - `TestChatModelControl_ShowsKnownLabelInsteadOfLoading`
   - `TestChatModelControl_LoadingPickerHasNoFakeDefaultRow`
+- `src/useChatDefaults.test.ts`
+  - `TestUseResolvedChatDraft_KeepsTheLastResolutionForTheSameProject`
+  - `TestUseResolvedChatDraft_ClearsWhenTheProjectChanges`
+- `src-tauri/bridge-core/src/binary.rs`
+  - `version_probe_runs_once_per_binary_file`
+  - `version_probe_rereads_a_replaced_binary`
 
 ## Integration / Functional Tests
 
@@ -71,8 +84,8 @@ Opening a new chat must never paint a guess and then correct itself.
 
 ## E2E Tests
 
-- N/A — the flow is covered by the App-level jsdom integration tests above; there
-  is no packaged-app harness for the Welcome surface.
+- N/A. The flow is covered by the App-level jsdom integration tests above;
+  there is no packaged-app harness for the Welcome surface.
 
 ## Manual Tests
 
