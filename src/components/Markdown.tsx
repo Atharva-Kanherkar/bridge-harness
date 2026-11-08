@@ -38,14 +38,25 @@ function isTableRow(line: string): boolean {
   return line.includes("|");
 }
 
+export type RichFenceKind = "diagram" | "mermaid" | "math" | "html";
+
+/** The figure a fence's info string asks for, or null for plain code. Chat and
+ *  the notes editor both read fences through this one table. */
+export function richFenceKind(lang: string): RichFenceKind | null {
+  const key = lang.trim().toLowerCase();
+  if (key === "diagram" || key === "mermaid" || key === "html") return key;
+  if (key === "math" || key === "latex" || key === "tex") return "math";
+  return null;
+}
+
 /** Classify a fenced block by its info string into a rich-content block kind. */
 function fencedBlock(lang: string, body: string): Block {
-  const key = lang.trim().toLowerCase();
-  if (key === "diagram") return { kind: "diagram", spec: body };
-  if (key === "mermaid") return { kind: "mermaid", code: body };
-  if (key === "storage-plan") return { kind: "storage-plan", body };
-  if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
-  if (key === "html") return { kind: "html", html: body };
+  if (lang.trim().toLowerCase() === "storage-plan") return { kind: "storage-plan", body };
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return { kind, spec: body };
+  if (kind === "mermaid") return { kind, code: body };
+  if (kind === "math") return { kind, tex: body };
+  if (kind === "html") return { kind, html: body };
   return { kind: "code", lang, body };
 }
 
@@ -491,6 +502,16 @@ function HtmlBlock({ html }: { html: string }) {
       {frame}
     </div>
   );
+}
+
+/** A rich fence drawn exactly as chat draws it; nothing for plain code. */
+export function RichFence({ lang, body }: { lang: string; body: string }) {
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return <DiagramBlock spec={body} />;
+  if (kind === "mermaid") return <MermaidBlock code={body} />;
+  if (kind === "math") return <MathBlock tex={body} />;
+  if (kind === "html") return <HtmlBlock html={body} />;
+  return null;
 }
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {

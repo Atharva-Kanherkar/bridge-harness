@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 import { withNotesContext } from "../notesBrief";
 
@@ -13,6 +13,24 @@ const mermaidMock = vi.hoisted(() => ({
   render: vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' }),
 }));
 vi.mock("mermaid", () => ({ default: mermaidMock }));
+
+describe("rich fences shared with the notes editor", () => {
+  it("names the rich fence kinds and nothing else", () => {
+    expect(richFenceKind("mermaid")).toBe("mermaid");
+    expect(richFenceKind(" Mermaid ")).toBe("mermaid");
+    expect(richFenceKind("diagram")).toBe("diagram");
+    expect(richFenceKind("HTML")).toBe("html");
+    for (const alias of ["math", "latex", "tex"]) expect(richFenceKind(alias)).toBe("math");
+    for (const plain of ["", "ts", "rust", "storage-plan", "mermaidx"]) expect(richFenceKind(plain), plain).toBeNull();
+  });
+
+  it("renders a rich fence with the chat's renderer", () => {
+    expect(renderToStaticMarkup(<RichFence lang="math" body="x^2" />)).toContain("katex");
+    expect(renderToStaticMarkup(<RichFence lang="html" body="<b>hi</b>" />)).toContain('sandbox=""');
+    expect(renderToStaticMarkup(<RichFence lang="mermaid" body="graph TD; A-->B" />)).toContain("Rendering diagram");
+    expect(renderToStaticMarkup(<RichFence lang="ts" body="let x" />)).toBe("");
+  });
+});
 
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
