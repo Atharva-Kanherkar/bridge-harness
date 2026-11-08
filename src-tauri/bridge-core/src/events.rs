@@ -343,7 +343,7 @@ impl EventBus {
     pub fn publish(&self, event: CoreEvent) {
         let moves_attention = matches!(
             &event,
-            CoreEvent::Agent(agent) if agent.sequence > 0 && crate::attention::is_trigger_kind(&agent.kind)
+            CoreEvent::Agent(agent) if agent.sequence > 0 && crate::attention::is_trigger(&agent.kind, agent.status.as_deref())
         );
         {
             let mut state = self.reconciliation.lock().unwrap();

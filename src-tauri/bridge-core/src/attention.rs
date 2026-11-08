@@ -159,6 +159,11 @@ pub fn effect(kind: &str, status: Option<&str>) -> Effect {
             _ => Effect::Ignore,
         };
     }
+    // Not every fatal outcome has a boundary: an ACP connection close, for one,
+    // persists only this. A provider that sends both raises one row; see `open`.
+    if kind == "error" && status == Some("failed") {
+        return Effect::Open(AttentionKind::Failed);
+    }
     if REQUEST_KINDS.contains(&kind) {
         return Effect::Open(AttentionKind::NeedsYou);
     }
@@ -168,10 +173,11 @@ pub fn effect(kind: &str, status: Option<&str>) -> Effect {
     Effect::Ignore
 }
 
-/// Whether a forest kind can move the ledger at all, whatever its status. The
-/// event bus uses it to decide when to send `attention/changed`.
-pub fn is_trigger_kind(kind: &str) -> bool {
-    kind == "turn.completed" || REQUEST_KINDS.contains(&kind) || RESOLUTION_KINDS.contains(&kind)
+/// Whether a forest entry can move the ledger. The event bus uses it to decide
+/// when to send `attention/changed`, and the forest append to skip the
+/// savepoint for everything else.
+pub fn is_trigger(kind: &str, status: Option<&str>) -> bool {
+    kind == "turn.completed" || effect(kind, status) != Effect::Ignore
 }
 
 /// The session facts classification needs.
@@ -301,8 +307,7 @@ pub fn record_in_transaction(
         Effect::Ignore => Ok(false),
         Effect::Open(attention) => {
             let session = session.expect("classify ignores unknown sessions");
-            open(transaction, session_id, attention, &session, kind, entry_sequence)?;
-            Ok(true)
+            Ok(open(transaction, session_id, attention, &session, kind, entry_sequence)?.is_some())
         }
         Effect::Close => Ok(close(transaction, session_id, answered_request(payload))? > 0),
     }
@@ -319,13 +324,31 @@ fn open(
     session: &SessionFacts,
     forest_kind: &str,
     entry_sequence: i64,
-) -> Result<i64, BridgeError> {
+) -> Result<Option<i64>, BridgeError> {
+    if kind == AttentionKind::Failed && newest_is_unseen_failure(db, session_id)? {
+        // One failure, two frames (`error` and a failed boundary, in either
+        // order): the person hears about it once.
+        return Ok(None);
+    }
     let (title, body) = copy(kind, session);
     let request = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
     // Only approvals and permissions are answered through resolve_approval; a
     // question has its own reply channel, so it offers no approval id.
     let approval = request.filter(|_| matches!(forest_kind, "approval.requested" | "permission.requested"));
-    insert_row(db, session_id, kind, &title, &body, approval, request)
+    insert_row(db, session_id, kind, &title, &body, approval, request).map(Some)
+}
+
+fn newest_is_unseen_failure(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT kind='failed' AND seen_at IS NULL FROM attention_events
+             WHERE session_id=?1 AND audience=?2 AND superseded_by IS NULL
+             ORDER BY sequence DESC LIMIT 1",
+            params![session_id, HUMAN],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
 }
 
 fn insert_row(
@@ -541,6 +564,9 @@ mod tests {
             ("question.rejected", None, Effect::Close),
             ("delegation.approved", None, Effect::Ignore),
             ("delegation.rejected", None, Effect::Ignore),
+            ("error", Some("failed"), Effect::Open(Failed)),
+            ("error", Some("retrying"), Effect::Ignore),
+            ("error", None, Effect::Ignore),
             ("turn.started", None, Effect::Ignore),
             ("tool.completed", Some("completed"), Effect::Ignore),
             ("assistant.message", None, Effect::Ignore),
@@ -557,7 +583,7 @@ mod tests {
         for (kind, status, expected) in cases {
             let raw = effect(kind, *status);
             assert_eq!(raw, *expected, "{kind} {status:?}");
-            assert_eq!(is_trigger_kind(kind), *kind == "turn.completed" || *expected != Effect::Ignore, "{kind}");
+            assert_eq!(is_trigger(kind, *status), *kind == "turn.completed" || *expected != Effect::Ignore, "{kind}");
             assert_eq!(classify(raw, Some(&top)), *expected, "top-level {kind} {status:?}");
             let for_worker = match expected {
                 Effect::Open(Finished | Failed) => Effect::Ignore,
@@ -684,6 +710,34 @@ mod tests {
         // Its request id still matches the answer that closes it.
         assert!(record(&db, "s", "question.resolved", json!({"data": {"requestEventId": 5}}), 6));
         assert!(list(&db, None, None, false).unwrap().items[0].resolved_at.is_some());
+    }
+
+    #[test]
+    fn a_fatal_error_without_a_boundary_raises_failed() {
+        let db = store();
+        session(&db, "cursor", "direct", None, None);
+        session(&db, "w", "orchestrator", Some("cursor"), None);
+        // An ACP connection close persists only `error` with status failed.
+        assert!(record(&db, "cursor", "error", json!({"status": "failed", "text": "connection closed"}), 4));
+        assert!(!record(&db, "w", "error", json!({"status": "failed"}), 2), "a worker failure is its orchestrator's");
+        assert!(!record(&db, "cursor", "error", json!({"status": "retrying"}), 5));
+        assert!(!record(&db, "cursor", "error", json!({"status": "warning"}), 6));
+        assert_eq!(rows(&db), vec![("cursor".into(), "failed".into(), None, false, false)]);
+    }
+
+    #[test]
+    fn error_and_boundary_for_one_failure_raise_one_row() {
+        let db = store();
+        session(&db, "a", "direct", None, None);
+        session(&db, "b", "direct", None, None);
+        assert!(record(&db, "a", "error", json!({"status": "failed"}), 4));
+        assert!(!record(&db, "a", "turn.completed", json!({"status": "failed"}), 5), "the boundary repeats the failure");
+        assert!(record(&db, "b", "turn.completed", json!({"status": "error_during_execution"}), 4));
+        assert!(!record(&db, "b", "error", json!({"status": "failed"}), 5), "either order raises one row");
+        assert_eq!(list(&db, None, None, false).unwrap().items.len(), 2);
+        // Once seen, the next failure is news again.
+        mark_seen(&db, "a").unwrap();
+        assert!(record(&db, "a", "error", json!({"status": "failed"}), 9));
     }
 
     #[test]

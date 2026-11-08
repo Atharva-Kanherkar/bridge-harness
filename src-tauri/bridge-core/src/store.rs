@@ -3183,7 +3183,7 @@ pub(crate) fn append_session_entry_tx(
     // so the attention row commits or rolls back with the entry that caused it.
     // Best-effort on purpose: a notification bug must never cost a forest
     // entry. The savepoint undoes a half-written attention change on its own.
-    if crate::attention::is_trigger_kind(kind) {
+    if crate::attention::is_trigger(kind, payload.get("status").and_then(serde_json::Value::as_str)) {
         transaction.execute_batch("SAVEPOINT attention")?;
         match crate::attention::record_in_transaction(transaction, session_id, kind, payload, entry.sequence) {
             Ok(_) => transaction.execute_batch("RELEASE attention")?,
