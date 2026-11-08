@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 69;
+const LATEST_SCHEMA_VERSION: i64 = 70;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -752,6 +752,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "sessions", "title_ladder", "TEXT")?;
                 add_column_if_missing(&transaction, "sessions", "title_ladder_for", "TEXT")?;
             }
+            // What a person should know about: chats that finished, failed or
+            // need them. See `attention`.
+            70 => crate::attention::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -3176,6 +3179,20 @@ pub(crate) fn append_session_entry_tx(
          ON CONFLICT(session_id) DO UPDATE SET active_entry_id=excluded.active_entry_id,updated_at=excluded.updated_at",
         params![entry.session_id, entry.id, entry.created_at],
     )?;
+    // Every forest entry passes here, adapter events and typed entries alike,
+    // so the attention row commits or rolls back with the entry that caused it.
+    // Best-effort on purpose: a notification bug must never cost a forest
+    // entry. The savepoint undoes a half-written attention change on its own.
+    if crate::attention::is_trigger_kind(kind) {
+        transaction.execute_batch("SAVEPOINT attention")?;
+        match crate::attention::record_in_transaction(transaction, session_id, kind, payload, entry.sequence) {
+            Ok(_) => transaction.execute_batch("RELEASE attention")?,
+            Err(error) => {
+                transaction.execute_batch("ROLLBACK TO attention; RELEASE attention")?;
+                eprintln!("attention: could not record {kind} for {session_id}: {error}");
+            }
+        }
+    }
     Ok(entry)
 }
 
@@ -4362,7 +4379,59 @@ mod tests {
             .unwrap();
         assert!(columns.iter().any(|name| name == "account"));
         let version: i64 = db.query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 69);
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
+    }
+
+    fn attention_kinds(db: &Connection) -> Vec<(String, String)> {
+        db.prepare("SELECT session_id, kind FROM attention_events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn forest_write_and_attention_row_commit_together() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('s','codex','Chat','ready','direct')", []).unwrap();
+        let mut ended = crate::agent::NormalizedEvent::new("turn.completed");
+        ended.status = Some("completed".into());
+
+        let transaction = db.unchecked_transaction().unwrap();
+        session_event_in_transaction(&transaction, "s", &ended, &serde_json::json!({})).unwrap();
+        drop(transaction);
+        assert!(attention_kinds(&db).is_empty(), "a rolled-back forest write leaves no attention row");
+
+        session_event(&db, "s", &ended, &serde_json::json!({})).unwrap();
+        assert_eq!(attention_kinds(&db), vec![("s".to_owned(), "finished".to_owned())]);
+    }
+
+    #[test]
+    fn a_failing_attention_write_never_costs_the_forest_entry() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('s','codex','Chat','ready','direct')", []).unwrap();
+        db.execute_batch("DROP TABLE attention_events").unwrap();
+        let mut ended = crate::agent::NormalizedEvent::new("turn.completed");
+        ended.status = Some("completed".into());
+        let stored = session_event(&db, "s", &ended, &serde_json::json!({})).unwrap();
+        let kept: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='s' AND sequence=?1", [stored.sequence], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, 1);
+    }
+
+    #[test]
+    fn typed_forest_approval_opens_needs_you() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('parent','codex','Orchestrator','waiting','orchestrator')", []).unwrap();
+        let entry = crate::session_forest::SessionForest::new(&db)
+            .append("parent", crate::session_forest::EntryKind::ApprovalRequested, serde_json::json!({"approvalId": "delegation:1"}))
+            .unwrap();
+        let approval: Option<i64> = db
+            .query_row("SELECT approval_event_id FROM attention_events WHERE kind='needs_you'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(approval, Some(entry.sequence));
     }
 
     fn observability_db() -> Connection {
