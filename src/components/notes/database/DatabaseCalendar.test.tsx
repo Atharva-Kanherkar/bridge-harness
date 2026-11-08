@@ -132,6 +132,29 @@ describe("DatabaseCalendar", () => {
   });
 });
 
+describe("composed filters", () => {
+  const calendar = (dateProperty: string): NoteDatabaseView => ({ id: "cal", name: "Calendar", type: "calendar", order: 0, dateProperty });
+
+  it("keeps a nested or a near-limit view filter within the planner's limits", async () => {
+    const { made, due, genre, row } = books();
+    const [fiction, tech] = genre.options!;
+    row("Novel", { [due.id]: { start: "2026-11-12" }, [genre.id]: fiction.id });
+    row("Manual", { [due.id]: { start: "2026-11-13" }, [genre.id]: tech.id });
+    const nested = { and: [{ or: [{ property: genre.id, op: "is", value: fiction.id }, { property: genre.id, op: "is", value: tech.id }] }] };
+    const given = props(made, calendar(due.id));
+    await act(async () => { root.render(<DatabaseCalendar {...given} query={{ ...given.query, filter: nested }} today="2026-11-05" />); });
+    await settle();
+    expect(titlesOn("2026-11-12")).toEqual(["Novel"]);
+    expect(titlesOn("2026-11-13")).toEqual(["Manual"]);
+    // Twenty conditions already: the window cannot be added as two more.
+    const full = { and: Array.from({ length: 20 }, (_, index) => ({ property: "title", op: "notContains", value: `zz${index}` })) };
+    await act(async () => { root.render(<DatabaseCalendar {...given} key="full" query={{ ...given.query, filter: full }} today="2026-11-05" />); });
+    await settle();
+    expect(titlesOn("2026-11-12")).toEqual(["Novel"]);
+    expect(document.querySelector("aside[aria-label='No date']")).not.toBeNull();
+  });
+});
+
 describe("DatabaseList", () => {
   const list = (groupBy: string | null): NoteDatabaseView => ({ id: "list", name: "List", type: "list", order: 0, groupBy: groupBy ? { property: groupBy } : null });
 

@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { clsx } from "clsx";
 import type { DatabaseRow } from "../../../types";
 import type { ViewBodyProps } from "./viewBody";
-import { withCondition } from "./viewBody";
+import { composeFilter, readAll } from "./viewBody";
 import { filterColumns } from "./viewModel";
 
 const DAY_MS = 86_400_000;
@@ -67,10 +67,19 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
     let alive = true;
     const first = days[0];
     const last = days[days.length - 1];
-    void run({ filter: withCondition(query.filter, { property: dateColumn.id, op: "onOrAfter", value: first }, { property: dateColumn.id, op: "onOrBefore", value: last }), sorts: query.sorts, limit: 500 })
-      .then(result => { if (alive) setPlaced(result.rows); }, () => undefined);
-    if (writable) void run({ filter: withCondition(query.filter, { property: dateColumn.id, op: "isEmpty" }), sorts: query.sorts, limit: 100 })
-      .then(result => { if (alive) setUndated(result.rows); }, () => undefined);
+    const startOf = (row: DatabaseRow) => { const value = row.values[dateColumn.id] as { start?: string } | undefined; return value?.start ? placedDay(value.start) : null; };
+    // Composed within the planner's limits when they allow, else the view's
+    // own rows with the window applied here.
+    const read = (conditions: { property: string; op: string; value?: unknown }[], limit: number, matches: (row: DatabaseRow) => boolean) => {
+      const composed = composeFilter(query.filter, conditions);
+      return composed !== null
+        ? run({ filter: composed, sorts: query.sorts, limit }).then(result => result.rows)
+        : readAll(run, { filter: query.filter ?? null, sorts: query.sorts }).then(rows => rows.filter(matches));
+    };
+    void read([{ property: dateColumn.id, op: "onOrAfter", value: first }, { property: dateColumn.id, op: "onOrBefore", value: last }], 500, row => { const start = startOf(row); return !!start && first <= start && start <= last; })
+      .then(rows => { if (alive) setPlaced(rows); }, () => undefined);
+    if (writable) void read([{ property: dateColumn.id, op: "isEmpty" }], 100, row => !startOf(row))
+      .then(rows => { if (alive) setUndated(rows); }, () => undefined);
     return () => { alive = false; };
   }, [dateColumn, days, filterKey, version, run, writable]); // eslint-disable-line react-hooks/exhaustive-deps
 

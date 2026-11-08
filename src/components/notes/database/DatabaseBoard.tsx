@@ -12,17 +12,25 @@ import type { DatabaseGroup, DatabaseRow } from "../../../types";
 import { Floating } from "./Floating";
 import { cellValue, columnsOf, formatValue, type Column } from "./formatValue";
 import type { ViewBodyProps } from "./viewBody";
-import { withCondition } from "./viewBody";
-import { filterColumns, type FieldColumn } from "./viewModel";
+import { composeFilter, readAll } from "./viewBody";
+import { filterColumns, type Condition, type FieldColumn } from "./viewModel";
 
 export const GROUP_LIMIT = 50;
 const MOVABLE = new Set(["select", "status", "multiSelect", "checkbox", "kind", "state", "project"]);
 
-/** The condition that picks one group's rows, for its next page. */
-export function groupCondition(column: FieldColumn, key: string): unknown {
-  if (column.type === "checkbox") return { property: column.id, op: "is", value: key === "true" };
-  if (column.type === "multiSelect") return key ? { property: column.id, op: "contains", value: key } : { property: column.id, op: "isEmpty" };
-  return key ? { property: column.id, op: "is", value: key } : { property: column.id, op: "isEmpty" };
+/** The conditions that pick one group's rows, for its next page. */
+export function groupConditions(column: FieldColumn, key: string): Condition[] {
+  if (column.type === "checkbox") return [{ property: column.id, op: "is", value: key === "true" }];
+  if (column.type === "multiSelect") return [key ? { property: column.id, op: "contains", value: key } : { property: column.id, op: "isEmpty" }];
+  return [key ? { property: column.id, op: "is", value: key } : { property: column.id, op: "isEmpty" }];
+}
+
+/** Whether a row sits in group `key`, as the planner buckets it. */
+export function inGroup(column: FieldColumn, key: string, row: DatabaseRow): boolean {
+  const value = cellValue(column, row.note, row.values);
+  if (column.type === "checkbox") return (value === true) === (key === "true");
+  if (column.type === "multiSelect") return Array.isArray(value) && value.length ? value.includes(key) : key === "";
+  return key ? value === key : value === null || value === undefined || value === "";
 }
 
 /** The value a card takes when moved from group `from` to group `to`. */
@@ -72,7 +80,14 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
 
   const loadMore = async (group: DatabaseGroup, have: number) => {
     const page = extra[group.key];
-    const filter = withCondition(query.filter, groupCondition(grouping, group.key));
+    const filter = composeFilter(query.filter, groupConditions(grouping, group.key));
+    if (filter === null) {
+      // No composed filter fits the planner's limits: the column's rows from
+      // the view's own, all at once.
+      const rows = (await readAll(run, { filter: query.filter ?? null, sorts: query.sorts })).filter(row => inGroup(grouping, group.key, row));
+      setExtra(current => ({ ...current, [group.key]: { rows: rows.slice(group.rows.length), cursor: null } }));
+      return;
+    }
     const result = page?.cursor
       ? await run({ filter, sorts: query.sorts, limit: GROUP_LIMIT, cursor: page.cursor })
       : await run({ filter, sorts: query.sorts, limit: have + GROUP_LIMIT });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NoteDatabase } from "../../../types";
+import { composeFilter } from "./viewBody";
 import { addCondition, addGroup, canAdd, completeOnly, countConditions, defaultCondition, filterColumns, groupableColumns, opsFor, readFilter, removeAt, retarget, setCondition, setJoin, sortableColumns, writeFilter, type FieldColumn, type Group } from "./viewModel";
 
 const DATABASE: NoteDatabase = { id: "db", scope: "children", views: [], properties: [
@@ -85,5 +86,19 @@ describe("viewModel", () => {
     const ids = (list: FieldColumn[]) => list.map(column => column.id);
     expect(ids(groupableColumns(DATABASE))).toEqual(["p-status", "p-labels", "p-due", "p-owned", "kind", "state", "project"]);
     expect(ids(sortableColumns(DATABASE))).toEqual(["p-rating", "p-status", "p-due", "p-owned", "p-note", "title", "kind", "state", "project", "created", "updated", "createdBy"]);
+  });
+});
+
+describe("composeFilter", () => {
+  const a = { property: "p-note", op: "contains", value: "a" };
+  const b = { property: "p-note", op: "contains", value: "b" };
+  const x = { property: "p-due", op: "isEmpty" };
+  it("adds conditions within two levels and twenty conditions", () => {
+    expect(composeFilter(null, [x])).toEqual({ and: [x] });
+    expect(composeFilter({ and: [{ or: [a, b] }] }, [x])).toEqual({ and: [{ or: [a, b] }, x] });
+    expect(composeFilter({ or: [a, { and: [b] }, { or: [a, b] }] }, [x])).toEqual({ or: [{ and: [a, x] }, { and: [b, x] }, { and: [a, x] }, { and: [b, x] }] });
+    expect(composeFilter({ and: Array.from({ length: 19 }, () => a) }, [x])).not.toBeNull();
+    expect(composeFilter({ and: Array.from({ length: 19 }, () => a) }, [x, x])).toBeNull();
+    expect(composeFilter({ or: Array.from({ length: 11 }, () => a) }, [x])).toBeNull();
   });
 });

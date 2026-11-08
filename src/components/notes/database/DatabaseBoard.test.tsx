@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../../api";
 import { mockCreateDatabase, mockCreatePage, mockQueryDatabase, mockReadPage, mockSaveView, mockUpdateNote, resetMockNotes } from "../../../notesMock";
 import { DatabaseView } from "./DatabaseView";
-import { groupCondition, movedValue } from "./DatabaseBoard";
+import { groupConditions, movedValue } from "./DatabaseBoard";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -119,7 +119,7 @@ describe("DatabaseBoard", () => {
     await act(async () => { [...column("To read").querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Load more (70)")!.click(); });
     await settle();
     expect(cardsIn("To read")).toHaveLength(100);
-    expect(query.mock.calls[0][0].filter).toEqual({ and: [groupCondition(status, option("To read"))] });
+    expect(query.mock.calls[0][0].filter).toEqual({ and: groupConditions(status, option("To read")) });
     await act(async () => { [...column("To read").querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Load more (20)")!.click(); });
     await settle();
     expect(cardsIn("To read")).toHaveLength(120);
