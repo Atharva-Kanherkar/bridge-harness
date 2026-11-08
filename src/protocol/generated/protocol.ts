@@ -1276,9 +1276,9 @@ export interface AttentionItem {
   title: string;
 }
 
-export type AttentionKind = "finished" | "failed" | "needsYou";
+export type AttentionKind = "finished" | "failed" | "needsYou" | "other";
 
-export type AttentionSeverity = "informational" | "actionable";
+export type AttentionSeverity = "informational" | "actionable" | "other";
 
 export interface AttributionSettings {
   hideAiAttribution?: boolean;

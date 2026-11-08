@@ -14,6 +14,11 @@ pub enum AttentionKind {
     Failed,
     /// A visible chat, workers included, is waiting on the person.
     NeedsYou,
+    /// A kind added after this client was built. The ledger gains kinds slice
+    /// by slice; decoding them as `other` keeps an older client's read working
+    /// instead of failing it, and a client shows nothing for them.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -21,6 +26,9 @@ pub enum AttentionKind {
 pub enum AttentionSeverity {
     Informational,
     Actionable,
+    /// A severity added after this client was built.
+    #[serde(other)]
+    Other,
 }
 
 /// One ledger row. `title` and `body` are written by core so every client
@@ -77,4 +85,26 @@ pub struct MarkAttentionSeenParams {
 pub struct MarkAttentionSeenResult {
     /// How many rows this call stamped.
     pub updated: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_attention_kinds_decode_as_other() {
+        // A row from a newer daemon, with a kind and severity this build has
+        // never heard of, must not fail the whole read.
+        let page: ListAttentionResult = serde_json::from_value(serde_json::json!({
+            "items": [{
+                "sequence": 7, "id": "a", "kind": "somethingNew", "severity": "urgent",
+                "title": "t", "createdAt": "2026-11-08T00:00:00Z"
+            }],
+            "latestSequence": 7
+        }))
+        .unwrap();
+        assert_eq!(page.items[0].kind, AttentionKind::Other);
+        assert_eq!(page.items[0].severity, AttentionSeverity::Other);
+        assert_eq!(serde_json::to_value(AttentionKind::NeedsYou).unwrap(), "needsYou");
+    }
 }

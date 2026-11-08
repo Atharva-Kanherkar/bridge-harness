@@ -91,15 +91,33 @@
             "needsYou"
           ],
           "type": "string"
+        },
+        {
+          "description": "A kind added after this client was built. The ledger gains kinds slice by slice; decoding them as `other` keeps an older client's read working instead of failing it, and a client shows nothing for them.",
+          "enum": [
+            "other"
+          ],
+          "type": "string"
         }
       ]
     },
     "AttentionSeverity": {
-      "enum": [
-        "informational",
-        "actionable"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "informational",
+            "actionable"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A severity added after this client was built.",
+          "enum": [
+            "other"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "description": "Rows oldest first, without superseded ones. `latestSequence` is the ledger's newest sequence (0 when empty), so a fresh client can start its cursor without paging.",
