@@ -60,6 +60,7 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
 import { useAttentionFeed } from "./useAttentionFeed";
 import { useUnreadSummary } from "./useUnreadSummary";
 import { useWindowFocused } from "./useWindowFocused";
@@ -718,26 +719,30 @@ function AppContent() {
   // Attention notifications come from the core ledger: core decides what a
   // person should know about (a worker finishing is its orchestrator's
   // business; a worker asking for approval is the person's), and the feed
-  // hands over each new row once. In-app glass toasts always enqueue;
-  // `notifyAttention` still gates the OS banner on Bridge not being focused,
-  // and on Linux the row's approval id lets the banner answer it in place.
+  // hands over each new row once. `decide` turns it into a toast, an OS
+  // banner, or nothing: nothing for the chat on screen in a focused window,
+  // and a banner only while Bridge is in the background. On Linux the row's
+  // approval id lets the banner answer it in place.
   const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
   const attentionSessionsRef = useRef<Session[]>(state.sessions);
   attentionSessionsRef.current = state.sessions;
+  const presenceRef = useRef<Presence>({ focused: false, onScreen: new Set() });
   const showAttention = useCallback((item: AttentionItem) => {
     const sessionId = item.sessionId;
-    if (!sessionId) return;
+    const decision = decide(item, presenceRef.current);
+    if (!sessionId || !decision) return;
     const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
     const toast: AttentionToast = {
       key: attentionToastKey(item),
       sessionId,
       copy,
       firedAt: Date.now(),
+      durationMs: decision.durationMs,
       ...(item.kind === "escalation" ? { actionLabel: "Deliver now" } : {}),
     };
     // Newest per chat wins, like the ledger itself.
-    setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-3));
-    void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+    if (decision.toast) setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-TOAST_QUEUE_MAX));
+    if (decision.banner) void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
   }, []);
   useAttentionFeed(showAttention);
   // Opening a chat is seeing it, on every client. Keyed on the view too: the
@@ -759,6 +764,7 @@ function AppContent() {
   const windowFocused = useWindowFocused();
   const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
   const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []) };
   useEffect(() => {
     if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
   }, [onScreenUnread, onScreenSessionId, unread]);

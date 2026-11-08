@@ -6,6 +6,9 @@ import type { AttentionItem } from "./types";
 // long as its kind deserves. The 1 s hold and re-check for requests happens
 // earlier, in `useAttentionFeed`; rows that reach here survived it.
 
+/** Toasts kept waiting, newest per chat; the stack shows the newest few. */
+export const TOAST_QUEUE_MAX = 8;
+
 export type Presence = {
   /** Bridge's window is focused and visible. */
   focused: boolean;

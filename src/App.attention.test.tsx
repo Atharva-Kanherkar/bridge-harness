@@ -261,4 +261,31 @@ describe("App attention wiring", () => {
       expect(badge).toHaveBeenLastCalledWith(0);
     });
   });
+
+  describe("policy", () => {
+    const openChat = async (id: string) => {
+      await act(async () => { (container.querySelector(`button[title^="Title ${id}"]`) as HTMLButtonElement).click(); });
+      await wait(20);
+    };
+
+    it("says nothing about the chat on screen in a focused window", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      await mountApp();
+      await openChat("b");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(toastRegion(container)).toBeFalsy();
+      expect(notifyAttention).not.toHaveBeenCalled();
+    });
+
+    it("toasts another chat in a focused window, without an OS banner", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      await mountApp();
+      await openChat("a");
+      await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+      await wait(40);
+      expect(toastRegion(container)?.textContent).toContain("Turn failed");
+      expect(notifyAttention).not.toHaveBeenCalled();
+    });
+  });
 });
