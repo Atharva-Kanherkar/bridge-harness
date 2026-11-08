@@ -6,6 +6,7 @@ import type { Editor } from "@tiptap/core";
 import { resetMockNotes } from "../../../notesMock";
 import { NoteEditor, HAND_OVER_MS, type NoteEditorHandle, type NoteEditorProps } from "./NoteEditor";
 import { imageWidthOf } from "./views";
+import { BLOCK_CHOICES } from "./slash";
 
 // No core assets in jsdom: images draw from a fake url, which still exercises
 // the caption and the resize handles.
@@ -545,6 +546,15 @@ describe("rich fences", () => {
     expect(figure()).toBeNull();
     expect(source().hidden).toBe(false);
     expect(source().textContent).toBe("const x = 1;");
+  });
+
+  it("the slash menu inserts a mermaid block", async () => {
+    const { onChange } = await mount("first\n");
+    await act(async () => { editor().chain().focus("end").insertContent({ type: "paragraph" }).run(); });
+    await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "mermaid")!.run(editor(), {} as never); });
+    await act(async () => { editor().commands.insertContent("graph TD; A-->B"); });
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith("first\n\n```mermaid\ngraph TD; A-->B\n```\n");
   });
 });
 
