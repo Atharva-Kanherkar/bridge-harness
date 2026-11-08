@@ -130,3 +130,45 @@ Against a daemon built from this branch with a short `--data-dir`:
    worker with `approvalEventId` set; resolving it sets `resolvedAt`.
 4. `attention/mark_attention_seen { sessionId }` returns `updated >= 1`; listing with
    `unseenOnly: true` no longer returns those rows.
+
+## Review amendments (review 5817244094, and the core halves of 5817244230 and 5817244323)
+
+Locked before the fixes; each fix lands in its own commit with a regression
+test that fails without it.
+
+1. **Hints for writes that publish no agent event.** Typed forest appends
+   (a delegation scope approval from `policy::record_decision`) and other
+   paths commit ledger rows without publishing an `agent-event`, so the bus
+   never derives `attention/changed`. Every ledger mutation now bumps a
+   revision in `attention_meta` inside the same transaction. The queued-input
+   sweep (every 2 s) publishes `attention/changed` whenever the committed
+   revision moved since it last looked. The bus-derived hint stays for the
+   common path; the sweep is the guarantee. Test:
+   `typed_approval_without_an_agent_event_still_hints`.
+2. **Routing decisions do not answer approvals.** `delegation.approved` and
+   `delegation.rejected` are ordinary routing records with no request id, so
+   they no longer close anything. A scope approval is closed by the
+   `approval.resolved` its resolution writes. Test:
+   `routing_decisions_leave_a_pending_approval_open`.
+3. **Checkpoint turns are maintenance.** While a checkpoint turn is active,
+   the frames it keeps for the supervisor (`turn.completed`, `error`, ...)
+   carry `data.bridgeCheckpointTurn = true`, and the classifier opens nothing
+   for them. Test (real handlers): `a_checkpoint_turn_raises_no_attention`.
+4. **Fatal errors without a boundary.** An `error` frame with status `failed`
+   on a top-level visible chat opens `failed`, because ACP disconnects and
+   others never send `turn.completed`. A `failed` row is not opened while the
+   chat's newest visible row is already an unseen `failed` one, so a provider
+   that sends both frames raises one failure. Tests:
+   `a_fatal_error_without_a_boundary_raises_failed`,
+   `error_and_boundary_for_one_failure_raise_one_row`.
+5. **Questions are not approvals.** Every `needs_you` row stores its
+   request's forest sequence in `request_event_id`, which resolution
+   matching uses. `approval_event_id` (and the wire `approvalEventId`) is set
+   only for `approval.requested` and `permission.requested`; a question is
+   answered through `approvals/resolve_question`, so it gets no approval id
+   and no Allow/Decline. Test: `question_rows_carry_no_approval_id`.
+6. **Older clients decode newer kinds.** Wire `AttentionKind` and
+   `AttentionSeverity` carry an `other` fallback (`#[serde(other)]`), so a
+   client built against this version decodes kinds added later instead of
+   failing the whole read. Test: `unknown_attention_kinds_decode_as_other`.
+

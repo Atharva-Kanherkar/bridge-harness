@@ -41,6 +41,7 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
             audience TEXT NOT NULL DEFAULT 'human',
             session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
             approval_event_id INTEGER,
+            request_event_id INTEGER,
             title TEXT NOT NULL,
             body TEXT,
             created_at TEXT NOT NULL,
@@ -49,7 +50,15 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
             superseded_by INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_attention_events_session
-            ON attention_events(session_id, audience, sequence);",
+            ON attention_events(session_id, audience, sequence);
+        -- Bumped by every ledger change in the same transaction, so a watcher
+        -- can tell that the committed ledger moved even when nothing was
+        -- published for it (typed forest appends publish no agent event).
+        CREATE TABLE IF NOT EXISTS attention_meta(
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            revision INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO attention_meta(id,revision) VALUES(1,0);",
     )?;
     Ok(())
 }
@@ -129,6 +138,11 @@ pub enum Effect {
 const REQUEST_KINDS: &[&str] = &["approval.requested", "permission.requested", "question.requested"];
 
 /// Forest kinds that answer one of those requests, by a person or by policy.
+///
+/// Not `delegation.approved` or `delegation.rejected`: `policy::record_decision`
+/// writes those for ordinary routing, with no request id, so treating them as
+/// answers would close a scope approval still waiting on the person. A scope
+/// approval is answered by the `approval.resolved` its resolution writes.
 const RESOLUTION_KINDS: &[&str] = &[
     "approval.resolved",
     "approval.settled",
@@ -136,8 +150,6 @@ const RESOLUTION_KINDS: &[&str] = &[
     "permission.denied",
     "question.resolved",
     "question.rejected",
-    "delegation.approved",
-    "delegation.rejected",
 ];
 
 /// Pure and allocation-free, because the forest append runs it for every
@@ -155,6 +167,11 @@ pub fn effect(kind: &str, status: Option<&str>) -> Effect {
             _ => Effect::Ignore,
         };
     }
+    // Not every fatal outcome has a boundary: an ACP connection close, for one,
+    // persists only this. A provider that sends both raises one row; see `open`.
+    if kind == "error" && status == Some("failed") {
+        return Effect::Open(AttentionKind::Failed);
+    }
     if REQUEST_KINDS.contains(&kind) {
         return Effect::Open(AttentionKind::NeedsYou);
     }
@@ -164,10 +181,11 @@ pub fn effect(kind: &str, status: Option<&str>) -> Effect {
     Effect::Ignore
 }
 
-/// Whether a forest kind can move the ledger at all, whatever its status. The
-/// event bus uses it to decide when to send `attention/changed`.
-pub fn is_trigger_kind(kind: &str) -> bool {
-    kind == "turn.completed" || REQUEST_KINDS.contains(&kind) || RESOLUTION_KINDS.contains(&kind)
+/// Whether a forest entry can move the ledger. The event bus uses it to decide
+/// when to send `attention/changed`, and the forest append to skip the
+/// savepoint for everything else.
+pub fn is_trigger(kind: &str, status: Option<&str>) -> bool {
+    kind == "turn.completed" || effect(kind, status) != Effect::Ignore
 }
 
 /// The session facts classification needs.
@@ -292,16 +310,40 @@ pub fn record_in_transaction(
     if effect == Effect::Ignore {
         return Ok(false);
     }
+    // A checkpoint turn's boundary and failures are maintenance. Its own
+    // requests and answers still count: they are real.
+    let checkpoint = payload.pointer("/data/bridgeCheckpointTurn").and_then(serde_json::Value::as_bool) == Some(true);
+    if checkpoint && matches!(effect, Effect::Open(AttentionKind::Finished | AttentionKind::Failed)) {
+        return Ok(false);
+    }
     let session = SessionFacts::load(transaction, session_id)?;
-    match classify(effect, session.as_ref()) {
+    let changed: Result<bool, BridgeError> = match classify(effect, session.as_ref()) {
         Effect::Ignore => Ok(false),
         Effect::Open(attention) => {
             let session = session.expect("classify ignores unknown sessions");
-            open(transaction, session_id, attention, &session, entry_sequence)?;
-            Ok(true)
+            Ok(open(transaction, session_id, attention, &session, kind, entry_sequence)?.is_some())
         }
         Effect::Close => Ok(close(transaction, session_id, answered_request(payload))? > 0),
+    };
+    let changed = changed?;
+    if changed {
+        bump(transaction)?;
     }
+    Ok(changed)
+}
+
+fn bump(db: &Connection) -> Result<(), BridgeError> {
+    db.execute("UPDATE attention_meta SET revision=revision+1 WHERE id=1", [])?;
+    Ok(())
+}
+
+/// The committed ledger's revision. It moves on every change, including
+/// closes and seen stamps that leave the newest sequence where it was.
+pub fn revision(db: &Connection) -> Result<i64, BridgeError> {
+    Ok(db
+        .query_row("SELECT revision FROM attention_meta WHERE id=1", [], |row| row.get(0))
+        .optional()?
+        .unwrap_or(0))
 }
 
 fn now() -> String {
@@ -313,13 +355,47 @@ fn open(
     session_id: &str,
     kind: AttentionKind,
     session: &SessionFacts,
+    forest_kind: &str,
     entry_sequence: i64,
-) -> Result<i64, BridgeError> {
+) -> Result<Option<i64>, BridgeError> {
+    if kind == AttentionKind::Failed && newest_is_unseen_failure(db, session_id)? {
+        // One failure, two frames (`error` and a failed boundary, in either
+        // order): the person hears about it once.
+        return Ok(None);
+    }
     let (title, body) = copy(kind, session);
-    let approval_event_id = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
+    let request = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
+    // Only approvals and permissions are answered through resolve_approval; a
+    // question has its own reply channel, so it offers no approval id.
+    let approval = request.filter(|_| matches!(forest_kind, "approval.requested" | "permission.requested"));
+    insert_row(db, session_id, kind, &title, &body, approval, request).map(Some)
+}
+
+fn newest_is_unseen_failure(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT kind='failed' AND seen_at IS NULL FROM attention_events
+             WHERE session_id=?1 AND audience=?2 AND superseded_by IS NULL
+             ORDER BY sequence DESC LIMIT 1",
+            params![session_id, HUMAN],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+fn insert_row(
+    db: &Connection,
+    session_id: &str,
+    kind: AttentionKind,
+    title: &str,
+    body: &str,
+    approval_event_id: Option<i64>,
+    request_event_id: Option<i64>,
+) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,title,body,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,request_event_id,title,body,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             Uuid::new_v4().to_string(),
             kind.as_str(),
@@ -327,6 +403,7 @@ fn open(
             HUMAN,
             session_id,
             approval_event_id,
+            request_event_id,
             title,
             body,
             now(),
@@ -348,7 +425,7 @@ fn close(db: &Connection, session_id: &str, request: Option<i64>) -> Result<usiz
         Some(request) => db.execute(
             "UPDATE attention_events SET resolved_at=?1
              WHERE session_id=?2 AND audience=?3 AND kind='needs_you' AND resolved_at IS NULL
-               AND approval_event_id=?4",
+               AND request_event_id=?4",
             params![at, session_id, HUMAN, request],
         )?,
         // No request id (Claude's `permission.denied`, Cursor's settle):
@@ -444,10 +521,16 @@ pub fn latest_sequence(db: &Connection) -> Result<i64, BridgeError> {
 
 /// Stamp every unseen row of one session as seen. Returns how many it stamped.
 pub fn mark_seen(db: &Connection, session_id: &str) -> Result<usize, BridgeError> {
-    Ok(db.execute(
+    let transaction = db.unchecked_transaction()?;
+    let stamped = transaction.execute(
         "UPDATE attention_events SET seen_at=?1 WHERE session_id=?2 AND audience=?3 AND seen_at IS NULL",
         params![now(), session_id, HUMAN],
-    )?)
+    )?;
+    if stamped > 0 {
+        bump(&transaction)?;
+    }
+    transaction.commit()?;
+    Ok(stamped)
 }
 
 #[cfg(test)]
@@ -518,8 +601,11 @@ mod tests {
             ("permission.denied", Some("denied"), Effect::Close),
             ("question.resolved", Some("answered"), Effect::Close),
             ("question.rejected", None, Effect::Close),
-            ("delegation.approved", None, Effect::Close),
-            ("delegation.rejected", None, Effect::Close),
+            ("delegation.approved", None, Effect::Ignore),
+            ("delegation.rejected", None, Effect::Ignore),
+            ("error", Some("failed"), Effect::Open(Failed)),
+            ("error", Some("retrying"), Effect::Ignore),
+            ("error", None, Effect::Ignore),
             ("turn.started", None, Effect::Ignore),
             ("tool.completed", Some("completed"), Effect::Ignore),
             ("assistant.message", None, Effect::Ignore),
@@ -536,7 +622,7 @@ mod tests {
         for (kind, status, expected) in cases {
             let raw = effect(kind, *status);
             assert_eq!(raw, *expected, "{kind} {status:?}");
-            assert_eq!(is_trigger_kind(kind), *kind == "turn.completed" || *expected != Effect::Ignore, "{kind}");
+            assert_eq!(is_trigger(kind, *status), *kind == "turn.completed" || *expected != Effect::Ignore, "{kind}");
             assert_eq!(classify(raw, Some(&top)), *expected, "top-level {kind} {status:?}");
             let for_worker = match expected {
                 Effect::Open(Finished | Failed) => Effect::Ignore,
@@ -629,6 +715,78 @@ mod tests {
         assert!(!record(&db, "a", "question.resolved", json!({}), 9));
         let resolved: Vec<bool> = rows(&db).into_iter().map(|row| row.3).collect();
         assert_eq!(resolved, vec![true, true, true]);
+    }
+
+    #[test]
+    fn routing_decisions_leave_a_pending_approval_open() {
+        let db = store();
+        session(&db, "parent", "orchestrator", None, None);
+        // A write-scope approval for one worker is pending...
+        record(&db, "parent", "approval.requested", json!({"approvalId": "scope:1"}), 7);
+        // ...while the same turn routes another worker with no approval at all.
+        assert!(!record(&db, "parent", "delegation.approved", json!({"requestId": "turn-1"}), 8));
+        assert!(!record(&db, "parent", "delegation.rejected", json!({"requestId": "turn-1"}), 9));
+        assert!(!rows(&db)[0].3, "the scope approval is still waiting on the person");
+        assert!(record(&db, "parent", "approval.resolved", json!({"requestEventId": 7}), 10));
+        assert!(rows(&db)[0].3);
+    }
+
+    #[test]
+    fn question_rows_carry_no_approval_id() {
+        let db = store();
+        session(&db, "s", "direct", None, None);
+        session(&db, "w", "orchestrator", Some("s"), None);
+        record(&db, "s", "question.requested", json!({}), 5);
+        record(&db, "w", "permission.requested", json!({}), 3);
+        let approval_ids: Vec<(String, Option<i64>)> = list(&db, None, None, false)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|row| (row.session_id.unwrap(), row.approval_event_id))
+            .collect();
+        // A question is answered through resolve_question, never resolve_approval.
+        assert_eq!(approval_ids, vec![("s".to_owned(), None), ("w".to_owned(), Some(3))]);
+        // Its request id still matches the answer that closes it.
+        assert!(record(&db, "s", "question.resolved", json!({"data": {"requestEventId": 5}}), 6));
+        assert!(list(&db, None, None, false).unwrap().items[0].resolved_at.is_some());
+    }
+
+    #[test]
+    fn a_fatal_error_without_a_boundary_raises_failed() {
+        let db = store();
+        session(&db, "cursor", "direct", None, None);
+        session(&db, "w", "orchestrator", Some("cursor"), None);
+        // An ACP connection close persists only `error` with status failed.
+        assert!(record(&db, "cursor", "error", json!({"status": "failed", "text": "connection closed"}), 4));
+        assert!(!record(&db, "w", "error", json!({"status": "failed"}), 2), "a worker failure is its orchestrator's");
+        assert!(!record(&db, "cursor", "error", json!({"status": "retrying"}), 5));
+        assert!(!record(&db, "cursor", "error", json!({"status": "warning"}), 6));
+        assert_eq!(rows(&db), vec![("cursor".into(), "failed".into(), None, false, false)]);
+    }
+
+    #[test]
+    fn error_and_boundary_for_one_failure_raise_one_row() {
+        let db = store();
+        session(&db, "a", "direct", None, None);
+        session(&db, "b", "direct", None, None);
+        assert!(record(&db, "a", "error", json!({"status": "failed"}), 4));
+        assert!(!record(&db, "a", "turn.completed", json!({"status": "failed"}), 5), "the boundary repeats the failure");
+        assert!(record(&db, "b", "turn.completed", json!({"status": "error_during_execution"}), 4));
+        assert!(!record(&db, "b", "error", json!({"status": "failed"}), 5), "either order raises one row");
+        assert_eq!(list(&db, None, None, false).unwrap().items.len(), 2);
+        // Once seen, the next failure is news again.
+        mark_seen(&db, "a").unwrap();
+        assert!(record(&db, "a", "error", json!({"status": "failed"}), 9));
+    }
+
+    #[test]
+    fn checkpoint_boundaries_open_nothing_but_their_requests_do() {
+        let db = store();
+        session(&db, "s", "direct", None, None);
+        let marked = |status: &str| json!({"status": status, "data": {"bridgeCheckpointTurn": true}});
+        assert!(!record(&db, "s", "turn.completed", marked("completed"), 3));
+        assert!(!record(&db, "s", "error", marked("failed"), 4));
+        assert!(record(&db, "s", "permission.requested", json!({"data": {"bridgeCheckpointTurn": true}}), 5));
     }
 
     #[test]
