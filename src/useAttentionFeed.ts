@@ -7,6 +7,8 @@ import type { AttentionItem } from "./types";
  * past that is what keeps it from flashing a toast. */
 export const NEEDS_YOU_HOLD_MS = 1_000;
 const PAGE_SIZE = 100;
+const RETRY_FIRST_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
 /** What this client knows how to show. A newer daemon's kinds arrive as
  * `other` (or, from a TypeScript peer, as a string this build has never seen)
  * and are skipped rather than shown as something they are not. */
@@ -35,6 +37,9 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
     let cursor: number | null = null;
     let reading = false;
     let readAgain = false;
+    let initializing = false;
+    let retryDelay = RETRY_FIRST_MS;
+    let retryTimer: number | undefined;
     const holds = new Set<number>();
     let unlisten: (() => void) | undefined;
 
@@ -67,8 +72,15 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
     };
 
     const read = async () => {
-      if (reading || cursor === null) {
-        // Booting or mid-read: remember the hint and read once more after.
+      if (cursor === null) {
+        // No cursor yet: a launch read is out, or failed. A hint means the
+        // backend is answering, so try now rather than wait for the timer.
+        readAgain = true;
+        void initialize();
+        return;
+      }
+      if (reading) {
+        // Mid-read: remember the hint and read once more after.
         readAgain = true;
         return;
       }
@@ -95,13 +107,12 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
       }
     };
 
-    void (async () => {
-      // Subscribe before taking the cursor, so a row written in between is
-      // read rather than lost.
+    const initialize = async () => {
+      if (cursor !== null || initializing || !active) return;
+      initializing = true;
+      window.clearTimeout(retryTimer);
+      retryTimer = undefined;
       try {
-        const off = await bridgeApi.onAttentionChanged(() => { void read(); });
-        if (!active) { off(); return; }
-        unlisten = off;
         const head = await bridgeApi.listAttention({ limit: 1 });
         if (!active) return;
         const latest = head.latestSequence;
@@ -113,14 +124,37 @@ export function useAttentionFeed(onArrive: (item: AttentionItem) => void, holdMs
         recent.items
           .filter(item => item.sequence <= latest && Date.parse(item.createdAt) > mountedAt)
           .forEach(consider);
-        if (readAgain) void read();
       } catch {
-        // No ledger on this backend; nothing to follow.
+        // The daemon is starting or reconnecting: one failure is not "this
+        // backend has no ledger". Try again, backing off.
+        if (active) {
+          retryTimer = window.setTimeout(() => { void initialize(); }, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+        }
+        return;
+      } finally {
+        initializing = false;
       }
+      if (readAgain) void read();
+    };
+
+    void (async () => {
+      // Subscribe before taking the cursor, so a row written in between is
+      // read rather than lost.
+      try {
+        const off = await bridgeApi.onAttentionChanged(() => { void read(); });
+        if (!active) { off(); return; }
+        unlisten = off;
+      } catch {
+        // No attention channel on this backend; nothing to follow.
+        return;
+      }
+      void initialize();
     })();
 
     return () => {
       active = false;
+      window.clearTimeout(retryTimer);
       holds.forEach(timer => window.clearTimeout(timer));
       holds.clear();
       unlisten?.();

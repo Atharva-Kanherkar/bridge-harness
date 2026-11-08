@@ -85,6 +85,26 @@ describe("useAttentionFeed", () => {
     expect(arrived.map(item => item.sessionId)).toEqual(["after"]);
   });
 
+  it("recovers after the first read fails and delivers what arrived meanwhile", async () => {
+    let failed = false;
+    const reads = vi.spyOn(bridgeApi, "listAttention").mockImplementation(async params => {
+      if (!failed) {
+        failed = true;
+        throw new Error("daemon is starting");
+      }
+      return mockListAttention(params);
+    });
+    await mount();
+    expect(reads).toHaveBeenCalledTimes(1);
+    // The backend is back; the next hint must not fall on deaf ears.
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "a", title: "Turn completed" }); });
+    await settle(30);
+    await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+    await settle(30);
+    expect(reads.mock.calls.length).toBeGreaterThan(1);
+    expect(arrived.map(item => item.sessionId)).toEqual(["a", "b"]);
+  });
+
   it("drops a request answered within the hold and delivers one still open", async () => {
     await mount();
     await act(async () => {
