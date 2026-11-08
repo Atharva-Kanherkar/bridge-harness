@@ -69,13 +69,14 @@ Wire:
   Superseded rows are excluded. `unseenOnly` excludes rows with `seenAt`.
   `latestSequence` is the ledger's max sequence (0 when empty), so a fresh
   client can start its cursor without paging.
-- `attention/mark_seen { sessionId } -> { updated }` stamps `seen_at` on every
-  unseen row of that session and returns how many it stamped.
+- `attention/mark_attention_seen { sessionId } -> { updated }` stamps `seen_at`
+  on every unseen row of that session and returns how many it stamped. (Not
+  `mark_seen`: the wire command is the Tauri command name, and those are global.)
 - Notification `attention/changed`, Transient, payload `null`. The event bus
   publishes it right after any durable `agent-event` (sequence > 0) whose kind
   is in the table above, so it always follows the commit. It is reconciled on
   lag like `memory-changed`.
-- `mark_seen` publishes `attention/changed` when it stamped anything.
+- `mark_attention_seen` publishes `attention/changed` when it stamped anything.
 - Protocol minor version 1.24, with a handshake note like the earlier bumps.
 
 ## Unit tests (bridge-core)
@@ -100,7 +101,7 @@ Wire:
 
 ## Integration / functional tests
 
-- bridged dispatch: `attention/list_attention` and `attention/mark_seen`
+- bridged dispatch: `attention/list_attention` and `attention/mark_attention_seen`
   round-trip through `dispatch.rs` (existing dispatch test pattern).
 - Protocol gates stay green: `tsgen::checked_in_artifacts_match_the_contract`,
   `params_types_are_named_after_their_method`, params `deny_unknown_fields`
@@ -127,5 +128,5 @@ Against a daemon built from this branch with a short `--data-dir`:
    that chat, `latestSequence` equal to its sequence.
 3. Trigger a permission request in a worker: one `needs_you` row for the
    worker with `approvalEventId` set; resolving it sets `resolvedAt`.
-4. `attention/mark_seen { sessionId }` returns `updated >= 1`; listing with
+4. `attention/mark_attention_seen { sessionId }` returns `updated >= 1`; listing with
    `unseenOnly: true` no longer returns those rows.
