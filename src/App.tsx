@@ -25,7 +25,7 @@ import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./e
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -60,8 +60,8 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { useAttentionFeed } from "./useAttentionFeed";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
-import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
@@ -126,8 +126,7 @@ import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFrom
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
-import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
-import { readWireKind } from "./transcript/wire";
+import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
 import { isMacPlatform } from "./lib/platform";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -691,17 +690,6 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
-  // On Linux a waiting session's notification can answer its approval in
-  // place; find which approval, if any, before posting.
-  const notifyWithActions = useCallback(async (kind: string, sessionId: string, headline: string, detail: string) => {
-    let approvalEventId: number | null = null;
-    if (kind === "needs-you" && !isMacPlatform()) {
-      approvalEventId = await bridgeApi.replaySessionEvents(sessionId, 0, 200, true)
-        .then(events => pendingApprovalEventId(events.map(event => ({ sequence: event.sequence, kind: readWireKind(event.kind), data: event.data }))))
-        .catch(() => null);
-    }
-    await notifyAttention(headline, detail, { sessionId, approvalEventId });
-  }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
@@ -724,36 +712,29 @@ function AppContent() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [reload]);
-  // Attention notifications: diff every `state.sessions` refresh for status
-  // transitions across visible sessions (hidden kinds filtered inside
-  // `diffAttentionEvents`), not just the open one, so a background chat that
-  // starts waiting on the human still surfaces a notification.
-  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
-  // banner on Bridge not being focused.
+  // Attention notifications come from the core ledger: core decides what a
+  // person should know about (a worker finishing is its orchestrator's
+  // business; a worker asking for approval is the person's), and the feed
+  // hands over each new row once. In-app glass toasts always enqueue;
+  // `notifyAttention` still gates the OS banner on Bridge not being focused,
+  // and on Linux the row's approval id lets the banner answer it in place.
   const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
-  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  const attentionSessionsRef = useRef<Session[]>(state.sessions);
+  attentionSessionsRef.current = state.sessions;
+  const showAttention = useCallback((item: AttentionItem) => {
+    const sessionId = item.sessionId;
+    if (!sessionId) return;
+    const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
+    const toast: AttentionToast = { key: attentionToastKey(item), sessionId, copy, firedAt: Date.now() };
+    // Newest per chat wins, like the ledger itself.
+    setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-3));
+    void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+  }, []);
+  useAttentionFeed(showAttention);
+  // Opening a chat is seeing it, on every client.
   useEffect(() => {
-    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
-    previousAttentionSessionsRef.current = state.sessions;
-    if (!events.length) return;
-    const nextToasts: AttentionToast[] = [];
-    for (const event of events) {
-      const copy = attentionCopy(event);
-      const key = attentionToastKey(event);
-      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
-      void notifyWithActions(event.kind, event.session.id, copy.headline, copy.detail);
-    }
-    setAttentionToasts(current => {
-      // A chat can revisit the same key (waiting → working → waiting) before
-      // its first card's TTL elapses. Replace rather than skip so the card
-      // reflects the latest event and restarts its countdown.
-      let merged = current;
-      for (const toast of nextToasts) {
-        merged = [...merged.filter(item => item.key !== toast.key), toast];
-      }
-      return merged.slice(-3);
-    });
-  }, [state.sessions]);
+    if (selectedSessionId) void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
+  }, [selectedSessionId]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was

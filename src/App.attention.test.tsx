@@ -3,7 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "./api";
+import { pushMockAttention, resetMockAttention } from "./attentionMock";
 import type { BridgeState, Session, SessionStatus } from "./types";
+import { NEEDS_YOU_HOLD_MS } from "./useAttentionFeed";
 
 const notifyAttention = vi.hoisted(() => vi.fn());
 vi.mock("./attention", () => ({ notifyAttention }));
@@ -27,11 +29,12 @@ function stateWith(sessions: Session[]): BridgeState {
   return { projects: [], workspaces: [], sessions, events: [] };
 }
 
+const wait = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+const toastRegion = (container: HTMLElement) => container.querySelector('[aria-label="Attention notifications"]');
+
 describe("App attention wiring", () => {
   let container: HTMLDivElement;
   let root: Root;
-  let stateHandler: (() => void) | undefined;
-  let currentSessions: Session[];
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -48,13 +51,12 @@ describe("App attention wiring", () => {
       },
     });
     notifyAttention.mockReset();
-    currentSessions = [session("a", "working")];
-    stateHandler = undefined;
-    vi.spyOn(bridgeApi, "onStateChanged").mockImplementation(async handler => {
-      stateHandler = handler;
-      return () => { if (stateHandler === handler) stateHandler = undefined; };
-    });
-    vi.spyOn(bridgeApi, "state").mockImplementation(async () => stateWith(currentSessions));
+    resetMockAttention();
+    vi.spyOn(bridgeApi, "state").mockImplementation(async () => stateWith([
+      session("a", "working"),
+      session("b", "ready"),
+      session("w", "working", { parentSessionId: "a", title: "Worker w" }),
+    ]));
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -66,60 +68,60 @@ describe("App attention wiring", () => {
     vi.restoreAllMocks();
   });
 
-  it("notifies once with enriched copy and shows a glass toast when working → waiting", async () => {
+  async function mountApp() {
     const { App } = await import("./App");
-    await act(async () => {
-      root.render(<App />);
-      await new Promise(resolve => setTimeout(resolve, 40));
-    });
-    expect(notifyAttention).not.toHaveBeenCalled();
-    expect(stateHandler, "App subscribed to state changes").toBeTruthy();
+    await act(async () => { root.render(<App />); });
+    await wait(40);
+  }
 
-    currentSessions = [session("a", "waiting")];
-    await act(async () => {
-      stateHandler!();
-      await new Promise(resolve => setTimeout(resolve, 40));
-    });
+  it("shows nothing for rows written before launch", async () => {
+    pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed", body: "Title b · Claude finished its turn" });
+    await mountApp();
+    await wait(40);
+    expect(notifyAttention).not.toHaveBeenCalled();
+    expect(toastRegion(container)).toBeFalsy();
+  });
+
+  it("raises a worker's approval request once, with its approval id", async () => {
+    await mountApp();
+    await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you", approvalEventId: 7 }); });
+    await wait(40);
+    expect(notifyAttention, "held for a second first").not.toHaveBeenCalled();
+    await wait(NEEDS_YOU_HOLD_MS + 100);
     expect(notifyAttention).toHaveBeenCalledTimes(1);
     expect(notifyAttention).toHaveBeenCalledWith(
       "Bridge needs you",
-      "Title a · Claude is waiting for your input",
-      // On macOS no approval is looked up: Linux alone answers it in place.
-      expect.objectContaining({ approvalEventId: null }),
+      "Worker w · Claude is waiting for your input",
+      { sessionId: "w", approvalEventId: 7 },
     );
-    expect(container.textContent).toContain("Bridge needs you");
-    expect(container.textContent).toContain("Title a · Claude is waiting for your input");
-    expect(container.querySelector('[aria-label="Attention notifications"]')).toBeTruthy();
-
-    await act(async () => {
-      stateHandler!();
-      await new Promise(resolve => setTimeout(resolve, 40));
-    });
-    expect(notifyAttention).toHaveBeenCalledTimes(1);
+    expect(toastRegion(container)?.textContent).toContain("Worker w · Claude is waiting for your input");
   });
 
-  it("opens that session and dismisses the card when the toast body is clicked", async () => {
-    currentSessions = [session("a", "working"), session("b", "working")];
-    const { App } = await import("./App");
-    await act(async () => {
-      root.render(<App />);
-      await new Promise(resolve => setTimeout(resolve, 40));
-    });
+  it("replaces a chat's toast with its newer row", async () => {
+    await mountApp();
+    await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+    await wait(40);
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+    await wait(40);
+    const text = toastRegion(container)?.textContent ?? "";
+    expect(text).toContain("Turn completed");
+    expect(text).not.toContain("Turn failed");
+    expect(notifyAttention).toHaveBeenCalledTimes(2);
+  });
 
-    currentSessions = [session("a", "working"), session("b", "waiting")];
-    await act(async () => {
-      stateHandler!();
-      await new Promise(resolve => setTimeout(resolve, 40));
-    });
+  it("opens the chat, dismisses the card and marks it seen when the toast is clicked", async () => {
+    const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
+    await mountApp();
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+    await wait(40);
 
     const toastButton = container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]') as HTMLButtonElement;
-    expect(toastButton, "toast body button for the waiting session").toBeTruthy();
-    await act(async () => {
-      toastButton.click();
-    });
+    expect(toastButton, "toast body button for the finished chat").toBeTruthy();
+    await act(async () => { toastButton.click(); });
+    await wait(20);
 
     expect(container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]')).toBeFalsy();
-    const chatRow = container.querySelector('button[title^="Title b"]');
-    expect(chatRow?.getAttribute("aria-current")).toBe("page");
+    expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
+    expect(seen).toHaveBeenCalledWith("b");
   });
 });
