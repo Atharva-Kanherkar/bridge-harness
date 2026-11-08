@@ -1081,5 +1081,26 @@ describe("tabs as saved views", () => {
     expect(button("Save for everyone")).toBeDefined();
     expect(button("Sort, 1")).toBeDefined();
   });
+
+  it("never lets an older list read replace the newest page list", async () => {
+    await render();
+    await openNote("Local-first sync libraries");
+    const parent = mockIdOf("Local-first sync libraries");
+    const real = bridgeApi.queryDatabase.bind(bridgeApi);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let first = true;
+    vi.spyOn(bridgeApi, "queryDatabase").mockImplementation(async params => { if (first) { first = false; await gate; } return real(params); });
+    // Refresh A starts and holds on its tab read.
+    mockNotesAgentWrite(parent, "a line from an agent");
+    await settle(60);
+    // A child page arrives, and refresh B completes around A.
+    mockCreatePage({ title: "Findings", parentId: parent });
+    await settle(60);
+    expect(host.querySelector("section[aria-label='Pages']")?.textContent).toContain("Findings");
+    await act(async () => { release(); });
+    await settle(60);
+    expect(host.querySelector("section[aria-label='Pages']")?.textContent).toContain("Findings");
+  });
 });
 

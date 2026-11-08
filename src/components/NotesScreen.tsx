@@ -188,6 +188,12 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       ]);
       if (ticket !== listRequest.current) return;
       setList(next);
+      // The page list commits while this read is still the newest, before
+      // any later await lets a newer read land first.
+      if (whole || !query) {
+        setEveryNote((whole ?? next).notes);
+        wholeStale.current = false;
+      }
       // The system database (the tabs) is read once here; after that only when
       // a change names it or a tab is edited from here.
       if (next.systemDatabaseId && systemRef.current?.id !== next.systemDatabaseId) {
@@ -199,10 +205,6 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         }
       }
       await refreshTab();
-      if (whole || !query) {
-        setEveryNote((whole ?? next).notes);
-        wholeStale.current = false;
-      }
     } catch (error) {
       if (ticket === listRequest.current) fail(error);
     }
