@@ -8,10 +8,12 @@ a link the agent can put in its reply, and a click on that link opens the page i
 
 ### The link (`bridge://p/<id>`)
 - A page's link is `bridge://p/<id>`, the form the editor already writes for a child page
-  (`<page url="bridge://p/<id>">`). `<id>` is the page's UUID.
+  (`<page url="bridge://p/<id>">`). `<id>` is the page's id: a UUID from the core, and `note-…` in
+  the mock store.
 - `src/noteLinks.ts::parseNoteLink(url)` returns the id for exactly that form, case-insensitive on
-  the scheme, and `undefined` for anything else. That includes a trailing path, a query, a non-UUID
-  id, and `bridge://x/<id>`.
+  the scheme, and `undefined` for anything else. An id is 1–64 characters from `[A-Za-z0-9_-]`. A
+  trailing path, a query, a fragment, any other character, and `bridge://x/<id>` all give
+  `undefined`. The core decides whether the page exists; a missing one shows the read error.
 
 ### Agent tools (`notes/tool.rs`, `mcp_apps/notes_tools.rs`, `notes/agent.rs`)
 - Every page summary a notes tool returns carries `"link": "bridge://p/<id>"`. This covers
