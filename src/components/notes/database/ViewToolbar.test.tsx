@@ -75,6 +75,20 @@ describe("useViewOverride", () => {
     expect(out.current!.dirty(VIEW)).toBe(false);
   });
 
+  it("a save clears only the override it saved", async () => {
+    const out = mount();
+    act(() => out.current!.change(VIEW, { sorts: [{ property: "p-rating", direction: "desc" }] }));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let saving!: Promise<void>;
+    act(() => { saving = out.current!.save(VIEW, async () => { await gate; }); });
+    // Edited again while the save is out.
+    act(() => out.current!.change(VIEW, { filter: { and: [{ property: "p-note", op: "contains", value: "x" }] } }));
+    await act(async () => { release(); await saving; });
+    expect(out.current!.dirty(VIEW)).toBe(true);
+    expect(out.current!.effective(VIEW).filter).toEqual({ and: [{ property: "p-note", op: "contains", value: "x" }] });
+  });
+
   it("keeps each tab's override apart", () => {
     const out = mount();
     const other = { ...VIEW, id: "w" };

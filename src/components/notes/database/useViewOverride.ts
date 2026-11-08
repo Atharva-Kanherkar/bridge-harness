@@ -61,7 +61,13 @@ export function useViewOverride(): ViewOverride {
     } catch {
       return;
     }
-    drop(view);
-  }, [overrides, drop]);
+    // Only the revision that was saved: an edit made since stays unsaved.
+    setOverrides(current => {
+      if (current[view.id] !== query) return current;
+      const rest = { ...current };
+      delete rest[view.id];
+      return rest;
+    });
+  }, [overrides]);
   return useMemo(() => ({ effective, dirty, change, reset: drop, save }), [effective, dirty, change, drop, save]);
 }
