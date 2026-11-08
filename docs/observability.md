@@ -11,7 +11,7 @@ how to get the record out.
 
 Every adapter normalizes into one event vocabulary before anything is stored
 (`agent.rs` for Codex's native protocol, `acp_events.rs` for the ACP runtimes,
-the Claude sidecar for Claude). `store::session_event_in_transaction` is the
+`agent.rs` for Claude SDK frames). `store::session_event_in_transaction` is the
 single door through which a normalized event becomes durable history, and the
 session forest — `session_entries` — is the only place that history lives.
 
@@ -157,3 +157,22 @@ exactly when the total is a multiple of the page size.
 - [`transcript-behavior-contract.md`](transcript-behavior-contract.md) — what
   the rendered conversation does, over normalized items and nothing else
 - [`local-history.md`](local-history.md), [`compaction-and-resume.md`](compaction-and-resume.md)
+
+## Background activity
+
+Native task starts, useful task-progress snapshots and terminal notifications are
+normalized to durable tool lifecycles under one task identity. Periodic tool
+heartbeats remain transient `tool.progress` frames. The launcher can finish before
+the process does; its `backgrounded` status is not a successful test result.
+Claude's task membership snapshot reconciles missed bookends. A task that vanishes
+without an outcome records `unknown`, and runtime teardown or startup recovery
+records the same state for any remaining live process. Native Codex executions
+with a reported process id use this independent lifecycle too.
+
+Synthetic SDK messages whose typed origin is `task-notification`, including
+Monitor events, are recorded as inspectable `Background update` tool rows.
+Ordinary user echoes stay suppressed. Housekeeping is excluded from activity;
+explicitly launched Monitor processes are visible as passive watchers.
+Bridge can show only the output and progress the runtime supplies. The current
+activity panel distinguishes a running process from a working model, and shared
+prompt guidance asks agents to keep execution and logs observable.
