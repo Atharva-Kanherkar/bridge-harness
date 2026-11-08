@@ -88,6 +88,17 @@ describe("DatabaseCalendar", () => {
     expect(document.querySelector("[role=grid]")!.textContent).not.toContain("Old");
   });
 
+  it("reads every page of the month and the tray", async () => {
+    const { made, due, row } = books();
+    for (let index = 0; index < 501; index += 1) row(`Dated ${index}`, { [due.id]: { start: `2026-11-${String(1 + (index % 28)).padStart(2, "0")}` } });
+    for (let index = 0; index < 101; index += 1) row(`Loose ${index}`, {});
+    await act(async () => { root.render(<DatabaseCalendar {...props(made, calendar(due.id))} today="2026-11-05" />); });
+    await settle();
+    const placed = new Set([...document.querySelectorAll("[role=gridcell] button")].map(button => button.textContent));
+    expect(placed.size).toBe(501);
+    expect(document.querySelectorAll("aside[aria-label='No date'] button")).toHaveLength(101);
+  });
+
   it("queries each shown month and moves with prev, next and today", async () => {
     const { made, due } = books();
     const query = vi.spyOn(bridgeApi, "queryDatabase");

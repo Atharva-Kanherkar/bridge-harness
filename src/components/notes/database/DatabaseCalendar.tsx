@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { clsx } from "clsx";
 import type { DatabaseRow } from "../../../types";
 import type { ViewBodyProps } from "./viewBody";
-import { composeFilter, readAll } from "./viewBody";
+import { readWith } from "./viewBody";
 import { filterColumns } from "./viewModel";
 
 const DAY_MS = 86_400_000;
@@ -72,17 +72,13 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
     const overlaps = (row: DatabaseRow) => { const start = startOf(row); const end = endOf(row); return !!start && !!end && start <= last && end >= first; };
     // Composed within the planner's limits when they allow, else the view's
     // own rows with the window applied here.
-    const read = (conditions: { property: string; op: string; value?: unknown }[], limit: number, matches: (row: DatabaseRow) => boolean) => {
-      const composed = composeFilter(query.filter, conditions);
-      return composed !== null
-        ? run({ filter: composed, sorts: query.sorts, limit }).then(result => result.rows)
-        : readAll(run, { filter: query.filter ?? null, sorts: query.sorts }).then(rows => rows.filter(matches));
-    };
+    // Every page, either way: a month or a tray never stops at one page.
+    const read = (conditions: { property: string; op: string; value?: unknown }[], matches: (row: DatabaseRow) => boolean) => readWith(run, query.filter, query.sorts, conditions, matches);
     // The core indexes a date's start only, so a range that began before the
     // grid is found by its start alone and kept here if it reaches the grid.
-    void read([{ property: dateColumn.id, op: "onOrBefore", value: last }], 500, overlaps)
+    void read([{ property: dateColumn.id, op: "onOrBefore", value: last }], overlaps)
       .then(rows => { if (alive) setPlaced(rows.filter(row => dateColumn.type !== "date" || overlaps(row))); }, () => undefined);
-    if (writable) void read([{ property: dateColumn.id, op: "isEmpty" }], 100, row => !startOf(row))
+    if (writable) void read([{ property: dateColumn.id, op: "isEmpty" }], row => !startOf(row))
       .then(rows => { if (alive) setUndated(rows); }, () => undefined);
     return () => { alive = false; };
   }, [dateColumn, days, filterKey, version, run, writable]); // eslint-disable-line react-hooks/exhaustive-deps
