@@ -5,6 +5,7 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod dock_badge;
 mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
@@ -2896,6 +2897,8 @@ fn select_host(
     omarchy::install(app.handle());
     // Linux notifications with Allow once / Decline / Open.
     notifications::install(app.handle());
+    // The unread count on the app icon, sent by the webview.
+    dock_badge::install(app.handle());
     quick_prompt::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {

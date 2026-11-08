@@ -61,6 +61,8 @@ import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
 import { useAttentionFeed } from "./useAttentionFeed";
+import { useUnreadSummary } from "./useUnreadSummary";
+import { useWindowFocused } from "./useWindowFocused";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
@@ -745,6 +747,21 @@ function AppContent() {
   useEffect(() => {
     if (selectedSessionId && view === "workspace") void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
   }, [selectedSessionId, view]);
+  // What is still unread: the sidebar dots and the dock badge. Keyed on the
+  // session ids too, because archiving a chat changes the count without
+  // moving the ledger.
+  const sessionIdsKey = useMemo(() => state.sessions.map(item => item.id).sort().join(","), [state.sessions]);
+  const unread = useUnreadSummary(sessionIdsKey);
+  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total]);
+  // The chat on screen in a focused window never stays unread: a turn that
+  // ends while you watch, or one that ended while Bridge was in the
+  // background, is seen once you are looking at it.
+  const windowFocused = useWindowFocused();
+  const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
+  const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  useEffect(() => {
+    if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
+  }, [onScreenUnread, onScreenSessionId, unread]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -3279,6 +3296,7 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      unread={unread.byChat}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
