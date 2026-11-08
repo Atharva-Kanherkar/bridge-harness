@@ -214,3 +214,40 @@ Issue #890 (parent #886, epic #865). Builds on #888 (`notes/query_database`, `sa
   - the edited Notes tabs.
 - 1000 rows: a board column renders its first 50 cards and pages with "Load more". An ungrouped list
   is windowed.
+
+## Amendments after review (PR #903)
+
+Each item below came out of review and has a regression test that fails without its fix.
+
+- **Composed filters stay within the planner's limits.** A body that adds conditions to the view's
+  filter (Calendar's window, a board column's next page) composes them so the result still nests at
+  most two levels and holds at most 20 conditions:
+  - A top `and` takes the new conditions as items.
+  - A top `or` distributes them into each branch.
+  - When that would break a limit, the body reads the view's own filter, follows every cursor, and
+    applies the extra conditions to the rows itself.
+- **A date column pages by its interval.** A board grouped by a date bucket loads more of a column
+  with `onOrAfter`/`onOrBefore` around the bucket: the day, the week from its Monday, or the month.
+  "No value" uses `isEmpty`.
+- **The calendar finds ranges that overlap it.** The core indexes a date's start only, so the month
+  reads rows whose start is on or before the last shown day. It keeps those whose end, or start,
+  is on or after the first shown day.
+- **Calendar reads follow their cursors.** Both the month and the "No date" tray read every page.
+- **Board pages load once per column.** Load more is disabled while its column's request is out, and
+  appended rows are deduplicated by id.
+- **A board page from an earlier query is dropped.** Each server answer starts a new generation, and
+  a column page that belongs to an older one is ignored.
+- **A failed save keeps the override.** Saving reports real completion. On a refusal, the edit and
+  "Save for everyone" stay, ready to retry. This holds in `DatabaseView` and on the Notes tabs.
+- **Saving clears only what was saved.** An edit made while a save is out stays as an unsaved
+  override.
+- **Reorders queue with every other view edit.** Moving a view goes through the same ordered,
+  composed save as renames and filter changes, so a slow reorder never writes an older name back.
+- **A number filter shows what it applies.** The number field follows its condition's value when the
+  row changes under it (a row above removed, the property switched).
+- **A Project filter starts on a real project.** Its first value is the first workspace. When the
+  value matches no choice, the picker shows "Choose…".
+- **The Notes list keeps its newest snapshot.** A list read that lands after a newer one never
+  replaces the page list used for links, breadcrumbs and child pages.
+- **An empty list still measures its scroller.** The list's scroller stays mounted when it has no
+  rows, so rows that arrive later are windowed against the real height.
