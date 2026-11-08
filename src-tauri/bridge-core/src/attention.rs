@@ -50,7 +50,15 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
             superseded_by INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_attention_events_session
-            ON attention_events(session_id, audience, sequence);",
+            ON attention_events(session_id, audience, sequence);
+        -- Bumped by every ledger change in the same transaction, so a watcher
+        -- can tell that the committed ledger moved even when nothing was
+        -- published for it (typed forest appends publish no agent event).
+        CREATE TABLE IF NOT EXISTS attention_meta(
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            revision INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO attention_meta(id,revision) VALUES(1,0);",
     )?;
     Ok(())
 }
@@ -309,14 +317,33 @@ pub fn record_in_transaction(
         return Ok(false);
     }
     let session = SessionFacts::load(transaction, session_id)?;
-    match classify(effect, session.as_ref()) {
+    let changed: Result<bool, BridgeError> = match classify(effect, session.as_ref()) {
         Effect::Ignore => Ok(false),
         Effect::Open(attention) => {
             let session = session.expect("classify ignores unknown sessions");
             Ok(open(transaction, session_id, attention, &session, kind, entry_sequence)?.is_some())
         }
         Effect::Close => Ok(close(transaction, session_id, answered_request(payload))? > 0),
+    };
+    let changed = changed?;
+    if changed {
+        bump(transaction)?;
     }
+    Ok(changed)
+}
+
+fn bump(db: &Connection) -> Result<(), BridgeError> {
+    db.execute("UPDATE attention_meta SET revision=revision+1 WHERE id=1", [])?;
+    Ok(())
+}
+
+/// The committed ledger's revision. It moves on every change, including
+/// closes and seen stamps that leave the newest sequence where it was.
+pub fn revision(db: &Connection) -> Result<i64, BridgeError> {
+    Ok(db
+        .query_row("SELECT revision FROM attention_meta WHERE id=1", [], |row| row.get(0))
+        .optional()?
+        .unwrap_or(0))
 }
 
 fn now() -> String {
@@ -494,10 +521,16 @@ pub fn latest_sequence(db: &Connection) -> Result<i64, BridgeError> {
 
 /// Stamp every unseen row of one session as seen. Returns how many it stamped.
 pub fn mark_seen(db: &Connection, session_id: &str) -> Result<usize, BridgeError> {
-    Ok(db.execute(
+    let transaction = db.unchecked_transaction()?;
+    let stamped = transaction.execute(
         "UPDATE attention_events SET seen_at=?1 WHERE session_id=?2 AND audience=?3 AND seen_at IS NULL",
         params![now(), session_id, HUMAN],
-    )?)
+    )?;
+    if stamped > 0 {
+        bump(&transaction)?;
+    }
+    transaction.commit()?;
+    Ok(stamped)
 }
 
 #[cfg(test)]
