@@ -50,8 +50,10 @@ function Windowed({ rows, render }: { rows: DatabaseRow[]; render: (row: Databas
     return () => observer.disconnect();
   }, []);
   const [start, end] = windowOf(rows.length, scrollTop, height);
-  if (!rows.length) return <p className="m-0 px-1 py-4 text-[13px] text-muted-foreground">No rows yet</p>;
+  // The scroller stays mounted when empty, so it is measured once and rows
+  // that arrive later are windowed against its real height.
   return <div ref={scroller} aria-label="List" onScroll={event => setScrollTop(event.currentTarget.scrollTop)} className="max-h-[70vh] overflow-y-auto">
+    {!rows.length && <p className="m-0 px-1 py-4 text-[13px] text-muted-foreground">No rows yet</p>}
     <div role="list">
       {start > 0 && <div aria-hidden="true" style={{ height: start * ROW_HEIGHT }} />}
       {rows.slice(start, end).map(render)}

@@ -205,4 +205,15 @@ describe("DatabaseList", () => {
     expect(sections[0].querySelectorAll("[role=listitem]")).toHaveLength(0);
     expect(sections[0].querySelector("button")!.getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("windows rows that arrive after the list was empty against its real height", async () => {
+    const { made, row } = books();
+    const empty = props(made, list(null));
+    await act(async () => { root.render(<DatabaseList {...empty} />); });
+    expect(document.body.textContent).toContain("No rows yet");
+    for (let index = 0; index < 80; index += 1) row(`Book ${index}`, {});
+    await act(async () => { root.render(<DatabaseList {...props(made, list(null))} />); });
+    expect(document.querySelectorAll("[role=listitem]")).toHaveLength(27);
+  });
 });
+
