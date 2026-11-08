@@ -12,7 +12,10 @@ Covered block kinds, all in `src/components/Markdown.tsx`:
 | ` ```diagram ` | `DiagramBlock` → `DiagramFigure` | copy only | copy + fullscreen |
 | ` ```mermaid ` | `MermaidBlock` | copy only | copy + fullscreen |
 | ` ```html ` | `HtmlBlock` | fullscreen already | unchanged behaviour, shared overlay |
-| ` ```math ` / `$$…$$` | `MathBlock` | copy only | copy + fullscreen |
+
+Display math (`$$…$$`) is deliberately out of scope: KaTeX sets its own font
+size, so a wider overlay does not make an equation any larger; its existing
+horizontal scroll is the right affordance.
 
 Rules:
 
@@ -29,9 +32,10 @@ Rules:
   block.
 - Nothing about the inline render changes: same markup, same copy behaviour.
 - Invalid diagram JSON still falls back to source, never crashes.
+- Zoom resets to 100% the next time a block is opened.
 
-Non-goals: image `![]()` rendering (Bridge's markdown has none), a second
-fullscreen surface for code blocks, or persisting zoom across messages.
+Non-goals: display math (see above), image `![]()` rendering (Bridge's markdown
+has none), a second fullscreen surface for code blocks.
 
 ## Unit Tests
 
@@ -45,8 +49,6 @@ fullscreen surface for code blocks, or persisting zoom across messages.
 
 - `renders a fullscreen affordance for diagrams` — static markup contains
   `aria-label="Fullscreen"` for a `diagram` fence and a `mermaid` fence.
-- `math blocks expose fullscreen too` — `$$x^2$$` static markup contains the
-  affordance.
 - Interactive: clicking `Fullscreen` on a diagram opens
   `[role="dialog"][aria-label="diagram fullscreen"]` outside the message
   container, and `Exit fullscreen` closes it.
