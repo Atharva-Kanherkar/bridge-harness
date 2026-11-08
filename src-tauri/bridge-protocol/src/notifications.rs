@@ -120,6 +120,11 @@ notifications![
     // A Structure or Turn into tasks reply so far, while it streams. Transient:
     // the settled job and its stored result are the truth.
     (NotesPassProgress, "notes/pass_progress", Transient),
+    // Refetch hint: the attention ledger may have moved. No rows ride along,
+    // for the same reason `memory-changed` carries no records: a client that
+    // rebuilt state from the hint would keep what the ledger already closed.
+    // Clients reread `attention/list_attention` from their cursor.
+    (AttentionChanged, "attention/changed", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent
@@ -179,6 +184,7 @@ mod tests {
             NotificationName::VoiceTranscript,
             NotificationName::SessionStartup,
             NotificationName::StreamLagged,
+            NotificationName::AttentionChanged,
         ] {
             assert_eq!(
                 transient.delivery(),

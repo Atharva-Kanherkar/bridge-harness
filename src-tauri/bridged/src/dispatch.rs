@@ -430,6 +430,14 @@ pub fn dispatch(
             reply(api::stop_session(core, p.session_id))
         }
 
+        MethodName::ListAttention => {
+            let p: wire::ListAttentionParams = decode(method, params)?;
+            reply(api::list_attention(core, &p))
+        }
+        MethodName::MarkAttentionSeen => {
+            let p: wire::MarkAttentionSeenParams = decode(method, params)?;
+            reply(api::mark_attention_seen(core, &p))
+        }
         MethodName::ResolveApproval => {
             let p: wire::ResolveApprovalParams = decode(method, params)?;
             reply(api::resolve_approval(
@@ -1324,6 +1332,40 @@ mod tests {
         // rather than something quietly ignored.
         let error = dispatch(&core, MethodName::GetWorkBoard, Some(json!({})))
             .expect_err("params must be refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn attention_ledger_reads_and_marks_seen_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let empty = dispatch(&core, MethodName::ListAttention, None).unwrap();
+        assert_eq!(empty, json!({"items": [], "latestSequence": 0}));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('s','claude','Chat','ready','direct','Fix login')",
+                [],
+            )
+            .unwrap();
+            let mut ended = bridge_core::agent::NormalizedEvent::new("turn.completed");
+            ended.status = Some("completed".into());
+            bridge_core::store::session_event(&db, "s", &ended, &json!({})).unwrap();
+        }
+        let page = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
+        assert_eq!(page["latestSequence"], json!(1));
+        assert_eq!(page["items"][0]["kind"], json!("finished"));
+        assert_eq!(page["items"][0]["severity"], json!("informational"));
+        assert_eq!(page["items"][0]["body"], json!("Fix login · Claude finished its turn"));
+
+        let seen = dispatch(&core, MethodName::MarkAttentionSeen, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(seen, json!({"updated": 1}));
+        let unseen = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
+        assert_eq!(unseen["items"], json!([]));
+
+        let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        let error = dispatch(&core, MethodName::ListAttention, Some(json!({"cursor": 1}))).expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 
