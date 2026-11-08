@@ -508,6 +508,15 @@ impl NotesService {
             rename_lock: Mutex::new(()),
             task_lock: Mutex::new(()),
         };
+        // The index is derived from the log. If it lost pages the log still
+        // has, rebuild it before anything reads or mirrors from it.
+        let missing: i64 = service.with_db(|db| {
+            Ok(db.query_row("SELECT COUNT(DISTINCT page_id) FROM page_updates WHERE page_id NOT IN (SELECT id FROM pages)", [], |row| row.get(0))?)
+        })?;
+        if missing > 0 {
+            eprintln!("[notes] the index is missing {missing} pages; rebuilding it from the log");
+            service.rebuild_index()?;
+        }
         // Pages committed but never mirrored (a failed write, a crash between
         // commit and projection) get their files now.
         if let Err(error) = projector::reconcile(&service) {
@@ -3201,6 +3210,31 @@ pub(crate) mod tests {
         let database = notes.database(&id).unwrap();
         assert_eq!(database.schema[&rating].name, "Score", "the rename survived the merge");
         assert!(database.schema[&status].options.iter().any(|option| option.name == "Paused"), "the option survived the merge");
+    }
+
+    #[test]
+    fn a_store_that_lost_its_index_rebuilds_on_open() {
+        use crate::notes::query::QuerySpec;
+        let dir = tempfile::tempdir().unwrap();
+        let open = || NotesService::open(dir.path(), Arc::new(|_: &str| false)).unwrap();
+        let notes = open();
+        let (id, rating, _status) = reading_list(&notes);
+        let view = notes.put_view(&id, None, ViewDef { name: "Top".into(), kind: ViewType::Board, order: 1, filter: None, sorts: vec![], group_by: None, date_property: None, properties: vec![] }, PERSON).unwrap();
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(4)))], PERSON).unwrap();
+        drop(notes);
+        // Every index table emptied, as a damaged or truncated notes.db leaves
+        // it; the log is intact.
+        let db = rusqlite::Connection::open(dir.path().join(store::FILE_NAME)).unwrap();
+        db.execute_batch("DELETE FROM pages; DELETE FROM page_values; DELETE FROM database_props; DELETE FROM pages_fts; DELETE FROM page_links;").unwrap();
+        drop(db);
+        let notes = open();
+        let database = notes.database(&id).unwrap();
+        assert!(database.schema.contains_key(&rating));
+        assert!(database.views.contains_key(&view));
+        assert_eq!(notes.read(&row.id).unwrap().values.unwrap()[&rating], serde_json::json!(4));
+        let found = notes.query_database(&id, &QuerySpec { filter: Some(serde_json::json!({"property": rating, "op": "gte", "value": 4})), ..Default::default() }).unwrap();
+        assert_eq!(found.rows.iter().map(|row| row.note.id.clone()).collect::<Vec<_>>(), vec![row.id]);
     }
 
     #[test]
