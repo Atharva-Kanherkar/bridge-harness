@@ -67,7 +67,7 @@ export function resolveDraftHarnessModel({ adapters, setup, session, harnessOver
   }
   const storedChoice = fromStoredChoice(stored, adapters);
   if (storedChoice) return storedChoice;
-  const profile = setup ? resolveProfileOption("standard_orchestrator", setup, adapters) : undefined;
+  const profile = setup ? resolveProfileOption("standard_orchestrator", setup, [...adapters]) : undefined;
   const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
   return {
     harness: (preferred?.id as Harness) ?? "codex",
