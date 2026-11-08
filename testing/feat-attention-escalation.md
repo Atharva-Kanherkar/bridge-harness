@@ -73,9 +73,13 @@ duplicate. They are left for #909's policy work.
 - `attention::tests::seen_escalation_is_not_raised_again`
 - `attention::tests::escalation_closes_when_the_queue_empties`
 - `attention::tests::escalation_copy_counts_updates`
-- `live_turn` test: `deliver_queued_now` resumes a session with no live
-  adapter and delivers its queued row once; a second call reports nothing
-  queued (`deliver_now_resumes_and_delivers_once`).
+- `live_turn` tests (unit fixtures can attach a recording adapter but not
+  launch a real one, so the real resume is exercised in the manual step):
+  - `deliver_now_delivers_once`: with a live adapter, the queued row is
+    sent once; a second call reports nothing queued.
+  - `deliver_now_resumes_an_adapterless_chat`: with no adapter, the call
+    attempts the resume a send would, surfaces its "could not resume it"
+    error when the harness cannot launch, and keeps the row queued.
 
 ## Integration / functional tests
 
