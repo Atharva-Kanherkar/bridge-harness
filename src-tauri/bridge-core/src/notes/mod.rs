@@ -19,6 +19,7 @@ pub mod jobs;
 pub mod live;
 pub mod links;
 pub mod markdown;
+pub mod notices;
 pub mod projector;
 pub mod query;
 pub mod service;

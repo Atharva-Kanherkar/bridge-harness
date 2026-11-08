@@ -246,6 +246,43 @@
       ],
       "type": "object"
     },
+    "NoteNotice": {
+      "description": "Something about a page's file the importer could not apply, kept so the page can say so: today, a frontmatter value its property cannot read.",
+      "properties": {
+        "createdAt": {
+          "type": "string"
+        },
+        "expected": {
+          "description": "The property's type, which the text did not read as.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`unreadableValue`.",
+          "type": "string"
+        },
+        "propertyId": {
+          "type": "string"
+        },
+        "raw": {
+          "description": "The text after the key, as the file had it.",
+          "type": "string"
+        },
+        "seq": {
+          "description": "The page's `seq` when the notice was recorded.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "expected",
+        "kind",
+        "propertyId",
+        "raw",
+        "seq"
+      ],
+      "type": "object"
+    },
     "NoteOption": {
       "description": "One choice of a select, multi-select or status property.",
       "properties": {
@@ -493,6 +530,13 @@
     },
     "note": {
       "$ref": "#/definitions/Note"
+    },
+    "notices": {
+      "description": "On a row: lines of its file the importer could not set, newest first.",
+      "items": {
+        "$ref": "#/definitions/NoteNotice"
+      },
+      "type": "array"
     },
     "seq": {
       "format": "int64",
