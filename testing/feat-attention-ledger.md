@@ -10,9 +10,12 @@ diffing two session-list snapshots (`src/attentionEvents.ts`). Nothing else
 can see those decisions, workers ping the person when they finish, and worker
 approvals never set the worker's status to `waiting`, so they ping nobody.
 
-This change moves the decision into bridge-core. Every durable forest event
-already goes through one function, `store::session_event_in_transaction`.
-Right after the forest entry is appended, a pure classifier decides whether
+This change moves the decision into bridge-core. Every durable forest entry
+already goes through one function, `store::append_session_entry_tx`: adapter
+events via `session_event_in_transaction`, and typed entries (delegation
+launch approvals, `policy.rs`) via `SessionForest`. Imports and forks copy
+history with direct inserts and never pass through it, so old history never
+raises anything. Right after the entry is appended, a pure classifier decides whether
 the event opens, closes, or does not touch an attention row, and the row is
 written in the same transaction. Clients read the ledger through two new
 methods and learn that it moved through one refetch hint.
@@ -29,12 +32,17 @@ kind is not hidden (`work_briefing_config::is_hidden_session_kind`):
 | `turn.completed` | `completed`, `end_turn` | open `finished` | nothing |
 | `turn.completed` | `failed`, or starts with `error` | open `failed` | nothing |
 | `turn.completed` | `cancelled`, `interrupted`, anything else | nothing | nothing |
-| `approval.requested`, `permission.requested`, `question.requested`, `delegation.requested` | any | open `needs_you` | open `needs_you` |
-| `approval.resolved`, `approval.settled`, `permission.resolved`, `permission.denied`, `question.resolved` | any | close the open `needs_you` rows | same |
+| `approval.requested`, `permission.requested`, `question.requested` | any | open `needs_you` | open `needs_you` |
+| `approval.resolved`, `approval.settled`, `permission.resolved`, `permission.denied`, `question.resolved`, `question.rejected`, `delegation.approved`, `delegation.rejected` | any | close the open `needs_you` rows | same |
 | anything else | | nothing | nothing |
 
 - Hidden kinds and unknown sessions: nothing, for every forest kind.
 - Restore, warm-up and resume emit no `turn.completed`, so they write nothing.
+- `delegation.requested` means the launch was queued, not that it needs a
+  person (`policy.rs`: `RouteDecision::Queue`), so it writes nothing. A launch
+  that needs approval is written as `approval.requested`.
+- The classifier returns before any SQL for every other kind, because this
+  path runs for every streamed tool event.
 - `needs_you` rows carry `approval_event_id` = the forest sequence of the
   request entry, so a client can resolve that approval without replaying.
 - Opening a row supersedes every older open, unseen row of the same session
@@ -81,6 +89,8 @@ Wire:
 - `attention::tests::mark_seen_stamps_only_that_session`
 - `store` test: `session_event_in_transaction` writes the row; rolling the
   transaction back leaves none (`forest_write_and_attention_row_commit_together`).
+- `store` test: a typed `SessionForest` append of `approval.requested` writes a
+  `needs_you` row (`typed_forest_approval_opens_needs_you`).
 - `events` test: publishing an `Agent` event of a trigger kind also delivers
   `AttentionChanged`; a non-trigger kind or a sequence-zero frame does not;
   a lagged receiver gets `AttentionChanged` back from `reconciliation_events`.
