@@ -144,4 +144,13 @@ describe("App attention wiring", () => {
     await wait(20);
     expect(seen).toHaveBeenCalledWith("b");
   });
+
+  it("passes no approval id for a question", async () => {
+    await mountApp();
+    // Core gives a question no approval id: it is answered through
+    // resolve_question, so the Linux banner must offer Open only.
+    await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you", approvalEventId: null }); });
+    await wait(NEEDS_YOU_HOLD_MS + 100);
+    expect(notifyAttention).toHaveBeenCalledWith("Bridge needs you", "Worker w · Claude is waiting for your input", { sessionId: "w", approvalEventId: null });
+  });
 });
