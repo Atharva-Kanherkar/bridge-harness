@@ -106,6 +106,24 @@ describe("DiagramBlock rendering", () => {
     expect(html).toContain("Could not render this diagram");
   });
 
+  it("offers a fullscreen affordance beside copy, without dropping either", () => {
+    const spec = JSON.stringify({
+      nodes: [{ id: "a", row: 0, col: 0, label: "start" }],
+      edges: [],
+      caption: "c",
+      ariaLabel: "a",
+    });
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\n" + spec + "\n```"} />);
+    expect(html).toContain("rich-block-actions");
+    expect(html).toContain('aria-label="Fullscreen"');
+    expect(html).toContain('aria-label="Copy"');
+  });
+
+  it("does not offer fullscreen for a diagram that failed to parse", () => {
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\nnot json\n```"} />);
+    expect(html).not.toContain('aria-label="Fullscreen"');
+  });
+
 });
 
 describe("Mermaid rendering", () => {
@@ -148,6 +166,20 @@ describe("Mermaid rendering", () => {
     await act(async () => { root.render(<Markdown text={"```mermaid\ninvalid\n```"} />); });
     expect(container.textContent).toContain("Could not render this Mermaid diagram");
     expect(container.querySelector(".code-block")?.textContent).toContain("invalid");
+  });
+
+  it("opens the same rendered diagram fullscreen and closes again", async () => {
+    await act(async () => { root.render(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />); });
+    const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+    await act(async () => { open.click(); });
+    // A wide flowchart is exactly the case the overlay exists for: labels that
+    // fit a chat column are unreadable, and the window is the only way out.
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="mermaid fullscreen"]') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(overlay.querySelector('[data-testid="mermaid-svg"]')).toBeTruthy();
+    await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[aria-label="mermaid fullscreen"]')).toBeNull();
   });
 
   it("re-renders when the active theme changes", async () => {
@@ -255,6 +287,37 @@ describe("copy affordances (interactive)", () => {
     await act(async () => { button.click(); await Promise.resolve(); await Promise.resolve(); });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(spec);
     expect(button.textContent).toContain("Copied");
+  });
+
+  it("DiagramBlock opens fullscreen from the toolbar and zooms without clipping", async () => {
+    const spec = JSON.stringify({
+      nodes: [
+        { id: "a", row: 0, col: 0, label: "start" },
+        { id: "b", row: 1, col: 0 },
+      ],
+      edges: [{ from: "a", to: "b" }],
+      caption: "A leads to B.",
+      ariaLabel: "Diagram: A leads to B.",
+    });
+    await act(async () => { root.render(<Markdown text={`\`\`\`diagram\n${spec}\n\`\`\``} />); });
+    const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+
+    await act(async () => { open.click(); });
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="diagram fullscreen"]') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(container.contains(overlay)).toBe(false);
+    // The figure and its caption come along; the overlay is a wider look at
+    // the same drawing, not a different rendering.
+    expect(overlay.querySelector("svg")).toBeTruthy();
+    expect(overlay.textContent).toContain("A leads to B.");
+
+    await act(async () => { (overlay.querySelector('[aria-label="Zoom in"]') as HTMLButtonElement).click(); });
+    expect(overlay.textContent).toContain("125%");
+
+    await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[aria-label="diagram fullscreen"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fullscreen"]')).toBeTruthy();
   });
 
   it("HtmlBlock's fullscreen toggle opens and closes an overlay without weakening the sandbox", async () => {

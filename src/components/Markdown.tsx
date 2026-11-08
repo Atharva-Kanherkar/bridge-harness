@@ -5,6 +5,7 @@ import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
+import { ExpandButton, VisualFullscreen } from "./VisualFullscreen";
 import { StoragePlanCard } from "./StoragePlanCard";
 import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
@@ -362,6 +363,7 @@ function DiagramBlock({ spec }: { spec: string }) {
       return null;
     }
   }, [spec]);
+  const [fullscreen, setFullscreen] = useState(false);
 
   if (!parsed) {
     return (
@@ -373,8 +375,16 @@ function DiagramBlock({ spec }: { spec: string }) {
   }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={spec} className="rich-block-copy" />
+      <div className="rich-block-actions">
+        <CopyButton text={spec} className="rich-block-copy" />
+        <ExpandButton onClick={() => setFullscreen(true)} />
+      </div>
       <DiagramFigure spec={parsed} />
+      <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="diagram">
+        {/* The same figure, not a copy: the overlay only changes the width it
+            is laid out at, so nothing about the drawing can drift. */}
+        <DiagramFigure spec={parsed} />
+      </VisualFullscreen>
     </div>
   );
 }
@@ -385,6 +395,7 @@ function MermaidBlock({ code }: { code: string }) {
   const dark = useDarkTheme();
   const [rendered, setRendered] = useState<{ code: string; dark: boolean; svg: string } | null>(null);
   const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const id = useRef("");
   if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
 
@@ -414,8 +425,16 @@ function MermaidBlock({ code }: { code: string }) {
     return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
   }
   return <div className="rich-block my-[0.9em]">
-    <CopyButton text={code} className="rich-block-copy" />
+    <div className="rich-block-actions">
+      <CopyButton text={code} className="rich-block-copy" />
+      <ExpandButton onClick={() => setFullscreen(true)} />
+    </div>
     <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="mermaid">
+      {/* Mermaid bakes a `max-width` onto its own <svg>; the overlay's canvas
+          rule overrides it so the drawing can use the window's width. */}
+      <div role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    </VisualFullscreen>
   </div>;
 }
 
