@@ -30,8 +30,9 @@ Core, `attention::unread_summary(db)`:
     the ones that wait on the person to act.
 - Read-only. It never changes the ledger or its revision.
 
-Protocol 1.26: `attention/unread_summary {} -> { total, needsYou, byChat,
-bySession }`. Strict params: unknown fields are refused. A 1.25 client still
+Protocol 1.26: `attention/unread_summary -> { total, needsYou, byChat,
+bySession }`. It takes no params, like the other parameterless reads
+(`get_recall_stats`, `get_attribution_settings`). A 1.25 client still
 pairs with a 1.26 daemon. A 1.26 client needs a 1.26 daemon, because the
 method is new.
 
@@ -75,8 +76,8 @@ the chat on screen and per-kind settings (#909), Mission Control grid tiles.
 ## Integration / functional tests
 
 - bridged dispatch: `attention/unread_summary` on an empty ledger returns
-  `{ total: 0, needsYou: 0, byChat: {}, bySession: {} }`; unknown fields are
-  refused.
+  `{ total: 0, needsYou: 0, byChat: {}, bySession: {} }`, and after a
+  finished turn counts that chat.
 - Shell: `parse_unread_badge` maps 0 to no badge, n to n, and garbage to no
   change.
 - Protocol gates as in the earlier slices (artifacts, naming, strictness,
