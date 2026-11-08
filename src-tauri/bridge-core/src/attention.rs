@@ -464,7 +464,8 @@ pub const STRANDED_LOOKBACK: chrono::Duration = chrono::Duration::hours(24);
 /// sweep; never starts a provider. Returns whether the ledger changed.
 ///
 /// One open escalation per chat: a seen but unresolved one is not raised again,
-/// because the person already knows. It closes once that chat's queue is empty,
+/// because the person already knows. A superseded one does not count: no
+/// client shows it, and the remedy has to stay reachable. It closes once that chat's queue is empty,
 /// whichever route emptied it.
 pub fn escalate_stranded(
     db: &Connection,
@@ -516,7 +517,8 @@ fn escalate_stranded_in(
         }
         let open: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM attention_events
-             WHERE session_id=?1 AND audience=?2 AND kind='escalation' AND resolved_at IS NULL)",
+             WHERE session_id=?1 AND audience=?2 AND kind='escalation' AND resolved_at IS NULL
+               AND superseded_by IS NULL)",
             params![session_id, HUMAN],
             |row| row.get(0),
         )?;
@@ -1030,6 +1032,21 @@ mod tests {
         queued(&db, "q1", "worker", "queued", chrono::Duration::minutes(2), now);
         assert!(!escalate_stranded(&db, &std::collections::HashSet::new(), now).unwrap());
         assert!(escalations(&db).is_empty(), "Deliver now is never offered for a worker");
+    }
+
+    #[test]
+    fn a_superseded_escalation_is_raised_again() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(2), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        // A failed turn supersedes the unseen escalation; the input is still stranded.
+        record(&db, "orch", "turn.completed", json!({"status": "failed"}), 4);
+        assert!(escalate_stranded(&db, &live, now).unwrap(), "the remedy must stay reachable");
+        let visible: Vec<AttentionKind> = list(&db, None, None, false).unwrap().items.into_iter().map(|row| row.kind).collect();
+        assert_eq!(visible, vec![AttentionKind::Escalation]);
     }
 
     #[test]
