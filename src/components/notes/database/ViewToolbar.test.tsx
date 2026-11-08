@@ -168,6 +168,17 @@ describe("FilterBuilder", () => {
     expect(select("Filter 1 value").selectedOptions[0].textContent).toBe("Choose…");
   });
 
+  it("keeps unfinished text with its own row when a row above goes", () => {
+    const onChange = vi.fn();
+    act(() => root.render(<FilterBuilder database={DATABASE} value={{ and: [{ property: "p-rating", op: "gte", value: 5 }, { property: "p-rating", op: "lte", value: 10 }] }} onChange={onChange} />));
+    type(input("Filter 2 value"), "4x");
+    click(button("Remove filter 1"));
+    expect(onChange).toHaveBeenLastCalledWith(null);
+    expect(input("Filter 1 value").value).toBe("4x");
+    expect(input("Filter 1 value").getAttribute("aria-invalid")).toBe("true");
+    expect(select("Filter 1 op").value).toBe("lte");
+  });
+
   it("leaves an unfinished number out", () => {
     const onChange = mount({ and: [{ property: "p-rating", op: "gte", value: 3 }] });
     type(input("Filter 1 value"), "4x");

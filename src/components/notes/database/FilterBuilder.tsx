@@ -2,7 +2,7 @@
 // group one level deep, and/or per group. It keeps its own tree so a half-typed
 // number stays on screen, and hands out only complete conditions.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -25,7 +25,25 @@ const LIST_OPS = new Set(["isAnyOf", "isNoneOf", "containsAny"]);
 export function FilterBuilder({ database, value, onChange, workspaces = [] }: FilterBuilderProps) {
   const columns = filterColumns(database);
   const [tree, setTree] = useState<Group>(() => readFilter(value));
+  // Each row keeps one key through edits, so its half-typed text stays with
+  // its own condition when a row above it goes. An edit makes a new object;
+  // it takes the key of the object it replaced at the same place.
+  const keys = useRef(new WeakMap<object, string>());
+  const counter = useRef(0);
+  const keyOf = (item: object) => {
+    let key = keys.current.get(item);
+    if (!key) { key = `r${++counter.current}`; keys.current.set(item, key); }
+    return key;
+  };
+  const carry = (before: Group, after: Group) => {
+    after.items.forEach((item, index) => {
+      const old = before.items[index];
+      if (!keys.current.has(item) && old && isGroup(old) === isGroup(item) && !after.items.includes(old)) keys.current.set(item, keyOf(old));
+      if (isGroup(item) && old && isGroup(old)) carry(old, item);
+    });
+  };
   const apply = (next: Group) => {
+    carry(tree, next);
     setTree(next);
     onChange(writeFilter(completeOnly(next, columns)));
   };
@@ -35,13 +53,13 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
   const rows = (group: Group, path: Path) => group.items.map((item, index) => {
     const at = [...path, index];
     if (isGroup(item)) {
-      return <li key={`g${index}`} className="rounded-lg bg-muted/50 p-1.5 ring-1 ring-border">
+      return <li key={keyOf(item)} className="rounded-lg bg-muted/50 p-1.5 ring-1 ring-border">
         <JoinSwitch label="Match in this group" join={item.join} onChange={join => apply(setJoin(tree, at, join))} />
         <ol className="m-0 mt-1 flex list-none flex-col gap-1 p-0">{rows(item, at)}</ol>
         <button type="button" disabled={!canAdd(tree)} onClick={() => add(at)} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={12} aria-hidden="true" />Add to group</button>
       </li>;
     }
-    return <li key={`c${index}`}><ConditionRow condition={item} columns={columns} workspaces={workspaces} label={`Filter ${at.map(part => part + 1).join(".")}`} onChange={condition => apply(setCondition(tree, at, condition))} onRemove={() => apply(removeAt(tree, at))} /></li>;
+    return <li key={keyOf(item)}><ConditionRow condition={item} columns={columns} workspaces={workspaces} label={`Filter ${at.map(part => part + 1).join(".")}`} onChange={condition => apply(setCondition(tree, at, condition))} onRemove={() => apply(removeAt(tree, at))} /></li>;
   });
 
   return <div aria-label="Filter builder" className="flex w-[34rem] max-w-[calc(100vw-2rem)] flex-col gap-1.5 p-1">
