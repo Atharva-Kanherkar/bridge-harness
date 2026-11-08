@@ -124,4 +124,24 @@ describe("App attention wiring", () => {
     expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
     expect(seen).toHaveBeenCalledWith("b");
   });
+
+  it("marks the chat seen when its toast reopens the retained selection", async () => {
+    const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
+    await mountApp();
+    await act(async () => { (container.querySelector('button[title^="Title b"]') as HTMLButtonElement).click(); });
+    await wait(20);
+    // Away to Memory; the chat stays selected underneath.
+    const memory = [...container.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Memory")) as HTMLButtonElement;
+    expect(memory, "the Memory entry in the sidebar").toBeTruthy();
+    await act(async () => { memory.click(); });
+    await wait(20);
+    seen.mockClear();
+
+    await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+    await wait(40);
+    const toastButton = container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]') as HTMLButtonElement;
+    await act(async () => { toastButton.click(); });
+    await wait(20);
+    expect(seen).toHaveBeenCalledWith("b");
+  });
 });
