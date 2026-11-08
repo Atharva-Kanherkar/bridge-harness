@@ -226,3 +226,34 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
     try manifest.write(to: output.appendingPathComponent("README.txt"), atomically: true, encoding: .utf8)
     print("Synthetic menu card renders written to \(output.path)")
 }
+
+// The status icon with and without the unread dot, tinted the way the menu bar
+// draws a template image, on light and dark strips. Synthetic; no menu bar.
+func renderStatusIconFixtures() throws {
+    guard let destination = ProcessInfo.processInfo.environment["BRIDGE_MENU_BAR_RENDER_DIR"] else { return }
+    let output = URL(fileURLWithPath: destination, isDirectory: true)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let scale: CGFloat = 8
+    let plain = MenuController.templateIcon()
+    for (name, background, ink) in [("light", NSColor(white: 0.93, alpha: 1), NSColor.black), ("dark", NSColor(white: 0.16, alpha: 1), NSColor.white)] {
+        let size = NSSize(width: 64 * scale, height: 26 * scale)
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height), bitsPerSample: 8,
+                                      samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        background.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        for (index, icon) in [plain, iconWithUnreadDot(plain)].enumerated() {
+            let frame = NSRect(x: (8 + CGFloat(index) * 30) * scale, y: 4 * scale, width: 18 * scale, height: 18 * scale)
+            let tinted = NSImage(size: frame.size, flipped: false) { rect in
+                icon.draw(in: rect)
+                ink.setFill()
+                rect.fill(using: .sourceAtop)
+                return true
+            }
+            tinted.draw(in: frame)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("status-icon-unread-\(name).png"))
+    }
+}

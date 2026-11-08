@@ -78,6 +78,9 @@ final class MenuController: NSObject, NSMenuDelegate {
     // A detached custom view must never reveal NSMenuItem's default title.
     let card = MenuCardItem(title: "", action: nil, keyEquivalent: "")
     let refresh = NSMenuItem(title: "Refresh usage", action: #selector(refreshUsage), keyEquivalent: "r")
+    // Unread chats, above the usage card. Choosing it opens Bridge.
+    let attention = NSMenuItem(title: "", action: #selector(openBridge), keyEquivalent: "")
+    let attentionSeparator = NSMenuItem.separator()
     let refreshOptions = NSMenu(title: "Refresh interval")
     lazy var breakdown = ModelBreakdownMenu(state: state)
     var tracking = false
@@ -118,6 +121,12 @@ final class MenuController: NSObject, NSMenuDelegate {
         item.button?.setAccessibilityTitle("Bridge usage menu")
         menu.delegate = self
         menu.autoenablesItems = false
+        attention.target = self
+        attention.image = Self.menuSymbol("bell")
+        attention.isHidden = true
+        attentionSeparator.isHidden = true
+        menu.addItem(attention)
+        menu.addItem(attentionSeparator)
         menu.addItem(card)
         menu.addItem(breakdown.item)
         menu.addItem(.separator())
@@ -215,7 +224,9 @@ final class MenuController: NSObject, NSMenuDelegate {
         refresh.title = presentation.refreshing ? "Refreshing usage…" : "Refresh usage"
         let statusPresentation = presentation.forStatusProvider(statusProvider)
         let status = MenuStatus(statusPresentation, now: Int64(Date().timeIntervalSince1970))
-        let icon = statusProvider.flatMap { ProviderIcon.image($0) } ?? (presentation.settings.iconStyle == "meter" ? Self.meterIcon(presentation) : Self.templateIcon())
+        let unread = attentionLabel(presentation.attention)
+        let plainIcon = statusProvider.flatMap { ProviderIcon.image($0) } ?? (presentation.settings.iconStyle == "meter" ? Self.meterIcon(presentation) : Self.templateIcon())
+        let icon = unread == nil ? plainIcon : iconWithUnreadDot(plainIcon)
         let layout = StatusLayout(statusPresentation, now: Int64(Date().timeIntervalSince1970))
         if layout.custom && layout.hasContent {
             if layout.requiresTemplateImage {
@@ -234,10 +245,16 @@ final class MenuController: NSObject, NSMenuDelegate {
             item.button?.title = status.title.isEmpty ? "" : " \(status.title)"
         }
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        let accessible = layout.custom && layout.hasContent ? layout.accessibilityTitle : status.accessibilityTitle
+        let accessible = accessibleTitle(layout.custom && layout.hasContent ? layout.accessibilityTitle : status.accessibilityTitle, attention: presentation.attention)
         item.button?.toolTip = accessible
         item.button?.setAccessibilityTitle(accessible)
+        // The title updates in place; showing or hiding the row waits for the
+        // menu to close, like every other structural change here.
+        attention.title = unread ?? "No unread chats"
+        attention.isEnabled = unread != nil
         if !tracking {
+            attention.isHidden = unread == nil
+            attentionSeparator.isHidden = unread == nil
             for (index, seconds) in [0, 60, 300, 900, 1800].enumerated() {
                 refreshOptions.items[index].state = presentation.settings.refreshSeconds == seconds ? .on : .off
             }
