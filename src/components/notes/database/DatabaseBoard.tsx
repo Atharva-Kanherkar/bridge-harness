@@ -12,22 +12,51 @@ import type { DatabaseGroup, DatabaseRow } from "../../../types";
 import { Floating } from "./Floating";
 import { cellValue, columnsOf, formatValue, type Column } from "./formatValue";
 import type { ViewBodyProps } from "./viewBody";
+import { addDays, placedDay } from "./DatabaseCalendar";
 import { composeFilter, readAll } from "./viewBody";
 import { filterColumns, type Condition, type FieldColumn } from "./viewModel";
 
 export const GROUP_LIMIT = 50;
 const MOVABLE = new Set(["select", "status", "multiSelect", "checkbox", "kind", "state", "project"]);
 
+/** The first and last day of a date bucket's key: a day, the week from its
+ *  Monday, or a month (`YYYY-MM`). */
+export function bucketDays(key: string, bucket: string | null | undefined): [string, string] {
+  if (bucket === "month" || key.length === 7) {
+    const [year, month] = key.split("-").map(Number);
+    return [`${key}-01`, new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)];
+  }
+  if (bucket === "week") return [key, addDays(key, 6)];
+  return [key, key];
+}
+
+/** A stored date's bucket key, as the planner buckets it. */
+export function bucketOf(raw: string, bucket: string | null | undefined): string {
+  const day = placedDay(raw);
+  if (bucket === "month") return day.slice(0, 7);
+  if (bucket === "week") return addDays(day, -((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7));
+  return day;
+}
+
 /** The conditions that pick one group's rows, for its next page. */
-export function groupConditions(column: FieldColumn, key: string): Condition[] {
+export function groupConditions(column: FieldColumn, key: string, bucket?: string | null): Condition[] {
+  if (column.type === "date" || column.type === "created" || column.type === "updated") {
+    if (!key) return [{ property: column.id, op: "isEmpty" }];
+    const [first, last] = bucketDays(key, bucket);
+    return [{ property: column.id, op: "onOrAfter", value: first }, { property: column.id, op: "onOrBefore", value: last }];
+  }
   if (column.type === "checkbox") return [{ property: column.id, op: "is", value: key === "true" }];
   if (column.type === "multiSelect") return [key ? { property: column.id, op: "contains", value: key } : { property: column.id, op: "isEmpty" }];
   return [key ? { property: column.id, op: "is", value: key } : { property: column.id, op: "isEmpty" }];
 }
 
 /** Whether a row sits in group `key`, as the planner buckets it. */
-export function inGroup(column: FieldColumn, key: string, row: DatabaseRow): boolean {
+export function inGroup(column: FieldColumn, key: string, row: DatabaseRow, bucket?: string | null): boolean {
   const value = cellValue(column, row.note, row.values);
+  if (column.type === "date" || column.type === "created" || column.type === "updated") {
+    const start = typeof value === "string" ? value : (value as { start?: string } | null)?.start;
+    return start ? bucketOf(start, bucket) === key : key === "";
+  }
   if (column.type === "checkbox") return (value === true) === (key === "true");
   if (column.type === "multiSelect") return Array.isArray(value) && value.length ? value.includes(key) : key === "";
   return key ? value === key : value === null || value === undefined || value === "";
@@ -80,11 +109,11 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
 
   const loadMore = async (group: DatabaseGroup, have: number) => {
     const page = extra[group.key];
-    const filter = composeFilter(query.filter, groupConditions(grouping, group.key));
+    const filter = composeFilter(query.filter, groupConditions(grouping, group.key, query.groupBy?.dateBucket));
     if (filter === null) {
       // No composed filter fits the planner's limits: the column's rows from
       // the view's own, all at once.
-      const rows = (await readAll(run, { filter: query.filter ?? null, sorts: query.sorts })).filter(row => inGroup(grouping, group.key, row));
+      const rows = (await readAll(run, { filter: query.filter ?? null, sorts: query.sorts })).filter(row => inGroup(grouping, group.key, row, query.groupBy?.dateBucket));
       setExtra(current => ({ ...current, [group.key]: { rows: rows.slice(group.rows.length), cursor: null } }));
       return;
     }

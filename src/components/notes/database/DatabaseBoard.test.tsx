@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../../api";
 import { mockCreateDatabase, mockCreatePage, mockQueryDatabase, mockReadPage, mockSaveView, mockUpdateNote, resetMockNotes } from "../../../notesMock";
 import { DatabaseView } from "./DatabaseView";
-import { groupConditions, movedValue } from "./DatabaseBoard";
+import { bucketDays, bucketOf, groupConditions, movedValue } from "./DatabaseBoard";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -137,4 +137,28 @@ describe("DatabaseBoard", () => {
     const [fresh] = mockQueryDatabase({ databaseId: made.note.id }).rows;
     expect(fresh.values).toEqual({ [status.id]: option("Reading") });
   });
+
+  it("pages a date column by its interval", async () => {
+    const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Due", type: "date" }] });
+    const due = made.database!.properties[0];
+    for (let index = 0; index < 60; index += 1) { const page = mockCreatePage({ title: `Nov ${index}`, parentId: made.note.id }); mockUpdateNote({ id: page.id, values: { [due.id]: { start: `2026-11-${String(1 + (index % 28)).padStart(2, "0")}` } } }); }
+    const late = mockCreatePage({ title: "December", parentId: made.note.id });
+    mockUpdateNote({ id: late.id, values: { [due.id]: { start: "2026-12-02" } } });
+    const view = mockSaveView({ databaseId: made.note.id, view: { name: "By month", type: "board", groupBy: { property: due.id, dateBucket: "month" } } });
+    const onError = vi.fn();
+    await act(async () => { root.render(<DatabaseView databaseId={made.note.id} viewId={view.id} workspaces={[]} onOpenPage={vi.fn()} onError={onError} />); });
+    await settle();
+    expect(columnLabels()).toEqual(["2026-11, 60", "2026-12, 1"]);
+    await act(async () => { [...column("2026-11").querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Load more (10)")!.click(); });
+    await settle();
+    expect(cardsIn("2026-11")).toHaveLength(60);
+    expect(cardsIn("2026-11")).not.toContain("December");
+    expect(onError).not.toHaveBeenCalled();
+    expect(bucketDays("2026-11", "month")).toEqual(["2026-11-01", "2026-11-30"]);
+    expect(bucketDays("2026-11-09", "week")).toEqual(["2026-11-09", "2026-11-15"]);
+    expect(bucketDays("2026-11-12", "day")).toEqual(["2026-11-12", "2026-11-12"]);
+    expect(bucketOf("2026-11-12", "week")).toBe("2026-11-09");
+    expect(bucketOf("2026-11-12T23:30:00-08:00", "day")).toBe("2026-11-13");
+  });
 });
+
