@@ -78,6 +78,7 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
         session={session}
         events={events}
         forestEntries={forest?.entries}
+        activeProcessEntries={forest?.activeProcessEntries}
         entryWindow={forest?.entryWindow}
         activeLeafId={forest?.head?.activeEntryId}
         continuationFidelity={session.continuationFidelity}

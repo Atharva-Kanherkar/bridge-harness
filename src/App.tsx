@@ -3543,6 +3543,7 @@ function AppContent() {
                   onOpenSession={openSession}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
+                  activeProcessEntries={forest?.activeProcessEntries}
                   entryWindow={forest?.entryWindow}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}

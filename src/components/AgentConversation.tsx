@@ -3,6 +3,10 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
+import { isToolLive } from "../transcript/toolCall";
+import { normalizeAgentEvent, normalizeSessionEntry } from "../transcript/codec";
+import { reduceTranscript } from "../transcript/reducer";
+import type { TranscriptEvent } from "../transcript/events";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
@@ -24,7 +28,7 @@ import { computeNarration, type NarrationView } from "../startupNarration";
 import { useAutoExpandEditActivity, useShowThinking } from "../transcriptSettings";
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
-import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
+import { CappedOutput, CommandPanel, EffectChip, TerminalBlock, toolIcon } from "./CommandOutput";
 import { CHECK_LABEL } from "../transcript/checks";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
@@ -185,9 +189,13 @@ function summarize(items: ConversationItem[], live: boolean): string {
   // A web search and a code search share a verb but not a sentence: `rg` in
   // the repo is not "searching the web".
   let web = 0;
+  const counted = new Set<string>();
   for (const item of items) {
     if (!isToolItem(item)) continue;
     const call = toolCallDisplay(item);
+    const identity = call.sourceCallId ?? item.identity ?? item.key;
+    if (counted.has(identity)) continue;
+    counted.add(identity);
     counts[call.verb] += 1;
     if (call.verb === "search" && call.glyph === "globe") web += 1;
   }
@@ -298,8 +306,8 @@ type CheckState = "running" | "passed" | "failed" | "pending";
 /// status the provider left it with, and that is a true fact about the wire,
 /// but the row must not keep claiming live work the model is no longer doing:
 /// it reads as `pending`, the state that claims nothing.
-function checkState(call: ReturnType<typeof toolCallDisplay>, turnActive: boolean): CheckState {
-  if (call.status === "running") return turnActive ? "running" : "pending";
+function checkState(call: ReturnType<typeof toolCallDisplay>, turnActive: boolean, runtimeActive: boolean): CheckState {
+  if (call.status === "running") return isToolLive(call, turnActive, runtimeActive) ? "running" : "pending";
   if (call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || call.check?.failures) return "failed";
   return call.status === "completed" ? "passed" : "pending";
 }
@@ -327,10 +335,11 @@ function CheckGlyph({ state }: { state: CheckState }) {
 
 const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: ConversationItem; turnActive?: boolean }) {
   const call = toolCallDisplay(item);
+  const runtimeActive = useContext(RuntimeActive);
   // A call can report itself running forever: the provider may never send its
   // completion, or the turn may be stopped mid-call. Once the turn is over the
   // row stops claiming to run, without rewriting what the wire said.
-  const live = turnActive && call.status === "running";
+  const live = isToolLive(call, turnActive, runtimeActive);
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
   const body = call.patch ? "patch" : call.subagent ? "subagent" : call.command ? "command" : call.verb === "run" && call.output ? "terminal" : call.output ? "output" : null;
@@ -339,10 +348,10 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
   // one keeps it collapsed.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const open = (toggled ?? !!call.patch) && !!body;
-  const check = call.check && call.command ? { ...call.check, state: checkState(call, turnActive) } : undefined;
+  const check = call.check && call.command ? { ...call.check, state: checkState(call, turnActive, runtimeActive) } : undefined;
   // What the call was for, in the harness's own words when it gave any; else
   // what Bridge read off the call. A check is named by the command it ran.
-  const label = check ? call.command! : call.intent ?? `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
+  const label = check ? call.command! : call.statusLabel ? `${call.statusLabel}: ${call.target ?? item.title ?? "task"}` : call.intent ?? `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
   // The command itself trails the title, muted, unless the title already is it.
   const suffix = !check && call.command && !label.includes(call.command) ? call.command : undefined;
   // A shell row names its path inside the command; a second label would repeat it.
@@ -409,8 +418,8 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
             {call.verb === "edit" && call.additions !== undefined && (
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
-            {call.durationMs !== undefined && !live && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
-            {check && <span className={cn("text-[11px] tracking-wide", CHECK_STATE[check.state].tone)}>{CHECK_STATE[check.state].word}</span>}
+            {call.durationMs !== undefined && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
+            {check && <span className={cn("text-[11px] tracking-wide", CHECK_STATE[check.state].tone)}>{call.statusLabel ?? CHECK_STATE[check.state].word}</span>}
             {/* Only what needs a look earns a glyph: running, or failed. A tick
                 on every settled row was noise the eye had to skip. */}
             {!check && (live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
@@ -461,12 +470,14 @@ const SELF_OPENING_STEPS = 3;
 /// "needs the agent" wants the broken step, not the ninety-nine that were
 /// fine. "Show all" reveals the whole timeline from there.
 const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpandEditActivity }: { items: ConversationItem[]; turnActive: boolean; autoExpandEditActivity: boolean }) {
+  const runtimeActive = useContext(RuntimeActive);
   const tools = useMemo(() => items.filter(isToolItem), [items]);
   // Live is a claim about the *work*, not about the transcript. A thought left
   // streaming by a provider that never settles it must not keep a finished run
   // spinning forever, and neither must a tool call whose completion never
   // arrived: the turn is the outer bound of both.
-  const live = turnActive && tools.some(item => item.status === "inProgress" || item.status === "streaming");
+  const live = tools.some(item => isToolLive(toolCallDisplay(item), turnActive, runtimeActive));
+  const watching = live && tools.filter(item => isToolLive(toolCallDisplay(item), turnActive, runtimeActive)).every(item => toolCallDisplay(item).passive);
   // A failed call is the agent's work, not the reader's. The marker names who
   // has to act instead of raising a human-attention alarm over a failure the
   // orchestrator exists to absorb.
@@ -509,11 +520,13 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   // One collapsed line for the whole run: the summary, then a mono step count on
   // the right. The count is the number of tool calls folded away, faint because
   // it is a measure of the work rather than the work itself.
-  const stepCount = tools.length;
+  const stepCount = new Set(tools.map(item => toolCallDisplay(item).sourceCallId ?? item.identity ?? item.key)).size;
   // What the run is doing right now, for a reader watching it work. One line,
   // not the whole timeline: the point of collapsing is that the tail is where
   // the news is.
-  const current = live ? toolCallDisplay(tools[tools.length - 1]) : undefined;
+  const currentItem = [...tools].reverse().find(item => isToolLive(toolCallDisplay(item), turnActive, runtimeActive));
+  const current = currentItem ? toolCallDisplay(currentItem) : undefined;
+  const progress = current?.progress ?? [...tools].reverse().map(toolCallDisplay).find(call => call.progress)?.progress;
   // Wall-clock the run occupied, not the sum of call durations: overlapping
   // tool calls would otherwise be counted twice. Each item contributes the
   // window [start, start+duration]; the trailer reports the union's span, which
@@ -529,7 +542,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   const summary = summarize(items, live);
   // One faint line, Codex-style: how long the run took, then what it did. With
   // no timestamps the summary is the headline rather than a wrong duration.
-  const headline = live ? "Working" : workedMs > 0 ? `Worked for ${formatThoughtDuration(workedMs)}` : summary;
+  const headline = live ? watching ? "Watching" : "Working" : workedMs > 0 ? `Worked for ${formatThoughtDuration(workedMs)}` : summary;
   return (
     <div data-activity-group className="min-w-0">
       <button
@@ -539,7 +552,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
         title={summary}
         onClick={onToggle}
       >
-        {live && <PulseDot size={7}/>}
+        {live && (watching ? <Circle size={7} className="shrink-0"/> : <PulseDot size={7}/>)}
         {!live && needsAgent && <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>}
         <span className="shrink-0">{headline}</span>
         {!live && needsAgent && <span className="shrink-0 text-destructive">· needs the agent</span>}
@@ -552,7 +565,8 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
       {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
         {checks.map(item => <ActionRow key={item.key} item={item} turnActive={turnActive}/>)}
       </div>}
-      {current && !current.check && !expanded && <NowCard item={tools[tools.length - 1]} items={items}/>}
+      {currentItem && current && !current.check && !expanded && <NowCard item={currentItem} items={items}/>}
+      {!expanded && progress && <p role="status" className="truncate px-1.5 pb-1 text-[12px] text-muted-foreground">{progress}</p>}
       <Disclosure open={expanded}>
         <motion.div
           className="grid min-w-0 gap-px pb-1"
@@ -641,7 +655,7 @@ const SHOWN_PLAN_STEPS = 6;
 /// it has been running, the newest output, and the plan around it.
 function NowCard({ item, items }: { item: ConversationItem; items: ConversationItem[] }) {
   const call = toolCallDisplay(item);
-  const title = call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
+  const title = call.passive ? `Watching${call.target ? ` ${call.target}` : ""}` : call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
   const command = call.command && !title.includes(call.command) ? call.command : undefined;
   const tail = useMemo(() => outputTail(call.output), [call.output]);
   const plan = useMemo(() => latestPlan(items), [items]);
@@ -769,6 +783,7 @@ const TranscriptHarness = createContext<string | null | undefined>(undefined);
 /// the conversation root, beside the harness, so every thinking row reads the
 /// same preference from the same subscription.
 const ShowThinking = createContext(true);
+const RuntimeActive = createContext(true);
 
 /// The one "the agent is thinking" row: the harness mark and a pulsing word.
 /// The cold-start wait, a reply whose first token has not landed, and a
@@ -837,7 +852,42 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+/** A live process can outlast both its assistant reply and the loaded history. */
+function CurrentActivity({ items, turnActive, waiting, stopping, startup, harness }: {
+  items: ConversationItem[]; turnActive: boolean; waiting: boolean; stopping?: boolean;
+  startup?: NarrationView; harness?: string | null;
+}) {
+  return <div data-current-activity role="region" aria-label="Current activity" className="u-glass sticky bottom-4 z-10 mx-auto mt-3 w-full max-w-conversation rounded-xl border border-border px-3 py-2 shadow-sm">
+    <div role="status">
+      {startup ? <StartupStatusRow view={startup} harness={harness}/>
+        : stopping ? <ThinkingRow label="Stopping…"/>
+        : turnActive && !waiting ? <ThinkingRow label="Working"/>
+        : <p className="py-1 text-[12px] font-medium text-foreground">{waiting ? "Waiting for input" : "Background processes"}</p>}
+    </div>
+    {items.length > 0 && <ul className="max-h-44 space-y-1 overflow-y-auto">
+      {items.map(item => {
+        const call = toolCallDisplay(item);
+        const output = call.output?.trimEnd();
+        const lastLine = output?.slice(output.lastIndexOf("\n") + 1);
+        return <li key={item.identity ?? item.key} className="min-w-0">
+          <details className="group/process min-w-0">
+            <summary className="flex min-h-7 cursor-pointer list-none items-center gap-2 rounded-md text-[12px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+              {call.passive ? <Circle size={7} className="shrink-0"/> : <PulseDot size={5}/>}
+              <span className="min-w-0 truncate font-mono text-foreground">{call.command ?? call.target ?? item.title ?? call.doing}</span>
+              <span className="ml-auto shrink-0 text-[11px]">{call.preparing ? "Preparing" : call.passive ? "Watching" : "Running"}</span>
+              <ChevronRight size={12} className="shrink-0 group-open/process:rotate-90"/>
+            </summary>
+            <TerminalBlock command={call.command} output={call.output}/>
+            {!call.output && <p className="px-3 py-2 text-[12px] text-muted-foreground">The runtime has not provided output yet.</p>}
+          </details>
+          {(call.progress || lastLine) && <p className="truncate pl-3.5 font-mono text-[11px] text-muted-foreground">{call.progress ?? lastLine}</p>}
+        </li>;
+      })}
+    </ul>}
+  </div>;
+}
+
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -929,9 +979,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     return { has: path => paths.has(path), open: onOpenFile };
   }, [workspaceFiles, onOpenFile]);
 
-  const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
-  // The turn is the gate for every liveness claim below. `working` is the
-  // surface's answer when it has one; otherwise the session's own status is.
   const turnActive = working ?? ACTIVE_SESSION_STATUSES.has(session?.status ?? "");
   // Only while the session still has a turn: a window that kept the
   // announcement of a compaction the turn never closed must not claim one.
@@ -949,6 +996,50 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     snapshot: latestUsageSnapshot(events),
     allowReset: session?.kind === "chat" && !readOnly && !preview,
   }), [session?.harness, session?.kind, events, readOnly, preview]);
+  const runtimeActive = !readOnly && !["stopped", "failed", "completed", "cancelled"].includes(session?.status ?? "");
+  const latestTurn = visibleItems.at(-1)?.turn ?? 0;
+  // Background processes and abandoned calls from earlier turns must not
+  // suppress the model's own status while a new request is starting.
+  const streaming = turnActive && visibleItems.some(item => item.turn === latestTurn
+    && (item.status === "streaming" || item.status === "inProgress"));
+  const processSnapshots = useMemo(() => {
+    const snapshots = activeProcessEntries?.flatMap<TranscriptEvent>(entry => {
+      const event = normalizeSessionEntry(entry);
+      if (!event) return [];
+      if (event.type === "tool.started" || event.type === "tool.completed") {
+        // Seed the reducer's output buffer so transient deltas append to the
+        // preview instead of being hidden by its older aggregatedOutput field.
+        const output = event.envelope.providerData.aggregatedOutput;
+        return [{ ...event, text: typeof output === "string" ? output : event.text,
+          envelope: { ...event.envelope, providerData: { ...event.envelope.providerData, aggregatedOutput: undefined } } }];
+      }
+      return [event];
+    }) ?? [];
+    const byProcess = new Map(snapshots.map(event => [event.envelope.itemId, event.envelope]));
+    const updates = events.filter(event => {
+      const snapshot = byProcess.get(event.itemId ?? undefined);
+      if (!snapshot || snapshot.sessionId !== event.sessionId) return false;
+      // Durable updates have an exact ordering. Live-only output/heartbeats
+      // belong after their causal anchor and must also reach the current card.
+      return event.sequence > snapshot.sequence
+        || (event.sequence === 0 && (event.causalAnchor ?? snapshot.sequence) >= snapshot.sequence);
+    }).map(normalizeAgentEvent);
+    return reduceTranscript([...snapshots, ...updates]);
+  }, [activeProcessEntries, events]);
+  const processIds = useMemo(() => new Set(processSnapshots.map(item => item.identity)), [processSnapshots]);
+  const snapshotSequence = Math.max(0, ...forestEntries?.map(entry => entry.sequence) ?? []);
+  const visibleTurns = new Map(visibleItems.map(item => [item.identity, item.turn]));
+  const processCandidates = activeProcessEntries === undefined ? visibleItems : mergeConversationProjections(
+    processSnapshots.map(item => ({ ...item, turn: visibleTurns.get(item.identity) ?? item.turn })), visibleItems,
+  );
+  const activeProcesses = [...new Map(processCandidates.filter(item => {
+    if (!isToolItem(item)) return false;
+    const call = toolCallDisplay(item);
+    // An authoritative snapshot can remove an old live-window start. Newer
+    // live starts remain visible while the next forest poll is in flight.
+    if (call.background && activeProcessEntries !== undefined && !processIds.has(item.identity) && item.sequence <= snapshotSequence) return false;
+    return isToolLive(call, turnActive && item.turn === latestTurn, runtimeActive);
+  }).map(item => [toolCallDisplay(item).sourceCallId ?? item.identity ?? item.key, item])).values()];
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
@@ -967,8 +1058,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // render through the normal path below so a turn that starts mid-fetch is
   // never hidden behind the skeleton.
   const historyPending = !!session && !preview && forestEntries === undefined;
-  if (historyPending && !visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton density={density} />;
-  if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
+  if (historyPending && !visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton density={density} />;
+  if (!visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
   // A send is answered only by a user turn newer than the newest identical one
   // the chat already had when it was sent, so repeating "yes" or "continue"
   // still shows its bubble at once. A send with neither words nor images has
@@ -996,9 +1087,10 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const clock = now ?? Date.now();
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
+  const activitySignature = activeProcesses.map(item => `${item.identity}:${item.eventId}:${item.text.length}`).join(":");
   // Hydration is a layout change above the reader: when they are pinned to the
   // bottom it must re-place them there, and when they scrolled up it must not.
-  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}:${shownItems.length - windowStart}`;
+  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}:${shownItems.length - windowStart}:${activitySignature}`;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   // The reply whose action bar stays visible: the last settled assistant message.
   let latestReplyKey: string | undefined;
@@ -1016,7 +1108,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     delivery={entry.kind === "item" ? delivery.get(entry.item.key) : undefined}
     latest={entry.kind === "item" && entry.item.key === latestReplyKey}
     readOnly={readOnly}
-    turnActive={turnActive}
+    turnActive={turnActive && (entry.kind === "group" ? entry.items.some(item => item.turn === latestTurn) : entry.kind === "item" && entry.item.turn === latestTurn)}
     autoExpandEditActivity={autoExpandEditActivity}
     onResolve={onResolve}
     onAnswerQuestion={onAnswerQuestion}
@@ -1031,7 +1123,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     rewindable={entry.kind === "item" && !!leafEntryIds?.includes(entry.item.entryId ?? "")}
     errorContext={errorContext}
   />;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -1067,7 +1159,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         </div>
         {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
         </TranscriptRow>)}
-        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>
@@ -1079,8 +1170,13 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           so late-growing rows (an image decoding, a code block highlighting)
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
+      {!readOnly && (startupNarration.mounted || turnActive || activeProcesses.length > 0) && <CurrentActivity
+        items={activeProcesses} turnActive={turnActive} waiting={session?.status === "waiting"} stopping={stopping}
+        startup={startupNarration.mounted && (!streaming || modelSwitch || compaction) ? startupNarration : undefined}
+        harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}
+      />}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking

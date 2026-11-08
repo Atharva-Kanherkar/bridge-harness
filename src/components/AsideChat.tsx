@@ -318,6 +318,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
             session={session}
             events={ownEvents}
             forestEntries={forest?.entries}
+            activeProcessEntries={forest?.activeProcessEntries}
             activeLeafId={forest?.head?.activeEntryId ?? null}
             working={working}
             pendingMessages={pendingMessages}

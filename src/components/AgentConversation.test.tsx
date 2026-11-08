@@ -368,6 +368,17 @@ describe("AgentConversation", () => {
       expect(render([compacting, event(1, "turn.started")])).toContain("Compacting context…");
     });
 
+    it("keeps compaction visible while a background process is still running", () => {
+      const background = event(1, "tool.started", {
+        itemId: "tests", status: "inProgress", title: "Rust tests",
+        data: { background: true, command: "cargo test" },
+      });
+      const html = render([background, compacting]);
+      expect(html).toContain("Compacting context…");
+      expect(html).toContain("cargo test");
+      expect(html.slice(html.indexOf("data-current-activity"))).not.toContain(">Working<");
+    });
+
     it("stops saying so once the boundary lands", () => {
       const html = render([compacting, event(2, "context.compacted", { status: "completed", data: { harness: "claude" } })]);
       expect(html).not.toContain("Compacting context…");
