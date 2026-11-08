@@ -28,8 +28,9 @@ export interface ViewOverride {
   dirty: (view: NoteDatabaseView) => boolean;
   change: (view: NoteDatabaseView, patch: Partial<ViewQuery>) => void;
   reset: (view: NoteDatabaseView) => void;
-  /** Save the override for everyone through `save`, then drop it. */
-  save: (view: NoteDatabaseView, save: (query: ViewQuery) => Promise<void> | void) => Promise<void>;
+  /** Save the override for everyone through `save`, then drop it. A save
+   *  that throws or resolves `false` keeps it, to retry. */
+  save: (view: NoteDatabaseView, save: (query: ViewQuery) => Promise<boolean | void> | boolean | void) => Promise<void>;
 }
 
 export function useViewOverride(): ViewOverride {
@@ -52,10 +53,14 @@ export function useViewOverride(): ViewOverride {
     }
     return { ...current, [view.id]: next };
   }), []);
-  const save = useCallback(async (view: NoteDatabaseView, write: (query: ViewQuery) => Promise<void> | void) => {
+  const save = useCallback(async (view: NoteDatabaseView, write: (query: ViewQuery) => Promise<boolean | void> | boolean | void) => {
     const query = overrides[view.id];
     if (!query) return;
-    await write({ ...query, filter: writeFilter(readFilter(query.filter)) });
+    try {
+      if ((await write({ ...query, filter: writeFilter(readFilter(query.filter)) })) === false) return;
+    } catch {
+      return;
+    }
     drop(view);
   }, [overrides, drop]);
   return useMemo(() => ({ effective, dirty, change, reset: drop, save }), [effective, dirty, change, drop, save]);

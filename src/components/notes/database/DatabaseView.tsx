@@ -225,10 +225,11 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   latestView.current = view;
   const saves = useRef<Promise<unknown>>(Promise.resolve());
   const saveSeq = useRef(0);
-  const saveView = useCallback((patch: (base: NoteDatabaseView, columns: Column[]) => Partial<NoteViewInput>, target?: NoteDatabaseView) => {
+  /** Queue a view edit; resolves to whether it was stored. */
+  const saveView = useCallback((patch: (base: NoteDatabaseView, columns: Column[]) => Partial<NoteViewInput>, target?: NoteDatabaseView): Promise<boolean> => {
     const current = latestDatabase.current;
     const shown = target ?? latestView.current;
-    if (!current || !shown) return;
+    if (!current || !shown) return Promise.resolve(false);
     const base = viewDraft.current?.id === shown.id ? viewDraft.current : shown;
     const input: NoteViewInput = { ...viewInputOf(base), ...patch(base, columnsOf(current, base)) };
     const optimistic: NoteDatabaseView = {
@@ -238,7 +239,8 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     viewDraft.current = optimistic;
     setDatabase(held => held && withView(held, optimistic));
     const mine = ++saveSeq.current;
-    saves.current = saves.current.then(() => bridgeApi.saveDatabaseView({ databaseId, view: input })).then(saved => {
+    const write = saves.current.then(() => bridgeApi.saveDatabaseView({ databaseId, view: input }));
+    saves.current = write.then(saved => {
       if (mine !== saveSeq.current) return;
       viewDraft.current = null;
       setDatabase(held => held && withView(held, saved));
@@ -247,6 +249,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       if (mine === saveSeq.current) { viewDraft.current = null; void readDatabase(); }
       fail(error);
     });
+    return write.then(() => true, () => false);
   }, [databaseId, query, readDatabase, fail]);
 
   const host: CellHost = useMemo(() => ({

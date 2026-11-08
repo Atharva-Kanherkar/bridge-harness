@@ -411,13 +411,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const tabKey = JSON.stringify([activeView?.id ?? null, viewDirty ? effective : null]);
   useEffect(() => { void refreshTab(); }, [tabKey, refreshTab]);
 
-  const saveTab = async (view: NoteDatabaseView, patch: Partial<ReturnType<typeof viewInputOf>>) => {
-    if (!system) return;
+  /** Save a tab; resolves to whether it was stored. */
+  const saveTab = async (view: NoteDatabaseView, patch: Partial<ReturnType<typeof viewInputOf>>): Promise<boolean> => {
+    if (!system) return false;
     try {
       await bridgeApi.saveDatabaseView({ databaseId: system.id, view: { ...viewInputOf(view), ...patch } });
-      await rereadSystem();
-      await refreshTab();
-    } catch (error) { fail(error); }
+    } catch (error) { fail(error); return false; }
+    await rereadSystem();
+    await refreshTab();
+    return true;
   };
   const hideTab = async (view: NoteDatabaseView) => {
     if (!system || tabViews.length <= 1) return;

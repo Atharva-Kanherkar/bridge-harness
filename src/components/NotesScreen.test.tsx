@@ -1067,4 +1067,19 @@ describe("tabs as saved views", () => {
     await click(button("All tab menu"));
     expect(menuItem("Hide")?.disabled).toBe(true);
   });
+
+  it("keeps a tab's unsaved edit when saving it fails", async () => {
+    await render();
+    await click(tab("Tasks"));
+    await click(button("Tasks tab menu"));
+    await click(menuItem("Edit view"));
+    await click(button("Sort"));
+    await click(floating("Add a sort"));
+    vi.spyOn(bridgeApi, "saveDatabaseView").mockRejectedValueOnce(new Error("disk full"));
+    await click(button("Save for everyone"));
+    await settle(40);
+    expect(button("Save for everyone")).toBeDefined();
+    expect(button("Sort, 1")).toBeDefined();
+  });
 });
+

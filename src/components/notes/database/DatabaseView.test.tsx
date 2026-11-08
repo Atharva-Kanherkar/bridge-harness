@@ -307,5 +307,27 @@ describe("DatabaseView", () => {
     await later();
     expect(document.querySelector("[role=columnheader][aria-label='Newest rename']")).not.toBeNull();
   });
+
+  it("keeps an unsaved override when saving it fails", async () => {
+    const { id, rating } = books();
+    const onError = vi.fn();
+    await mount({ databaseId: id, onError });
+    const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(candidate => candidate.textContent?.trim() === name || candidate.getAttribute("aria-label") === name);
+    act(() => button("Sort")!.click());
+    act(() => button("Add a sort")!.click());
+    expect(button("Save for everyone")).toBeDefined();
+    vi.spyOn(bridgeApi, "saveDatabaseView").mockRejectedValueOnce(new Error("disk full"));
+    await act(async () => { button("Save for everyone")!.click(); });
+    await settle();
+    expect(onError).toHaveBeenCalledWith("disk full");
+    expect(button("Save for everyone")).toBeDefined();
+    expect(button("Sort, 1")).toBeDefined();
+    expect(mockReadPage(id).database!.views[0].sorts ?? []).toEqual([]);
+    // And the retry saves it.
+    await act(async () => { button("Save for everyone")!.click(); });
+    await settle();
+    expect(mockReadPage(id).database!.views[0].sorts).toEqual([{ property: rating, direction: "asc" }]);
+    expect(button("Save for everyone")).toBeUndefined();
+  });
 });
 
