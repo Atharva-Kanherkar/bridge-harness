@@ -12436,6 +12436,19 @@ fn escalate_stranded_input(core: &Arc<BridgeCore>) {
 /// unattended. Returns whether a row was delivered.
 pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
     ensure_session_not_archived(core, session_id)?;
+    // A worker resumes only through its orchestrator, inside its pool
+    // reservation and with its sandbox and write scope. `resume_for_send` is
+    // the generic chat launcher and would drop all three.
+    let worker: bool = core.db.lock().unwrap().query_row(
+        "SELECT parent_session_id IS NOT NULL OR COALESCE(depth,0)>0 FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if worker {
+        return Err(BridgeError::Invalid(
+            "This is a worker; it resumes through its orchestrator, not from here.".into(),
+        ));
+    }
     let queued = session_input::next_queued(&core.db.lock().unwrap(), session_id)?.is_some();
     if !queued {
         return Ok(false);
@@ -16322,6 +16335,28 @@ mod submit_input_tests {
         assert!(!deliver_queued_now(&core, "chat").unwrap(), "nothing left to deliver");
         assert_eq!(sent.lock().unwrap().as_slice(), ["worker report".to_owned()]);
         assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn deliver_now_refuses_a_worker_and_launches_nothing() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth,parent_session_id)
+                 VALUES('worker',NULL,'no-such-harness','Worker','stopped','reported','orchestrator',1,'chat')",
+                [],
+            )
+            .unwrap();
+        session_input::enqueue(&core.db.lock().unwrap(), "worker", "steer", "steer").unwrap();
+
+        // A worker resumes only through its orchestrator, inside its pool
+        // reservation and sandbox. The generic launcher would drop both.
+        let message = deliver_queued_now(&core, "worker").unwrap_err().to_string();
+        assert!(!message.contains("could not resume it"), "no launch was attempted: {message}");
+        assert!(message.contains("orchestrator"), "{message}");
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "worker").unwrap(), 1);
     }
 
     #[test]

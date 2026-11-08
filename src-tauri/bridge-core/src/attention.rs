@@ -508,7 +508,10 @@ fn escalate_stranded_in(
             continue;
         }
         let Some(session) = SessionFacts::load(db, &session_id)? else { continue };
-        if crate::work_briefing_config::is_hidden_session_kind(session.kind.as_deref()) {
+        // A worker's stranded input belongs to its orchestrator's lifecycle:
+        // the only remedy here is resuming it, which must not happen outside
+        // its pool reservation and sandbox.
+        if session.is_worker() || crate::work_briefing_config::is_hidden_session_kind(session.kind.as_deref()) {
             continue;
         }
         let open: bool = db.query_row(
@@ -1016,6 +1019,17 @@ mod tests {
         let live: std::collections::HashSet<String> = ["live".to_owned()].into();
         assert!(!escalate_stranded(&db, &live, now).unwrap());
         assert!(escalations(&db).is_empty());
+    }
+
+    #[test]
+    fn workers_never_escalate() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        session(&db, "worker", "orchestrator", Some("orch"), None);
+        queued(&db, "q1", "worker", "queued", chrono::Duration::minutes(2), now);
+        assert!(!escalate_stranded(&db, &std::collections::HashSet::new(), now).unwrap());
+        assert!(escalations(&db).is_empty(), "Deliver now is never offered for a worker");
     }
 
     #[test]
