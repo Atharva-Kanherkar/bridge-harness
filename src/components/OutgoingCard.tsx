@@ -12,12 +12,13 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, AtSign, Check, ChevronRight, ClipboardCopy, Hash, MessageSquareText, Pencil, Trash2, Wand2 } from "lucide-react";
+import { AlertCircle, AtSign, Check, ChevronRight, ClipboardCopy, Hash, ImageIcon, MessageSquareText, Pencil, Trash2, Wand2, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { ConversationItem } from "../conversation";
-import type { OutgoingDestination, OutgoingLintFinding, OutgoingMessage } from "../protocol/generated/protocol";
+import type { OutgoingAttachment, OutgoingDestination, OutgoingLintFinding, OutgoingMessage } from "../protocol/generated/protocol";
+import { Markdown } from "./Markdown";
 import { outgoingCallState, outgoingDraftId, outgoingRefusal } from "../transcript/outgoing";
 
 function DestinationIcon({ destination }: { destination: OutgoingDestination }) {
@@ -75,6 +76,74 @@ function RefusedRow({ detail }: { detail?: string }) {
   );
 }
 
+/** An image as a PNG blob, which is what the clipboard reliably takes. */
+async function pngBlob(dataUrl: string, mime: string): Promise<Blob> {
+  const source = await (await fetch(dataUrl)).blob();
+  if (mime === "image/png") return source;
+  const bitmap = await createImageBitmap(source);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("could not copy the image")), "image/png"));
+}
+
+function Attachment({ draftId, index, attachment, readOnly, busy, onRemove, onError }: {
+  draftId: string;
+  index: number;
+  attachment: OutgoingAttachment;
+  readOnly: boolean;
+  busy: boolean;
+  onRemove: () => void;
+  onError: (message: string) => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let live = true;
+    bridgeApi.readOutgoingAttachment(draftId, index)
+      .then(image => { if (live) setSrc(`data:${image.mime};base64,${image.dataBase64}`); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [draftId, index, attachment.path]);
+  const copy = async () => {
+    if (!src) return;
+    try {
+      const blob = await pngBlob(src, attachment.mime);
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch (cause) {
+      onError(cause instanceof Error ? cause.message : "could not copy the image");
+    }
+  };
+  return (
+    <li data-outgoing-attachment={attachment.name} className="flex w-36 flex-col overflow-hidden rounded-xl border border-border bg-background/60">
+      <div className="relative grid h-24 shrink-0 place-items-center overflow-hidden bg-muted/40">
+        {src
+          ? <img src={src} alt={attachment.name} className="absolute inset-0 size-full object-cover" />
+          : <ImageIcon size={18} className={cn("text-muted-foreground", !failed && "animate-pulse")} aria-hidden="true" />}
+      </div>
+      <div className="flex min-w-0 items-center gap-1 px-2 py-1.5">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/85" title={failed ? `${attachment.name}: file missing or changed` : attachment.name}>
+          {failed ? "Missing: " : ""}{attachment.name}
+        </span>
+        {!readOnly && <>
+          <button type="button" aria-label={copied ? "Image copied" : `Copy image ${attachment.name}`} disabled={!src || busy} onClick={() => void copy()}
+            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+            {copied ? <Check size={12} aria-hidden="true" /> : <ClipboardCopy size={12} aria-hidden="true" />}
+          </button>
+          <button type="button" aria-label={`Remove image ${attachment.name}`} disabled={busy} onClick={onRemove}
+            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+            <X size={12} aria-hidden="true" />
+          </button>
+        </>}
+      </div>
+    </li>
+  );
+}
+
 /** The card for one stored draft. Exported for tests and other surfaces. */
 export function OutgoingDraft({ draft, readOnly = false, onChange }: {
   draft: OutgoingMessage;
@@ -112,6 +181,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
     );
   }
 
+  const attachments = draft.attachments ?? [];
   const canFix = draft.lint.some(finding => finding.fixable && !finding.fixed);
   const save = async () => {
     if (await run(async () => (await bridgeApi.updateOutgoing(draft.id, draft.revision, text)).item)) setEditing(false);
@@ -155,9 +225,37 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
             disabled={busy}
           />
         ) : (
-          <div data-outgoing-preview className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
-            {draft.rendered}
-          </div>
+          // Markdown destinations (Slack through its connector, GitHub) are
+          // previewed formatted; pasted mrkdwn and plain text as typed.
+          draft.format === "slackMarkdown" || draft.format === "github" ? (
+            <div data-outgoing-preview className="mt-3 max-h-96 overflow-auto rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
+              <Markdown text={draft.rendered} />
+            </div>
+          ) : (
+            <div data-outgoing-preview className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
+              {draft.rendered}
+            </div>
+          )
+        )}
+
+        {attachments.length > 0 && (
+          <ul className="mt-2.5 flex flex-wrap gap-2" aria-label="Images">
+            {attachments.map((attachment, index) => (
+              <Attachment
+                key={`${attachment.path}-${index}`}
+                draftId={draft.id}
+                index={index}
+                attachment={attachment}
+                readOnly={readOnly}
+                busy={busy}
+                onError={setError}
+                onRemove={() => void run(async () => (await bridgeApi.updateOutgoing(
+                  draft.id, draft.revision, undefined, false,
+                  attachments.filter((_, other) => other !== index).map(kept => kept.path),
+                )).item)}
+              />
+            ))}
+          </ul>
         )}
 
         {draft.lint.length > 0 && !editing && (

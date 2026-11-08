@@ -22,8 +22,8 @@ import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, Not
 import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
-import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
-import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
+import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
+import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
@@ -1655,8 +1655,11 @@ export const bridgeApi = {
     hasBackend() ? call("outgoing/list_outgoing", { sessionId }) : Promise.resolve(mockListOutgoing(sessionId)),
   /** Edit a draft and/or apply its fixable style rules, against the revision
    * the editor saw. A stale revision is refused. */
-  updateOutgoing: (id: string, revision: number, body?: string, applyFixes = false): Promise<UpdateOutgoingResult> =>
-    hasBackend() ? call("outgoing/update_outgoing", { id, revision, body, applyFixes }) : mockUpdateOutgoing(id, revision, body, applyFixes),
+  updateOutgoing: (id: string, revision: number, body?: string, applyFixes = false, attachments?: string[]): Promise<UpdateOutgoingResult> =>
+    hasBackend() ? call("outgoing/update_outgoing", { id, revision, body, applyFixes, attachments }) : mockUpdateOutgoing(id, revision, body, applyFixes, attachments),
+  /** One image a draft carries, read and checked again by the core. */
+  readOutgoingAttachment: (id: string, index: number): Promise<ReadOutgoingAttachmentResult> =>
+    hasBackend() ? call("outgoing/read_outgoing_attachment", { id, index }) : mockReadOutgoingAttachment(id, index),
   /** The rendered text to put on the clipboard; marks the draft copied. */
   copyOutgoing: (id: string, revision: number): Promise<CopyOutgoingResult> =>
     hasBackend() ? call("outgoing/copy_outgoing", { id, revision }) : mockCopyOutgoing(id, revision),

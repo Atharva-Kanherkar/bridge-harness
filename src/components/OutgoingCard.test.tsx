@@ -156,4 +156,51 @@ describe("OutgoingCard", () => {
     expect(button("Copy")).toBeUndefined();
     expect(button("Edit")).toBeUndefined();
   });
+
+  it("previews Slack connector drafts as formatted Markdown, tables and code included", async () => {
+    resetMockOutgoing([draft({
+      format: "slackMarkdown",
+      body: "Done.\n\n| service | status |\n|---|---|\n| api | ok |\n\n```bash\nbun run deploy\n```",
+      rendered: "Done.\n\n| service | status |\n|---|---|\n| api | ok |\n\n```bash\nbun run deploy\n```",
+      lint: [],
+    })]);
+    await mount();
+    const preview = container.querySelector("[data-outgoing-preview]")!;
+    expect(preview.querySelector("table")?.textContent).toContain("api");
+    expect(preview.textContent).toContain("bun run deploy");
+    expect(preview.textContent).not.toContain("|---|");
+  });
+
+  it("shows attached images and removes one as an edit", async () => {
+    resetMockOutgoing([draft({ attachments: [
+      { path: "/tmp/a.png", name: "a.png", mime: "image/png", bytes: 68 },
+      { path: "/tmp/b.png", name: "b.png", mime: "image/png", bytes: 68 },
+    ] })]);
+    await mount();
+    await act(async () => { await Promise.resolve(); });
+    const images = container.querySelectorAll("[data-outgoing-attachment] img");
+    expect(images).toHaveLength(2);
+    expect(images[0].getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+    await act(async () => { (container.querySelector('[aria-label="Remove image a.png"]') as HTMLButtonElement).click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect([...container.querySelectorAll("[data-outgoing-attachment]")].map(node => node.getAttribute("data-outgoing-attachment"))).toEqual(["b.png"]);
+  });
+
+  it("copies an attached image to the clipboard as a PNG", async () => {
+    const written: unknown[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: () => Promise.resolve(), write: (items: unknown[]) => { written.push(...items); return Promise.resolve(); } },
+    });
+    vi.stubGlobal("ClipboardItem", class { constructor(public items: Record<string, Blob>) {} });
+    vi.stubGlobal("fetch", async () => ({ blob: async () => new Blob(["png"], { type: "image/png" }) }));
+    resetMockOutgoing([draft({ attachments: [{ path: "/tmp/a.png", name: "a.png", mime: "image/png", bytes: 68 }] })]);
+    await mount();
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { (container.querySelector('[aria-label="Copy image a.png"]') as HTMLButtonElement).click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(written).toHaveLength(1);
+    expect(Object.keys((written[0] as { items: Record<string, Blob> }).items)).toEqual(["image/png"]);
+    vi.unstubAllGlobals();
+  });
 });
