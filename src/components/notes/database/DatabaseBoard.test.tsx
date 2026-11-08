@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../../api";
 import { mockCreateDatabase, mockCreatePage, mockQueryDatabase, mockReadPage, mockSaveView, mockUpdateNote, resetMockNotes } from "../../../notesMock";
 import { DatabaseView } from "./DatabaseView";
+import { DatabaseBoard } from "./DatabaseBoard";
+import type { QueryDatabaseParams } from "../../../types";
 import { bucketDays, bucketOf, groupConditions, movedValue } from "./DatabaseBoard";
 
 let host: HTMLDivElement;
@@ -178,6 +180,28 @@ describe("DatabaseBoard", () => {
     expect(cardsIn("To read")).toHaveLength(100);
     expect(new Set(cardsIn("To read")).size).toBe(100);
     expect(more().textContent).toBe("Load more (20)");
+  });
+
+  it("drops a column page that belongs to an earlier query", async () => {
+    const { made, status, option, row } = reading();
+    for (let index = 0; index < 120; index += 1) row(`Book ${String(index).padStart(3, "0")}`, { [status.id]: option("To read") });
+    row("Fresh", { [status.id]: option("To read") });
+    const database = mockReadPage(made.note.id).database!;
+    const view = { id: "v", name: "Board", type: "board", order: 0, groupBy: { property: status.id } };
+    const query = (filter: unknown) => ({ filter, sorts: [], groupBy: { property: status.id } });
+    const groupsFor = (filter: unknown) => mockQueryDatabase({ databaseId: made.note.id, filter, groupBy: { property: status.id }, groupLimit: 50 }).groups!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const run = vi.fn(async (params: Omit<QueryDatabaseParams, "databaseId">) => { await gate; return mockQueryDatabase({ databaseId: made.note.id, ...params }); });
+    const base = { database, view, rows: [], run, version: 0, host: { addOption: vi.fn(async () => null), searchRows: vi.fn(async () => []), rowTitle: () => undefined, workspaces: [] }, onCommit: vi.fn(async () => true), onNewRow: vi.fn(async () => null), onOpenRow: vi.fn() };
+    await act(async () => { root.render(<DatabaseBoard {...base} query={query(null)} groups={groupsFor(null)} />); });
+    act(() => [...column("To read").querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.startsWith("Load more"))!.click());
+    // The filter changes while the page is out.
+    const fresh = { and: [{ property: "title", op: "contains", value: "Fresh" }] };
+    await act(async () => { root.render(<DatabaseBoard {...base} query={query(fresh)} groups={groupsFor(fresh)} />); });
+    await act(async () => { release(); });
+    await settle();
+    expect(cardsIn("To read")).toEqual(["Fresh"]);
   });
 });
 

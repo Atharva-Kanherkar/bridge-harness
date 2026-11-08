@@ -86,8 +86,10 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
   // One page request per column at a time.
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const inFlight = useRef(new Set<string>());
-  // A fresh answer from the server supersedes local moves and pages.
-  useEffect(() => { setMoves([]); setExtra({}); }, [groups]);
+  // A fresh answer from the server supersedes local moves and pages, and
+  // starts a new generation: a page asked for before it is dropped.
+  const generation = useRef(0);
+  useEffect(() => { generation.current += 1; setMoves([]); setExtra({}); }, [groups]);
 
   if (!grouping || !groups) return <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-[13px] text-muted-foreground">Choose a property to group by</p>;
   // A date grouping is a bucket of days, which a move cannot write.
@@ -125,18 +127,22 @@ export function DatabaseBoard({ database, view, query, groups, run, host, onComm
     return rows.filter(row => !ids.has(row.note.id) && ids.add(row.note.id));
   };
   const fetchMore = async (group: DatabaseGroup, have: number) => {
+    const asked = generation.current;
+    const current = () => asked === generation.current;
     const page = extra[group.key];
     const filter = composeFilter(query.filter, groupConditions(grouping, group.key, query.groupBy?.dateBucket));
     if (filter === null) {
       // No composed filter fits the planner's limits: the column's rows from
       // the view's own, all at once.
       const rows = (await readAll(run, { filter: query.filter ?? null, sorts: query.sorts })).filter(row => inGroup(grouping, group.key, row, query.groupBy?.dateBucket));
+      if (!current()) return;
       setExtra(current => ({ ...current, [group.key]: { rows: unseen(group, [], rows), cursor: null } }));
       return;
     }
     const result = page?.cursor
       ? await run({ filter, sorts: query.sorts, limit: GROUP_LIMIT, cursor: page.cursor })
       : await run({ filter, sorts: query.sorts, limit: have + GROUP_LIMIT });
+    if (!current()) return;
     const fresh = page?.cursor ? result.rows : result.rows.slice(group.rows.length);
     setExtra(current => { const held = current[group.key]?.rows ?? []; return { ...current, [group.key]: { rows: [...held, ...unseen(group, held, fresh)], cursor: result.nextCursor ?? null } }; });
   };
