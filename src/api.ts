@@ -1,7 +1,7 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
-import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult } from "./protocol/generated/protocol";
-import { mockListAttention, mockMarkAttentionSeen, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
+import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, UnreadSummary } from "./protocol/generated/protocol";
+import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
 import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
@@ -3373,6 +3373,20 @@ export const bridgeApi = {
   markAttentionSeen: async (sessionId: string): Promise<MarkAttentionSeenResult> => {
     if (hasBackend()) return call("attention/mark_attention_seen", { sessionId });
     return mockMarkAttentionSeen(sessionId);
+  },
+  /** What is still unread, rolled up to the chats in the sidebar. */
+  unreadSummary: async (): Promise<UnreadSummary> => {
+    if (hasBackend()) return call("attention/unread_summary");
+    return mockUnreadSummary(id => {
+      const session = mockState.sessions.find(item => item.id === id);
+      return session ? session.parentSessionId ?? null : undefined;
+    });
+  },
+  /** The dock badge. The shell owns the window, so this is an event the shell
+   *  listens for, like `revealMainWindow`; zero clears it. */
+  setUnreadBadge: async (count: number): Promise<void> => {
+    if (!isTauri()) return;
+    await shellEmit("bridge-unread-badge", count);
   },
   /** Deliver a chat's stranded input now, resuming its agent if it stopped. */
   deliverQueuedInput: async (sessionId: string): Promise<DeliverQueuedInputResult> => {
