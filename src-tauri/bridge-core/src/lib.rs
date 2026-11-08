@@ -96,6 +96,7 @@ pub mod marketplace;
 pub mod mcp_apps;
 pub mod notes;
 pub mod outgoing;
+pub mod outgoing_tools;
 pub mod memory_activity;
 pub mod memory_consolidation;
 pub mod memory_consolidation_live;

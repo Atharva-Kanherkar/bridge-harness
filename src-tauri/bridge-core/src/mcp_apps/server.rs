@@ -168,7 +168,7 @@ impl VisualServer {
             }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
-                let chat_tool = name.starts_with("notes_") || name.starts_with("memory_");
+                let chat_tool = name.starts_with("notes_") || name.starts_with("memory_") || name.starts_with("outgoing_");
                 if let (Some(notes), true) = (&self.notes, chat_tool) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                     reply(id, notes.call(name, &arguments))
@@ -301,6 +301,31 @@ mod tests {
         }
     }
 
+    struct DraftCore {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl notes_tools::NotesTransport for DraftCore {
+        fn get(&self, _path: &str) -> Result<Value, (u16, String)> {
+            Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "outgoing_draft"]}))
+        }
+        fn post(&self, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+            self.calls.lock().unwrap().push((path.to_owned(), body.clone()));
+            Ok(json!({"id": "o1", "state": "draft", "rendered": body["body"]}))
+        }
+    }
+
+    #[test]
+    fn outgoing_draft_is_listed_from_the_core_and_forwarded_to_it() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut server = VisualServer::with_notes(Some(NotesLink::new(Box::new(DraftCore { calls: calls.clone() }))));
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "outgoing_draft"]);
+        let arguments = json!({"to": {"clipboard": "plain"}, "body": "hi", "reason": "r"});
+        let drafted = server.handle(&request(2, "tools/call", json!({"name": "outgoing_draft", "arguments": arguments}))).unwrap();
+        assert_eq!(drafted["result"]["structuredContent"]["id"], "o1");
+        assert_eq!(calls.lock().unwrap()[0], ("outgoing_draft".to_owned(), arguments));
+    }
+
     #[test]
     fn memory_tools_are_listed_from_the_core_and_forwarded_to_it() {
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -316,6 +341,7 @@ mod tests {
         let init = server.handle(&request(3, "initialize", json!({}))).unwrap();
         let instructions = init["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("memory_propose") && instructions.contains("never in a note"), "{instructions}");
+        assert!(instructions.contains("outgoing_draft"), "{instructions}");
         // Without a chat link there is nothing to forward to.
         let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();
         assert_eq!(unknown["error"]["code"], -32602);
