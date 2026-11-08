@@ -80,7 +80,7 @@ pub struct OutgoingMessage {
     pub rendered: String,
     pub lint: Vec<OutgoingLintFinding>,
     pub state: OutgoingState,
-    /// Bumped on every change; edits and copies name the revision they saw.
+    /// Bumped on every text change; edits and copies name the revision they saw.
     pub revision: u32,
     /// Why the person wants this message, in the agent's words.
     pub reason: String,

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 69;
+const LATEST_SCHEMA_VERSION: i64 = 70;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -752,6 +752,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "sessions", "title_ladder", "TEXT")?;
                 add_column_if_missing(&transaction, "sessions", "title_ladder_for", "TEXT")?;
             }
+            // Messages a chat drafted for a person or a place: the text, where
+            // it is addressed, its style findings and its revision.
+            70 => crate::outgoing::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -4362,7 +4365,7 @@ mod tests {
             .unwrap();
         assert!(columns.iter().any(|name| name == "account"));
         let version: i64 = db.query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 69);
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
     }
 
     fn observability_db() -> Connection {
@@ -6684,6 +6687,21 @@ mod tests {
             params![id],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_70_adds_the_outgoing_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('outgoing_messages')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
+        assert_eq!(current_schema_version(&db).unwrap(), 70);
     }
 
     #[test]

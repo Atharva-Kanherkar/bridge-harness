@@ -217,7 +217,7 @@
           "type": "string"
         },
         "revision": {
-          "description": "Bumped on every change; edits and copies name the revision they saw.",
+          "description": "Bumped on every text change; edits and copies name the revision they saw.",
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"

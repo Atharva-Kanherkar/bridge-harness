@@ -1,0 +1,134 @@
+//! A draft's Markdown as its destination shows it.
+//!
+//! Slack speaks mrkdwn (`*bold*`, `_italic_`, `<url|text>`, no headings),
+//! GitHub speaks Markdown, and a plain destination gets the words with the
+//! markup taken out. Code spans and fences pass through untouched.
+
+use std::sync::OnceLock;
+
+use bridge_protocol::messages::OutgoingFormat;
+use regex::Regex;
+
+use super::lint::map_prose;
+
+struct Patterns {
+    bold: Regex,
+    italic_star: Regex,
+    strike: Regex,
+    link: Regex,
+    heading: Regex,
+    bullet: Regex,
+}
+
+fn patterns() -> &'static Patterns {
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    PATTERNS.get_or_init(|| Patterns {
+        bold: Regex::new(r"\*\*([^*\n]+?)\*\*|__([^_\n]+?)__").unwrap(),
+        italic_star: Regex::new(r"\*([^*\s][^*\n]*?)\*").unwrap(),
+        strike: Regex::new(r"~~([^~\n]+?)~~").unwrap(),
+        link: Regex::new(r"\[([^\]\n]+)\]\(([^)\s]+)\)").unwrap(),
+        heading: Regex::new(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$").unwrap(),
+        bullet: Regex::new(r"^(\s*)[*+-]\s+").unwrap(),
+    })
+}
+
+/// Marks a converted bold run while single-star italics are rewritten.
+const BOLD: char = '\u{1}';
+
+fn slack_prose(text: &str) -> String {
+    let p = patterns();
+    let text = p.link.replace_all(text, "<$2|$1>");
+    let text = p.bold.replace_all(&text, |caps: &regex::Captures| {
+        let inner = caps.get(1).or_else(|| caps.get(2)).map_or("", |m| m.as_str());
+        format!("{BOLD}{inner}{BOLD}")
+    });
+    let text = p.italic_star.replace_all(&text, "_${1}_");
+    let text = p.strike.replace_all(&text, "~$1~");
+    text.replace(BOLD, "*")
+}
+
+fn plain_prose(text: &str) -> String {
+    let p = patterns();
+    let text = p.link.replace_all(text, "$1 ($2)");
+    let text = p.bold.replace_all(&text, |caps: &regex::Captures| {
+        caps.get(1).or_else(|| caps.get(2)).map_or("", |m| m.as_str()).to_owned()
+    });
+    let text = p.italic_star.replace_all(&text, "$1");
+    p.strike.replace_all(&text, "$1").into_owned()
+}
+
+fn is_fence(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
+/// `body` as `format` shows it.
+pub fn render(body: &str, format: OutgoingFormat) -> String {
+    if format == OutgoingFormat::Github {
+        return body.to_owned();
+    }
+    let p = patterns();
+    let mut inside = false;
+    let mut out = Vec::new();
+    for line in body.split('\n') {
+        if is_fence(line) {
+            inside = !inside;
+            if format == OutgoingFormat::Slack {
+                // Slack fences take no language tag.
+                out.push(line.trim()[..3].to_owned());
+            }
+            continue;
+        }
+        if inside {
+            out.push(line.to_owned());
+            continue;
+        }
+        let rendered = if let Some(caps) = p.heading.captures(line) {
+            let title = map_prose(&caps[1], plain_prose);
+            if format == OutgoingFormat::Slack { format!("*{title}*") } else { title }
+        } else {
+            let bulleted = match format {
+                OutgoingFormat::Slack => p.bullet.replace(line, "${1}\u{2022} ").into_owned(),
+                _ => line.to_owned(),
+            };
+            match format {
+                OutgoingFormat::Slack => map_prose(&bulleted, slack_prose),
+                _ => map_prose(&bulleted, plain_prose).replace('`', ""),
+            }
+        };
+        out.push(rendered);
+    }
+    out.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slack_converts_emphasis_links_headings_and_bullets() {
+        let body = "# Deploy **done**\n- **All** green, *mostly* ~~red~~\n* see [the run](https://ci.example/run_1?a=b)\n+ __third__";
+        assert_eq!(
+            render(body, OutgoingFormat::Slack),
+            "*Deploy done*\n\u{2022} *All* green, _mostly_ ~red~\n\u{2022} see <https://ci.example/run_1?a=b|the run>\n\u{2022} *third*"
+        );
+    }
+
+    #[test]
+    fn slack_leaves_code_untouched() {
+        let body = "Run `**not bold**` then\n```rust\nlet x = *y; // [a](b)\n```";
+        assert_eq!(render(body, OutgoingFormat::Slack), "Run `**not bold**` then\n```\nlet x = *y; // [a](b)\n```");
+    }
+
+    #[test]
+    fn plain_strips_markup_and_keeps_link_targets() {
+        let body = "## Note\n**Done**, see [run](https://ci/1) and `cargo test`\n```\nraw *text*\n```";
+        assert_eq!(render(body, OutgoingFormat::Plain), "Note\nDone, see run (https://ci/1) and cargo test\nraw *text*");
+    }
+
+    #[test]
+    fn github_is_the_body_as_written() {
+        let body = "# Title\n| a |\n|---|";
+        assert_eq!(render(body, OutgoingFormat::Github), body);
+    }
+}
