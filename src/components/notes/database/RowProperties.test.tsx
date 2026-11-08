@@ -72,5 +72,38 @@ describe("RowProperties", () => {
     expect(host.textContent).toContain("Newest rename");
     expect(host.textContent).not.toContain("Old rename");
   });
+
+  describe("import notices", () => {
+    const setup = () => {
+      const made = mockCreateDatabase({ title: "Books", properties: [{ name: "Rating", type: "number" }] });
+      const rating = made.database!.properties[0].id;
+      const mine = mockCreatePage({ title: "Mine", parentId: made.note.id });
+      const notice = (propertyId: string, raw = "three") => ({ kind: "unreadableValue", propertyId, raw, expected: "number", seq: 2, createdAt: "2026-11-08T10:00:00Z" });
+      return { page: mockReadPage(mine.id), rating, notice };
+    };
+    const show = async (page: ReturnType<typeof mockReadPage>) => { await act(async () => { root.render(<RowProperties page={page} workspaces={[]} onChanged={vi.fn()} onError={vi.fn()} />); }); await settle(); };
+
+    it("shows a notice for a line the file could not read", async () => {
+      const { page, rating, notice } = setup();
+      await show({ ...page, notices: [notice(rating)] });
+      const line = host.querySelector("[aria-label='Row properties'] [role=status]")!;
+      expect(line.textContent).toBe("Rating in the file could not be read as a number: three");
+      expect(line.querySelector("code")?.textContent).toBe("three");
+    });
+
+    it("hides a notice once the page is re-read without it", async () => {
+      const { page, rating, notice } = setup();
+      await show({ ...page, notices: [notice(rating)] });
+      expect(host.querySelector("[role=status]")).not.toBeNull();
+      await show({ ...page, notices: [] });
+      expect(host.querySelector("[role=status]")).toBeNull();
+    });
+
+    it("skips a notice for a property that is gone", async () => {
+      const { page, notice } = setup();
+      await show({ ...page, notices: [notice("p-gone")] });
+      expect(host.querySelector("[role=status]")).toBeNull();
+    });
+  });
 });
 
