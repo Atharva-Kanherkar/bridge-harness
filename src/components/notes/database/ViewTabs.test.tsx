@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bridgeApi } from "../../../api";
 import { mockCreateDatabase, mockReadPage, resetMockNotes } from "../../../notesMock";
 import { DatabaseView } from "./DatabaseView";
 
@@ -100,6 +101,27 @@ describe("ViewTabs", () => {
     await act(async () => { tab("Table").dispatchEvent(new Event("drop", { bubbles: true, cancelable: true })); });
     await settle();
     expect(stored(made.note.id).map(view => view.name)).toEqual(["Second", "Table", "Third"]);
+  });
+
+  it("a slow reorder never writes an older name back", async () => {
+    const made = await mount();
+    await click("New view");
+    nameNewView("Second");
+    await submit("New view name");
+    const real = bridgeApi.saveDatabaseView.bind(bridgeApi);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let first = true;
+    vi.spyOn(bridgeApi, "saveDatabaseView").mockImplementation(async params => { if (first) { first = false; await gate; } return real(params); });
+    await click("Table view menu");
+    await click("Move right");
+    await click("Table view menu");
+    await click("Rename");
+    type("View name", "Renamed");
+    await submit("View name");
+    await act(async () => { release(); });
+    await settle();
+    expect(stored(made.note.id).map(view => view.name)).toEqual(["Second", "Renamed"]);
   });
 });
 

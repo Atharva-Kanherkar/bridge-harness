@@ -71,8 +71,11 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   const fail = useCallback((error: unknown) => latest.current.onError(message(error)), []);
 
   /** The newest view edit not yet saved, kept over any read that lands first. */
-  const viewDraft = useRef<NoteDatabaseView | null>(null);
-  useEffect(() => { if (given) setDatabase(viewDraft.current ? withView(given, viewDraft.current) : given); }, [given]);
+  // Per view, so queued edits to different views (a reorder moves two) each
+  // build on their own last edit.
+  const viewDrafts = useRef(new Map<string, NoteDatabaseView>());
+  const withDrafts = (database: NoteDatabase) => [...viewDrafts.current.values()].reduce(withView, database);
+  useEffect(() => { if (given) setDatabase(withDrafts(given)); }, [given]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Schema reads and writes land newest first, whatever order they answer in.
   const schemaOrder = useLatestOnly();
@@ -80,7 +83,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     const ticket = schemaOrder.take();
     try {
       const page = await bridgeApi.readNotePage(databaseId);
-      if (page.database && schemaOrder.accept(ticket)) setDatabase(viewDraft.current ? withView(page.database, viewDraft.current) : page.database);
+      if (page.database && schemaOrder.accept(ticket)) setDatabase(withDrafts(page.database));
     } catch (error) { fail(error); }
   }, [databaseId, fail, schemaOrder]);
   useEffect(() => { if (!given) void readDatabase(); }, [given, readDatabase]);
@@ -230,23 +233,24 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
     const current = latestDatabase.current;
     const shown = target ?? latestView.current;
     if (!current || !shown) return Promise.resolve(false);
-    const base = viewDraft.current?.id === shown.id ? viewDraft.current : shown;
+    const base = viewDrafts.current.get(shown.id) ?? shown;
     const input: NoteViewInput = { ...viewInputOf(base), ...patch(base, columnsOf(current, base)) };
     const optimistic: NoteDatabaseView = {
       id: base.id, name: input.name, type: input.type, order: input.order ?? base.order, filter: input.filter,
       sorts: input.sorts ?? [], groupBy: input.groupBy ?? null, dateProperty: input.dateProperty ?? null, properties: input.properties ?? [],
     };
-    viewDraft.current = optimistic;
+    viewDrafts.current.set(optimistic.id, optimistic);
     setDatabase(held => held && withView(held, optimistic));
     const mine = ++saveSeq.current;
     const write = saves.current.then(() => bridgeApi.saveDatabaseView({ databaseId, view: input }));
     saves.current = write.then(saved => {
       if (mine !== saveSeq.current) return;
-      viewDraft.current = null;
+      // The newest save landed: everything queued before it has too.
+      viewDrafts.current.clear();
       setDatabase(held => held && withView(held, saved));
       void query();
     }, error => {
-      if (mine === saveSeq.current) { viewDraft.current = null; void readDatabase(); }
+      if (mine === saveSeq.current) { viewDrafts.current.clear(); void readDatabase(); }
       fail(error);
     });
     return write.then(() => true, () => false);
@@ -296,11 +300,12 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
   // Views: made, renamed, retyped, duplicated, moved and deleted.
   const views_ = useRef(views);
   views_.current = views;
+  // Orders go through the same queue as every other view edit, each built on
+  // that view's latest, so a slow reorder never writes an older field back.
   const saveOrder = useCallback(async (ordered: NoteDatabaseView[]) => {
     const moved = ordered.map((candidate, order) => ({ candidate, order })).filter(({ candidate, order }) => candidate.order !== order);
-    setDatabase(current => current && { ...current, views: current.views.map(candidate => { const at = ordered.findIndex(item => item.id === candidate.id); return at < 0 ? candidate : { ...candidate, order: at }; }) });
-    for (const { candidate, order } of moved) await bridgeApi.saveDatabaseView({ databaseId, view: { ...viewInputOf(candidate), order } });
-  }, [databaseId]);
+    await Promise.all(moved.map(({ candidate, order }) => saveView(() => ({ order }), candidate)));
+  }, [saveView]);
   const typeDefaults = useCallback((type: string, current?: NoteDatabaseView): Partial<NoteViewInput> => {
     if (!database) return {};
     if (type === "board" && !current?.groupBy) return { groupBy: groupableColumns(database).find(column => column.type !== "date") ? { property: groupableColumns(database).find(column => column.type !== "date")!.id } : null };
