@@ -729,7 +729,13 @@ function AppContent() {
     const sessionId = item.sessionId;
     if (!sessionId) return;
     const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
-    const toast: AttentionToast = { key: attentionToastKey(item), sessionId, copy, firedAt: Date.now() };
+    const toast: AttentionToast = {
+      key: attentionToastKey(item),
+      sessionId,
+      copy,
+      firedAt: Date.now(),
+      ...(item.kind === "escalation" ? { actionLabel: "Deliver now" } : {}),
+    };
     // Newest per chat wins, like the ledger itself.
     setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-3));
     void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
@@ -3917,6 +3923,14 @@ function AppContent() {
         openSession(toast.sessionId);
       }}
       onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+      onAction={toast => {
+        // The only remedy so far: deliver input stranded behind a stopped agent.
+        // Any answer means the queue is handled; a failure rejects, and the
+        // card stays so the person can try again.
+        void bridgeApi.deliverQueuedInput(toast.sessionId)
+          .then(() => setAttentionToasts(current => current.filter(item => item.key !== toast.key)))
+          .catch(error => setError(errorMessage(error)));
+      }}
     />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     {INBOX_PANE_ENABLED && <ConnectorToasts

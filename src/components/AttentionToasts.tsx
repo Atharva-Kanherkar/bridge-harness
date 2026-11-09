@@ -19,6 +19,8 @@ export type AttentionToast = {
   // without this, App re-renders that only change unrelated state (e.g. the
   // git-stat poll) would pass a same-key toast through and must NOT restart it.
   firedAt?: number;
+  /** A one-click remedy beside the body, such as delivering stranded input. */
+  actionLabel?: string;
 };
 
 function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
@@ -31,10 +33,11 @@ function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
   return <CircleCheck size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-success" />;
 }
 
-function ToastCard({ toast, onOpen, onDismiss }: {
+function ToastCard({ toast, onOpen, onDismiss, onAction }: {
   toast: AttentionToast;
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
+  onAction?: (toast: AttentionToast) => void;
 }) {
   // `onDismiss` is a fresh closure on every App render (e.g. its ~5s
   // git-stat poll), which is not a reason to restart this timer — only a
@@ -49,15 +52,25 @@ function ToastCard({ toast, onOpen, onDismiss }: {
 
   return <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
     <ToneIcon tone={toast.copy.tone} />
-    <button
-      type="button"
-      onClick={() => onOpen(toast)}
-      className="min-w-0 flex-1 text-left"
-      aria-label={`${toast.copy.headline} — open the chat`}
-    >
-      <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
-      <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">{toast.copy.detail}</span>
-    </button>
+    <div className="min-w-0 flex-1">
+      <button
+        type="button"
+        onClick={() => onOpen(toast)}
+        className="block w-full text-left"
+        aria-label={`${toast.copy.headline} — open the chat`}
+      >
+        <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
+        {/* A remedy needs its reason read in full, so that detail may wrap. */}
+        <span className={cn("mt-0.5 block text-[12px] text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
+      </button>
+      {toast.actionLabel && onAction && <button
+        type="button"
+        onClick={() => onAction(toast)}
+        className="mt-2 h-7 rounded-md border border-border px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+      >
+        {toast.actionLabel}
+      </button>}
+    </div>
     <button
       type="button"
       onClick={() => onDismiss(toast.key)}
@@ -69,10 +82,11 @@ function ToastCard({ toast, onOpen, onDismiss }: {
   </div>;
 }
 
-export function AttentionToasts({ toasts, onOpen, onDismiss }: {
+export function AttentionToasts({ toasts, onOpen, onDismiss, onAction }: {
   toasts: AttentionToast[];
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
+  onAction?: (toast: AttentionToast) => void;
 }) {
   if (!toasts.length) return null;
   const shown = toasts.slice(-3);
@@ -82,7 +96,7 @@ export function AttentionToasts({ toasts, onOpen, onDismiss }: {
     className="pointer-events-none flex flex-col items-end gap-2"
   >
     {shown.map(toast => (
-      <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} />
+      <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} onAction={onAction} />
     ))}
   </div>;
 }

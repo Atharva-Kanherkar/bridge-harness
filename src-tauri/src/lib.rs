@@ -872,6 +872,13 @@ async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_
     api::list_attention(state.inner(), &bridge_protocol::messages::ListAttentionParams { after_sequence, limit, unseen_only })
 }
 
+/// Resuming an adapter spawns a provider process, so off the async runtime.
+#[tauri::command]
+async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DeliverQueuedInputResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Queued input delivery", move || api::deliver_queued_input(&core, &bridge_protocol::messages::DeliverQueuedInputParams { session_id })).await
+}
+
 #[tauri::command]
 async fn mark_attention_seen(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::MarkAttentionSeenResult, BridgeError> {
     api::mark_attention_seen(state.inner(), &bridge_protocol::messages::MarkAttentionSeenParams { session_id })
@@ -3183,6 +3190,7 @@ pub fn run() -> i32 {
             save_delegation_notify_settings,
             list_attention,
             mark_attention_seen,
+            deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,
             get_chat_search_settings,

@@ -125,6 +125,24 @@ describe("App attention wiring", () => {
     expect(seen).toHaveBeenCalledWith("b");
   });
 
+  it("offers Deliver now on an escalation and delivers that chat's input", async () => {
+    const deliver = vi.spyOn(bridgeApi, "deliverQueuedInput").mockResolvedValue({ disposition: "delivered" });
+    await mountApp();
+    await act(async () => {
+      pushMockAttention({ kind: "escalation", sessionId: "a", title: "A result is waiting", body: "Title a · Claude stopped before it read 1 update" });
+    });
+    await wait(40);
+    expect(toastRegion(container)?.textContent).toContain("A result is waiting");
+    expect(notifyAttention).toHaveBeenCalledWith("A result is waiting", "Title a · Claude stopped before it read 1 update", { sessionId: "a", approvalEventId: null });
+
+    const button = [...container.querySelectorAll('[aria-label="Attention notifications"] button')].find(item => item.textContent === "Deliver now") as HTMLButtonElement;
+    expect(button, "the remedy is on the card").toBeTruthy();
+    await act(async () => { button.click(); });
+    await wait(20);
+    expect(deliver).toHaveBeenCalledWith("a");
+    expect(toastRegion(container)).toBeFalsy();
+  });
+
   it("marks the chat seen when its toast reopens the retained selection", async () => {
     const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
     await mountApp();
@@ -152,5 +170,19 @@ describe("App attention wiring", () => {
     await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you", approvalEventId: null }); });
     await wait(NEEDS_YOU_HOLD_MS + 100);
     expect(notifyAttention).toHaveBeenCalledWith("Bridge needs you", "Worker w · Claude is waiting for your input", { sessionId: "w", approvalEventId: null });
+  });
+
+  it("keeps Deliver now when delivery fails", async () => {
+    vi.spyOn(bridgeApi, "deliverQueuedInput").mockRejectedValue(new Error("Bridge could not hand the waiting input to the agent; it is still queued. Try again."));
+    await mountApp();
+    await act(async () => {
+      pushMockAttention({ kind: "escalation", sessionId: "a", title: "A result is waiting", body: "Title a · Claude stopped before it read 1 update" });
+    });
+    await wait(40);
+    const button = [...container.querySelectorAll('[aria-label="Attention notifications"] button')].find(item => item.textContent === "Deliver now") as HTMLButtonElement;
+    await act(async () => { button.click(); });
+    await wait(20);
+    expect(toastRegion(container)?.textContent, "the remedy is still there to retry").toContain("Deliver now");
+    expect(container.textContent).toContain("it is still queued");
   });
 });

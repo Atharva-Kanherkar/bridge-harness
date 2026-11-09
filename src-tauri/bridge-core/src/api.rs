@@ -4308,6 +4308,17 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+/// Deliver a chat's queued input now, resuming its adapter if it is gone.
+pub fn deliver_queued_input(core: &Arc<BridgeCore>, params: &wire::DeliverQueuedInputParams) -> Result<wire::DeliverQueuedInputResult, BridgeError> {
+    use crate::live_turn::QueuedDelivery;
+    let disposition = match crate::live_turn::deliver_queued_now(core, &params.session_id)? {
+        QueuedDelivery::Delivered => wire::QueuedInputDelivery::Delivered,
+        QueuedDelivery::NothingQueued => wire::QueuedInputDelivery::NothingQueued,
+        QueuedDelivery::AfterCurrentTurn => wire::QueuedInputDelivery::AfterCurrentTurn,
+    };
+    Ok(wire::DeliverQueuedInputResult { disposition })
+}
+
 pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams) -> Result<wire::ListAttentionResult, BridgeError> {
     let page = crate::attention::list(&core.db.lock().unwrap(), params.after_sequence, params.limit, params.unseen_only)?;
     Ok(wire::ListAttentionResult {
@@ -4325,6 +4336,7 @@ fn attention_item(row: crate::attention::AttentionRow) -> wire::AttentionItem {
             AttentionKind::Finished => wire::AttentionKind::Finished,
             AttentionKind::Failed => wire::AttentionKind::Failed,
             AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
+            AttentionKind::Escalation => wire::AttentionKind::Escalation,
         },
         severity: match row.severity {
             Severity::Informational => wire::AttentionSeverity::Informational,

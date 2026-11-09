@@ -434,6 +434,10 @@ pub fn dispatch(
             let p: wire::ListAttentionParams = decode(method, params)?;
             reply(api::list_attention(core, &p))
         }
+        MethodName::DeliverQueuedInput => {
+            let p: wire::DeliverQueuedInputParams = decode(method, params)?;
+            reply(api::deliver_queued_input(core, &p))
+        }
         MethodName::MarkAttentionSeen => {
             let p: wire::MarkAttentionSeenParams = decode(method, params)?;
             reply(api::mark_attention_seen(core, &p))
@@ -1366,6 +1370,12 @@ mod tests {
         let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
         let error = dispatch(&core, MethodName::ListAttention, Some(json!({"cursor": 1}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+
+        let nothing = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
+        let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
+            .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

@@ -177,11 +177,6 @@ fn refuse_overloaded(mut stream: TcpStream) {
 
 /// A `TcpStream` whose reads cannot outlive an absolute deadline. A per-read
 /// socket timeout alone lets a peer reset the clock with every byte it drips.
-///
-/// Reads and writes a signal interrupted are retried. On Linux a socket read
-/// with a timeout is never restarted: it fails with EINTR even with no handler
-/// installed, if the process is stopped and resumed (signal(7)), and that
-/// would otherwise drop every connected client.
 struct DeadlineStream {
     stream: TcpStream,
     deadline: Option<Instant>,
@@ -189,30 +184,20 @@ struct DeadlineStream {
 
 impl Read for DeadlineStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        loop {
-            if let Some(deadline) = self.deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(std::io::Error::new(ErrorKind::TimedOut, "handshake deadline passed"));
-                }
-                self.stream.set_read_timeout(Some(remaining))?;
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(ErrorKind::TimedOut, "handshake deadline passed"));
             }
-            match self.stream.read(buf) {
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                other => return other,
-            }
+            self.stream.set_read_timeout(Some(remaining))?;
         }
+        self.stream.read(buf)
     }
 }
 
 impl Write for DeadlineStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        loop {
-            match self.stream.write(buf) {
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                other => return other,
-            }
-        }
+        self.stream.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

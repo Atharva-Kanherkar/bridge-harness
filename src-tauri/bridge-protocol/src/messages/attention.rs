@@ -14,6 +14,9 @@ pub enum AttentionKind {
     Failed,
     /// A visible chat, workers included, is waiting on the person.
     NeedsYou,
+    /// Input queued for a chat whose adapter is gone has waited past the
+    /// bound. `sessions/deliver_queued_input` delivers it.
+    Escalation,
     /// A kind added after this client was built. The ledger gains kinds slice
     /// by slice; decoding them as `other` keeps an older client's read working
     /// instead of failing it, and a client shows nothing for them.
@@ -87,6 +90,33 @@ pub struct MarkAttentionSeenResult {
     pub updated: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeliverQueuedInputParams {
+    pub session_id: String,
+}
+
+/// What Deliver now did. Each value means the queue is handled; a delivery
+/// that failed is an error instead, and the input stays queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum QueuedInputDelivery {
+    Delivered,
+    /// Nothing was queued, or another drain had already claimed it.
+    NothingQueued,
+    /// The agent is live and mid-turn; its next boundary delivers the input.
+    AfterCurrentTurn,
+    /// A value added after this client was built.
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliverQueuedInputResult {
+    pub disposition: QueuedInputDelivery,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +136,22 @@ mod tests {
         assert_eq!(page.items[0].kind, AttentionKind::Other);
         assert_eq!(page.items[0].severity, AttentionSeverity::Other);
         assert_eq!(serde_json::to_value(AttentionKind::NeedsYou).unwrap(), "needsYou");
+    }
+
+    #[test]
+    fn a_1_24_client_decodes_escalation_as_other() {
+        // AttentionKind exactly as protocol 1.24 shipped it.
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum AttentionKindV124 {
+            Finished,
+            Failed,
+            NeedsYou,
+            #[serde(other)]
+            Other,
+        }
+        let wire = serde_json::to_value(AttentionKind::Escalation).unwrap();
+        assert_eq!(wire, "escalation");
+        assert_eq!(serde_json::from_value::<AttentionKindV124>(wire).unwrap(), AttentionKindV124::Other);
     }
 }

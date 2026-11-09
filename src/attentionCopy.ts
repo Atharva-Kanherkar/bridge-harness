@@ -12,6 +12,7 @@ const TONES: Record<AttentionItem["kind"], AttentionCopy["tone"]> = {
   needsYou: "needs-you",
   finished: "completed",
   failed: "failed",
+  escalation: "needs-you",
   // Never shown: the feed drops kinds it does not know.
   other: "completed",
 };
@@ -25,7 +26,8 @@ const TONES: Record<AttentionItem["kind"], AttentionCopy["tone"]> = {
  */
 export function attentionCopy(item: Pick<AttentionItem, "kind" | "title" | "body">, session?: Session): AttentionCopy {
   const tone = TONES[item.kind];
-  if (!session) return { headline: item.title, detail: item.body ?? "", tone };
+  // An escalation's body carries how much is waiting, which only core knows.
+  if (!session || item.kind === "escalation") return { headline: item.title, detail: item.body ?? "", tone };
   const who = `${chatName(session)} · ${harnessLabel(session.harness)}`;
   if (item.kind === "needsYou") return { headline: "Bridge needs you", detail: `${who} is waiting for your input`, tone };
   if (item.kind === "failed") return { headline: "Turn failed", detail: `${who} ended this turn with an error`, tone };
