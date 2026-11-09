@@ -145,3 +145,15 @@ that fails without it.
    `a_1_24_client_decodes_escalation_as_other` (protocol), plus the
    desktop feed's unknown-kind test.
 
+
+## Review amendments (review 2)
+
+Locked before the fix; it gets a regression test that fails without it.
+
+5. **An escalation stays open while its input is being delivered.** Deliver
+   now claims the row (`claiming`) before the provider write. A sweep in that
+   window must not read the queue as empty: if the write fails, `release()`
+   puts the row back to `queued`, and the card has to still be there. The
+   close query counts `queued` and `claiming` rows as pending, as
+   `runtime_budget` already does. Test:
+   `escalation_stays_open_while_delivery_is_claiming`.
