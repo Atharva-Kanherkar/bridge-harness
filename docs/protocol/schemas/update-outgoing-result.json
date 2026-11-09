@@ -19,6 +19,11 @@
         },
         "path": {
           "type": "string"
+        },
+        "sha256": {
+          "default": "",
+          "description": "Hex SHA-256 of the bytes when attached. A read refuses a file whose digest moved, so the image cannot change outside the draft's revision.",
+          "type": "string"
         }
       },
       "required": [

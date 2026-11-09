@@ -84,6 +84,10 @@ pub struct OutgoingAttachment {
     /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
     pub mime: String,
     pub bytes: u64,
+    /// Hex SHA-256 of the bytes when attached. A read refuses a file whose
+    /// digest moved, so the image cannot change outside the draft's revision.
+    #[serde(default)]
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

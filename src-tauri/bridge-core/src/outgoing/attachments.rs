@@ -27,26 +27,44 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     }
 }
 
-fn one(path: &str) -> Result<OutgoingAttachment, String> {
+/// Read a file through one handle, at most the size limit plus one byte, so
+/// the bytes checked are the bytes returned and a growing file cannot slip
+/// past the limit.
+fn bounded_read(path: &str) -> Result<Vec<u8>, String> {
     let file = Path::new(path);
     if !file.is_absolute() {
         return Err(format!("{path}: attachments must be absolute paths"));
     }
-    let meta = std::fs::metadata(file).map_err(|_| format!("{path}: no such file"))?;
+    let handle = std::fs::File::open(file).map_err(|_| format!("{path}: no such file"))?;
+    let meta = handle.metadata().map_err(|_| format!("{path}: cannot be read"))?;
     if !meta.is_file() {
         return Err(format!("{path}: not a file"));
     }
-    if meta.len() > MAX_OUTGOING_ATTACHMENT_BYTES {
+    let mut bytes = Vec::new();
+    handle
+        .take(MAX_OUTGOING_ATTACHMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| format!("{path}: cannot be read"))?;
+    if bytes.len() as u64 > MAX_OUTGOING_ATTACHMENT_BYTES {
         return Err(format!("{path}: larger than {} MB", MAX_OUTGOING_ATTACHMENT_BYTES / (1024 * 1024)));
     }
-    let mut head = [0u8; 12];
-    let read = std::fs::File::open(file).and_then(|mut handle| handle.read(&mut head)).map_err(|_| format!("{path}: cannot be read"))?;
-    let mime = sniff(&head[..read]).ok_or_else(|| format!("{path}: not a PNG, JPEG, GIF or WebP image"))?;
+    Ok(bytes)
+}
+
+fn digest(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn one(path: &str) -> Result<OutgoingAttachment, String> {
+    let bytes = bounded_read(path)?;
+    let mime = sniff(&bytes).ok_or_else(|| format!("{path}: not a PNG, JPEG, GIF or WebP image"))?;
     Ok(OutgoingAttachment {
         path: path.to_owned(),
-        name: file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+        name: Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
         mime: mime.to_owned(),
-        bytes: meta.len(),
+        bytes: bytes.len() as u64,
+        sha256: digest(&bytes),
     })
 }
 
@@ -58,14 +76,15 @@ pub fn validate(paths: &[String]) -> Result<Vec<OutgoingAttachment>, String> {
     paths.iter().map(|path| one(path.trim())).collect()
 }
 
-/// The image as base64, if it is still the image that was attached.
+/// The image as base64, if it is still exactly the image that was attached.
 pub fn read(attachment: &OutgoingAttachment) -> Result<(String, String), String> {
-    let checked = one(&attachment.path)?;
-    if checked.mime != attachment.mime {
-        return Err(format!("{}: the file changed since it was attached", attachment.path));
+    let bytes = bounded_read(&attachment.path)?;
+    let changed = || format!("{}: the file changed since it was attached", attachment.path);
+    let mime = sniff(&bytes).ok_or_else(changed)?;
+    if mime != attachment.mime || digest(&bytes) != attachment.sha256 {
+        return Err(changed());
     }
-    let bytes = std::fs::read(&attachment.path).map_err(|_| format!("{}: cannot be read", attachment.path))?;
-    Ok((checked.mime, base64::engine::general_purpose::STANDARD.encode(bytes)))
+    Ok((mime.to_owned(), base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
 #[cfg(test)]
@@ -102,6 +121,18 @@ pub(crate) mod tests {
         assert!(validate(&[format!("{png}.gone")]).unwrap_err().contains("no such file"));
         assert!(validate(&[dir.path().to_string_lossy().into_owned()]).unwrap_err().contains("not a file"));
         assert!(validate(&vec![png; MAX_OUTGOING_ATTACHMENTS + 1]).unwrap_err().contains("at most"));
+    }
+
+    #[test]
+    fn swapping_in_a_different_image_of_the_same_type_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "a.png", PNG);
+        let attached = validate(&[path.clone()]).unwrap().remove(0);
+        let mut other = PNG.to_vec();
+        *other.last_mut().unwrap() = 99;
+        std::fs::write(&path, &other).unwrap();
+        let error = read(&attached).unwrap_err();
+        assert!(error.contains("changed since it was attached"), "{error}");
     }
 
     #[test]

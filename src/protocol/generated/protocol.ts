@@ -2306,6 +2306,7 @@ export interface OutgoingAttachment {
   mime: string;
   name: string;
   path: string;
+  sha256?: string;
 }
 
 export type OutgoingDestination = { channel: string; kind: "slackChannel" } | { channel: string; kind: "slackThread"; thread: string } | { kind: "slackDm"; user: string } | { kind: "githubComment"; number: number; repo: string } | { commentId: number; kind: "githubReviewReply"; number: number; repo: string } | { format: OutgoingFormat; kind: "clipboard" };
