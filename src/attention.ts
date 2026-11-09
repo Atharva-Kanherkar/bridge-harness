@@ -1,5 +1,7 @@
 import { isMacPlatform } from "./lib/platform";
 import { NOTIFY_EVENT } from "./nativeNotify";
+import { activeWebDaemon } from "./webDaemon";
+import { notifyInBrowser } from "./webNotify";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -52,7 +54,13 @@ export async function notifyAttention(
   body: string,
   context: { sessionId?: string; approvalEventId?: number | null } = {},
 ): Promise<void> {
-  if (isBridgeFocused() || !isTauri()) return;
+  if (isBridgeFocused()) return;
+  if (!isTauri()) {
+    // A browser tab with a daemon link posts through the browser. Mock mode
+    // (`bun run dev` with no daemon) posts nothing.
+    if (activeWebDaemon()) await notifyInBrowser(title, body, context.sessionId);
+    return;
+  }
   // Linux: the shell posts it natively, with Allow once / Decline / Open.
   if (!isMacPlatform()) {
     const { emit } = await import("@tauri-apps/api/event");

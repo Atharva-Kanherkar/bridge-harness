@@ -134,8 +134,8 @@ pub struct UnreadSummary {
     pub by_session: BTreeMap<String, AttentionKind>,
 }
 
-/// Which kind of client is reporting. Only a desktop client has an OS banner
-/// channel today, so only it can own banners while unfocused.
+/// Which kind of client is reporting. It sets the default for
+/// `canPostBanners`: a desktop client posts banners, a web client says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PresenceClientKind {
@@ -151,6 +151,11 @@ pub struct ReportPresenceParams {
     /// One random id per app load.
     pub client_id: String,
     pub client_kind: PresenceClientKind,
+    /// Whether this client can post OS banners now. Absent: a desktop client
+    /// can and a web client cannot. A browser tab whose person denied
+    /// notifications says `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_post_banners: Option<bool>,
     pub focused: bool,
     #[serde(default)]
     pub gone: bool,
@@ -160,7 +165,8 @@ pub struct ReportPresenceParams {
 #[serde(rename_all = "camelCase")]
 pub struct ReportPresenceResult {
     /// Whether this client posts OS banners. One client at a time does: the
-    /// focused one, otherwise the desktop client focused last.
+    /// focused one, otherwise the client that can post them and was focused
+    /// last.
     pub banner_owner: bool,
 }
 

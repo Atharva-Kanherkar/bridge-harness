@@ -1400,6 +1400,8 @@ mod tests {
         assert_eq!(report("other", "desktop", false), json!({"bannerOwner": false}));
         assert_eq!(report("web", "web", true), json!({"bannerOwner": true}));
         assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": false}), "the focused web client owns");
+        let capable = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "canPostBanners": true, "focused": false}))).unwrap();
+        assert_eq!(capable, json!({"bannerOwner": true}), "the tab can post banners and was focused last");
         let gone = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "focused": false, "gone": true}))).unwrap();
         assert_eq!(gone, json!({"bannerOwner": false}));
         assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));

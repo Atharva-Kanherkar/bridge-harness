@@ -881,8 +881,8 @@ async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCor
 }
 
 #[tauri::command]
-async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
-    api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, focused, gone })
+async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, can_post_banners: Option<bool>, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
+    api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, can_post_banners, focused, gone })
 }
 
 #[tauri::command]

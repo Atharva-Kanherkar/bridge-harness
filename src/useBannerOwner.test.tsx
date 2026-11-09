@@ -20,6 +20,8 @@ describe("useBannerOwner", () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.useFakeTimers();
+    // A browser tab that has not been asked yet: it could post after asking.
+    vi.stubGlobal("Notification", { permission: "default" });
     seen = [];
     container = document.createElement("div");
     document.body.append(container);
@@ -31,6 +33,7 @@ describe("useBannerOwner", () => {
     container.remove();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   const render = (focused: boolean) => act(async () => { root.render(<Probe focused={focused} seen={seen} />); });
@@ -39,13 +42,13 @@ describe("useBannerOwner", () => {
     const report = vi.spyOn(bridgeApi, "reportPresence").mockResolvedValue({ bannerOwner: false });
     await render(false);
     await settle();
-    expect(report).toHaveBeenLastCalledWith("me", false);
+    expect(report).toHaveBeenLastCalledWith("me", { focused: false, canPostBanners: true });
     expect(seen.at(-1)).toBe(false);
 
     report.mockResolvedValue({ bannerOwner: true });
     await render(true);
     await settle();
-    expect(report).toHaveBeenLastCalledWith("me", true);
+    expect(report).toHaveBeenLastCalledWith("me", { focused: true, canPostBanners: true });
     expect(seen.at(-1)).toBe(true);
 
     const calls = report.mock.calls.length;
@@ -58,7 +61,7 @@ describe("useBannerOwner", () => {
     const report = vi.spyOn(bridgeApi, "reportPresence").mockResolvedValue({ bannerOwner: true });
     await render(false);
     await act(async () => { window.dispatchEvent(new Event("pagehide")); });
-    expect(report).toHaveBeenLastCalledWith("me", false, true);
+    expect(report).toHaveBeenLastCalledWith("me", { focused: false, gone: true });
   });
 
   it("owns banners when a report fails, so nothing goes silent", async () => {
@@ -78,4 +81,13 @@ describe("useBannerOwner", () => {
     await act(async () => { answers[0]({ bannerOwner: false }); });
     expect(seen.at(-1)).toBe(true);
   });
+
+  it("tells core a browser tab whose person denied notifications cannot post banners", async () => {
+    const report = vi.spyOn(bridgeApi, "reportPresence").mockResolvedValue({ bannerOwner: false });
+    vi.stubGlobal("Notification", { permission: "denied" });
+    await render(false);
+    await settle();
+    expect(report).toHaveBeenLastCalledWith("me", { focused: false, canPostBanners: false });
+  });
 });
+

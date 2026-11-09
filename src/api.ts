@@ -3383,8 +3383,16 @@ export const bridgeApi = {
     });
   },
   /** Renew this client's presence lease; the answer says whether it posts OS banners. */
-  reportPresence: async (clientId: string, focused: boolean, gone = false): Promise<ReportPresenceResult> => {
-    if (hasBackend()) return call("attention/report_presence", { clientId, clientKind: isTauri() ? "desktop" : "web", focused, gone });
+  reportPresence: async (clientId: string, presence: { focused: boolean; gone?: boolean; canPostBanners?: boolean }): Promise<ReportPresenceResult> => {
+    if (hasBackend()) {
+      return call("attention/report_presence", {
+        clientId,
+        clientKind: isTauri() ? "desktop" : "web",
+        focused: presence.focused,
+        gone: presence.gone ?? false,
+        ...(presence.canPostBanners === undefined ? {} : { canPostBanners: presence.canPostBanners }),
+      });
+    }
     // One client, no daemon: it owns its banners.
     return { bannerOwner: true };
   },

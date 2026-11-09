@@ -5,6 +5,10 @@ const isPermissionGranted = vi.hoisted(() => vi.fn());
 const requestPermission = vi.hoisted(() => vi.fn());
 const sendNotification = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-notification", () => ({ isPermissionGranted, requestPermission, sendNotification }));
+const activeWebDaemon = vi.hoisted(() => vi.fn(() => null as object | null));
+vi.mock("./webDaemon", () => ({ activeWebDaemon }));
+const notifyInBrowser = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("./webNotify", () => ({ notifyInBrowser }));
 
 async function loadAttention() {
   vi.resetModules();
@@ -88,3 +92,31 @@ describe("notifyAttention", () => {
     expect(sendNotification).toHaveBeenCalledWith({ title: "t2", body: "b2" });
   });
 });
+
+describe("the web client", () => {
+  beforeEach(() => {
+    setTauri(false);
+    notifyInBrowser.mockClear();
+  });
+
+  it("posts through the browser when a daemon link is active and Bridge is in the background", async () => {
+    activeWebDaemon.mockReturnValue({});
+    const { notifyAttention } = await loadAttention();
+    window.dispatchEvent(new Event("blur"));
+    await notifyAttention("Bridge needs you", "Fix login · Claude is waiting", { sessionId: "chat-1" });
+    expect(notifyInBrowser).toHaveBeenCalledWith("Bridge needs you", "Fix login · Claude is waiting", "chat-1");
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("posts nothing while Bridge is focused, or in mock mode", async () => {
+    activeWebDaemon.mockReturnValue({});
+    const { notifyAttention } = await loadAttention();
+    window.dispatchEvent(new Event("focus"));
+    await notifyAttention("Bridge needs you", "x", { sessionId: "chat-1" });
+    activeWebDaemon.mockReturnValue(null);
+    window.dispatchEvent(new Event("blur"));
+    await notifyAttention("Bridge needs you", "x", { sessionId: "chat-1" });
+    expect(notifyInBrowser).not.toHaveBeenCalled();
+  });
+});
+

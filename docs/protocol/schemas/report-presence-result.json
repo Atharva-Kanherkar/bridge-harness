@@ -3,7 +3,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
     "bannerOwner": {
-      "description": "Whether this client posts OS banners. One client at a time does: the focused one, otherwise the desktop client focused last.",
+      "description": "Whether this client posts OS banners. One client at a time does: the focused one, otherwise the client that can post them and was focused last.",
       "type": "boolean"
     }
   },
