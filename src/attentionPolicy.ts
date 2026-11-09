@@ -1,3 +1,4 @@
+import { DEFAULT_ATTENTION_SETTINGS, isQuiet, type AttentionSettings, type AttentionSettingKind } from "./attentionSettings";
 import type { AttentionItem } from "./types";
 
 // What an attention row becomes, decided in one place. Ported from herdr's
@@ -20,6 +21,7 @@ export type Decision = {
   toast: boolean;
   /** The OS notification. */
   banner: boolean;
+  sound: boolean;
   /** How long the toast stays; `null` until the person acts on it. */
   durationMs: number | null;
 };
@@ -33,12 +35,26 @@ const DURATION_MS: Partial<Record<AttentionItem["kind"], number | null>> = {
   escalation: null,
 };
 
-export function decide(item: AttentionItem, presence: Presence): Decision | null {
+export function decide(
+  item: AttentionItem,
+  presence: Presence,
+  settings: AttentionSettings = DEFAULT_ATTENTION_SETTINGS,
+  now: Date = new Date(),
+): Decision | null {
   const sessionId = item.sessionId;
   if (!sessionId || item.seenAt || item.resolvedAt) return null;
   const durationMs = DURATION_MS[item.kind];
   if (durationMs === undefined) return null;
   // The person is looking at it.
   if (presence.focused && presence.onScreen.has(sessionId)) return null;
-  return { toast: true, banner: !presence.focused, durationMs };
+  const channels = settings.kinds[item.kind as AttentionSettingKind];
+  // Quiet hours silence what reaches outside the window; a toast is silent.
+  const quiet = isQuiet(settings.quietHours, now);
+  const decision = {
+    toast: channels.toast,
+    banner: channels.banner && !presence.focused && !quiet,
+    sound: channels.sound && !quiet,
+    durationMs,
+  };
+  return decision.toast || decision.banner || decision.sound ? decision : null;
 }
