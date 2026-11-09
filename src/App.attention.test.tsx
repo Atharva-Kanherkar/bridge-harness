@@ -212,6 +212,22 @@ describe("App attention wiring", () => {
       expect(badge).toHaveBeenLastCalledWith(0);
     });
 
+    it("sends the badge event again when what needs you changes at the same total", async () => {
+      // The native menu bar wakes on this event and words its row from
+      // needsYou, so a finished chat that starts waiting must not go unheard.
+      const badge = vi.spyOn(bridgeApi, "setUnreadBadge");
+      await mountApp();
+      await open(container, "a");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      const calls = badge.mock.calls.length;
+      expect(badge).toHaveBeenLastCalledWith(1);
+      await act(async () => { pushMockAttention({ kind: "escalation", sessionId: "b", title: "A result is waiting" }); });
+      await wait(40);
+      expect(badge.mock.calls.length).toBeGreaterThan(calls);
+      expect(badge).toHaveBeenLastCalledWith(1);
+    });
+
     it("clears the dot when another client marks the chat seen", async () => {
       await mountApp();
       await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });

@@ -54,6 +54,29 @@ check(fixture.selectedUsage?.windows[1].usedPercent.current == nil, "Stale usage
 check(moneyLabel(fixture.selectedUsage!.today.costMicrousd) == "≈ $1.20", "Estimated cost survives Rust to Swift")
 check(moneyLabel(fixture.selectedUsage!.month.costMicrousd) == "Unavailable", "Unpriced totals stay unavailable")
 check(fixture.selectedUsage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
+// Unread chats ride the same snapshot. A host that predates them sends none.
+check(fixture.attention == AttentionCounts(total: 4, needsYou: 1), "Unread counts survive Rust to Swift")
+var withoutAttention = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))) as! [String: Any]
+withoutAttention.removeValue(forKey: "attention")
+let legacy = try JSONDecoder().decode(Presentation.self, from: JSONSerialization.data(withJSONObject: withoutAttention))
+check(legacy.attention == nil && attentionLabel(legacy.attention) == nil, "A snapshot without unread counts shows nothing unread")
+check(attentionLabel(total: 0, needsYou: 0) == nil, "Nothing unread hides the row")
+check(attentionLabel(total: 1, needsYou: 1) == "1 chat needs you", "One request reads singular")
+check(attentionLabel(total: 2, needsYou: 2) == "2 chats need you", "Requests read plural")
+check(attentionLabel(total: 1, needsYou: 0) == "1 unread chat", "One finished chat reads singular")
+check(attentionLabel(total: 3, needsYou: 0) == "3 unread chats", "Finished chats read plural")
+check(attentionLabel(total: 4, needsYou: 1) == "1 chat needs you · 3 unread", "Requests come first, the rest are counted after")
+check(accessibleTitle("Bridge usage menu", attention: nil) == "Bridge usage menu", "Nothing is appended when nothing is unread")
+check(accessibleTitle("Bridge usage menu", attention: AttentionCounts(total: 0, needsYou: 0)) == "Bridge usage menu", "Zero appends nothing")
+check(accessibleTitle("Bridge usage menu", attention: AttentionCounts(total: 2, needsYou: 2)) == "Bridge usage menu, 2 chats need you",
+      "VoiceOver and the tooltip end with what is unread")
+let plainIcon = MenuController.templateIcon()
+let dottedIcon = iconWithUnreadDot(plainIcon)
+check(dottedIcon.isTemplate && dottedIcon.size == plainIcon.size, "The dotted icon stays a template of the same size")
+check(dottedIcon.tiffRepresentation != plainIcon.tiffRepresentation, "The dot is drawn")
+let colored = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in NSColor.systemBlue.setFill(); rect.fill(); return true }
+check(!iconWithUnreadDot(colored).isTemplate, "A colored provider icon keeps its colors")
+
 var available = fixture.selectedUsage!
 available.windows[1].usedPercent = Metric(value: 58, source: "reported", status: "current")
 check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic headlines the window closest to exhaustion, not the first slot")
@@ -595,6 +618,7 @@ disconnectedState.openSettings = { settingsActions += 1 }
 disconnectedState.openSettings()
 check(settingsActions == 1, "The disconnected card settings action is independently wired")
 try renderMenuCardFixtures(fixture)
+try renderStatusIconFixtures()
 print("Menu Bar Swift checks passed: wire fixture, disabled-data isolation, favorite defaults, 69-provider bounded overflow, selection reveal, scroll preservation, countdowns, status accessibility, viewport resizing, appearance, submenu tracking, template mask")
 
 // Every overview contribution and separate icon follows enabled favorites.
