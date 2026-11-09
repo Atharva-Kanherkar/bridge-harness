@@ -3974,7 +3974,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
-    </div>
+    {/* Last: an update can wait behind anything happening now. */}
     {availableUpdate && (
       <UpdateToast
         key={`${availableUpdate.channel}:${availableUpdate.version}`}
@@ -3983,6 +3983,7 @@ function AppContent() {
         onDismiss={() => setAvailableUpdate(undefined)}
       />
     )}
+    </div>
 
     <ProviderSignInDialog
       provider={loginProvider}

@@ -62,3 +62,8 @@ export async function installUpdateAndRestart(update: UpdateInfo): Promise<void>
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
 }
+
+/** A `bun run dev` build: it cannot install updates, only a packaged app can. */
+export function isDevelopmentBuild(): boolean {
+  return (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
+}

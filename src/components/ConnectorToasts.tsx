@@ -1,7 +1,7 @@
-import { useEffect } from "react";
-import { AtSign, FileText, Mail, MessageSquare, Reply, X } from "lucide-react";
+import { AtSign, FileText, Mail, MessageSquare, Reply } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ConnectorToast } from "../connectorSurface";
+import { ToastCard, ToastOverflow, TOASTS_SHOWN } from "./ToastCard";
 
 // The connector notification stack. One card per inbox item, keyed by item so
 // the harness-rendered headline *replaces* the placeholder in a toast that is
@@ -32,28 +32,23 @@ function KindIcon({ family }: { family: string }) {
   return <Icon size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-foreground" />;
 }
 
-function ToastCard({ toast, index, onOpen, onDismiss }: {
+function ConnectorCard({ toast, index, onOpen, onDismiss }: {
   toast: ConnectorToast;
   index: number;
   onOpen: (toast: ConnectorToast) => void;
   onDismiss: (key: string) => void;
 }) {
-  useEffect(() => {
-    const timer = window.setTimeout(() => onDismiss(toast.key), CONNECTOR_TOAST_TTL_MS);
-    return () => window.clearTimeout(timer);
-  }, [toast.key, onDismiss]);
-
-  return <div
-    className="u-glass-popover connector-toast-in pointer-events-auto flex w-[min(23rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl"
+  return <ToastCard
+    toastKey={toast.key}
+    durationMs={CONNECTOR_TOAST_TTL_MS}
+    onDismiss={onDismiss}
+    entrance="connector-toast-in"
+    className="w-[min(23rem,calc(100vw-1.5rem))]"
     style={{ "--connector-toast-delay": `${Math.min(index, 4) * 60}ms` } as React.CSSProperties}
-  >
-    <KindIcon family={toast.family} />
-    <button
-      type="button"
-      onClick={() => onOpen(toast)}
-      className="min-w-0 flex-1 text-left"
-      aria-label={`${toast.headline} — open in the inbox`}
-    >
+    icon={<KindIcon family={toast.family} />}
+    onOpen={() => onOpen(toast)}
+    openLabel={`${toast.headline} — open in the inbox`}
+    body={<>
       <span
         key={toast.headline}
         className={cn(
@@ -71,16 +66,8 @@ function ToastCard({ toast, index, onOpen, onDismiss }: {
         <Reply size={10} aria-hidden="true" className="shrink-0" />
         <span className="shrink-0">Reply here</span>
       </span>
-    </button>
-    <button
-      type="button"
-      onClick={() => onDismiss(toast.key)}
-      aria-label="Dismiss notification"
-      className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      <X size={13} aria-hidden="true" />
-    </button>
-  </div>;
+    </>}
+  />;
 }
 
 export function ConnectorToasts({ toasts, suppressed = false, onOpen, onDismiss }: {
@@ -95,15 +82,13 @@ export function ConnectorToasts({ toasts, suppressed = false, onOpen, onDismiss 
   if (suppressed || !toasts.length) return null;
   // Newest nearest the corner, and never more than three at once: a burst of
   // mentions should not become a wall the user has to clear.
-  const shown = toasts.slice(-3);
+  const shown = toasts.slice(-TOASTS_SHOWN);
   return <div
     role="region"
     aria-label="Connector notifications"
     className="pointer-events-none flex flex-col items-end gap-2"
   >
-    {shown.map((toast, index) => <ToastCard key={toast.key} toast={toast} index={index} onOpen={onOpen} onDismiss={onDismiss} />)}
-    {toasts.length > shown.length && <div className="pointer-events-none rounded-md bg-muted/70 px-2 py-0.5 text-[11px] text-muted-foreground">
-      +{toasts.length - shown.length} more waiting
-    </div>}
+    {shown.map((toast, index) => <ConnectorCard key={toast.key} toast={toast} index={index} onOpen={onOpen} onDismiss={onDismiss} />)}
+    <ToastOverflow count={toasts.length - shown.length} />
   </div>;
 }
