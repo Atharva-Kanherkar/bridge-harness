@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Download, LoaderCircle, X } from "lucide-react";
-import { UpdateInstallUnavailableError, type UpdateInfo } from "../updater";
+import { Download, LoaderCircle } from "lucide-react";
+import { isDevelopmentBuild, UpdateInstallUnavailableError, type UpdateInfo } from "../updater";
+import { ToastCard } from "./ToastCard";
 
+/** Last in the top-right stack. It stays until installed or dismissed. */
 export function UpdateToast({ update, onInstall, onDismiss }: {
   update: UpdateInfo;
   onInstall: (update: UpdateInfo) => Promise<void>;
@@ -9,7 +11,7 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
 }) {
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string>();
-  const developmentBuild = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
+  const developmentBuild = isDevelopmentBuild();
   async function install() {
     setInstallError(undefined);
     setInstalling(true);
@@ -22,26 +24,26 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
         : "Update failed. Check your connection and try again.");
     }
   }
-  return <div className="pointer-events-none fixed bottom-3 left-3 z-30 sm:bottom-[18px] sm:left-[18px]">
-    <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
-      <Download size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <span className="block text-[13px] font-medium leading-snug text-foreground">Bridge {update.version} is available</span>
-        <span className="mt-0.5 block text-[12px] text-muted-foreground">You're on {update.currentVersion}. Update now to restart with the latest build.</span>
-        {installError && <span className="mt-1 block text-[12px] text-destructive">{installError}</span>}
-        {developmentBuild ? <span className="mt-2 block text-[12px] text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
-          type="button"
-          disabled={installing}
-          onClick={() => void install()}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
-        >
-          {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
-          {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}
-        </button>}
-      </div>
-      <button type="button" onClick={onDismiss} aria-label="Dismiss update notification" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
-        <X size={13} aria-hidden="true" />
-      </button>
-    </div>
-  </div>;
+  return <ToastCard
+    toastKey={`${update.channel}:${update.version}`}
+    durationMs={null}
+    onDismiss={onDismiss}
+    icon={<Download size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-foreground" />}
+    body={<>
+      <span className="block text-[13px] font-medium leading-snug text-foreground">Bridge {update.version} is available</span>
+      <span className="mt-0.5 block text-[12px] text-muted-foreground">You're on {update.currentVersion}. Update now to restart with the latest build.</span>
+    </>}
+    footer={<>
+      {installError && <span className="mt-1 block text-[12px] text-destructive">{installError}</span>}
+      {developmentBuild ? <span className="mt-2 block text-[12px] text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
+        type="button"
+        disabled={installing}
+        onClick={() => void install()}
+        className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
+      >
+        {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
+        {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}
+      </button>}
+    </>}
+  />;
 }
