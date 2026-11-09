@@ -4368,6 +4368,30 @@ pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionS
     Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
 }
 
+/// An agent asks for the person. Posts one `posted` row for the chat, or says
+/// the chat is rate limited.
+pub fn post_attention(core: &Arc<BridgeCore>, params: &wire::PostParams) -> Result<wire::PostResult, BridgeError> {
+    let severity = match params.severity {
+        Some(wire::AttentionSeverity::Actionable) => crate::attention::Severity::Actionable,
+        _ => crate::attention::Severity::Informational,
+    };
+    let outcome = crate::attention::post(
+        &core.db.lock().unwrap(),
+        &params.session_id,
+        &params.title,
+        params.body.as_deref(),
+        severity,
+        chrono::Utc::now(),
+    )?;
+    Ok(match outcome {
+        crate::attention::PostOutcome::Shown(_) => {
+            core.events.publish(CoreEvent::AttentionChanged);
+            wire::PostResult { shown: true, reason: wire::PostReason::Shown }
+        }
+        crate::attention::PostOutcome::RateLimited => wire::PostResult { shown: false, reason: wire::PostReason::RateLimited },
+    })
+}
+
 /// Renew one client's presence lease and say whether it posts OS banners.
 pub fn report_presence(core: &Arc<BridgeCore>, params: &wire::ReportPresenceParams) -> Result<wire::ReportPresenceResult, BridgeError> {
     let kind = match params.client_kind {

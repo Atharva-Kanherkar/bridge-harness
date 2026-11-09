@@ -881,6 +881,11 @@ async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCor
 }
 
 #[tauri::command]
+async fn post(session_id: String, title: String, body: Option<String>, severity: Option<bridge_protocol::messages::AttentionSeverity>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::PostResult, BridgeError> {
+    api::post_attention(state.inner(), &bridge_protocol::messages::PostParams { session_id, title, body, severity })
+}
+
+#[tauri::command]
 async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, can_post_banners: Option<bool>, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
     api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, can_post_banners, focused, gone })
 }
@@ -3205,6 +3210,7 @@ pub fn run() -> i32 {
             mark_attention_seen,
             unread_summary,
             report_presence,
+            post,
             deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,

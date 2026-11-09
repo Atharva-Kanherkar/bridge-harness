@@ -18,6 +18,9 @@ pub enum AttentionKind {
     /// Input queued for a chat whose adapter is gone has waited past the
     /// bound. `sessions/deliver_queued_input` delivers it.
     Escalation,
+    /// An agent asked for the person (`attention/post`, the `notify_user`
+    /// tool). Title and body are the agent's own words.
+    Posted,
     /// A kind added after this client was built. The ledger gains kinds slice
     /// by slice; decoding them as `other` keeps an older client's read working
     /// instead of failing it, and a client shows nothing for them.
@@ -170,6 +173,40 @@ pub struct ReportPresenceResult {
     pub banner_owner: bool,
 }
 
+/// An agent asks for the person. Text only: posting grants nothing.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostParams {
+    /// The chat the notice is about, and opens.
+    pub session_id: String,
+    /// At most 80 characters after control characters and extra whitespace go.
+    pub title: String,
+    /// At most 240 characters, cleaned the same way.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// `informational` unless said otherwise.
+    #[serde(default)]
+    pub severity: Option<AttentionSeverity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PostReason {
+    Shown,
+    /// The chat already posted three times in the last five minutes.
+    RateLimited,
+    /// A value added after this client was built.
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PostResult {
+    pub shown: bool,
+    pub reason: PostReason,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +243,23 @@ mod tests {
         let wire = serde_json::to_value(AttentionKind::Escalation).unwrap();
         assert_eq!(wire, "escalation");
         assert_eq!(serde_json::from_value::<AttentionKindV124>(wire).unwrap(), AttentionKindV124::Other);
+    }
+
+    #[test]
+    fn a_1_28_client_decodes_posted_as_other() {
+        // AttentionKind exactly as protocol 1.28 shipped it.
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum AttentionKindV128 {
+            Finished,
+            Failed,
+            NeedsYou,
+            Escalation,
+            #[serde(other)]
+            Other,
+        }
+        let wire = serde_json::to_value(AttentionKind::Posted).unwrap();
+        assert_eq!(wire, "posted");
+        assert_eq!(serde_json::from_value::<AttentionKindV128>(wire).unwrap(), AttentionKindV128::Other);
     }
 }
