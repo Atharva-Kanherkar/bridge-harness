@@ -4,11 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "./api";
 import { mockUnreadSummary, pushMockAttention, resetMockAttention } from "./attentionMock";
+import { DEFAULT_ATTENTION_SETTINGS, writeAttentionSettings, type AttentionSettings } from "./attentionSettings";
 import type { BridgeState, Session, SessionStatus } from "./types";
 import { NEEDS_YOU_HOLD_MS } from "./useAttentionFeed";
 
 const notifyAttention = vi.hoisted(() => vi.fn());
 vi.mock("./attention", () => ({ notifyAttention }));
+const playAttentionSound = vi.hoisted(() => vi.fn());
+vi.mock("./attentionSound", () => ({ playAttentionSound }));
 
 function session(id: string, status: SessionStatus, overrides: Partial<Session> = {}): Session {
   return {
@@ -51,6 +54,7 @@ describe("App attention wiring", () => {
       },
     });
     notifyAttention.mockReset();
+    playAttentionSound.mockReset();
     resetMockAttention();
     vi.spyOn(bridgeApi, "state").mockImplementation(async () => stateWith([
       session("a", "working"),
@@ -323,4 +327,44 @@ describe("App attention wiring", () => {
       expect(notifyAttention).not.toHaveBeenCalled();
     });
   });
+
+  describe("settings", () => {
+    const set = (change: (next: AttentionSettings) => void) => {
+      const next = structuredClone(DEFAULT_ATTENTION_SETTINGS);
+      change(next);
+      writeAttentionSettings(next);
+    };
+    const hhmm = (date: Date) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+
+    it("shows nothing for a kind whose toast and banner are off", async () => {
+      set(next => { next.kinds.finished = { toast: false, banner: false, sound: false }; });
+      await mountApp();
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(toastRegion(container)).toBeFalsy();
+      expect(notifyAttention).not.toHaveBeenCalled();
+    });
+
+    it("plays one sound for a request that is still open after the hold", async () => {
+      await mountApp();
+      await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you" }); });
+      await wait(NEEDS_YOU_HOLD_MS + 100);
+      expect(playAttentionSound).toHaveBeenCalledTimes(1);
+      expect(playAttentionSound).toHaveBeenCalledWith("needsYou");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(playAttentionSound, "finished turns are silent by default").toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the toast but posts no banner in quiet hours", async () => {
+      const now = new Date();
+      set(next => { next.quietHours = { enabled: true, start: hhmm(new Date(now.getTime() - 3_600_000)), end: hhmm(new Date(now.getTime() + 3_600_000)) }; });
+      await mountApp();
+      await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+      await wait(40);
+      expect(toastRegion(container)?.textContent).toContain("Turn failed");
+      expect(notifyAttention).not.toHaveBeenCalled();
+    });
+  });
 });
+
