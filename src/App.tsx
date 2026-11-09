@@ -61,6 +61,8 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { useAttentionSettings } from "./attentionSettings";
+import { playAttentionSound } from "./attentionSound";
 import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
 import { useAttentionFeed } from "./useAttentionFeed";
 import { useUnreadSummary } from "./useUnreadSummary";
@@ -730,9 +732,12 @@ function AppContent() {
   const attentionSessionsRef = useRef<Session[]>(state.sessions);
   attentionSessionsRef.current = state.sessions;
   const presenceRef = useRef<Presence>({ focused: false, onScreen: new Set() });
+  const attentionSettings = useAttentionSettings();
+  const attentionSettingsRef = useRef(attentionSettings);
+  attentionSettingsRef.current = attentionSettings;
   const showAttention = useCallback((item: AttentionItem) => {
     const sessionId = item.sessionId;
-    const decision = decide(item, presenceRef.current);
+    const decision = decide(item, presenceRef.current, attentionSettingsRef.current);
     if (!sessionId || !decision) return;
     const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
     const toast: AttentionToast = {
@@ -746,6 +751,7 @@ function AppContent() {
     // Newest per chat wins, like the ledger itself.
     if (decision.toast) setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-TOAST_QUEUE_MAX));
     if (decision.banner) void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+    if (decision.sound) playAttentionSound(item.kind);
   }, []);
   useAttentionFeed(showAttention);
   // Opening a chat is seeing it, on every client. Keyed on the view too: the
