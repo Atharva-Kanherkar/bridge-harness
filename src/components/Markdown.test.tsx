@@ -489,6 +489,20 @@ describe("link scheme allowlist", () => {
     expect(safe).toContain('href="https://example.test/x"');
     expect(safe).toContain('href="mailto:me@example.test"');
   });
+
+  it("renders a note link as an anchor", () => {
+    const html = renderToStaticMarkup(<Markdown text={"Saved as [Reading list](bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c)."} />);
+    expect(html).toContain('<a href="bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c" data-note-link="">Reading list</a>');
+    expect(html).not.toContain("target=");
+  });
+
+  it("keeps a bridge link that is not a page as text", () => {
+    for (const url of ["bridge://p/a.b", "bridge://x/01a1bc34-8f0f-7013-a72c-51e46d404d3c", "bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c/x"]) {
+      const html = renderToStaticMarkup(<Markdown text={`[page](${url})`} />);
+      expect(html, url).not.toContain("<a ");
+      expect(html).toContain("page");
+    }
+  });
 });
 
 describe("existing markdown behavior is preserved", () => {

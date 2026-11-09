@@ -4,6 +4,7 @@ import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
+import { parseNoteLink } from "../noteLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 import { ExpandButton, VisualFullscreen } from "./VisualFullscreen";
 import { StoragePlanCard } from "./StoragePlanCard";
@@ -296,7 +297,8 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2), allowLinks)}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1), allowLinks)}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
-    // A link only renders as an anchor when `externalLinks` would claim it.
+    // A link only renders as an anchor when `externalLinks` would claim it
+    // (http(s), mailto, or a notes page link).
     // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
     // keeps the webview's default action, and the Tauri webview sets no CSP,
     // so a `javascript:` href in agent- or GitHub-authored markdown would run
@@ -304,9 +306,10 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (link && allowLinks) {
       // Link labels may themselves be a URL (GitHub's normalizer emits this
       // shape). Keep their inline formatting without creating a nested anchor.
-      return isExternalUrl(link[2])
-        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>
-        : <span key={index}>{renderInline(link[1], false)}</span>;
+      if (isExternalUrl(link[2])) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>;
+      // A notes page: the interceptor opens it inside Bridge, never a browser.
+      if (parseNoteLink(link[2])) return <a key={index} href={link[2].trim()} data-note-link="">{renderInline(link[1], false)}</a>;
+      return <span key={index}>{renderInline(link[1], false)}</span>;
     }
     // A URL an agent typed as prose is still a link the reader means to follow.
     // It goes through the same click interceptor as a written-out one, so a

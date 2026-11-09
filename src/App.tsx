@@ -22,6 +22,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
+import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
@@ -274,6 +275,8 @@ function AppContent() {
   const [notesListToggle, setNotesListToggle] = useState(0);
   // Bumped by `capture-note`: Notes opens with its capture box focused.
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
+  const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
@@ -1058,10 +1061,18 @@ function AppContent() {
     openGithubPane(choice.link.view);
   }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
 
-  useEffect(() => {
-    setInternalLinkRouter(routeGithubLink);
-    return () => setInternalLinkRouter(undefined);
+  const routeInternalLink = useCallback((url: string): boolean | Promise<boolean> => {
+    const noteId = parseNoteLink(url);
+    if (!noteId) return routeGithubLink(url);
+    setView("notes");
+    setNoteOpenRequest(current => ({ id: noteId, nonce: (current?.nonce ?? 0) + 1 }));
+    return true;
   }, [routeGithubLink]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeInternalLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeInternalLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -3364,6 +3375,7 @@ function AppContent() {
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
+        openRequest={noteOpenRequest}
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
