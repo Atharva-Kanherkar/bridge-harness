@@ -94,6 +94,13 @@ Bridge's Graphite & Paper chrome with Tailwind v4 utilities only.
   and no focus refetch. Window, metric, and rate changes do not restart history
   scans. Unmounting or disabling history stops scheduling further batches;
   late summary responses cannot replace a newer selection.
+- Figures are never hidden behind a scan. The last summary for a window is
+  kept across visits and drawn at once; the scan and the refetch replace it in
+  place. A scan in flight does not by itself label the total partial; an
+  incomplete source or a failed scan does. Only the very first load, with
+  nothing stored, shows a skeleton, and it carries no explanatory text.
+- Opening Usage within five minutes of a clean automatic scan does not scan
+  again. Refresh and Scan history always scan.
 - Outside Tauri the mock host returns a deterministic multi-harness window
   so `bun run dev` renders the full page.
 

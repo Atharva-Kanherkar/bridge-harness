@@ -1,5 +1,4 @@
 import { useCallback, useState } from "react";
-import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
 import type { UsageSummaryResult } from "../types";
@@ -57,37 +56,15 @@ export function SkeletonBar({ className }: { className?: string }) {
   return <div aria-hidden="true" className={cn("animate-pulse rounded bg-muted", className)} />;
 }
 
-/**
- * Totals while loading: no figure is true until the scan and the refetch
- * both land. Showing a stale or half imported total here would read as a
- * final number and then visibly jump, so the hero and its detail stay
- * shapes until the real values are known.
- */
-export function UsageLoadingState({ label, note }: { label: string; note?: string | null }) {
-  return <div role="status" aria-live="polite" aria-busy="true" className="space-y-6 py-1">
-    <div className="flex flex-wrap items-center gap-3">
-      <span className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
-        <LoaderCircle size={12} className="animate-spin" aria-hidden="true" />
-        {label}…
-      </span>
-      <p className="text-caption text-muted-foreground">Numbers appear only when loading finishes.</p>
-    </div>
-    {note ? <p className="text-caption tabular-nums text-muted-foreground">{note}</p> : null}
+/** First load only: the hero and chart shapes until the first summary lands. Later loads keep the last figures on screen. */
+export function UsageLoadingState() {
+  return <div role="status" aria-busy="true" className="space-y-6 py-1">
     <div className="space-y-3" aria-hidden="true">
       <SkeletonBar className="h-3 w-24" />
       <SkeletonBar className="h-12 w-56 max-w-full sm:w-64" />
-      <SkeletonBar className="h-4 w-full max-w-2xl" />
-      <SkeletonBar className="h-4 w-full max-w-xl" />
+      <SkeletonBar className="h-4 w-full max-w-md" />
     </div>
-    <div className="grid gap-4" aria-hidden="true">
-      <SkeletonBar className="h-36 w-full" />
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-        <SkeletonBar className="h-16 w-full" />
-        <SkeletonBar className="h-16 w-full" />
-        <SkeletonBar className="h-16 w-full" />
-      </div>
-      <SkeletonBar className="h-48 w-full" />
-    </div>
+    <SkeletonBar className="h-36 w-full" />
     <span className="sr-only">Loading usage</span>
   </div>;
 }
