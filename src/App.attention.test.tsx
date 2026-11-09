@@ -294,6 +294,25 @@ describe("App attention wiring", () => {
       expect(notifyAttention).not.toHaveBeenCalled();
     });
 
+    it("keeps eight toasts queued and reveals the next on dismiss", async () => {
+      await mountApp();
+      for (let index = 1; index <= 9; index += 1) {
+        await act(async () => { pushMockAttention({ kind: "failed", sessionId: `s${index}`, title: "Turn failed", body: `Chat s${index} · Codex ended this turn with an error` }); });
+        await wait(10);
+      }
+      const shown = () => [...container.querySelectorAll('[aria-label="Attention notifications"] button[aria-label*="open the chat"]')]
+        .map(button => /Chat (s\d)/.exec(button.textContent ?? "")?.[1]);
+      expect(shown()).toEqual(["s7", "s8", "s9"]);
+      const dismissNewest = async () => {
+        const buttons = container.querySelectorAll('[aria-label="Attention notifications"] button[aria-label="Dismiss notification"]');
+        await act(async () => { (buttons[buttons.length - 1] as HTMLButtonElement).click(); });
+      };
+      await dismissNewest();
+      expect(shown(), "the next queued toast appears").toEqual(["s6", "s7", "s8"]);
+      for (let count = 0; count < 5; count += 1) await dismissNewest();
+      expect(shown(), "the ninth row evicted the oldest").toEqual(["s2", "s3"]);
+    });
+
     it("toasts another chat in a focused window, without an OS banner", async () => {
       vi.spyOn(document, "hasFocus").mockReturnValue(true);
       await mountApp();
