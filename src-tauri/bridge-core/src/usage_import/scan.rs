@@ -223,42 +223,81 @@ pub(crate) fn has_jsonl_file(root: &Path) -> bool {
 /// Lists `.jsonl` files beneath `root` with their relative path, size and
 /// mtime, sorted by relative path so batches are deterministic. Entries that
 /// vanish mid-walk are skipped; a partial listing beats a failed scan.
+///
+/// A warm scan is almost all filesystem calls: Claude Code keeps one
+/// directory per working directory, and a machine can hold tens of
+/// thousands of them. Each level of the tree is read, and every file
+/// stat'd, across several threads.
 pub(crate) fn list_jsonl_files(root: &Path) -> Vec<ListedFile> {
-    let mut found = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            let mtime_ms = meta
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-                .unwrap_or(0);
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            found.push((relative, path, meta.len(), mtime_ms));
+    let mut paths = Vec::new();
+    let mut level = vec![root.to_path_buf()];
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for (dirs, files) in parallel_map(&level, |dir| read_level(dir)) {
+            next.extend(dirs);
+            paths.extend(files);
         }
+        level = next;
     }
+    let mut found: Vec<ListedFile> = parallel_map(&paths, |path| stat_listed(root, path))
+        .into_iter()
+        .flatten()
+        .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
+}
+
+/// Subdirectories and `.jsonl` files directly inside `dir`.
+fn read_level(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (dirs, files);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            dirs.push(path);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+    (dirs, files)
+}
+
+/// `items.iter().map(f)` split across up to eight scoped threads, in order.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
+    if items.len() < 64 || workers == 1 {
+        return items.iter().map(f).collect();
+    }
+    let chunk = items.len().div_ceil(workers);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .map(|chunk| scope.spawn(move || chunk.iter().map(f).collect::<Vec<_>>()))
+            .collect();
+        handles.into_iter().flat_map(|handle| handle.join().unwrap_or_default()).collect()
+    })
+}
+
+fn stat_listed(root: &Path, path: &Path) -> Option<ListedFile> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    Some((relative, path.to_path_buf(), meta.len(), mtime_ms))
 }
 
 struct FileScan {
@@ -1039,6 +1078,29 @@ mod tests {
     fn fnv1a_is_stable() {
         assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    /// Enough directories and files to take the threaded path: every
+    /// transcript is found once, nothing else is, and the order is stable.
+    #[test]
+    fn listing_a_wide_tree_finds_every_transcript_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for project in 0..120 {
+            let nested = root.join(format!("p{project:03}/subagents"));
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(root.join(format!("p{project:03}/s.jsonl")), b"{}\n").unwrap();
+            std::fs::write(nested.join("a.jsonl"), b"{}\n").unwrap();
+            std::fs::write(root.join(format!("p{project:03}/notes.txt")), b"x").unwrap();
+        }
+        assert!(has_jsonl_file(root));
+        let files = list_jsonl_files(root);
+        assert_eq!(files.len(), 240);
+        assert!(files.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(files[0].0, "p000/s.jsonl");
+        assert_eq!(files[1].0, "p000/subagents/a.jsonl");
+        assert!(files.iter().all(|file| file.2 == 3));
+        assert!(!has_jsonl_file(&root.join("p000/missing")));
     }
 
     /// Upgrading moves a JSONL source's single cursor document into rows,
