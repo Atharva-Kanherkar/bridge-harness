@@ -58,11 +58,7 @@ pub(crate) fn jsonl_root_state(root: &Path, label: &str) -> (CoverageState, Opti
             Some(format!("{label} history directory cannot be read")),
         );
     }
-    let has_transcripts = super::scan::list_jsonl_files(root)
-        .into_iter()
-        .next()
-        .is_some();
-    if has_transcripts {
+    if super::scan::has_jsonl_file(root) {
         (CoverageState::Partial, None)
     } else {
         (
