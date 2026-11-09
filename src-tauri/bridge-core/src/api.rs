@@ -4373,7 +4373,7 @@ pub fn report_presence(core: &Arc<BridgeCore>, params: &wire::ReportPresencePara
         wire::PresenceClientKind::Desktop => crate::attention_presence::ClientKind::Desktop,
         wire::PresenceClientKind::Web => crate::attention_presence::ClientKind::Web,
     };
-    let banner_owner = core.attention_presence.report(&params.client_id, kind, params.focused, params.gone, std::time::Instant::now());
+    let banner_owner = core.attention_presence.report(&params.client_id, kind, params.can_post_banners, params.focused, params.gone, std::time::Instant::now());
     Ok(wire::ReportPresenceResult { banner_owner })
 }
 

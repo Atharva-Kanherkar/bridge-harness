@@ -104,9 +104,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// an older daemon, whose presence reports would fail with `method_not_found`;
 /// a 1.26 client still pairs with a 1.27 daemon, never reports, and keeps
 /// posting its own banners.
+/// **1.28 adds `canPostBanners` to `attention/report_presence`**, so a browser
+/// tab can own banners. A 1.27 daemon refuses the field, so a new client
+/// needs 1.28; a 1.27 client still pairs with a 1.28 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 27,
+    minor: 28,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -369,6 +372,15 @@ mod tests {
         let presence = ProtocolVersion { major: 1, minor: 27 };
         assert!(!before.accepts(presence));
         assert!(presence.accepts(before), "a 1.26 client still pairs with a 1.27 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn web_banner_client_rejects_a_daemon_without_the_capability() {
+        let before = ProtocolVersion { major: 1, minor: 27 };
+        let web_banners = ProtocolVersion { major: 1, minor: 28 };
+        assert!(!before.accepts(web_banners));
+        assert!(web_banners.accepts(before), "a 1.27 client still pairs with a 1.28 daemon");
         assert!(PROTOCOL_VERSION.accepts(before));
     }
 

@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "definitions": {
     "PresenceClientKind": {
-      "description": "Which kind of client is reporting. Only a desktop client has an OS banner channel today, so only it can own banners while unfocused.",
+      "description": "Which kind of client is reporting. It sets the default for `canPostBanners`: a desktop client posts banners, a web client says so.",
       "enum": [
         "desktop",
         "web"
@@ -14,6 +14,13 @@
   },
   "description": "A client's presence lease, renewed while it runs. A lease expires 30 s after its last report; `gone` ends it at once, as a closing window does.",
   "properties": {
+    "canPostBanners": {
+      "description": "Whether this client can post OS banners now. Absent: a desktop client can and a web client cannot. A browser tab whose person denied notifications says `false`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "clientId": {
       "description": "One random id per app load.",
       "type": "string"
