@@ -90,4 +90,11 @@ describe("decide", () => {
       expect(decide(row({ kind: "needsYou" }), presence(true, "a"), DEFAULT_ATTENTION_SETTINGS, noon)).toBeNull();
     });
   });
+
+  it("posts no banner from a client that does not own them, and keeps its toast and sound", () => {
+    const notOwner = { focused: false, onScreen: new Set<string>(), bannerOwner: false };
+    expect(decide(row({ kind: "needsYou" }), notOwner)).toEqual({ toast: true, banner: false, sound: true, durationMs: 8_000 });
+    expect(decide(row({ kind: "needsYou" }), { ...notOwner, bannerOwner: true })?.banner).toBe(true);
+  });
 });
+

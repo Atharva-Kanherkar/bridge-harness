@@ -366,5 +366,14 @@ describe("App attention wiring", () => {
       expect(notifyAttention).not.toHaveBeenCalled();
     });
   });
+
+  it("leaves the OS banner to the client core named, and still toasts", async () => {
+    vi.spyOn(bridgeApi, "reportPresence").mockResolvedValue({ bannerOwner: false });
+    await mountApp();
+    await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+    await wait(40);
+    expect(toastRegion(container)?.textContent).toContain("Turn failed");
+    expect(notifyAttention).not.toHaveBeenCalled();
+  });
 });
 
