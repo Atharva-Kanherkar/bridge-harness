@@ -185,6 +185,24 @@ describe("capture", () => {
   });
 });
 
+describe("open request", () => {
+  it("opens the page an open request names", async () => {
+    const first = await mockCreatePage({ title: "Linked from chat", content: "" });
+    const second = await mockCreatePage({ title: "Another page", content: "" });
+    await render({ openRequest: { id: first.id, nonce: 1 } });
+    await settle();
+    expect(host.querySelector("main")?.textContent).toContain("Linked from chat");
+    await act(async () => { root.render(<NotesScreen {...props({ openRequest: { id: second.id, nonce: 2 } })} />); });
+    await settle();
+    expect(host.querySelector("main")?.textContent).toContain("Another page");
+    // The same page asked for again, after the person moved away, opens again.
+    await openNote("Linked from chat");
+    await act(async () => { root.render(<NotesScreen {...props({ openRequest: { id: second.id, nonce: 3 } })} />); });
+    await settle();
+    expect(host.querySelector("main")?.textContent).toContain("Another page");
+  });
+});
+
 describe("list", () => {
   it("shows the results of the newest search when an older one answers last", async () => {
     await render();

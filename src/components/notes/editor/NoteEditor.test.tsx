@@ -6,6 +6,7 @@ import type { Editor } from "@tiptap/core";
 import { resetMockNotes } from "../../../notesMock";
 import { NoteEditor, HAND_OVER_MS, type NoteEditorHandle, type NoteEditorProps } from "./NoteEditor";
 import { imageWidthOf } from "./views";
+import { BLOCK_CHOICES } from "./slash";
 
 // No core assets in jsdom: images draw from a fake url, which still exercises
 // the caption and the resize handles.
@@ -484,3 +485,76 @@ describe("NoteEditor", () => {
     expect(onChange.mock.calls[0][0]).toBe("Intro\n\n![Plan](assets/0123456789abcdef.png \"120\")\n");
   });
 });
+
+describe("rich fences", () => {
+  const MATH = "Before\n\n```math\nx^2 + y^2\n```\n\nAfter\n";
+  const figure = () => host.querySelector("[data-rich-fence]");
+  const source = () => host.querySelector<HTMLPreElement>(".note-editor pre")!;
+  // jsdom focuses only an element with a tabindex, never a bare
+  // contenteditable, and runs no frame for tiptap's deferred focus; a browser
+  // needs neither.
+  const focusable = async () => {
+    editor().view.dom.setAttribute("tabindex", "-1");
+    await act(async () => { editor().view.dom.focus(); });
+  };
+  /** Put the cursor inside the first code block, with the editor focused. */
+  const enterFence = async () => {
+    let at = -1;
+    editor().state.doc.descendants((node, pos) => { if (at < 0 && node.type.name === "codeBlock") at = pos; });
+    await focusable();
+    await act(async () => { editor().chain().focus().setTextSelection(at + 2).run(); });
+    await settle();
+  };
+
+  it("round-trips a mermaid fence unchanged", async () => {
+    const text = "Intro\n\n```mermaid\ngraph TD; A-->B\n```\n";
+    const { onChange } = await mount(text);
+    await typeAfter("Intro", "!");
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith(text.replace("Intro", "Intro!"));
+  });
+
+  it("shows the figure for a rich fence and hides its source", async () => {
+    await mount(MATH);
+    expect(figure()?.querySelector(".katex")).not.toBeNull();
+    expect(source().hidden).toBe(true);
+    expect(source().textContent).toBe("x^2 + y^2");
+  });
+
+  it("shows the source while the cursor is inside", async () => {
+    await mount(MATH);
+    await enterFence();
+    expect(figure()).toBeNull();
+    expect(source().hidden).toBe(false);
+    await act(async () => { editor().chain().focus().setTextSelection(2).run(); });
+    await settle();
+    expect(figure()).not.toBeNull();
+  });
+
+  it("clicking the figure moves the cursor into the source", async () => {
+    await mount(MATH);
+    await focusable();
+    await act(async () => { figure()!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+    await settle();
+    expect(editor().isActive("codeBlock")).toBe(true);
+    expect(figure()).toBeNull();
+    expect(source().hidden).toBe(false);
+  });
+
+  it("leaves an ordinary code block as code", async () => {
+    await mount("```ts\nconst x = 1;\n```\n");
+    expect(figure()).toBeNull();
+    expect(source().hidden).toBe(false);
+    expect(source().textContent).toBe("const x = 1;");
+  });
+
+  it("the slash menu inserts a mermaid block", async () => {
+    const { onChange } = await mount("first\n");
+    await act(async () => { editor().chain().focus("end").insertContent({ type: "paragraph" }).run(); });
+    await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "mermaid")!.run(editor(), {} as never); });
+    await act(async () => { editor().commands.insertContent("graph TD; A-->B"); });
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith("first\n\n```mermaid\ngraph TD; A-->B\n```\n");
+  });
+});
+
