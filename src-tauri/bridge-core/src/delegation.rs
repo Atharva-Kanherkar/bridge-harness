@@ -1718,7 +1718,7 @@ You are a depth-one worker: you do not spawn workers yourself. You may ask for *
 Always report the work you already completed in the same result. Asking for help never means discarding your own findings."#
             .into();
     }
-    r#"## Delegating work (Bridge typed protocol v1)
+    let protocol_head = r#"## Delegating work (Bridge typed protocol v1)
 
 Delegate only focused, non-trivial work. Emit one fenced `bridge-delegate` JSON object using this schema:
 
@@ -1742,6 +1742,9 @@ While workers run you are not blind. Bridge attaches a compact `fleet` digest (p
 
 Optional fields: `{"sessionId":"<one child>","limit":10}`. Bridge replies with a `bridge-worker-activity` notice: each worker's runtime state plus its most recent tool calls and messages, as a bounded host-built digest. Use it to answer the user concretely; never ask a worker itself for status, and never present the digest as your own work.
 
+"#;
+    [protocol_head, WAIT_GUIDANCE, r#"
+
 ## Redirecting a worker (bridge-steer)
 
 When a peek shows a worker going the wrong way, you can correct it mid-run instead of waiting for a wrong result. Emit one fenced `bridge-steer` block and stop:
@@ -1750,9 +1753,24 @@ When a peek shows a worker going the wrong way, you can correct it mid-run inste
 {"sessionId":"<one of your live children>","message":"Use the existing SQLite token store; do not add a new table."}
 ```
 
-Both fields are required. Steer to **redirect** — a constraint, a correction, a narrowed scope. Never to ask for status: that is `bridge-peek`, and a worker asked for status stops working to answer. Keep the message short; if you need more than a couple of sentences you are issuing a new objective, so delegate one. Bridge validates that the target is your own live worker and refuses anything else. Steering never replaces the worker's typed `bridge-worker-result`; you still wait for it."#
-        .into()
+Both fields are required. Steer to **redirect** — a constraint, a correction, a narrowed scope. Never to ask for status: that is `bridge-peek`, and a worker asked for status stops working to answer. Keep the message short; if you need more than a couple of sentences you are issuing a new objective, so delegate one. Bridge validates that the target is your own live worker and refuses anything else. Steering never replaces the worker's typed `bridge-worker-result`; you still wait for it."#]
+        .concat()
 }
+
+/// How to wait for several workers at once. Its own constant so the live eval
+/// can run the protocol without it and show this text is what changes the
+/// behavior.
+pub const WAIT_GUIDANCE: &str = r#"## Waiting for several workers (bridge-wait)
+
+When you start two or more workers in one turn, emit one fenced `bridge-wait` block after the delegation blocks and stop:
+
+```bridge-wait
+{"workers":"all","until":"all_done","timeoutSeconds":900}
+```
+
+Bridge then holds their results and wakes you once, with a single `bridge-worker-results` notice that carries every result, instead of spending one of your turns per worker. `"all"` means the workers running when your turn ends; you can list session ids instead. `"until":"any_done"` wakes you at the first result. It wakes you early when a worker fails or needs the person (`breakOn`, default `["failed","needs_you"]`; `[]` never breaks early), and at the timeout (30 to 3600 seconds) with whatever has arrived plus `stillRunning`.
+
+Until that notice arrives, the work is not done: do not claim it is, and do not summarize results you have not seen. If the notice lists workers in `stillRunning`, report what finished and what is still running; wait again or peek if you need them."#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerEvidence {
@@ -2949,5 +2967,16 @@ mod result_pipeline_tests {
         assert_eq!(strip_wait(text).trim(), "Waiting for the three of them.");
         assert!(matches!(parse_peek_request(text), ParseOutcome::Absent), "a wait is not a peek");
         assert!(matches!(parse_stop_request(text), ParseOutcome::Absent));
+    }
+
+    #[test]
+    fn the_orchestrator_protocol_teaches_bridge_wait_once() {
+        let text = protocol(0);
+        assert_eq!(text.matches("## Waiting for several workers (bridge-wait)").count(), 1);
+        assert!(text.contains("```bridge-wait"));
+        // The example in the prompt is a block the parser accepts.
+        assert!(matches!(parse_wait_request(WAIT_GUIDANCE), ParseOutcome::Parsed(_)));
+        assert!(text.contains("## Checking on your workers (bridge-peek)") && text.contains("## Redirecting a worker (bridge-steer)"));
+        assert!(!protocol(DEFAULT_MAX_DEPTH).contains("bridge-wait"), "workers do not wait on workers");
     }
 }
