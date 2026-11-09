@@ -625,6 +625,10 @@ fn is_stop_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("stop")
 }
 
+fn is_wait_tag(tag: &str) -> bool {
+    tag.contains("bridge") && tag.contains("wait")
+}
+
 /// What the host filled in, corrected, or ignored on the model's behalf.
 ///
 /// Recorded rather than applied silently: a normalized envelope has to be
@@ -1319,6 +1323,139 @@ pub fn parse_stop_request(text: &str) -> ParseOutcome<StopRequest> {
 
 pub fn strip_stop(text: &str) -> String {
     strip_machine_blocks(text, is_stop_tag)
+}
+
+pub const WAIT_DEFAULT_TIMEOUT_SECONDS: u64 = 900;
+pub const WAIT_MIN_TIMEOUT_SECONDS: u64 = 30;
+pub const WAIT_MAX_TIMEOUT_SECONDS: u64 = 3_600;
+/// More than this many ids is not a list of one orchestrator's workers.
+const WAIT_MAX_LISTED_WORKERS: usize = 64;
+
+/// Which workers a `bridge-wait` covers: every live worker, or a named few.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum WaitWorkers {
+    /// Must be the string `"all"`.
+    All(String),
+    Listed(Vec<String>),
+}
+
+impl Default for WaitWorkers {
+    fn default() -> Self {
+        Self::All("all".into())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitUntil {
+    #[default]
+    AllDone,
+    AnyDone,
+}
+
+impl WaitUntil {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AllDone => "all_done",
+            Self::AnyDone => "any_done",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitBreak {
+    /// A listed worker's result is failed, blocked or protocol-invalid.
+    Failed,
+    /// A listed worker is blocked on the person's approval.
+    NeedsYou,
+}
+
+/// "Wake me when my workers are done": hold their results and deliver them
+/// in one turn. Validated here for shape; ownership is checked when it arms.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitRequest {
+    #[serde(default)]
+    pub workers: WaitWorkers,
+    #[serde(default)]
+    pub until: WaitUntil,
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// `None` means both; an explicit empty list means nothing breaks it.
+    #[serde(default)]
+    pub break_on: Option<Vec<WaitBreak>>,
+}
+
+impl WaitRequest {
+    pub fn timeout_seconds(&self) -> u64 {
+        self.timeout_seconds.unwrap_or(WAIT_DEFAULT_TIMEOUT_SECONDS)
+    }
+
+    pub fn breaks_on(&self) -> Vec<WaitBreak> {
+        let mut breaks = self.break_on.clone().unwrap_or_else(|| vec![WaitBreak::Failed, WaitBreak::NeedsYou]);
+        breaks.dedup();
+        breaks
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        match &self.workers {
+            WaitWorkers::All(word) if word == "all" => {}
+            WaitWorkers::All(other) => {
+                return Err(format!("bridge-wait workers must be \"all\" or a list of your workers' session ids, not {other:?}"))
+            }
+            WaitWorkers::Listed(ids) if ids.is_empty() => {
+                return Err("bridge-wait workers cannot be an empty list; use \"all\" or name them".into())
+            }
+            WaitWorkers::Listed(ids) if ids.len() > WAIT_MAX_LISTED_WORKERS => {
+                return Err(format!("bridge-wait names at most {WAIT_MAX_LISTED_WORKERS} workers"))
+            }
+            WaitWorkers::Listed(ids) => {
+                if !ids.iter().all(|id| valid_child_session_id(id)) {
+                    return Err("bridge-wait worker ids must be 1-128 identifier characters".into());
+                }
+            }
+        }
+        let timeout = self.timeout_seconds();
+        if !(WAIT_MIN_TIMEOUT_SECONDS..=WAIT_MAX_TIMEOUT_SECONDS).contains(&timeout) {
+            return Err(format!(
+                "bridge-wait timeoutSeconds must be between {WAIT_MIN_TIMEOUT_SECONDS} and {WAIT_MAX_TIMEOUT_SECONDS}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn parse_wait_request(text: &str) -> ParseOutcome<WaitRequest> {
+    let blocks = fenced_blocks(text, is_wait_tag);
+    if blocks.is_empty() {
+        return ParseOutcome::Absent;
+    }
+    if blocks.len() != 1 {
+        return ParseOutcome::Invalid {
+            raw: blocks.iter().map(|block| block.body.as_str()).collect::<Vec<_>>().join("\n"),
+            reason: "expected at most one bridge-wait block per message".into(),
+        };
+    }
+    let raw = blocks[0].body.clone();
+    // A bare fence means the defaults: every worker, all done, 15 minutes.
+    let request = if raw.trim().is_empty() {
+        Ok(WaitRequest::default())
+    } else {
+        serde_json::from_str::<WaitRequest>(&raw)
+    };
+    match request {
+        Ok(request) => match request.validate() {
+            Ok(()) => ParseOutcome::Parsed(request),
+            Err(reason) => ParseOutcome::Invalid { raw, reason },
+        },
+        Err(error) => ParseOutcome::Invalid { raw, reason: format!("invalid bridge-wait JSON: {error}") },
+    }
+}
+
+pub fn strip_wait(text: &str) -> String {
+    strip_machine_blocks(text, is_wait_tag)
 }
 
 pub fn strip_steer(text: &str) -> String {
@@ -2775,5 +2912,42 @@ mod result_pipeline_tests {
     fn a_message_with_no_envelope_is_not_mistaken_for_one() {
         assert!(!contains_worker_result_block("Still working on it."));
         assert!(contains_worker_result_block(&envelope("")));
+    }
+
+    #[test]
+    fn wait_requests_parse_with_defaults_and_refuse_bad_shapes() {
+        let parsed = |text: &str| match parse_wait_request(text) {
+            ParseOutcome::Parsed(request) => request,
+            other => panic!("expected a wait: {:?}", matches!(other, ParseOutcome::Absent)),
+        };
+        let full = parsed("Three workers are off.\n```bridge-wait\n{\"workers\":\"all\",\"until\":\"all_done\",\"timeoutSeconds\":900,\"breakOn\":[\"failed\",\"needs_you\"]}\n```\n");
+        assert_eq!(full.workers, WaitWorkers::All("all".into()));
+        assert_eq!((full.until, full.timeout_seconds()), (WaitUntil::AllDone, 900));
+        assert_eq!(full.breaks_on(), vec![WaitBreak::Failed, WaitBreak::NeedsYou]);
+        let bare = parsed("```bridge-wait\n```");
+        assert_eq!(bare, WaitRequest::default());
+        assert_eq!(bare.breaks_on(), vec![WaitBreak::Failed, WaitBreak::NeedsYou], "both break by default");
+        let listed = parsed("```bridge-wait\n{\"workers\":[\"w-1\",\"w-2\"],\"until\":\"any_done\",\"breakOn\":[]}\n```");
+        assert_eq!(listed.workers, WaitWorkers::Listed(vec!["w-1".into(), "w-2".into()]));
+        assert_eq!(listed.until, WaitUntil::AnyDone);
+        assert!(listed.breaks_on().is_empty(), "an explicit empty list breaks on nothing");
+        for bad in [
+            "```bridge-wait\n{\"workers\":\"some\"}\n```",
+            "```bridge-wait\n{\"workers\":[]}\n```",
+            "```bridge-wait\n{\"until\":\"never\"}\n```",
+            "```bridge-wait\n{\"timeoutSeconds\":5}\n```",
+            "```bridge-wait\n{\"timeoutSeconds\":7200}\n```",
+            "```bridge-wait\n{\"breakOn\":[\"bored\"]}\n```",
+            "```bridge-wait\n{\"sessionId\":\"w-1\"}\n```",
+            "```bridge-wait\n{\"workers\":[\"bad id!\"]}\n```",
+            "```bridge-wait\n```\n```bridge-wait\n```",
+        ] {
+            assert!(matches!(parse_wait_request(bad), ParseOutcome::Invalid { .. }), "{bad}");
+        }
+        assert!(matches!(parse_wait_request("no blocks here"), ParseOutcome::Absent));
+        let text = "Waiting for the three of them.\n```bridge-wait\n{}\n```\n";
+        assert_eq!(strip_wait(text).trim(), "Waiting for the three of them.");
+        assert!(matches!(parse_peek_request(text), ParseOutcome::Absent), "a wait is not a peek");
+        assert!(matches!(parse_stop_request(text), ParseOutcome::Absent));
     }
 }
