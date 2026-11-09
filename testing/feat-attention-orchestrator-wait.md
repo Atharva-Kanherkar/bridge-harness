@@ -42,7 +42,7 @@ Arming (at the turn's end):
   moves into the wait, so a result that raced the orchestrator's own turn is
   not delivered on its own.
 - A successful arm sends nothing back: the point is to stop spending turns.
-- Stored durably (migration 71): `orchestrator_waits` (one row per
+- Stored durably (migration 72): `orchestrator_waits` (one row per
   orchestrator: workers, until, breakOn, deadline) and
   `orchestrator_wait_results` (held result notices). Held results live there
   rather than in `queued_session_input`, so the queue's delivery rules are
