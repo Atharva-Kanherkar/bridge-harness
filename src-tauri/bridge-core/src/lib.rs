@@ -123,6 +123,7 @@ pub mod opencode_adapter;
 mod opencode_v2;
 pub mod pi_adapter;
 pub mod orchestrator;
+pub mod orchestrator_wait;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
