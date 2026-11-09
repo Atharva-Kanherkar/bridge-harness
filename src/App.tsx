@@ -755,7 +755,10 @@ function AppContent() {
   // moving the ledger.
   const sessionIdsKey = useMemo(() => state.sessions.map(item => item.id).sort().join(","), [state.sessions]);
   const unread = useUnreadSummary(sessionIdsKey);
-  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total]);
+  // Keyed on needsYou too: the native menu bar wakes on this event and words
+  // its row from it, so a finished chat that starts waiting at the same total
+  // must still be sent. The Dock just sets the same count again.
+  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
   // The chat on screen in a focused window never stays unread: a turn that
   // ends while you watch, or one that ended while Bridge was in the
   // background, is seen once you are looking at it.
