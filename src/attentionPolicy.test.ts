@@ -96,5 +96,12 @@ describe("decide", () => {
     expect(decide(row({ kind: "needsYou" }), notOwner)).toEqual({ toast: true, banner: false, sound: true, durationMs: 8_000 });
     expect(decide(row({ kind: "needsYou" }), { ...notOwner, bannerOwner: true })?.banner).toBe(true);
   });
-});
 
+  it("times a post by its severity and lets its switch turn it off", () => {
+    expect(decide(row({ kind: "posted", severity: "actionable" }), presence(true))?.durationMs).toBe(8_000);
+    expect(decide(row({ kind: "posted", severity: "informational" }), presence(true))?.durationMs).toBe(5_000);
+    const off = structuredClone(DEFAULT_ATTENTION_SETTINGS);
+    off.kinds.posted = { toast: false, banner: false, sound: false };
+    expect(decide(row({ kind: "posted", severity: "actionable" }), presence(false), off)).toBeNull();
+  });
+});

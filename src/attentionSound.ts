@@ -14,19 +14,24 @@ const NOTE_SECONDS = 0.12;
 const GAP_SECONDS = 0.04;
 const PEAK_GAIN = 0.08;
 
-export function soundFor(kind: AttentionItem["kind"]): readonly number[] {
-  return kind === "needsYou" || kind === "escalation" ? SOUND_PATTERNS.request : SOUND_PATTERNS.turn;
+export function soundFor(kind: AttentionItem["kind"], severity?: AttentionItem["severity"]): readonly number[] {
+  const request = kind === "needsYou" || kind === "escalation" || (kind === "posted" && severity !== "informational");
+  return request ? SOUND_PATTERNS.request : SOUND_PATTERNS.turn;
 }
 
 let context: AudioContext | undefined;
 
-export function playAttentionSound(kind: AttentionItem["kind"], createContext: () => AudioContext = () => new AudioContext()): void {
+export function playAttentionSound(
+  kind: AttentionItem["kind"],
+  severity?: AttentionItem["severity"],
+  createContext: () => AudioContext = () => new AudioContext(),
+): void {
   try {
     context ??= createContext();
     const audio = context;
     void audio.resume?.().catch(() => undefined);
     let start = audio.currentTime;
-    for (const frequency of soundFor(kind)) {
+    for (const frequency of soundFor(kind, severity)) {
       const oscillator = audio.createOscillator();
       const gain = audio.createGain();
       oscillator.type = "sine";

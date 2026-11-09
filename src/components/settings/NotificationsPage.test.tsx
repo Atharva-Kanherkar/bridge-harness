@@ -35,7 +35,7 @@ const control = (label: string) => host!.querySelector(`[aria-label="${label}"]`
 
 describe("NotificationsPage", () => {
   it("shows toast, banner and sound switches for each kind, set from the defaults", () => {
-    for (const kind of ["Needs you", "A result is waiting", "Turn failed", "Turn completed"]) {
+    for (const kind of ["Needs you", "An agent asks for you", "A result is waiting", "Turn failed", "Turn completed"]) {
       for (const channel of ["Toast", "Banner", "Sound"]) expect(control(`${channel} for ${kind}`), `${channel} for ${kind}`).toBeTruthy();
     }
     expect(control("Sound for Needs you").getAttribute("aria-checked")).toBe("true");

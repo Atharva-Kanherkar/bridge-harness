@@ -762,7 +762,7 @@ function AppContent() {
     // Newest per chat wins, like the ledger itself.
     if (decision.toast) setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-TOAST_QUEUE_MAX));
     if (decision.banner) void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
-    if (decision.sound) playAttentionSound(item.kind);
+    if (decision.sound) playAttentionSound(item.kind, item.severity);
   }, []);
   useAttentionFeed(showAttention);
   // Opening a chat is seeing it, on every client. Keyed on the view too: the

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { playAttentionSound, resetAttentionSound, SOUND_PATTERNS } from "./attentionSound";
+import { playAttentionSound, resetAttentionSound, soundFor, SOUND_PATTERNS } from "./attentionSound";
 
 function stubContext() {
   const frequencies: number[] = [];
@@ -29,24 +29,30 @@ describe("playAttentionSound", () => {
 
   it("rises for a request and plays one tone for a finished turn", () => {
     const stub = stubContext();
-    playAttentionSound("needsYou", () => stub.context);
+    playAttentionSound("needsYou", undefined, () => stub.context);
     expect(stub.frequencies).toEqual([...SOUND_PATTERNS.request]);
     expect(stub.starts[1]).toBeGreaterThan(stub.starts[0]);
     resetAttentionSound();
     const second = stubContext();
-    playAttentionSound("finished", () => second.context);
+    playAttentionSound("finished", undefined, () => second.context);
     expect(second.frequencies).toEqual([...SOUND_PATTERNS.turn]);
   });
 
   it("reuses one context", () => {
     const stub = stubContext();
     const create = vi.fn(() => stub.context);
-    playAttentionSound("failed", create);
-    playAttentionSound("escalation", create);
+    playAttentionSound("failed", undefined, create);
+    playAttentionSound("escalation", undefined, create);
     expect(create).toHaveBeenCalledTimes(1);
   });
 
   it("swallows a context that cannot play", () => {
-    expect(() => playAttentionSound("needsYou", () => { throw new Error("no audio device"); })).not.toThrow();
+    expect(() => playAttentionSound("needsYou", undefined, () => { throw new Error("no audio device"); })).not.toThrow();
+  });
+
+  it("rises for an actionable post and plays one tone for an informational one", () => {
+    expect(soundFor("posted", "actionable")).toEqual(SOUND_PATTERNS.request);
+    expect(soundFor("posted", "informational")).toEqual(SOUND_PATTERNS.turn);
   });
 });
+

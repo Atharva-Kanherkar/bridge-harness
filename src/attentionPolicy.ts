@@ -35,6 +35,8 @@ const DURATION_MS: Partial<Record<AttentionItem["kind"], number | null>> = {
   finished: 5_000,
   // Its Deliver now button is the only remedy, so it waits for the person.
   escalation: null,
+  // An agent's question; an informational post gets a finished turn's time.
+  posted: 8_000,
 };
 
 export function decide(
@@ -45,8 +47,9 @@ export function decide(
 ): Decision | null {
   const sessionId = item.sessionId;
   if (!sessionId || item.seenAt || item.resolvedAt) return null;
-  const durationMs = DURATION_MS[item.kind];
-  if (durationMs === undefined) return null;
+  const kindDuration = DURATION_MS[item.kind];
+  if (kindDuration === undefined) return null;
+  const durationMs = item.kind === "posted" && item.severity !== "actionable" ? DURATION_MS.finished! : kindDuration;
   // The person is looking at it.
   if (presence.focused && presence.onScreen.has(sessionId)) return null;
   const channels = settings.kinds[item.kind as AttentionSettingKind];
