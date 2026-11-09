@@ -1,5 +1,7 @@
-//! Presentation only. The host sends versioned JSON snapshots and receives
-//! action IDs; no credentials, provider requests, database, or Tauri state live here.
+//! Presentation only: the menu bar item and OS notification banners. The host
+//! sends versioned JSON snapshots and requests and receives action IDs or
+//! clicked actions; no credentials, provider requests, database, or Tauri
+//! state live here.
 
 pub type ActionHandler = extern "C" fn(i32);
 pub const REFRESH: i32 = 1;
@@ -8,8 +10,13 @@ pub const OPEN_BRIDGE: i32 = 3;
 pub const OPENED: i32 = 4;
 pub const QUIT: i32 = 5;
 
+/// A clicked banner, as JSON: `{"action", "sessionId"?, "approvalEventId"?}`.
+pub type NotificationClickHandler = extern "C" fn(*const std::ffi::c_char);
+
 #[cfg(target_os = "macos")]
 extern "C" {
+    fn bridge_notifications_install(handler: NotificationClickHandler) -> bool;
+    fn bridge_notifications_post(bytes: *const u8, count: usize) -> bool;
     fn bridge_menu_bar_create(callback: ActionHandler) -> bool;
     fn bridge_menu_bar_update(bytes: *const u8, count: usize) -> bool;
     fn bridge_menu_bar_show();
@@ -62,4 +69,26 @@ pub unsafe fn show() {
 #[cfg(target_os = "macos")]
 pub unsafe fn destroy() {
     bridge_menu_bar_destroy()
+}
+
+/// Install the native notification center: its delegate and the Allow once /
+/// Decline / Open categories. False outside an app bundle, where macOS refuses
+/// the center; the caller then posts plain banners another way.
+///
+/// # Safety
+/// Must run on the AppKit main thread, during launch. The handler must not
+/// unwind; it may be called on any thread.
+#[cfg(target_os = "macos")]
+pub unsafe fn notifications_install(handler: NotificationClickHandler) -> bool {
+    bridge_notifications_install(handler)
+}
+
+/// Post one banner from the webview's request JSON. False when the center is
+/// not installed or the JSON is not a request.
+///
+/// # Safety
+/// Swift copies the bytes synchronously; any thread.
+#[cfg(target_os = "macos")]
+pub unsafe fn notifications_post(request: &[u8]) -> bool {
+    bridge_notifications_post(request.as_ptr(), request.len())
 }

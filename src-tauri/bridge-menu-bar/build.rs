@@ -59,7 +59,7 @@ fn main() {
     }
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=BridgeMenuBar");
-    for framework in ["AppKit", "SwiftUI", "Foundation"] {
+    for framework in ["AppKit", "SwiftUI", "Foundation", "UserNotifications"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
