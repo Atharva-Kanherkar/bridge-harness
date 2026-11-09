@@ -60,5 +60,10 @@ events to the attention ledger.
 
 ## E2E / Manual
 
-Mock mode in a browser: an attention toast, a connector toast and the update
-toast together in the top-right stack, dark and light screenshots.
+Mock mode in a browser: five attention toasts, so the stack shows three on
+the shared card and counts "+2 more waiting", dark and light screenshots.
+
+Amended before the screenshots: mock mode cannot show the other kinds.
+Connector toasts are behind `INBOX_PANE_ENABLED = false`, and the update
+check runs only inside Tauri. Their cards are covered by the component tests
+(`ConnectorToasts`, `GithubToasts`, `UpdateToast`) instead.
