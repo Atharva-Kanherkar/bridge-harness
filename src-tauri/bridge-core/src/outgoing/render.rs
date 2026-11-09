@@ -23,6 +23,7 @@ fn fence_marker(line: &str) -> Option<String> {
 struct Patterns {
     bold: Regex,
     italic_star: Regex,
+    italic_underscore: Regex,
     strike: Regex,
     link: Regex,
     heading: Regex,
@@ -34,6 +35,9 @@ fn patterns() -> &'static Patterns {
     PATTERNS.get_or_init(|| Patterns {
         bold: Regex::new(r"\*\*([^*\n]+?)\*\*|__([^_\n]+?)__").unwrap(),
         italic_star: Regex::new(r"\*([^*\s][^*\n]*?)\*").unwrap(),
+        // Only a whole word in underscores: `snake_case` and `my_file_v2`
+        // keep theirs, as Markdown keeps them.
+        italic_underscore: Regex::new(r"(^|[^\w])_([^_\s](?:[^_\n]*[^_\s])?)_([^\w]|$)").unwrap(),
         strike: Regex::new(r"~~([^~\n]+?)~~").unwrap(),
         link: Regex::new(r"\[([^\]\n]+)\]\(([^)\s]+)\)").unwrap(),
         heading: Regex::new(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$").unwrap(),
@@ -63,6 +67,7 @@ fn plain_prose(text: &str) -> String {
         caps.get(1).or_else(|| caps.get(2)).map_or("", |m| m.as_str()).to_owned()
     });
     let text = p.italic_star.replace_all(&text, "$1");
+    let text = p.italic_underscore.replace_all(&text, "$1$2$3");
     p.strike.replace_all(&text, "$1").into_owned()
 }
 
@@ -143,6 +148,14 @@ mod tests {
     fn slack_through_the_connector_is_the_body_as_written() {
         let body = "# Title\n| a |\n|---|\n```python\nprint(1)\n```";
         assert_eq!(render(body, OutgoingFormat::SlackMarkdown), body);
+    }
+
+    #[test]
+    fn plain_strips_underscore_emphasis_but_not_identifiers() {
+        assert_eq!(render("This is _important_, really", OutgoingFormat::Plain), "This is important, really");
+        assert_eq!(render("_lead_ in", OutgoingFormat::Plain), "lead in");
+        assert_eq!(render("set snake_case_name and __init__ here", OutgoingFormat::Plain), "set snake_case_name and init here");
+        assert_eq!(render("path my_file_v2.txt stays", OutgoingFormat::Plain), "path my_file_v2.txt stays");
     }
 
     #[test]
