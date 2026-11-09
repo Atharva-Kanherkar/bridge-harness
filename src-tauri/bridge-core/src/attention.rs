@@ -75,6 +75,9 @@ pub enum AttentionKind {
     /// Input queued for a chat whose adapter is gone, waiting past the bound.
     /// Raised by [`escalate_stranded`], not by a forest entry.
     Escalation,
+    /// An agent asked for the person through [`post`]: a decision or a
+    /// blocker, in its own words.
+    Posted,
 }
 
 impl AttentionKind {
@@ -84,6 +87,7 @@ impl AttentionKind {
             Self::Failed => "failed",
             Self::NeedsYou => "needs_you",
             Self::Escalation => "escalation",
+            Self::Posted => "posted",
         }
     }
 
@@ -93,13 +97,15 @@ impl AttentionKind {
             "failed" => Some(Self::Failed),
             "needs_you" => Some(Self::NeedsYou),
             "escalation" => Some(Self::Escalation),
+            "posted" => Some(Self::Posted),
             _ => None,
         }
     }
 
     pub const fn severity(self) -> Severity {
         match self {
-            Self::Finished => Severity::Informational,
+            // A post says its own severity; this is the default.
+            Self::Finished | Self::Posted => Severity::Informational,
             Self::Failed | Self::NeedsYou | Self::Escalation => Severity::Actionable,
         }
     }
@@ -290,6 +296,8 @@ pub fn copy(kind: AttentionKind, session: &SessionFacts) -> (String, String) {
         AttentionKind::Failed => ("Turn failed".into(), format!("{who} ended this turn with an error")),
         AttentionKind::Finished => ("Turn completed".into(), format!("{who} finished its turn")),
         AttentionKind::Escalation => escalation_copy(session, 1),
+        // A post carries the agent's own words; this is only a fallback.
+        AttentionKind::Posted => ("Your agent asks for you".into(), format!("{who} sent you a message")),
     }
 }
 
@@ -407,13 +415,27 @@ fn insert_row(
     approval_event_id: Option<i64>,
     request_event_id: Option<i64>,
 ) -> Result<i64, BridgeError> {
+    insert_row_as(db, session_id, kind, kind.severity(), title, Some(body), approval_event_id, request_event_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_row_as(
+    db: &Connection,
+    session_id: &str,
+    kind: AttentionKind,
+    severity: Severity,
+    title: &str,
+    body: Option<&str>,
+    approval_event_id: Option<i64>,
+    request_event_id: Option<i64>,
+) -> Result<i64, BridgeError> {
     db.execute(
         "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,request_event_id,title,body,created_at)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             Uuid::new_v4().to_string(),
             kind.as_str(),
-            kind.severity().as_str(),
+            severity.as_str(),
             HUMAN,
             session_id,
             approval_event_id,
@@ -542,6 +564,70 @@ fn escalate_stranded_in(
     Ok(changed || closed > 0)
 }
 
+/// Posts one chat may make in [`POST_WINDOW`].
+pub const POST_LIMIT: i64 = 3;
+pub const POST_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
+pub const POST_TITLE_MAX: usize = 80;
+pub const POST_BODY_MAX: usize = 240;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostOutcome {
+    /// The row's sequence.
+    Shown(i64),
+    RateLimited,
+}
+
+/// Strip control characters, collapse whitespace, trim, and cut to `max`
+/// characters (never inside one).
+pub fn clean_post_text(text: &str, max: usize) -> String {
+    let spaced: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let collapsed = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.chars().take(max).collect::<String>().trim_end().to_owned()
+}
+
+/// An agent asks for the person. Writes one `posted` row for the chat, or
+/// refuses past [`POST_LIMIT`] posts in [`POST_WINDOW`]. Grants nothing: it is
+/// text and a link to the chat.
+pub fn post(
+    db: &Connection,
+    session_id: &str,
+    title: &str,
+    body: Option<&str>,
+    severity: Severity,
+    now: chrono::DateTime<Utc>,
+) -> Result<PostOutcome, BridgeError> {
+    let title = clean_post_text(title, POST_TITLE_MAX);
+    if title.is_empty() {
+        return Err(BridgeError::Invalid("a post needs a title".into()));
+    }
+    let body = body.map(|body| clean_post_text(body, POST_BODY_MAX)).filter(|body| !body.is_empty());
+    let live: Option<(Option<String>, bool)> = db
+        .query_row(
+            "SELECT kind, archived_at IS NULL FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match live {
+        Some((kind, true)) if !crate::work_briefing_config::is_hidden_session_kind(kind.as_deref()) => {}
+        _ => return Err(BridgeError::Invalid(format!("no chat {session_id} to post for"))),
+    }
+    let transaction = db.unchecked_transaction()?;
+    let recent: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM attention_events
+         WHERE session_id=?1 AND audience=?2 AND kind='posted' AND julianday(created_at) > julianday(?3)",
+        params![session_id, HUMAN, (now - POST_WINDOW).to_rfc3339()],
+        |row| row.get(0),
+    )?;
+    if recent >= POST_LIMIT {
+        return Ok(PostOutcome::RateLimited);
+    }
+    let sequence = insert_row_as(&transaction, session_id, AttentionKind::Posted, severity, &title, body.as_deref(), None, None)?;
+    bump(&transaction)?;
+    transaction.commit()?;
+    Ok(PostOutcome::Shown(sequence))
+}
+
 /// One ledger row as clients see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionRow {
@@ -663,8 +749,9 @@ impl UnreadSummary {
 /// How strongly a kind claims a chat's row when several of its sessions are unread.
 const fn strength(kind: AttentionKind) -> u8 {
     match kind {
-        AttentionKind::NeedsYou => 4,
-        AttentionKind::Escalation => 3,
+        AttentionKind::NeedsYou => 5,
+        AttentionKind::Escalation => 4,
+        AttentionKind::Posted => 3,
         AttentionKind::Failed => 2,
         AttentionKind::Finished => 1,
     }
@@ -1289,6 +1376,83 @@ mod tests {
         db.execute("UPDATE queued_session_input SET state='delivered' WHERE id='q1'", []).unwrap();
         assert!(escalate_stranded(&db, &live, now).unwrap());
         assert!(escalations(&db)[0].2, "closed once delivered");
+    }
+
+    fn post_rows(db: &Connection) -> Vec<(String, String, Option<String>)> {
+        db.prepare("SELECT severity, title, body FROM attention_events WHERE kind='posted' ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn post_sanitizes_and_truncates() {
+        let db = unread_store();
+        let title = format!("Pick\u{7}  a\n\tdatabase {}", "x".repeat(200));
+        let body = format!("Postgres or\u{1b}[31m SQLite?  {}", "é".repeat(400));
+        assert!(matches!(post(&db, "chat", &title, Some(&body), Severity::Actionable, Utc::now()).unwrap(), PostOutcome::Shown(_)));
+        let rows = post_rows(&db);
+        let (severity, title, body) = &rows[0];
+        assert_eq!(severity, "actionable");
+        assert!(title.starts_with("Pick a database xxx"), "{title}");
+        assert_eq!(title.chars().count(), POST_TITLE_MAX);
+        let body = body.as_deref().unwrap();
+        assert!(body.starts_with("Postgres or [31m SQLite? éé"), "{body}");
+        assert!(!body.chars().any(char::is_control));
+        assert_eq!(body.chars().count(), POST_BODY_MAX);
+        post(&db, "chat", "Done?", Some(" \n "), Severity::Informational, Utc::now()).unwrap();
+        assert_eq!(post_rows(&db)[1], ("informational".to_owned(), "Done?".to_owned(), None), "a blank body is none");
+    }
+
+    #[test]
+    fn post_refuses_an_empty_title() {
+        let db = unread_store();
+        for title in ["", "   ", "\u{0}\u{7}\n"] {
+            assert!(matches!(post(&db, "chat", title, None, Severity::Informational, Utc::now()), Err(BridgeError::Invalid(_))), "{title:?}");
+        }
+        assert!(post_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn the_fourth_post_in_five_minutes_is_rate_limited() {
+        let db = unread_store();
+        let now = Utc::now();
+        for _ in 0..POST_LIMIT {
+            assert!(matches!(post(&db, "chat", "Need a decision", None, Severity::Actionable, now).unwrap(), PostOutcome::Shown(_)));
+        }
+        let before = revision(&db).unwrap();
+        assert_eq!(post(&db, "chat", "Need a decision", None, Severity::Actionable, now).unwrap(), PostOutcome::RateLimited);
+        assert_eq!(revision(&db).unwrap(), before, "a refused post writes nothing");
+        assert!(matches!(post(&db, "other", "Elsewhere", None, Severity::Actionable, now).unwrap(), PostOutcome::Shown(_)), "the limit is per chat");
+        // Once the window has passed, the chat may post again.
+        assert!(matches!(post(&db, "chat", "Later", None, Severity::Actionable, now + POST_WINDOW + chrono::Duration::seconds(1)).unwrap(), PostOutcome::Shown(_)));
+    }
+
+    #[test]
+    fn posts_need_a_live_visible_chat() {
+        let db = unread_store();
+        session(&db, "brief", "briefing", None, None);
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='other'", []).unwrap();
+        for session_id in ["missing", "brief", "other"] {
+            assert!(matches!(post(&db, session_id, "Hi", None, Severity::Informational, Utc::now()), Err(BridgeError::Invalid(_))), "{session_id}");
+        }
+    }
+
+    #[test]
+    fn a_post_counts_as_unread_below_requests() {
+        let db = unread_store();
+        raise(&db, "chat", AttentionKind::Failed);
+        post(&db, "worker", "Which branch?", None, Severity::Actionable, Utc::now()).unwrap();
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary.by_chat["chat"], AttentionKind::Posted, "a post outranks a failure");
+        assert_eq!(summary.needs_you(), 0, "needsYou still counts requests and stranded results");
+        raise(&db, "nested", AttentionKind::NeedsYou);
+        assert_eq!(unread_summary(&db).unwrap().by_chat["chat"], AttentionKind::NeedsYou);
+        let page = list(&db, None, None, false).unwrap();
+        let posted = page.items.iter().find(|row| row.kind == AttentionKind::Posted).unwrap();
+        assert_eq!((posted.severity, posted.title.as_str(), posted.body.as_deref()), (Severity::Actionable, "Which branch?", None));
     }
 
     #[test]

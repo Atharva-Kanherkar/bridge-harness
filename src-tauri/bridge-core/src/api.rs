@@ -4334,6 +4334,7 @@ fn wire_attention_kind(kind: crate::attention::AttentionKind) -> wire::Attention
         AttentionKind::Failed => wire::AttentionKind::Failed,
         AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
         AttentionKind::Escalation => wire::AttentionKind::Escalation,
+        AttentionKind::Posted => wire::AttentionKind::Posted,
     }
 }
 
