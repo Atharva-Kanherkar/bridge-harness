@@ -2,9 +2,8 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
-import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
-import { normalizeAgentEvent, normalizeSessionEntry } from "../transcript/codec";
 import { reduceTranscript } from "../transcript/reducer";
 import type { TranscriptEvent } from "../transcript/events";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
@@ -1002,30 +1001,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // suppress the model's own status while a new request is starting.
   const streaming = turnActive && visibleItems.some(item => item.turn === latestTurn
     && (item.status === "streaming" || item.status === "inProgress"));
-  const processSnapshots = useMemo(() => {
-    const snapshots = activeProcessEntries?.flatMap<TranscriptEvent>(entry => {
-      const event = normalizeSessionEntry(entry);
-      if (!event) return [];
-      if (event.type === "tool.started" || event.type === "tool.completed") {
-        // Seed the reducer's output buffer so transient deltas append to the
-        // preview instead of being hidden by its older aggregatedOutput field.
-        const output = event.envelope.providerData.aggregatedOutput;
-        return [{ ...event, text: typeof output === "string" ? output : event.text,
-          envelope: { ...event.envelope, providerData: { ...event.envelope.providerData, aggregatedOutput: undefined } } }];
-      }
-      return [event];
-    }) ?? [];
-    const byProcess = new Map(snapshots.map(event => [event.envelope.itemId, event.envelope]));
-    const updates = events.filter(event => {
-      const snapshot = byProcess.get(event.itemId ?? undefined);
-      if (!snapshot || snapshot.sessionId !== event.sessionId) return false;
-      // Durable updates have an exact ordering. Live-only output/heartbeats
-      // belong after their causal anchor and must also reach the current card.
-      return event.sequence > snapshot.sequence
-        || (event.sequence === 0 && (event.causalAnchor ?? snapshot.sequence) >= snapshot.sequence);
-    }).map(normalizeAgentEvent);
-    return reduceTranscript([...snapshots, ...updates]);
-  }, [activeProcessEntries, events]);
+  const processSnapshots = useMemo(() => projectActiveProcesses(activeProcessEntries, events), [activeProcessEntries, events]);
   const processIds = useMemo(() => new Set(processSnapshots.map(item => item.identity)), [processSnapshots]);
   const snapshotSequence = Math.max(0, ...forestEntries?.map(entry => entry.sequence) ?? []);
   const visibleTurns = new Map(visibleItems.map(item => [item.identity, item.turn]));
