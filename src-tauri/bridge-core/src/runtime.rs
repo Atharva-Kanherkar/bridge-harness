@@ -246,6 +246,10 @@ pub struct DelegationState {
     /// A stop is queued like a steer, but it is a decision rather than
     /// guidance: it settles the worker whether or not the worker cooperates.
     pub pending_worker_stops: HashMap<String, Vec<delegation::StopRequest>>,
+    /// A `bridge-wait` arms at the turn boundary, after the turn's own
+    /// delegations have launched, so `"all"` covers the workers it just started.
+    /// One per orchestrator: the last block of the turn wins.
+    pub pending_worker_waits: HashMap<String, delegation::WaitRequest>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
