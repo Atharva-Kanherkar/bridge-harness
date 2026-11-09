@@ -102,6 +102,35 @@ describe("AttentionToasts", () => {
     expect(onDismiss).toHaveBeenCalledWith(needsYou.key);
   });
 
+  it("expires after its own duration, and never when it has none", async () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    const quick: AttentionToast = { ...completed, durationMs: 5_000 };
+    const sticky: AttentionToast = { ...needsYou, durationMs: null };
+    await mount(<AttentionToasts toasts={[sticky, quick]} onOpen={() => undefined} onDismiss={onDismiss} />);
+    await act(async () => { vi.advanceTimersByTime(4_999); });
+    expect(onDismiss).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(2); });
+    expect(onDismiss).toHaveBeenCalledWith(quick.key);
+    await act(async () => { vi.advanceTimersByTime(ATTENTION_TOAST_TTL_MS * 10); });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the newest three of a longer queue", async () => {
+    const queue: AttentionToast[] = Array.from({ length: 8 }, (_, index) => ({
+      ...completed,
+      key: `k${index}`,
+      sessionId: `s${index}`,
+      copy: { ...completed.copy, detail: `Chat ${index} · Codex finished its turn` },
+    }));
+    await mount(<AttentionToasts toasts={queue} onOpen={() => undefined} onDismiss={() => undefined} />);
+    const shown = [...host!.querySelectorAll('button[aria-label*="open the chat"]')].map(button => button.textContent);
+    expect(shown).toHaveLength(3);
+    expect(shown.join("|")).toContain("Chat 7");
+    expect(shown.join("|")).toContain("Chat 5");
+    expect(shown.join("|")).not.toContain("Chat 4");
+  });
+
   it("renders nothing when empty", async () => {
     await mount(<AttentionToasts toasts={[]} onOpen={() => undefined} onDismiss={() => undefined} />);
     expect(host!.textContent).toBe("");

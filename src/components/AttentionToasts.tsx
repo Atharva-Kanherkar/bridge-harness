@@ -8,7 +8,10 @@ import type { AttentionCopy } from "../attentionCopy";
 // bottom-right CI and connector stacks, and so "Bridge needs you" reads near
 // the window chrome the human already glances at.
 
+/** How long a toast stays when it does not say. */
 export const ATTENTION_TOAST_TTL_MS = 16_000;
+/** Toasts shown at once; the rest of the queue waits its turn. */
+export const ATTENTION_TOASTS_SHOWN = 3;
 
 export type AttentionToast = {
   key: string;
@@ -21,6 +24,8 @@ export type AttentionToast = {
   firedAt?: number;
   /** A one-click remedy beside the body, such as delivering stranded input. */
   actionLabel?: string;
+  /** How long it stays once shown; `null` until the person acts on it. */
+  durationMs?: number | null;
 };
 
 function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
@@ -45,10 +50,12 @@ function ToastCard({ toast, onOpen, onDismiss, onAction }: {
   // instead of depending on it directly.
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
+  const durationMs = toast.durationMs === undefined ? ATTENTION_TOAST_TTL_MS : toast.durationMs;
   useEffect(() => {
-    const timer = window.setTimeout(() => onDismissRef.current(toast.key), ATTENTION_TOAST_TTL_MS);
+    if (durationMs === null) return;
+    const timer = window.setTimeout(() => onDismissRef.current(toast.key), durationMs);
     return () => window.clearTimeout(timer);
-  }, [toast.key, toast.firedAt]);
+  }, [toast.key, toast.firedAt, durationMs]);
 
   return <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
     <ToneIcon tone={toast.copy.tone} />
@@ -89,7 +96,8 @@ export function AttentionToasts({ toasts, onOpen, onDismiss, onAction }: {
   onAction?: (toast: AttentionToast) => void;
 }) {
   if (!toasts.length) return null;
-  const shown = toasts.slice(-3);
+  // A card's timer starts when it is shown, so a queued one gets its full time.
+  const shown = toasts.slice(-ATTENTION_TOASTS_SHOWN);
   return <div
     role="region"
     aria-label="Attention notifications"
