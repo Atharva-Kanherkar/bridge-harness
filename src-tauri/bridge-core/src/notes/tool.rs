@@ -173,9 +173,14 @@ fn names_state(tree: &Value) -> bool {
     }
 }
 
+/// The link that opens a page in Bridge, the form the editor writes for a child page.
+pub fn page_link(id: &str) -> String {
+    format!("bridge://p/{id}")
+}
+
 fn summary(note: &bridge_protocol::messages::Note) -> Value {
     json!({
-        "id": note.id, "title": note.title, "kind": note.kind, "state": note.state, "tags": note.tags,
+        "id": note.id, "link": page_link(&note.id), "title": note.title, "kind": note.kind, "state": note.state, "tags": note.tags,
         "projectId": note.workspace_id, "parentId": note.parent_id, "preview": note.preview,
         "seq": note.seq, "updatedAt": note.updated_at, "lastEditedBy": note.last_actor,
     })
@@ -545,6 +550,29 @@ mod tests {
         assert_eq!(page.note.last_actor, actor);
         assert_eq!(run(&notes, Access::Write, actor, "notes_create", &json!({"content": "no title"})).unwrap_err().status, 400);
         assert_eq!(run(&notes, Access::Write, actor, "notes_delete", &json!({})).unwrap_err().status, 404);
+    }
+
+    #[test]
+    fn every_page_summary_carries_its_bridge_link() {
+        let (_dir, notes) = service();
+        let actor = "agent:claude:chat-1";
+        let created = run(&notes, Access::Write, actor, "notes_create", &json!({"title": "Linked", "content": "find me"})).unwrap();
+        let id = created["created"]["id"].as_str().unwrap().to_owned();
+        let link = format!("bridge://p/{id}");
+        assert_eq!(created["created"]["link"], link.as_str());
+        let read = run(&notes, Access::ReadOnly, actor, "notes_read", &json!({"id": id})).unwrap();
+        assert_eq!(read["page"]["link"], link.as_str());
+        let found = run(&notes, Access::ReadOnly, actor, "notes_search", &json!({"query": "find"})).unwrap();
+        assert_eq!(found["pages"][0]["link"], link.as_str());
+        let filtered = run(&notes, Access::ReadOnly, actor, "notes_search", &json!({"where": {"property": "title", "op": "contains", "value": "Linked"}})).unwrap();
+        assert_eq!(filtered["pages"][0]["link"], link.as_str());
+        for (tool, args) in [
+            ("notes_edit", json!({"id": id, "edits": [{"oldStr": "find me", "newStr": "found"}]})),
+            ("notes_append", json!({"id": id, "content": "more"})),
+            ("notes_set", json!({"id": id, "kind": "idea"})),
+        ] {
+            assert_eq!(run(&notes, Access::Write, actor, tool, &args).unwrap()["page"]["link"], link.as_str(), "{tool}");
+        }
     }
 
     #[test]

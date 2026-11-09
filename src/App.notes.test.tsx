@@ -4,7 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { bridgeApi } from "./api";
-import { resetMockNotes, setMockNotesPassDelay } from "./notesMock";
+import { mockCreatePage, resetMockNotes, setMockNotesPassDelay } from "./notesMock";
+import { installExternalLinkHandler } from "./externalLinks";
 
 // Notes inside the real App: what a Start from a note hands to the chat path,
 // and which defaults the pickers start from.
@@ -107,6 +108,22 @@ afterEach(() => {
 });
 
 describe("Notes in the App", () => {
+  it("a note link in a chat opens that page in Notes", { timeout: 15_000 }, async () => {
+    installExternalLinkHandler();
+    const page = mockCreatePage({ title: "Linked from chat", content: "" });
+    await mountApp();
+    expect(container.querySelector("aside[aria-label='Notes list']")).toBeNull();
+    const link = document.createElement("a");
+    link.setAttribute("href", `bridge://p/${page.id}`);
+    link.textContent = "Linked from chat";
+    container.append(link);
+    let prevented = false;
+    await act(async () => { prevented = !link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 })); });
+    expect(prevented).toBe(true);
+    for (let tries = 0; tries < 100 && container.querySelector<HTMLTextAreaElement>("textarea[aria-label='Title']")?.value !== "Linked from chat"; tries += 1) await wait(50);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea[aria-label='Title']")?.value).toBe("Linked from chat");
+  });
+
   it("preselects the saved application chat default in every picker", async () => {
     const view = await bridgeApi.getChatDefaults();
     await bridgeApi.saveChatDefaults({ defaults: { ...view.application.defaults, model: { harness: "claude", model: "claude-opus-5-5" } }, expectedRevision: view.application.revision });
