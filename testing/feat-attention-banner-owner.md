@@ -16,7 +16,7 @@ holds a short presence lease per client and names one banner owner.
 
 Core (`bridge-core/src/attention_presence.rs`), in memory on `BridgeCore`:
 
-- `report(client_id, kind, focused, visible_session_id, gone, now)` records
+- `report(client_id, kind, focused, gone, now)` records
   or renews a client's lease and returns whether that client owns banners.
   `kind` is `desktop` or `web`. `gone` removes the client at once (a window
   closing).
@@ -32,15 +32,15 @@ Core (`bridge-core/src/attention_presence.rs`), in memory on `BridgeCore`:
   elects again.
 
 Protocol 1.27: `attention/report_presence { clientId, clientKind, focused,
-visibleSessionId?, gone? } -> { bannerOwner }`. Strict params. A 1.26 client
+gone? } -> { bannerOwner }`. Strict params. A 1.26 client
 still pairs with a 1.27 daemon (it never reports, and keeps posting banners
 as before). A 1.27 client against an older daemon gets `method_not_found`,
 which the client treats as owning banners, so nothing goes silent.
 
 Desktop:
 
-- `useBannerOwner({ focused, visibleSessionId })` reports on mount, on every
-  change of focus or visible chat, and every 10 s; on `pagehide` it reports
+- `useBannerOwner(focused)` reports on mount, on every change of focus, and
+  every 10 s; on `pagehide` it reports
   `gone`. It returns the last answer, `true` before the first one and after
   a failed one.
 - Renewal every 10 s against a 30 s lease puts a crashed owner's handover
@@ -92,3 +92,11 @@ using remote presence for toast suppression.
 Live daemon from this branch: two `bridge exec --method attention/report_presence`
 calls with different client ids show one owner; a focused report from the
 second takes it; `gone` hands it back.
+
+## Amendment (before the protocol change)
+
+The issue sketched a `visibleSessionId` in the report, for core to suppress
+notices about a chat that is on screen in another client. Nothing in this
+slice would read it, so it is left out rather than stored unused; the slice
+that wires cross-client suppression adds it.
+
