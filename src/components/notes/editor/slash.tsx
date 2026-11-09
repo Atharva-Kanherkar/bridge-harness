@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { Extension, type Editor, type Range } from "@tiptap/core";
 import Suggestion, { type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
-import { ChevronRight, Code2, FileText, Heading1, Heading2, Heading3, Image as ImageIcon, List, ListOrdered, ListTodo, Minus, Quote, Sigma, SquareRadical, Table2, Text as TextIcon, MessageSquareText, Database } from "lucide-react";
+import { ChevronRight, Code2, FileText, Heading1, Heading2, Heading3, Image as ImageIcon, List, ListOrdered, ListTodo, Minus, Quote, Sigma, SquareRadical, Table2, Text as TextIcon, MessageSquareText, Database, Workflow } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
@@ -43,6 +43,7 @@ export const BLOCK_CHOICES: BlockChoice[] = [
   { id: "callout", label: "Callout", hint: "Make a note stand out", keywords: "note tip warning alert info", icon: icon(MessageSquareText), run: editor => editor.chain().focus().wrapIn("callout", { kind: "NOTE" }).run() },
   { id: "divider", label: "Divider", hint: "A line between sections", keywords: "hr rule separator ---", icon: icon(Minus), run: editor => editor.chain().focus().setHorizontalRule().run() },
   { id: "code", label: "Code", hint: "A block of code", keywords: "codeblock snippet ```", icon: icon(Code2), run: editor => editor.chain().focus().toggleCodeBlock().run() },
+  { id: "mermaid", label: "Mermaid diagram", hint: "A flowchart or sequence drawn from text", keywords: "chart flowchart graph sequence diagram", icon: icon(Workflow), run: editor => editor.chain().focus().setCodeBlock({ language: "mermaid" }).run() },
   { id: "table", label: "Table", hint: "Rows and columns", keywords: "grid", icon: icon(Table2), run: editor => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { id: "image", label: "Image", hint: "Upload a picture", keywords: "photo picture screenshot png jpg", icon: icon(ImageIcon), run: (editor, host) => host.pickImage(editor.state.selection.from) },
   { id: "math", label: "Math block", hint: "An equation in TeX", keywords: "equation latex katex formula tex", icon: icon(SquareRadical), run: (editor, host) => host.editMath("block", editor.state.selection.from) },
