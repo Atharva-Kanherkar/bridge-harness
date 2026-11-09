@@ -8,6 +8,7 @@ describe("settings destinations", () => {
   it("keeps every contextual link associated with a visible destination", () => {
     for (const section of ALL_SECTIONS) expect(PRIMARY_SECTIONS).toContain(primarySection(section));
     expect(primarySection("menuBar")).toBe("general");
+    expect(primarySection("notifications")).toBe("general");
     expect(primarySection("prompts")).toBe("codingAgents");
     expect(primarySection("clones")).toBe("permissions");
     expect(primarySection("import")).toBe("data");

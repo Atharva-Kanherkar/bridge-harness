@@ -15,6 +15,7 @@ import { SettingsRail } from "./settings/SettingsRail";
 import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
+import { NotificationsPage } from "./settings/NotificationsPage";
 import type { UpdateInfo } from "../updater";
 import { PermissionsSection } from "./settings/PermissionsPage";
 import { ComposerPage } from "./settings/ComposerPage";
@@ -253,6 +254,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const generalLinks = <SettingsGroup label="Preferences">
     <SettingsRow label="Voice" description="Private, on-device dictation and local speech model setup." onOpen={() => navigate("voice")} />
     <SettingsRow label="Typing & search" description="Text suggestions while you type, and how Bridge searches chat history." onOpen={() => navigate("composer")} />
+    <SettingsRow label="Notifications" description="Toasts, banners and sounds for each kind of notice, and quiet hours." onOpen={() => navigate("notifications")} />
     <SettingsRow label="Menu bar" description="Show account usage and spend in the macOS menu bar." onOpen={() => navigate("menuBar")} />
     <SettingsRow label="Updates" description={availableUpdate ? `Bridge ${availableUpdate.version} is available.` : "Check for new versions of Bridge."} onOpen={() => navigate("updates")} />
   </SettingsGroup>;
@@ -283,6 +285,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "appearance" && <AppearancePage />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}
       {section === "menuBar" && <MenuBarSettingsPage />}
+      {section === "notifications" && <NotificationsPage />}
 
       {section === "permissions" && config && <PermissionsSection
         policy={config.permissionPolicy}
