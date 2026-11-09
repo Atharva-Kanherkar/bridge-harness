@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "./api";
-import { pushMockAttention, resetMockAttention } from "./attentionMock";
+import { mockUnreadSummary, pushMockAttention, resetMockAttention } from "./attentionMock";
 import type { BridgeState, Session, SessionStatus } from "./types";
 import { NEEDS_YOU_HOLD_MS } from "./useAttentionFeed";
 
@@ -57,6 +57,9 @@ describe("App attention wiring", () => {
       session("b", "ready"),
       session("w", "working", { parentSessionId: "a", title: "Worker w" }),
     ]));
+    // The mock summary's session tree is the one this test's state serves.
+    const parents: Record<string, string | null> = { a: null, b: null, w: "a" };
+    vi.spyOn(bridgeApi, "unreadSummary").mockImplementation(async () => mockUnreadSummary(id => parents[id]));
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -184,5 +187,78 @@ describe("App attention wiring", () => {
     await wait(20);
     expect(toastRegion(container)?.textContent, "the remedy is still there to retry").toContain("Deliver now");
     expect(container.textContent).toContain("it is still queued");
+  });
+
+  describe("unread", () => {
+    const row = (container: HTMLElement, id: string) => container.querySelector(`button[title^="Title ${id}"]`) as HTMLButtonElement;
+    const open = async (container: HTMLElement, id: string) => {
+      await act(async () => { row(container, id).click(); });
+      await wait(20);
+    };
+
+    it("marks a chat that finishes while another is open, badges it, and clears both when opened", async () => {
+      const badge = vi.spyOn(bridgeApi, "setUnreadBadge");
+      await mountApp();
+      await open(container, "a");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(row(container, "b").textContent).toContain("Unread: ");
+      expect(row(container, "a").textContent).not.toContain("Unread");
+      expect(badge).toHaveBeenLastCalledWith(1);
+
+      await open(container, "b");
+      await wait(20);
+      expect(row(container, "b").textContent).not.toContain("Unread");
+      expect(badge).toHaveBeenLastCalledWith(0);
+    });
+
+    it("clears the dot when another client marks the chat seen", async () => {
+      await mountApp();
+      await act(async () => { pushMockAttention({ kind: "failed", sessionId: "b", title: "Turn failed" }); });
+      await wait(40);
+      expect(row(container, "b").textContent).toContain("Unread: ");
+      // What the web client's open does: a server-side stamp and a hint.
+      await act(async () => { await bridgeApi.markAttentionSeen("b"); });
+      await wait(20);
+      expect(row(container, "b").textContent).not.toContain("Unread");
+    });
+
+    it("marks an orchestrator needs you while its worker waits", async () => {
+      await mountApp();
+      await open(container, "b");
+      await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you", approvalEventId: 3 }); });
+      await wait(40);
+      const text = row(container, "a").textContent ?? "";
+      expect(text).toContain("Unread: ");
+      expect(text).toContain("needs you");
+      expect(text).not.toContain("working");
+    });
+
+    it("marks a row for the chat on screen seen at once in a focused window", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      await mountApp();
+      await open(container, "b");
+      const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(seen).toHaveBeenCalledWith("b");
+      expect(row(container, "b").textContent).not.toContain("Unread");
+    });
+
+    it("leaves the chat on screen unread while the window is in the background", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      const badge = vi.spyOn(bridgeApi, "setUnreadBadge");
+      await mountApp();
+      await open(container, "b");
+      await act(async () => { window.dispatchEvent(new Event("blur")); });
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(badge).toHaveBeenLastCalledWith(1);
+      // Coming back to Bridge is seeing it.
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      await wait(40);
+      expect(badge).toHaveBeenLastCalledWith(0);
+    });
   });
 });

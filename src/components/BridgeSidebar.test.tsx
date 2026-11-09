@@ -276,6 +276,26 @@ describe("BridgeSidebar theming", () => {
     expect(html).not.toMatch(/emerald-|amber-|sky-|red-4/);
   });
 
+  it("marks an unread chat with a dot, a heavier title and an Unread name", () => {
+    const html = render({
+      chats: [session("seen", { status: "completed", title: "Read chat" }), session("new", { status: "completed", title: "Finished chat" })],
+      unread: { new: "finished" },
+    });
+    const row = (title: string) => html.split("<button").find(chunk => chunk.includes(`>${title}<`)) ?? "";
+    expect(row("Finished chat")).toContain(">Unread: <");
+    expect(row("Finished chat")).toContain("rounded-full bg-foreground");
+    expect(row("Finished chat")).toMatch(/font-medium[^"]*">Finished chat</);
+    expect(row("Read chat")).not.toContain("Unread");
+    expect(row("Read chat")).not.toContain("bg-foreground");
+  });
+
+  it("says needs you on a chat whose worker is waiting", () => {
+    // The orchestrator is busy, but a request in its tree outranks that.
+    const html = render({ chats: [session("orchestrator", { status: "working" })], unread: { orchestrator: "needsYou" } });
+    expect(html).toContain(">needs you<");
+    expect(html).not.toContain(">working<");
+  });
+
   it("leaves an idle chat without a status dot", () => {
     // An idle chat falls back to a muted time and never wears an active-status ink.
     const html = render({ chats: [session("idle", { status: "completed" })] });

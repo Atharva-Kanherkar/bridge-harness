@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { mockListAttention, mockMarkAttentionSeen, onMockAttentionChanged, pushMockAttention, resetMockAttention, resolveMockAttention } from "./attentionMock";
+import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention, resetMockAttention, resolveMockAttention } from "./attentionMock";
 
 describe("attention mock ledger", () => {
   beforeEach(() => resetMockAttention());
@@ -36,5 +36,33 @@ describe("attention mock ledger", () => {
     pushMockAttention({ kind: "finished", sessionId: "a", title: "Turn completed" });
     expect(calls).toBe(3);
     expect(mockListAttention().items[0].resolvedAt).toBeTruthy();
+  });
+
+  describe("unread summary", () => {
+    // chat <- worker <- nested, and a separate top-level chat.
+    const parents: Record<string, string | null> = { chat: null, worker: "chat", nested: "worker", other: null };
+    const parentOf = (id: string) => parents[id];
+
+    it("rolls a worker's request up to its chat and prefers the stronger kind", () => {
+      pushMockAttention({ kind: "finished", sessionId: "chat", title: "Turn completed" });
+      pushMockAttention({ kind: "needsYou", sessionId: "nested", title: "Bridge needs you" });
+      pushMockAttention({ kind: "failed", sessionId: "other", title: "Turn failed" });
+      pushMockAttention({ kind: "finished", sessionId: "worker", title: "Turn completed" });
+      expect(mockUnreadSummary(parentOf)).toEqual({
+        total: 2,
+        needsYou: 1,
+        byChat: { chat: "needsYou", other: "failed" },
+        bySession: { chat: "finished", nested: "needsYou", other: "failed", worker: "finished" },
+      });
+    });
+
+    it("skips seen, answered and gone sessions", () => {
+      pushMockAttention({ kind: "finished", sessionId: "chat", title: "Turn completed" });
+      mockMarkAttentionSeen("chat");
+      const request = pushMockAttention({ kind: "needsYou", sessionId: "worker", title: "Bridge needs you" });
+      resolveMockAttention(request.sequence);
+      pushMockAttention({ kind: "finished", sessionId: "archived", title: "Turn completed" });
+      expect(mockUnreadSummary(parentOf)).toEqual({ total: 0, needsYou: 0, byChat: {}, bySession: {} });
+    });
   });
 });

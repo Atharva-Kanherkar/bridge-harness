@@ -442,6 +442,7 @@ pub fn dispatch(
             let p: wire::MarkAttentionSeenParams = decode(method, params)?;
             reply(api::mark_attention_seen(core, &p))
         }
+        MethodName::UnreadSummary => reply(api::unread_summary(core)),
         MethodName::ResolveApproval => {
             let p: wire::ResolveApprovalParams = decode(method, params)?;
             reply(api::resolve_approval(
@@ -1345,6 +1346,8 @@ mod tests {
         let core = core(fixture.path());
         let empty = dispatch(&core, MethodName::ListAttention, None).unwrap();
         assert_eq!(empty, json!({"items": [], "latestSequence": 0}));
+        let nothing_unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(nothing_unread, json!({"total": 0, "needsYou": 0, "byChat": {}, "bySession": {}}));
         {
             let db = core.db.lock().unwrap();
             db.execute(
@@ -1361,11 +1364,14 @@ mod tests {
         assert_eq!(page["items"][0]["kind"], json!("finished"));
         assert_eq!(page["items"][0]["severity"], json!("informational"));
         assert_eq!(page["items"][0]["body"], json!("Fix login · Claude finished its turn"));
+        let unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(unread, json!({"total": 1, "needsYou": 0, "byChat": {"s": "finished"}, "bySession": {"s": "finished"}}));
 
         let seen = dispatch(&core, MethodName::MarkAttentionSeen, Some(json!({"sessionId": "s"}))).unwrap();
         assert_eq!(seen, json!({"updated": 1}));
         let unseen = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
         assert_eq!(unseen["items"], json!([]));
+        assert_eq!(dispatch(&core, MethodName::UnreadSummary, None).unwrap()["total"], json!(0));
 
         let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());

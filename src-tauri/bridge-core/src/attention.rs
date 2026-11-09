@@ -21,6 +21,7 @@
 use crate::BridgeError;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const HUMAN: &str = "human";
@@ -635,6 +636,89 @@ pub fn mark_seen(db: &Connection, session_id: &str) -> Result<usize, BridgeError
     Ok(stamped)
 }
 
+/// What is still unread, per session and rolled up to the chats a person sees.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnreadSummary {
+    /// Top-level chat -> the strongest unread kind in its tree.
+    pub by_chat: BTreeMap<String, AttentionKind>,
+    /// Session -> its own unread kind, workers included.
+    pub by_session: BTreeMap<String, AttentionKind>,
+}
+
+impl UnreadSummary {
+    /// Marked chats, so a badge matches the marked sidebar rows.
+    pub fn total(&self) -> usize {
+        self.by_chat.len()
+    }
+
+    /// Marked chats that wait on the person to act: a request or waiting input.
+    pub fn needs_you(&self) -> usize {
+        self.by_chat
+            .values()
+            .filter(|kind| matches!(kind, AttentionKind::NeedsYou | AttentionKind::Escalation))
+            .count()
+    }
+}
+
+/// How strongly a kind claims a chat's row when several of its sessions are unread.
+const fn strength(kind: AttentionKind) -> u8 {
+    match kind {
+        AttentionKind::NeedsYou => 4,
+        AttentionKind::Escalation => 3,
+        AttentionKind::Failed => 2,
+        AttentionKind::Finished => 1,
+    }
+}
+
+/// A session is unread when its newest row is unseen and unresolved. A seen or
+/// answered newest row means nothing there waits, even if an older row was
+/// never seen: it was superseded. Each unread session rolls up to the
+/// top-level chat above it, through sessions that still exist and are not
+/// archived. Read-only.
+pub fn unread_summary(db: &Connection) -> Result<UnreadSummary, BridgeError> {
+    let unread: Vec<(String, String)> = {
+        let mut statement = db.prepare(
+            "SELECT e.session_id, e.kind FROM attention_events e
+             JOIN sessions s ON s.id=e.session_id
+             WHERE e.audience=?1 AND e.seen_at IS NULL AND e.resolved_at IS NULL AND s.archived_at IS NULL
+               AND e.sequence=(SELECT MAX(x.sequence) FROM attention_events x
+                               WHERE x.session_id=e.session_id AND x.audience=?1)
+             ORDER BY e.session_id",
+        )?;
+        let rows = statement.query_map(params![HUMAN], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut parent_of = db.prepare("SELECT parent_session_id, archived_at IS NULL FROM sessions WHERE id=?1")?;
+    let mut summary = UnreadSummary::default();
+    for (session_id, kind) in unread {
+        let Some(kind) = AttentionKind::parse(&kind) else { continue };
+        summary.by_session.insert(session_id.clone(), kind);
+        // Walk up to the top-level chat. The visited set guards a corrupt cycle.
+        let mut current = session_id;
+        let mut visited = std::collections::HashSet::new();
+        let root = loop {
+            if !visited.insert(current.clone()) {
+                break None;
+            }
+            let parent: Option<(Option<String>, bool)> = parent_of
+                .query_row(params![current], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?;
+            match parent {
+                Some((_, false)) | None => break None,
+                Some((Some(parent), true)) if !parent.is_empty() => current = parent,
+                Some((_, true)) => break Some(current),
+            }
+        };
+        if let Some(root) = root {
+            let entry = summary.by_chat.entry(root).or_insert(kind);
+            if strength(kind) > strength(*entry) {
+                *entry = kind;
+            }
+        }
+    }
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,6 +1164,110 @@ mod tests {
         queued(&db, "q2", "orch", "queued", chrono::Duration::minutes(1), now);
         assert!(escalate_stranded(&db, &live, now).unwrap());
         assert_eq!(escalations(&db).iter().filter(|row| !row.2).count(), 1);
+    }
+
+    fn unread_store() -> Connection {
+        let db = queue_store();
+        session(&db, "chat", "orchestrator", None, Some("Ship it"));
+        session(&db, "worker", "orchestrator", Some("chat"), None);
+        session(&db, "nested", "orchestrator", Some("worker"), None);
+        session(&db, "other", "direct", None, None);
+        db
+    }
+
+    fn raise(db: &Connection, session_id: &str, kind: AttentionKind) -> i64 {
+        insert_row(db, session_id, kind, "title", "body", None, None).unwrap()
+    }
+
+    fn kinds(map: &BTreeMap<String, AttentionKind>) -> Vec<(&str, AttentionKind)> {
+        map.iter().map(|(id, kind)| (id.as_str(), *kind)).collect()
+    }
+
+    #[test]
+    fn unread_is_the_newest_unseen_unresolved_row() {
+        let db = unread_store();
+        record(&db, "chat", "turn.completed", json!({"status": "failed"}), 2);
+        record(&db, "chat", "turn.completed", json!({"status": "completed"}), 3);
+        record(&db, "other", "turn.completed", json!({"status": "completed"}), 4);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(kinds(&summary.by_chat), vec![("chat", AttentionKind::Finished), ("other", AttentionKind::Finished)]);
+        assert_eq!(kinds(&summary.by_session), kinds(&summary.by_chat));
+        assert_eq!((summary.total(), summary.needs_you()), (2, 0));
+    }
+
+    #[test]
+    fn seen_resolved_and_superseded_rows_are_not_unread() {
+        let db = unread_store();
+        record(&db, "chat", "turn.completed", json!({"status": "completed"}), 2);
+        mark_seen(&db, "chat").unwrap();
+        // The newest row was answered: the older unseen one it superseded does not resurface.
+        record(&db, "other", "turn.completed", json!({"status": "completed"}), 3);
+        record(&db, "other", "permission.requested", json!({}), 4);
+        record(&db, "other", "permission.resolved", json!({"requestEventId": 4}), 5);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary, UnreadSummary::default());
+        // A newer row after a seen one is unread again.
+        record(&db, "chat", "turn.completed", json!({"status": "failed"}), 6);
+        assert_eq!(kinds(&unread_summary(&db).unwrap().by_chat), vec![("chat", AttentionKind::Failed)]);
+    }
+
+    #[test]
+    fn a_worker_request_rolls_up_to_its_top_level_chat() {
+        let db = unread_store();
+        record(&db, "nested", "approval.requested", json!({}), 2);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(kinds(&summary.by_chat), vec![("chat", AttentionKind::NeedsYou)]);
+        assert_eq!(kinds(&summary.by_session), vec![("nested", AttentionKind::NeedsYou)]);
+        assert_eq!((summary.total(), summary.needs_you()), (1, 1));
+        // Opening the chat does not answer its worker's request.
+        mark_seen(&db, "chat").unwrap();
+        assert_eq!(unread_summary(&db).unwrap().total(), 1);
+        mark_seen(&db, "nested").unwrap();
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+    }
+
+    #[test]
+    fn the_strongest_kind_wins_the_rollup() {
+        let db = unread_store();
+        raise(&db, "chat", AttentionKind::Finished);
+        raise(&db, "worker", AttentionKind::Failed);
+        assert_eq!(unread_summary(&db).unwrap().by_chat["chat"], AttentionKind::Failed);
+        raise(&db, "chat", AttentionKind::Escalation);
+        assert_eq!(unread_summary(&db).unwrap().by_chat["chat"], AttentionKind::Escalation);
+        raise(&db, "nested", AttentionKind::NeedsYou);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary.by_chat["chat"], AttentionKind::NeedsYou);
+        assert_eq!(summary.by_session.len(), 3);
+        assert_eq!((summary.total(), summary.needs_you()), (1, 1));
+        // Order does not matter: a weaker kind arriving last does not demote it.
+        raise(&db, "other", AttentionKind::Escalation);
+        raise(&db, "chat", AttentionKind::Finished);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary.by_chat["chat"], AttentionKind::NeedsYou);
+        assert_eq!((summary.total(), summary.needs_you()), (2, 2));
+    }
+
+    #[test]
+    fn archived_sessions_are_not_unread() {
+        let db = unread_store();
+        raise(&db, "nested", AttentionKind::NeedsYou);
+        raise(&db, "other", AttentionKind::Finished);
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id IN ('worker','other')", []).unwrap();
+        let summary = unread_summary(&db).unwrap();
+        assert!(summary.by_chat.is_empty(), "nothing rolls up through an archived worker: {summary:?}");
+        assert_eq!(kinds(&summary.by_session), vec![("nested", AttentionKind::NeedsYou)]);
+        db.execute("UPDATE sessions SET archived_at=NULL WHERE id='worker'", []).unwrap();
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='nested'", []).unwrap();
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+    }
+
+    #[test]
+    fn unread_summary_leaves_the_revision_alone() {
+        let db = unread_store();
+        raise(&db, "chat", AttentionKind::Finished);
+        let before = (revision(&db).unwrap(), rows(&db));
+        unread_summary(&db).unwrap();
+        assert_eq!((revision(&db).unwrap(), rows(&db)), before);
     }
 
     #[test]

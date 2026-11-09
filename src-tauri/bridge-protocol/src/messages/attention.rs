@@ -4,6 +4,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +116,22 @@ pub enum QueuedInputDelivery {
 #[serde(rename_all = "camelCase")]
 pub struct DeliverQueuedInputResult {
     pub disposition: QueuedInputDelivery,
+}
+
+/// What is still unread. A chat counts while its newest row is unseen and
+/// unanswered; a worker's counts toward the top-level chat above it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadSummary {
+    /// Marked chats: the length of `byChat`, and the dock badge.
+    pub total: u32,
+    /// Marked chats whose kind is `needsYou` or `escalation`.
+    pub needs_you: u32,
+    /// Top-level chat id to the strongest unread kind in its tree:
+    /// `needsYou`, then `escalation`, `failed`, `finished`.
+    pub by_chat: BTreeMap<String, AttentionKind>,
+    /// Session id to its own unread kind, workers included.
+    pub by_session: BTreeMap<String, AttentionKind>,
 }
 
 #[cfg(test)]

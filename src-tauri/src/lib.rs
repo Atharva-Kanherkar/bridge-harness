@@ -5,6 +5,7 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod dock_badge;
 mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
@@ -877,6 +878,11 @@ async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_
 async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DeliverQueuedInputResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Queued input delivery", move || api::deliver_queued_input(&core, &bridge_protocol::messages::DeliverQueuedInputParams { session_id })).await
+}
+
+#[tauri::command]
+async fn unread_summary(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnreadSummary, BridgeError> {
+    api::unread_summary(state.inner())
 }
 
 #[tauri::command]
@@ -2891,6 +2897,8 @@ fn select_host(
     omarchy::install(app.handle());
     // Linux notifications with Allow once / Decline / Open.
     notifications::install(app.handle());
+    // The unread count on the app icon, sent by the webview.
+    dock_badge::install(app.handle());
     quick_prompt::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
@@ -3190,6 +3198,7 @@ pub fn run() -> i32 {
             save_delegation_notify_settings,
             list_attention,
             mark_attention_seen,
+            unread_summary,
             deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,

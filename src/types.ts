@@ -204,6 +204,7 @@ export type {
   MarketplaceProvider,
   AttentionItem,
   AttentionKind,
+  UnreadSummary,
 } from "./protocol/generated/protocol";
 
 export type {
