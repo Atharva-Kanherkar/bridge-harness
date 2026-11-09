@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { bridgeApi } from "../api";
 import type { ScanHistoryResult, SummaryParams, UsageBucket, UsageHistorySource, UsageSummaryResult } from "../types";
 import { formatDayShort, USAGE_LAYOUT_OPTIONS, USAGE_PREFERENCES_KEY, type UsageLayout } from "../usageReport";
-import { UsageScreen } from "./UsageScreen";
+import { clearUsageCacheForTests, UsageScreen } from "./UsageScreen";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -59,6 +59,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  clearUsageCacheForTests();
   summarySpy = vi.spyOn(bridgeApi, "usageSummary").mockImplementation(async params => summaryFor(params));
   scanSpy = vi.spyOn(bridgeApi, "scanUsageHistory").mockResolvedValue({ durationMs: 1, recordsImported: 0, recordsSkipped: 0, sources: [] });
   vi.spyOn(bridgeApi, "listUsageHistorySources").mockResolvedValue([source]);
@@ -237,15 +238,46 @@ describe("UsageScreen", () => {
     expect(summarySpy).toHaveBeenCalledTimes(2);
   });
 
-  it("hides figures while history is still loading", async () => {
+  it("shows the stored figures while history scans", async () => {
     const pending = deferred<ScanHistoryResult>();
     scanSpy.mockReturnValueOnce(pending.promise);
+    vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, coverageState: "complete" }]);
     await mount();
-    expect(text()).toContain("Loading history");
-    expect(text()).toContain("Numbers appear only when loading finishes");
+    expect(text()).toContain("$4.50");
+    expect(text()).not.toContain("Numbers appear");
     expect(text()).not.toContain("Partial total");
-    expect(text()).not.toContain("$4.50");
     await act(async () => { pending.resolve(batch("complete", 5, "end")); });
+    expect(summarySpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("draws the last figures at once when Usage reopens and skips a fresh rescan", async () => {
+    vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, coverageState: "complete" }]);
+    await mount();
+    expect(scanSpy).toHaveBeenCalledTimes(1);
+    act(() => { root.render(null); });
+    const pending = deferred<UsageSummaryResult>();
+    summarySpy.mockReturnValueOnce(pending.promise);
+    act(() => { root.render(<UsageScreen onError={() => {}} />); });
+    expect(text()).toContain("$4.50");
+    expect(text()).not.toContain("Loading usage");
+    await act(async () => { pending.resolve(summaryFor(summarySpy.mock.calls[2][0])); });
+    await flush();
+    expect(scanSpy).toHaveBeenCalledTimes(1);
+    expect(summarySpy).toHaveBeenCalledTimes(3);
+    click(container.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!);
+    await flush();
+    await flush();
+    expect(scanSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("rescans on reopen after a scan that did not finish cleanly", async () => {
+    scanSpy.mockRejectedValueOnce(new Error("cannot read history"));
+    await mount();
+    act(() => { root.render(null); });
+    act(() => { root.render(<UsageScreen onError={() => {}} />); });
+    await flush();
+    await flush();
+    expect(scanSpy).toHaveBeenCalledTimes(2);
   });
 
   it("keeps scanning when the cursor advances even if a batch imports only duplicates", async () => {
@@ -294,17 +326,18 @@ describe("UsageScreen", () => {
     expect(text()).toContain("Partial total");
   });
 
-  it("hides the subtotal until the post-import summary arrives", async () => {
+  it("replaces the figures in place when the post-import summary arrives", async () => {
     const pending = deferred<UsageSummaryResult>();
     summarySpy.mockImplementationOnce(async params => summaryFor(params)).mockReturnValueOnce(pending.promise);
     vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, coverageState: "complete" }]);
     await mount();
-    expect(text()).toContain("Updating usage");
-    expect(text()).not.toContain("$4.50");
-    expect(text()).not.toContain("Partial total");
-    await act(async () => { pending.resolve(summaryFor(summarySpy.mock.calls[1][0])); });
-    expect(text()).not.toContain("Partial total");
     expect(text()).toContain("$4.50");
+    expect(text()).not.toContain("Partial total");
+    const updated = summaryFor(summarySpy.mock.calls[1][0]);
+    updated.buckets[0].costMicrousd = 6_000_000;
+    await act(async () => { pending.resolve(updated); });
+    expect(text()).not.toContain("Partial total");
+    expect(text()).toContain("$6.00");
   });
 
   it("does not leave an old subtotal visible when the post-import summary fails", async () => {
