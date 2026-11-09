@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import { webCanPostBanners } from "./webNotify";
+
+const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** The desktop always can; a browser tab says whether its person allowed it. */
+const canPostBanners = () => (inTauri() ? undefined : webCanPostBanners());
 
 /** Leases last 30 s in core; renewing at a third of that hands a crashed
  * owner's banners over within 40 s. */
@@ -30,7 +35,7 @@ export function useBannerOwner(focused: boolean, clientId = CLIENT_ID, renewMs =
     let latest = 0;
     const report = () => {
       const ticket = ++latest;
-      bridgeApi.reportPresence(clientId, focusedRef.current).then(
+      bridgeApi.reportPresence(clientId, { focused: focusedRef.current, canPostBanners: canPostBanners() }).then(
         result => { if (active && ticket === latest) setOwner(result.bannerOwner); },
         () => { if (active && ticket === latest) setOwner(true); },
       );
@@ -38,7 +43,7 @@ export function useBannerOwner(focused: boolean, clientId = CLIENT_ID, renewMs =
     reportRef.current = report;
     report();
     const timer = window.setInterval(report, renewMs);
-    const leave = () => { void bridgeApi.reportPresence(clientId, false, true).catch(() => undefined); };
+    const leave = () => { void bridgeApi.reportPresence(clientId, { focused: false, gone: true }).catch(() => undefined); };
     window.addEventListener("pagehide", leave);
     return () => {
       active = false;

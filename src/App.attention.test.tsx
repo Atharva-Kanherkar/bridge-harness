@@ -375,5 +375,12 @@ describe("App attention wiring", () => {
     expect(toastRegion(container)?.textContent).toContain("Turn failed");
     expect(notifyAttention).not.toHaveBeenCalled();
   });
+
+  it("opens the chat a clicked browser notification was about", async () => {
+    await mountApp();
+    await act(async () => { window.dispatchEvent(new CustomEvent("bridge:web-notification-open", { detail: { sessionId: "b" } })); });
+    await wait(20);
+    expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
+  });
 });
 

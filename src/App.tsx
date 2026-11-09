@@ -134,6 +134,7 @@ import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFrom
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
+import { WEB_NOTIFICATION_OPEN } from "./webNotify";
 import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
 import { isMacPlatform } from "./lib/platform";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
@@ -700,6 +701,15 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
+  // A browser notification clicked (web client): open the chat it was about.
+  useEffect(() => {
+    const open = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: unknown }>).detail?.sessionId;
+      if (typeof sessionId === "string" && sessionId) openSessionRef.current(sessionId);
+    };
+    window.addEventListener(WEB_NOTIFICATION_OPEN, open);
+    return () => window.removeEventListener(WEB_NOTIFICATION_OPEN, open);
+  }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
