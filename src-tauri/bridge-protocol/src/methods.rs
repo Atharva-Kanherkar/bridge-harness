@@ -175,6 +175,7 @@ methods![
     (ListAttention, "attention", "list_attention"),
     (MarkAttentionSeen, "attention", "mark_attention_seen"),
     (UnreadSummary, "attention", "unread_summary"),
+    (ReportPresence, "attention", "report_presence"),
     // Delivering a chat's queued input on request is a session operation the
     // attention escalation offers; it lives beside its caller for reading.
     (DeliverQueuedInput, "sessions", "deliver_queued_input"),

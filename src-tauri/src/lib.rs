@@ -881,6 +881,11 @@ async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCor
 }
 
 #[tauri::command]
+async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
+    api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, focused, gone })
+}
+
+#[tauri::command]
 async fn unread_summary(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnreadSummary, BridgeError> {
     api::unread_summary(state.inner())
 }
@@ -3199,6 +3204,7 @@ pub fn run() -> i32 {
             list_attention,
             mark_attention_seen,
             unread_summary,
+            report_presence,
             deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,
