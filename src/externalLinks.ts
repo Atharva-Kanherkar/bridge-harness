@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-shell";
+import { parseNoteLink } from "./noteLinks";
 
 // Anchors and window.open() targets a bare WKWebView/WebView2 has no browser
 // chrome to open — without this they either no-op or spawn an empty app
@@ -118,6 +119,14 @@ export function installExternalLinkHandler(): void {
     const anchor = (event.target as HTMLElement | null)?.closest?.("a[href]");
     if (!anchor) return;
     const href = anchor.getAttribute("href") ?? "";
+    // A notes page link only ever opens inside Bridge: with no router to take
+    // it, the click does nothing rather than reach a browser.
+    if (parseNoteLink(href)) {
+      event.preventDefault();
+      const router = internalRouter;
+      if (router) void routeSafely(router, href);
+      return;
+    }
     if (!isExternalUrl(href)) return;
     event.preventDefault();
     if (anchor.hasAttribute(SYSTEM_BROWSER_ATTRIBUTE)) {

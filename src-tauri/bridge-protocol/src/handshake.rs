@@ -344,6 +344,21 @@ mod tests {
         assert!(ProtocolVersion { major: 1, minor: 20 }.accepts(before));
     }
 
+    #[test]
+    fn unread_summary_client_rejects_a_daemon_without_the_method() {
+        // A 1.26 client reads `attention/unread_summary` for its dots and
+        // badge, which a 1.25 daemon answers with `method_not_found`. The
+        // method is additive, so a 1.25 client still pairs with a newer daemon.
+        let before_unread = ProtocolVersion { major: 1, minor: 25 };
+        let unread = ProtocolVersion { major: 1, minor: 26 };
+        assert!(!before_unread.accepts(unread));
+        assert!(unread.accepts(before_unread), "a 1.25 client still pairs with a 1.26 daemon");
+        assert!(
+            PROTOCOL_VERSION.accepts(before_unread),
+            "a later minimum-client gate that drops 1.25 must change this test on purpose"
+        );
+    }
+
     fn request(major: u32, minor: u32) -> HandshakeRequest {
         HandshakeRequest {
             protocol_version: ProtocolVersion { major, minor },

@@ -466,8 +466,8 @@ pub const STRANDED_LOOKBACK: chrono::Duration = chrono::Duration::hours(24);
 ///
 /// One open escalation per chat: a seen but unresolved one is not raised again,
 /// because the person already knows. A superseded one does not count: no
-/// client shows it, and the remedy has to stay reachable. It closes once that chat's queue is empty,
-/// whichever route emptied it.
+/// client shows it, and the remedy has to stay reachable. It closes once that chat has nothing
+/// queued or mid-delivery, whichever route emptied it.
 pub fn escalate_stranded(
     db: &Connection,
     live_adapters: &std::collections::HashSet<String>,
@@ -530,11 +530,13 @@ fn escalate_stranded_in(
         insert_row(db, &session_id, AttentionKind::Escalation, &title, &body, None, None)?;
         changed = true;
     }
+    // A `claiming` row is mid-delivery, not delivered: if the write fails,
+    // release() puts it back to `queued` and the card must still be there.
     let closed = db.execute(
         "UPDATE attention_events SET resolved_at=?1
          WHERE audience=?2 AND kind='escalation' AND resolved_at IS NULL
            AND NOT EXISTS (SELECT 1 FROM queued_session_input q
-                           WHERE q.session_id=attention_events.session_id AND q.state='queued')",
+                           WHERE q.session_id=attention_events.session_id AND q.state IN ('queued','claiming'))",
         params![at, HUMAN],
     )?;
     Ok(changed || closed > 0)
@@ -1266,6 +1268,27 @@ mod tests {
         let before = (revision(&db).unwrap(), rows(&db));
         unread_summary(&db).unwrap();
         assert_eq!((revision(&db).unwrap(), rows(&db)), before);
+    }
+
+    #[test]
+    fn escalation_stays_open_while_delivery_is_claiming() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(1), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        // Deliver now has claimed the row; the provider write is in flight.
+        db.execute("UPDATE queued_session_input SET state='claiming' WHERE id='q1'", []).unwrap();
+        assert!(!escalate_stranded(&db, &live, now).unwrap(), "an in-flight delivery is not an empty queue");
+        assert_eq!(escalations(&db).iter().filter(|row| !row.2).count(), 1);
+        // The write failed and release() put it back: the card is still there.
+        db.execute("UPDATE queued_session_input SET state='queued' WHERE id='q1'", []).unwrap();
+        assert!(!escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(escalations(&db).len(), 1, "the same escalation, not a second one");
+        db.execute("UPDATE queued_session_input SET state='delivered' WHERE id='q1'", []).unwrap();
+        assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert!(escalations(&db)[0].2, "closed once delivered");
     }
 
     #[test]

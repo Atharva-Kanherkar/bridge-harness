@@ -75,3 +75,14 @@ sounds and per-kind settings (the PR after), Mission Control tiles.
 Mock mode in a browser: open a chat, push a `finished` row for it (no toast),
 then for another chat (a toast that leaves after 5 s). Screenshot of the
 toast in dark and light.
+
+## Review amendments (review 2)
+
+Locked before the change.
+
+1. **The queue cap is tested where it is applied.** An App-level test feeds
+   nine rows for nine chats: the newest three show, the oldest is evicted,
+   and dismissing a shown toast reveals the next one still queued, all the
+   way down without the evicted one coming back. It fails if App goes back
+   to keeping only three. Test (`App.attention.test.tsx`): "keeps eight
+   toasts queued and reveals the next on dismiss".

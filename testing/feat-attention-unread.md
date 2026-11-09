@@ -120,3 +120,15 @@ see the dot; open the chat, the dot goes. Screenshots dark and light.
 The dock badge itself needs a release bundle; launching one next to the
 daily app risks its data directory, so it is checked by the shell unit test
 and left as a manual step for the reviewer.
+
+## Review amendments (review 2)
+
+Locked before the change.
+
+1. **The 1.26 compatibility boundary is pinned.** A handshake test names it:
+   a 1.26 daemon accepts a 1.25 client (the method is additive), and a 1.25
+   daemon rejects a 1.26 client (its unread reads would fail with
+   `method_not_found`). The accept side is checked against the current
+   `PROTOCOL_VERSION`, so a later minimum-client gate that drops 1.25 has to
+   change this test on purpose. Test:
+   `handshake::tests::unread_summary_client_rejects_a_daemon_without_the_method`.
