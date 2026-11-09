@@ -124,3 +124,18 @@ curl -s -H "x-bridge-notes-auth: $TOKEN" -X POST "$URL/outgoing_draft" \
 curl -s -H "x-bridge-notes-auth: $TOKEN" -X POST "$URL/outgoing_draft" -d '{"to":{"email":"x"},"body":"hi","reason":"r"}'
 # -> 400, names the accepted destinations
 ```
+
+## Review fixes (locked before the fixes)
+
+Each item has a regression test that fails before its fix.
+
+1. Claude Ask-mode chats (`Shared`, `Isolated`) preapprove `mcp__bridge__outgoing_draft` in `sidecar/claude-agent/options.mjs`, like `memory_propose`. Covered for both modes.
+2. Edit saves against the revision captured when Edit was pressed. If the draft changes underneath (an `outgoing/changed` refresh), Save is refused as stale, never silently accepted.
+3. Archived (read-only) transcripts without a `session` prop pass the historical session id to the card; a completed call loads its draft instead of staying on "Drafting a message…".
+4. Forking a chat clones the outgoing drafts its copied entries reference into the fork, as new rows with `sourceId` set to the original id. The card finds a draft by `id` or `sourceId`. Editing the fork's copy never changes the original.
+5. Each attachment stores the SHA-256 of its bytes. Reading validates and hashes the same bounded file handle and refuses a file whose digest changed, even if it is still a valid image of the same type and size.
+6. Inline code spans close only on a backtick run of the same length; fences close only on the same character with a run at least as long and no info string. Neither the em dash fix, the attribution check nor rendering touches text inside them, including double-backtick spans and four-backtick fences containing a three-backtick line.
+7. An AI attribution line is a whole line: `Co-Authored-By:` naming an assistant, or a line that is entirely a "Generated with Claude Code" footer (optionally with the robot emoji and link). Sentences that mention the phrase, and code spans, are untouched.
+8. The draft preview renders destination Markdown only: fenced `html`, `diagram`, `mermaid` and similar blocks show as code, never as live chat widgets.
+9. The plain format strips `_underscore_` emphasis but leaves identifiers such as `snake_case_name` intact.
+10. The generated visual artifact (`src/mcp-apps/visual/generated/visual.html`) is rebuilt so `bun run check:visual` passes.
