@@ -133,13 +133,26 @@ pub(crate) fn prose_only(line: &str) -> String {
     segments(line).into_iter().filter(|(code, _)| !code).map(|(_, part)| part).collect()
 }
 
+fn footer_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"(?i)^(?:\x{1F916}\s*)?generated (?:with|by) (?:\[claude code\]\([^)\s]*\)|claude code)\.?$").unwrap()
+    })
+}
+
+/// A whole line that only attributes the text to an assistant: a
+/// `Co-Authored-By:` trailer naming one, or the "Generated with Claude Code"
+/// footer. Code spans are not part of the line for this check, so a sentence
+/// that quotes the footer, or mentions it, stays.
 fn attribution_line(line: &str) -> bool {
-    let lower = line.trim().to_lowercase();
+    let prose = prose_only(line);
+    let text = prose.trim();
+    if text != line.trim() {
+        return false;
+    }
+    let lower = text.to_lowercase();
     let assistant = ["claude", "anthropic", "openai", "codex", "chatgpt", "copilot", "gpt-"];
-    (lower.starts_with("co-authored-by:") && assistant.iter().any(|name| lower.contains(name)))
-        || lower.contains("generated with [claude code]")
-        || lower.contains("generated with claude code")
-        || lower.trim_start_matches(|c: char| !c.is_ascii_alphanumeric()).starts_with("generated with [claude")
+    (lower.starts_with("co-authored-by:") && assistant.iter().any(|name| lower.contains(name))) || footer_pattern().is_match(text)
 }
 
 fn dash_pattern() -> &'static Regex {
@@ -300,6 +313,23 @@ mod tests {
         assert_eq!(fixed.len(), 2);
         // A human co-author is not attribution to an assistant.
         assert!(check("Co-Authored-By: Nina <nina@example.com>", OutgoingFormat::Plain).is_empty());
+    }
+
+    #[test]
+    fn sentences_and_code_that_mention_the_footer_are_left_alone() {
+        for body in [
+            "Use `Generated with Claude Code` to find those files",
+            "We generated with Claude Code a quick prototype yesterday.",
+            "The commit trailer looks like Co-Authored-By: Claude, which we strip.",
+        ] {
+            let (text, fixed) = fix(body);
+            assert_eq!(text, body);
+            assert!(fixed.is_empty(), "{body}");
+        }
+        // The real footers are still whole lines and still go.
+        for footer in ["Generated with Claude Code", "\u{1F916} Generated with [Claude Code](https://claude.com/claude-code)", "co-authored-by: Codex <codex@openai.com>"] {
+            assert_eq!(fix(&format!("Done.\n\n{footer}")).0, "Done.", "{footer}");
+        }
     }
 
     #[test]
