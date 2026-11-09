@@ -4,6 +4,7 @@ import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
+import { parseNoteLink } from "../noteLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 import { ExpandButton, VisualFullscreen } from "./VisualFullscreen";
 import { StoragePlanCard } from "./StoragePlanCard";
@@ -38,14 +39,25 @@ function isTableRow(line: string): boolean {
   return line.includes("|");
 }
 
+export type RichFenceKind = "diagram" | "mermaid" | "math" | "html";
+
+/** The figure a fence's info string asks for, or null for plain code. Chat and
+ *  the notes editor both read fences through this one table. */
+export function richFenceKind(lang: string): RichFenceKind | null {
+  const key = lang.trim().toLowerCase();
+  if (key === "diagram" || key === "mermaid" || key === "html") return key;
+  if (key === "math" || key === "latex" || key === "tex") return "math";
+  return null;
+}
+
 /** Classify a fenced block by its info string into a rich-content block kind. */
 function fencedBlock(lang: string, body: string): Block {
-  const key = lang.trim().toLowerCase();
-  if (key === "diagram") return { kind: "diagram", spec: body };
-  if (key === "mermaid") return { kind: "mermaid", code: body };
-  if (key === "storage-plan") return { kind: "storage-plan", body };
-  if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
-  if (key === "html") return { kind: "html", html: body };
+  if (lang.trim().toLowerCase() === "storage-plan") return { kind: "storage-plan", body };
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return { kind, spec: body };
+  if (kind === "mermaid") return { kind, code: body };
+  if (kind === "math") return { kind, tex: body };
+  if (kind === "html") return { kind, html: body };
   return { kind: "code", lang, body };
 }
 
@@ -296,7 +308,8 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2), allowLinks)}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1), allowLinks)}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
-    // A link only renders as an anchor when `externalLinks` would claim it.
+    // A link only renders as an anchor when `externalLinks` would claim it
+    // (http(s), mailto, or a notes page link).
     // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
     // keeps the webview's default action, and the Tauri webview sets no CSP,
     // so a `javascript:` href in agent- or GitHub-authored markdown would run
@@ -304,9 +317,10 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (link && allowLinks) {
       // Link labels may themselves be a URL (GitHub's normalizer emits this
       // shape). Keep their inline formatting without creating a nested anchor.
-      return isExternalUrl(link[2])
-        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>
-        : <span key={index}>{renderInline(link[1], false)}</span>;
+      if (isExternalUrl(link[2])) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>;
+      // A notes page: the interceptor opens it inside Bridge, never a browser.
+      if (parseNoteLink(link[2])) return <a key={index} href={link[2].trim()} data-note-link="">{renderInline(link[1], false)}</a>;
+      return <span key={index}>{renderInline(link[1], false)}</span>;
     }
     // A URL an agent typed as prose is still a link the reader means to follow.
     // It goes through the same click interceptor as a written-out one, so a
@@ -491,6 +505,16 @@ function HtmlBlock({ html }: { html: string }) {
       {frame}
     </div>
   );
+}
+
+/** A rich fence drawn exactly as chat draws it; nothing for plain code. */
+export function RichFence({ lang, body }: { lang: string; body: string }) {
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return <DiagramBlock spec={body} />;
+  if (kind === "mermaid") return <MermaidBlock code={body} />;
+  if (kind === "math") return <MathBlock tex={body} />;
+  if (kind === "html") return <HtmlBlock html={body} />;
+  return null;
 }
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {

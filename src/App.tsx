@@ -22,6 +22,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
+import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
@@ -277,6 +278,8 @@ function AppContent() {
   const [notesListToggle, setNotesListToggle] = useState(0);
   // Bumped by `capture-note`: Notes opens with its capture box focused.
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
+  const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
@@ -757,7 +760,10 @@ function AppContent() {
   // moving the ledger.
   const sessionIdsKey = useMemo(() => state.sessions.map(item => item.id).sort().join(","), [state.sessions]);
   const unread = useUnreadSummary(sessionIdsKey);
-  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total]);
+  // Keyed on needsYou too: the native menu bar wakes on this event and words
+  // its row from it, so a finished chat that starts waiting at the same total
+  // must still be sent. The Dock just sets the same count again.
+  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
   // The chat on screen in a focused window never stays unread: a turn that
   // ends while you watch, or one that ended while Bridge was in the
   // background, is seen once you are looking at it.
@@ -1087,10 +1093,18 @@ function AppContent() {
     openGithubPane(choice.link.view);
   }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
 
-  useEffect(() => {
-    setInternalLinkRouter(routeGithubLink);
-    return () => setInternalLinkRouter(undefined);
+  const routeInternalLink = useCallback((url: string): boolean | Promise<boolean> => {
+    const noteId = parseNoteLink(url);
+    if (!noteId) return routeGithubLink(url);
+    setView("notes");
+    setNoteOpenRequest(current => ({ id: noteId, nonce: (current?.nonce ?? 0) + 1 }));
+    return true;
   }, [routeGithubLink]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeInternalLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeInternalLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -3394,6 +3408,7 @@ function AppContent() {
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
+        openRequest={noteOpenRequest}
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}

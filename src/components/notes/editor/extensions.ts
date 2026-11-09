@@ -3,6 +3,7 @@
 
 import type { AnyExtension } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import CodeBlock from "@tiptap/extension-code-block";
 import { Markdown } from "@tiptap/markdown";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
@@ -21,16 +22,20 @@ export interface NoteSchemaOptions {
   databaseEmbed?: typeof DatabaseEmbed;
   wikiLink?: typeof WikiLink;
   callout?: typeof Callout;
+  /** The code block; the editor's draws Mermaid, diagram, math and HTML fences. */
+  codeBlock?: typeof CodeBlock;
 }
 
-export function noteExtensions({ placeholder, onMathClick, extra = [], image = Image, pageLink = PageLink, databaseEmbed = DatabaseEmbed, wikiLink = WikiLink, callout = Callout }: NoteSchemaOptions = {}): AnyExtension[] {
+export function noteExtensions({ placeholder, onMathClick, extra = [], image = Image, pageLink = PageLink, databaseEmbed = DatabaseEmbed, wikiLink = WikiLink, callout = Callout, codeBlock = CodeBlock }: NoteSchemaOptions = {}): AnyExtension[] {
   return [
     StarterKit.configure({
       heading: { levels: [1, 2, 3] },
       link: { openOnClick: false, autolink: true, linkOnPaste: true },
       dropcursor: { width: 2, class: "note-dropcursor" },
       trailingNode: {},
+      codeBlock: false,
     }),
+    codeBlock,
     Markdown.configure({ indentation: { style: "space", size: 2 }, markedOptions: { gfm: true } }),
     TaskList,
     TaskItem.configure({ nested: true }),
