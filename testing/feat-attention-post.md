@@ -21,8 +21,9 @@ Core (`attention::post`):
 - Sanitizing, like herdr: control characters are stripped, whitespace runs
   collapse to one space, both ends are trimmed; the title is cut to 80
   characters and the body to 240 (on character, not byte, boundaries). An
-  empty title after that is refused (`invalid_params`). An empty body is
-  stored as none.
+  empty title after that is refused with `invalid` (1000), the code every
+  core validation uses; `invalid_params` stays for malformed params such as
+  unknown fields. An empty body is stored as none.
 - Rate limit: at most 3 posts per session in any 5 minutes. The fourth is
   refused as `rateLimited` and writes nothing.
 - The session must exist and not be archived; a hidden kind (briefing,
@@ -81,7 +82,7 @@ Out of scope: posting to other chats or other people; a `sound` argument
 ## Integration / functional tests
 
 - bridged dispatch: `attention/post` writes a row `list_attention` returns;
-  an empty title is `invalid_params`; unknown fields are refused.
+  an empty title is `invalid`; unknown fields are `invalid_params`.
 - Protocol gates, a handshake test for 1.29, and a 1.28 client decoding
   `posted` as `other`.
 
