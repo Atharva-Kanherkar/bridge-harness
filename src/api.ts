@@ -1,6 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
-import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, UnreadSummary } from "./protocol/generated/protocol";
+import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
 import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
 import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
@@ -3381,6 +3381,12 @@ export const bridgeApi = {
       const session = mockState.sessions.find(item => item.id === id);
       return session ? session.parentSessionId ?? null : undefined;
     });
+  },
+  /** Renew this client's presence lease; the answer says whether it posts OS banners. */
+  reportPresence: async (clientId: string, focused: boolean, gone = false): Promise<ReportPresenceResult> => {
+    if (hasBackend()) return call("attention/report_presence", { clientId, clientKind: isTauri() ? "desktop" : "web", focused, gone });
+    // One client, no daemon: it owns its banners.
+    return { bannerOwner: true };
   },
   /** The dock badge. The shell owns the window, so this is an event the shell
    *  listens for, like `revealMainWindow`; zero clears it. */

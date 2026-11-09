@@ -443,6 +443,10 @@ pub fn dispatch(
             reply(api::mark_attention_seen(core, &p))
         }
         MethodName::UnreadSummary => reply(api::unread_summary(core)),
+        MethodName::ReportPresence => {
+            let p: wire::ReportPresenceParams = decode(method, params)?;
+            reply(api::report_presence(core, &p))
+        }
         MethodName::ResolveApproval => {
             let p: wire::ResolveApprovalParams = decode(method, params)?;
             reply(api::resolve_approval(
@@ -1381,6 +1385,25 @@ mod tests {
         let nothing = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s"}))).unwrap();
         assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
         let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
+            .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn presence_names_one_banner_owner_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let report = |client: &str, kind: &str, focused: bool| {
+            dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": client, "clientKind": kind, "focused": focused}))).unwrap()
+        };
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));
+        assert_eq!(report("other", "desktop", false), json!({"bannerOwner": false}));
+        assert_eq!(report("web", "web", true), json!({"bannerOwner": true}));
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": false}), "the focused web client owns");
+        let gone = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "focused": false, "gone": true}))).unwrap();
+        assert_eq!(gone, json!({"bannerOwner": false}));
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));
+        let error = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "x", "clientKind": "desktop", "focused": true, "visibleSessionId": "s"})))
             .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }

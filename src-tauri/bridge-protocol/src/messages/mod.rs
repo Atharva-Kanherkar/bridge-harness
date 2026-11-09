@@ -294,6 +294,7 @@ typed_methods![
     (ListAttention, ListAttentionParams, ListAttentionResult),
     (MarkAttentionSeen, MarkAttentionSeenParams, MarkAttentionSeenResult),
     (UnreadSummary, _, UnreadSummary),
+    (ReportPresence, ReportPresenceParams, ReportPresenceResult),
     (DeliverQueuedInput, DeliverQueuedInputParams, DeliverQueuedInputResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),

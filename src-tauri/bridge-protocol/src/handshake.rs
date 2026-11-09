@@ -100,9 +100,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.26 adds `attention/unread_summary`.** A new client must not pair with
 /// an older daemon, whose unread dots and badge would fail with
 /// `method_not_found`; a 1.25 client still pairs with a 1.26 daemon.
+/// **1.27 adds `attention/report_presence`.** A new client must not pair with
+/// an older daemon, whose presence reports would fail with `method_not_found`;
+/// a 1.26 client still pairs with a 1.27 daemon, never reports, and keeps
+/// posting its own banners.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 26,
+    minor: 27,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -357,6 +361,15 @@ mod tests {
             PROTOCOL_VERSION.accepts(before_unread),
             "a later minimum-client gate that drops 1.25 must change this test on purpose"
         );
+    }
+
+    #[test]
+    fn presence_client_rejects_a_daemon_without_the_lease() {
+        let before = ProtocolVersion { major: 1, minor: 26 };
+        let presence = ProtocolVersion { major: 1, minor: 27 };
+        assert!(!before.accepts(presence));
+        assert!(presence.accepts(before), "a 1.26 client still pairs with a 1.27 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

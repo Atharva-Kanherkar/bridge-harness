@@ -134,6 +134,36 @@ pub struct UnreadSummary {
     pub by_session: BTreeMap<String, AttentionKind>,
 }
 
+/// Which kind of client is reporting. Only a desktop client has an OS banner
+/// channel today, so only it can own banners while unfocused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PresenceClientKind {
+    Desktop,
+    Web,
+}
+
+/// A client's presence lease, renewed while it runs. A lease expires 30 s
+/// after its last report; `gone` ends it at once, as a closing window does.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportPresenceParams {
+    /// One random id per app load.
+    pub client_id: String,
+    pub client_kind: PresenceClientKind,
+    pub focused: bool,
+    #[serde(default)]
+    pub gone: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportPresenceResult {
+    /// Whether this client posts OS banners. One client at a time does: the
+    /// focused one, otherwise the desktop client focused last.
+    pub banner_owner: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -116,6 +116,8 @@ pub struct BridgeCore {
     pub github_surface: crate::github_surface::GithubSurface,
     pub github_poller: crate::github_poll::GithubPoller,
     pub connector_poller: crate::connector_runs_live::ConnectorPoller,
+    /// Short presence leases that name the one client posting OS banners.
+    pub attention_presence: crate::attention_presence::PresenceRegistry,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
@@ -368,6 +370,7 @@ impl BridgeCore {
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
+            attention_presence: crate::attention_presence::PresenceRegistry::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             chat_activity: Mutex::new(HashMap::new()),
@@ -528,6 +531,7 @@ impl BridgeCore {
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
+            attention_presence: crate::attention_presence::PresenceRegistry::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             chat_activity: Mutex::new(HashMap::new()),

@@ -15,6 +15,8 @@ export type Presence = {
   focused: boolean;
   /** Chats whose transcript is in view. */
   onScreen: ReadonlySet<string>;
+  /** Core named this client the one that posts OS banners. Defaults to yes. */
+  bannerOwner?: boolean;
 };
 
 export type Decision = {
@@ -52,7 +54,7 @@ export function decide(
   const quiet = isQuiet(settings.quietHours, now);
   const decision = {
     toast: channels.toast,
-    banner: channels.banner && !presence.focused && !quiet,
+    banner: channels.banner && !presence.focused && !quiet && presence.bannerOwner !== false,
     sound: channels.sound && !quiet,
     durationMs,
   };

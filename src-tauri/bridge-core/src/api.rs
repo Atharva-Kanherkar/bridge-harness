@@ -4367,6 +4367,16 @@ pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionS
     Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
 }
 
+/// Renew one client's presence lease and say whether it posts OS banners.
+pub fn report_presence(core: &Arc<BridgeCore>, params: &wire::ReportPresenceParams) -> Result<wire::ReportPresenceResult, BridgeError> {
+    let kind = match params.client_kind {
+        wire::PresenceClientKind::Desktop => crate::attention_presence::ClientKind::Desktop,
+        wire::PresenceClientKind::Web => crate::attention_presence::ClientKind::Web,
+    };
+    let banner_owner = core.attention_presence.report(&params.client_id, kind, params.focused, params.gone, std::time::Instant::now());
+    Ok(wire::ReportPresenceResult { banner_owner })
+}
+
 /// What is still unread, rolled up to the chats a person sees. Clients reread
 /// it on `attention/changed`.
 pub fn unread_summary(core: &Arc<BridgeCore>) -> Result<wire::UnreadSummary, BridgeError> {

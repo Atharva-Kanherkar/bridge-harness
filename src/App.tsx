@@ -65,6 +65,7 @@ import { useAttentionSettings } from "./attentionSettings";
 import { playAttentionSound } from "./attentionSound";
 import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
 import { useAttentionFeed } from "./useAttentionFeed";
+import { useBannerOwner } from "./useBannerOwner";
 import { useUnreadSummary } from "./useUnreadSummary";
 import { useWindowFocused } from "./useWindowFocused";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
@@ -776,7 +777,10 @@ function AppContent() {
   const windowFocused = useWindowFocused();
   const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
   const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
-  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []) };
+  // Core names one client to post OS banners, so a second client on the same
+  // daemon does not raise a second banner for the same event.
+  const bannerOwner = useBannerOwner(windowFocused);
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []), bannerOwner };
   useEffect(() => {
     if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
   }, [onScreenUnread, onScreenSessionId, unread]);
