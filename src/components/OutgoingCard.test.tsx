@@ -203,4 +203,22 @@ describe("OutgoingCard", () => {
     expect(Object.keys((written[0] as { items: Record<string, Blob> }).items)).toEqual(["image/png"]);
     vi.unstubAllGlobals();
   });
+
+  it("refuses a save when the draft changed after Edit was pressed, even if the card refreshed", async () => {
+    await mount();
+    await click("Edit");
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(textarea, "my local text");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // Another view edits the draft; the change event refreshes this card to revision 2.
+    const { mockUpdateOutgoing } = await import("../outgoingMock");
+    await act(async () => { await mockUpdateOutgoing(MOCK_OUTGOING_ID, 1, "edited elsewhere"); });
+    await act(async () => { await Promise.resolve(); });
+    await click("Save");
+    expect(container.querySelector("[role=alert]")?.textContent).toContain("changed since you opened it");
+    expect((await import("../outgoingMock")).mockListOutgoing("session-1").items[0].body).toBe("edited elsewhere");
+  });
 });

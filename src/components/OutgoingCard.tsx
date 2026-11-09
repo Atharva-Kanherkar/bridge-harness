@@ -151,6 +151,9 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
   onChange: (next: OutgoingMessage) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  // The revision the editor opened at. A refresh while editing must not
+  // move it, or a save would overwrite the change that caused the refresh.
+  const [editBase, setEditBase] = useState(draft.revision);
   const [text, setText] = useState(draft.body);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -184,7 +187,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
   const attachments = draft.attachments ?? [];
   const canFix = draft.lint.some(finding => finding.fixable && !finding.fixed);
   const save = async () => {
-    if (await run(async () => (await bridgeApi.updateOutgoing(draft.id, draft.revision, text)).item)) setEditing(false);
+    if (await run(async () => (await bridgeApi.updateOutgoing(draft.id, editBase, text)).item)) setEditing(false);
   };
   const copy = () => run(async () => {
     const result = await bridgeApi.copyOutgoing(draft.id, draft.revision);
@@ -276,7 +279,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
                 {copied ? <Check aria-hidden="true" /> : <ClipboardCopy aria-hidden="true" />}
                 {copied ? "Copied" : "Copy"}
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => { setText(draft.body); setEditing(true); }} disabled={busy}>
+              <Button size="sm" variant="ghost" onClick={() => { setText(draft.body); setEditBase(draft.revision); setEditing(true); }} disabled={busy}>
                 <Pencil aria-hidden="true" />Edit
               </Button>
               {canFix && (
