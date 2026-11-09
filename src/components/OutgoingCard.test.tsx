@@ -221,4 +221,11 @@ describe("OutgoingCard", () => {
     expect(container.querySelector("[role=alert]")?.textContent).toContain("changed since you opened it");
     expect((await import("../outgoingMock")).mockListOutgoing("session-1").items[0].body).toBe("edited elsewhere");
   });
+
+  it("finds a forked chat's copy of a draft by the id its transcript still names", async () => {
+    resetMockOutgoing([draft({ id: "fork-copy-1", sourceId: MOCK_OUTGOING_ID, body: "the fork's copy", rendered: "the fork's copy" })]);
+    await mount();
+    expect(container.querySelector("[data-outgoing-preview]")?.textContent).toBe("the fork's copy");
+    expect(container.querySelector("[data-outgoing-state=missing]")).toBeNull();
+  });
 });

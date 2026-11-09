@@ -313,13 +313,15 @@ export function OutgoingCard({ item, sessionId, readOnly = false }: { item: Conv
     let live = true;
     const load = () => bridgeApi.listOutgoing(sessionId).then(result => {
       if (!live) return;
-      const found = result.items.find(candidate => candidate.id === draftId) ?? null;
+      // A forked chat's transcript still names the original draft; its own
+      // copy records that id as `sourceId`.
+      const found = result.items.find(candidate => candidate.id === draftId || candidate.sourceId === draftId) ?? null;
       setDraft(found);
       setMissing(!found);
     }).catch(() => { if (live) setMissing(true); });
     void load();
     const unlisten = bridgeApi.onOutgoingChanged(payload => {
-      if (payload.sessionId === sessionId && payload.id === draftId) void load();
+      if (payload.sessionId === sessionId) void load();
     });
     return () => {
       live = false;

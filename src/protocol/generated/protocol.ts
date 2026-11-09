@@ -2333,6 +2333,7 @@ export interface OutgoingMessage {
   rendered: string;
   revision: number;
   sessionId: string;
+  sourceId?: string | null;
   state: OutgoingState;
   updatedAt: string;
 }

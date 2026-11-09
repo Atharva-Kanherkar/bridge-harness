@@ -91,6 +91,11 @@ pub struct OutgoingAttachment {
 pub struct OutgoingMessage {
     pub id: String,
     pub session_id: String,
+    /// The draft this one was copied from when its chat was forked. The
+    /// fork's transcript still names the original id, so a card looks for
+    /// either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
     pub destination: OutgoingDestination,
     /// The chip text: `Slack · #dev · thread`, `GitHub · owner/repo#123`.
     pub label: String,

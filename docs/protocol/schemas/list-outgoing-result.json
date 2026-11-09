@@ -261,6 +261,13 @@
         "sessionId": {
           "type": "string"
         },
+        "sourceId": {
+          "description": "The draft this one was copied from when its chat was forked. The fork's transcript still names the original id, so a card looks for either.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "$ref": "#/definitions/OutgoingState"
         },

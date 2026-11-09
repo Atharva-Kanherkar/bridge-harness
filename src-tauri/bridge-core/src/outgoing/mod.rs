@@ -42,6 +42,7 @@ pub fn install_store(db: &Connection) -> Result<(), BridgeError> {
             state TEXT NOT NULL,
             revision INTEGER NOT NULL DEFAULT 1,
             reason TEXT NOT NULL,
+            source_id TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -181,7 +182,7 @@ fn parse_state(text: &str) -> OutgoingState {
     }
 }
 
-const COLUMNS: &str = "id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments";
+const COLUMNS: &str = "id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments,source_id";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<OutgoingMessage> {
     let destination: OutgoingDestination = serde_json::from_str(&row.get::<_, String>(2)?)
@@ -202,6 +203,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<OutgoingMessage> {
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
         attachments: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
+        source_id: row.get(12)?,
     })
 }
 
@@ -233,8 +235,8 @@ fn fixed_text(body: &str, format: OutgoingFormat) -> (String, Vec<OutgoingLintFi
 
 fn write(db: &Connection, item: &OutgoingMessage) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO outgoing_messages(id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+        "INSERT INTO outgoing_messages(id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments,source_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
          ON CONFLICT(id) DO UPDATE SET body=excluded.body, rendered=excluded.rendered, lint=excluded.lint,
            state=excluded.state, revision=excluded.revision, updated_at=excluded.updated_at, attachments=excluded.attachments",
         params![
@@ -250,6 +252,7 @@ fn write(db: &Connection, item: &OutgoingMessage) -> Result<(), BridgeError> {
             item.created_at,
             item.updated_at,
             serde_json::to_string(&item.attachments).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            item.source_id,
         ],
     )?;
     Ok(())
@@ -286,6 +289,7 @@ pub fn create_draft(
     let item = OutgoingMessage {
         id: uuid::Uuid::now_v7().to_string(),
         session_id: session_id.to_owned(),
+        source_id: None,
         label: label(&destination),
         format,
         destination,
@@ -355,6 +359,32 @@ pub fn copy(db: &Connection, id: &str, revision: u32, now: &str) -> Result<(Stri
     item.updated_at = now.to_owned();
     write(db, &item)?;
     Ok((item.rendered.clone(), item))
+}
+
+/// Give a fork its own copy of every draft its copied entries name.
+///
+/// The fork's transcript keeps the original ids verbatim, so each copy
+/// records the id it came from; the card matches either. The copies are the
+/// fork's own: edits there never reach the original, as a fork never writes
+/// to its parent.
+pub fn clone_for_fork(db: &Connection, parent_session: &str, fork_session: &str, copied_payloads: &[String], now: &str) -> Result<usize, BridgeError> {
+    let mut cloned = 0;
+    for original in list(db, parent_session)? {
+        if !copied_payloads.iter().any(|payload| payload.contains(&original.id)) {
+            continue;
+        }
+        let copy = OutgoingMessage {
+            id: uuid::Uuid::now_v7().to_string(),
+            session_id: fork_session.to_owned(),
+            source_id: Some(original.id.clone()),
+            created_at: now.to_owned(),
+            updated_at: now.to_owned(),
+            ..original
+        };
+        write(db, &copy)?;
+        cloned += 1;
+    }
+    Ok(cloned)
 }
 
 /// One attached image as `(mime, base64)`, checked again before it is read.
