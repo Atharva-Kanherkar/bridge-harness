@@ -1014,7 +1014,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     entry={entry}
     instant={instant}
     highlighted={!!highlightEntryId && entry.kind === "item" && entry.item.entryId === highlightEntryId}
-    sessionId={session?.id}
+    // An archived transcript has events but no session; rows that load
+    // their own records (a drafted message) still need to know the chat.
+    sessionId={session?.id ?? historySessionId}
     delivery={entry.kind === "item" ? delivery.get(entry.item.key) : undefined}
     latest={entry.kind === "item" && entry.item.key === latestReplyKey}
     readOnly={readOnly}
