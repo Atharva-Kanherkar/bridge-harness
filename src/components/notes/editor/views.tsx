@@ -2,12 +2,14 @@
 
 import { createContext, useContext, useEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
 import Image from "@tiptap/extension-image";
+import CodeBlock from "@tiptap/extension-code-block";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
 import { ArrowUpRight, FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Table2, TriangleAlert } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { assetUrl } from "./assets";
+import { RichFence, richFenceKind } from "../../Markdown";
 import { Callout, CALLOUT_KINDS, DatabaseEmbed, PageLink, WikiLink, type CalloutKind } from "./blocks";
 
 /** What the views need from the page around the editor. */
@@ -258,4 +260,52 @@ function CalloutView({ node, updateAttributes }: ReactNodeViewProps) {
 
 export const NoteCallout = Callout.extend({
   addNodeView() { return ReactNodeViewRenderer(CalloutView); },
+});
+
+/** Whether the editor is focused with the cursor inside the node at `getPos`. */
+function useCursorInside(editor: ReactNodeViewProps["editor"], getPos: ReactNodeViewProps["getPos"], size: number): boolean {
+  const read = () => {
+    const at = getPos();
+    if (typeof at !== "number" || !editor.isFocused) return false;
+    const { from, to } = editor.state.selection;
+    return from > at && to < at + size;
+  };
+  const [inside, setInside] = useState(read);
+  useEffect(() => {
+    const update = () => setInside(read());
+    update();
+    editor.on("selectionUpdate", update);
+    editor.on("focus", update);
+    editor.on("blur", update);
+    return () => { editor.off("selectionUpdate", update); editor.off("focus", update); editor.off("blur", update); };
+  }, [editor, getPos, size]); // eslint-disable-line react-hooks/exhaustive-deps
+  return inside;
+}
+
+// A fence chat draws as a figure (Mermaid, diagram, math, HTML) draws the same
+// way here, through the chat's own renderer. The source stays in the document,
+// hidden, and comes back while the cursor is in it.
+function CodeBlockView({ node, editor, getPos }: ReactNodeViewProps) {
+  const lang = String(node.attrs.language ?? "");
+  const body = node.textContent;
+  const inside = useCursorInside(editor, getPos, node.nodeSize);
+  const figure = !!richFenceKind(lang) && body.trim() !== "" && !inside;
+  const edit = (event: React.MouseEvent) => {
+    // The figure's own buttons (copy, expand) keep their clicks.
+    if ((event.target as Element).closest("button, a, iframe")) return;
+    const at = getPos();
+    if (typeof at !== "number") return;
+    event.preventDefault();
+    editor.chain().focus().setTextSelection(at + node.nodeSize - 1).run();
+  };
+  return <NodeViewWrapper data-language={lang || undefined}>
+    {figure && <div contentEditable={false} data-rich-fence="" onMouseDown={edit} className="cursor-text">
+      <RichFence lang={lang} body={body} />
+    </div>}
+    <pre hidden={figure}><NodeViewContent<"code"> as="code" className={lang ? `language-${lang}` : undefined} /></pre>
+  </NodeViewWrapper>;
+}
+
+export const NoteCodeBlock = CodeBlock.extend({
+  addNodeView() { return ReactNodeViewRenderer(CodeBlockView); },
 });
