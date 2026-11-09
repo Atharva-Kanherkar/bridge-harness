@@ -168,7 +168,7 @@ impl VisualServer {
             }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
-                let chat_tool = name.starts_with("notes_") || name.starts_with("memory_");
+                let chat_tool = name.starts_with("notes_") || name.starts_with("memory_") || name == crate::notes::tool::NOTIFY_USER;
                 if let (Some(notes), true) = (&self.notes, chat_tool) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                     reply(id, notes.call(name, &arguments))
@@ -320,6 +320,20 @@ mod tests {
         // Without a chat link there is nothing to forward to.
         let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();
         assert_eq!(unknown["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn notify_user_is_forwarded_to_the_core_like_the_memory_tools() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let link = NotesLink::new(Box::new(MemoryCore { calls: calls.clone() }));
+        let mut server = VisualServer::with_notes(Some(link));
+        let asked = server
+            .handle(&request(2, "tools/call", json!({"name": "notify_user", "arguments": {"title": "Postgres or SQLite?"}})))
+            .unwrap();
+        assert_eq!(asked["result"]["isError"], false);
+        assert_eq!(calls.lock().unwrap()[0], ("notify_user".to_owned(), json!({"title": "Postgres or SQLite?"})));
+        let description = notes_tools::all_definitions().into_iter().find(|tool| tool["name"] == "notify_user").unwrap()["description"].as_str().unwrap().to_owned();
+        assert!(description.contains("Not for progress"), "{description}");
     }
 
     #[test]
