@@ -11,7 +11,14 @@ use std::sync::OnceLock;
 use bridge_protocol::messages::OutgoingFormat;
 use regex::Regex;
 
-use super::lint::map_prose;
+use super::lint::{fenced_lines, map_prose};
+
+/// The fence character of a fence line, if `line` is one.
+fn fence_marker(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let marker = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    (trimmed.chars().take_while(|c| *c == marker).count() >= 3).then(|| marker.to_string())
+}
 
 struct Patterns {
     bold: Regex,
@@ -59,29 +66,22 @@ fn plain_prose(text: &str) -> String {
     p.strike.replace_all(&text, "$1").into_owned()
 }
 
-fn is_fence(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
-}
-
 /// `body` as `format` shows it.
 pub fn render(body: &str, format: OutgoingFormat) -> String {
     if matches!(format, OutgoingFormat::Github | OutgoingFormat::SlackMarkdown) {
         return body.to_owned();
     }
     let p = patterns();
-    let mut inside = false;
     let mut out = Vec::new();
-    for line in body.split('\n') {
-        if is_fence(line) {
-            inside = !inside;
+    for (line, code, fence) in fenced_lines(body) {
+        if fence {
+            // Slack fences take no language tag; plain text drops fences.
             if format == OutgoingFormat::Slack {
-                // Slack fences take no language tag.
-                out.push(line.trim()[..3].to_owned());
+                out.push(fence_marker(line).unwrap_or_else(|| "`".into()).repeat(3));
             }
             continue;
         }
-        if inside {
+        if code {
             out.push(line.to_owned());
             continue;
         }
@@ -120,6 +120,17 @@ mod tests {
     fn slack_leaves_code_untouched() {
         let body = "Run `**not bold**` then\n```rust\nlet x = *y; // [a](b)\n```";
         assert_eq!(render(body, OutgoingFormat::Slack), "Run `**not bold**` then\n```\nlet x = *y; // [a](b)\n```");
+    }
+
+    #[test]
+    fn longer_fences_and_double_backtick_spans_render_as_code() {
+        let body = "````\n```\n**kept**\n```\n````\nsee ``**raw**`` and **bold**";
+        assert_eq!(render(body, OutgoingFormat::Slack), "```\n```\n**kept**\n```\n```\nsee ``**raw**`` and *bold*");
+    }
+
+    #[test]
+    fn plain_keeps_a_fence_example_inside_a_longer_fence() {
+        assert_eq!(render("````\n```\nexample\n```\n````", OutgoingFormat::Plain), "```\nexample\n```");
     }
 
     #[test]

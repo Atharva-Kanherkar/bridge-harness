@@ -33,36 +33,104 @@ fn finding(rule: &str, message: impl Into<String>, line: Option<usize>, fixable:
     }
 }
 
-fn is_fence(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+/// The opening run of a fence line: its character and length, if the line
+/// opens or could close a fence (up to three spaces of indent, then three or
+/// more backticks or tildes).
+fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let marker = rest.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let length = rest.chars().take_while(|c| *c == marker).count();
+    (length >= 3).then(|| (marker, length, &rest[length..]))
 }
 
-/// Each line with whether it sits inside a fenced block (fence lines count as inside).
-fn lines_with_fences(body: &str) -> Vec<(&str, bool)> {
-    let mut inside = false;
+/// Each line with whether it is code (inside a fenced block or one of its
+/// fence lines) and whether it is itself a fence line. A fence closes only
+/// on the same character, at least as many of them, and nothing else on the
+/// line, so a four-backtick fence can hold a three-backtick example.
+pub(crate) fn fenced_lines(body: &str) -> Vec<(&str, bool, bool)> {
+    let mut open: Option<(char, usize)> = None;
     body.split('\n')
-        .map(|line| {
-            if is_fence(line) {
-                inside = !inside;
-                return (line, true);
+        .map(|line| match (open, fence_run(line)) {
+            (None, Some((marker, length, info))) if marker == '~' || !info.contains('`') => {
+                open = Some((marker, length));
+                (line, true, true)
             }
-            (line, inside)
+            (Some((marker, length)), Some((closing, run, rest))) if closing == marker && run >= length && rest.trim().is_empty() => {
+                open = None;
+                (line, true, true)
+            }
+            (Some(_), _) => (line, true, false),
+            (None, _) => (line, false, false),
         })
         .collect()
 }
 
-/// Apply `transform` to the prose of one line, leaving `inline code` alone.
+fn lines_with_fences(body: &str) -> Vec<(&str, bool)> {
+    fenced_lines(body).into_iter().map(|(line, code, _)| (line, code)).collect()
+}
+
+/// A line split into prose and inline code. A run of backticks opens a
+/// code span only if a run of exactly the same length closes it later on
+/// the line; an unmatched run is just text.
+fn segments(line: &str) -> Vec<(bool, &str)> {
+    let bytes = line.as_bytes();
+    let run_at = |at: usize| bytes[at..].iter().take_while(|byte| **byte == b'`').count();
+    let mut out = Vec::new();
+    let (mut prose_start, mut at) = (0, 0);
+    while at < bytes.len() {
+        if bytes[at] != b'`' {
+            at += 1;
+            continue;
+        }
+        let length = run_at(at);
+        let mut search = at + length;
+        let mut close = None;
+        while search < bytes.len() {
+            if bytes[search] == b'`' {
+                let run = run_at(search);
+                if run == length {
+                    close = Some(search);
+                    break;
+                }
+                search += run;
+            } else {
+                search += 1;
+            }
+        }
+        match close {
+            Some(close) => {
+                if prose_start < at {
+                    out.push((false, &line[prose_start..at]));
+                }
+                out.push((true, &line[at..close + length]));
+                at = close + length;
+                prose_start = at;
+            }
+            None => at += length,
+        }
+    }
+    if prose_start < line.len() {
+        out.push((false, &line[prose_start..]));
+    }
+    out
+}
+
+/// Apply `transform` to the prose of one line, leaving inline code alone.
 pub(crate) fn map_prose(line: &str, transform: impl Fn(&str) -> String) -> String {
-    line.split('`')
-        .enumerate()
-        .map(|(index, part)| if index % 2 == 0 { transform(part) } else { part.to_owned() })
-        .collect::<Vec<_>>()
-        .join("`")
+    segments(line).into_iter().map(|(code, part)| if code { part.to_owned() } else { transform(part) }).collect()
 }
 
 fn prose_has(line: &str, needle: char) -> bool {
-    line.split('`').enumerate().any(|(index, part)| index % 2 == 0 && part.contains(needle))
+    segments(line).into_iter().any(|(code, part)| !code && part.contains(needle))
+}
+
+/// The line with its inline code removed: what a structural check reads.
+pub(crate) fn prose_only(line: &str) -> String {
+    segments(line).into_iter().filter(|(code, _)| !code).map(|(_, part)| part).collect()
 }
 
 fn attribution_line(line: &str) -> bool {
@@ -206,6 +274,21 @@ mod tests {
         let (text, fixed) = fix(body);
         assert_eq!(text, body);
         assert!(fixed.is_empty());
+    }
+
+    #[test]
+    fn multi_backtick_spans_and_longer_fences_are_code() {
+        let span = "Run ``a \u{2014} b`` now";
+        assert_eq!(fix(span).0, span, "a double-backtick span is code");
+        let nested = "````md\n```\nlog \u{2014} line\n```\n````\nafter \u{2014} this";
+        let (text, fixed) = fix(nested);
+        assert_eq!(text, "````md\n```\nlog \u{2014} line\n```\n````\nafter, this", "only the prose after the outer fence changes");
+        assert_eq!(fixed.len(), 1);
+        // A lone backtick opens nothing, so the dash after it is prose.
+        assert_eq!(fix("it's a ` tick \u{2014} really").0, "it's a ` tick, really");
+        // A fence closes only on its own character.
+        let tilde = "~~~\n```\nx \u{2014} y\n~~~";
+        assert_eq!(fix(tilde).0, tilde);
     }
 
     #[test]
