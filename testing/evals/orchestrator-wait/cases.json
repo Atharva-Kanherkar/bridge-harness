@@ -6,7 +6,7 @@
     },
     {
       "id": "fanout-audit",
-      "task": "Audit three separate parts of our codebase at the same time for dead code and unused exports: the auth module, the billing module and the search module. They don't depend on each other; I just want one report per module."
+      "task": "Audit three separate parts of our codebase at the same time for dead code and unused exports: the auth module, the billing module and the search module. The repository isn't on this machine, but your workers get a checkout. They don't depend on each other; I just want one report per module."
     },
     {
       "id": "fanout-design",
@@ -36,10 +36,18 @@
           "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical."
         }
       ],
-      "stillRunning": ["worker-rocksdb"],
+      "stillRunning": [
+        "worker-rocksdb"
+      ],
       "notice": null,
       "fleet": [
-        {"sessionId": "worker-rocksdb", "label": "Research · RocksDB compaction", "lifecycle": "running", "resultStatus": "pending", "currentActivity": "reading the leveled compaction docs"}
+        {
+          "sessionId": "worker-rocksdb",
+          "label": "Research \u00b7 RocksDB compaction",
+          "lifecycle": "running",
+          "resultStatus": "pending",
+          "currentActivity": "reading the leveled compaction docs"
+        }
       ],
       "instruction": "Your bridge-wait timed out. The results below arrived; the workers in stillRunning have not reported. Do not claim the task is done: report what finished, say what is still running, and wait again or peek if you need them."
     }
