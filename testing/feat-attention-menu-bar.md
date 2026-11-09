@@ -77,3 +77,14 @@ icon (light and dark) from the Swift test harness go in the PR. Running it
 live is left as a reviewer step: enable the menu bar, finish a turn in a
 background chat, and check the dot and the row, then open the chat and check
 both clear.
+
+## Review amendments (review 2)
+
+Locked before the fix; it gets a regression test that fails without it.
+
+1. **The menu wakes when what needs you changes, not only the total.** The
+   app sends `bridge-unread-badge` whenever `total` or `needsYou` changes, so
+   a chat going from finished to needs-you (total still 1) reaches the menu
+   at once instead of on the next 30 s pass. The Dock badge just sets the
+   same count again. Test (`App.attention.test.tsx`): `setUnreadBadge` is
+   called again when `needsYou` changes at the same total.
