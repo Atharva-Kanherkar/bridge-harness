@@ -116,6 +116,10 @@ pub enum CoreEvent {
     NotesPageChanged(bridge_protocol::messages::NotePageChanged),
     /// A notes pass's reply so far.
     NotesPassProgress(bridge_protocol::messages::NotePassProgress),
+    /// Refetch hint: the attention ledger may have moved. Never constructed
+    /// by callers for forest changes: [`EventBus::publish`] derives it from
+    /// the durable agent event that moved the ledger. See `attention`.
+    AttentionChanged,
 }
 
 impl CoreEvent {
@@ -146,13 +150,14 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
             CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
             CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
+            CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
         }
     }
 
     /// The wire payload, exactly as today's `app.emit` serializes it.
     pub fn payload(&self) -> Value {
         match self {
-            CoreEvent::StateChanged | CoreEvent::AdaptersChanged => Value::Null,
+            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged => Value::Null,
             CoreEvent::Agent(event) => serde_json::to_value(event).expect("agent event serializes"),
             CoreEvent::LearningJobChanged(payload) => payload.clone(),
             // The scope only. Rebuilding a record from the hint would leave a
@@ -242,6 +247,7 @@ struct ReconciliationState {
     /// Which memory scopes changed while a subscriber was lagging. Same shape
     /// as the agent set above, for the same reason: the hint names its scope.
     memory_scopes_changed: std::collections::BTreeSet<String>,
+    attention_changed: bool,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -290,6 +296,9 @@ impl EventReceiver {
                 scope_key: scope_key.clone(),
             });
         }
+        if state.attention_changed {
+            events.push(CoreEvent::AttentionChanged);
+        }
         events
     }
 
@@ -332,7 +341,17 @@ impl EventBus {
     /// Publish an event. Call sites must sit **after** the corresponding DB
     /// commit. Delivery is best-effort by design: no subscribers (or lagged
     /// subscribers) are not errors, because durable history lives in SQLite.
+    ///
+    /// A durable agent event of an attention trigger kind is followed by
+    /// [`CoreEvent::AttentionChanged`]. Attention rows commit in the same
+    /// transaction as the forest entry, and this runs after that commit, so
+    /// the hint can never arrive before the row. A trigger that wrote no row
+    /// (a worker's finished turn) costs a client one empty read.
     pub fn publish(&self, event: CoreEvent) {
+        let moves_attention = matches!(
+            &event,
+            CoreEvent::Agent(agent) if agent.sequence > 0 && crate::attention::is_trigger(&agent.kind, agent.status.as_deref())
+        );
         {
             let mut state = self.reconciliation.lock().unwrap();
             match &event {
@@ -350,6 +369,7 @@ impl EventBus {
                 CoreEvent::MemoryChanged { scope_key } => {
                     state.memory_scopes_changed.insert(scope_key.clone());
                 }
+                CoreEvent::AttentionChanged => state.attention_changed = true,
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::TerminalFrame(_)
@@ -368,8 +388,14 @@ impl EventBus {
                 | CoreEvent::NotesPageChanged(_)
                 | CoreEvent::NotesPassProgress(_) => {}
             }
+            if moves_attention {
+                state.attention_changed = true;
+            }
         }
         let _ = self.sender.send(event);
+        if moves_attention {
+            let _ = self.sender.send(CoreEvent::AttentionChanged);
+        }
     }
 }
 
@@ -506,6 +532,7 @@ mod tests {
             CoreEvent::ConnectorInboxChanged { family: "slack".into() },
             CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
             CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
+            CoreEvent::AttentionChanged,
         ];
         for event in &events {
             assert_eq!(
@@ -669,5 +696,43 @@ mod tests {
             event,
             CoreEvent::MemoryChanged { scope_key } if scope_key == "account:local"
         )));
+    }
+
+    fn agent_of_kind(sequence: i64, kind: &str) -> AgentEvent {
+        AgentEvent { kind: kind.into(), ..agent_event(sequence) }
+    }
+
+    #[test]
+    fn durable_attention_triggers_are_followed_by_the_attention_hint() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe();
+        bus.publish(CoreEvent::Agent(agent_of_kind(4, "turn.completed")));
+        assert!(matches!(receiver.try_recv(), Ok(CoreEvent::Agent(event)) if event.kind == "turn.completed"));
+        assert!(matches!(receiver.try_recv(), Ok(CoreEvent::AttentionChanged)), "the hint follows the event that moved the ledger");
+        assert!(receiver.try_recv().is_err());
+
+        // A streaming frame, or a durable event that cannot move the ledger,
+        // sends no hint.
+        bus.publish(CoreEvent::Agent(agent_of_kind(0, "permission.requested")));
+        bus.publish(CoreEvent::Agent(agent_of_kind(5, "tool.completed")));
+        assert!(matches!(receiver.try_recv(), Ok(CoreEvent::Agent(_))));
+        assert!(matches!(receiver.try_recv(), Ok(CoreEvent::Agent(_))));
+        assert!(receiver.try_recv().is_err());
+
+        assert_eq!(CoreEvent::AttentionChanged.kind(), NotificationName::AttentionChanged);
+        assert_eq!(CoreEvent::AttentionChanged.payload(), Value::Null, "the hint carries no rows");
+        assert_eq!(CoreEvent::AttentionChanged.durable_cursor(), None);
+    }
+
+    #[test]
+    fn lagged_receivers_get_the_attention_hint_back() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe();
+        bus.publish(CoreEvent::Agent(agent_of_kind(2, "approval.requested")));
+        for index in 0..=EVENT_BUS_CAPACITY {
+            bus.publish(CoreEvent::SessionOutput { session_id: "s".into(), terminal_id: "t1".into(), data: index.to_string() });
+        }
+        assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
+        assert!(receiver.reconciliation_events().iter().any(|event| matches!(event, CoreEvent::AttentionChanged)));
     }
 }

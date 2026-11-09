@@ -835,6 +835,20 @@
       "resultSchema": "interaction-resolution-result.json"
     },
     {
+      "command": "list_attention",
+      "domain": "attention",
+      "method": "attention/list_attention",
+      "paramsSchema": "list-attention-params.json",
+      "resultSchema": "list-attention-result.json"
+    },
+    {
+      "command": "mark_attention_seen",
+      "domain": "attention",
+      "method": "attention/mark_attention_seen",
+      "paramsSchema": "mark-attention-seen-params.json",
+      "resultSchema": "mark-attention-seen-result.json"
+    },
+    {
       "command": "start_provider_login",
       "domain": "auth",
       "method": "auth/start_provider_login",
@@ -1985,7 +1999,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 23
+    "minor": 24
   },
   "reserved": {
     "cancel": "$/cancel",

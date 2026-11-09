@@ -22,10 +22,11 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
+import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -60,8 +61,8 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { useAttentionFeed } from "./useAttentionFeed";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
-import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
@@ -109,7 +110,6 @@ import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus"
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
 import { reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
 import { projectSessionConversationCached } from "./transcript/projectionCache";
-import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
@@ -118,6 +118,8 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
+import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
+import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
 import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
 import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
 import { NotesCopilot } from "./components/notes/NotesCopilot";
@@ -126,8 +128,7 @@ import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFrom
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
-import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
-import { readWireKind } from "./transcript/wire";
+import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
 import { isMacPlatform } from "./lib/platform";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -274,6 +275,8 @@ function AppContent() {
   const [notesListToggle, setNotesListToggle] = useState(0);
   // Bumped by `capture-note`: Notes opens with its capture box focused.
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
+  const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
@@ -691,17 +694,6 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
-  // On Linux a waiting session's notification can answer its approval in
-  // place; find which approval, if any, before posting.
-  const notifyWithActions = useCallback(async (kind: string, sessionId: string, headline: string, detail: string) => {
-    let approvalEventId: number | null = null;
-    if (kind === "needs-you" && !isMacPlatform()) {
-      approvalEventId = await bridgeApi.replaySessionEvents(sessionId, 0, 200, true)
-        .then(events => pendingApprovalEventId(events.map(event => ({ sequence: event.sequence, kind: readWireKind(event.kind), data: event.data }))))
-        .catch(() => null);
-    }
-    await notifyAttention(headline, detail, { sessionId, approvalEventId });
-  }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
@@ -724,36 +716,32 @@ function AppContent() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [reload]);
-  // Attention notifications: diff every `state.sessions` refresh for status
-  // transitions across visible sessions (hidden kinds filtered inside
-  // `diffAttentionEvents`), not just the open one, so a background chat that
-  // starts waiting on the human still surfaces a notification.
-  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
-  // banner on Bridge not being focused.
+  // Attention notifications come from the core ledger: core decides what a
+  // person should know about (a worker finishing is its orchestrator's
+  // business; a worker asking for approval is the person's), and the feed
+  // hands over each new row once. In-app glass toasts always enqueue;
+  // `notifyAttention` still gates the OS banner on Bridge not being focused,
+  // and on Linux the row's approval id lets the banner answer it in place.
   const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
-  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  const attentionSessionsRef = useRef<Session[]>(state.sessions);
+  attentionSessionsRef.current = state.sessions;
+  const showAttention = useCallback((item: AttentionItem) => {
+    const sessionId = item.sessionId;
+    if (!sessionId) return;
+    const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
+    const toast: AttentionToast = { key: attentionToastKey(item), sessionId, copy, firedAt: Date.now() };
+    // Newest per chat wins, like the ledger itself.
+    setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-3));
+    void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+  }, []);
+  useAttentionFeed(showAttention);
+  // Opening a chat is seeing it, on every client. Keyed on the view too: the
+  // selection survives a trip to Memory or Settings, and coming back to the
+  // chat is seeing what landed meanwhile. `openSession` also stamps directly,
+  // for an open that changes neither.
   useEffect(() => {
-    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
-    previousAttentionSessionsRef.current = state.sessions;
-    if (!events.length) return;
-    const nextToasts: AttentionToast[] = [];
-    for (const event of events) {
-      const copy = attentionCopy(event);
-      const key = attentionToastKey(event);
-      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
-      void notifyWithActions(event.kind, event.session.id, copy.headline, copy.detail);
-    }
-    setAttentionToasts(current => {
-      // A chat can revisit the same key (waiting → working → waiting) before
-      // its first card's TTL elapses. Replace rather than skip so the card
-      // reflects the latest event and restarts its countdown.
-      let merged = current;
-      for (const toast of nextToasts) {
-        merged = [...merged.filter(item => item.key !== toast.key), toast];
-      }
-      return merged.slice(-3);
-    });
-  }, [state.sessions]);
+    if (selectedSessionId && view === "workspace") void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
+  }, [selectedSessionId, view]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -1073,10 +1061,18 @@ function AppContent() {
     openGithubPane(choice.link.view);
   }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
 
-  useEffect(() => {
-    setInternalLinkRouter(routeGithubLink);
-    return () => setInternalLinkRouter(undefined);
+  const routeInternalLink = useCallback((url: string): boolean | Promise<boolean> => {
+    const noteId = parseNoteLink(url);
+    if (!noteId) return routeGithubLink(url);
+    setView("notes");
+    setNoteOpenRequest(current => ({ id: noteId, nonce: (current?.nonce ?? 0) + 1 }));
+    return true;
   }, [routeGithubLink]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeInternalLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeInternalLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -1247,10 +1243,54 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  // The harness/model the last new chat was confirmed on. Read once at mount and
+  // updated through `rememberDraftChoice`, so a new chat paints the real model
+  // before provider catalogs finish discovering instead of a fallback guess.
+  const [lastDraftChoice, setLastDraftChoice] = useState<LastDraftModel | null>(() => readLastDraftModel());
+  const lastDraftChoiceRef = useRef(lastDraftChoice);
+  lastDraftChoiceRef.current = lastDraftChoice;
+  const rememberDraftChoice = useCallback((harness: Harness, model: string | null, label?: string | null) => {
+    const previous = lastDraftChoiceRef.current;
+    const next: LastDraftModel = {
+      harness,
+      model,
+      // Keep the remembered label while the model is unchanged: a catalog that
+      // has not loaded yet must not erase the name the pill is showing.
+      label: label ?? (previous?.harness === harness && previous?.model === model ? previous.label ?? null : null),
+    };
+    if (previous && previous.harness === next.harness && previous.model === next.model && previous.label === next.label) return;
+    writeLastDraftModel(next);
+    lastDraftChoiceRef.current = next;
+    setLastDraftChoice(next);
+  }, []);
+  const catalogLabelFor = useCallback((harness: Harness, model: string | null): string | null =>
+    model ? adapters.find(adapter => adapter.id === harness)?.models.find(option => option.id === model)?.label ?? null : null,
+  [adapters]);
   const resolvedWelcomeWorkspaceId = newChatDraft
     ? newChatDraft.workspaceId
     : resolveNewChatWorkspaceId({ activeWorkspaceId: welcomeWorkspaceId, lastWorkspaceId: readLastWorkspaceId(), workspaces: state.workspaces });
   const draftSettings = useResolvedChatDraft(resolvedWelcomeWorkspaceId, newChatDraft?.overrides ?? {}, adaptersReady && !session && view === "workspace");
+  // Every settled resolution is what the next new chat should start on, and it
+  // carries the catalog label the pill can show before discovery lands.
+  const resolvedDraftHarness = draftSettings.settings?.model.harness as Harness | undefined;
+  const resolvedDraftModel = draftSettings.settings?.model.model ?? null;
+  useEffect(() => {
+    if (!resolvedDraftHarness) return;
+    // A draft carrying an explicit pick is a one-off override, not a default:
+    // remembering it would make the next chat promise a model the host will not
+    // create. Only the host's own answer predicts the next answer.
+    if (newChatDraft?.overrides?.model) return;
+    rememberDraftChoice(resolvedDraftHarness, resolvedDraftModel, catalogLabelFor(resolvedDraftHarness, resolvedDraftModel));
+  }, [resolvedDraftHarness, resolvedDraftModel, catalogLabelFor, rememberDraftChoice, newChatDraft?.overrides?.model]);
+  // What the Welcome pill paints before the host answers: the last confirmed
+  // choice, with the label it was confirmed under. When there is nothing
+  // confirmed yet the pill says it is loading instead of naming a guess.
+  const draftFallback = resolveDraftHarnessModel();
+  const welcomeHarness = resolvedDraftHarness ?? draftFallback.harness;
+  const welcomeModel = resolvedDraftHarness ? resolvedDraftModel : draftFallback.model;
+  const welcomeKnownLabel = lastDraftChoice && lastDraftChoice.harness === welcomeHarness && lastDraftChoice.model === welcomeModel
+    ? lastDraftChoice.label ?? null
+    : null;
   const [chatConfiguration, setChatConfiguration] = useState<{sessionId:string; value:ChatSessionSettings}>();
   const currentChatConfiguration = chatConfiguration?.sessionId === session?.id ? chatConfiguration?.value : undefined;
   useEffect(() => {
@@ -1636,6 +1676,7 @@ function AppContent() {
   // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
+    void bridgeApi.markAttentionSeen(id).catch(() => undefined);
     setView("workspace");
     setParadigm("single");
     setNewChatDraft(null);
@@ -1854,22 +1895,17 @@ function AppContent() {
     }
   }, [refetchWorkBoard]);
   // Preserve the current direct chat's harness/model so switching to OpenCode also
-  // changes the next-chat default; otherwise fall back to the configured standard
-  // profile. Snapshotted at draft-open time, while the session being left is still
-  // selected, so the carry-over survives deselecting it.
+  // changes the next-chat default; otherwise the last confirmed choice, then the
+  // configured standard profile. Snapshotted at draft-open time, while the session
+  // being left is still selected, so the carry-over survives deselecting it.
   function resolveDraftHarnessModel(harnessOverride?: import("./types").AdapterDescriptor): { harness: Harness; model: string | null } {
-    const currentAdapter = session?.kind === "direct"
-      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
-      : undefined;
-    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-    const harness = (preferred?.id as Harness) ?? "codex";
-    const model = harnessOverride
-      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
-      : currentAdapter
-      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
-      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
-    return { harness, model };
+    return resolveNewChatModel({
+      adapters,
+      setup: modelSetup,
+      session,
+      harnessOverride,
+      stored: lastDraftChoiceRef.current,
+    });
   }
 
   // The single create-on-submit path (#350). Turns a draft into a real session —
@@ -3339,6 +3375,7 @@ function AppContent() {
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
+        openRequest={noteOpenRequest}
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
@@ -3796,8 +3833,10 @@ function AppContent() {
         accessControl={accessControl}
         onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
-        harness={draftSettings.settings?.model.harness ?? resolveDraftHarnessModel().harness}
-        model={draftSettings.settings?.model.model ?? null}
+        harness={welcomeHarness}
+        model={welcomeModel}
+        knownLabel={welcomeKnownLabel}
+        loading={draftSettings.loading}
         accounts={providerAccounts}
         account={draftSettings.settings?.model.account ?? null}
         effort={draftSettings.settings?.effort ?? undefined}
@@ -3970,7 +4009,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, accounts, account, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -3982,6 +4021,10 @@ function Welcome({ adapters, accounts, account, harness, model, slashCommands, s
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
+  /** A remembered label for `model`, shown until the catalog has the entry. */
+  knownLabel?: string | null;
+  /** The host is still resolving this draft's defaults. */
+  loading?: boolean;
   effort?: string;
   onSelectEffort: (effort: string) => void;
   onSelectModel: (harness: Harness, model: string | null, account: string | null) => void;
@@ -4168,7 +4211,7 @@ function Welcome({ adapters, accounts, account, harness, model, slashCommands, s
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip

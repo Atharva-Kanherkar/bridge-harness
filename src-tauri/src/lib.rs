@@ -898,6 +898,16 @@ async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSet
 }
 
 #[tauri::command]
+async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_only: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ListAttentionResult, BridgeError> {
+    api::list_attention(state.inner(), &bridge_protocol::messages::ListAttentionParams { after_sequence, limit, unseen_only })
+}
+
+#[tauri::command]
+async fn mark_attention_seen(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::MarkAttentionSeenResult, BridgeError> {
+    api::mark_attention_seen(state.inner(), &bridge_protocol::messages::MarkAttentionSeenParams { session_id })
+}
+
+#[tauri::command]
 async fn get_delegation_notify_settings(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DelegationNotifySettingsView, BridgeError> {
     api::get_delegation_notify_settings(state.inner(), &bridge_protocol::messages::GetDelegationNotifySettingsParams { session_id })
 }
@@ -3206,6 +3216,8 @@ pub fn run() -> i32 {
             save_reviewer_settings,
             get_delegation_notify_settings,
             save_delegation_notify_settings,
+            list_attention,
+            mark_attention_seen,
             get_attribution_settings,
             save_attribution_settings,
             get_chat_search_settings,

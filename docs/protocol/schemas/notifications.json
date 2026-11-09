@@ -87,6 +87,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "attention/changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "outgoing/changed"
     },
     {

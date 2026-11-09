@@ -341,6 +341,7 @@ mod tests {
         let init = server.handle(&request(3, "initialize", json!({}))).unwrap();
         let instructions = init["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("memory_propose") && instructions.contains("never in a note"), "{instructions}");
+        assert!(instructions.contains("bridge://p/<id>") && instructions.contains("[Title](link)"), "{instructions}");
         assert!(instructions.contains("outgoing_draft"), "{instructions}");
         // Without a chat link there is nothing to forward to.
         let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();

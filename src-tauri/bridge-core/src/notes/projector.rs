@@ -243,14 +243,17 @@ fn apply_import(
             let current = base.values();
             let ordered = database.ordered();
             let mut patch: Vec<(String, Option<serde_json::Value>)> = Vec::new();
+            let mut refused: Vec<(String, String, &'static str)> = Vec::new();
             for line in &front.unknown {
                 let Some((key, raw)) = line.split_once(':') else { continue };
                 let key = key.trim();
                 let Some((prop, def)) = ordered.iter().find(|(_, def)| def.name.to_lowercase() == key.to_lowercase()) else { continue };
                 let parsed = super::database::parse_value(db, &page.note.space_id, def, raw).filter(|value| super::database::validate_value(def, value).is_ok());
                 let Some(value) = parsed else {
-                    // The line stays in the file; nothing is written.
+                    // The line stays in the file; nothing is written, and the
+                    // row page says why.
                     eprintln!("[notes] kept {key} of {id} verbatim: it is not a valid {}", def.kind.as_str());
+                    refused.push(((*prop).clone(), raw.to_owned(), def.kind.as_str()));
                     continue;
                 };
                 // Compared with the file's base, not the cleared value: a stale
@@ -271,6 +274,13 @@ fn apply_import(
                     patch.push(((*prop).clone(), None));
                 }
             }
+            // One notice per line that did not read; every other notice of the
+            // row (a line that reads now, one removed, a property gone) clears.
+            let space = &page.note.space_id;
+            for (prop, raw, expected) in &refused {
+                super::notices::record(db, space, id, prop, raw, expected, page.seq)?;
+            }
+            super::notices::clear_except(db, space, id, &refused.iter().map(|(prop, _, _)| prop.clone()).collect::<Vec<_>>())?;
             Ok(patch)
         })?;
         if !values.is_empty() {
@@ -554,6 +564,71 @@ mod tests {
         }
         assert_eq!(import_changes(&notes).unwrap(), 0);
         assert_eq!(notes.read(&note.id).unwrap().note.last_actor, "agent:claude:s1");
+    }
+
+    /// A Books database with Rating (number) and Done (checkbox), and one row
+    /// rated 5, mirrored to its file.
+    fn rated_row(notes: &NotesService) -> (String, String, String, PathBuf) {
+        use crate::notes::service::{NewProperty, SchemaOp};
+        let list = notes.create(CreatePage { title: Some("Books".into()), kind: Some("database".into()), ..Default::default() }, PERSON).unwrap();
+        let added = notes
+            .update_schema(&list.id, &[SchemaOp::Add(NewProperty { name: "Rating".into(), kind: "number".into(), ..Default::default() }), SchemaOp::Add(NewProperty { name: "Done".into(), kind: "checkbox".into(), ..Default::default() })], PERSON)
+            .unwrap();
+        let (rating, done) = (added.added[0].0.clone(), added.added[1].0.clone());
+        let row = notes.create(CreatePage { title: Some("DDIA".into()), parent_id: Some(list.id.clone()), ..Default::default() }, PERSON).unwrap();
+        notes.set_values(&row.id, &[(rating.clone(), Some(serde_json::json!(5)))], PERSON).unwrap();
+        let path = PathBuf::from(notes.read(&row.id).unwrap().note.path.unwrap());
+        (row.id, rating, done, path)
+    }
+
+    #[test]
+    fn an_unreadable_value_records_one_notice() {
+        let (_dir, notes) = service();
+        let (row, rating, _, path) = rated_row(&notes);
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("Rating: 5", "Rating: three")).unwrap();
+        import_changes(&notes).unwrap();
+        let page = notes.read(&row).unwrap();
+        assert_eq!(page.notices.len(), 1, "{:?}", page.notices);
+        let notice = &page.notices[0];
+        assert_eq!((notice.kind.as_str(), notice.property_id.as_str(), notice.raw.as_str(), notice.expected.as_str()), ("unreadableValue", rating.as_str(), "three", "number"));
+        assert_eq!(page.values.unwrap()[&rating], serde_json::json!(5), "the value is kept");
+    }
+
+    #[test]
+    fn a_second_import_does_not_duplicate_a_notice() {
+        let (_dir, notes) = service();
+        let (row, _, _, path) = rated_row(&notes);
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("Rating: 5", "Rating: three")).unwrap();
+        import_changes(&notes).unwrap();
+        import_changes(&notes).unwrap();
+        std::fs::write(&path, file.replace("Rating: 5", "Rating: three and a half")).unwrap();
+        import_changes(&notes).unwrap();
+        let notices = notes.read(&row).unwrap().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].raw, "three and a half");
+    }
+
+    #[test]
+    fn fixing_the_line_clears_the_notice() {
+        let (_dir, notes) = service();
+        let (row, rating, _, path) = rated_row(&notes);
+        let file = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, file.replace("Rating: 5", "Rating: three\nDone: maybe")).unwrap();
+        import_changes(&notes).unwrap();
+        assert_eq!(notes.read(&row).unwrap().notices.len(), 2);
+        // Rating reads now; Done still does not.
+        std::fs::write(&path, file.replace("Rating: 5", "Rating: 4\nDone: maybe")).unwrap();
+        import_changes(&notes).unwrap();
+        let page = notes.read(&row).unwrap();
+        assert_eq!(page.notices.iter().map(|notice| notice.raw.as_str()).collect::<Vec<_>>(), vec!["maybe"]);
+        assert_eq!(page.values.unwrap()[&rating], serde_json::json!(4));
+        // And a line removed takes its notice with it.
+        let now = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, now.replace("Done: maybe\n", "")).unwrap();
+        import_changes(&notes).unwrap();
+        assert!(notes.read(&row).unwrap().notices.is_empty());
     }
 
     #[test]

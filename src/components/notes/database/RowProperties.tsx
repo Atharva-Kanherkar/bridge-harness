@@ -11,6 +11,7 @@ import { AddProperty } from "./SchemaMenu";
 import { addOption } from "./schemaWrites";
 import { useLatestOnly } from "./useLatestOnly";
 import { typeIcon } from "./DatabaseTable";
+import { TYPE_LABELS } from "./formatValue";
 
 export interface RowPropertiesProps {
   page: NotePage;
@@ -92,7 +93,17 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
 
   if (!database) return null;
   const properties = [...database.properties].sort((a, b) => a.order - b.order);
+  // Lines of the row's file the importer could not set, for properties the
+  // database still has. Each goes once the cell is set or the file is fixed.
+  const notices = (page.notices ?? []).flatMap(notice => {
+    const property = properties.find(candidate => candidate.id === notice.propertyId);
+    return property ? [{ notice, property }] : [];
+  });
   return <div aria-label="Row properties">
+    {notices.map(({ notice, property }) => <p key={`${notice.kind}-${notice.propertyId}`} role="status" className="m-0 mb-1 flex flex-wrap items-baseline gap-x-1 rounded-md bg-muted px-2 py-1.5 text-[12.5px] text-foreground">
+      {property.name} in the file could not be read as a {(TYPE_LABELS[notice.expected] ?? notice.expected).toLowerCase()}:{" "}
+      <code className="rounded bg-background px-1 font-mono text-[12px] text-muted-foreground">{notice.raw}</code>
+    </p>)}
     {properties.map(property => <div key={property.id} className="flex min-h-8 items-start gap-2">
       <dt className="flex w-28 shrink-0 items-center gap-1.5 py-1.5 text-[13px] text-muted-foreground">
         <span className="shrink-0">{typeIcon(property.type)}</span>

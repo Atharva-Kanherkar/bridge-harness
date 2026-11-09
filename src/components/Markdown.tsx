@@ -4,7 +4,9 @@ import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
+import { parseNoteLink } from "../noteLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
+import { ExpandButton, VisualFullscreen } from "./VisualFullscreen";
 import { StoragePlanCard } from "./StoragePlanCard";
 import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
@@ -37,17 +39,28 @@ function isTableRow(line: string): boolean {
   return line.includes("|");
 }
 
+export type RichFenceKind = "diagram" | "mermaid" | "math" | "html";
+
+/** The figure a fence's info string asks for, or null for plain code. Chat and
+ *  the notes editor both read fences through this one table. */
+export function richFenceKind(lang: string): RichFenceKind | null {
+  const key = lang.trim().toLowerCase();
+  if (key === "diagram" || key === "mermaid" || key === "html") return key;
+  if (key === "math" || key === "latex" || key === "tex") return "math";
+  return null;
+}
+
 /** Classify a fenced block by its info string into a rich-content block
  *  kind. Without rich fences every fence is code, as GitHub and Slack show
  *  it: a preview of text bound elsewhere must not run chat-only widgets. */
 function fencedBlock(lang: string, body: string, richFences = true): Block {
   if (!richFences) return { kind: "code", lang, body };
-  const key = lang.trim().toLowerCase();
-  if (key === "diagram") return { kind: "diagram", spec: body };
-  if (key === "mermaid") return { kind: "mermaid", code: body };
-  if (key === "storage-plan") return { kind: "storage-plan", body };
-  if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
-  if (key === "html") return { kind: "html", html: body };
+  if (lang.trim().toLowerCase() === "storage-plan") return { kind: "storage-plan", body };
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return { kind, spec: body };
+  if (kind === "mermaid") return { kind, code: body };
+  if (kind === "math") return { kind, tex: body };
+  if (kind === "html") return { kind, html: body };
   return { kind: "code", lang, body };
 }
 
@@ -298,7 +311,8 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2), allowLinks)}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1), allowLinks)}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
-    // A link only renders as an anchor when `externalLinks` would claim it.
+    // A link only renders as an anchor when `externalLinks` would claim it
+    // (http(s), mailto, or a notes page link).
     // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
     // keeps the webview's default action, and the Tauri webview sets no CSP,
     // so a `javascript:` href in agent- or GitHub-authored markdown would run
@@ -306,9 +320,10 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (link && allowLinks) {
       // Link labels may themselves be a URL (GitHub's normalizer emits this
       // shape). Keep their inline formatting without creating a nested anchor.
-      return isExternalUrl(link[2])
-        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>
-        : <span key={index}>{renderInline(link[1], false)}</span>;
+      if (isExternalUrl(link[2])) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>;
+      // A notes page: the interceptor opens it inside Bridge, never a browser.
+      if (parseNoteLink(link[2])) return <a key={index} href={link[2].trim()} data-note-link="">{renderInline(link[1], false)}</a>;
+      return <span key={index}>{renderInline(link[1], false)}</span>;
     }
     // A URL an agent typed as prose is still a link the reader means to follow.
     // It goes through the same click interceptor as a written-out one, so a
@@ -365,6 +380,7 @@ function DiagramBlock({ spec }: { spec: string }) {
       return null;
     }
   }, [spec]);
+  const [fullscreen, setFullscreen] = useState(false);
 
   if (!parsed) {
     return (
@@ -376,8 +392,16 @@ function DiagramBlock({ spec }: { spec: string }) {
   }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={spec} className="rich-block-copy" />
+      <div className="rich-block-actions">
+        <CopyButton text={spec} className="rich-block-copy" />
+        <ExpandButton onClick={() => setFullscreen(true)} />
+      </div>
       <DiagramFigure spec={parsed} />
+      <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="diagram">
+        {/* The same figure, not a copy: the overlay only changes the width it
+            is laid out at, so nothing about the drawing can drift. */}
+        <DiagramFigure spec={parsed} />
+      </VisualFullscreen>
     </div>
   );
 }
@@ -388,6 +412,7 @@ function MermaidBlock({ code }: { code: string }) {
   const dark = useDarkTheme();
   const [rendered, setRendered] = useState<{ code: string; dark: boolean; svg: string } | null>(null);
   const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const id = useRef("");
   if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
 
@@ -417,8 +442,16 @@ function MermaidBlock({ code }: { code: string }) {
     return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
   }
   return <div className="rich-block my-[0.9em]">
-    <CopyButton text={code} className="rich-block-copy" />
+    <div className="rich-block-actions">
+      <CopyButton text={code} className="rich-block-copy" />
+      <ExpandButton onClick={() => setFullscreen(true)} />
+    </div>
     <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="mermaid">
+      {/* Mermaid bakes a `max-width` onto its own <svg>; the overlay's canvas
+          rule overrides it so the drawing can use the window's width. */}
+      <div role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    </VisualFullscreen>
   </div>;
 }
 
@@ -475,6 +508,16 @@ function HtmlBlock({ html }: { html: string }) {
       {frame}
     </div>
   );
+}
+
+/** A rich fence drawn exactly as chat draws it; nothing for plain code. */
+export function RichFence({ lang, body }: { lang: string; body: string }) {
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return <DiagramBlock spec={body} />;
+  if (kind === "mermaid") return <MermaidBlock code={body} />;
+  if (kind === "math") return <MathBlock tex={body} />;
+  if (kind === "html") return <HtmlBlock html={body} />;
+  return null;
 }
 
 export const Markdown = memo(function Markdown({ text, richFences = true }: { text: string; richFences?: boolean }) {

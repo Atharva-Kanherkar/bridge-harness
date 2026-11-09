@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 import { withNotesContext } from "../notesBrief";
 
@@ -13,6 +13,24 @@ const mermaidMock = vi.hoisted(() => ({
   render: vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' }),
 }));
 vi.mock("mermaid", () => ({ default: mermaidMock }));
+
+describe("rich fences shared with the notes editor", () => {
+  it("names the rich fence kinds and nothing else", () => {
+    expect(richFenceKind("mermaid")).toBe("mermaid");
+    expect(richFenceKind(" Mermaid ")).toBe("mermaid");
+    expect(richFenceKind("diagram")).toBe("diagram");
+    expect(richFenceKind("HTML")).toBe("html");
+    for (const alias of ["math", "latex", "tex"]) expect(richFenceKind(alias)).toBe("math");
+    for (const plain of ["", "ts", "rust", "storage-plan", "mermaidx"]) expect(richFenceKind(plain), plain).toBeNull();
+  });
+
+  it("renders a rich fence with the chat's renderer", () => {
+    expect(renderToStaticMarkup(<RichFence lang="math" body="x^2" />)).toContain("katex");
+    expect(renderToStaticMarkup(<RichFence lang="html" body="<b>hi</b>" />)).toContain('sandbox=""');
+    expect(renderToStaticMarkup(<RichFence lang="mermaid" body="graph TD; A-->B" />)).toContain("Rendering diagram");
+    expect(renderToStaticMarkup(<RichFence lang="ts" body="let x" />)).toBe("");
+  });
+});
 
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
@@ -106,6 +124,24 @@ describe("DiagramBlock rendering", () => {
     expect(html).toContain("Could not render this diagram");
   });
 
+  it("offers a fullscreen affordance beside copy, without dropping either", () => {
+    const spec = JSON.stringify({
+      nodes: [{ id: "a", row: 0, col: 0, label: "start" }],
+      edges: [],
+      caption: "c",
+      ariaLabel: "a",
+    });
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\n" + spec + "\n```"} />);
+    expect(html).toContain("rich-block-actions");
+    expect(html).toContain('aria-label="Fullscreen"');
+    expect(html).toContain('aria-label="Copy"');
+  });
+
+  it("does not offer fullscreen for a diagram that failed to parse", () => {
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\nnot json\n```"} />);
+    expect(html).not.toContain('aria-label="Fullscreen"');
+  });
+
 });
 
 describe("Mermaid rendering", () => {
@@ -148,6 +184,20 @@ describe("Mermaid rendering", () => {
     await act(async () => { root.render(<Markdown text={"```mermaid\ninvalid\n```"} />); });
     expect(container.textContent).toContain("Could not render this Mermaid diagram");
     expect(container.querySelector(".code-block")?.textContent).toContain("invalid");
+  });
+
+  it("opens the same rendered diagram fullscreen and closes again", async () => {
+    await act(async () => { root.render(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />); });
+    const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+    await act(async () => { open.click(); });
+    // A wide flowchart is exactly the case the overlay exists for: labels that
+    // fit a chat column are unreadable, and the window is the only way out.
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="mermaid fullscreen"]') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(overlay.querySelector('[data-testid="mermaid-svg"]')).toBeTruthy();
+    await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[aria-label="mermaid fullscreen"]')).toBeNull();
   });
 
   it("re-renders when the active theme changes", async () => {
@@ -255,6 +305,37 @@ describe("copy affordances (interactive)", () => {
     await act(async () => { button.click(); await Promise.resolve(); await Promise.resolve(); });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(spec);
     expect(button.textContent).toContain("Copied");
+  });
+
+  it("DiagramBlock opens fullscreen from the toolbar and zooms without clipping", async () => {
+    const spec = JSON.stringify({
+      nodes: [
+        { id: "a", row: 0, col: 0, label: "start" },
+        { id: "b", row: 1, col: 0 },
+      ],
+      edges: [{ from: "a", to: "b" }],
+      caption: "A leads to B.",
+      ariaLabel: "Diagram: A leads to B.",
+    });
+    await act(async () => { root.render(<Markdown text={`\`\`\`diagram\n${spec}\n\`\`\``} />); });
+    const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+
+    await act(async () => { open.click(); });
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="diagram fullscreen"]') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(container.contains(overlay)).toBe(false);
+    // The figure and its caption come along; the overlay is a wider look at
+    // the same drawing, not a different rendering.
+    expect(overlay.querySelector("svg")).toBeTruthy();
+    expect(overlay.textContent).toContain("A leads to B.");
+
+    await act(async () => { (overlay.querySelector('[aria-label="Zoom in"]') as HTMLButtonElement).click(); });
+    expect(overlay.textContent).toContain("125%");
+
+    await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[aria-label="diagram fullscreen"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fullscreen"]')).toBeTruthy();
   });
 
   it("HtmlBlock's fullscreen toggle opens and closes an overlay without weakening the sandbox", async () => {
@@ -425,6 +506,20 @@ describe("link scheme allowlist", () => {
     const safe = renderToStaticMarkup(<Markdown text={"[docs](https://example.test/x) and [mail](mailto:me@example.test)"} />);
     expect(safe).toContain('href="https://example.test/x"');
     expect(safe).toContain('href="mailto:me@example.test"');
+  });
+
+  it("renders a note link as an anchor", () => {
+    const html = renderToStaticMarkup(<Markdown text={"Saved as [Reading list](bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c)."} />);
+    expect(html).toContain('<a href="bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c" data-note-link="">Reading list</a>');
+    expect(html).not.toContain("target=");
+  });
+
+  it("keeps a bridge link that is not a page as text", () => {
+    for (const url of ["bridge://p/a.b", "bridge://x/01a1bc34-8f0f-7013-a72c-51e46d404d3c", "bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c/x"]) {
+      const html = renderToStaticMarkup(<Markdown text={`[page](${url})`} />);
+      expect(html, url).not.toContain("<a ");
+      expect(html).toContain("page");
+    }
   });
 });
 

@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
-import type { AttentionEvent } from "./attentionEvents";
-import type { Session, SessionStatus } from "./types";
+import type { AttentionItem, Session } from "./types";
 
-function session(status: SessionStatus, overrides: Partial<Session> = {}): Session {
+function session(overrides: Partial<Session> = {}): Session {
   return {
     continuationFidelity: "native",
     harness: "claude",
@@ -12,49 +11,53 @@ function session(status: SessionStatus, overrides: Partial<Session> = {}): Sessi
     label: "Label chat",
     metricSource: "provider",
     restorationMode: "fresh",
-    status,
+    status: "ready",
     title: "Auth tokens",
     ...overrides,
   };
 }
 
-function event(kind: AttentionEvent["kind"], status: SessionStatus, overrides: Partial<Session> = {}): AttentionEvent {
-  return { kind, session: session(status, overrides) };
+function row(kind: AttentionItem["kind"]): Pick<AttentionItem, "kind" | "title" | "body"> {
+  return { kind, title: "Core headline", body: "New chat · Claude core body" };
 }
 
 describe("attentionCopy", () => {
-  it("describes a needs-you event with chat name and harness", () => {
-    expect(attentionCopy(event("needs-you", "waiting"))).toEqual({
+  it("describes a request with the chat's live name and harness", () => {
+    expect(attentionCopy(row("needsYou"), session())).toEqual({
       headline: "Bridge needs you",
       detail: "Auth tokens · Claude is waiting for your input",
       tone: "needs-you",
     });
   });
 
-  it("describes a completed turn", () => {
-    expect(attentionCopy(event("turn-completed", "ready"))).toEqual({
+  it("describes a finished turn", () => {
+    expect(attentionCopy(row("finished"), session())).toEqual({
       headline: "Turn completed",
       detail: "Auth tokens · Claude finished its turn",
       tone: "completed",
     });
   });
 
-  it("uses Turn failed when the session status is failed", () => {
-    expect(attentionCopy(event("turn-completed", "failed"))).toEqual({
+  it("describes a failed turn", () => {
+    expect(attentionCopy(row("failed"), session())).toEqual({
       headline: "Turn failed",
       detail: "Auth tokens · Claude ended this turn with an error",
       tone: "failed",
     });
   });
 
-  it("falls back to label when title is empty and humanizes harness", () => {
-    const copy = attentionCopy(event("needs-you", "waiting", { title: "", harness: "codex" }));
-    expect(copy.detail).toBe("Label chat · Codex is waiting for your input");
+  it("falls back to the label and humanizes the harness", () => {
+    expect(attentionCopy(row("needsYou"), session({ title: "", harness: "codex" })).detail).toBe("Label chat · Codex is waiting for your input");
+  });
+
+  it("uses the row's own copy when the chat is not known here", () => {
+    expect(attentionCopy(row("failed"))).toEqual({ headline: "Core headline", detail: "New chat · Claude core body", tone: "failed" });
+    expect(attentionCopy({ kind: "finished", title: "Turn completed", body: null }).detail).toBe("");
   });
 });
 
 describe("attentionToastKey", () => {
-  it("keys by session, kind, and status", () => {
-    expect(attentionToastKey(event("needs-you", "waiting"))).toBe("s1:needs-you:waiting");
+  it("keys by ledger sequence", () => {
+    expect(attentionToastKey({ sequence: 42 })).toBe("attention:42");
   });
 });

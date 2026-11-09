@@ -216,7 +216,8 @@ export function mockReadPage(id: string): NotePage {
   const markdown = page.history[page.history.length - 1];
   const structured = page.structured ? { ...clone(page.structured.view), stale: page.structured.body !== markdown } : null;
   const tasks = pages.filter(candidate => !candidate.deleted && candidate.note.parentId === id && candidate.note.kind === "task").map(candidate => clone(candidate.note)).reverse();
-  const read: NotePage = { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: backlinksOf(id) };
+  // No file importer here, so never a notice.
+  const read: NotePage = { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: backlinksOf(id), notices: [] };
   if (page.database) read.database = databaseOf(page);
   const parent = rowDatabase(page);
   if (parent) {

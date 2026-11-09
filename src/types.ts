@@ -202,6 +202,8 @@ export type {
   RiskTier,
   MarketplaceAction,
   MarketplaceProvider,
+  AttentionItem,
+  AttentionKind,
 } from "./protocol/generated/protocol";
 
 export type {

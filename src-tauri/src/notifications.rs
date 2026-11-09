@@ -2,9 +2,9 @@
 //!
 //! `tauri-plugin-notification` posts plain banners. On Linux an approval
 //! deserves more: Allow once / Decline / Open on the notification itself, the
-//! way Omarchy's own alerts work. The webview decides what to notify about
-//! (it already diffs session status for attention) and asks the shell to post
-//! it; a clicked action comes back to the webview, which resolves it through
+//! way Omarchy's own alerts work. Core's attention ledger decides what to
+//! notify about; the webview follows it and asks the shell to post it; a
+//! clicked action comes back to the webview, which resolves it through
 //! `bridgeApi.resolveApproval`, the same call the in-app card makes. The
 //! policy engine stays the only authority, and the core's atomic claim makes
 //! a second resolution of the same approval a no-op.
