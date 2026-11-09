@@ -72,11 +72,47 @@ impl Running {
     }
 }
 
+/// The client's TCP stream, retrying reads and writes a signal interrupted.
+///
+/// On Linux a socket read with a timeout (`SO_RCVTIMEO`) is never restarted:
+/// it fails with EINTR even with no handler installed, if the process is
+/// stopped and resumed (signal(7)). tungstenite surfaces that as a failed
+/// handshake or read, so a runner pausing the test process failed these tests
+/// at random. Retrying is what std's own `read_exact` and `read_line` do.
+struct Client(TcpStream);
+
+impl std::io::Read for Client {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            match self.0.read(buf) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => return other,
+            }
+        }
+    }
+}
+
+impl std::io::Write for Client {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        loop {
+            match self.0.write(buf) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => return other,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
 /// Upgrade result: either a socket, or the HTTP status the upgrade was refused
 /// with.
-fn connect(addr: std::net::SocketAddr, origin: Option<&str>) -> Result<WebSocket<TcpStream>, u16> {
+fn connect(addr: std::net::SocketAddr, origin: Option<&str>) -> Result<WebSocket<Client>, u16> {
     let stream = TcpStream::connect(addr).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let stream = Client(stream);
     let mut request = format!("ws://{addr}").into_client_request().unwrap();
     if let Some(origin) = origin {
         request.headers_mut().insert("origin", HeaderValue::from_str(origin).unwrap());
@@ -90,11 +126,11 @@ fn connect(addr: std::net::SocketAddr, origin: Option<&str>) -> Result<WebSocket
     }
 }
 
-fn send(socket: &mut WebSocket<TcpStream>, frame: Value) {
+fn send(socket: &mut WebSocket<Client>, frame: Value) {
     socket.send(Message::text(frame.to_string())).unwrap();
 }
 
-fn recv(socket: &mut WebSocket<TcpStream>) -> Value {
+fn recv(socket: &mut WebSocket<Client>) -> Value {
     loop {
         match socket.read().expect("a frame arrives") {
             Message::Text(text) => return serde_json::from_str(text.as_str()).unwrap(),
@@ -106,7 +142,7 @@ fn recv(socket: &mut WebSocket<TcpStream>) -> Value {
 
 /// The frame that answers request `id`, skipping interleaved notifications
 /// (a mutation publishes its own `state-changed`).
-fn recv_response(socket: &mut WebSocket<TcpStream>, id: i64) -> Value {
+fn recv_response(socket: &mut WebSocket<Client>, id: i64) -> Value {
     loop {
         let frame = recv(socket);
         if frame.get("id") == Some(&json!(id)) {
@@ -327,7 +363,7 @@ fn a_peer_flooding_pings_before_authenticating_is_reclaimed_at_the_deadline() {
     let fixture = tempfile::tempdir().unwrap();
     let running = Running::start(fixture.path());
     let mut socket = connect(running.addr, Some(ALLOWED_ORIGIN)).unwrap();
-    socket.get_ref().set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    socket.get_ref().0.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
     let started = std::time::Instant::now();
     let mut closed = false;
     while started.elapsed() < Duration::from_secs(3) {
