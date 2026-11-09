@@ -37,8 +37,11 @@ function isTableRow(line: string): boolean {
   return line.includes("|");
 }
 
-/** Classify a fenced block by its info string into a rich-content block kind. */
-function fencedBlock(lang: string, body: string): Block {
+/** Classify a fenced block by its info string into a rich-content block
+ *  kind. Without rich fences every fence is code, as GitHub and Slack show
+ *  it: a preview of text bound elsewhere must not run chat-only widgets. */
+function fencedBlock(lang: string, body: string, richFences = true): Block {
+  if (!richFences) return { kind: "code", lang, body };
   const key = lang.trim().toLowerCase();
   if (key === "diagram") return { kind: "diagram", spec: body };
   if (key === "mermaid") return { kind: "mermaid", code: body };
@@ -48,7 +51,7 @@ function fencedBlock(lang: string, body: string): Block {
   return { kind: "code", lang, body };
 }
 
-export function splitBlocks(source: string): Block[] {
+export function splitBlocks(source: string, { richFences = true }: { richFences?: boolean } = {}): Block[] {
   const blocks: Block[] = [];
   const lines = source.replaceAll("\r\n", "\n").split("\n");
   let index = 0;
@@ -62,7 +65,7 @@ export function splitBlocks(source: string): Block[] {
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
       index += 1;
-      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n")));
+      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n"), richFences));
       continue;
     }
     if (trimmed.startsWith("$$")) {
@@ -474,10 +477,10 @@ function HtmlBlock({ html }: { html: string }) {
   );
 }
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text, richFences = true }: { text: string; richFences?: boolean }) {
   return (
     <div className="md">
-      {splitBlocks(text).map((block, index) => {
+      {splitBlocks(text, { richFences }).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
         if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;

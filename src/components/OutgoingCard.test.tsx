@@ -228,4 +228,15 @@ describe("OutgoingCard", () => {
     expect(container.querySelector("[data-outgoing-preview]")?.textContent).toBe("the fork's copy");
     expect(container.querySelector("[data-outgoing-state=missing]")).toBeNull();
   });
+
+  it("previews fenced html, diagram and mermaid blocks as code, the way the destination shows them", async () => {
+    const body = "```html\n<button>Ship it</button>\n```\n\n```mermaid\ngraph TD; a-->b\n```";
+    resetMockOutgoing([draft({ format: "github", body, rendered: body, lint: [] })]);
+    await mount();
+    const preview = container.querySelector("[data-outgoing-preview]")!;
+    expect(preview.querySelector("iframe")).toBeNull();
+    expect(preview.querySelector("button")?.textContent).not.toBe("Ship it");
+    expect(preview.textContent).toContain("<button>Ship it</button>");
+    expect(preview.textContent).toContain("graph TD; a-->b");
+  });
 });

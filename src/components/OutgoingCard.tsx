@@ -232,7 +232,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           // previewed formatted; pasted mrkdwn and plain text as typed.
           draft.format === "slackMarkdown" || draft.format === "github" ? (
             <div data-outgoing-preview className="mt-3 max-h-96 overflow-auto rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
-              <Markdown text={draft.rendered} />
+              <Markdown text={draft.rendered} richFences={false} />
             </div>
           ) : (
             <div data-outgoing-preview className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-background/60 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground">
