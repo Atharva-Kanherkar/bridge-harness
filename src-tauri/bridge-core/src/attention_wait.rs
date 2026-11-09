@@ -131,11 +131,7 @@ pub fn wait(
     let deadline = Instant::now() + timeout;
     let mut last_read = Instant::now();
     loop {
-        let mut moved = false;
-        while events.try_recv().is_ok() {
-            moved = true;
-        }
-        if moved || last_read.elapsed() >= RECHECK {
+        if events.drain_pending() || last_read.elapsed() >= RECHECK {
             last_read = Instant::now();
             let now = snapshot(&core.db.lock().unwrap(), session_id, pin)?;
             if let Some((state, item)) = evaluate(&now, until, vouched, pinned_by_caller) {

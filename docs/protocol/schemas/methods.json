@@ -870,6 +870,13 @@
       "resultSchema": "post-result.json"
     },
     {
+      "command": "wait",
+      "domain": "sessions",
+      "method": "sessions/wait",
+      "paramsSchema": "wait-params.json",
+      "resultSchema": "wait-result.json"
+    },
+    {
       "command": "deliver_queued_input",
       "domain": "sessions",
       "method": "sessions/deliver_queued_input",
@@ -1992,7 +1999,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 29
+    "minor": 30
   },
   "reserved": {
     "cancel": "$/cancel",

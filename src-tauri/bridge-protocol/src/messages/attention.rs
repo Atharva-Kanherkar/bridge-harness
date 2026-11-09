@@ -173,6 +173,50 @@ pub struct ReportPresenceResult {
     pub banner_owner: bool,
 }
 
+/// A state `sessions/wait` can wait for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitState {
+    /// A turn ended normally.
+    Finished,
+    /// A turn ended with an error.
+    Failed,
+    /// The chat waits on the person: an approval, a permission or a question.
+    NeedsYou,
+    /// No turn is in flight and nothing waits on the person.
+    Idle,
+    /// A state added after this build; refused in `until`.
+    #[serde(other)]
+    Other,
+}
+
+/// Wait until a chat reaches one of `until`. Returns at once when it already
+/// has, or when nothing in `until` can still happen.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitParams {
+    pub session_id: String,
+    pub until: Vec<WaitState>,
+    /// Default 10 minutes, at most 1 hour. A timeout is an error.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// `latestSequence` read before sending a turn: a turn end after it counts
+    /// even though the turn had not started at the call. Without it, only a
+    /// turn already in flight can satisfy `finished` or `failed`.
+    #[serde(default)]
+    pub after_sequence: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitResult {
+    /// The matched state, or the chat's current one when nothing matched.
+    pub state: WaitState,
+    pub matched: bool,
+    /// The ledger row that matched, when one did.
+    pub item: Option<AttentionItem>,
+}
+
 /// An agent asks for the person. Text only: posting grants nothing.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
