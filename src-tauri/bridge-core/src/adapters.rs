@@ -2370,10 +2370,12 @@ mod tests {
         for (id, label, expected) in [
             ("claude-opus-5-5", "Opus 5.5", CapabilityTier::Strong),
             ("claude-fable-5-1", "Fable", CapabilityTier::Strong),
+            ("claude-fable-5-2", "Fable 5.2", CapabilityTier::Strong),
             ("gpt-6-astra", "GPT-6-Astra", CapabilityTier::Strong),
             ("gpt-6-sol", "GPT-6-Sol", CapabilityTier::Strong),
             ("gpt-6-luna", "GPT-6-Luna", CapabilityTier::Fast),
             ("claude-haiku-4-5", "Haiku 4.5", CapabilityTier::Fast),
+            ("claude-haiku-5-5", "Haiku 5.5", CapabilityTier::Fast),
             ("claude-sonnet-5", "Sonnet 5", CapabilityTier::Standard),
             ("claude-sonnet-5-5", "Sonnet 5.5", CapabilityTier::Standard),
         ] {
