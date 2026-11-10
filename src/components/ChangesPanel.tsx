@@ -1,6 +1,7 @@
 import { PaneState } from "@/components/ui/pane";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { Check, ChevronDown, Code2, Quote, FileDiff, FolderGit2, CircleAlert } from "lucide-react";
+import { Check, ChevronDown, Code2, Quote, FolderGit2, CircleAlert } from "lucide-react";
 import type { RiskTier, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
@@ -212,7 +213,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
   });
 
   if (loadError) return <PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-[13px] hover:bg-accent">Try again</button>}>{loadError}</PaneState>;
-  if (!changes) return <PaneState icon={FileDiff} title="Loading changes…" role="status" />;
+  if (!changes) return <SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />;
   if (changes.repositoryState === "not_git") return <PaneState icon={FolderGit2} title="No Git repository">This folder is available in Code, but Changes needs a Git repository.</PaneState>;
 
   const totalAdditions = changes.files.reduce((sum, file) => sum + file.additions, 0);

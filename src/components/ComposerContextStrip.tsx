@@ -1,4 +1,5 @@
 import { Bot, ChevronDown, FolderGit2, GitBranch, GitFork, Plus } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { AgentDefinition, Workspace } from "../types";
@@ -124,7 +125,7 @@ export function ComposerContextStrip({
             onNewChat={locked && onNewChat ? () => { branchMenu.close(); onNewChat(); } : undefined}
           />
         </> : <>
-          {branchBusy && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-muted-foreground">Loading branches…</p>}
+          {branchBusy && <SkeletonRows label="Loading branches" rows={3} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-3 py-1.5" />}
           {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-destructive">{branchError}</p>}
           {!branchBusy && !branchError && branches.map(branch => (
             <MenuItem

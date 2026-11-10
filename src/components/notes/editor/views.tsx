@@ -1,6 +1,7 @@
 // How images, child pages, embedded databases and wiki links draw inside the editor.
 
 import { createContext, useContext, useEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import Image from "@tiptap/extension-image";
 import CodeBlock from "@tiptap/extension-code-block";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
@@ -124,7 +125,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
             style={width == null ? undefined : { width: `${width}px` }}
             className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}
           />
-          : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
+          : <SkeletonRegion label="Loading image"><Skeleton className="h-40 rounded-lg" /></SkeletonRegion>}
       {url && !failed && resizable && <>
         <button type="button" contentEditable={false} aria-label="Resize from the left edge" onPointerDown={beginDrag("left")} className={clsx(handle, "left-0 -translate-x-1/2")} />
         <button type="button" contentEditable={false} aria-label="Resize from the right edge" onPointerDown={beginDrag("right")} className={clsx(handle, "right-0 translate-x-1/2")} />
