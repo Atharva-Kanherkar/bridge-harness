@@ -294,9 +294,12 @@ const SKELETON_BAR = "animate-pulse rounded bg-muted-foreground/10";
 const SKELETON_WIDTHS = ["w-3/5", "w-2/5", "w-1/2", "w-3/4", "w-2/5", "w-2/3"] as const;
 
 /** Placeholder rows shaped like the list they precede, instead of a bare
- * spinner in an empty pane. */
-function ListSkeleton({ label }: { label: string }) {
+ * spinner in an empty pane. `notice` rides above the rows so a state that
+ * needs explaining (first connect, per-tab errors) explains itself inside
+ * the structure rather than replacing it. */
+function ListSkeleton({ label, notice }: { label: string; notice?: React.ReactNode }) {
   return <div role="status" aria-label={label} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+    {notice}
     <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
       {SKELETON_WIDTHS.map((width, index) => <div key={index} className="flex items-start gap-2.5 px-3 py-3">
         <span className={cn("mt-0.5 size-[15px] shrink-0 rounded-full", SKELETON_BAR)} />
@@ -306,6 +309,19 @@ function ListSkeleton({ label }: { label: string }) {
         </span>
       </div>)}
     </div>
+  </div>;
+}
+
+/** First paint, while `gh` availability and the repository resolve. The pane
+ *  shows its real structure (rows filling in) with the connect step named
+ *  inside it, never a lone spinner on a blank surface. */
+function ConnectingNotice() {
+  return <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5">
+    <LoaderCircle size={14} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+    <span className="min-w-0">
+      <span className="block text-[12px] font-medium text-foreground">Connecting to GitHub…</span>
+      <span className="block text-[11px] leading-relaxed text-muted-foreground">Resolving the CLI and repository.</span>
+    </span>
   </div>;
 }
 
@@ -621,7 +637,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   if (surfaceError) {
     body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{surfaceError}</PaneNotice>;
   } else if (!status) {
-    body = <PaneNotice icon={LoaderCircle} spin title="Checking GitHub…">Resolving the CLI and repository.</PaneNotice>;
+    body = <ListSkeleton label="Connecting to GitHub" notice={<ConnectingNotice />} />;
   } else if (status.availability.status === "notInstalled") {
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {

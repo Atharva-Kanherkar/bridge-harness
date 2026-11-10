@@ -289,6 +289,16 @@ describe("GitHubPane", () => {
     expect(statusRead).toHaveBeenLastCalledWith("w", true);
   });
 
+  it("shows the connecting skeleton while the status resolves, not a lone spinner", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockReturnValue(new Promise(() => undefined));
+    await mount();
+    const state = host!.querySelector('[role="status"][aria-label="Connecting to GitHub"]');
+    expect(state).not.toBeNull();
+    expect(state!.textContent).toContain("Resolving the CLI and repository.");
+    // Structure, not a blank surface: placeholder rows ride beneath the notice.
+    expect(state!.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+  });
+
   it("renders explicit unavailable, sign-in, empty, and error states", async () => {
     const statusSpy = vi.spyOn(bridgeApi, "githubStatus");
     statusSpy.mockResolvedValue({ availability: { status: "notInstalled" }, repository: null });
