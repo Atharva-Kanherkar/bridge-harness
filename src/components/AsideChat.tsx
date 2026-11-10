@@ -31,7 +31,7 @@ import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSna
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, accounts, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading }: {
+export function AsideChat({ session, adapters, accounts, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading, placeholder, headerActions }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -74,6 +74,10 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   tag?: string;
   /** Drawn above the first message, inside the scroll. */
   leading?: ReactNode;
+  /** The composer's hint, in place of the generic one. */
+  placeholder?: string;
+  /** Extra header buttons, before Open as chat. */
+  headerActions?: ReactNode;
 }) {
   const activeTurnInput = useActiveTurnInput();
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
@@ -259,8 +263,9 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   }
 
   const panel = <>
-        <header className="flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border px-4 py-1.5">
-          <HarnessMark harness={session.harness} live={working} size={15}/>
+        <header className={cn("flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border py-1.5", docked ? "pl-3.5 pr-2" : "px-4")}>
+          {/* Docked, the model picker below already wears the harness mark. */}
+          {!docked && <HarnessMark harness={session.harness} live={working} size={15}/>}
           <div className="min-w-0 flex-1">
             <h2 className="m-0 truncate font-display text-[13px] font-semibold leading-tight text-foreground">{session.title || session.label}</h2>
             <div className="-ml-1 flex min-w-0 items-center gap-1">
@@ -293,6 +298,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
               {!docked && <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>{tag}</span>}
             </div>
           </div>
+          {headerActions}
           <button
             type="button"
             onClick={onPromote}
@@ -328,6 +334,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
             onAnswerQuestion={onAnswerQuestion}
             onRetryCompaction={onRetryCompaction}
             leading={leading}
+            density={docked ? "compact" : "comfortable"}
           />
         </div>
 
@@ -400,7 +407,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 setDraft(current => `${current}${draftSuggestion.suggestion}`);
                 completion.clear();
               }}
-              placeholder={`Ask ${harnessLabel(session.harness)}… / skills & commands · @ files`}
+              placeholder={placeholder ?? `Ask ${harnessLabel(session.harness)}… / skills & commands · @ files`}
               working={working}
               activeAction={activeAction}
               activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
@@ -411,7 +418,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
   </>;
 
   if (docked) {
-    return <section aria-label={`${tag.charAt(0).toUpperCase() + tag.slice(1)} with ${harnessLabel(session.harness)}`} className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background">
+    return <section aria-label={`${tag.charAt(0).toUpperCase() + tag.slice(1)} with ${harnessLabel(session.harness)}`} className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
       {panel}
     </section>;
   }

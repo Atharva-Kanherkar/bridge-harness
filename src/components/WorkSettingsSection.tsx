@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LoaderCircle as CircleNotch } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { CONNECTOR_LOGOS } from "./connectorLogos";
 import type {
@@ -61,9 +61,7 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
 
   if (!draft || !options) {
     return <SettingsPage title="Work briefing">
-      <SettingsGroup>
-        <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
-      </SettingsGroup>
+      <SkeletonRows label="Loading work briefing" rows={4} trailing />
     </SettingsPage>;
   }
 

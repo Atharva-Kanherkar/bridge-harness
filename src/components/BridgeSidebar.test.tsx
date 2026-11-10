@@ -88,12 +88,12 @@ beforeEach(() => {
 });
 
 describe("BridgeSidebar responsive rail", () => {
-  it("draws the rail's trailing slot after Gitplace", () => {
-    const html = render({ onOpenGitplace: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
-    const gitplace = html.indexOf('aria-label="Gitplace"');
+  it("draws the rail's trailing slot after Pulls", () => {
+    const html = render({ onOpenPulls: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
+    const pulls = html.indexOf('aria-label="Pulls"');
     const usage = html.indexOf('aria-label="Open usage — test"');
-    expect(gitplace).toBeGreaterThan(-1);
-    expect(usage).toBeGreaterThan(gitplace);
+    expect(pulls).toBeGreaterThan(-1);
+    expect(usage).toBeGreaterThan(pulls);
   });
 
   it("marks a chat whose agents are still working after its own turn ended", () => {
@@ -274,6 +274,26 @@ describe("BridgeSidebar theming", () => {
     expect(html).toContain(">needs you<");
     expect(html).toContain(">failed<");
     expect(html).not.toMatch(/emerald-|amber-|sky-|red-4/);
+  });
+
+  it("marks an unread chat with a dot, a heavier title and an Unread name", () => {
+    const html = render({
+      chats: [session("seen", { status: "completed", title: "Read chat" }), session("new", { status: "completed", title: "Finished chat" })],
+      unread: { new: "finished" },
+    });
+    const row = (title: string) => html.split("<button").find(chunk => chunk.includes(`>${title}<`)) ?? "";
+    expect(row("Finished chat")).toContain(">Unread: <");
+    expect(row("Finished chat")).toContain("rounded-full bg-foreground");
+    expect(row("Finished chat")).toMatch(/font-medium[^"]*">Finished chat</);
+    expect(row("Read chat")).not.toContain("Unread");
+    expect(row("Read chat")).not.toContain("bg-foreground");
+  });
+
+  it("says needs you on a chat whose worker is waiting", () => {
+    // The orchestrator is busy, but a request in its tree outranks that.
+    const html = render({ chats: [session("orchestrator", { status: "working" })], unread: { orchestrator: "needsYou" } });
+    expect(html).toContain(">needs you<");
+    expect(html).not.toContain(">working<");
   });
 
   it("leaves an idle chat without a status dot", () => {

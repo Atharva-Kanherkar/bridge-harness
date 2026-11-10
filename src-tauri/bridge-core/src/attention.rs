@@ -21,6 +21,7 @@
 use crate::BridgeError;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const HUMAN: &str = "human";
@@ -71,6 +72,12 @@ pub enum AttentionKind {
     Failed,
     /// Any visible chat, workers included, is waiting on a person.
     NeedsYou,
+    /// Input queued for a chat whose adapter is gone, waiting past the bound.
+    /// Raised by [`escalate_stranded`], not by a forest entry.
+    Escalation,
+    /// An agent asked for the person through [`post`]: a decision or a
+    /// blocker, in its own words.
+    Posted,
 }
 
 impl AttentionKind {
@@ -79,6 +86,8 @@ impl AttentionKind {
             Self::Finished => "finished",
             Self::Failed => "failed",
             Self::NeedsYou => "needs_you",
+            Self::Escalation => "escalation",
+            Self::Posted => "posted",
         }
     }
 
@@ -87,14 +96,17 @@ impl AttentionKind {
             "finished" => Some(Self::Finished),
             "failed" => Some(Self::Failed),
             "needs_you" => Some(Self::NeedsYou),
+            "escalation" => Some(Self::Escalation),
+            "posted" => Some(Self::Posted),
             _ => None,
         }
     }
 
     pub const fn severity(self) -> Severity {
         match self {
-            Self::Finished => Severity::Informational,
-            Self::Failed | Self::NeedsYou => Severity::Actionable,
+            // A post says its own severity; this is the default.
+            Self::Finished | Self::Posted => Severity::Informational,
+            Self::Failed | Self::NeedsYou | Self::Escalation => Severity::Actionable,
         }
     }
 }
@@ -283,7 +295,17 @@ pub fn copy(kind: AttentionKind, session: &SessionFacts) -> (String, String) {
         AttentionKind::NeedsYou => ("Bridge needs you".into(), format!("{who} is waiting for your input")),
         AttentionKind::Failed => ("Turn failed".into(), format!("{who} ended this turn with an error")),
         AttentionKind::Finished => ("Turn completed".into(), format!("{who} finished its turn")),
+        AttentionKind::Escalation => escalation_copy(session, 1),
+        // A post carries the agent's own words; this is only a fallback.
+        AttentionKind::Posted => ("Your agent asks for you".into(), format!("{who} sent you a message")),
     }
+}
+
+/// Copy for a stranded queue: who stopped, and how much is waiting for it.
+pub fn escalation_copy(session: &SessionFacts, waiting: i64) -> (String, String) {
+    let who = format!("{} · {}", chat_name(session), harness_label(&session.harness));
+    let updates = if waiting == 1 { "1 update".to_owned() } else { format!("{waiting} updates") };
+    ("A result is waiting".into(), format!("{who} stopped before it read {updates}"))
 }
 
 /// The request a resolution answers, when it says. Typed entries carry
@@ -393,13 +415,27 @@ fn insert_row(
     approval_event_id: Option<i64>,
     request_event_id: Option<i64>,
 ) -> Result<i64, BridgeError> {
+    insert_row_as(db, session_id, kind, kind.severity(), title, Some(body), approval_event_id, request_event_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_row_as(
+    db: &Connection,
+    session_id: &str,
+    kind: AttentionKind,
+    severity: Severity,
+    title: &str,
+    body: Option<&str>,
+    approval_event_id: Option<i64>,
+    request_event_id: Option<i64>,
+) -> Result<i64, BridgeError> {
     db.execute(
         "INSERT INTO attention_events(id,kind,severity,audience,session_id,approval_event_id,request_event_id,title,body,created_at)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             Uuid::new_v4().to_string(),
             kind.as_str(),
-            kind.severity().as_str(),
+            severity.as_str(),
             HUMAN,
             session_id,
             approval_event_id,
@@ -439,6 +475,159 @@ fn close(db: &Connection, session_id: &str, request: Option<i64>) -> Result<usiz
     Ok(changed)
 }
 
+/// How long queued input may wait for a chat with no live adapter before the
+/// person is told.
+pub const STRANDED_AFTER: chrono::Duration = chrono::Duration::seconds(30);
+/// Older leftovers are left alone, so an upgrade does not raise a storm of
+/// escalations for input that went stale long ago.
+pub const STRANDED_LOOKBACK: chrono::Duration = chrono::Duration::hours(24);
+
+/// Tell the person about queued input that is waiting on a chat whose adapter
+/// is gone, and close what has since been delivered. Called by the queued-input
+/// sweep; never starts a provider. Returns whether the ledger changed.
+///
+/// One open escalation per chat: a seen but unresolved one is not raised again,
+/// because the person already knows. A superseded one does not count: no
+/// client shows it, and the remedy has to stay reachable. It closes once that chat has nothing
+/// queued or mid-delivery, whichever route emptied it.
+pub fn escalate_stranded(
+    db: &Connection,
+    live_adapters: &std::collections::HashSet<String>,
+    now: chrono::DateTime<Utc>,
+) -> Result<bool, BridgeError> {
+    // One transaction, so the revision moves with exactly what it covers.
+    let transaction = db.unchecked_transaction()?;
+    let changed = escalate_stranded_in(&transaction, live_adapters, now)?;
+    if changed {
+        bump(&transaction)?;
+    }
+    transaction.commit()?;
+    Ok(changed)
+}
+
+fn escalate_stranded_in(
+    db: &Connection,
+    live_adapters: &std::collections::HashSet<String>,
+    now: chrono::DateTime<Utc>,
+) -> Result<bool, BridgeError> {
+    let at = now.to_rfc3339();
+    let stranded: Vec<(String, i64)> = {
+        let mut statement = db.prepare(
+            "SELECT q.session_id, COUNT(*) FROM queued_session_input q
+             JOIN sessions s ON s.id=q.session_id
+             WHERE q.state='queued' AND s.archived_at IS NULL
+               AND julianday(q.created_at) <= julianday(?1)
+               AND julianday(q.created_at) >= julianday(?2)
+             GROUP BY q.session_id ORDER BY q.session_id",
+        )?;
+        let rows = statement.query_map(
+            params![(now - STRANDED_AFTER).to_rfc3339(), (now - STRANDED_LOOKBACK).to_rfc3339()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut changed = false;
+    for (session_id, waiting) in stranded {
+        if live_adapters.contains(&session_id) {
+            continue;
+        }
+        let Some(session) = SessionFacts::load(db, &session_id)? else { continue };
+        // A worker's stranded input belongs to its orchestrator's lifecycle:
+        // the only remedy here is resuming it, which must not happen outside
+        // its pool reservation and sandbox.
+        if session.is_worker() || crate::work_briefing_config::is_hidden_session_kind(session.kind.as_deref()) {
+            continue;
+        }
+        let open: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attention_events
+             WHERE session_id=?1 AND audience=?2 AND kind='escalation' AND resolved_at IS NULL
+               AND superseded_by IS NULL)",
+            params![session_id, HUMAN],
+            |row| row.get(0),
+        )?;
+        if open {
+            continue;
+        }
+        let (title, body) = escalation_copy(&session, waiting);
+        insert_row(db, &session_id, AttentionKind::Escalation, &title, &body, None, None)?;
+        changed = true;
+    }
+    // A `claiming` row is mid-delivery, not delivered: if the write fails,
+    // release() puts it back to `queued` and the card must still be there.
+    let closed = db.execute(
+        "UPDATE attention_events SET resolved_at=?1
+         WHERE audience=?2 AND kind='escalation' AND resolved_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM queued_session_input q
+                           WHERE q.session_id=attention_events.session_id AND q.state IN ('queued','claiming'))",
+        params![at, HUMAN],
+    )?;
+    Ok(changed || closed > 0)
+}
+
+/// Posts one chat may make in [`POST_WINDOW`].
+pub const POST_LIMIT: i64 = 3;
+pub const POST_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
+pub const POST_TITLE_MAX: usize = 80;
+pub const POST_BODY_MAX: usize = 240;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostOutcome {
+    /// The row's sequence.
+    Shown(i64),
+    RateLimited,
+}
+
+/// Strip control characters, collapse whitespace, trim, and cut to `max`
+/// characters (never inside one).
+pub fn clean_post_text(text: &str, max: usize) -> String {
+    let spaced: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let collapsed = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.chars().take(max).collect::<String>().trim_end().to_owned()
+}
+
+/// An agent asks for the person. Writes one `posted` row for the chat, or
+/// refuses past [`POST_LIMIT`] posts in [`POST_WINDOW`]. Grants nothing: it is
+/// text and a link to the chat.
+pub fn post(
+    db: &Connection,
+    session_id: &str,
+    title: &str,
+    body: Option<&str>,
+    severity: Severity,
+    now: chrono::DateTime<Utc>,
+) -> Result<PostOutcome, BridgeError> {
+    let title = clean_post_text(title, POST_TITLE_MAX);
+    if title.is_empty() {
+        return Err(BridgeError::Invalid("a post needs a title".into()));
+    }
+    let body = body.map(|body| clean_post_text(body, POST_BODY_MAX)).filter(|body| !body.is_empty());
+    let live: Option<(Option<String>, bool)> = db
+        .query_row(
+            "SELECT kind, archived_at IS NULL FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match live {
+        Some((kind, true)) if !crate::work_briefing_config::is_hidden_session_kind(kind.as_deref()) => {}
+        _ => return Err(BridgeError::Invalid(format!("no chat {session_id} to post for"))),
+    }
+    let transaction = db.unchecked_transaction()?;
+    let recent: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM attention_events
+         WHERE session_id=?1 AND audience=?2 AND kind='posted' AND julianday(created_at) > julianday(?3)",
+        params![session_id, HUMAN, (now - POST_WINDOW).to_rfc3339()],
+        |row| row.get(0),
+    )?;
+    if recent >= POST_LIMIT {
+        return Ok(PostOutcome::RateLimited);
+    }
+    let sequence = insert_row_as(&transaction, session_id, AttentionKind::Posted, severity, &title, body.as_deref(), None, None)?;
+    bump(&transaction)?;
+    transaction.commit()?;
+    Ok(PostOutcome::Shown(sequence))
+}
+
 /// One ledger row as clients see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionRow {
@@ -461,6 +650,64 @@ pub struct AttentionPage {
     pub latest_sequence: i64,
 }
 
+const ROW_COLUMNS: &str = "sequence,id,kind,severity,session_id,approval_event_id,title,body,created_at,resolved_at,seen_at";
+
+/// One row from a `SELECT ROW_COLUMNS`, or `None` for a kind or severity this
+/// build does not know (written by a newer build sharing the directory).
+fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<AttentionRow>> {
+    let kind: String = row.get(2)?;
+    let severity: String = row.get(3)?;
+    let (Some(kind), Some(severity)) = (AttentionKind::parse(&kind), Severity::parse(&severity)) else {
+        return Ok(None);
+    };
+    Ok(Some(AttentionRow {
+        sequence: row.get(0)?,
+        id: row.get(1)?,
+        kind,
+        severity,
+        session_id: row.get(4)?,
+        approval_event_id: row.get(5)?,
+        title: row.get(6)?,
+        body: row.get(7)?,
+        created_at: row.get(8)?,
+        resolved_at: row.get(9)?,
+        seen_at: row.get(10)?,
+    }))
+}
+
+/// The chat's request still waiting on the person, if its newest row is one.
+pub fn open_request(db: &Connection, session_id: &str) -> Result<Option<AttentionRow>, BridgeError> {
+    let row = db
+        .query_row(
+            &format!(
+                "SELECT {ROW_COLUMNS} FROM attention_events
+                 WHERE session_id=?1 AND audience=?2 ORDER BY sequence DESC LIMIT 1"
+            ),
+            params![session_id, HUMAN],
+            read_row,
+        )
+        .optional()?
+        .flatten();
+    Ok(row.filter(|row| row.kind == AttentionKind::NeedsYou && row.resolved_at.is_none()))
+}
+
+/// The chat's first finished or failed turn after `after`, superseded or not:
+/// a later row hiding it from clients does not undo that the turn ended.
+pub fn first_turn_end_after(db: &Connection, session_id: &str, after: i64) -> Result<Option<AttentionRow>, BridgeError> {
+    Ok(db
+        .query_row(
+            &format!(
+                "SELECT {ROW_COLUMNS} FROM attention_events
+                 WHERE session_id=?1 AND audience=?2 AND sequence>?3 AND kind IN ('finished','failed')
+                 ORDER BY sequence ASC LIMIT 1"
+            ),
+            params![session_id, HUMAN, after],
+            read_row,
+        )
+        .optional()?
+        .flatten())
+}
+
 /// The person's rows after `after_sequence`, oldest first, without superseded
 /// ones. `latest_sequence` lets a fresh client start its cursor without paging.
 pub fn list(
@@ -470,47 +717,19 @@ pub fn list(
     unseen_only: bool,
 ) -> Result<AttentionPage, BridgeError> {
     let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
-    let mut statement = db.prepare(
-        "SELECT sequence,id,kind,severity,session_id,approval_event_id,title,body,created_at,resolved_at,seen_at
-         FROM attention_events
+    let mut statement = db.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM attention_events
          WHERE audience=?1 AND sequence>?2 AND superseded_by IS NULL AND (?3=0 OR seen_at IS NULL)
-         ORDER BY sequence ASC LIMIT ?4",
-    )?;
-    let rows = statement.query_map(
-        params![HUMAN, after_sequence.unwrap_or(0), unseen_only, limit],
-        |row| {
-            let kind: String = row.get(2)?;
-            let severity: String = row.get(3)?;
-            Ok((
-                kind,
-                severity,
-                AttentionRow {
-                    sequence: row.get(0)?,
-                    id: row.get(1)?,
-                    kind: AttentionKind::Finished,
-                    severity: Severity::Informational,
-                    session_id: row.get(4)?,
-                    approval_event_id: row.get(5)?,
-                    title: row.get(6)?,
-                    body: row.get(7)?,
-                    created_at: row.get(8)?,
-                    resolved_at: row.get(9)?,
-                    seen_at: row.get(10)?,
-                },
-            ))
-        },
-    )?;
+         ORDER BY sequence ASC LIMIT ?4"
+    ))?;
+    let rows = statement.query_map(params![HUMAN, after_sequence.unwrap_or(0), unseen_only, limit], read_row)?;
     let mut items = Vec::new();
     for row in rows {
-        let (kind, severity, mut item) = row?;
         // A kind this build does not know came from a newer one sharing the
         // data directory; skipping it beats failing the whole read.
-        let (Some(kind), Some(severity)) = (AttentionKind::parse(&kind), Severity::parse(&severity)) else {
-            continue;
-        };
-        item.kind = kind;
-        item.severity = severity;
-        items.push(item);
+        if let Some(item) = row? {
+            items.push(item);
+        }
     }
     Ok(AttentionPage { items, latest_sequence: latest_sequence(db)? })
 }
@@ -531,6 +750,90 @@ pub fn mark_seen(db: &Connection, session_id: &str) -> Result<usize, BridgeError
     }
     transaction.commit()?;
     Ok(stamped)
+}
+
+/// What is still unread, per session and rolled up to the chats a person sees.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnreadSummary {
+    /// Top-level chat -> the strongest unread kind in its tree.
+    pub by_chat: BTreeMap<String, AttentionKind>,
+    /// Session -> its own unread kind, workers included.
+    pub by_session: BTreeMap<String, AttentionKind>,
+}
+
+impl UnreadSummary {
+    /// Marked chats, so a badge matches the marked sidebar rows.
+    pub fn total(&self) -> usize {
+        self.by_chat.len()
+    }
+
+    /// Marked chats that wait on the person to act: a request or waiting input.
+    pub fn needs_you(&self) -> usize {
+        self.by_chat
+            .values()
+            .filter(|kind| matches!(kind, AttentionKind::NeedsYou | AttentionKind::Escalation))
+            .count()
+    }
+}
+
+/// How strongly a kind claims a chat's row when several of its sessions are unread.
+const fn strength(kind: AttentionKind) -> u8 {
+    match kind {
+        AttentionKind::NeedsYou => 5,
+        AttentionKind::Escalation => 4,
+        AttentionKind::Posted => 3,
+        AttentionKind::Failed => 2,
+        AttentionKind::Finished => 1,
+    }
+}
+
+/// A session is unread when its newest row is unseen and unresolved. A seen or
+/// answered newest row means nothing there waits, even if an older row was
+/// never seen: it was superseded. Each unread session rolls up to the
+/// top-level chat above it, through sessions that still exist and are not
+/// archived. Read-only.
+pub fn unread_summary(db: &Connection) -> Result<UnreadSummary, BridgeError> {
+    let unread: Vec<(String, String)> = {
+        let mut statement = db.prepare(
+            "SELECT e.session_id, e.kind FROM attention_events e
+             JOIN sessions s ON s.id=e.session_id
+             WHERE e.audience=?1 AND e.seen_at IS NULL AND e.resolved_at IS NULL AND s.archived_at IS NULL
+               AND e.sequence=(SELECT MAX(x.sequence) FROM attention_events x
+                               WHERE x.session_id=e.session_id AND x.audience=?1)
+             ORDER BY e.session_id",
+        )?;
+        let rows = statement.query_map(params![HUMAN], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut parent_of = db.prepare("SELECT parent_session_id, archived_at IS NULL FROM sessions WHERE id=?1")?;
+    let mut summary = UnreadSummary::default();
+    for (session_id, kind) in unread {
+        let Some(kind) = AttentionKind::parse(&kind) else { continue };
+        summary.by_session.insert(session_id.clone(), kind);
+        // Walk up to the top-level chat. The visited set guards a corrupt cycle.
+        let mut current = session_id;
+        let mut visited = std::collections::HashSet::new();
+        let root = loop {
+            if !visited.insert(current.clone()) {
+                break None;
+            }
+            let parent: Option<(Option<String>, bool)> = parent_of
+                .query_row(params![current], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?;
+            match parent {
+                Some((_, false)) | None => break None,
+                Some((Some(parent), true)) if !parent.is_empty() => current = parent,
+                Some((_, true)) => break Some(current),
+            }
+        };
+        if let Some(root) = root {
+            let entry = summary.by_chat.entry(root).or_insert(kind);
+            if strength(kind) > strength(*entry) {
+                *entry = kind;
+            }
+        }
+    }
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -850,5 +1153,342 @@ mod tests {
         assert!(record_in_transaction(&transaction, "s", "turn.completed", &json!({"status": "completed"}), 2).unwrap());
         drop(transaction);
         assert!(rows(&db).is_empty());
+    }
+
+    fn queue_store() -> Connection {
+        let db = store();
+        db.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN archived_at TEXT;
+             CREATE TABLE queued_session_input(id TEXT PRIMARY KEY, sequence INTEGER, session_id TEXT NOT NULL,
+                provider_text TEXT, display_text TEXT, state TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT);",
+        )
+        .unwrap();
+        db
+    }
+
+    fn queued(db: &Connection, id: &str, session_id: &str, state: &str, age: chrono::Duration, now: chrono::DateTime<Utc>) {
+        db.execute(
+            "INSERT INTO queued_session_input(id,sequence,session_id,provider_text,display_text,state,created_at) VALUES(?1,1,?2,'{}','worker report',?3,?4)",
+            params![id, session_id, state, (now - age).to_rfc3339()],
+        )
+        .unwrap();
+    }
+
+    fn escalations(db: &Connection) -> Vec<(String, String, bool)> {
+        db.prepare("SELECT session_id, body, resolved_at IS NOT NULL FROM attention_events WHERE kind='escalation' ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn stranded_session_escalates_once() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, Some("Ship it"));
+        queued(&db, "q1", "orch", "queued", chrono::Duration::seconds(45), now);
+        queued(&db, "q2", "orch", "queued", chrono::Duration::seconds(40), now);
+        let live = std::collections::HashSet::new();
+        let before = revision(&db).unwrap();
+        assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(revision(&db).unwrap(), before + 1, "the sweep's publisher sees escalations move the ledger");
+        assert!(!escalate_stranded(&db, &live, now + chrono::Duration::seconds(2)).unwrap(), "one open escalation per chat");
+        assert_eq!(revision(&db).unwrap(), before + 1);
+        assert_eq!(escalations(&db), vec![("orch".to_owned(), "Ship it · Codex stopped before it read 2 updates".to_owned(), false)]);
+        let page = list(&db, None, None, false).unwrap();
+        assert_eq!(page.items[0].kind, AttentionKind::Escalation);
+        assert_eq!(page.items[0].severity, Severity::Actionable);
+        assert_eq!(page.items[0].title, "A result is waiting");
+    }
+
+    #[test]
+    fn live_adapter_archived_hidden_and_old_rows_do_not_escalate() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "live", "orchestrator", None, None);
+        session(&db, "archived", "orchestrator", None, None);
+        session(&db, "hidden", "briefing", None, None);
+        session(&db, "fresh", "orchestrator", None, None);
+        session(&db, "stale", "orchestrator", None, None);
+        session(&db, "delivered", "orchestrator", None, None);
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='archived'", []).unwrap();
+        for id in ["live", "archived", "hidden"] {
+            queued(&db, &format!("q-{id}"), id, "queued", chrono::Duration::minutes(5), now);
+        }
+        queued(&db, "q-fresh", "fresh", "queued", chrono::Duration::seconds(10), now);
+        queued(&db, "q-stale", "stale", "queued", chrono::Duration::hours(30), now);
+        queued(&db, "q-delivered", "delivered", "delivered", chrono::Duration::minutes(5), now);
+        queued(&db, "q-gone", "no-such-session", "queued", chrono::Duration::minutes(5), now);
+        let live: std::collections::HashSet<String> = ["live".to_owned()].into();
+        assert!(!escalate_stranded(&db, &live, now).unwrap());
+        assert!(escalations(&db).is_empty());
+    }
+
+    #[test]
+    fn workers_never_escalate() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        session(&db, "worker", "orchestrator", Some("orch"), None);
+        queued(&db, "q1", "worker", "queued", chrono::Duration::minutes(2), now);
+        assert!(!escalate_stranded(&db, &std::collections::HashSet::new(), now).unwrap());
+        assert!(escalations(&db).is_empty(), "Deliver now is never offered for a worker");
+    }
+
+    #[test]
+    fn a_superseded_escalation_is_raised_again() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(2), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        // A failed turn supersedes the unseen escalation; the input is still stranded.
+        record(&db, "orch", "turn.completed", json!({"status": "failed"}), 4);
+        assert!(escalate_stranded(&db, &live, now).unwrap(), "the remedy must stay reachable");
+        let visible: Vec<AttentionKind> = list(&db, None, None, false).unwrap().items.into_iter().map(|row| row.kind).collect();
+        assert_eq!(visible, vec![AttentionKind::Escalation]);
+    }
+
+    #[test]
+    fn seen_escalation_is_not_raised_again() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(1), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        mark_seen(&db, "orch").unwrap();
+        queued(&db, "q2", "orch", "queued", chrono::Duration::seconds(50), now);
+        assert!(!escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(escalations(&db).len(), 1);
+    }
+
+    #[test]
+    fn escalation_closes_when_the_queue_empties() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(1), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        db.execute("UPDATE queued_session_input SET state='delivered' WHERE id='q1'", []).unwrap();
+        assert!(escalate_stranded(&db, &live, now).unwrap(), "closing is a change");
+        assert_eq!(escalations(&db), vec![("orch".to_owned(), "New chat · Codex stopped before it read 1 update".to_owned(), true)]);
+        // A later strand raises a new one.
+        queued(&db, "q2", "orch", "queued", chrono::Duration::minutes(1), now);
+        assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(escalations(&db).iter().filter(|row| !row.2).count(), 1);
+    }
+
+    fn unread_store() -> Connection {
+        let db = queue_store();
+        session(&db, "chat", "orchestrator", None, Some("Ship it"));
+        session(&db, "worker", "orchestrator", Some("chat"), None);
+        session(&db, "nested", "orchestrator", Some("worker"), None);
+        session(&db, "other", "direct", None, None);
+        db
+    }
+
+    fn raise(db: &Connection, session_id: &str, kind: AttentionKind) -> i64 {
+        insert_row(db, session_id, kind, "title", "body", None, None).unwrap()
+    }
+
+    fn kinds(map: &BTreeMap<String, AttentionKind>) -> Vec<(&str, AttentionKind)> {
+        map.iter().map(|(id, kind)| (id.as_str(), *kind)).collect()
+    }
+
+    #[test]
+    fn unread_is_the_newest_unseen_unresolved_row() {
+        let db = unread_store();
+        record(&db, "chat", "turn.completed", json!({"status": "failed"}), 2);
+        record(&db, "chat", "turn.completed", json!({"status": "completed"}), 3);
+        record(&db, "other", "turn.completed", json!({"status": "completed"}), 4);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(kinds(&summary.by_chat), vec![("chat", AttentionKind::Finished), ("other", AttentionKind::Finished)]);
+        assert_eq!(kinds(&summary.by_session), kinds(&summary.by_chat));
+        assert_eq!((summary.total(), summary.needs_you()), (2, 0));
+    }
+
+    #[test]
+    fn seen_resolved_and_superseded_rows_are_not_unread() {
+        let db = unread_store();
+        record(&db, "chat", "turn.completed", json!({"status": "completed"}), 2);
+        mark_seen(&db, "chat").unwrap();
+        // The newest row was answered: the older unseen one it superseded does not resurface.
+        record(&db, "other", "turn.completed", json!({"status": "completed"}), 3);
+        record(&db, "other", "permission.requested", json!({}), 4);
+        record(&db, "other", "permission.resolved", json!({"requestEventId": 4}), 5);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary, UnreadSummary::default());
+        // A newer row after a seen one is unread again.
+        record(&db, "chat", "turn.completed", json!({"status": "failed"}), 6);
+        assert_eq!(kinds(&unread_summary(&db).unwrap().by_chat), vec![("chat", AttentionKind::Failed)]);
+    }
+
+    #[test]
+    fn a_worker_request_rolls_up_to_its_top_level_chat() {
+        let db = unread_store();
+        record(&db, "nested", "approval.requested", json!({}), 2);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(kinds(&summary.by_chat), vec![("chat", AttentionKind::NeedsYou)]);
+        assert_eq!(kinds(&summary.by_session), vec![("nested", AttentionKind::NeedsYou)]);
+        assert_eq!((summary.total(), summary.needs_you()), (1, 1));
+        // Opening the chat does not answer its worker's request.
+        mark_seen(&db, "chat").unwrap();
+        assert_eq!(unread_summary(&db).unwrap().total(), 1);
+        mark_seen(&db, "nested").unwrap();
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+    }
+
+    #[test]
+    fn the_strongest_kind_wins_the_rollup() {
+        let db = unread_store();
+        raise(&db, "chat", AttentionKind::Finished);
+        raise(&db, "worker", AttentionKind::Failed);
+        assert_eq!(unread_summary(&db).unwrap().by_chat["chat"], AttentionKind::Failed);
+        raise(&db, "chat", AttentionKind::Escalation);
+        assert_eq!(unread_summary(&db).unwrap().by_chat["chat"], AttentionKind::Escalation);
+        raise(&db, "nested", AttentionKind::NeedsYou);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary.by_chat["chat"], AttentionKind::NeedsYou);
+        assert_eq!(summary.by_session.len(), 3);
+        assert_eq!((summary.total(), summary.needs_you()), (1, 1));
+        // Order does not matter: a weaker kind arriving last does not demote it.
+        raise(&db, "other", AttentionKind::Escalation);
+        raise(&db, "chat", AttentionKind::Finished);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary.by_chat["chat"], AttentionKind::NeedsYou);
+        assert_eq!((summary.total(), summary.needs_you()), (2, 2));
+    }
+
+    #[test]
+    fn archived_sessions_are_not_unread() {
+        let db = unread_store();
+        raise(&db, "nested", AttentionKind::NeedsYou);
+        raise(&db, "other", AttentionKind::Finished);
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id IN ('worker','other')", []).unwrap();
+        let summary = unread_summary(&db).unwrap();
+        assert!(summary.by_chat.is_empty(), "nothing rolls up through an archived worker: {summary:?}");
+        assert_eq!(kinds(&summary.by_session), vec![("nested", AttentionKind::NeedsYou)]);
+        db.execute("UPDATE sessions SET archived_at=NULL WHERE id='worker'", []).unwrap();
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='nested'", []).unwrap();
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+    }
+
+    #[test]
+    fn unread_summary_leaves_the_revision_alone() {
+        let db = unread_store();
+        raise(&db, "chat", AttentionKind::Finished);
+        let before = (revision(&db).unwrap(), rows(&db));
+        unread_summary(&db).unwrap();
+        assert_eq!((revision(&db).unwrap(), rows(&db)), before);
+    }
+
+    #[test]
+    fn escalation_stays_open_while_delivery_is_claiming() {
+        let db = queue_store();
+        let now = Utc::now();
+        session(&db, "orch", "orchestrator", None, None);
+        queued(&db, "q1", "orch", "queued", chrono::Duration::minutes(1), now);
+        let live = std::collections::HashSet::new();
+        escalate_stranded(&db, &live, now).unwrap();
+        // Deliver now has claimed the row; the provider write is in flight.
+        db.execute("UPDATE queued_session_input SET state='claiming' WHERE id='q1'", []).unwrap();
+        assert!(!escalate_stranded(&db, &live, now).unwrap(), "an in-flight delivery is not an empty queue");
+        assert_eq!(escalations(&db).iter().filter(|row| !row.2).count(), 1);
+        // The write failed and release() put it back: the card is still there.
+        db.execute("UPDATE queued_session_input SET state='queued' WHERE id='q1'", []).unwrap();
+        assert!(!escalate_stranded(&db, &live, now).unwrap());
+        assert_eq!(escalations(&db).len(), 1, "the same escalation, not a second one");
+        db.execute("UPDATE queued_session_input SET state='delivered' WHERE id='q1'", []).unwrap();
+        assert!(escalate_stranded(&db, &live, now).unwrap());
+        assert!(escalations(&db)[0].2, "closed once delivered");
+    }
+
+    fn post_rows(db: &Connection) -> Vec<(String, String, Option<String>)> {
+        db.prepare("SELECT severity, title, body FROM attention_events WHERE kind='posted' ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn post_sanitizes_and_truncates() {
+        let db = unread_store();
+        let title = format!("Pick\u{7}  a\n\tdatabase {}", "x".repeat(200));
+        let body = format!("Postgres or\u{1b}[31m SQLite?  {}", "é".repeat(400));
+        assert!(matches!(post(&db, "chat", &title, Some(&body), Severity::Actionable, Utc::now()).unwrap(), PostOutcome::Shown(_)));
+        let rows = post_rows(&db);
+        let (severity, title, body) = &rows[0];
+        assert_eq!(severity, "actionable");
+        assert!(title.starts_with("Pick a database xxx"), "{title}");
+        assert_eq!(title.chars().count(), POST_TITLE_MAX);
+        let body = body.as_deref().unwrap();
+        assert!(body.starts_with("Postgres or [31m SQLite? éé"), "{body}");
+        assert!(!body.chars().any(char::is_control));
+        assert_eq!(body.chars().count(), POST_BODY_MAX);
+        post(&db, "chat", "Done?", Some(" \n "), Severity::Informational, Utc::now()).unwrap();
+        assert_eq!(post_rows(&db)[1], ("informational".to_owned(), "Done?".to_owned(), None), "a blank body is none");
+    }
+
+    #[test]
+    fn post_refuses_an_empty_title() {
+        let db = unread_store();
+        for title in ["", "   ", "\u{0}\u{7}\n"] {
+            assert!(matches!(post(&db, "chat", title, None, Severity::Informational, Utc::now()), Err(BridgeError::Invalid(_))), "{title:?}");
+        }
+        assert!(post_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn the_fourth_post_in_five_minutes_is_rate_limited() {
+        let db = unread_store();
+        let now = Utc::now();
+        for _ in 0..POST_LIMIT {
+            assert!(matches!(post(&db, "chat", "Need a decision", None, Severity::Actionable, now).unwrap(), PostOutcome::Shown(_)));
+        }
+        let before = revision(&db).unwrap();
+        assert_eq!(post(&db, "chat", "Need a decision", None, Severity::Actionable, now).unwrap(), PostOutcome::RateLimited);
+        assert_eq!(revision(&db).unwrap(), before, "a refused post writes nothing");
+        assert!(matches!(post(&db, "other", "Elsewhere", None, Severity::Actionable, now).unwrap(), PostOutcome::Shown(_)), "the limit is per chat");
+        // Once the window has passed, the chat may post again.
+        assert!(matches!(post(&db, "chat", "Later", None, Severity::Actionable, now + POST_WINDOW + chrono::Duration::seconds(1)).unwrap(), PostOutcome::Shown(_)));
+    }
+
+    #[test]
+    fn posts_need_a_live_visible_chat() {
+        let db = unread_store();
+        session(&db, "brief", "briefing", None, None);
+        db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='other'", []).unwrap();
+        for session_id in ["missing", "brief", "other"] {
+            assert!(matches!(post(&db, session_id, "Hi", None, Severity::Informational, Utc::now()), Err(BridgeError::Invalid(_))), "{session_id}");
+        }
+    }
+
+    #[test]
+    fn a_post_counts_as_unread_below_requests() {
+        let db = unread_store();
+        raise(&db, "chat", AttentionKind::Failed);
+        post(&db, "worker", "Which branch?", None, Severity::Actionable, Utc::now()).unwrap();
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(summary.by_chat["chat"], AttentionKind::Posted, "a post outranks a failure");
+        assert_eq!(summary.needs_you(), 0, "needsYou still counts requests and stranded results");
+        raise(&db, "nested", AttentionKind::NeedsYou);
+        assert_eq!(unread_summary(&db).unwrap().by_chat["chat"], AttentionKind::NeedsYou);
+        let page = list(&db, None, None, false).unwrap();
+        let posted = page.items.iter().find(|row| row.kind == AttentionKind::Posted).unwrap();
+        assert_eq!((posted.severity, posted.title.as_str(), posted.body.as_deref()), (Severity::Actionable, "Which branch?", None));
+    }
+
+    #[test]
+    fn escalation_copy_counts_updates() {
+        let facts = SessionFacts { kind: Some("orchestrator".into()), parent_session_id: None, title: Some("Ship it".into()), label: "Orchestrator".into(), harness: "claude".into() };
+        assert_eq!(escalation_copy(&facts, 1), ("A result is waiting".into(), "Ship it · Claude stopped before it read 1 update".into()));
+        assert_eq!(escalation_copy(&facts, 3).1, "Ship it · Claude stopped before it read 3 updates");
     }
 }

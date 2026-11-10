@@ -146,6 +146,7 @@ struct Presentation: Decodable {
     }
     var refreshing: Bool
     var error: String?
+    var attention: AttentionCounts? = nil
 }
 
 final class MenuState: ObservableObject {

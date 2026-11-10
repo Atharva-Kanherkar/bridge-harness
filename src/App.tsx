@@ -13,7 +13,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -22,10 +22,11 @@ import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "
 import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
+import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -50,8 +51,8 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
-import { GitplaceScreen } from "./components/GitplaceScreen";
-import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
+import { PullsScreen } from "./components/PullsScreen";
+import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -60,8 +61,14 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { useAttentionSettings } from "./attentionSettings";
+import { playAttentionSound } from "./attentionSound";
+import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
+import { useAttentionFeed } from "./useAttentionFeed";
+import { useBannerOwner } from "./useBannerOwner";
+import { useUnreadSummary } from "./useUnreadSummary";
+import { useWindowFocused } from "./useWindowFocused";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
-import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
@@ -119,7 +126,7 @@ import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
 import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
-import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { readStorageChatHistory, rememberStorageChat, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE } from "./storageChat";
 import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
 import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
@@ -127,9 +134,8 @@ import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFrom
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
-import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
-import { readWireKind } from "./transcript/wire";
-import { isMacPlatform } from "./lib/platform";
+import { WEB_NOTIFICATION_OPEN } from "./webNotify";
+import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -275,6 +281,8 @@ function AppContent() {
   const [notesListToggle, setNotesListToggle] = useState(0);
   // Bumped by `capture-note`: Notes opens with its capture box focused.
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
+  const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
@@ -470,7 +478,9 @@ function AppContent() {
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
-  const [storageChatId, setStorageChatId] = useState(readStorageChatId);
+  // The rail opens blank; earlier storage chats stay one click away in Recent.
+  const [storageChatId, setStorageChatId] = useState<string | null>(null);
+  const [storageChatHistory, setStorageChatHistory] = useState(readStorageChatHistory);
   const [storageChatStarting, setStorageChatStarting] = useState(false);
   const [notesChatId, setNotesChatId] = useState(readNotesChatId);
   const [notesChatStarting, setNotesChatStarting] = useState(false);
@@ -692,20 +702,19 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
-  // On Linux a waiting session's notification can answer its approval in
-  // place; find which approval, if any, before posting.
-  const notifyWithActions = useCallback(async (kind: string, sessionId: string, headline: string, detail: string) => {
-    let approvalEventId: number | null = null;
-    if (kind === "needs-you" && !isMacPlatform()) {
-      approvalEventId = await bridgeApi.replaySessionEvents(sessionId, 0, 200, true)
-        .then(events => pendingApprovalEventId(events.map(event => ({ sequence: event.sequence, kind: readWireKind(event.kind), data: event.data }))))
-        .catch(() => null);
-    }
-    await notifyAttention(headline, detail, { sessionId, approvalEventId });
+  // A browser notification clicked (web client): open the chat it was about.
+  useEffect(() => {
+    const open = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: unknown }>).detail?.sessionId;
+      if (typeof sessionId === "string" && sessionId) openSessionRef.current(sessionId);
+    };
+    window.addEventListener(WEB_NOTIFICATION_OPEN, open);
+    return () => window.removeEventListener(WEB_NOTIFICATION_OPEN, open);
   }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
+    // Linux (notify-rust) and macOS (Notification Center) both report clicks.
+    if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void import("@tauri-apps/api/event").then(({ listen }) => listen(ACTION_EVENT, async event => {
@@ -725,36 +734,68 @@ function AppContent() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [reload]);
-  // Attention notifications: diff every `state.sessions` refresh for status
-  // transitions across visible sessions (hidden kinds filtered inside
-  // `diffAttentionEvents`), not just the open one, so a background chat that
-  // starts waiting on the human still surfaces a notification.
-  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
-  // banner on Bridge not being focused.
+  // Attention notifications come from the core ledger: core decides what a
+  // person should know about (a worker finishing is its orchestrator's
+  // business; a worker asking for approval is the person's), and the feed
+  // hands over each new row once. `decide` turns it into a toast, an OS
+  // banner, or nothing: nothing for the chat on screen in a focused window,
+  // and a banner only while Bridge is in the background. On Linux the row's
+  // approval id lets the banner answer it in place.
   const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
-  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  const attentionSessionsRef = useRef<Session[]>(state.sessions);
+  attentionSessionsRef.current = state.sessions;
+  const presenceRef = useRef<Presence>({ focused: false, onScreen: new Set() });
+  const attentionSettings = useAttentionSettings();
+  const attentionSettingsRef = useRef(attentionSettings);
+  attentionSettingsRef.current = attentionSettings;
+  const showAttention = useCallback((item: AttentionItem) => {
+    const sessionId = item.sessionId;
+    const decision = decide(item, presenceRef.current, attentionSettingsRef.current);
+    if (!sessionId || !decision) return;
+    const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
+    const toast: AttentionToast = {
+      key: attentionToastKey(item),
+      sessionId,
+      copy,
+      firedAt: Date.now(),
+      durationMs: decision.durationMs,
+      ...(item.kind === "escalation" ? { actionLabel: "Deliver now" } : {}),
+    };
+    // Newest per chat wins, like the ledger itself.
+    if (decision.toast) setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-TOAST_QUEUE_MAX));
+    if (decision.banner) void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+    if (decision.sound) playAttentionSound(item.kind, item.severity);
+  }, []);
+  useAttentionFeed(showAttention);
+  // Opening a chat is seeing it, on every client. Keyed on the view too: the
+  // selection survives a trip to Memory or Settings, and coming back to the
+  // chat is seeing what landed meanwhile. `openSession` also stamps directly,
+  // for an open that changes neither.
   useEffect(() => {
-    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
-    previousAttentionSessionsRef.current = state.sessions;
-    if (!events.length) return;
-    const nextToasts: AttentionToast[] = [];
-    for (const event of events) {
-      const copy = attentionCopy(event);
-      const key = attentionToastKey(event);
-      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
-      void notifyWithActions(event.kind, event.session.id, copy.headline, copy.detail);
-    }
-    setAttentionToasts(current => {
-      // A chat can revisit the same key (waiting → working → waiting) before
-      // its first card's TTL elapses. Replace rather than skip so the card
-      // reflects the latest event and restarts its countdown.
-      let merged = current;
-      for (const toast of nextToasts) {
-        merged = [...merged.filter(item => item.key !== toast.key), toast];
-      }
-      return merged.slice(-3);
-    });
-  }, [state.sessions]);
+    if (selectedSessionId && view === "workspace") void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
+  }, [selectedSessionId, view]);
+  // What is still unread: the sidebar dots and the dock badge. Keyed on the
+  // session ids too, because archiving a chat changes the count without
+  // moving the ledger.
+  const sessionIdsKey = useMemo(() => state.sessions.map(item => item.id).sort().join(","), [state.sessions]);
+  const unread = useUnreadSummary(sessionIdsKey);
+  // Keyed on needsYou too: the native menu bar wakes on this event and words
+  // its row from it, so a finished chat that starts waiting at the same total
+  // must still be sent. The Dock just sets the same count again.
+  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
+  // The chat on screen in a focused window never stays unread: a turn that
+  // ends while you watch, or one that ended while Bridge was in the
+  // background, is seen once you are looking at it.
+  const windowFocused = useWindowFocused();
+  const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
+  const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  // Core names one client to post OS banners, so a second client on the same
+  // daemon does not raise a second banner for the same event.
+  const bannerOwner = useBannerOwner(windowFocused);
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []), bannerOwner };
+  useEffect(() => {
+    if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
+  }, [onScreenUnread, onScreenSessionId, unread]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -1074,10 +1115,18 @@ function AppContent() {
     openGithubPane(choice.link.view);
   }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
 
-  useEffect(() => {
-    setInternalLinkRouter(routeGithubLink);
-    return () => setInternalLinkRouter(undefined);
+  const routeInternalLink = useCallback((url: string): boolean | Promise<boolean> => {
+    const noteId = parseNoteLink(url);
+    if (!noteId) return routeGithubLink(url);
+    setView("notes");
+    setNoteOpenRequest(current => ({ id: noteId, nonce: (current?.nonce ?? 0) + 1 }));
+    return true;
   }, [routeGithubLink]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeInternalLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeInternalLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -1175,13 +1224,13 @@ function AppContent() {
   /** Jump-to-diff from a review comment: open the editor at the commented
    * file/line. When the PR head branch is not what this workspace has checked
    * out, the file still opens (read it, don't edit it) with a hint saying so. */
-  /** Gitplace has no chat of its own: open the newest chat in the comment's
+  /** Pulls has no chat of its own: open the newest chat in the comment's
    * workspace and jump there, or start one when the workspace has none. */
-  function jumpFromGitplace(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
+  function jumpFromPulls(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
     const chat = topSessions
       .filter(candidate => candidate.workspaceId === workspaceId)
       .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
-    setPendingGitplaceJump({ workspaceId, path, line, headBranch });
+    setPendingPullsJump({ workspaceId, path, line, headBranch });
     if (chat) {
       openSession(chat.id);
       return;
@@ -1309,18 +1358,18 @@ function AppContent() {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
   }
 
-  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // A review-comment jump from Pulls: the file lives in a worktree, so the
   // jump waits until a chat in that workspace is the one on screen, through a
   // draft's first message if it has to. Declared after the workspace-change
   // reset of the code reveal, so it runs after it.
-  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<GitplaceJump>();
+  const [pendingPullsJump, setPendingPullsJump] = useState<PullsJump>();
   useEffect(() => {
-    if (!pendingGitplaceJump) return;
-    const step = gitplaceJumpStep(pendingGitplaceJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
+    if (!pendingPullsJump) return;
+    const step = pullsJumpStep(pendingPullsJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
     if (step === "wait") return;
-    if (step === "jump") jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
-    setPendingGitplaceJump(undefined);
-  }, [pendingGitplaceJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
+    if (step === "jump") jumpToReviewComment(pendingPullsJump.path, pendingPullsJump.line, pendingPullsJump.headBranch);
+    setPendingPullsJump(undefined);
+  }, [pendingPullsJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -1681,6 +1730,7 @@ function AppContent() {
   // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
+    void bridgeApi.markAttentionSeen(id).catch(() => undefined);
     setView("workspace");
     setParadigm("single");
     setNewChatDraft(null);
@@ -2027,7 +2077,7 @@ function AppContent() {
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the storage chat but did not return its session");
       setState(next);
-      writeStorageChatId(created.id);
+      setStorageChatHistory(rememberStorageChat(created.id));
       setStorageChatId(created.id);
       await deliverPrompt(created, prompt);
     } finally {
@@ -2035,22 +2085,41 @@ function AppContent() {
       setStorageChatStarting(false);
     }
   }
+  const storageRecent = storageChatHistory
+    .map(id => state.sessions.find(candidate => candidate.id === id))
+    .filter((candidate): candidate is Session => !!candidate && candidate.id !== storageChatId)
+    .slice(0, 5)
+    .map(candidate => ({ id: candidate.id, title: candidate.title || candidate.label, at: candidate.startedAt ?? "" }));
+  const storageWorking = !!storageSession && (!!storageSession.activeTurnId || storageSession.status === "working");
   const storageCopilot: StorageCopilotHost = {
     ask: prompt => void askStorage(prompt).catch(e => setError(errorMessage(e))),
+    // A visit starts on a blank rail, unless a reply is still coming in.
+    onVisit: () => { if (!storageWorking) setStorageChatId(null); },
     render: (brief, selectedCount) => <StorageCopilot
       selectedCount={selectedCount}
       starting={storageChatStarting}
+      recent={storageRecent}
+      onOpenRecent={setStorageChatId}
       onAsk={question => void askStorage(brief(question)).catch(e => setError(errorMessage(e)))}
       chat={storageSession && <AsideChat
         docked
         tag="storage"
+        placeholder="Ask about your storage…"
+        headerActions={<button
+          type="button"
+          onClick={() => setStorageChatId(null)}
+          disabled={storageWorking}
+          title="New chat"
+          aria-label="New storage chat"
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+        ><SquarePen size={14} aria-hidden="true" /></button>}
         session={storageSession}
         adapters={adapters}
         accounts={providerAccounts}
         events={agentEvents}
         pendingMessages={storagePending}
         queuedFollowUpCount={queuedFollowUps(storageSession.id, state.events).length}
-        working={!!storageSession.activeTurnId || storageSession.status === "working"}
+        working={storageWorking}
         suggestionSettings={suggestionSettings}
         modelSwitch={modelSwitch?.sessionId === storageSession.id ? modelSwitch : null}
         onSend={(text, attachments) => deliverPrompt(storageSession, brief(text), attachments)}
@@ -3240,7 +3309,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3288,6 +3357,7 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      unread={unread.byChat}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
@@ -3296,7 +3366,7 @@ function AppContent() {
       notesActive={view === "notes"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
-      gitplaceActive={view === "gitplace"}
+      pullsActive={view === "pulls"}
       agentFleetActive={view === "agent-fleet"}
       missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
@@ -3316,7 +3386,7 @@ function AppContent() {
       onOpenMemory={() => setView("memory")}
       onOpenNotes={() => setView("notes")}
       onOpenUsage={() => setView("usage")}
-      onOpenGitplace={() => setView("gitplace")}
+      onOpenPulls={() => setView("pulls")}
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
@@ -3379,6 +3449,7 @@ function AppContent() {
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
+        openRequest={noteOpenRequest}
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
@@ -3394,10 +3465,10 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
-        onJumpToFile={jumpFromGitplace}
+        onJumpToFile={jumpFromPulls}
         onAddProject={() => setNewProjectOpen(true)}
       /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
@@ -3921,6 +3992,14 @@ function AppContent() {
         openSession(toast.sessionId);
       }}
       onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+      onAction={toast => {
+        // The only remedy so far: deliver input stranded behind a stopped agent.
+        // Any answer means the queue is handled; a failure rejects, and the
+        // card stays so the person can try again.
+        void bridgeApi.deliverQueuedInput(toast.sessionId)
+          .then(() => setAttentionToasts(current => current.filter(item => item.key !== toast.key)))
+          .catch(error => setError(errorMessage(error)));
+      }}
     />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     {INBOX_PANE_ENABLED && <ConnectorToasts
@@ -3937,7 +4016,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
-    </div>
+    {/* Last: an update can wait behind anything happening now. */}
     {availableUpdate && (
       <UpdateToast
         key={`${availableUpdate.channel}:${availableUpdate.version}`}
@@ -3946,6 +4025,7 @@ function AppContent() {
         onDismiss={() => setAvailableUpdate(undefined)}
       />
     )}
+    </div>
 
     <ProviderSignInDialog
       provider={loginProvider}

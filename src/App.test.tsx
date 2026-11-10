@@ -994,15 +994,15 @@ describe("the dock in the session view", () => {
     expect(outside).toHaveLength(0);
   });
 
-  // A review-comment jump from Gitplace into a workspace with no chat: the
+  // A review-comment jump from Pulls into a workspace with no chat: the
   // draft's first message creates the chat, and the file still opens in it.
-  it("keeps a Gitplace file jump through a new chat's first message", async () => {
+  it("keeps a Pulls file jump through a new chat's first message", async () => {
     const real = await bridgeApi.state();
     const lonely = real.workspaces.find(workspace => workspace.id === "demo-3")!;
     vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
     const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
     await mountApp();
-    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Gitplace")!);
+    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Pulls")!);
     await settle(4);
     await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
     await settle(4);

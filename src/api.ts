@@ -1,5 +1,8 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
+import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
+import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
+import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -3095,6 +3098,8 @@ export const bridgeApi = {
     appendAgent(sessionId, "message.delta", { itemId: assistantItemId, role: "assistant", status: "streaming", text: "I’ll handle that through the normalized adapter layer. " });
     appendAgent(sessionId, "message.completed", { itemId: assistantItemId, role: "assistant", status: "completed", text: "I’ll handle that through the normalized adapter layer. The GUI remains provider-neutral, and no agent TUI is rendered." });
     session.status = "ready"; session.activeTurnId = null; emitState();
+    // Core writes this row when a top-level chat's turn completes.
+    if (!session.parentSessionId) pushMockAttention({ kind: "finished", sessionId, title: "Turn completed", body: `${session.title || session.label} · ${harnessLabel(session.harness)} finished its turn` });
   },
   // The active-turn input contract. Unlike sendTurn this is safe to call while
   // the agent is working: the preference chooses native steering or queueing,
@@ -3357,6 +3362,56 @@ export const bridgeApi = {
   onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe("learning-job-changed", handler);
     return () => undefined;
+  },
+  /** The person's attention rows after a cursor, oldest first. */
+  listAttention: async (params: ListAttentionParams = {}): Promise<ListAttentionResult> => {
+    // The desktop shell's command takes `unseenOnly` as a plain bool.
+    if (hasBackend()) return call("attention/list_attention", { ...params, unseenOnly: params.unseenOnly ?? false });
+    return mockListAttention(params);
+  },
+  /** Seen is a server fact: every client hears about it through `attention/changed`. */
+  markAttentionSeen: async (sessionId: string): Promise<MarkAttentionSeenResult> => {
+    if (hasBackend()) return call("attention/mark_attention_seen", { sessionId });
+    return mockMarkAttentionSeen(sessionId);
+  },
+  /** What is still unread, rolled up to the chats in the sidebar. */
+  unreadSummary: async (): Promise<UnreadSummary> => {
+    if (hasBackend()) return call("attention/unread_summary");
+    return mockUnreadSummary(id => {
+      const session = mockState.sessions.find(item => item.id === id);
+      return session ? session.parentSessionId ?? null : undefined;
+    });
+  },
+  /** Renew this client's presence lease; the answer says whether it posts OS banners. */
+  reportPresence: async (clientId: string, presence: { focused: boolean; gone?: boolean; canPostBanners?: boolean }): Promise<ReportPresenceResult> => {
+    if (hasBackend()) {
+      return call("attention/report_presence", {
+        clientId,
+        clientKind: isTauri() ? "desktop" : "web",
+        focused: presence.focused,
+        gone: presence.gone ?? false,
+        ...(presence.canPostBanners === undefined ? {} : { canPostBanners: presence.canPostBanners }),
+      });
+    }
+    // One client, no daemon: it owns its banners.
+    return { bannerOwner: true };
+  },
+  /** The dock badge. The shell owns the window, so this is an event the shell
+   *  listens for, like `revealMainWindow`; zero clears it. */
+  setUnreadBadge: async (count: number): Promise<void> => {
+    if (!isTauri()) return;
+    await shellEmit("bridge-unread-badge", count);
+  },
+  /** Deliver a chat's stranded input now, resuming its agent if it stopped. */
+  deliverQueuedInput: async (sessionId: string): Promise<DeliverQueuedInputResult> => {
+    if (hasBackend()) return call("sessions/deliver_queued_input", { sessionId });
+    // The mock has no adapters to strand input behind.
+    return { disposition: "nothingQueued" };
+  },
+  /** Refetch hint: reread `listAttention` from your cursor. Carries no rows. */
+  onAttentionChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe("attention/changed", () => handler());
+    return onMockAttentionChanged(handler);
   },
   onMemoryChanged: async (handler: (payload: MemoryChangedPayload) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<MemoryChangedPayload>("memory-changed", handler);
@@ -3724,7 +3779,7 @@ const mockManagedAgents: ManagedAgentList = {
       executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
       // Deliberately behind the pin: mock mode is where the Update action is
       // developed and reviewed, so one runtime has to have an update waiting.
-      version: "0.3.209", pinnedVersion: "0.3.284", updateAvailable: true, consecutiveFailures: 0,
+      version: "0.3.209", pinnedVersion: "0.3.322", updateAvailable: true, consecutiveFailures: 0,
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,

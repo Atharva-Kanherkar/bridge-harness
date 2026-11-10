@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! bridge exec --json --harness <id> [flags] "<prompt>"   run one turn, stream JSONL events
+//!           [--wait finished,needsYou,...]               or wait server-side and exit by state
 //! bridge exec --json [flags] --method <m> [--params <json>]
 //!                                                        call one protocol method
 //! bridge learning run --database <bridge.db> --trigger <...>
@@ -43,7 +44,7 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "usage:\n  bridge exec --json [--data-dir <dir>] [--timeout <secs>] \
-                 (--harness <id> [--model <id>] \"<prompt>\" | --method <name> [--params <json>])\n  \
+                 (--harness <id> [--model <id>] [--wait <states>] \"<prompt>\" | --method <name> [--params <json>])\n  \
                  bridge learning run --database <bridge.db> --trigger \
                  <manual|in-app|codex:ID|claude:ID|opencode:ID> [--credential-ref <reference>]\n  \
                  bridge meter --json\n  \
@@ -288,6 +289,37 @@ struct ExecFlags {
     method: Option<String>,
     params: Option<Value>,
     prompt: Option<String>,
+    /// `sessions/wait` states, in wire spelling, for `--wait`.
+    wait: Option<Vec<String>>,
+}
+
+/// `--wait finished,needs_you` to wire states. `needs_you` and `needsYou`
+/// both read as the request state.
+fn parse_wait_states(value: &str) -> Result<Vec<String>, String> {
+    let states: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(|state| match state {
+            "finished" | "failed" | "idle" => Ok(state.to_owned()),
+            "needs_you" | "needsYou" | "needs-you" => Ok("needsYou".to_owned()),
+            other => Err(format!("--wait takes finished, failed, needs_you or idle, not {other}")),
+        })
+        .collect::<Result<_, _>>()?;
+    if states.is_empty() {
+        return Err("--wait needs at least one state".into());
+    }
+    Ok(states)
+}
+
+/// `bridge exec --wait` exit codes: 0 finished or idle, 3 waiting on the
+/// person, 1 failed or nothing matched. A timeout is an error, also 1.
+fn wait_exit_code(state: &str, matched: bool) -> u8 {
+    match (state, matched) {
+        ("finished" | "idle", true) => 0,
+        ("needsYou", true) => 3,
+        _ => 1,
+    }
 }
 
 fn parse_exec_flags(args: &[String]) -> Result<ExecFlags, String> {
@@ -299,6 +331,7 @@ fn parse_exec_flags(args: &[String]) -> Result<ExecFlags, String> {
     let mut method = None;
     let mut params = None;
     let mut prompt = None;
+    let mut wait = None;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         let mut value = |flag: &str| {
@@ -317,6 +350,7 @@ fn parse_exec_flags(args: &[String]) -> Result<ExecFlags, String> {
                 )
             }
             "--method" => method = Some(value("--method")?),
+            "--wait" => wait = Some(parse_wait_states(&value("--wait")?)?),
             "--params" => {
                 params = Some(
                     serde_json::from_str(&value("--params")?)
@@ -346,7 +380,30 @@ fn parse_exec_flags(args: &[String]) -> Result<ExecFlags, String> {
         }
         _ => {}
     }
-    Ok(ExecFlags { data_dir, harness, model, timeout, method, params, prompt })
+    if wait.is_some() && method.is_some() {
+        return Err("--wait goes with a prompt; for a single call use --method sessions/wait".into());
+    }
+    Ok(ExecFlags { data_dir, harness, model, timeout, method, params, prompt, wait })
+}
+
+/// `--wait`: start the chat, pin the ledger, send, and let the daemon wait.
+/// The pin is read before the send, so the turn it sends is the one waited
+/// for, with no race against a fast turn.
+fn exec_turn_and_wait(client: &DaemonClient, session_id: &str, prompt: &str, until: &[String], budget: &Budget) -> Result<ExitCode, String> {
+    budget.call(client, MethodName::StartChat, Some(json!({"sessionId": session_id})))?;
+    let page = budget.call(client, MethodName::ListAttention, Some(json!({"limit": 1})))?;
+    let pin = page["latestSequence"].as_i64().unwrap_or(0);
+    budget.call(client, MethodName::SendTurn, Some(json!({"sessionId": session_id, "text": prompt})))?;
+    let timeout_ms = budget.remaining()?.as_millis() as u64;
+    let result = budget.call(
+        client,
+        MethodName::Wait,
+        Some(json!({"sessionId": session_id, "until": until, "timeoutMs": timeout_ms, "afterSequence": pin})),
+    )?;
+    emit(&json!({"type": "exec.wait", "sessionId": session_id, "result": result}));
+    let state = result["state"].as_str().unwrap_or("");
+    let matched = result["matched"].as_bool().unwrap_or(false);
+    Ok(ExitCode::from(wait_exit_code(state, matched)))
 }
 
 /// The whole command's time budget, shared by every call.
@@ -570,6 +627,10 @@ fn exec_turn(client: &DaemonClient, flags: &ExecFlags, budget: &Budget) -> Resul
     let session_id = created.session_id;
     emit(&json!({"type": "session", "sessionId": session_id, "harness": harness}));
 
+    if let Some(until) = &flags.wait {
+        return exec_turn_and_wait(client, &session_id, prompt, until, budget);
+    }
+
     // Subscribe from cursor 0 before starting, so nothing between start and
     // first poll can be missed; the stream discards replayed duplicates.
     let mut events = SessionEventStream::new(client, session_id.clone(), 0)
@@ -764,5 +825,24 @@ mod tests {
         assert!(error.contains("--json"), "{error}");
         assert!(parse(&["--json", "--data-dir", "/tmp/x", "--method", "health/health"]).is_ok());
         assert!(parse(&["--json", "--data-dir", "/tmp/x", "--harness", "codex", "hi"]).is_ok());
+    }
+
+    #[test]
+    fn wait_states_parse_and_map_to_exit_codes() {
+        let parse = |args: &[&str]| {
+            parse_exec_flags(&args.iter().map(|value| value.to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(parse_wait_states("finished, needs_you").unwrap(), vec!["finished", "needsYou"]);
+        assert_eq!(parse_wait_states("idle,needsYou,failed").unwrap(), vec!["idle", "needsYou", "failed"]);
+        assert!(parse_wait_states("done").is_err());
+        assert!(parse_wait_states(" , ").is_err());
+        assert_eq!(wait_exit_code("finished", true), 0);
+        assert_eq!(wait_exit_code("idle", true), 0);
+        assert_eq!(wait_exit_code("needsYou", true), 3);
+        assert_eq!(wait_exit_code("failed", true), 1);
+        assert_eq!(wait_exit_code("idle", false), 1, "nothing matched");
+        let flags = parse(&["--json", "--data-dir", "/tmp/x", "--harness", "claude", "--wait", "finished,needs_you", "do it"]).unwrap();
+        assert_eq!(flags.wait.unwrap(), vec!["finished", "needsYou"]);
+        assert!(parse(&["--json", "--data-dir", "/tmp/x", "--method", "health/health", "--wait", "idle"]).is_err());
     }
 }

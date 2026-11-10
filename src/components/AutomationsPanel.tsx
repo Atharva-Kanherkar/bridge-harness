@@ -1,4 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Clock, LoaderCircle, Pause, Pencil, Play, Plus, RefreshCw, Rocket, Trash2, X } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -117,7 +118,7 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
       </div>
 
       {failure && <div className="mt-3 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-caption text-destructive"><AlertTriangle className="mt-0.5 shrink-0" size={12}/><span className="min-w-0 break-words">{failure}</span></div>}
-      {loading && !catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Reading native schedules…</div>}
+      {loading && !catalog && <SkeletonRows label="Reading native schedules" rows={4} lead="icon" trailing className="mt-4" />}
       {!loading && !catalog && <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs text-muted-foreground"><p>Bridge could not read the native schedules.</p><Button size="xs" variant="secondary" onClick={() => void refresh()}><RefreshCw size={11}/>Try again</Button></div>}
       {catalog && automations.length === 0 && <p className="py-16 text-center text-xs text-muted-foreground">{catalog.automations.length === 0 ? "No native automations yet." : "No automations match these filters."}</p>}
       {catalog && automations.length > 0 && <div className="mt-4 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{automations.map(automation => {

@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { GITPLACE_REPO_KEY, GitplaceScreen, gitplaceRepos } from "./GitplaceScreen";
+import { PULLS_REPO_KEY, PullsScreen, pullsRepos } from "./PullsScreen";
 import type { Project, Workspace } from "../types";
 
 const workspace = (id: string, overrides: Partial<Workspace> = {}): Workspace => ({
@@ -39,9 +39,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("gitplaceRepos", () => {
+describe("pullsRepos", () => {
   it("lists one entry per project, skips folderless workspaces, and names it after the project", () => {
-    const repos = gitplaceRepos([
+    const repos = pullsRepos([
       workspace("a", { projectId: "p1", createdAt: "2026-09-01T00:00:00Z" }),
       workspace("b", { projectId: "p1", createdAt: "2026-09-03T00:00:00Z" }),
       workspace("c", { path: null }),
@@ -51,11 +51,11 @@ describe("gitplaceRepos", () => {
   });
 });
 
-describe("GitplaceScreen", () => {
+describe("PullsScreen", () => {
   it("renders the GitHub pane at page width with no session, and switches repositories", async () => {
     const statusSpy = vi.spyOn(bridgeApi, "githubStatus");
     vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: false });
-    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha"), workspace("beta")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    await act(async () => root.render(<PullsScreen workspaces={[workspace("alpha"), workspace("beta")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
     await act(flush);
     expect(host.querySelector('section[aria-label="GitHub repository"]')).not.toBeNull();
     expect(statusSpy).toHaveBeenLastCalledWith("alpha", false);
@@ -65,20 +65,20 @@ describe("GitplaceScreen", () => {
     await act(async () => beta.click());
     await act(flush);
     expect(statusSpy).toHaveBeenLastCalledWith("beta", false);
-    expect(localStorage.getItem(GITPLACE_REPO_KEY)).toBe("beta");
+    expect(localStorage.getItem(PULLS_REPO_KEY)).toBe("beta");
   });
 
   it("reopens the repository it was last on", async () => {
     vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: false });
-    localStorage.setItem(GITPLACE_REPO_KEY, "beta");
-    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha"), workspace("beta")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    localStorage.setItem(PULLS_REPO_KEY, "beta");
+    await act(async () => root.render(<PullsScreen workspaces={[workspace("alpha"), workspace("beta")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
     await act(flush);
     expect(host.querySelector('button[aria-label="Repository: beta"]')).not.toBeNull();
   });
 
   it("asks for a project when no workspace has a folder", async () => {
     const add = vi.fn();
-    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("x", { path: null })]} projects={[]} onJumpToFile={() => {}} onAddProject={add} />));
+    await act(async () => root.render(<PullsScreen workspaces={[workspace("x", { path: null })]} projects={[]} onJumpToFile={() => {}} onAddProject={add} />));
     expect(host.textContent).toContain("Add a project with a GitHub remote");
     await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Add a project")!.click());
     expect(add).toHaveBeenCalledTimes(1);
@@ -87,7 +87,7 @@ describe("GitplaceScreen", () => {
   it("renders the hide-attribution toggle and persists the switch", async () => {
     vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: true });
     const save = vi.spyOn(bridgeApi, "saveAttributionSettings").mockResolvedValue({ hideAiAttribution: false });
-    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    await act(async () => root.render(<PullsScreen workspaces={[workspace("alpha")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
     await act(flush);
     const toggle = host.querySelector('button[role="switch"][aria-label="Hide AI attribution"]') as HTMLButtonElement | null;
     expect(toggle).not.toBeNull();
@@ -100,7 +100,7 @@ describe("GitplaceScreen", () => {
   it("rolls the switch back and shows an alert when the save is rejected", async () => {
     vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: false });
     vi.spyOn(bridgeApi, "saveAttributionSettings").mockRejectedValue(new Error("method_not_found"));
-    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    await act(async () => root.render(<PullsScreen workspaces={[workspace("alpha")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
     await act(flush);
     const toggle = host.querySelector('button[role="switch"][aria-label="Hide AI attribution"]') as HTMLButtonElement | null;
     expect(toggle!.getAttribute("aria-checked")).toBe("false");

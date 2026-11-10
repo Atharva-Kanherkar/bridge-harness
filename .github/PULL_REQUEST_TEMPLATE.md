@@ -1,13 +1,29 @@
-## Summary
+<!--
+PR notes. CI fails the "PR notes" check until all five sections below have
+real content. Rule: docs/pr-format.md. Comments like this one do not count.
+-->
 
-<!-- What changed and why, in a few sentences. -->
+Plan note: <!-- the plan written before coding (what, why, how), e.g. a Bridge note or issue comment -->
+Linked issue: <!-- #123, or "none" -->
 
-## Linked issue
+## What I did
 
-<!-- Optional: #123 — omit if there is no tracking issue. -->
+<!-- The change in a few sentences, in your own words. -->
 
-## Checklist
+## Codebase affected
 
-- [ ] `bun run build` and `bun run test` pass locally (or I explain why not applicable)
-- [ ] Docs updated when behavior or setup changed
-- [ ] PR title uses [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, …)
+<!-- Crates, modules, files, wire methods, migrations, workflows. -->
+
+## Users affected
+
+<!-- Who notices, on which surface or platform, and what they see. "No user-facing change" plus why is a valid answer. -->
+
+## Tests I ran
+
+<!-- Each command and its output, pasted unedited in a fenced code block. Say what you did not run and why. -->
+
+## Tradeoffs and risks
+
+<!-- What you gave up, what could go wrong, and how someone would notice. -->
+
+<!-- UI change? Add a ## Screenshots section with dark, light and one interaction state. -->

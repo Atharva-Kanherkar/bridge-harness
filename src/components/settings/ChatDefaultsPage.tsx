@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import { layerChatDefaults, WORKER_EFFORTS } from "../../chatDefaults";
 import type { AdapterDescriptor, AgentDefinition, Project } from "../../types";
@@ -84,7 +85,7 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
       <SettingsRow label="Apply defaults to" description="Project settings belong to this Bridge project on this device." control={<DefaultsSelect label="Defaults scope" value={scope} options={[{ value: "", label: "All projects (application default)" }, ...projects.map(p => ({ value: p.id, label: p.name }))]} onChange={setScope} />} />
     </SettingsGroup>
     {error && <div role="alert" className="text-ui text-destructive">{error} <TextButton onClick={() => setReload(value => value + 1)}>Reload defaults</TextButton></div>}
-    {!view ? <p role="status" className="text-ui text-muted-foreground">{busy ? "Loading defaults…" : "Defaults could not be loaded."}</p> : <>
+    {!view ? busy ? <SkeletonRows label="Loading defaults" rows={4} trailing /> : <p role="status" className="text-ui text-muted-foreground">Defaults could not be loaded.</p> : <>
       <SettingsGroup label="When a chat starts">
         <SettingsRow label="Agent or chat mode" description={source("target")} control={<DefaultsSelect label="Default chat target" disabled={busy} value={selectValue("target", draft)} options={[inherited, ...choices.target]} onChange={value => setField("target", value, value => value.startsWith("agent:") ? { kind: "agent", agentId: value.slice(6) } : { kind: value as "direct" | "orchestrator" })} />} />
         <SettingsRow label="Model" description={source("model")} control={<DefaultsSelect label="Default chat model" disabled={busy} value={selectValue("model", draft)} options={[inherited, ...choices.model]} onChange={value => {

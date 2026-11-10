@@ -93,6 +93,20 @@
           "type": "string"
         },
         {
+          "description": "Input queued for a chat whose adapter is gone has waited past the bound. `sessions/deliver_queued_input` delivers it.",
+          "enum": [
+            "escalation"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An agent asked for the person (`attention/post`, the `notify_user` tool). Title and body are the agent's own words.",
+          "enum": [
+            "posted"
+          ],
+          "type": "string"
+        },
+        {
           "description": "A kind added after this client was built. The ledger gains kinds slice by slice; decoding them as `other` keeps an older client's read working instead of failing it, and a client shows nothing for them.",
           "enum": [
             "other"

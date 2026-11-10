@@ -1,9 +1,9 @@
 import type { AppView } from "./navigationHistory";
 
-/** A review-comment location clicked in Gitplace, waiting for a chat in its
+/** A review-comment location clicked in Pulls, waiting for a chat in its
  *  workspace to be on screen: the file lives in that worktree, and only a chat
  *  has the Code pane to open it in. */
-export type GitplaceJump = { workspaceId: string; path: string; line: number | undefined; headBranch: string };
+export type PullsJump = { workspaceId: string; path: string; line: number | undefined; headBranch: string };
 
 /// What to do with a pending jump given what is on screen now.
 ///
@@ -12,8 +12,8 @@ export type GitplaceJump = { workspaceId: string; path: string; line: number | u
 ///   exist until its first message is sent, and the jump must survive that.
 /// - `drop`: the reader went somewhere else (another chat, another draft,
 ///   another view), so the jump is stale and must not fire later by surprise.
-export function gitplaceJumpStep(
-  jump: GitplaceJump,
+export function pullsJumpStep(
+  jump: PullsJump,
   now: { view: AppView; sessionWorkspaceId?: string | null; draftWorkspaceId?: string | null },
 ): "jump" | "wait" | "drop" {
   if (now.view !== "workspace") return "drop";

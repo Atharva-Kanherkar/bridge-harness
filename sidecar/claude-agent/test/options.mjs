@@ -25,7 +25,7 @@ test("resumed queries use resume without requesting a new session id", () => {
 
 test("query options load explicit Claude plugins and credential-free connectors", () => {
   const mcpServers = { "claude.ai Notion": { type: "http", url: "https://mcp.example/notion" } };
-  const options = buildOptions({ ...base, writeMode: "Shared", resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers });
+  const options = buildOptions({ ...base, writeMode: "Shared", resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers, projectTrusted: true });
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.equal(options.skills, "all");
   assert.equal(options.strictMcpConfig, false);
@@ -41,6 +41,16 @@ test("query options load explicit Claude plugins and credential-free connectors"
   assert.equal(options.allowedTools, undefined);
   assert.equal(options.tools, undefined);
   assert.equal(options.disallowedTools, undefined);
+});
+
+test("a folder's own settings load only when the folder is trusted", () => {
+  for (const writeMode of ["Shared", "Isolated", "Full", undefined]) {
+    assert.deepEqual(buildOptions({ ...base, writeMode }).settingSources, ["user"], `${writeMode} defaults to untrusted`);
+    assert.deepEqual(buildOptions({ ...base, writeMode, projectTrusted: false }).settingSources, ["user"]);
+    assert.deepEqual(buildOptions({ ...base, writeMode, projectTrusted: true }).settingSources, ["user", "project", "local"]);
+  }
+  // A read-only worker never loads them, trusted or not.
+  assert.deepEqual(buildOptions({ ...base, writeMode: "ReadOnly", projectTrusted: true }).settingSources, ["user"]);
 });
 
 test("Claude receives the compiled stable prefix before variable context", () => {

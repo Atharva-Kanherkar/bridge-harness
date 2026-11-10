@@ -6,9 +6,17 @@ import type { Editor } from "@tiptap/core";
 import { resetMockNotes } from "../../../notesMock";
 import { NoteEditor, HAND_OVER_MS, type NoteEditorHandle, type NoteEditorProps } from "./NoteEditor";
 import { imageWidthOf } from "./views";
+import { BLOCK_CHOICES } from "./slash";
 
 // No core assets in jsdom: images draw from a fake url, which still exercises
 // the caption and the resize handles.
+// Excalidraw itself needs a real canvas; the block around it is what is tested here.
+vi.mock("./drawingCanvas", () => ({
+  DrawingPreview: ({ scene }: { scene: { elements: unknown[] } }) => <p data-preview="">{scene.elements.length} elements</p>,
+  DrawingEditor: ({ body, onSave, onClose }: { body: string; onSave: (body: string) => void; onClose: () => void }) => <div data-drawing-editor="">
+    <button type="button" onClick={() => { onSave(body.replace('"elements":[\n', '"elements":[\n{"id":"n","type":"rectangle","x":0,"y":0,"width":10,"height":10,"version":1},\n')); onClose(); }}>Save drawing</button>
+  </div>,
+}));
 vi.mock("./assets", async actual => ({ ...(await actual<typeof import("./assets")>()), assetUrl: async (source: string) => `blob:asset${source}` }));
 
 let host: HTMLDivElement;
@@ -484,3 +492,125 @@ describe("NoteEditor", () => {
     expect(onChange.mock.calls[0][0]).toBe("Intro\n\n![Plan](assets/0123456789abcdef.png \"120\")\n");
   });
 });
+
+describe("rich fences", () => {
+  const MATH = "Before\n\n```math\nx^2 + y^2\n```\n\nAfter\n";
+  const figure = () => host.querySelector("[data-rich-fence]");
+  const source = () => host.querySelector<HTMLPreElement>(".note-editor pre")!;
+  // jsdom focuses only an element with a tabindex, never a bare
+  // contenteditable, and runs no frame for tiptap's deferred focus; a browser
+  // needs neither.
+  const focusable = async () => {
+    editor().view.dom.setAttribute("tabindex", "-1");
+    await act(async () => { editor().view.dom.focus(); });
+  };
+  /** Put the cursor inside the first code block, with the editor focused. */
+  const enterFence = async () => {
+    let at = -1;
+    editor().state.doc.descendants((node, pos) => { if (at < 0 && node.type.name === "codeBlock") at = pos; });
+    await focusable();
+    await act(async () => { editor().chain().focus().setTextSelection(at + 2).run(); });
+    await settle();
+  };
+
+  it("round-trips a mermaid fence unchanged", async () => {
+    const text = "Intro\n\n```mermaid\ngraph TD; A-->B\n```\n";
+    const { onChange } = await mount(text);
+    await typeAfter("Intro", "!");
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith(text.replace("Intro", "Intro!"));
+  });
+
+  it("shows the figure for a rich fence and hides its source", async () => {
+    await mount(MATH);
+    expect(figure()?.querySelector(".katex")).not.toBeNull();
+    expect(source().hidden).toBe(true);
+    expect(source().textContent).toBe("x^2 + y^2");
+  });
+
+  it("shows the source while the cursor is inside", async () => {
+    await mount(MATH);
+    await enterFence();
+    expect(figure()).toBeNull();
+    expect(source().hidden).toBe(false);
+    await act(async () => { editor().chain().focus().setTextSelection(2).run(); });
+    await settle();
+    expect(figure()).not.toBeNull();
+  });
+
+  it("clicking the figure moves the cursor into the source", async () => {
+    await mount(MATH);
+    await focusable();
+    await act(async () => { figure()!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+    await settle();
+    expect(editor().isActive("codeBlock")).toBe(true);
+    expect(figure()).toBeNull();
+    expect(source().hidden).toBe(false);
+  });
+
+  it("leaves an ordinary code block as code", async () => {
+    await mount("```ts\nconst x = 1;\n```\n");
+    expect(figure()).toBeNull();
+    expect(source().hidden).toBe(false);
+    expect(source().textContent).toBe("const x = 1;");
+  });
+
+  describe("drawings", () => {
+    const SCENE = '{"type":"excalidraw","version":2,"source":"bridge","elements":[\n{"id":"a","type":"rectangle","x":0,"y":0,"width":10,"height":10,"version":3}\n],"appState":{},"files":{}}';
+    const PAGE = `Before\n\n\`\`\`excalidraw\n${SCENE}\n\`\`\`\n\nAfter\n`;
+    const drawingBlock = () => host.querySelector("[data-drawing]");
+    const pressDrawing = async () => {
+      await act(async () => { host.querySelector("[data-drawing] button")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+      await settle();
+    };
+
+    it("draws an excalidraw fence in place, hides its JSON, and round-trips it", async () => {
+      const { onChange } = await mount(PAGE);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(drawingBlock()?.textContent).toContain("1 elements");
+      expect(source().hidden).toBe(true);
+      await typeAfter("Before", "!");
+      await commit();
+      expect(onChange).toHaveBeenLastCalledWith(PAGE.replace("Before", "Before!"));
+    });
+
+    it("opens the editor on a click and saves the scene into the fence", async () => {
+      const { onChange } = await mount(PAGE);
+      await pressDrawing();
+      expect(host.ownerDocument.querySelector("[data-drawing-editor]")).not.toBeNull();
+      await act(async () => { [...host.ownerDocument.querySelectorAll("button")].find(node => node.textContent === "Save drawing")!.click(); });
+      await commit();
+      const saved = onChange.mock.calls.at(-1)![0] as string;
+      expect(saved.startsWith("Before\n\n```excalidraw\n{")).toBe(true);
+      expect(saved).toContain('{"id":"n","type":"rectangle"');
+      expect(saved).toContain('{"id":"a","type":"rectangle"');
+      expect(saved.endsWith("```\n\nAfter\n")).toBe(true);
+      expect(host.ownerDocument.querySelector("[data-drawing-editor]")).toBeNull();
+    });
+
+    it("shows a fence that is not a scene as code", async () => {
+      await mount("```excalidraw\nnot json\n```\n");
+      expect(drawingBlock()).toBeNull();
+      expect(source().hidden).toBe(false);
+    });
+
+    it("the slash menu inserts an empty drawing", async () => {
+      const { onChange } = await mount("first\n");
+      await act(async () => { editor().chain().focus("end").insertContent({ type: "paragraph" }).run(); });
+      await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "drawing")!.run(editor(), {} as never); });
+      await commit();
+      expect(onChange).toHaveBeenLastCalledWith('first\n\n```excalidraw\n{"type":"excalidraw","version":2,"source":"bridge","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}\n```\n');
+      expect(drawingBlock()?.textContent).toContain("Empty drawing. Click to draw.");
+    });
+  });
+
+  it("the slash menu inserts a mermaid block", async () => {
+    const { onChange } = await mount("first\n");
+    await act(async () => { editor().chain().focus("end").insertContent({ type: "paragraph" }).run(); });
+    await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "mermaid")!.run(editor(), {} as never); });
+    await act(async () => { editor().commands.insertContent("graph TD; A-->B"); });
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith("first\n\n```mermaid\ngraph TD; A-->B\n```\n");
+  });
+});
+

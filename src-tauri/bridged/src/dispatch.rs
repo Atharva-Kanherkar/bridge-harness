@@ -434,9 +434,27 @@ pub fn dispatch(
             let p: wire::ListAttentionParams = decode(method, params)?;
             reply(api::list_attention(core, &p))
         }
+        MethodName::DeliverQueuedInput => {
+            let p: wire::DeliverQueuedInputParams = decode(method, params)?;
+            reply(api::deliver_queued_input(core, &p))
+        }
         MethodName::MarkAttentionSeen => {
             let p: wire::MarkAttentionSeenParams = decode(method, params)?;
             reply(api::mark_attention_seen(core, &p))
+        }
+        MethodName::UnreadSummary => reply(api::unread_summary(core)),
+        MethodName::Wait => {
+            // Long-lived: it holds this connection, never the database.
+            let p: wire::WaitParams = decode(method, params)?;
+            reply(api::wait_session(core, &p))
+        }
+        MethodName::Post => {
+            let p: wire::PostParams = decode(method, params)?;
+            reply(api::post_attention(core, &p))
+        }
+        MethodName::ReportPresence => {
+            let p: wire::ReportPresenceParams = decode(method, params)?;
+            reply(api::report_presence(core, &p))
         }
         MethodName::ResolveApproval => {
             let p: wire::ResolveApprovalParams = decode(method, params)?;
@@ -1341,6 +1359,8 @@ mod tests {
         let core = core(fixture.path());
         let empty = dispatch(&core, MethodName::ListAttention, None).unwrap();
         assert_eq!(empty, json!({"items": [], "latestSequence": 0}));
+        let nothing_unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(nothing_unread, json!({"total": 0, "needsYou": 0, "byChat": {}, "bySession": {}}));
         {
             let db = core.db.lock().unwrap();
             db.execute(
@@ -1357,15 +1377,97 @@ mod tests {
         assert_eq!(page["items"][0]["kind"], json!("finished"));
         assert_eq!(page["items"][0]["severity"], json!("informational"));
         assert_eq!(page["items"][0]["body"], json!("Fix login · Claude finished its turn"));
+        let unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(unread, json!({"total": 1, "needsYou": 0, "byChat": {"s": "finished"}, "bySession": {"s": "finished"}}));
 
         let seen = dispatch(&core, MethodName::MarkAttentionSeen, Some(json!({"sessionId": "s"}))).unwrap();
         assert_eq!(seen, json!({"updated": 1}));
         let unseen = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
         assert_eq!(unseen["items"], json!([]));
+        assert_eq!(dispatch(&core, MethodName::UnreadSummary, None).unwrap()["total"], json!(0));
 
         let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
         let error = dispatch(&core, MethodName::ListAttention, Some(json!({"cursor": 1}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+
+        let nothing = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
+        let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
+            .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn a_wait_returns_when_another_thread_ends_the_turn() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title,active_turn_id) VALUES('s','claude','Chat','working','direct','Fix login','t1')", [])
+            .unwrap();
+        let writer = {
+            let core = core.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let db = core.db.lock().unwrap();
+                db.execute("UPDATE sessions SET status='ready', active_turn_id=NULL WHERE id='s'", []).unwrap();
+                let mut ended = bridge_core::agent::NormalizedEvent::new("turn.completed");
+                ended.status = Some("completed".into());
+                bridge_core::store::session_event(&db, "s", &ended, &json!({})).unwrap();
+            })
+        };
+        let result = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": ["finished", "needsYou"], "timeoutMs": 5000}))).unwrap();
+        writer.join().unwrap();
+        assert_eq!(result["state"], json!("finished"));
+        assert_eq!(result["matched"], json!(true));
+        assert_eq!(result["item"]["kind"], json!("finished"));
+        let error = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": []}))).expect_err("an empty until is refused");
+        assert_eq!(error.code, ErrorCode::Invalid.code());
+        let error = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": ["idle"], "turnId": "t1"}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn an_agent_post_lands_in_the_ledger_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('s','claude','Chat','ready','direct','Fix login')", [])
+            .unwrap();
+        let posted = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "Which database?", "severity": "actionable"}))).unwrap();
+        assert_eq!(posted, json!({"shown": true, "reason": "shown"}));
+        let page = dispatch(&core, MethodName::ListAttention, None).unwrap();
+        assert_eq!(page["items"][0]["kind"], json!("posted"));
+        assert_eq!(page["items"][0]["severity"], json!("actionable"));
+        assert_eq!(page["items"][0]["title"], json!("Which database?"));
+        let error = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "  "}))).expect_err("an empty title is refused");
+        assert_eq!(error.code, ErrorCode::Invalid.code());
+        let error = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "x", "sound": "request"}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn presence_names_one_banner_owner_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let report = |client: &str, kind: &str, focused: bool| {
+            dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": client, "clientKind": kind, "focused": focused}))).unwrap()
+        };
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));
+        assert_eq!(report("other", "desktop", false), json!({"bannerOwner": false}));
+        assert_eq!(report("web", "web", true), json!({"bannerOwner": true}));
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": false}), "the focused web client owns");
+        let capable = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "canPostBanners": true, "focused": false}))).unwrap();
+        assert_eq!(capable, json!({"bannerOwner": true}), "the tab can post banners and was focused last");
+        let gone = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "focused": false, "gone": true}))).unwrap();
+        assert_eq!(gone, json!({"bannerOwner": false}));
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));
+        let error = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "x", "clientKind": "desktop", "focused": true, "visibleSessionId": "s"})))
+            .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

@@ -168,7 +168,7 @@ test("absent briefing config leaves write-mode options untouched", () => {
   // The regression that matters most to everything already shipped: a normal
   // session must reach exactly the options it reached before this existed.
   for (const writeMode of ["ReadOnly", "Shared", "Isolated", "Full", undefined]) {
-    const withoutBriefing = buildOptions({ ...base, writeMode, plugins: ["/tmp/p"], mcpServers: { notion: {} } });
+    const withoutBriefing = buildOptions({ ...base, writeMode, plugins: ["/tmp/p"], mcpServers: { notion: {} }, projectTrusted: true });
     assert.deepEqual(
       withoutBriefing.settingSources,
       writeMode === "ReadOnly" ? ["user"] : ["user", "project", "local"],

@@ -295,6 +295,18 @@ impl EventReceiver {
         events
     }
 
+    /// Take whatever is waiting without blocking. True when anything arrived,
+    /// a lag included: either way a follower should re-read what it watches.
+    pub fn drain_pending(&mut self) -> bool {
+        let mut moved = false;
+        loop {
+            match self.receiver.try_recv() {
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => moved = true,
+                Err(_) => return moved,
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn try_recv(&mut self) -> Result<CoreEvent, broadcast::error::TryRecvError> {
         self.receiver.try_recv()

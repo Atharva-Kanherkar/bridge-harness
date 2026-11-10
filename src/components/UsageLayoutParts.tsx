@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
 import type { UsageSummaryResult } from "../types";
@@ -52,44 +52,16 @@ export function PartialBadge({ label, className }: { label: string | null; class
   </span>;
 }
 
-/** Skeleton bar that holds a figure's shape while history is still importing. */
-export function SkeletonBar({ className }: { className?: string }) {
-  return <div aria-hidden="true" className={cn("animate-pulse rounded bg-muted", className)} />;
-}
-
-/**
- * Totals while loading: no figure is true until the scan and the refetch
- * both land. Showing a stale or half imported total here would read as a
- * final number and then visibly jump, so the hero and its detail stay
- * shapes until the real values are known.
- */
-export function UsageLoadingState({ label, note }: { label: string; note?: string | null }) {
-  return <div role="status" aria-live="polite" aria-busy="true" className="space-y-6 py-1">
-    <div className="flex flex-wrap items-center gap-3">
-      <span className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
-        <LoaderCircle size={12} className="animate-spin" aria-hidden="true" />
-        {label}…
-      </span>
-      <p className="text-caption text-muted-foreground">Numbers appear only when loading finishes.</p>
+/** First load only: the hero and chart shapes until the first summary lands. Later loads keep the last figures on screen. */
+export function UsageLoadingState() {
+  return <SkeletonRegion label="Loading usage" className="space-y-6 py-1">
+    <div className="space-y-3">
+      <Skeleton className="w-24" />
+      <Skeleton index={1} className="h-12 w-56 max-w-full sm:w-64" />
+      <Skeleton index={2} className="h-4 w-full max-w-md" />
     </div>
-    {note ? <p className="text-caption tabular-nums text-muted-foreground">{note}</p> : null}
-    <div className="space-y-3" aria-hidden="true">
-      <SkeletonBar className="h-3 w-24" />
-      <SkeletonBar className="h-12 w-56 max-w-full sm:w-64" />
-      <SkeletonBar className="h-4 w-full max-w-2xl" />
-      <SkeletonBar className="h-4 w-full max-w-xl" />
-    </div>
-    <div className="grid gap-4" aria-hidden="true">
-      <SkeletonBar className="h-36 w-full" />
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-        <SkeletonBar className="h-16 w-full" />
-        <SkeletonBar className="h-16 w-full" />
-        <SkeletonBar className="h-16 w-full" />
-      </div>
-      <SkeletonBar className="h-48 w-full" />
-    </div>
-    <span className="sr-only">Loading usage</span>
-  </div>;
+    <Skeleton index={3} className="h-36 w-full rounded-xl" />
+  </SkeletonRegion>;
 }
 
 /** `~` after a cost whose window holds unpriced records: the figure is a floor, not a total. */

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import {
   AtSign,
   ChevronRight,
@@ -183,7 +184,7 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
 
     {connector && !connector.available && <ConnectorHint connector={connector} />}
 
-    {!inbox ? <div className="grid flex-1 place-items-center text-muted-foreground"><LoaderCircle className="animate-spin" size={18} /></div>
+    {!inbox ? <SkeletonRows label="Loading inbox" rows={5} lead="icon" framed={false} className="min-h-0 flex-1 overflow-hidden" />
       : empty ? <EmptyState state={empty} />
       : <div className="flex min-h-0 flex-1 flex-col">
         <ul className="max-h-[38%] shrink-0 overflow-y-auto border-b border-border" aria-label="Unread messages">

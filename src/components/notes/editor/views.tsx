@@ -1,13 +1,17 @@
 // How images, child pages, embedded databases and wiki links draw inside the editor.
 
 import { createContext, useContext, useEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import Image from "@tiptap/extension-image";
+import CodeBlock from "@tiptap/extension-code-block";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
 import { ArrowUpRight, FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Table2, TriangleAlert } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { assetUrl } from "./assets";
+import { RichFence, richFenceKind } from "../../Markdown";
+import { DrawingBlock, isDrawingFence, readsAsDrawing } from "./drawing";
 import { Callout, CALLOUT_KINDS, DatabaseEmbed, PageLink, WikiLink, type CalloutKind } from "./blocks";
 
 /** What the views need from the page around the editor. */
@@ -122,7 +126,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
             style={width == null ? undefined : { width: `${width}px` }}
             className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}
           />
-          : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
+          : <SkeletonRegion label="Loading image"><Skeleton className="h-40 rounded-lg" /></SkeletonRegion>}
       {url && !failed && resizable && <>
         <button type="button" contentEditable={false} aria-label="Resize from the left edge" onPointerDown={beginDrag("left")} className={clsx(handle, "left-0 -translate-x-1/2")} />
         <button type="button" contentEditable={false} aria-label="Resize from the right edge" onPointerDown={beginDrag("right")} className={clsx(handle, "right-0 translate-x-1/2")} />
@@ -258,4 +262,64 @@ function CalloutView({ node, updateAttributes }: ReactNodeViewProps) {
 
 export const NoteCallout = Callout.extend({
   addNodeView() { return ReactNodeViewRenderer(CalloutView); },
+});
+
+/** Whether the editor is focused with the cursor inside the node at `getPos`. */
+function useCursorInside(editor: ReactNodeViewProps["editor"], getPos: ReactNodeViewProps["getPos"], size: number): boolean {
+  const read = () => {
+    const at = getPos();
+    if (typeof at !== "number" || !editor.isFocused) return false;
+    const { from, to } = editor.state.selection;
+    return from > at && to < at + size;
+  };
+  const [inside, setInside] = useState(read);
+  useEffect(() => {
+    const update = () => setInside(read());
+    update();
+    editor.on("selectionUpdate", update);
+    editor.on("focus", update);
+    editor.on("blur", update);
+    return () => { editor.off("selectionUpdate", update); editor.off("focus", update); editor.off("blur", update); };
+  }, [editor, getPos, size]); // eslint-disable-line react-hooks/exhaustive-deps
+  return inside;
+}
+
+// A fence chat draws as a figure (Mermaid, diagram, math, HTML) draws the same
+// way here, through the chat's own renderer. The source stays in the document,
+// hidden, and comes back while the cursor is in it.
+function CodeBlockView({ node, editor, getPos }: ReactNodeViewProps) {
+  const lang = String(node.attrs.language ?? "");
+  const body = node.textContent;
+  const inside = useCursorInside(editor, getPos, node.nodeSize);
+  const drawing = isDrawingFence(lang) && readsAsDrawing(body) && !inside;
+  const figure = drawing || (!!richFenceKind(lang) && body.trim() !== "" && !inside);
+  const edit = (event: React.MouseEvent) => {
+    // The figure's own buttons (copy, expand) keep their clicks.
+    if ((event.target as Element).closest("button, a, iframe")) return;
+    const at = getPos();
+    if (typeof at !== "number") return;
+    event.preventDefault();
+    editor.chain().focus().setTextSelection(at + node.nodeSize - 1).run();
+  };
+  // A drawing saves the whole scene back into the block's text.
+  const save = (text: string) => {
+    const at = getPos();
+    const current = typeof at === "number" ? editor.state.doc.nodeAt(at) : null;
+    if (typeof at !== "number" || !current || current.type.name !== node.type.name || current.textContent === text) return;
+    editor.chain().command(({ tr }) => {
+      tr.replaceWith(at + 1, at + current.nodeSize - 1, editor.schema.text(text));
+      return true;
+    }).run();
+  };
+  return <NodeViewWrapper data-language={lang || undefined}>
+    {drawing && <DrawingBlock body={body} onSave={save} />}
+    {figure && !drawing && <div contentEditable={false} data-rich-fence="" onMouseDown={edit} className="cursor-text">
+      <RichFence lang={lang} body={body} />
+    </div>}
+    <pre hidden={figure}><NodeViewContent<"code"> as="code" className={lang ? `language-${lang}` : undefined} /></pre>
+  </NodeViewWrapper>;
+}
+
+export const NoteCodeBlock = CodeBlock.extend({
+  addNodeView() { return ReactNodeViewRenderer(CodeBlockView); },
 });

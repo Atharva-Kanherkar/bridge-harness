@@ -52,6 +52,26 @@ describe("GithubToasts", () => {
     expect(onDismissHint).toHaveBeenCalled();
   });
 
+  it("expires on time while the parent re-renders with a fresh onDismiss", async () => {
+    // App recreates its handlers on every render, and its git poll renders
+    // every few seconds; that must not keep a CI verdict on screen forever.
+    vi.useFakeTimers();
+    const dismissed: string[] = [];
+    const render = () => root?.render(<GithubToasts toasts={[failed]} onOpen={() => undefined} onDismiss={key => dismissed.push(key)} onDismissHint={() => undefined} />);
+    await mount(<GithubToasts toasts={[failed]} onOpen={() => undefined} onDismiss={key => dismissed.push(key)} onDismissHint={() => undefined} />);
+    for (let elapsed = 0; elapsed <= CI_TOAST_TTL_MS; elapsed += 5_000) {
+      await act(async () => { vi.advanceTimersByTime(5_000); render(); });
+    }
+    expect(dismissed).toContain(failed.key);
+  });
+
+  it("shows the newest three verdicts and counts the rest", async () => {
+    const many: CiToast[] = Array.from({ length: 5 }, (_, index) => ({ ...passed, key: `w#${index}:0/3`, payload: { ...passed.payload, number: index } }));
+    await mount(<GithubToasts toasts={many} onOpen={() => undefined} onDismiss={() => undefined} onDismissHint={() => undefined} />);
+    expect(host!.querySelectorAll('button[aria-label="Dismiss notification"]')).toHaveLength(3);
+    expect(host!.textContent).toContain("+2 more waiting");
+  });
+
   it("renders nothing when there is nothing to say", async () => {
     await mount(<GithubToasts toasts={[]} onOpen={() => undefined} onDismiss={() => undefined} onDismissHint={() => undefined} />);
     expect(host!.textContent).toBe("");

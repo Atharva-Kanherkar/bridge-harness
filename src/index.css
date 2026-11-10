@@ -782,12 +782,14 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: page-enter 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* ── Conversation skeleton ──────────────────────────────────────────────────
-   Placeholder bars shaped like a transcript while an existing chat's history
-   loads. The whole block waits a beat before fading in, so a fast load never
-   flashes placeholders. Each bar carries one soft highlight that travels left
-   to right; rows stagger their delay so the sweep reads top to bottom. Under
-   reduced motion the global rule below leaves static bars. */
+/* ── Skeletons ──────────────────────────────────────────────────────────────
+   Every first-load placeholder in the app, drawn through the kit in
+   `src/components/ui/skeleton.tsx` (only that file names these classes; the
+   design-system test enforces it). The whole block waits a beat before fading
+   in, so a fast load never flashes placeholders. Each bar carries one soft
+   highlight that travels left to right; rows stagger their delay so the sweep
+   reads top to bottom. Under reduced motion the global rule below leaves
+   static bars. */
 @keyframes skeleton-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -1662,8 +1664,4 @@ html[data-native-fullscreen] .u-traffic-inset {
 @keyframes insight-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
-}
-@keyframes insight-shimmer {
-  from { background-position: 200% 0; }
-  to { background-position: -200% 0; }
 }

@@ -293,6 +293,11 @@ typed_methods![
     // attention
     (ListAttention, ListAttentionParams, ListAttentionResult),
     (MarkAttentionSeen, MarkAttentionSeenParams, MarkAttentionSeenResult),
+    (UnreadSummary, _, UnreadSummary),
+    (ReportPresence, ReportPresenceParams, ReportPresenceResult),
+    (Post, PostParams, PostResult),
+    (Wait, WaitParams, WaitResult),
+    (DeliverQueuedInput, DeliverQueuedInputParams, DeliverQueuedInputResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
     (CancelProviderLogin, CancelProviderLoginParams, UnitResult),

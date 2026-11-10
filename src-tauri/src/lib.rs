@@ -5,6 +5,7 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod dock_badge;
 mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
@@ -870,6 +871,34 @@ async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSet
 #[tauri::command]
 async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_only: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ListAttentionResult, BridgeError> {
     api::list_attention(state.inner(), &bridge_protocol::messages::ListAttentionParams { after_sequence, limit, unseen_only })
+}
+
+/// Resuming an adapter spawns a provider process, so off the async runtime.
+#[tauri::command]
+async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DeliverQueuedInputResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Queued input delivery", move || api::deliver_queued_input(&core, &bridge_protocol::messages::DeliverQueuedInputParams { session_id })).await
+}
+
+#[tauri::command]
+async fn wait(session_id: String, until: Vec<bridge_protocol::messages::WaitState>, timeout_ms: Option<u64>, after_sequence: Option<i64>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WaitResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Session wait", move || api::wait_session(&core, &bridge_protocol::messages::WaitParams { session_id, until, timeout_ms, after_sequence })).await
+}
+
+#[tauri::command]
+async fn post(session_id: String, title: String, body: Option<String>, severity: Option<bridge_protocol::messages::AttentionSeverity>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::PostResult, BridgeError> {
+    api::post_attention(state.inner(), &bridge_protocol::messages::PostParams { session_id, title, body, severity })
+}
+
+#[tauri::command]
+async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, can_post_banners: Option<bool>, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
+    api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, can_post_banners, focused, gone })
+}
+
+#[tauri::command]
+async fn unread_summary(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnreadSummary, BridgeError> {
+    api::unread_summary(state.inner())
 }
 
 #[tauri::command]
@@ -2882,8 +2911,11 @@ fn select_host(
     });
     // Omarchy theme sync. Linux-only and inert unless Omarchy is detected.
     omarchy::install(app.handle());
-    // Linux notifications with Allow once / Decline / Open.
+    // OS banners with Allow once / Decline / Open: notify-rust on Linux, the
+    // native center on macOS (installed here, on the main thread, during launch).
     notifications::install(app.handle());
+    // The unread count on the app icon, sent by the webview.
+    dock_badge::install(app.handle());
     quick_prompt::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
@@ -3183,6 +3215,11 @@ pub fn run() -> i32 {
             save_delegation_notify_settings,
             list_attention,
             mark_attention_seen,
+            unread_summary,
+            report_presence,
+            post,
+            wait,
+            deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,
             get_chat_search_settings,
