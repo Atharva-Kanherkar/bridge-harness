@@ -12884,9 +12884,10 @@ fn stop_harness_subagent(core: &Arc<BridgeCore>, session_id: &str) -> Result<(),
     }
     let db=core.db.lock().unwrap();
     let provider:String=db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1",[session_id],|r|r.get(0))?;
-    let mut event=agent::NormalizedEvent::new("subagent.completed");
-    event.status=Some("interrupted".into());
-    event.data=serde_json::json!({"subagent":{"sessionId":provider},"reason":"user_stopped"});
+    let mut event=agent::NormalizedEvent::new("subagent.progress");
+    event.status=Some("working".into());
+    event.title=Some("Stop requested".into());
+    event.data=serde_json::json!({"subagent":{"sessionId":provider},"reason":"user_stopped","stopRequested":true});
     for stored in crate::harness_subagents::route(&db,&parent,&event,&serde_json::json!({"source":"user"}))? {
         core.events.publish(CoreEvent::Agent(stored));
     }
@@ -18146,6 +18147,8 @@ mod permission_policy_tests {
             }
             db.query_row("SELECT id FROM sessions WHERE provider_session_id='one'",[],|r|r.get::<_,String>(0)).unwrap()};
         cancel_visible_turn(&core,&child).unwrap();
+        let child_status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id=?1",[&child],|r|r.get(0)).unwrap();
+        assert_eq!(child_status,"working","a written stop request is not a provider completion acknowledgement");
         cancel_visible_turn(&core,"chat").unwrap();
         assert_eq!(*calls.lock().unwrap(),vec!["one:one-turn","root interrupt"]);
         assert!(core.adapters.lock().unwrap().contains_key("chat"));

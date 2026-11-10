@@ -1750,6 +1750,16 @@ pub fn normalize_claude_message_with_state(
         return events;
     }
     let subtype = message.get("subtype").and_then(Value::as_str).unwrap_or("");
+    if message.get("type").and_then(Value::as_str) == Some("system") && subtype == "subagent_stop_failed" {
+        let task=message.get("task_id").and_then(Value::as_str).unwrap_or("");
+        if task.is_empty() {return vec![];}
+        let id=state.tasks.get(task).and_then(|task|task.get("tool_use_id")).and_then(Value::as_str).unwrap_or(task);
+        let mut event=with_data("error",message,message.clone());
+        event.status=Some("warning".into());event.title=Some("Could not stop subagent".into());
+        event.text=message.get("error").and_then(Value::as_str).map(str::to_owned);
+        tag_harness_subagent(&mut event,id,"claude","Claude subagent");
+        return vec![event];
+    }
     if message.get("type").and_then(Value::as_str) == Some("system") && subtype.starts_with("task_") {
         let task = message.get("task_id").and_then(Value::as_str).unwrap_or("");
         if message.get("ambient").and_then(Value::as_bool) == Some(true)
@@ -4519,6 +4529,14 @@ mod harness_subagent_tests {
         assert!(normalize_opencode_message_with_state(&status("idle"),&mut state).is_empty());
         assert_eq!(normalize_opencode_message_with_state(&status("busy"),&mut state)[0].kind,"subagent.status");
         assert_eq!(normalize_opencode_message_with_state(&status("idle"),&mut state)[0].kind,"subagent.completed");
+    }
+
+    #[test]
+    fn a_claude_stop_rejection_is_a_child_warning_not_a_completion() {
+        let mut state=ClaudeStreamState::default();
+        normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"agent","task_type":"local_agent"}),&mut state);
+        let events=normalize_claude_message_with_state(&json!({"type":"system","subtype":"subagent_stop_failed","task_id":"task","error":"Task is not stoppable yet"}),&mut state);
+        assert_eq!(events[0].kind,"error");assert_eq!(events[0].status.as_deref(),Some("warning"));assert_eq!(events[0].data["subagent"]["sessionId"],"agent");
     }
 
 }
