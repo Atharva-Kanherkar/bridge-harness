@@ -12919,6 +12919,8 @@ fn interrupt_parent_with_live_subagents(core: &Arc<BridgeCore>, session_id: &str
     {
         let adapters=core.adapters.lock().unwrap();
         let Some(runtime)=adapters.get(session_id) else {return Ok(false);};
+        // The abort error this provokes is the Stop, not a failure.
+        core.user_stop_requested.lock().unwrap().insert(session_id.to_owned());
         runtime.interrupt()?;
     }
     let db=core.db.lock().unwrap();
@@ -18199,6 +18201,40 @@ mod permission_policy_tests {
         assert!(core.begin_manual_compaction(&child).unwrap_err().to_string().contains("harness_subagent_processless"));
         assert!(core.fork_session(&child,"ignored",None,None,None,"shared").unwrap_err().to_string().contains("harness_subagent_processless"));
         // Drop the spy without calling its process destructor contract.
+        core.adapters.lock().unwrap().remove("chat");
+    }
+
+    #[test]
+    fn a_parent_stop_that_keeps_children_swallows_the_abort_error_it_provokes() {
+        struct Spy;
+        impl adapters::AdapterRuntime for Spy {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{Ok(())}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn stop(&mut self,_:adapters::ShutdownReason){panic!("must preserve shared process");}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='opencode',provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Spy));
+        {
+            let db=core.db.lock().unwrap();
+            let mut event=agent::NormalizedEvent::new("subagent.started");
+            event.data=serde_json::json!({"subagent":{"sessionId":"kid"}});
+            crate::harness_subagents::route(&db,"chat",&event,&serde_json::json!({})).unwrap();
+        }
+        cancel_visible_turn(&core,"chat").unwrap();
+        // OpenCode answers an abort with a session error on the root.
+        let turn=Arc::new(Mutex::new(None));
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"type":"session.error","properties":{"sessionID":"root","error":{"name":"MessageAbortedError","data":{"message":"The operation was aborted."}}}}));
+        {
+            let db=core.db.lock().unwrap();
+            let status:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();
+            assert_eq!(status,"stopped");
+            assert!(store::session_entries(&db,"chat").unwrap().iter().all(|entry|entry.kind!="error"));
+        }
         core.adapters.lock().unwrap().remove("chat");
     }
 
