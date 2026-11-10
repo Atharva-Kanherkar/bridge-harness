@@ -12893,11 +12893,15 @@ fn announce_worker_cancellation(core: &Arc<BridgeCore>, child_session_id: &str, 
 
 fn stop_harness_subagent(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     let (parent,target,turn) = crate::harness_subagents::stop_target(&core.db.lock().unwrap(),session_id)?;
-    {
+    let request = {
         let adapters=core.adapters.lock().unwrap();
-        adapters.get(&parent).ok_or_else(||BridgeError::Invalid("Parent harness is no longer running".into()))?
-            .stop_subagent(&target,turn.as_deref())?;
-    }
+        let runtime=adapters.get(&parent).ok_or_else(||BridgeError::Invalid("Parent harness is no longer running".into()))?;
+        match runtime.stop_subagent_request(&target,turn.as_deref()) {
+            Some(request) => request,
+            None => { runtime.stop_subagent(&target,turn.as_deref())?; Box::new(|| Ok(())) as adapters::InterruptRequest }
+        }
+    };
+    run_provider_request(request)?;
     let db=core.db.lock().unwrap();
     let provider:String=db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1",[session_id],|r|r.get(0))?;
     let mut event=agent::NormalizedEvent::new("subagent.progress");
@@ -12911,19 +12915,31 @@ fn stop_harness_subagent(core: &Arc<BridgeCore>, session_id: &str) -> Result<(),
     Ok(())
 }
 
+/// Run a snapshotted provider call with no lock held. OpenCode's is blocking
+/// HTTP, kept on its own thread so its client never drops on an async runtime.
+fn run_provider_request(request: adapters::InterruptRequest) -> Result<(), BridgeError> {
+    thread::spawn(request)
+        .join()
+        .map_err(|_| BridgeError::Adapter("Provider stop request panicked".into()))?
+}
+
 /// Keep the shared process and reader alive when cancelling only the root
 /// turn. Otherwise the normal hard-stop path would kill every provider child.
 fn interrupt_parent_with_live_subagents(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool,BridgeError> {
     let has_children:bool=core.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE parent_session_id=?1 AND kind='harness_subagent' AND status IN ('working','waiting','starting','ready'))",[session_id],|r|r.get(0))?;
     if !has_children {return Ok(false);}
     let _lifecycle=core.claim_session_lifecycle(session_id,"stop parent turn")?;
-    {
+    let request = {
         let adapters=core.adapters.lock().unwrap();
         let Some(runtime)=adapters.get(session_id) else {return Ok(false);};
         // The abort error this provokes is the Stop, not a failure.
         core.user_stop_requested.lock().unwrap().insert(session_id.to_owned());
-        runtime.interrupt()?;
-    }
+        match runtime.interrupt_request() {
+            Some(request) => request,
+            None => { runtime.interrupt()?; Box::new(|| Ok(())) as adapters::InterruptRequest }
+        }
+    };
+    run_provider_request(request)?;
     let db=core.db.lock().unwrap();
     db.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL WHERE id=?1",[session_id])?;
     db.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",[session_id])?;
@@ -18202,6 +18218,43 @@ mod permission_policy_tests {
         assert!(core.begin_manual_compaction(&child).unwrap_err().to_string().contains("harness_subagent_processless"));
         assert!(core.fork_session(&child,"ignored",None,None,None,"shared").unwrap_err().to_string().contains("harness_subagent_processless"));
         // Drop the spy without calling its process destructor contract.
+        core.adapters.lock().unwrap().remove("chat");
+    }
+
+    #[test]
+    fn harness_stops_never_hold_the_adapter_map_across_a_provider_call() {
+        // OpenCode's abort is a blocking HTTP request. Holding the map across
+        // it would stall every other chat's sends and approvals.
+        struct Spy { core: std::sync::Weak<BridgeCore>, free: Arc<Mutex<Vec<bool>>> }
+        impl Spy {
+            fn probe(&self) -> Option<adapters::InterruptRequest> {
+                let (core, free) = (self.core.clone(), self.free.clone());
+                Some(Box::new(move || { free.lock().unwrap().push(core.upgrade().unwrap().adapters.try_lock().is_ok()); Ok(()) }))
+            }
+        }
+        impl adapters::AdapterRuntime for Spy {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{panic!("interrupted under the adapter map")}
+            fn interrupt_request(&self)->Option<adapters::InterruptRequest>{self.probe()}
+            fn stop_subagent(&self,_:&str,_:Option<&str>)->Result<(),BridgeError>{panic!("stopped under the adapter map")}
+            fn stop_subagent_request(&self,_:&str,_:Option<&str>)->Option<adapters::InterruptRequest>{self.probe()}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn stop(&mut self,_:adapters::ShutdownReason){panic!("must preserve shared process");}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        let free=Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Spy{core:Arc::downgrade(&core),free:free.clone()}));
+        let child={let db=core.db.lock().unwrap();
+            let mut event=agent::NormalizedEvent::new("subagent.status");
+            event.data=serde_json::json!({"subagent":{"sessionId":"kid"},"turn":{"id":"kid-turn"}});
+            crate::harness_subagents::route(&db,"chat",&event,&serde_json::json!({})).unwrap();
+            db.query_row("SELECT id FROM sessions WHERE kind='harness_subagent'",[],|r|r.get::<_,String>(0)).unwrap()};
+        cancel_visible_turn(&core,&child).unwrap();
+        cancel_visible_turn(&core,"chat").unwrap();
+        assert_eq!(*free.lock().unwrap(),vec![true,true]);
         core.adapters.lock().unwrap().remove("chat");
     }
 
