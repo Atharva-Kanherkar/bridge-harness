@@ -350,7 +350,7 @@ describe("App attention wiring", () => {
       await act(async () => { pushMockAttention({ kind: "needsYou", sessionId: "w", title: "Bridge needs you" }); });
       await wait(NEEDS_YOU_HOLD_MS + 100);
       expect(playAttentionSound).toHaveBeenCalledTimes(1);
-      expect(playAttentionSound).toHaveBeenCalledWith("needsYou");
+      expect(playAttentionSound).toHaveBeenCalledWith("needsYou", "actionable");
       await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
       await wait(40);
       expect(playAttentionSound, "finished turns are silent by default").toHaveBeenCalledTimes(1);
@@ -382,5 +382,15 @@ describe("App attention wiring", () => {
     await wait(20);
     expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
   });
-});
 
+  it("shows an agent's post in its own words and opens its chat", async () => {
+    await mountApp();
+    await act(async () => { pushMockAttention({ kind: "posted", sessionId: "b", title: "Postgres or SQLite?", body: "Both work; pick one.", severity: "actionable" }); });
+    await wait(40);
+    expect(toastRegion(container)?.textContent).toContain("Postgres or SQLite?");
+    expect(notifyAttention).toHaveBeenCalledWith("Postgres or SQLite?", "Both work; pick one.", { sessionId: "b", approvalEventId: null });
+    await act(async () => { (container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]') as HTMLButtonElement).click(); });
+    await wait(20);
+    expect(container.querySelector('button[title^="Title b"]')?.getAttribute("aria-current")).toBe("page");
+  });
+});

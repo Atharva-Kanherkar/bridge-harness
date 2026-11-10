@@ -30,6 +30,8 @@ pub const AUTH_HEADER: &str = "x-bridge-notes-auth";
 pub const ENV_URL: &str = "BRIDGE_NOTES_URL";
 pub const ENV_TOKEN: &str = "BRIDGE_NOTES_TOKEN";
 pub const READ_TOOLS: [&str; 2] = ["notes_search", "notes_read"];
+/// Shares the chat-tools route and its per-chat token with the notes tools.
+pub const NOTIFY_USER: &str = "notify_user";
 pub const WRITE_TOOLS: [&str; 4] = ["notes_create", "notes_edit", "notes_append", "notes_set"];
 /// Largest tool request body the route reads.
 pub const MAX_BODY_BYTES: usize = 1 << 20;
@@ -130,11 +132,14 @@ impl Access {
     pub fn tools(self) -> Vec<&'static str> {
         let memory = crate::memory_tools::READ_TOOLS.iter();
         match self {
+            // Only a top-level chat asks the person directly; a worker asks
+            // through its orchestrator.
             Access::Write => READ_TOOLS
                 .iter()
                 .chain(WRITE_TOOLS.iter())
                 .chain(memory)
                 .chain(crate::memory_tools::WRITE_TOOLS.iter())
+                .chain(std::iter::once(&NOTIFY_USER))
                 .copied()
                 .collect(),
             Access::ReadOnly => READ_TOOLS.iter().chain(memory).copied().collect(),
@@ -425,6 +430,10 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
             Err(_) => return reply(400, json!({"error": "the request body must be a JSON object"})),
         }
     };
+    if tool == NOTIFY_USER {
+        let (status, value) = notify_user(&core, access, session_id, &args);
+        return reply(status, value);
+    }
     if tool.starts_with("memory_") {
         let outcome = {
             let db = core.db.lock().unwrap();
@@ -445,6 +454,34 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
     match run(&core.notes, access, &actor, tool, &args) {
         Ok(result) => reply(200, result),
         Err(error) => reply(error.status, json!({"error": error.message})),
+    }
+}
+
+/// The `notify_user` tool: the calling chat asks the person. Posts for the
+/// token's chat only, so it cannot speak for another.
+fn notify_user(core: &BridgeCore, access: Access, session_id: &str, args: &Value) -> (u16, Value) {
+    if access != Access::Write {
+        return (403, json!({"error": "only a top-level chat asks the person directly; tell your orchestrator instead"}));
+    }
+    let Some(title) = text(args, "title") else {
+        return (400, json!({"error": "title is required"}));
+    };
+    let severity = if args.get("actionable").and_then(Value::as_bool).unwrap_or(true) {
+        crate::attention::Severity::Actionable
+    } else {
+        crate::attention::Severity::Informational
+    };
+    let outcome = crate::attention::post(&core.db.lock().unwrap(), session_id, &title, text(args, "body").as_deref(), severity, chrono::Utc::now());
+    match outcome {
+        Ok(crate::attention::PostOutcome::Shown(_)) => {
+            core.events.publish(crate::events::CoreEvent::AttentionChanged);
+            (200, json!({"shown": true, "reason": "shown"}))
+        }
+        Ok(crate::attention::PostOutcome::RateLimited) => (
+            200,
+            json!({"shown": false, "reason": "rateLimited", "note": "You already asked three times in five minutes. Wait for the person, and keep the rest in your reply."}),
+        ),
+        Err(error) => (400, json!({"error": error.to_string()})),
     }
 }
 
@@ -503,6 +540,33 @@ mod tests {
         assert_eq!(status, 401);
         let (status, _) = serve_http("/notes_search", "", b"{}");
         assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn notify_user_posts_for_the_calling_chat_and_is_rate_limited() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = crate::BridgeCore::for_tests(scratch.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat','claude','Chat','ready','direct','Ship it')", [])
+            .unwrap();
+        assert!(Access::Write.tools().contains(&NOTIFY_USER));
+        assert!(!Access::ReadOnly.tools().contains(&NOTIFY_USER), "a worker asks through its orchestrator");
+        let (status, _) = notify_user(&core, Access::ReadOnly, "chat", &json!({"title": "x"}));
+        assert_eq!(status, 403);
+        for _ in 0..3 {
+            let (status, value) = notify_user(&core, Access::Write, "chat", &json!({"title": "Postgres or SQLite?", "body": "Both work; pick one."}));
+            assert_eq!((status, value["reason"].clone()), (200, json!("shown")));
+        }
+        let (status, value) = notify_user(&core, Access::Write, "chat", &json!({"title": "Again?"}));
+        assert_eq!((status, value["shown"].clone(), value["reason"].clone()), (200, json!(false), json!("rateLimited")));
+        let (status, _) = notify_user(&core, Access::Write, "chat", &json!({"body": "no title"}));
+        assert_eq!(status, 400);
+        let page = crate::attention::list(&core.db.lock().unwrap(), None, None, false).unwrap();
+        assert_eq!(page.items.len(), 1, "newest per chat wins");
+        assert_eq!((page.items[0].kind, page.items[0].severity), (crate::attention::AttentionKind::Posted, crate::attention::Severity::Actionable));
+        assert_eq!(page.items[0].session_id.as_deref(), Some("chat"));
     }
 
     #[test]

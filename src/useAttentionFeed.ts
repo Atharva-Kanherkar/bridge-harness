@@ -12,7 +12,7 @@ const RETRY_MAX_MS = 30_000;
 /** What this client knows how to show. A newer daemon's kinds arrive as
  * `other` (or, from a TypeScript peer, as a string this build has never seen)
  * and are skipped rather than shown as something they are not. */
-const SHOWN_KINDS: ReadonlySet<string> = new Set<AttentionItem["kind"]>(["finished", "failed", "needsYou", "escalation"]);
+const SHOWN_KINDS: ReadonlySet<string> = new Set<AttentionItem["kind"]>(["finished", "failed", "needsYou", "escalation", "posted"]);
 
 /**
  * Follows the core attention ledger and hands each new row to `onArrive`.

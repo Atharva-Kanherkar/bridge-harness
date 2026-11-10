@@ -863,6 +863,13 @@
       "resultSchema": "report-presence-result.json"
     },
     {
+      "command": "post",
+      "domain": "attention",
+      "method": "attention/post",
+      "paramsSchema": "post-params.json",
+      "resultSchema": "post-result.json"
+    },
+    {
       "command": "deliver_queued_input",
       "domain": "sessions",
       "method": "sessions/deliver_queued_input",
@@ -1985,7 +1992,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 28
+    "minor": 29
   },
   "reserved": {
     "cancel": "$/cancel",

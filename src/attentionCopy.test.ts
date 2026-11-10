@@ -68,4 +68,10 @@ describe("attentionToastKey", () => {
   it("keys by ledger sequence", () => {
     expect(attentionToastKey({ sequence: 42 })).toBe("attention:42");
   });
+
+  it("uses a post's own words, and its tone follows the severity", () => {
+    const post = { kind: "posted" as const, title: "Postgres or SQLite?", body: "Both work; pick one.", severity: "actionable" as const };
+    expect(attentionCopy(post)).toEqual({ headline: "Postgres or SQLite?", detail: "Both work; pick one.", tone: "needs-you" });
+    expect(attentionCopy({ ...post, body: null, severity: "informational" }).tone).toBe("completed");
+  });
 });

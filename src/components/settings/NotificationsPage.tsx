@@ -4,6 +4,7 @@ import { Field, GhostButton, SettingsGroup, SettingsPage, SettingsRow, Switch } 
 
 const KIND_COPY: Record<AttentionSettingKind, { label: string; description: string }> = {
   needsYou: { label: "Needs you", description: "A chat or one of its agents is waiting for an answer or an approval." },
+  posted: { label: "An agent asks for you", description: "A chat's agent needs a decision or is blocked, in its own words." },
   escalation: { label: "A result is waiting", description: "An agent stopped before it read a worker's update." },
   failed: { label: "Turn failed", description: "A chat's turn ended with an error." },
   finished: { label: "Turn completed", description: "A chat finished its turn." },

@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 // How each attention kind may reach the person, per client. Kept with the
 // other General preferences in localStorage; every window hears a change.
 
-export const ATTENTION_KINDS = ["needsYou", "escalation", "failed", "finished"] as const;
+export const ATTENTION_KINDS = ["needsYou", "posted", "escalation", "failed", "finished"] as const;
 export type AttentionSettingKind = (typeof ATTENTION_KINDS)[number];
 export type Channels = { toast: boolean; banner: boolean; sound: boolean };
 export type QuietHours = { enabled: boolean; start: string; end: string };
@@ -19,6 +19,7 @@ const CHANGE_EVENT = "bridge:attention-settings";
 export const DEFAULT_ATTENTION_SETTINGS: AttentionSettings = {
   kinds: {
     needsYou: { toast: true, banner: true, sound: true },
+    posted: { toast: true, banner: true, sound: true },
     escalation: { toast: true, banner: true, sound: true },
     failed: { toast: true, banner: true, sound: false },
     finished: { toast: true, banner: true, sound: false },

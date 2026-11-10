@@ -78,7 +78,7 @@ export function mockMarkAttentionSeen(sessionId: string): MarkAttentionSeenResul
 }
 
 /** How strongly a kind claims a chat's row, as in core's rollup. */
-const STRENGTH: Partial<Record<AttentionKind, number>> = { needsYou: 4, escalation: 3, failed: 2, finished: 1 };
+const STRENGTH: Partial<Record<AttentionKind, number>> = { needsYou: 5, escalation: 4, posted: 3, failed: 2, finished: 1 };
 
 /**
  * The unread summary core would answer. `parentOf` gives a live session's

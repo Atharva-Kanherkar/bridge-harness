@@ -443,6 +443,10 @@ pub fn dispatch(
             reply(api::mark_attention_seen(core, &p))
         }
         MethodName::UnreadSummary => reply(api::unread_summary(core)),
+        MethodName::Post => {
+            let p: wire::PostParams = decode(method, params)?;
+            reply(api::post_attention(core, &p))
+        }
         MethodName::ReportPresence => {
             let p: wire::ReportPresenceParams = decode(method, params)?;
             reply(api::report_presence(core, &p))
@@ -1386,6 +1390,27 @@ mod tests {
         assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
         let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
             .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn an_agent_post_lands_in_the_ledger_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('s','claude','Chat','ready','direct','Fix login')", [])
+            .unwrap();
+        let posted = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "Which database?", "severity": "actionable"}))).unwrap();
+        assert_eq!(posted, json!({"shown": true, "reason": "shown"}));
+        let page = dispatch(&core, MethodName::ListAttention, None).unwrap();
+        assert_eq!(page["items"][0]["kind"], json!("posted"));
+        assert_eq!(page["items"][0]["severity"], json!("actionable"));
+        assert_eq!(page["items"][0]["title"], json!("Which database?"));
+        let error = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "  "}))).expect_err("an empty title is refused");
+        assert_eq!(error.code, ErrorCode::Invalid.code());
+        let error = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "x", "sound": "request"}))).expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

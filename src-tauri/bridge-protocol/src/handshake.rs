@@ -107,9 +107,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.28 adds `canPostBanners` to `attention/report_presence`**, so a browser
 /// tab can own banners. A 1.27 daemon refuses the field, so a new client
 /// needs 1.28; a 1.27 client still pairs with a 1.28 daemon.
+/// **1.29 adds `attention/post` and the `posted` attention kind.** A 1.28
+/// client decodes `posted` as `other` and shows nothing for it, so it still
+/// pairs; a new client needs 1.29 for the method.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 28,
+    minor: 29,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -381,6 +384,15 @@ mod tests {
         let web_banners = ProtocolVersion { major: 1, minor: 28 };
         assert!(!before.accepts(web_banners));
         assert!(web_banners.accepts(before), "a 1.27 client still pairs with a 1.28 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn post_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 28 };
+        let post = ProtocolVersion { major: 1, minor: 29 };
+        assert!(!before.accepts(post));
+        assert!(post.accepts(before), "a 1.28 client still pairs with a 1.29 daemon");
         assert!(PROTOCOL_VERSION.accepts(before));
     }
 
