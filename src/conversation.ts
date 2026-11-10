@@ -420,7 +420,12 @@ export function delegationChildSessionId(item: ConversationItem): string | undef
 /** Replace a provider Agent tool card with its attributed child pointer. */
 export function foldHarnessSubagents(items: ConversationItem[]): ConversationItem[] {
   const ids = new Set(items.filter(item => item.data.harnessSubagent === true).map(item => subagentSource(item)?.sessionId).filter((id): id is string => Boolean(id)));
-  return items.filter(item => !(item.type === "activity" && item.tool?.subagent && item.itemId && ids.has(item.itemId)));
+  return items.filter(item => {
+    if (item.type !== "activity" || !item.tool?.subagent) return true;
+    if (item.itemId && ids.has(item.itemId)) return false;
+    const linked = item.tool.subagent.providerSessionIds;
+    return !linked?.length || !linked.every(id => ids.has(id));
+  });
 }
 
 /**

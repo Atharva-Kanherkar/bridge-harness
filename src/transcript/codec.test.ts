@@ -356,6 +356,7 @@ it("projects a harness child pointer identically live and durable and hides self
   expect(b?.type).toBe(a.type);
   expect(a.envelope.providerData).toMatchObject({harnessSubagent:true,childSessionId:"child"});
   const self=normalizeAgentEvent(live("subagent.completed",{sessionId:"child",data,status:"completed"}));
-  expect(self).toMatchObject({type:"session.lifecycle",settles:true});
+  expect(self).toMatchObject({type:"turn.completed",status:"completed"});
+  expect(normalizeAgentEvent(live("subagent.status",{sessionId:"child",data:{...data,turnStarted:true}}))).toMatchObject({type:"turn.started"});
   expect(self.envelope.providerData.subagent).toBeUndefined();
 });

@@ -224,7 +224,12 @@ function localSessionData(sessionId: string, data: Record<string, unknown>): Rec
 
 function subagentPointer(kind: string, envelope: TranscriptEnvelope, data: Record<string, unknown>, status?: string): TranscriptEvent {
   const child = stringValue(data.childSessionId);
-  if (!child || child === envelope.sessionId || !["subagent.started", "subagent.completed"].includes(kind)) return { type: "session.lifecycle", envelope, settles: child === envelope.sessionId && (kind === "subagent.completed" || data.turnCompleted === true) };
+  if (child === envelope.sessionId) {
+    if (data.turnStarted === true) return { type: "turn.started", envelope };
+    if (data.turnCompleted === true || kind === "subagent.completed") return { type: "turn.completed", envelope, status };
+    return { type: "session.lifecycle", envelope, settles: false };
+  }
+  if (!child || !["subagent.started", "subagent.completed"].includes(kind)) return { type: "session.lifecycle", envelope, settles: false };
   const source = objectValue(data.subagent);
   return {
     type: "delegation.updated",

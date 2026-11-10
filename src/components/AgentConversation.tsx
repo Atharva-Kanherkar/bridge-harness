@@ -2247,7 +2247,7 @@ function DelegationRow({ item, onOpenSession, onOpenAgent, onRetryWorker }: { it
     <div className="flex min-w-0 items-center gap-1 -ml-2">
       <button className="min-w-0 flex-1 flex items-center gap-[9px] min-h-[30px] px-2 py-1 rounded-md text-left text-muted-foreground text-[13px] hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
         {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{item.data.harnessSubagent === true ? (isResult ? (item.status === "failed" ? "Subagent failed" : item.status === "interrupted" || item.status === "stopped" ? "Subagent interrupted" : "Subagent finished") : "Running subagent") : isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {item.title}</b>}</span>
+        <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{item.data.harnessSubagent === true ? "Subagent" : isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {item.title}</b>}</span>
         {model && <em className="hidden flex-none font-mono text-[11px] text-muted-foreground not-italic border border-border rounded px-1.5 py-0.5 sm:inline">{model}{effort ? ` · ${effort}` : ""}</em>}
         {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
       </button>

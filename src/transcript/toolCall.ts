@@ -87,6 +87,7 @@ export interface ToolCallDisplay {
  * subagent finished".
  */
 export interface SubagentFacet {
+  providerSessionIds?: string[];
   agentType?: string;
   description?: string;
   prompt?: string;
@@ -371,7 +372,14 @@ function readSubagent(source: ToolCallSource, data: Record<string, unknown>): Su
   // neither type, description, nor prompt, but it still owns a child result
   // that the transcript should surface.
   if (!agentType && !description && !prompt && !isCollabAgent) return undefined;
-  return { agentType, description, prompt, status: lifecycleStatus };
+  const metadata = { ...objectValue(data.metadata), ...objectValue(state.metadata) };
+  const receiverIds = Array.isArray(data.receiverThreadIds) ? data.receiverThreadIds.filter((id): id is string => typeof id === "string") : [];
+  const providerSessionIds = [...new Set([
+    ...receiverIds,
+    ...(isCollabAgent ? Object.keys(objectValue(data.agentsStates)) : []),
+    ...[text(metadata.sessionId) ?? text(metadata.sessionID)].filter((id): id is string => Boolean(id)),
+  ])];
+  return { agentType, description, prompt, status: lifecycleStatus, ...(providerSessionIds.length ? { providerSessionIds } : {}) };
 }
 
 /** Read one tool call's display shape out of whatever the provider sent. */
