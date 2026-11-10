@@ -448,6 +448,7 @@ impl BridgeCore {
         model: Option<&str>,
         worktree_policy: &str,
     ) -> Result<(String, SessionForestSnapshot, String), BridgeError> {
+        crate::harness_subagents::require_process_session(&self.db.lock().unwrap(), session_id)?;
         // A "new" worktree is a git operation: prepare it before the database
         // lock so a slow repository never stalls every other session op, and
         // remove it if the durable fork fails so a retry starts clean.
@@ -1067,6 +1068,7 @@ impl BridgeCore {
     /// machinery until the live-turn slice lands.
     pub fn begin_manual_compaction(&self, session_id: &str) -> Result<String, BridgeError> {
         let db = self.db.lock().unwrap();
+        crate::harness_subagents::require_process_session(&db, session_id)?;
         let status: String = db.query_row(
             "SELECT status FROM sessions WHERE id=?1",
             params![session_id],
@@ -1929,6 +1931,7 @@ pub(crate) fn fork_session_records(
     worktree_policy: &str,
     worktree: Option<&ForkWorktree>,
 ) -> Result<String, BridgeError> {
+    crate::harness_subagents::require_process_session(db, session_id)?;
     if !matches!(worktree_policy, "shared" | "new") {
         return Err(BridgeError::Invalid(format!(
             "Unsupported worktree policy {worktree_policy:?}; expected \"shared\" or \"new\""

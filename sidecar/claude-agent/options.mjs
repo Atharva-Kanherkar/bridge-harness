@@ -74,6 +74,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(cwd ? { cwd } : {}),
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
     includePartialMessages: true,
+    forwardSubagentText: true,
+    perTaskStopAffordance: true,
     ...(instructions
       ? { systemPrompt: toolless ? instructions : { type: "preset", preset: "claude_code", append: instructions } }
       : {}),

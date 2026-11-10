@@ -676,7 +676,7 @@ pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, Brid
 pub fn backfill_from_messages(db: &Connection) -> Result<usize, BridgeError> {
     let mut untitled: Vec<(String, Option<String>, bool)> = Vec::new();
     {
-        let mut statement = db.prepare("SELECT id,title,label,title_source FROM sessions")?;
+        let mut statement = db.prepare("SELECT id,title,label,title_source FROM sessions WHERE kind!='harness_subagent'")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;

@@ -209,6 +209,9 @@ pub trait AdapterRuntime: Send {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
+    fn stop_subagent(&self, _provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This harness does not support subagent Stop".into()))
+    }
     /// Snapshot an interrupt that can run without retaining the adapter map.
     /// Unsupported transports use the host's bounded process fallback.
     fn interrupt_request(&self) -> Option<InterruptRequest> { None }
@@ -2754,11 +2757,11 @@ mod tests {
         };
         assert_eq!(adapter.normalize(&created("root", None))[0].kind, "session.started");
         adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "root", "status": {"type": "busy"}}}));
-        assert!(adapter.normalize(&created("child", Some("root"))).is_empty());
-        assert!(adapter.normalize(&created("grandchild", Some("child"))).is_empty());
+        assert_eq!(adapter.normalize(&created("child", Some("root")))[0].kind, "subagent.started");
+        assert_eq!(adapter.normalize(&created("grandchild", Some("child")))[0].kind, "subagent.started");
         // A child's completion must not close the root's turn, and its text is
         // tagged as subagent work inside the root's stream.
-        assert!(adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "grandchild", "status": {"type": "idle"}}})).is_empty());
+        assert_eq!(adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "grandchild", "status": {"type": "idle"}}}))[0].kind, "subagent.completed");
         adapter.normalize(&serde_json::json!({"type": "message.updated", "properties": {"sessionID": "grandchild", "info": {"id": "m1", "role": "assistant"}}}));
         let text = adapter.normalize(&serde_json::json!({"type": "message.part.updated", "properties": {"sessionID": "grandchild", "part": {"id": "p1", "messageID": "m1", "type": "text", "text": "nested", "time": {"start": 1, "end": 2}}}}));
         assert_eq!(text[0].kind, "message.completed");

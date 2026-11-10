@@ -2453,6 +2453,7 @@ fn cleanup_reader_state(
 }
 
 fn stop_direct_session_after_reader_exit(db: &Connection, session_id: &str) {
+    let _ = crate::harness_subagents::interrupt_children(db, session_id);
     if let Ok(Some(pending)) =
         compaction_controller::CompactionController::pending(db, session_id)
     {
@@ -2896,7 +2897,7 @@ fn handle_agent_value_timed(
             let root: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1", params![session_id], |r| r.get(0)).ok().flatten();
             if let Some(root) = root { frame["_bridgeRootThreadId"] = serde_json::json!(root); }
         }
-        let mut normalized = state
+        let normalized = state
             .adapter_registry
             .normalize(&adapter_id, &frame)
             .into_iter()
@@ -2904,6 +2905,27 @@ fn handle_agent_value_timed(
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
             })
             .collect::<Vec<_>>();
+        // Route before any root error/turn/control handling. Child prose is
+        // never interpreted as a Bridge delegation or prompt mutation.
+        let mut root_events = Vec::new();
+        for event in normalized {
+            if event.data.get("subagent").is_some() {
+                match crate::harness_subagents::route(&db, session_id, &event, &serde_json::json!({"adapter":adapter_id})) {
+                    Ok(events) => {
+                        let state_changed=events.iter().any(|e|matches!(e.kind.as_str(),"subagent.started"|"subagent.completed"|"subagent.status"|"permission.requested"|"question.requested"));
+                        for stored in events {
+                            if stored.kind=="permission.requested" && should_auto_approve_permission(&db, session_id, &event) {
+                                pending_auto_approvals.push((stored.session_id.clone(), stored.sequence));
+                            }
+                            state.events.publish(CoreEvent::Agent(stored));
+                        }
+                        if state_changed { state.events.publish(CoreEvent::StateChanged); }
+                    }
+                    Err(error) => { let _ = store::event(&db,"adapter","subagent.routing_failed",session_id,&error.to_string()); }
+                }
+            } else { root_events.push(event); }
+        }
+        let mut normalized = root_events;
         let normalization_ms = normalization_started.elapsed().as_secs_f64() * 1000.0;
         // Interrupting a provider to honor a user's Stop click routinely makes
         // it emit an "error" frame (an aborted turn, a broken pipe, a non-zero
@@ -3046,7 +3068,7 @@ fn handle_agent_value_timed(
                             .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
                     if !checkpointing_worker && !completes_prompt_control {
                         let _ = db.execute(
-                            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
+                            "UPDATE sessions SET status=CASE WHEN status='stopped' THEN status ELSE 'ready' END,active_turn_id=NULL WHERE id=?1",
                             params![session_id],
                         );
                     }
@@ -3638,7 +3660,7 @@ fn handle_agent_value_timed(
                     // chose not to persist, and answering 0 would resolve whatever
                     // approval happens to sit at that sequence.
                     if auto_approve_this_event && event.kind == "permission.requested" && event.sequence > 0 {
-                        pending_auto_approvals.push(event.sequence);
+                        pending_auto_approvals.push((session_id.to_owned(), event.sequence));
                     }
                     // Publish while the database mutex is still held. This keeps
                     // durable live delivery in commit/sequence order: another
@@ -3876,8 +3898,8 @@ fn handle_agent_value_timed(
 
     // Before the parent is told a child is blocked: if policy already answered
     // the approval, nobody is blocked and mirroring a card would be a lie.
-    for event_id in pending_auto_approvals {
-        apply_bypass_approval(core, session_id, event_id);
+    for (approval_session, event_id) in pending_auto_approvals {
+        apply_bypass_approval(core, &approval_session, event_id);
     }
     if let Some(detail) = &pending_child_approval {
         surface_child_approval_on_parent(core, session_id, detail);
@@ -10551,6 +10573,7 @@ pub fn prepare_turn(
     if !exists {
         return Err(BridgeError::Invalid("Chat session does not exist".into()));
     }
+    crate::harness_subagents::require_process_session(&state.db.lock().unwrap(), &session_id)?;
     let intercepted = secret_interception::intercept(&text);
     state
         .credential_broker
@@ -12852,10 +12875,51 @@ fn announce_worker_cancellation(core: &Arc<BridgeCore>, child_session_id: &str, 
     );
 }
 
+fn stop_harness_subagent(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let (parent,target,turn) = crate::harness_subagents::stop_target(&core.db.lock().unwrap(),session_id)?;
+    {
+        let adapters=core.adapters.lock().unwrap();
+        adapters.get(&parent).ok_or_else(||BridgeError::Invalid("Parent harness is no longer running".into()))?
+            .stop_subagent(&target,turn.as_deref())?;
+    }
+    let db=core.db.lock().unwrap();
+    let provider:String=db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1",[session_id],|r|r.get(0))?;
+    let mut event=agent::NormalizedEvent::new("subagent.completed");
+    event.status=Some("interrupted".into());
+    event.data=serde_json::json!({"subagent":{"sessionId":provider},"reason":"user_stopped"});
+    for stored in crate::harness_subagents::route(&db,&parent,&event,&serde_json::json!({"source":"user"}))? {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(())
+}
+
+/// Keep the shared process and reader alive when cancelling only the root
+/// turn. Otherwise the normal hard-stop path would kill every provider child.
+fn interrupt_parent_with_live_subagents(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool,BridgeError> {
+    let has_children:bool=core.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE parent_session_id=?1 AND kind='harness_subagent' AND status IN ('working','waiting','starting','ready'))",[session_id],|r|r.get(0))?;
+    if !has_children {return Ok(false);}
+    let _lifecycle=core.claim_session_lifecycle(session_id,"stop parent turn")?;
+    {
+        let adapters=core.adapters.lock().unwrap();
+        let Some(runtime)=adapters.get(session_id) else {return Ok(false);};
+        runtime.interrupt()?;
+    }
+    let db=core.db.lock().unwrap();
+    db.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL WHERE id=?1",[session_id])?;
+    db.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",[session_id])?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(true)
+}
+
 /// Composer Stop is a cancellation boundary, not an unbounded graceful abort.
 /// Close the reader gate and settle this chat before disposing its process.
 /// Its persisted provider session remains available for the next user send.
 pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    if crate::harness_subagents::is_child(&core.db.lock().unwrap(), session_id)? {
+        return stop_harness_subagent(core, session_id);
+    }
+    if interrupt_parent_with_live_subagents(core, session_id)? { return Ok(()); }
     let is_worker = core.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         [session_id], |row| row.get::<_, bool>(0),
@@ -12902,6 +12966,7 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
         event.data = serde_json::json!({"reason":reason});
         let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
         transaction.commit()?;
+        let _ = crate::harness_subagents::interrupt_children(&db, session_id);
         core.deactivate_reader_launch(session_id);
         // The reader gate suppresses shutdown frames. Do not leave a marker
         // that could swallow a genuine error during the next cold resume.
@@ -12929,6 +12994,10 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
 /// returns. Callers retire the root first, so a worker's cancellation cannot
 /// start a new turn on it.
 pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str, cause: StopCause<'_>) -> Result<(), BridgeError> {
+    if crate::harness_subagents::is_child(&core.db.lock().unwrap(),session_id)? {
+        // Its owner was retired first; archive never starts a child process.
+        return Ok(());
+    }
     // A worker is a child with a runtime record. Real workers keep the default
     // `kind`, so the kind column cannot identify them. An unsettled worker is
     // settled even without a live process: its lease still counts toward
@@ -12972,6 +13041,7 @@ pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str,
 /// A hidden family cannot be resumed by a stale window or queued input. Check
 /// under the lifecycle claim so a start cannot slip in after archive commits.
 fn ensure_session_not_archived(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    crate::harness_subagents::require_process_session(&core.db.lock().unwrap(), session_id)?;
     if session_has_archived_ancestor(&core.db.lock().unwrap(), session_id)? {
         return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
     }
@@ -12994,6 +13064,10 @@ pub fn stop_session(
     session_id: String,
 ) -> Result<BridgeState, BridgeError> {
     let state = core;
+    if crate::harness_subagents::is_child(&state.db.lock().unwrap(), &session_id)? {
+        stop_harness_subagent(core, &session_id)?;
+        return store::state(&state.db.lock().unwrap());
+    }
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
     state.browser_bridge.revoke_session(&session_id);
     #[cfg(target_os = "macos")]
@@ -18001,6 +18075,86 @@ mod permission_policy_tests {
             ledger(&core, "approval."),
             vec!["approval.auto_allowed".to_owned()]
         );
+    }
+
+    #[test]
+    fn harness_children_cannot_end_the_root_turn_or_publish_their_reply_as_root() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let turn=Arc::new(Mutex::new(Some("root-turn".into())));
+        for child in ["one","two","three"] {
+            for frame in [
+                serde_json::json!({"method":"turn/started","params":{"threadId":child,"turn":{"id":format!("{child}-turn")}}}),
+                serde_json::json!({"method":"item/completed","params":{"threadId":child,"item":{"type":"agentMessage","id":format!("{child}-reply"),"text":"Only in child"}}}),
+                serde_json::json!({"method":"turn/completed","params":{"threadId":child,"turn":{"id":format!("{child}-turn"),"status":"completed"}}})
+            ] {handle_agent_value(&core,"chat",&turn,&frame);}
+            assert_eq!(turn.lock().unwrap().as_deref(),Some("root-turn"));
+        }
+        {
+            let db=core.db.lock().unwrap();
+            let status:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(status,"working");
+            let root=store::session_entries(&db,"chat").unwrap();
+            assert_eq!(root.len(),6);
+            assert!(root.iter().all(|entry|entry.kind.starts_with("subagent.") && entry.context_visibility=="hidden"));
+            let replies:i64=db.query_row("SELECT count(*) FROM session_entries WHERE kind='assistant.message' AND session_id!='chat'",[],|r|r.get(0)).unwrap();assert_eq!(replies,3);
+        }
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/completed","params":{"threadId":"root","turn":{"id":"root-turn","status":"completed"}}}));
+        assert!(turn.lock().unwrap().is_none());
+        let status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(status,"ready");
+    }
+
+    #[test]
+    fn a_harness_child_permission_is_persisted_and_answered_through_the_parent() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let handles=attach(&core,"chat");
+        let mut frame=approval_frame(42);
+        frame["params"]["threadId"]=serde_json::json!("child-thread");
+        deliver(&core,&frame);
+        let (child,sequence)={let db=core.db.lock().unwrap();
+            db.query_row("SELECT session_id,sequence FROM session_entries WHERE kind='permission.requested'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap()};
+        assert_ne!(child,"chat");
+        crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap();
+        assert_eq!(handles.responded.lock().unwrap()[0].0,serde_json::json!(42));
+        let db=core.db.lock().unwrap();
+        let root:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(root,"working");
+        assert!(store::session_entries(&db,&child).unwrap().iter().any(|entry|entry.kind=="permission.resolved"));
+    }
+
+    #[test]
+    fn harness_child_stop_and_parent_stop_keep_siblings_and_the_shared_runtime() {
+        struct Spy(Arc<Mutex<Vec<String>>>);
+        impl adapters::AdapterRuntime for Spy {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{self.0.lock().unwrap().push("root interrupt".into());Ok(())}
+            fn stop_subagent(&self,id:&str,turn:Option<&str>)->Result<(),BridgeError>{self.0.lock().unwrap().push(format!("{id}:{}",turn.unwrap()));Ok(())}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn stop(&mut self,_:adapters::ShutdownReason){panic!("must preserve shared process");}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        let calls=Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Spy(calls.clone())));
+        let child={let db=core.db.lock().unwrap();
+            for id in ["one","two"] {
+                let mut event=agent::NormalizedEvent::new("subagent.status");
+                event.data=serde_json::json!({"subagent":{"sessionId":id},"turn":{"id":format!("{id}-turn")}});
+                crate::harness_subagents::route(&db,"chat",&event,&serde_json::json!({})).unwrap();
+            }
+            db.query_row("SELECT id FROM sessions WHERE provider_session_id='one'",[],|r|r.get::<_,String>(0)).unwrap()};
+        cancel_visible_turn(&core,&child).unwrap();
+        cancel_visible_turn(&core,"chat").unwrap();
+        assert_eq!(*calls.lock().unwrap(),vec!["one:one-turn","root interrupt"]);
+        assert!(core.adapters.lock().unwrap().contains_key("chat"));
+        let status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE provider_session_id='two'",[],|r|r.get(0)).unwrap();assert_eq!(status,"working");
+        assert!(start_chat(&core,child.clone()).unwrap_err().to_string().contains("harness_subagent_processless"));
+        assert!(submit_input(&core,child.clone(),"hello".into()).unwrap_err().to_string().contains("harness_subagent_processless"));
+        assert!(core.begin_manual_compaction(&child).unwrap_err().to_string().contains("harness_subagent_processless"));
+        assert!(core.fork_session(&child,"ignored",None,None,None,"shared").unwrap_err().to_string().contains("harness_subagent_processless"));
+        // Drop the spy without calling its process destructor contract.
+        core.adapters.lock().unwrap().remove("chat");
     }
 
     #[test]

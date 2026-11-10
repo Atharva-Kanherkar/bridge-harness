@@ -1330,6 +1330,13 @@ impl AdapterRuntime for OpenCodeRuntime {
         };
         self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode turn")
     }
+    fn stop_subagent(&self, provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{provider_id}/abort"),
+            ServerApi::V2 => format!("/api/session/{provider_id}/interrupt"),
+        };
+        self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode subagent")
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let client = self.client.as_ref()?.clone();
         let path = match self.api {

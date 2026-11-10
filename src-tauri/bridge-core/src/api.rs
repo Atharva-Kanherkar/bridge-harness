@@ -2443,10 +2443,11 @@ fn resolve_legacy_approval(
             Some("approval_resolved"),
         )?;
     }
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     let adapters = core.adapters.lock().unwrap();
     let runtime = adapters
-        .get(session_id)
+        .get(&adapter_owner)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let response = if is_question {
         runtime.reject_question(request_id)
@@ -2837,11 +2838,12 @@ fn resolve_provider_permission(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 
     let adapters = core.adapters.lock().unwrap();
-    let response = match adapters.get(session_id) {
+    let response = match adapters.get(&adapter_owner) {
         Some(runtime) => runtime.respond_with_option(request_id, &decision, option_id.as_deref()),
         None => Err(BridgeError::Invalid(
             "Structured adapter session is not running".into(),
@@ -2929,11 +2931,12 @@ pub fn resolve_question(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 
     let adapters = core.adapters.lock().unwrap();
-    let response = match (adapters.get(session_id), request_method) {
+    let response = match (adapters.get(&adapter_owner), request_method) {
         (None, _) => Err(BridgeError::Invalid(
             "Structured adapter session is not running".into(),
         )),

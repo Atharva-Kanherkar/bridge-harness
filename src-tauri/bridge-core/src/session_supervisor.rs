@@ -67,6 +67,7 @@ impl SessionSupervisor {
     }
 
     pub fn recover_tracked_adapter_processes(db: &Connection) -> Result<usize, BridgeError> {
+        crate::harness_subagents::interrupt_orphans(db)?;
         let claims = {
             let mut statement = db.prepare(
                 "SELECT id,status,adapter_pid,adapter_process_identity,active_turn_id IS NOT NULL

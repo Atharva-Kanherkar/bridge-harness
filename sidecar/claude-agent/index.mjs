@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { stopTaskFrame, childPermissions } from "./subagents.mjs";
 // Bridge ↔ Claude Agent SDK sidecar.
 //
 // Replaces the per-turn `claude -p` spawn. One long-lived process drives a
@@ -110,6 +111,8 @@ function userMessage(content) {
 
 const options = config.catalog === true ? catalogOptions() : buildOptions(config);
 
+const permissions = childPermissions(writeFrame, sessionId);
+if (config.catalog !== true) options.canUseTool = permissions.canUseTool;
 const run = query({ prompt: input, options });
 
 // Catalogue discovery is a short-lived control-plane request. It uses the
@@ -140,6 +143,10 @@ rl.on("line", (line) => {
     // to remove. See input.mjs for the shapes this tolerates.
     const blocks = userContentBlocks(frame);
     if (blocks) input.push(userMessage(blocks));
+  } else if (frame.type === "control_response") {
+    permissions.respond(frame);
+  } else if (frame.type === "stop_task") {
+    void stopTaskFrame(run, frame).catch(error => writeFrame({ type: "system", subtype: "subagent_stop_failed", task_id: frame.task_id, error: String(error) }));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
     void run.interrupt().catch(() => {});
   }
