@@ -1831,26 +1831,13 @@ impl HarnessAdapter for CodexAdapter {
         codex_adapter::supports_native_fork()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
-        if value.get("id").is_some() && value.get("method").is_some() {
-            agent::normalize_codex_request(value).into_iter().collect()
-        } else {
-            // Standard Codex app-server stdio notifications carry threadId on
-            // thread/turn boundaries, but omit session identity on mid-turn deltas.
-            // Stream state therefore resolves the session key when present and
-            // safely defaults to "default", with per-turn counter resets in
-            // CodexStreamState preventing cross-turn reasoning collision.
-            let session_key = value
-                .pointer("/params/conversationId")
-                .or_else(|| value.pointer("/params/threadId"))
-                .or_else(|| value.pointer("/params/sessionID"))
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                .to_owned();
-            let mut streams = self.streams.lock().unwrap();
-            let state = streams.entry(session_key).or_default();
-            agent::normalize_codex_message_with_state(value, state)
-        }
+        let session_key = value.get("_bridgeRootThreadId")
+            .or_else(|| value.pointer("/params/threadId"))
+            .and_then(Value::as_str).unwrap_or("default").to_owned();
+        let mut streams = self.streams.lock().unwrap();
+        agent::normalize_codex_message_with_state(value, streams.entry(session_key).or_default())
     }
+
     fn forget_session(&self, provider_session_id: &str) {
         if provider_session_id != "default" {
             self.streams.lock().unwrap().remove(provider_session_id);

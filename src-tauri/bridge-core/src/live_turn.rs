@@ -2891,9 +2891,14 @@ fn handle_agent_value_timed(
         // Provider echoes may include hidden user-role file context, so do not
         // duplicate them into the visible conversation.
         let normalization_started = std::time::Instant::now();
+        let mut frame = value.clone();
+        if adapter_id == "codex" {
+            let root: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1", params![session_id], |r| r.get(0)).ok().flatten();
+            if let Some(root) = root { frame["_bridgeRootThreadId"] = serde_json::json!(root); }
+        }
         let mut normalized = state
             .adapter_registry
-            .normalize(&adapter_id, value)
+            .normalize(&adapter_id, &frame)
             .into_iter()
             .filter(|event| {
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
@@ -2969,6 +2974,7 @@ fn handle_agent_value_timed(
         });
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
+            if event.data.get("subagent").is_some() { continue; }
             if checkpoint_turn_active
                 && !matches!(
                     event.kind.as_str(),
