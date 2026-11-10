@@ -154,3 +154,10 @@ describe("AgentChat", () => {
     });
   });
 });
+
+it("shows a processless child's own messages without offering a steer composer", async () => {
+  await mount({session:worker({kind:"harness_subagent"}),runtime:undefined,liveEvents:[live(3,"message.completed",{itemId:"child-reply",role:"assistant",text:"Child-only reply"})]});
+  expect(container.textContent).toContain("Child-only reply");
+  expect(container.textContent).not.toContain("STATUS UNAVAILABLE");
+  expect(container.querySelector("textarea")).toBeNull();
+});
