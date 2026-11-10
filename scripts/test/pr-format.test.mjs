@@ -115,6 +115,14 @@ test("bots, the label and the marker are exempt", () => {
   assert.equal(checkPullRequestFormat(`<!-- ${EXEMPT_MARKER} -->`).exempt, true);
 });
 
+test("mentioning the marker in code does not exempt a body", () => {
+  const inline = checkPullRequestFormat(`Escape hatch: \`<!-- ${EXEMPT_MARKER} -->\` in the body.`);
+  const fenced = checkPullRequestFormat(`\`\`\`\n<!-- ${EXEMPT_MARKER} -->\n\`\`\``);
+  assert.equal(inline.exempt, false);
+  assert.equal(fenced.exempt, false);
+  assert.equal(inline.ok, false);
+});
+
 test("a null body fails rather than throwing", () => {
   assert.equal(checkPullRequestFormat(null).ok, false);
 });

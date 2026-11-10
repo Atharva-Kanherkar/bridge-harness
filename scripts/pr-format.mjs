@@ -51,6 +51,15 @@ function maskFences(markdown) {
   });
 }
 
+/**
+ * The marker only counts as an HTML comment in the body itself. A body that
+ * mentions it in code, as this rule's own docs and PRs do, is not exempt.
+ */
+function hasExemptMarker(markdown) {
+  const prose = markdown.replace(FENCE, '').replace(/`[^`\n]*`/g, '');
+  return /<!--\s*pr-format:\s*exempt\s*-->/i.test(prose);
+}
+
 function matchesSection(title, pattern) {
   return pattern.test(title.replace(/[^\p{L}\p{N}\s/-]/gu, ' '));
 }
@@ -77,7 +86,7 @@ export function checkPullRequestFormat(body, options = {}) {
   const labels = (options.labels ?? []).map((label) => String(label).toLowerCase());
   const all = Object.fromEntries(SECTIONS.map((section) => [section.key, true]));
 
-  if (options.isBot || labels.includes(EXEMPT_LABEL) || source.includes(EXEMPT_MARKER)) {
+  if (options.isBot || labels.includes(EXEMPT_LABEL) || hasExemptMarker(source)) {
     return { ok: true, exempt: true, problems: [], sections: all };
   }
 
