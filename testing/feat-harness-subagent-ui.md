@@ -4,7 +4,7 @@
 - Agents pane lists active harness_subagent child sessions without worker runtimes alongside existing workers, scoped to the selected chat.
 - Child rows use existing agent chat/pin/Stop controls and show a subagent label, current step and honest permission description: Started by <harness> in this chat. Runs with this chat’s permissions. Not a Bridge worker.
 - Selecting a child shows its own forest and approvals. No child composer or steering is offered for a processless session.
-- Parent transcript folds each child lifecycle into one quiet pointer with Show in Agents. Provider launch placeholders never render as results. Original Agent tool cards are replaced by the attributed pointer when available.
+- Parent transcript folds each child lifecycle into one quiet Subagent pointer with Show in Agents; current status is shown in the Agents pane, including when the provider starts a later turn on the same child. Provider launch placeholders never render as results. Original Agent tool cards are replaced by the attributed pointer when available.
 - Finished rows remain readable if selected or pinned; running rows remain until provider completion. Direct chats auto-open newly observed child sessions through the same spawn watcher as workers.
 - Existing Bridge workers, grouping and transcript behavior remain unchanged. Tailwind v4 utilities and existing tokens only.
 
