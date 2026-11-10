@@ -2453,7 +2453,6 @@ fn cleanup_reader_state(
 }
 
 fn stop_direct_session_after_reader_exit(db: &Connection, session_id: &str) {
-    let _ = crate::harness_subagents::interrupt_children(db, session_id);
     if let Ok(Some(pending)) =
         compaction_controller::CompactionController::pending(db, session_id)
     {
@@ -2674,6 +2673,8 @@ fn spawn_reader_thread(
                     |row| row.get(0),
                 )
                 .ok();
+            // Workers and chats alike: their provider children ended with them.
+            let _ = crate::harness_subagents::interrupt_children(&db, &session_id);
             if !is_worker {
                 stop_direct_session_after_reader_exit(&db, &session_id);
             }
@@ -12836,6 +12837,7 @@ pub fn stop_worker_session(
     }
     verify_read_only_worker(core, session_id);
     let db = state.db.lock().unwrap();
+    crate::harness_subagents::interrupt_children(&db, session_id)?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
     let workspace_id: String = db.query_row(
         "SELECT workspace_id FROM sessions WHERE id=?1",
@@ -12933,12 +12935,13 @@ pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
     if crate::harness_subagents::is_child(&core.db.lock().unwrap(), session_id)? {
         return stop_harness_subagent(core, session_id);
     }
-    if interrupt_parent_with_live_subagents(core, session_id)? { return Ok(()); }
     let is_worker = core.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         [session_id], |row| row.get::<_, bool>(0),
     )?;
+    // A worker's Stop cancels the worker, children included.
     if is_worker { return stop_worker_session(core, session_id, StopCause::User); }
+    if interrupt_parent_with_live_subagents(core, session_id)? { return Ok(()); }
     stop_turn(core, session_id, TurnStop::User)
 }
 
@@ -19625,6 +19628,29 @@ mod retry_settlement_tests {
             )
             .expect("a refusal the user can see, not just a ledger row");
         assert!(refusal.contains("not one of your workers"), "{refusal}");
+    }
+
+    /// A provider subagent inside a worker must not turn the worker's Stop
+    /// into a parent-turn interrupt. The worker is still cancelled, and the
+    /// child it owned ends with its process.
+    #[test]
+    fn stopping_a_worker_with_a_live_harness_subagent_still_cancels_the_worker() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            let mut event = agent::NormalizedEvent::new("subagent.started");
+            event.data = serde_json::json!({"subagent":{"sessionId":"provider-child"}});
+            crate::harness_subagents::route(&db, "child", &event, &serde_json::json!({})).unwrap();
+        }
+
+        cancel_visible_turn(&core, "child").unwrap();
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(store::worker_runtime(&db, "child").unwrap().unwrap().lifecycle_state, "cancelled");
+        let status: String = db
+            .query_row("SELECT status FROM sessions WHERE kind='harness_subagent'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "interrupted");
     }
 
     /// `Waiting → Cancelled` is a legal transition the settle path used to
