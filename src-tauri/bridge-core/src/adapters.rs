@@ -2761,7 +2761,7 @@ mod tests {
         assert_eq!(adapter.normalize(&created("grandchild", Some("child")))[0].kind, "subagent.started");
         // A child's completion must not close the root's turn, and its text is
         // tagged as subagent work inside the root's stream.
-        assert_eq!(adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "grandchild", "status": {"type": "idle"}}}))[0].kind, "subagent.completed");
+        assert!(adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "grandchild", "status": {"type": "idle"}}})).is_empty());
         adapter.normalize(&serde_json::json!({"type": "message.updated", "properties": {"sessionID": "grandchild", "info": {"id": "m1", "role": "assistant"}}}));
         let text = adapter.normalize(&serde_json::json!({"type": "message.part.updated", "properties": {"sessionID": "grandchild", "part": {"id": "p1", "messageID": "m1", "type": "text", "text": "nested", "time": {"start": 1, "end": 2}}}}));
         assert_eq!(text[0].kind, "message.completed");

@@ -715,7 +715,7 @@ mod tests {
     fn seeded() -> Connection {
         let db = Connection::open_in_memory().expect("db");
         db.execute_batch(
-            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT, label TEXT, harness TEXT, provider_session_id TEXT, title_source TEXT, cwd TEXT);
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT, label TEXT, harness TEXT, provider_session_id TEXT, title_source TEXT, cwd TEXT, kind TEXT DEFAULT 'direct');
              CREATE TABLE session_entries(rowid INTEGER PRIMARY KEY, session_id TEXT, kind TEXT, payload TEXT);",
         )
         .expect("schema");
@@ -1378,4 +1378,11 @@ mod tests {
         let text = grounding_text(&db, "s1").unwrap();
         assert!(text.contains("dynamo router") && text.contains("sentry alerts"));
     }
+    #[test]
+    fn backfill_never_renames_a_harness_subagent() {
+        let db=seeded();session(&db,"child",None,"codex");said(&db,"child","Research important facts");
+        db.execute("UPDATE sessions SET kind='harness_subagent' WHERE id='child'",[]).unwrap();
+        assert_eq!(backfill_from_messages(&db).unwrap(),0);
+    }
+
 }

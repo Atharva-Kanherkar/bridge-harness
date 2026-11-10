@@ -221,12 +221,15 @@ pub fn normalize_opencode_message_with_state(
         // session records belong to it alone.
         "session.status" | "session.idle" => {
             let status=properties.pointer("/status/type").and_then(Value::as_str).unwrap_or("idle");
-            let mut events=Vec::new();
-            if event_type=="session.idle" || status=="idle" {
-                if let Some(child)=state.child_streams.get_mut(&child_session) { events.extend(flush_pending_text(child)); }
-            }
-            let mut event=with_data(if event_type=="session.idle" || status=="idle" {"subagent.completed"} else {"subagent.status"},&properties,properties.clone());
-            event.status=Some(if status=="idle" {"completed"} else {"working"}.into());
+            let idle=event_type=="session.idle" || status=="idle";
+            let child=state.child_streams.entry(child_session.clone()).or_default();
+            // A newly created session can announce idle before its first
+            // turn. Only an idle after observed work completes that child.
+            if idle && child.turn_active != Some(true) { return vec![]; }
+            child.turn_active=Some(!idle);
+            let mut events=if idle {flush_pending_text(child)} else {vec![]};
+            let mut event=with_data(if idle {"subagent.completed"} else {"subagent.status"},&properties,properties.clone());
+            event.status=Some(if idle {"completed"} else {"working"}.into());
             events.push(event);
             for event in &mut events {tag_subagent(event,&child_session,&child_info);}
             events
@@ -240,10 +243,14 @@ pub fn normalize_opencode_message_with_state(
             event.title = Some("OpenCode subagent error".into());
             event.text = opencode_error_text(&properties);
             tag_subagent(&mut event, &child_session, &child_info);
-            vec![event]
+            let mut completed=event.clone();
+            completed.kind="subagent.completed".into();
+            completed.status=Some("failed".into());
+            vec![event,completed]
         }
         _ => {
             let child_state=state.child_streams.entry(child_session.clone()).or_default();
+            child_state.turn_active=Some(true);
             let mut events = normalize_opencode_root_frame(event_type, &properties, child_state);
             for event in &mut events {
                 tag_subagent(event, &child_session, &child_info);
@@ -1479,6 +1486,7 @@ fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option
 
 #[derive(Debug, Clone)]
 struct ClaudeToolCall {
+    is_subagent: bool,
     family: ClaudeToolFamily,
     started_at: Instant,
     /// The Bash command, kept so the completion event can name it — the
@@ -1571,6 +1579,7 @@ fn claude_tool_started(
             }
         })
         .or_insert(ClaudeToolCall {
+            is_subagent: matches!(name, "Agent" | "Task"),
             family,
             started_at: now,
             command: None,
@@ -2100,7 +2109,10 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     .unwrap_or("tool")
                     .to_owned();
                 let output = part.get("content").map(Value::to_string).unwrap_or_default();
-                if output.contains("Async agent launched successfully") {
+                let is_subagent = state.tool_calls.get(&tool_id).is_some_and(|call| call.is_subagent)
+                    || state.child_streams.contains_key(&tool_id)
+                    || state.tasks.values().any(|task| task.get("tool_use_id").and_then(Value::as_str) == Some(tool_id.as_str()));
+                if is_subagent && output.contains("Async agent launched successfully") {
                     continue;
                 }
                 let call = state.tool_calls.remove(&tool_id);
@@ -3038,13 +3050,15 @@ mod tests {
     }
 
     #[test]
-    fn opencode_child_session_error_is_a_warning_not_a_turn_end() {
+    fn opencode_child_session_error_ends_only_the_child() {
         let mut state = OpenCodeStreamState::default();
         normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"root","info":{"id":"root"}}}), &mut state);
         normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"root","status":{"type":"busy"}}}), &mut state);
         normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"kid","info":{"id":"kid","parentID":"root","agent":"explore","title":"Scan"}}}), &mut state);
         let events = normalize_opencode_message_with_state(&json!({"type":"session.error","properties":{"sessionID":"kid","error":{"name":"UnknownError","data":{"message":"subagent crashed"}}}}), &mut state);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].kind, "subagent.completed");
+        assert_eq!(events[1].status.as_deref(), Some("failed"));
         assert_eq!(events[0].kind, "error");
         assert_eq!(events[0].status.as_deref(), Some("warning"));
         assert_eq!(events[0].text.as_deref(), Some("subagent crashed"));
@@ -4488,4 +4502,23 @@ mod harness_subagent_tests {
             assert_eq!(events[0].data["subagent"]["sessionId"],"child");
         }
     }
+    #[test]
+    fn ordinary_tool_output_is_not_mistaken_for_an_agent_launch() {
+        let mut state=ClaudeStreamState::default();
+        normalize_claude_message_with_state(&json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"echo test"}}]}}),&mut state);
+        let events=normalize_claude_message_with_state(&json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash","content":"Async agent launched successfully"}]}}),&mut state);
+        assert_eq!(events[0].kind,"command.completed");
+    }
+
+    #[test]
+    fn opencode_initial_idle_does_not_finish_a_new_subagent() {
+        let mut state=OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"info":{"id":"root"}}}),&mut state);
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"info":{"id":"child","parentID":"root"}}}),&mut state);
+        let status=|kind|json!({"type":"session.status","properties":{"sessionID":"child","status":{"type":kind}}});
+        assert!(normalize_opencode_message_with_state(&status("idle"),&mut state).is_empty());
+        assert_eq!(normalize_opencode_message_with_state(&status("busy"),&mut state)[0].kind,"subagent.status");
+        assert_eq!(normalize_opencode_message_with_state(&status("idle"),&mut state)[0].kind,"subagent.completed");
+    }
+
 }

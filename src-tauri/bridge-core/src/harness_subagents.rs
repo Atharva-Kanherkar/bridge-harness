@@ -139,6 +139,26 @@ pub fn route(
             meta,
         )?);
     }
+    if terminal(event) {
+        let pending = {
+            let mut stmt=tx.prepare("SELECT e.sequence,e.kind FROM session_entries e WHERE e.session_id=?1 AND e.kind IN ('permission.requested','question.requested') AND NOT EXISTS (SELECT 1 FROM session_entries r WHERE r.session_id=e.session_id AND r.kind=replace(e.kind,'requested','resolved') AND json_extract(r.payload,'$.data.requestEventId')=e.sequence)")?;
+            let rows = stmt
+                .query_map([&child], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        for (sequence, kind) in pending {
+            let mut settled = NormalizedEvent::new(&kind.replace("requested", "resolved"));
+            settled.status = Some("cancelled".into());
+            settled.data =
+                json!({"requestEventId":sequence,"decision":"cancel","reason":"subagent_ended"});
+            result.push(store::session_event_in_transaction(
+                &tx, &child, &settled, meta,
+            )?);
+        }
+    }
     tx.commit()?;
     Ok(result)
 }
@@ -265,5 +285,58 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status, "interrupted");
+    }
+    #[test]
+    fn claude_background_replay_waits_for_notification() {
+        let db = db();
+        db.execute("UPDATE sessions SET harness='claude' WHERE id='parent'", [])
+            .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/claude-subagents.json"
+        ))
+        .unwrap();
+        let mut state = crate::agent::ClaudeStreamState::default();
+        for (index, frame) in fixture["frames"].as_array().unwrap().iter().enumerate() {
+            for event in crate::agent::normalize_claude_message_with_state(frame, &mut state) {
+                assert!(!event
+                    .text
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("Async agent launched"));
+                if event.data.get("subagent").is_some() {
+                    route(&db, "parent", &event, &json!({})).unwrap();
+                }
+            }
+            let status: String = db
+                .query_row(
+                    "SELECT status FROM sessions WHERE kind='harness_subagent'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, if index == 5 { "completed" } else { "working" });
+        }
+        let id: String = db
+            .query_row(
+                "SELECT id FROM sessions WHERE kind='harness_subagent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stop_target(&db, &id).unwrap().1, "task-1");
+    }
+    #[test]
+    fn ending_a_child_settles_its_pending_approval() {
+        let db = db();
+        let mut request = event("permission.requested", "one");
+        request.data["requestId"] = json!(42);
+        let events = route(&db, "parent", &request, &json!({})).unwrap();
+        let child = events.last().unwrap().session_id.clone();
+        let mut done = event("subagent.completed", "one");
+        done.status = Some("interrupted".into());
+        let events = route(&db, "parent", &done, &json!({})).unwrap();
+        assert!(events.iter().any(|e| e.session_id == child
+            && e.kind == "permission.resolved"
+            && e.status.as_deref() == Some("cancelled")));
     }
 }

@@ -13197,6 +13197,7 @@ fn record_shutdown_reason(
     session_id: &str,
     reason: adapters::ShutdownReason,
 ) -> Result<(), BridgeError> {
+    crate::harness_subagents::interrupt_children(db, session_id)?;
     session_supervisor::SessionSupervisor::clear_adapter_process(db, session_id)?;
     session_forest::SessionForest::new(db)
         .append(
@@ -18155,6 +18156,33 @@ mod permission_policy_tests {
         assert!(core.fork_session(&child,"ignored",None,None,None,"shared").unwrap_err().to_string().contains("harness_subagent_processless"));
         // Drop the spy without calling its process destructor contract.
         core.adapters.lock().unwrap().remove("chat");
+    }
+
+    #[test]
+    fn harness_live_codex_capture_replays_into_three_isolated_sessions() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root-thread',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let fixture:serde_json::Value=serde_json::from_str(include_str!("../../../testing/fixtures/codex-subagents.json")).unwrap();
+        let turn=Arc::new(Mutex::new(Some("root-turn".into())));
+        for frame in fixture["frames"].as_array().unwrap() {handle_agent_value(&core,"chat",&turn,frame);}
+        let db=core.db.lock().unwrap();
+        let children:i64=db.query_row("SELECT count(*) FROM sessions WHERE parent_session_id='chat' AND kind='harness_subagent'",[],|r|r.get(0)).unwrap();assert_eq!(children,3);
+        let pointers:i64=db.query_row("SELECT count(*) FROM session_entries WHERE session_id='chat' AND kind IN ('subagent.started','subagent.completed')",[],|r|r.get(0)).unwrap();assert_eq!(pointers,6);
+        let root:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(root,"working");
+        let child_replies:i64=db.query_row("SELECT count(*) FROM session_entries WHERE session_id!='chat' AND kind='assistant.message' AND json_extract(payload,'$.text') LIKE '%TEST_CHILD_%'",[],|r|r.get(0)).unwrap();assert_eq!(child_replies,3);
+    }
+
+    #[test]
+    fn a_finished_harness_child_cannot_accept_a_stale_permission() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root' WHERE id='chat'",[]).unwrap();
+        let handles=attach(&core,"chat");let mut frame=approval_frame(42);frame["params"]["threadId"]=serde_json::json!("child");deliver(&core,&frame);
+        let (child,sequence)={let db=core.db.lock().unwrap();
+            let row=db.query_row("SELECT session_id,sequence FROM session_entries WHERE kind='permission.requested'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap();
+            let mut done=agent::NormalizedEvent::new("subagent.completed");done.status=Some("interrupted".into());done.data=serde_json::json!({"subagent":{"sessionId":"child"}});
+            crate::harness_subagents::route(&db,"chat",&done,&serde_json::json!({})).unwrap();row};
+        assert!(crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap_err().to_string().contains("no longer running"));
+        assert!(handles.responded.lock().unwrap().is_empty());
     }
 
     #[test]

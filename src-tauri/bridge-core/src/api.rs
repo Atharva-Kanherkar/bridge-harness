@@ -2489,7 +2489,7 @@ fn resolve_legacy_approval(
     )?;
     if !is_worker {
         db.execute(
-            "UPDATE sessions SET status='working' WHERE id=?1",
+            "UPDATE sessions SET status='working' WHERE id=?1 AND (kind!='harness_subagent' OR status NOT IN ('completed','failed','interrupted','stopped'))",
             params![session_id],
         )?;
     }
@@ -2570,6 +2570,8 @@ fn interaction_payload(
     event_id: i64,
     expected_kind: &str,
 ) -> Result<(Value, String, bool), BridgeError> {
+    let terminal_child: bool = db.query_row("SELECT kind='harness_subagent' AND status IN ('completed','failed','interrupted','stopped') FROM sessions WHERE id=?1", [session_id], |r| r.get(0))?;
+    if terminal_child { return Err(BridgeError::Invalid("This subagent is no longer running".into())); }
     let (kind, payload, adapter_id): (String, String, String) = db.query_row(
         "SELECT e.kind,e.payload,s.harness FROM session_entries e
          JOIN sessions s ON s.id=e.session_id
@@ -2713,7 +2715,7 @@ fn finish_interaction(
             )?;
         } else {
             transaction.execute(
-                "UPDATE sessions SET status='working' WHERE id=?1",
+                "UPDATE sessions SET status='working' WHERE id=?1 AND (kind!='harness_subagent' OR status NOT IN ('completed','failed','interrupted','stopped'))",
                 params![session_id],
             )?;
         }
