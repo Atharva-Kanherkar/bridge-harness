@@ -1,5 +1,5 @@
 {
- "snapshotDate": "2026-09-29",
+ "snapshotDate": "2026-11-10",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "unit": "microusd_per_million_tokens",
  "rates": {
@@ -49,6 +49,12 @@
    "cacheRead": 250000,
    "cacheWrite": 12500000
   },
+  "claude-fable-5-2": {
+   "input": 8000000,
+   "output": 40000000,
+   "cacheRead": 200000,
+   "cacheWrite": 10000000
+  },
   "claude-haiku-4-5": {
    "input": 1000000,
    "output": 5000000,
@@ -60,6 +66,12 @@
    "output": 5000000,
    "cacheRead": 100000,
    "cacheWrite": 1250000
+  },
+  "claude-haiku-5-5": {
+   "input": 100000,
+   "output": 500000,
+   "cacheRead": 10000,
+   "cacheWrite": 125000
   },
   "claude-mythos-5": {
    "input": 10000000,
@@ -184,7 +196,7 @@
   "claude-sonnet-5-5": {
    "input": 2000000,
    "output": 10000000,
-   "cacheRead": 200000,
+   "cacheRead": 100000,
    "cacheWrite": 2500000
   },
   "codex-mini-latest": {
@@ -289,7 +301,8 @@
   "dashscope/qwen3.7-max": {
    "input": 2500000,
    "output": 7500000,
-   "cacheRead": 500000
+   "cacheRead": 500000,
+   "cacheWrite": 3125000
   },
   "dashscope/qwen3.8-flash": {
    "input": 150000,
@@ -502,6 +515,11 @@
    "output": 3750000,
    "cacheRead": 75000
   },
+  "gemini/gemini-4-argon": {
+   "input": 2000000,
+   "output": 10000000,
+   "cacheRead": 100000
+  },
   "gemini/gemini-flash-latest": {
    "input": 750000,
    "output": 3750000,
@@ -521,6 +539,10 @@
    "output": 1050000
   },
   "gemini/gemini-omni-1.1-flash": {
+   "input": 1500000,
+   "output": 9000000
+  },
+  "gemini/gemini-omni-1.2-flash": {
    "input": 1500000,
    "output": 9000000
   },
@@ -832,6 +854,11 @@
    "output": 75000000,
    "cacheRead": 1250000
   },
+  "gpt-5.5-cyber-preview": {
+   "input": 12500000,
+   "output": 75000000,
+   "cacheRead": 1250000
+  },
   "gpt-5.5-pro": {
    "input": 30000000,
    "output": 180000000
@@ -870,17 +897,22 @@
    "cacheRead": 200000,
    "cacheWrite": 2500000
   },
-  "gpt-6.1-sol": {
-   "input": 2000000,
-   "output": 10000000,
-   "cacheRead": 100000,
-   "cacheWrite": 2500000
-  },
   "gpt-6-astra": {
    "input": 10000000,
    "output": 50000000,
    "cacheRead": 1000000,
    "cacheWrite": 12500000
+  },
+  "gpt-6-astra-law": {
+   "input": 10000000,
+   "output": 50000000,
+   "cacheRead": 1000000
+  },
+  "gpt-6-cyber": {
+   "input": 20000000,
+   "output": 100000000,
+   "cacheRead": 2000000,
+   "cacheWrite": 25000000
   },
   "gpt-6-luna": {
    "input": 100000,
@@ -888,11 +920,29 @@
    "cacheRead": 10000,
    "cacheWrite": 125000
   },
+  "gpt-6-rosalind": {
+   "input": 15000000,
+   "output": 75000000,
+   "cacheRead": 1500000,
+   "cacheWrite": 18750000
+  },
   "gpt-6-sol": {
    "input": 2000000,
    "output": 10000000,
    "cacheRead": 200000,
    "cacheWrite": 2500000
+  },
+  "gpt-6.1-sol": {
+   "input": 2000000,
+   "output": 10000000,
+   "cacheRead": 100000,
+   "cacheWrite": 2500000
+  },
+  "gpt-6.1-terra": {
+   "input": 1000000,
+   "output": 5000000,
+   "cacheRead": 50000,
+   "cacheWrite": 1250000
   },
   "gpt-daybreak-blue-latest": {
    "input": 4000000,
@@ -905,6 +955,11 @@
    "output": 75000000,
    "cacheRead": 1250000,
    "cacheWrite": 15625000
+  },
+  "gpt-rosalind-discovery": {
+   "input": 5000000,
+   "output": 25000000,
+   "cacheRead": 500000
   },
   "minimax/minimax-m2": {
    "input": 300000,
@@ -940,6 +995,11 @@
    "input": 300000,
    "output": 1200000,
    "cacheRead": 60000
+  },
+  "minimax/minimax-m3.1-flash": {
+   "input": 150000,
+   "output": 600000,
+   "cacheRead": 15000
   },
   "moonshot/kimi-k2-0711-preview": {
    "input": 600000,
@@ -984,7 +1044,20 @@
   "moonshot/kimi-k3": {
    "input": 3000000,
    "output": 15000000,
-   "cacheRead": 300000
+   "cacheRead": 300000,
+   "cacheWrite": 3000000
+  },
+  "moonshot/kimi-k3.1-pro": {
+   "input": 2000000,
+   "output": 10000000,
+   "cacheRead": 200000,
+   "cacheWrite": 2000000
+  },
+  "moonshot/kimi-k3.1-pro-highspeed": {
+   "input": 4000000,
+   "output": 20000000,
+   "cacheRead": 200000,
+   "cacheWrite": 4000000
   },
   "moonshot/kimi-latest": {
    "input": 2000000,
@@ -1458,6 +1531,11 @@
    "output": 500000,
    "cacheRead": 30000,
    "cacheWrite": 0
+  },
+  "zai/glm-5v-turbo": {
+   "input": 1200000,
+   "output": 4000000,
+   "cacheRead": 240000
   }
  }
 }
