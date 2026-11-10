@@ -19,7 +19,12 @@ if ("__TAURI_INTERNALS__" in window) document.documentElement.dataset.tauri = ""
 const params = new URLSearchParams(window.location.search);
 const preview = params.get("preview");
 const root = ReactDOM.createRoot(document.getElementById("root")!);
-if (preview === "right-rail") {
+if (import.meta.env.DEV && preview === "harness-subagents") {
+  void import("./previews/HarnessSubagentsPreview").then(({ HarnessSubagentsPreview }) => {
+    root.render(<HarnessSubagentsPreview />);
+    dismissBootSplash();
+  });
+} else if (preview === "right-rail") {
   void import("./previews/RightRailPreview").then(({ RightRailPreview }) => {
     root.render(<RightRailPreview />);
     dismissBootSplash();

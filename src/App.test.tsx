@@ -630,6 +630,23 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });
 
+  it("keeps a full-page harness child view read-only instead of offering a worker steer", async () => {
+    const real = await bridgeApi.state();
+    const spy = vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real, sessions: real.sessions.map(item => item.id === "session-1w" ? { ...item, kind: "harness_subagent" } : item) });
+    try {
+      await mountApp();
+      await openWorkspaceSession("4 files");
+      await click(dockToggle()!);
+      await key({ ...chord, code: "Digit6", key: "6" });
+      await settle(3);
+      await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+      await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
+      expect(container.textContent).toContain("Not a Bridge worker.");
+      expect(container.textContent).not.toContain("This is a background worker.");
+      expect(container.querySelector("textarea")).toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
   it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
     expect(container.querySelector("header")).not.toBeNull();

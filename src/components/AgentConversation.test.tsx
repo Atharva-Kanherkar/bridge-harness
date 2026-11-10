@@ -956,3 +956,17 @@ describe("AgentConversation", () => {
     }
   });
 });
+
+it("folds a provider Agent call and its lifecycle into one quiet child pointer", () => {
+  const subagent={sessionId:"agent-tool",agent:"Explore",title:"Check authentication"};
+  const events=[
+    event(1,"tool.started",{itemId:"agent-tool",title:"Agent",status:"running",data:{name:"Agent",input:{description:"Check authentication",prompt:"Read auth",subagent_type:"Explore"}}}),
+    event(2,"subagent.started",{status:"working",data:{childSessionId:"bridge-child",subagent}}),
+    event(3,"tool.completed",{itemId:"agent-tool",status:"completed",text:"Async agent launched successfully. Internal metadata",data:{name:"Agent",input:{prompt:"Read auth",subagent_type:"Explore"},aggregatedOutput:"Async agent launched successfully"}}),
+    event(4,"subagent.completed",{status:"completed",data:{childSessionId:"bridge-child",subagent}}),
+  ];
+  const html=renderToStaticMarkup(<AgentConversation session={session} events={events} onResolve={()=>undefined} onOpenAgent={()=>undefined}/>);
+  expect(html).not.toContain("Async agent launched");
+  expect(html.split("Show in Agents").length-1).toBe(1);
+  expect(html.split("Subagent finished").length-1).toBe(1);
+});

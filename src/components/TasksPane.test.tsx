@@ -229,3 +229,23 @@ describe("a row", () => {
     expect(onOpenTerminal).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("harness subagent sessions", () => {
+  it("lists runtime-free children with workers, scopes them and retains pinned outcomes", () => {
+    const sessions=[chat,session("child",{kind:"harness_subagent"}),session("other",{kind:"harness_subagent",parentSessionId:"elsewhere"}),session("done",{kind:"harness_subagent",status:"completed"}),session("worker")];
+    expect(activeAgentRows("chat",sessions,[runtime("worker")],new Set(["done"])).map(row=>row.session.id)).toEqual(["done","worker","child"]);
+  });
+  it("opens the child with provenance and sends Stop to the child session", async () => {
+    const onStopWorker=vi.fn().mockResolvedValue(undefined);
+    const child=session("child",{kind:"harness_subagent",title:"Check authentication",harness:"claude"});
+    await mount({sessions:[chat,child],onStopWorker,onSteer:async()=>undefined});
+    expect(container.textContent).toContain("subagent");
+    expect(container.textContent).not.toContain("STATUS UNAVAILABLE");
+    await click(byLabel(`View ${agentName("child")}`));
+    expect(container.textContent).toContain("Started by Claude in this chat.");
+    expect(container.textContent).toContain("Not a Bridge worker.");
+    expect(container.querySelector("textarea")).toBeNull();
+    await click(byLabel(`Stop subagent ${agentName("child")}`));
+    expect(onStopWorker).toHaveBeenCalledWith("child");
+  });
+});

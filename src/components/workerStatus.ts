@@ -7,7 +7,7 @@ export type WorkerStatus = { tone: WorkerTone; label: string; detail?: string };
 // Trust a typed result only after it is reported. Reused warm workers retain
 // their prior result while pending, so lifecycle state remains authoritative.
 export function workerStatus(session: Session, runtime?: WorkerRuntimeRecord): WorkerStatus {
-  if (!runtime && session.parentSessionId) return { tone: "attention", label: "STATUS UNAVAILABLE", detail: "Worker runtime has not been loaded." };
+  if (!runtime && session.parentSessionId && session.kind !== "harness_subagent") return { tone: "attention", label: "STATUS UNAVAILABLE", detail: "Worker runtime has not been loaded." };
   const reported = runtime?.resultStatus === "reported";
   const lastResult = reported ? (runtime?.lastResult as { status?: string; summary?: string } | null | undefined) : undefined;
   const resultStatus = typeof lastResult?.status === "string" ? lastResult.status : undefined;
@@ -33,6 +33,7 @@ export function workerStatus(session: Session, runtime?: WorkerRuntimeRecord): W
     if (resultStatus === "completed") return { tone: "done", label: "DONE", detail: summary };
   }
   const lifecycle = runtime?.lifecycleState ?? session.status;
+  if (session.kind === "harness_subagent" && lifecycle === "stopped") return { tone: "idle", label: "INTERRUPTED" };
   if (lifecycle === "failed") return { tone: "failed", label: "FAILED" };
   if (lifecycle === "cancelled") return { tone: "idle", label: "CANCELLED" };
   if (lifecycle === "working") return { tone: "working", label: "WORKING" };

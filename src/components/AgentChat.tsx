@@ -91,7 +91,7 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
         empty={empty}
       />
     </div>
-    {onSteer && <SteerComposer sessionId={session.id} steerable={steerable} starting={active && !steerable} onSteer={onSteer} className="shrink-0 border-t border-border px-3 py-2.5" />}
+    {onSteer && session.kind !== "harness_subagent" && <SteerComposer sessionId={session.id} steerable={steerable} starting={active && !steerable} onSteer={onSteer} className="shrink-0 border-t border-border px-3 py-2.5" />}
   </div>;
 }
 

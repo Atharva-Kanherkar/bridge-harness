@@ -378,8 +378,10 @@ function readSubagent(source: ToolCallSource, data: Record<string, unknown>): Su
 export function readToolCall(source: ToolCallSource): ToolCallDisplay {
   const data = source.data;
   const path = readPath(data);
-  const output = readOutput(source, data);
+  let output = readOutput(source, data);
   const subagent = readSubagent(source, data);
+  const backgroundLaunch = Boolean(subagent && output?.includes("Async agent launched successfully"));
+  if (backgroundLaunch) { output = undefined; subagent!.status = "running"; }
   const common = {
     path,
     output,
@@ -387,7 +389,7 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     deletions: numberValue(data.deletions),
     durationMs: numberValue(data.durationMs),
     exitCode: readExitCode(data),
-    status: readStatus(source.status),
+    status: backgroundLaunch ? "running" as const : readStatus(source.status),
     subagent,
   };
   const named = namedToolFacet(source, data);
