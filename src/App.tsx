@@ -13,7 +13,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -126,7 +126,7 @@ import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
 import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
-import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { readStorageChatHistory, rememberStorageChat, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE } from "./storageChat";
 import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
 import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
@@ -479,7 +479,9 @@ function AppContent() {
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
-  const [storageChatId, setStorageChatId] = useState(readStorageChatId);
+  // The rail opens blank; earlier storage chats stay one click away in Recent.
+  const [storageChatId, setStorageChatId] = useState<string | null>(null);
+  const [storageChatHistory, setStorageChatHistory] = useState(readStorageChatHistory);
   const [storageChatStarting, setStorageChatStarting] = useState(false);
   const [notesChatId, setNotesChatId] = useState(readNotesChatId);
   const [notesChatStarting, setNotesChatStarting] = useState(false);
@@ -2075,7 +2077,7 @@ function AppContent() {
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the storage chat but did not return its session");
       setState(next);
-      writeStorageChatId(created.id);
+      setStorageChatHistory(rememberStorageChat(created.id));
       setStorageChatId(created.id);
       await deliverPrompt(created, prompt);
     } finally {
@@ -2083,22 +2085,41 @@ function AppContent() {
       setStorageChatStarting(false);
     }
   }
+  const storageRecent = storageChatHistory
+    .map(id => state.sessions.find(candidate => candidate.id === id))
+    .filter((candidate): candidate is Session => !!candidate && candidate.id !== storageChatId)
+    .slice(0, 5)
+    .map(candidate => ({ id: candidate.id, title: candidate.title || candidate.label, at: candidate.startedAt ?? "" }));
+  const storageWorking = !!storageSession && (!!storageSession.activeTurnId || storageSession.status === "working");
   const storageCopilot: StorageCopilotHost = {
     ask: prompt => void askStorage(prompt).catch(e => setError(errorMessage(e))),
+    // A visit starts on a blank rail, unless a reply is still coming in.
+    onVisit: () => { if (!storageWorking) setStorageChatId(null); },
     render: (brief, selectedCount) => <StorageCopilot
       selectedCount={selectedCount}
       starting={storageChatStarting}
+      recent={storageRecent}
+      onOpenRecent={setStorageChatId}
       onAsk={question => void askStorage(brief(question)).catch(e => setError(errorMessage(e)))}
       chat={storageSession && <AsideChat
         docked
         tag="storage"
+        placeholder="Ask about your storage…"
+        headerActions={<button
+          type="button"
+          onClick={() => setStorageChatId(null)}
+          disabled={storageWorking}
+          title="New chat"
+          aria-label="New storage chat"
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+        ><SquarePen size={14} aria-hidden="true" /></button>}
         session={storageSession}
         adapters={adapters}
         accounts={providerAccounts}
         events={agentEvents}
         pendingMessages={storagePending}
         queuedFollowUpCount={queuedFollowUps(storageSession.id, state.events).length}
-        working={!!storageSession.activeTurnId || storageSession.status === "working"}
+        working={storageWorking}
         suggestionSettings={suggestionSettings}
         modelSwitch={modelSwitch?.sessionId === storageSession.id ? modelSwitch : null}
         onSend={(text, attachments) => deliverPrompt(storageSession, brief(text), attachments)}
