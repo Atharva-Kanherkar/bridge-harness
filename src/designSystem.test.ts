@@ -111,6 +111,21 @@ describe("design system", () => {
     expect(flagged).toEqual([]);
   });
 
+  it("draws every loading placeholder through the skeleton kit", () => {
+    // One shimmer, one fade-in delay, one accessibility contract. A page that
+    // reaches for `.skeleton-shimmer` itself, or pulses a muted bar, forks the
+    // look the kit exists to keep.
+    const kit = join("components", "ui", "skeleton.tsx");
+    expect(offenders(/\b(?:skeleton-shimmer|animate-skeleton-in)\b/g, name => name === kit)).toEqual([]);
+    const pulsingBars = files.flatMap(file => {
+      const classStrings = file.text.match(/"[^"\n]*"|'[^'\n]*'|`[^`\n]*`/g) ?? [];
+      return classStrings
+        .filter(value => /\banimate-pulse\b/.test(value) && /\bbg-muted\b/.test(value))
+        .map(value => `${file.name}: ${value.slice(0, 120)}`);
+    });
+    expect(pulsingBars).toEqual([]);
+  });
+
   it("keeps blur off resting surfaces", () => {
     // Elevation is a lightness ladder; only genuinely floating layers may blur.
     const flagged = files.flatMap(file => {
