@@ -542,13 +542,19 @@ pub struct GithubSurface {
     /// the read caches. Resolution spawns several `git` subprocesses and
     /// sometimes `gh repo set-default --view`; every surface read resolves,
     /// so an uncached resolution made each pane open pay that several times.
-    resolutions: Mutex<HashMap<PathBuf, Resolution>>,
+    resolutions: Mutex<ResolutionCache>,
     command_timeout: Duration,
 }
 
 struct Resolution {
     stored_at: Instant,
     repository: GithubRepository,
+}
+
+#[derive(Default)]
+struct ResolutionCache {
+    generation: u64,
+    entries: HashMap<PathBuf, Resolution>,
 }
 
 impl std::fmt::Debug for GithubSurface {
@@ -589,7 +595,7 @@ impl GithubSurface {
             availability: Mutex::new(availability),
             cache_ttl,
             cache: Mutex::new(HashMap::new()),
-            resolutions: Mutex::new(HashMap::new()),
+            resolutions: Mutex::new(ResolutionCache::default()),
             command_timeout: GH_COMMAND_TIMEOUT,
         }
     }
@@ -613,11 +619,7 @@ impl GithubSurface {
     pub fn invalidate_repository(&self, workspace: &Path) {
         // Drop the resolution first: the re-resolve below must read the
         // workspace's remotes as they are now, not serve the cached answer.
-        self.resolutions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(workspace);
-        if let Ok(repository) = self.resolve_repository(workspace) {
+        if let Ok(repository) = self.resolve_repository_fresh(workspace) {
             let selector = repository.selector();
             self.cache
                 .lock()
@@ -675,11 +677,8 @@ impl GithubSurface {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        self.resolutions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        let repository = self.resolve_repository(workspace)?;
+        let generation = self.invalidate_resolutions(None);
+        let repository = self.resolve_and_store_repository(workspace, generation)?;
         Ok(ConnectedRepository {
             repository,
             initialized,
@@ -711,38 +710,73 @@ impl GithubSurface {
         &self,
         workspace: &Path,
     ) -> Result<GithubRepository, GithubSurfaceError> {
-        if let Some(resolution) = self.cached_resolution(workspace) {
+        let (resolution, generation) = self.resolution_snapshot(workspace);
+        if let Some(resolution) = resolution {
             return Ok(resolution);
         }
+        self.resolve_and_store_repository(workspace, generation)
+    }
+
+    /// Writes must use the workspace's current Git configuration. Advancing
+    /// the generation also prevents an older read from restoring stale identity.
+    fn resolve_repository_fresh(
+        &self,
+        workspace: &Path,
+    ) -> Result<GithubRepository, GithubSurfaceError> {
+        let generation = self.invalidate_resolutions(Some(workspace));
+        self.resolve_and_store_repository(workspace, generation)
+    }
+
+    fn resolve_and_store_repository(
+        &self,
+        workspace: &Path,
+        generation: u64,
+    ) -> Result<GithubRepository, GithubSurfaceError> {
         let repository = self.resolve_repository_uncached(workspace)?;
-        self.store_resolution(workspace, repository.clone());
+        self.store_resolution(workspace, repository.clone(), generation);
         Ok(repository)
     }
 
-    fn cached_resolution(&self, workspace: &Path) -> Option<GithubRepository> {
+    fn resolution_snapshot(&self, workspace: &Path) -> (Option<GithubRepository>, u64) {
         let mut resolutions = self
             .resolutions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let entry = resolutions.get(workspace)?;
-        if entry.stored_at.elapsed() < self.cache_ttl {
-            return Some(entry.repository.clone());
+        if let Some(entry) = resolutions.entries.get(workspace) {
+            if entry.stored_at.elapsed() < self.cache_ttl {
+                return (Some(entry.repository.clone()), resolutions.generation);
+            }
+            resolutions.entries.remove(workspace);
         }
-        resolutions.remove(workspace);
-        None
+        (None, resolutions.generation)
     }
 
-    fn store_resolution(&self, workspace: &Path, repository: GithubRepository) {
-        self.resolutions
+    fn invalidate_resolutions(&self, workspace: Option<&Path>) -> u64 {
+        let mut resolutions = self.resolutions
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        resolutions.generation = resolutions.generation.wrapping_add(1);
+        if let Some(workspace) = workspace {
+            resolutions.entries.remove(workspace);
+        } else {
+            resolutions.entries.clear();
+        }
+        resolutions.generation
+    }
+
+    fn store_resolution(&self, workspace: &Path, repository: GithubRepository, generation: u64) {
+        let mut resolutions = self.resolutions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if resolutions.generation == generation {
+            resolutions.entries.insert(
                 workspace.to_path_buf(),
                 Resolution {
                     stored_at: Instant::now(),
                     repository,
                 },
             );
+        }
     }
 
     fn resolve_repository_uncached(
@@ -1284,7 +1318,7 @@ impl GithubSurface {
         body: &str,
     ) -> Result<String, GithubSurfaceError> {
         self.require_binary()?;
-        let repository = self.resolve_repository(workspace)?;
+        let repository = self.resolve_repository_fresh(workspace)?;
         let selector = repository.selector();
         self.run_gh(
             workspace,
@@ -1309,7 +1343,7 @@ impl GithubSurface {
     /// propagates verbatim and is never retried.
     pub fn act(&self, workspace: &Path, action: &GithubAction) -> Result<String, GithubSurfaceError> {
         self.require_binary()?;
-        let repository = self.resolve_repository(workspace)?;
+        let repository = self.resolve_repository_fresh(workspace)?;
         let selector = repository.selector();
         let result = match action {
             GithubAction::Merge { number, strategy } => {
@@ -3435,6 +3469,67 @@ mod tests {
             expected("fixture", "other"),
             "a reconnect must be visible immediately, not masked by the cache"
         );
+    }
+
+    /// Hold an actual resolution's completed subprocess result at the cache
+    /// insertion boundary, so invalidation races are deterministic without sleeps.
+    fn defer_resolution_completion<'a>(
+        surface: &'a GithubSurface,
+        workspace: &'a Path,
+    ) -> impl FnOnce() + 'a {
+        let (_, generation) = surface.resolution_snapshot(workspace);
+        let repository = surface.resolve_repository_uncached(workspace).unwrap();
+        move || surface.store_resolution(workspace, repository, generation)
+    }
+
+    #[test]
+    fn an_in_flight_resolution_cannot_replace_an_explicit_refresh() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let complete_old_read = defer_resolution_completion(&surface, repository.path());
+        git(repository.path(), &["remote", "set-url", "origin", "https://github.com/fixture/other.git"]);
+
+        surface.invalidate_repository(repository.path());
+        complete_old_read();
+
+        assert_eq!(surface.resolve_repository(repository.path()).unwrap(), expected("fixture", "other"));
+    }
+
+    #[test]
+    fn an_in_flight_resolution_cannot_replace_a_reconnect() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let complete_old_read = defer_resolution_completion(&surface, repository.path());
+
+        let connected = surface.connect_repository(repository.path(), "https://github.com/fixture/other.git").unwrap();
+        assert_eq!(connected.repository, expected("fixture", "other"));
+        complete_old_read();
+
+        assert_eq!(surface.resolve_repository(repository.path()).unwrap(), connected.repository);
+    }
+
+    #[test]
+    fn writes_resolve_current_remotes_and_prevent_old_reads_from_restoring_them() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.resolve_repository(repository.path()).unwrap();
+        let complete_old_read = defer_resolution_completion(&surface, repository.path());
+        git(repository.path(), &["remote", "set-url", "origin", "https://github.com/fixture/other.git"]);
+
+        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash }).unwrap();
+        complete_old_read();
+        assert_eq!(surface.resolve_repository(repository.path()).unwrap(), expected("fixture", "other"));
+        assert!(invocations(&fake).contains("pr merge 103 --repo fixture/other --squash"));
+
+        let complete_old_read = defer_resolution_completion(&surface, repository.path());
+        git(repository.path(), &["remote", "set-url", "origin", "https://github.com/fixture/latest.git"]);
+        surface.comment_on_pull_request(repository.path(), 103, "cursor review").unwrap();
+        complete_old_read();
+        assert_eq!(surface.resolve_repository(repository.path()).unwrap(), expected("fixture", "latest"));
+        assert!(invocations(&fake).contains("pr comment 103 --repo fixture/latest --body cursor review"));
     }
 
     fn invocations(fake: &TempDir) -> String {
