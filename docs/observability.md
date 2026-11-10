@@ -157,3 +157,27 @@ exactly when the total is a multiple of the page size.
 - [`transcript-behavior-contract.md`](transcript-behavior-contract.md) — what
   the rendered conversation does, over normalized items and nothing else
 - [`local-history.md`](local-history.md), [`compaction-and-resume.md`](compaction-and-resume.md)
+
+## Harness subagents
+
+A provider-owned subagent is recorded as a `harness_subagent` child session.
+Its provider identity is `provider_session_id`; its parent owns the adapter,
+permissions and usage. Child tools, messages and approval requests are stored
+in the child's forest. The parent stores only `subagent.started` and
+`subagent.completed` pointers, with `data.childSessionId` and hidden context
+visibility. These pointers can be rendered and exported but do not enter the
+parent's model context or recall index.
+
+These sessions have no worker runtime, worktree, policy budget or process of
+their own. Sending, resuming, forking and compacting one returns an Invalid
+error with the stable `harness_subagent_processless` reason. Stop and approval
+replies address the child through the parent's live adapter. A parent turn Stop
+preserves that shared process while children remain active. Archiving the
+parent retires the family.
+
+On startup or parent process exit, unfinished children are recorded as
+`interrupted`, with `parent_process_exited`. The existing session-status wire
+vocabulary exposes this as `stopped`; the durable event retains the precise
+reason. Child usage is billed to the parent's ledger and budgets, never to
+the child, and a child's context-window readings never move the parent's.
+Title and memory jobs exclude these processless sessions.

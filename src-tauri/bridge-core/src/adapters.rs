@@ -209,6 +209,11 @@ pub trait AdapterRuntime: Send {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
+    fn stop_subagent(&self, _provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This harness does not support subagent Stop".into()))
+    }
+    /// Snapshot a subagent Stop that can run without retaining the adapter map.
+    fn stop_subagent_request(&self, _provider_id: &str, _turn_id: Option<&str>) -> Option<InterruptRequest> { None }
     /// Snapshot an interrupt that can run without retaining the adapter map.
     /// Unsupported transports use the host's bounded process fallback.
     fn interrupt_request(&self) -> Option<InterruptRequest> { None }
@@ -1831,26 +1836,13 @@ impl HarnessAdapter for CodexAdapter {
         codex_adapter::supports_native_fork()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
-        if value.get("id").is_some() && value.get("method").is_some() {
-            agent::normalize_codex_request(value).into_iter().collect()
-        } else {
-            // Standard Codex app-server stdio notifications carry threadId on
-            // thread/turn boundaries, but omit session identity on mid-turn deltas.
-            // Stream state therefore resolves the session key when present and
-            // safely defaults to "default", with per-turn counter resets in
-            // CodexStreamState preventing cross-turn reasoning collision.
-            let session_key = value
-                .pointer("/params/conversationId")
-                .or_else(|| value.pointer("/params/threadId"))
-                .or_else(|| value.pointer("/params/sessionID"))
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                .to_owned();
-            let mut streams = self.streams.lock().unwrap();
-            let state = streams.entry(session_key).or_default();
-            agent::normalize_codex_message_with_state(value, state)
-        }
+        let session_key = value.get("_bridgeRootThreadId")
+            .or_else(|| value.pointer("/params/threadId"))
+            .and_then(Value::as_str).unwrap_or("default").to_owned();
+        let mut streams = self.streams.lock().unwrap();
+        agent::normalize_codex_message_with_state(value, streams.entry(session_key).or_default())
     }
+
     fn forget_session(&self, provider_session_id: &str) {
         if provider_session_id != "default" {
             self.streams.lock().unwrap().remove(provider_session_id);
@@ -2767,8 +2759,8 @@ mod tests {
         };
         assert_eq!(adapter.normalize(&created("root", None))[0].kind, "session.started");
         adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "root", "status": {"type": "busy"}}}));
-        assert!(adapter.normalize(&created("child", Some("root"))).is_empty());
-        assert!(adapter.normalize(&created("grandchild", Some("child"))).is_empty());
+        assert_eq!(adapter.normalize(&created("child", Some("root")))[0].kind, "subagent.started");
+        assert_eq!(adapter.normalize(&created("grandchild", Some("child")))[0].kind, "subagent.started");
         // A child's completion must not close the root's turn, and its text is
         // tagged as subagent work inside the root's stream.
         assert!(adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "grandchild", "status": {"type": "idle"}}})).is_empty());

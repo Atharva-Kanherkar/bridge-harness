@@ -2496,10 +2496,11 @@ fn resolve_legacy_approval(
             Some("approval_resolved"),
         )?;
     }
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     let adapters = core.adapters.lock().unwrap();
     let runtime = adapters
-        .get(session_id)
+        .get(&adapter_owner)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let response = if is_question {
         runtime.reject_question(request_id)
@@ -2541,7 +2542,7 @@ fn resolve_legacy_approval(
     )?;
     if !is_worker {
         db.execute(
-            "UPDATE sessions SET status='working' WHERE id=?1",
+            "UPDATE sessions SET status='working' WHERE id=?1 AND (kind!='harness_subagent' OR status NOT IN ('completed','failed','interrupted','stopped'))",
             params![session_id],
         )?;
     }
@@ -2622,6 +2623,10 @@ fn interaction_payload(
     event_id: i64,
     expected_kind: &str,
 ) -> Result<(Value, String, bool), BridgeError> {
+    let terminal_child: bool = db.query_row("SELECT kind='harness_subagent' AND status IN ('completed','failed','interrupted','stopped') FROM sessions WHERE id=?1", [session_id], |r| r.get(0))?;
+    if terminal_child { return Err(BridgeError::Invalid("This subagent is no longer running".into())); }
+    let ended_interaction:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id=?1 AND kind=replace(?2,'requested','resolved') AND json_extract(payload,'$.data.requestEventId')=?3 AND json_extract(payload,'$.data.reason')='subagent_ended')",params![session_id,expected_kind,event_id],|r|r.get(0))?;
+    if ended_interaction { return Err(BridgeError::Invalid("This subagent interaction has ended".into())); }
     let (kind, payload, adapter_id): (String, String, String) = db.query_row(
         "SELECT e.kind,e.payload,s.harness FROM session_entries e
          JOIN sessions s ON s.id=e.session_id
@@ -2765,7 +2770,7 @@ fn finish_interaction(
             )?;
         } else {
             transaction.execute(
-                "UPDATE sessions SET status='working' WHERE id=?1",
+                "UPDATE sessions SET status='working' WHERE id=?1 AND (kind!='harness_subagent' OR status NOT IN ('completed','failed','interrupted','stopped'))",
                 params![session_id],
             )?;
         }
@@ -2890,11 +2895,12 @@ fn resolve_provider_permission(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 
     let adapters = core.adapters.lock().unwrap();
-    let response = match adapters.get(session_id) {
+    let response = match adapters.get(&adapter_owner) {
         Some(runtime) => runtime.respond_with_option(request_id, &decision, option_id.as_deref()),
         None => Err(BridgeError::Invalid(
             "Structured adapter session is not running".into(),
@@ -2982,11 +2988,12 @@ pub fn resolve_question(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 
     let adapters = core.adapters.lock().unwrap();
-    let response = match (adapters.get(session_id), request_method) {
+    let response = match (adapters.get(&adapter_owner), request_method) {
         (None, _) => Err(BridgeError::Invalid(
             "Structured adapter session is not running".into(),
         )),

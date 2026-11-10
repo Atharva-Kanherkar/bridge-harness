@@ -66,7 +66,8 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // lives here rather than behind a schema version (which would also copy
     // the whole store as a migration backup).
     connection.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);",
+        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
     )?;
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
@@ -74,6 +75,7 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // Then queue whatever still has nothing better than a heading, so the title
     // job names it: the harness's own title where there is one, else a generated one.
     let _ = crate::title_jobs::enqueue_backfill(&connection, Utc::now());
+    crate::harness_subagents::interrupt_orphans(&connection)?;
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
@@ -3055,6 +3057,7 @@ pub fn status(value: &str) -> SessionStatus {
         "restored" => SessionStatus::Restored,
         "completed" => SessionStatus::Completed,
         "cancelled" => SessionStatus::Cancelled,
+        "interrupted" => SessionStatus::Stopped, // Preserve the existing wire status vocabulary.
         _ => SessionStatus::Idle,
     }
 }
@@ -4197,11 +4200,13 @@ fn parse_json_column(row: &rusqlite::Row<'_>, index: usize) -> serde_json::Value
 /// [`HIDDEN_VISIBILITY`]: the context projector admits only `eligible` entries
 /// and the recall trigger indexes only `eligible`/`visible`, so recording them
 /// widens the record without widening either the prompt or search.
-const HIDDEN_CONTROL_KINDS: [&str; 4] = [
+const HIDDEN_CONTROL_KINDS: [&str; 6] = [
     "turn.started",
     "turn.completed",
     "usage.updated",
     "plan.updated",
+    "subagent.started",
+    "subagent.completed",
 ];
 
 /// Written, replayed and exported — never projected into model context and
