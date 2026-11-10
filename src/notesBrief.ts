@@ -6,6 +6,7 @@
 // sends its snapshot. `actorLabel` turns a page's last actor into a byline.
 
 import { harnessLabel } from "./utils";
+import { markDrawings } from "./components/notes/editor/drawingScene";
 import type { Note } from "./types";
 
 export const NOTES_CONTEXT_FENCE = "notes-context";
@@ -55,7 +56,8 @@ export function notesContext({ note, markdown, projectName }: { note: Note; mark
     `Open page: ${note.title?.trim() || "Untitled"} (id ${note.id}, seq ${note.seq})`,
     `Kind: ${note.kind} · State: ${note.state} · Project: ${projectName ?? "none"}${note.tags.length ? ` · Tags: ${note.tags.join(", ")}` : ""}`,
     "---",
-    clip(markdown, CONTEXT_BODY_CHARS),
+    // A drawing's JSON would fill the budget; notes_read describes it instead.
+    clip(markDrawings(markdown), CONTEXT_BODY_CHARS),
   ];
   return lines.join("\n");
 }
