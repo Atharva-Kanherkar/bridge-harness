@@ -10,6 +10,7 @@ import { ArrowUpRight, FileText, Info, Lightbulb, MessageSquareWarning, OctagonA
 import { clsx } from "clsx";
 import { assetUrl } from "./assets";
 import { RichFence, richFenceKind } from "../../Markdown";
+import { DrawingBlock, isDrawingFence, readsAsDrawing } from "./drawing";
 import { Callout, CALLOUT_KINDS, DatabaseEmbed, PageLink, WikiLink, type CalloutKind } from "./blocks";
 
 /** What the views need from the page around the editor. */
@@ -289,7 +290,8 @@ function CodeBlockView({ node, editor, getPos }: ReactNodeViewProps) {
   const lang = String(node.attrs.language ?? "");
   const body = node.textContent;
   const inside = useCursorInside(editor, getPos, node.nodeSize);
-  const figure = !!richFenceKind(lang) && body.trim() !== "" && !inside;
+  const drawing = isDrawingFence(lang) && readsAsDrawing(body) && !inside;
+  const figure = drawing || (!!richFenceKind(lang) && body.trim() !== "" && !inside);
   const edit = (event: React.MouseEvent) => {
     // The figure's own buttons (copy, expand) keep their clicks.
     if ((event.target as Element).closest("button, a, iframe")) return;
@@ -298,8 +300,19 @@ function CodeBlockView({ node, editor, getPos }: ReactNodeViewProps) {
     event.preventDefault();
     editor.chain().focus().setTextSelection(at + node.nodeSize - 1).run();
   };
+  // A drawing saves the whole scene back into the block's text.
+  const save = (text: string) => {
+    const at = getPos();
+    const current = typeof at === "number" ? editor.state.doc.nodeAt(at) : null;
+    if (typeof at !== "number" || !current || current.type.name !== node.type.name || current.textContent === text) return;
+    editor.chain().command(({ tr }) => {
+      tr.replaceWith(at + 1, at + current.nodeSize - 1, editor.schema.text(text));
+      return true;
+    }).run();
+  };
   return <NodeViewWrapper data-language={lang || undefined}>
-    {figure && <div contentEditable={false} data-rich-fence="" onMouseDown={edit} className="cursor-text">
+    {drawing && <DrawingBlock body={body} onSave={save} />}
+    {figure && !drawing && <div contentEditable={false} data-rich-fence="" onMouseDown={edit} className="cursor-text">
       <RichFence lang={lang} body={body} />
     </div>}
     <pre hidden={figure}><NodeViewContent<"code"> as="code" className={lang ? `language-${lang}` : undefined} /></pre>

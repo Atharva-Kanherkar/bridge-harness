@@ -16,6 +16,9 @@ const COLOR_LITERAL_ALLOWLIST = new Set([
   // Mirrors --background per mode for the <meta name="theme-color"> tag, which
   // cannot read a CSS custom property.
   "theme.ts",
+  // An Excalidraw scene's own background, stored in the drawing file the way
+  // Excalidraw writes it; data, not a UI colour.
+  "components/notes/editor/drawingScene.ts",
 ]);
 
 const BANNED_PALETTES = [

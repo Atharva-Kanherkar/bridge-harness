@@ -3486,7 +3486,7 @@ mod tests {
                 .find(|rule| rule["action"] == "*" || rule["action"] == tool)
                 .map(|rule| rule["effect"].as_str().unwrap().to_owned()).unwrap()
         }
-        for tool in ["bridge_notes_create", "bridge_notes_edit", "bridge_notes_append", "bridge_notes_set"] {
+        for tool in ["bridge_notes_create", "bridge_notes_edit", "bridge_notes_append", "bridge_notes_set", "bridge_notes_draw"] {
             for (mode, expected) in [(Some(WriteMode::Shared), "ask"), (Some(WriteMode::Isolated), "ask"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
                 let v1 = permission_rules(mode);
                 let v2 = crate::opencode_v2::permission_rules(&v1);
