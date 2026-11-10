@@ -89,7 +89,7 @@ export type GitHubPaneProps = {
    * distinguishes "open it again" from a re-render. */
   intent?: { view: GithubLinkView; nonce: number };
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
-  /** `dock` (default) is the 440px chat pane. `page` is Gitplace's full-width
+  /** `dock` (default) is the 440px chat pane. `page` is Pulls's full-width
    *  screen: the repo slug never truncates, and at 1100px and up an open pull
    *  request or issue sits beside its list instead of replacing it. */
   layout?: "dock" | "page";
@@ -800,7 +800,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11px] text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
     {sideList
       ? <div className="flex min-h-0 flex-1">
-          <div data-gitplace-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
+          <div data-pulls-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">{body}</div>
         </div>
       : body}
