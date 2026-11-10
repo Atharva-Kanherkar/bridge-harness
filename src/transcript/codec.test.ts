@@ -347,3 +347,16 @@ describe("a compaction in flight", () => {
     expect(Number.isFinite(found!.since)).toBe(true);
   });
 });
+
+it("projects a harness child pointer identically live and durable and hides self-attribution", () => {
+  const data={childSessionId:"child",subagent:{sessionId:"provider-child",agent:"codex",title:"Research"}};
+  const a=normalizeAgentEvent(live("subagent.started",{data}));
+  const b=normalizeSessionEntry(durable("subagent.started",{data,status:"working"}));
+  expect(a.type).toBe("delegation.updated");
+  expect(b?.type).toBe(a.type);
+  expect(a.envelope.providerData).toMatchObject({harnessSubagent:true,childSessionId:"child"});
+  const self=normalizeAgentEvent(live("subagent.completed",{sessionId:"child",data,status:"completed"}));
+  expect(self).toMatchObject({type:"turn.completed",status:"completed"});
+  expect(normalizeAgentEvent(live("subagent.status",{sessionId:"child",data:{...data,turnStarted:true}}))).toMatchObject({type:"turn.started"});
+  expect(self.envelope.providerData.subagent).toBeUndefined();
+});

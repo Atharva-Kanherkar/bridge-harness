@@ -59,20 +59,36 @@ export function descendantIds(rootId: string, sessions: readonly Session[]): Set
   return found;
 }
 
-export type AgentRow = { runtime: WorkerRuntimeRecord; session: Session; pinned: boolean };
+export type AgentRow = { runtime?: WorkerRuntimeRecord; session: Session; pinned: boolean };
 
 /// The rows the pane lists: this chat's active workers, plus any it pinned.
 export function activeAgentRows(chatId: string, sessions: readonly Session[], runtimes: readonly WorkerRuntimeRecord[], pinned: ReadonlySet<string>): AgentRow[] {
   const mine = descendantIds(chatId, sessions);
-  const rows = runtimes.flatMap(runtime => {
+  const rows: AgentRow[] = runtimes.flatMap(runtime => {
     if (!mine.has(runtime.sessionId)) return [];
     const session = sessions.find(item => item.id === runtime.sessionId);
-    if (!session) return [];
+    if (!session || session.kind === "harness_subagent") return [];
     const isPinned = pinned.has(runtime.sessionId);
     if (!isPinned && !isActiveTone(workerStatus(session, runtime).tone)) return [];
     return [{ runtime, session, pinned: isPinned }];
   });
+  for (const session of sessions) {
+    if (session.kind !== "harness_subagent" || !mine.has(session.id)) continue;
+    const isPinned = pinned.has(session.id);
+    if (!isPinned && !isActiveTone(workerStatus(session).tone)) continue;
+    rows.push({ session, pinned: isPinned });
+  }
   return rows.sort((left, right) => Number(right.pinned) - Number(left.pinned) || (left.session.startedAt ?? "").localeCompare(right.session.startedAt ?? ""));
+}
+
+function childStep(sessionId: string, events: readonly AgentEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.sessionId !== sessionId) continue;
+    const step = event.title ?? event.data.last_tool_name ?? event.data.summary;
+    if (typeof step === "string" && step.trim()) return step;
+  }
+  return undefined;
 }
 
 function queueObjective(request: unknown): string | undefined {
@@ -123,7 +139,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
     const runtime = runtimes.find(item => item.sessionId === open.id);
     const status = workerStatus(open, runtime);
     const name = agentName(open.id);
-    const topic = agentTopic(open);
+    const topic = open.kind === "harness_subagent" ? open.title : agentTopic(open);
     const isPinned = pinned.has(open.id);
     return <div className="flex h-full flex-col">
       <div className="flex min-h-11 shrink-0 items-center gap-1.5 border-b border-border px-1.5 py-1.5">
@@ -138,7 +154,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5">
             <b className="shrink-0 text-[13px] font-medium text-foreground">{name}</b>
-            <span className="min-w-0 truncate text-[12px] text-muted-foreground">{agentRole(open.label)}</span>
+            <span className="min-w-0 truncate text-[12px] text-muted-foreground">{open.kind === "harness_subagent" ? "subagent" : agentRole(open.label)}</span>
             <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.06em]", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
           </span>
           {topic && <span className="mt-0.5 block truncate text-[12px] text-foreground/80" title={topic}>{topic}</span>}
@@ -146,7 +162,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         </span>
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{formatElapsed(open.startedAt, workerClock(open, runtime, now))}</span>
         <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(open.id)} />
-        {onStopWorker && runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState) && <StopButton name={name} onStop={() => void onStopWorker(open.id)} />}
+        {onStopWorker && (open.kind === "harness_subagent" ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState)) && <StopButton name={name} subagent={open.kind === "harness_subagent"} onStop={() => void onStopWorker(open.id)} />}
         <button
           type="button"
           onClick={() => onOpenSession(open.id)}
@@ -155,6 +171,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
           className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         ><ArrowUpRight size={13} aria-hidden="true" /></button>
       </div>
+      {open.kind === "harness_subagent" && <p className="shrink-0 border-b border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">Started by {harnessLabel(open.harness)} in this chat. Runs with this chat’s permissions. Not a Bridge worker.</p>}
       <div className="min-h-0 flex-1">
         <AgentChat key={open.id} session={open} runtime={runtime} liveEvents={liveEvents} reasons={reasons} onOpenSession={onOpenSession} onSteer={onSteer} />
       </div>
@@ -174,12 +191,12 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         const status = workerStatus(session, runtime);
         const elapsed = formatElapsed(session.startedAt, workerClock(session, runtime, now));
         const name = agentName(session.id);
-        const topic = agentTopic(session);
-        return <section key={runtime.sessionId} data-agent-row={runtime.sessionId} className="border-b border-border">
+        const topic = session.kind === "harness_subagent" ? session.title : agentTopic(session);
+        return <section key={session.id} data-agent-row={session.id} className="border-b border-border">
           <div className="flex items-center gap-2 px-3 py-2.5">
             <button
               type="button"
-              onClick={() => setSelected(runtime.sessionId)}
+              onClick={() => setSelected(session.id)}
               aria-label={`View ${name}`}
               className="flex min-w-0 flex-1 items-center gap-2 text-left"
             >
@@ -187,17 +204,17 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-1.5">
                   <b className="shrink-0 text-[13px] font-medium text-foreground">{name}</b>
-                  <span className="min-w-0 truncate text-[12px] text-muted-foreground">{agentRole(session.label)}</span>
+                  <span className="min-w-0 truncate text-[12px] text-muted-foreground">{session.kind === "harness_subagent" ? "subagent" : agentRole(session.label)}</span>
                   <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.06em]", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
                 </span>
                 {topic && <span className="mt-0.5 block truncate text-[12px] text-foreground/80">{topic}</span>}
-                <small className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{runtime.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime.progressSummary ?? runtime.taskFamily}</small>
+                <small className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{runtime?.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime?.progressSummary ?? runtime?.taskFamily ?? childStep(session.id, liveEvents) ?? harnessLabel(session.harness)}</small>
               </span>
               <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{elapsed}</span>
               <ChevronRight size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             </button>
-            <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(runtime.sessionId)} />
-            {onStopWorker && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState) && <StopButton name={name} onStop={() => void onStopWorker(runtime.sessionId)} />}
+            <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(session.id)} />
+            {onStopWorker && (session.kind === "harness_subagent" ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState)) && <StopButton name={name} subagent={session.kind === "harness_subagent"} onStop={() => void onStopWorker(session.id)} />}
           </div>
         </section>;
       })}
@@ -242,12 +259,12 @@ function PinButton({ name, pinned, onToggle }: { name: string; pinned: boolean; 
   ><Pin size={12} className={cn(pinned && "fill-current")} aria-hidden="true" /></button>;
 }
 
-function StopButton({ name, onStop }: { name: string; onStop: () => void }) {
+function StopButton({ name, onStop, subagent = false }: { name: string; onStop: () => void; subagent?: boolean }) {
   return <button
     type="button"
     onClick={onStop}
-    aria-label={`Stop worker ${name}`}
-    title="Stop this worker"
+    aria-label={`Stop ${subagent ? "subagent" : "worker"} ${name}`}
+    title={`Stop this ${subagent ? "subagent" : "worker"}`}
     className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
   ><Square size={10} strokeWidth={1.8} aria-hidden="true" /></button>;
 }

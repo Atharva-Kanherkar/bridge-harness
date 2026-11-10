@@ -956,3 +956,26 @@ describe("AgentConversation", () => {
     }
   });
 });
+
+it("folds a provider Agent call and its lifecycle into one quiet child pointer", () => {
+  const subagent={sessionId:"agent-tool",agent:"Explore",title:"Check authentication"};
+  const events=[
+    event(1,"tool.started",{itemId:"agent-tool",title:"Agent",status:"running",data:{name:"Agent",input:{description:"Check authentication",prompt:"Read auth",subagent_type:"Explore"}}}),
+    event(2,"subagent.started",{status:"working",data:{childSessionId:"bridge-child",subagent}}),
+    event(3,"tool.completed",{itemId:"agent-tool",status:"completed",text:"Async agent launched successfully. Internal metadata",data:{name:"Agent",input:{prompt:"Read auth",subagent_type:"Explore"},aggregatedOutput:"Async agent launched successfully"}}),
+    event(4,"subagent.completed",{status:"completed",data:{childSessionId:"bridge-child",subagent}}),
+  ];
+  const html=renderToStaticMarkup(<AgentConversation session={session} events={events} onResolve={()=>undefined} onOpenAgent={()=>undefined}/>);
+  expect(html).not.toContain("Async agent launched");
+  expect(html.split("Show in Agents").length-1).toBe(1);
+  expect(html).not.toContain("Subagent finished");
+  expect(html).toContain("Subagent");
+});
+
+it("keeps a known child's final report out of the parent's collaboration tool card", () => {
+  const data={childSessionId:"bridge-child",subagent:{sessionId:"provider-child",agent:"codex",title:"Research"}};
+  const events=[event(1,"subagent.started",{data}),event(2,"tool.completed",{itemId:"wait-call",title:"wait",status:"completed",data:{type:"collabAgentToolCall",tool:"wait",receiverThreadIds:["provider-child"],agentsStates:{"provider-child":{status:"completed",message:"CHILD_ONLY_REPORT"}}}}),event(3,"subagent.completed",{data,status:"completed"})];
+  const html=renderToStaticMarkup(<AgentConversation session={session} events={events} onResolve={()=>undefined} onOpenAgent={()=>undefined}/>);
+  expect(html).not.toContain("CHILD_ONLY_REPORT");
+  expect(html.split("Show in Agents").length-1).toBe(1);
+});

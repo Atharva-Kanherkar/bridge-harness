@@ -630,6 +630,56 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });
 
+  it("keeps a full-page harness child view read-only instead of offering a worker steer", async () => {
+    const real = await bridgeApi.state();
+    const spy = vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real, sessions: real.sessions.map(item => item.id === "session-1w" ? { ...item, kind: "harness_subagent" } : item) });
+    try {
+      await mountApp();
+      await openWorkspaceSession("4 files");
+      await click(dockToggle()!);
+      await key({ ...chord, code: "Digit6", key: "6" });
+      await settle(3);
+      await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+      await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
+      expect(container.textContent).toContain("Not a Bridge worker.");
+      expect(container.textContent).not.toContain("This is a background worker.");
+      expect(container.querySelector("textarea")).toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("offers Stop on a full-page harness child that is waiting for an approval", async () => {
+    const real = await bridgeApi.state();
+    // A Claude child carries no turn id, so waiting is its only live signal.
+    const spy = vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real, sessions: real.sessions.map(item => item.id === "session-1w" ? { ...item, kind: "harness_subagent", status: "waiting", activeTurnId: null } : item) });
+    const stop = vi.spyOn(bridgeApi,"stopSession").mockResolvedValue(real);
+    try {
+      await mountApp();
+      await openWorkspaceSession("4 files");
+      await click(dockToggle()!);
+      await key({ ...chord, code: "Digit6", key: "6" });
+      await settle(3);
+      await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+      await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
+      const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Stop subagent");
+      expect(button).toBeDefined();
+      await click(button!);
+      expect(stop).toHaveBeenCalledWith("session-1w");
+    } finally { spy.mockRestore(); stop.mockRestore(); }
+  });
+
+  it("the parent composer Stop preserves harness subagents", async () => {
+    const real=await bridgeApi.state();
+    const state=vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real,sessions:real.sessions.map(item=>item.id==="session-1w"?{...item,kind:"harness_subagent"}:item) });
+    const stop=vi.spyOn(bridgeApi,"stopSession").mockResolvedValue(real);
+    const interrupt=vi.spyOn(bridgeApi,"interruptTurn").mockResolvedValue();
+    try {
+      await mountApp();await openWorkspaceSession("4 files");
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]')!);
+      expect(interrupt).toHaveBeenCalledWith("session-1");
+      expect(stop).not.toHaveBeenCalledWith("session-1w");
+    } finally {state.mockRestore();stop.mockRestore();interrupt.mockRestore();}
+  });
+
   it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
     expect(container.querySelector("header")).not.toBeNull();

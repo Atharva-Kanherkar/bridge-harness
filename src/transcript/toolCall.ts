@@ -87,6 +87,7 @@ export interface ToolCallDisplay {
  * subagent finished".
  */
 export interface SubagentFacet {
+  providerSessionIds?: string[];
   agentType?: string;
   description?: string;
   prompt?: string;
@@ -371,15 +372,24 @@ function readSubagent(source: ToolCallSource, data: Record<string, unknown>): Su
   // neither type, description, nor prompt, but it still owns a child result
   // that the transcript should surface.
   if (!agentType && !description && !prompt && !isCollabAgent) return undefined;
-  return { agentType, description, prompt, status: lifecycleStatus };
+  const metadata = { ...objectValue(data.metadata), ...objectValue(state.metadata) };
+  const receiverIds = Array.isArray(data.receiverThreadIds) ? data.receiverThreadIds.filter((id): id is string => typeof id === "string") : [];
+  const providerSessionIds = [...new Set([
+    ...receiverIds,
+    ...(isCollabAgent ? Object.keys(objectValue(data.agentsStates)) : []),
+    ...[text(metadata.sessionId) ?? text(metadata.sessionID)].filter((id): id is string => Boolean(id)),
+  ])];
+  return { agentType, description, prompt, status: lifecycleStatus, ...(providerSessionIds.length ? { providerSessionIds } : {}) };
 }
 
 /** Read one tool call's display shape out of whatever the provider sent. */
 export function readToolCall(source: ToolCallSource): ToolCallDisplay {
   const data = source.data;
   const path = readPath(data);
-  const output = readOutput(source, data);
+  let output = readOutput(source, data);
   const subagent = readSubagent(source, data);
+  const backgroundLaunch = Boolean(subagent && output?.includes("Async agent launched successfully"));
+  if (backgroundLaunch) { output = undefined; subagent!.status = "running"; }
   const common = {
     path,
     output,
@@ -387,7 +397,7 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     deletions: numberValue(data.deletions),
     durationMs: numberValue(data.durationMs),
     exitCode: readExitCode(data),
-    status: readStatus(source.status),
+    status: backgroundLaunch ? "running" as const : readStatus(source.status),
     subagent,
   };
   const named = namedToolFacet(source, data);

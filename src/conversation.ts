@@ -12,7 +12,7 @@ import { normalizeAgentEvent, normalizeSessionEntry } from "./transcript/codec";
 import { reduceTranscript } from "./transcript/reducer";
 import type { TranscriptEvent } from "./transcript/events";
 import { readToolCall, type ToolCallDisplay, type ToolCallSource } from "./transcript/toolCall";
-import { itemIdentity, type ConversationItem } from "./transcript/item";
+import { itemIdentity, subagentSource, type ConversationItem } from "./transcript/item";
 import type { AgentEvent, SessionEntry } from "./types";
 
 export { itemIdentity, itemSignature, sameItem, sameItems, subagentLabel, subagentSource, type ConversationItem, type ConversationItemType, type SubagentSource } from "./transcript/item";
@@ -415,6 +415,17 @@ export function delegationFacet(item: ConversationItem): DelegationFacet {
 
 export function delegationChildSessionId(item: ConversationItem): string | undefined {
   return typeof item.data.childSessionId === "string" ? item.data.childSessionId : undefined;
+}
+
+/** Replace a provider Agent tool card with its attributed child pointer. */
+export function foldHarnessSubagents(items: ConversationItem[]): ConversationItem[] {
+  const ids = new Set(items.filter(item => item.data.harnessSubagent === true).map(item => subagentSource(item)?.sessionId).filter((id): id is string => Boolean(id)));
+  return items.filter(item => {
+    if (item.type !== "activity" || !item.tool?.subagent) return true;
+    if (item.itemId && ids.has(item.itemId)) return false;
+    const linked = item.tool.subagent.providerSessionIds;
+    return !linked?.length || !linked.every(id => ids.has(id));
+  });
 }
 
 /**

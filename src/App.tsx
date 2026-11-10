@@ -2961,13 +2961,14 @@ function AppContent() {
   const stopWorker = useCallback(async (childSessionId: string) => {
     setState(await bridgeApi.stopSession(childSessionId));
   }, []);
-  // Stop ends everything this chat has running: the orchestrator's turn if it
-  // has one, and every live agent under it. Sending is untouched, so a message
-  // typed while agents run still goes only to the orchestrator.
+  const stoppableAgentIds = useMemo(() => chatAgents.filter(id =>
+    state.sessions.find(item => item.id === id)?.kind !== "harness_subagent"), [chatAgents, state.sessions]);
+  // Stop cancels this chat's turn and its Bridge workers. Provider-owned
+  // children use the Stop on their own row.
   const stopChat = useCallback(() => {
     if (turnActive) requestStop();
-    for (const id of chatAgents) void stopWorker(id).catch(value => setError(errorMessage(value)));
-  }, [turnActive, requestStop, chatAgents, stopWorker]);
+    for (const id of stoppableAgentIds) void stopWorker(id).catch(value => setError(errorMessage(value)));
+  }, [turnActive, requestStop, stoppableAgentIds, stopWorker]);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -3612,7 +3613,7 @@ function AppContent() {
                    queuedFollowUps={queuedFollowUpCount}
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
-                   onFollowUp={followUpToComposer}
+                   onFollowUp={session.kind === "harness_subagent" ? undefined : followUpToComposer}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as
@@ -3623,11 +3624,11 @@ function AppContent() {
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
-                  onForkSession={(snapshotSessionId, entryId) => {
+                  onForkSession={session.kind === "harness_subagent" ? undefined : (snapshotSessionId, entryId) => {
                     setForkError(null);
                     setForkDraft({ sessionId: snapshotSessionId, entryId });
                   }}
-                  onRewindEntry={(snapshotSessionId, entryId) => {
+                  onRewindEntry={session.kind === "harness_subagent" ? undefined : (snapshotSessionId, entryId) => {
                     // Naming the entry id here told the reader nothing — it is
                     // a uuid. Describe the effect instead.
                     if (window.confirm("Rewind to this message? Everything after it becomes inactive. Your history is kept and no files are changed.")) {
@@ -3673,7 +3674,11 @@ function AppContent() {
                 {/* A worker gets a steering composer, not the chat composer: what
                     you type amends the objective its orchestrator gave it, and
                     the orchestrator is told so it does not fight the change. */}
-                {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
+                {session.kind === "harness_subagent" ? <div className="mx-auto flex max-w-conversation items-center gap-3 px-4 py-3 text-[12px] text-muted-foreground sm:px-6">
+                  <span className="flex-1">Started by {harnessLabel(session.harness)} in its parent chat. Runs with that chat’s permissions. Not a Bridge worker.</span>
+                  {/* A child waiting on an approval has no turn of its own to interrupt. */}
+                  {(turnActive || session.status === "waiting") && <button type="button" onClick={() => void stopWorker(session.id).catch(value => setError(errorMessage(value)))} className="shrink-0 rounded-md border border-border px-3 py-1.5 hover:bg-accent">Stop subagent</button>}
+                </div> : isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
@@ -3766,7 +3771,7 @@ function AppContent() {
                     activeAction={activeAction}
                     activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
                     stopping={stopping}
-                    agentsWorking={chatAgents.length > 0}
+                    agentsWorking={stoppableAgentIds.length > 0}
                     onStop={session ? stopChat : undefined}
                     voiceAvailable={voice.available}
                     voiceState={voice.state}
