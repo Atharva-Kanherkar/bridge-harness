@@ -3676,7 +3676,8 @@ function AppContent() {
                     the orchestrator is told so it does not fight the change. */}
                 {session.kind === "harness_subagent" ? <div className="mx-auto flex max-w-conversation items-center gap-3 px-4 py-3 text-[12px] text-muted-foreground sm:px-6">
                   <span className="flex-1">Started by {harnessLabel(session.harness)} in its parent chat. Runs with that chat’s permissions. Not a Bridge worker.</span>
-                  {turnActive && <button type="button" onClick={() => void stopChat()} className="shrink-0 rounded-md border border-border px-3 py-1.5 hover:bg-accent">Stop subagent</button>}
+                  {/* A child waiting on an approval has no turn of its own to interrupt. */}
+                  {(turnActive || session.status === "waiting") && <button type="button" onClick={() => void stopWorker(session.id).catch(value => setError(errorMessage(value)))} className="shrink-0 rounded-md border border-border px-3 py-1.5 hover:bg-accent">Stop subagent</button>}
                 </div> : isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>

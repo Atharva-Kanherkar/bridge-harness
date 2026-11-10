@@ -647,6 +647,26 @@ describe("the dock in the session view", () => {
     } finally { spy.mockRestore(); }
   });
 
+  it("offers Stop on a full-page harness child that is waiting for an approval", async () => {
+    const real = await bridgeApi.state();
+    // A Claude child carries no turn id, so waiting is its only live signal.
+    const spy = vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real, sessions: real.sessions.map(item => item.id === "session-1w" ? { ...item, kind: "harness_subagent", status: "waiting", activeTurnId: null } : item) });
+    const stop = vi.spyOn(bridgeApi,"stopSession").mockResolvedValue(real);
+    try {
+      await mountApp();
+      await openWorkspaceSession("4 files");
+      await click(dockToggle()!);
+      await key({ ...chord, code: "Digit6", key: "6" });
+      await settle(3);
+      await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+      await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
+      const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Stop subagent");
+      expect(button).toBeDefined();
+      await click(button!);
+      expect(stop).toHaveBeenCalledWith("session-1w");
+    } finally { spy.mockRestore(); stop.mockRestore(); }
+  });
+
   it("the parent composer Stop preserves harness subagents", async () => {
     const real=await bridgeApi.state();
     const state=vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real,sessions:real.sessions.map(item=>item.id==="session-1w"?{...item,kind:"harness_subagent"}:item) });
