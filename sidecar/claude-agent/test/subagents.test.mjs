@@ -32,3 +32,14 @@ test("child approvals wait for the matching parent-channel response", async () =
   const parent=await permissions.canUseTool("Read",{},{signal:new AbortController().signal});
   assert.equal(parent.behavior,"deny");
 });
+
+test("a briefing run keeps its own gate, so reviewed reads still run", async () => {
+  const { childPermissions, withChildPermissions } = await import("../subagents.mjs");
+  const briefing={allowedTools:["mcp__notion__search"],allowedServers:["notion"],deniedBuiltins:["Task"]};
+  const options=withChildPermissions(buildOptions({sessionId:"s",cwd:"/tmp",briefing}),childPermissions(()=>{},"s"));
+  const signal=new AbortController().signal;
+  assert.equal((await options.canUseTool("mcp__notion__search",{},{signal,toolUseID:"t"})).behavior,"allow");
+  assert.equal((await options.canUseTool("mcp__notion__create_page",{},{signal,toolUseID:"t",agentID:"task"})).behavior,"deny");
+  const direct=childPermissions(()=>{},"s");
+  assert.equal(withChildPermissions(buildOptions({sessionId:"s",writeMode:"Shared"}),direct).canUseTool,direct.canUseTool);
+});

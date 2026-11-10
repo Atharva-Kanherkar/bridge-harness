@@ -4,6 +4,13 @@ export async function stopTaskFrame(run, frame) {
   await run.stopTask(frame.task_id);
 }
 
+/** A run with its own gate (a briefing) already decides every call, a
+ * subagent's included. The child prompt fills in only where nothing decides. */
+export function withChildPermissions(options, permissions) {
+  if (!options.canUseTool) options.canUseTool = permissions.canUseTool;
+  return options;
+}
+
 /** Bridge child approvals use the query's existing control channel. Parent
  * permission behavior stays as before: prompts that had no host are denied. */
 export function childPermissions(writeFrame, sessionId) {
