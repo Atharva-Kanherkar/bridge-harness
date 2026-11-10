@@ -2893,10 +2893,11 @@ fn handle_agent_value_timed(
         // Provider echoes may include hidden user-role file context, so do not
         // duplicate them into the visible conversation.
         let normalization_started = std::time::Instant::now();
-        let mut frame = value.clone();
+        // Only Codex needs the root thread stamped on; other frames are not copied.
+        let mut frame = std::borrow::Cow::Borrowed(value);
         if adapter_id == "codex" {
             let root: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1", params![session_id], |r| r.get(0)).ok().flatten();
-            if let Some(root) = root { frame["_bridgeRootThreadId"] = serde_json::json!(root); }
+            if let Some(root) = root { frame.to_mut()["_bridgeRootThreadId"] = serde_json::json!(root); }
         }
         let normalized = state
             .adapter_registry
