@@ -7,6 +7,7 @@
 - OpenCode tagged events use the same routing. No worker runtime, worktree, policy, PID or separately counted usage is created for children.
 - Child Stop routes through the parent runtime to the provider child. Approvals route replies through that runtime. Claude forwards child prose and supports stop_task without stopping siblings.
 - Restart marks running children interrupted with parent_process_exited. Send/resume/fork/compact reject processless sessions; archive follows parent; titles/memory extraction skip children.
+- A new explicit provider turn on an existing child makes that session working again; replayed completed turns and late progress cannot revive it. Parent pointers remain one start/finish pair per child identity.
 - Root turn and ordinary Bridge worker behavior remain unchanged.
 
 ## Unit Tests
