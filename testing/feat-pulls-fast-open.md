@@ -89,6 +89,9 @@ BRIDGE_GITHUB_EVAL_WORKSPACE=/path/to/checkout \
   and overview. Data from the old repository must not appear under a new slug.
 - Confirmed writes always resolve the workspace's current repository, even if
   an earlier read populated the resolution cache before a remote change.
+- A resolution started before an explicit refresh or reconnect cannot replace
+  the refreshed repository in the cache when its subprocess finishes later.
+  Deterministic generation tests cover both invalidation paths and fresh writes.
 - Run the focused frontend and GitHub backend suites, then `bun run build` and
   `bun run test`. Report unrelated baseline failures explicitly.
 
