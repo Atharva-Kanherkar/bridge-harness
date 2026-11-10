@@ -538,7 +538,17 @@ pub struct GithubSurface {
     availability: Mutex<GithubAvailability>,
     cache_ttl: Duration,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
+    /// Repository resolution per workspace path, bounded by the same TTL as
+    /// the read caches. Resolution spawns several `git` subprocesses and
+    /// sometimes `gh repo set-default --view`; every surface read resolves,
+    /// so an uncached resolution made each pane open pay that several times.
+    resolutions: Mutex<HashMap<PathBuf, Resolution>>,
     command_timeout: Duration,
+}
+
+struct Resolution {
+    stored_at: Instant,
+    repository: GithubRepository,
 }
 
 impl std::fmt::Debug for GithubSurface {
@@ -579,6 +589,7 @@ impl GithubSurface {
             availability: Mutex::new(availability),
             cache_ttl,
             cache: Mutex::new(HashMap::new()),
+            resolutions: Mutex::new(HashMap::new()),
             command_timeout: GH_COMMAND_TIMEOUT,
         }
     }
@@ -600,6 +611,12 @@ impl GithubSurface {
     }
 
     pub fn invalidate_repository(&self, workspace: &Path) {
+        // Drop the resolution first: the re-resolve below must read the
+        // workspace's remotes as they are now, not serve the cached answer.
+        self.resolutions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(workspace);
         if let Ok(repository) = self.resolve_repository(workspace) {
             let selector = repository.selector();
             self.cache
@@ -658,6 +675,10 @@ impl GithubSurface {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.resolutions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         let repository = self.resolve_repository(workspace)?;
         Ok(ConnectedRepository {
             repository,
@@ -680,7 +701,51 @@ impl GithubSurface {
 
     /// Resolve the repository from the workspace itself; callers cannot supply
     /// an arbitrary `owner/repo` string.
+    ///
+    /// Successful resolutions are cached per workspace for the cache TTL: the
+    /// resolution itself spawns `git` subprocesses and sometimes
+    /// `gh repo set-default --view`, and every surface read resolves first.
+    /// [`Self::invalidate_repository`] and [`Self::connect_repository`] drop
+    /// the cached resolution so a refresh or a reconnect is genuinely fresh.
     pub fn resolve_repository(
+        &self,
+        workspace: &Path,
+    ) -> Result<GithubRepository, GithubSurfaceError> {
+        if let Some(resolution) = self.cached_resolution(workspace) {
+            return Ok(resolution);
+        }
+        let repository = self.resolve_repository_uncached(workspace)?;
+        self.store_resolution(workspace, repository.clone());
+        Ok(repository)
+    }
+
+    fn cached_resolution(&self, workspace: &Path) -> Option<GithubRepository> {
+        let mut resolutions = self
+            .resolutions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = resolutions.get(workspace)?;
+        if entry.stored_at.elapsed() < self.cache_ttl {
+            return Some(entry.repository.clone());
+        }
+        resolutions.remove(workspace);
+        None
+    }
+
+    fn store_resolution(&self, workspace: &Path, repository: GithubRepository) {
+        self.resolutions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                workspace.to_path_buf(),
+                Resolution {
+                    stored_at: Instant::now(),
+                    repository,
+                },
+            );
+    }
+
+    fn resolve_repository_uncached(
         &self,
         workspace: &Path,
     ) -> Result<GithubRepository, GithubSurfaceError> {
@@ -2807,6 +2872,9 @@ mod tests {
             repository.path(),
             &["config", "--unset", "branch.main.pushRemote"],
         );
+        // Within the TTL the resolution is cached; the explicit refresh path
+        // is what makes a config change visible without waiting for expiry.
+        surface.invalidate_repository(repository.path());
         assert_eq!(
             surface.resolve_repository(repository.path()).unwrap(),
             expected("default", "project")
@@ -3287,6 +3355,86 @@ mod tests {
         surface.invalidate_repository(repository.path());
         surface.list_prs(repository.path()).unwrap();
         assert_eq!(invocation_count(&fake, "pr list"), 4);
+    }
+
+    #[test]
+    fn repository_resolution_is_cached_within_the_ttl() {
+        // No origin remote: resolution falls through to
+        // `gh repo set-default --view`, a logged fake invocation, so the
+        // resolution cache is observable by invocation count.
+        let repository = repository();
+        let fake = fake_gh(true, Some("fixture/project"));
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.resolve_repository(repository.path()).unwrap();
+        surface.resolve_repository(repository.path()).unwrap();
+        assert_eq!(
+            invocation_count(&fake, "repo set-default"),
+            1,
+            "the second resolution must come from the cache"
+        );
+    }
+
+    #[test]
+    fn an_expired_resolution_resolves_again() {
+        let repository = repository();
+        let fake = fake_gh(true, Some("fixture/project"));
+        let mut surface = GithubSurface::discover_on_path(fake.path());
+        surface.cache_ttl = Duration::ZERO;
+        surface.resolve_repository(repository.path()).unwrap();
+        surface.resolve_repository(repository.path()).unwrap();
+        assert_eq!(invocation_count(&fake, "repo set-default"), 2);
+    }
+
+    #[test]
+    fn explicit_repository_refresh_re_resolves_the_workspace() {
+        let repository = repository();
+        let fake = fake_gh(true, Some("fixture/project"));
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.resolve_repository(repository.path()).unwrap();
+        surface.invalidate_repository(repository.path());
+        assert_eq!(
+            invocation_count(&fake, "repo set-default"),
+            2,
+            "invalidation drops the cached resolution and re-resolves fresh"
+        );
+        surface.resolve_repository(repository.path()).unwrap();
+        assert_eq!(
+            invocation_count(&fake, "repo set-default"),
+            2,
+            "the refreshed resolution is cached again"
+        );
+    }
+
+    #[test]
+    fn a_failed_resolution_is_never_cached() {
+        let repository = repository(); // no origin remote
+        let fake = fake_gh(true, None); // and no gh default repository
+        let surface = GithubSurface::discover_on_path(fake.path());
+        assert!(surface.resolve_repository(repository.path()).is_err());
+        assert!(surface.resolve_repository(repository.path()).is_err());
+        assert_eq!(
+            invocation_count(&fake, "repo set-default"),
+            2,
+            "failed reads must not enter the cache"
+        );
+    }
+
+    #[test]
+    fn connect_repository_drops_the_cached_resolution() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let resolved = surface.resolve_repository(repository.path()).unwrap();
+        assert_eq!(resolved, expected("fixture", "project"));
+        surface
+            .connect_repository(repository.path(), "https://github.com/fixture/other.git")
+            .unwrap();
+        let resolved = surface.resolve_repository(repository.path()).unwrap();
+        assert_eq!(
+            resolved,
+            expected("fixture", "other"),
+            "a reconnect must be visible immediately, not masked by the cache"
+        );
     }
 
     fn invocations(fake: &TempDir) -> String {
