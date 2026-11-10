@@ -136,7 +136,6 @@ import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type 
 import { approvalTarget, type LaunchRequest } from "./launch";
 import { WEB_NOTIFICATION_OPEN } from "./webNotify";
 import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
-import { isMacPlatform } from "./lib/platform";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -712,7 +711,8 @@ function AppContent() {
   }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
+    // Linux (notify-rust) and macOS (Notification Center) both report clicks.
+    if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void import("@tauri-apps/api/event").then(({ listen }) => listen(ACTION_EVENT, async event => {

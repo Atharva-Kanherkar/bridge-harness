@@ -2911,7 +2911,8 @@ fn select_host(
     });
     // Omarchy theme sync. Linux-only and inert unless Omarchy is detected.
     omarchy::install(app.handle());
-    // Linux notifications with Allow once / Decline / Open.
+    // OS banners with Allow once / Decline / Open: notify-rust on Linux, the
+    // native center on macOS (installed here, on the main thread, during launch).
     notifications::install(app.handle());
     // The unread count on the app icon, sent by the webview.
     dock_badge::install(app.handle());

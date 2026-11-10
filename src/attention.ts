@@ -1,4 +1,3 @@
-import { isMacPlatform } from "./lib/platform";
 import { NOTIFY_EVENT } from "./nativeNotify";
 import { activeWebDaemon } from "./webDaemon";
 import { notifyInBrowser } from "./webNotify";
@@ -19,30 +18,6 @@ export function isBridgeFocused(): boolean {
   return focused;
 }
 
-// Shared across concurrent notifyAttention calls so the first OS prompt is
-// awaited by every in-flight caller — treating an outstanding request as
-// denial would drop every banner after the first when one snapshot emits
-// multiple attention events before the user answers. Assigned synchronously
-// so two callers cannot both miss and start duplicate prompts.
-let permissionRequest: Promise<boolean> | null = null;
-let notificationModule: Promise<typeof import("@tauri-apps/plugin-notification")> | null = null;
-
-function loadNotification() {
-  notificationModule ??= import("@tauri-apps/plugin-notification");
-  return notificationModule;
-}
-
-function ensureNotificationPermission(): Promise<boolean> {
-  if (!permissionRequest) {
-    permissionRequest = (async () => {
-      const { isPermissionGranted, requestPermission } = await loadNotification();
-      if (await isPermissionGranted()) return true;
-      return (await requestPermission()) === "granted";
-    })();
-  }
-  return permissionRequest;
-}
-
 /**
  * Fires a native OS notification, but only when Bridge is not the focused,
  * foreground app — a focused Bridge window means the human is already
@@ -61,13 +36,9 @@ export async function notifyAttention(
     if (activeWebDaemon()) await notifyInBrowser(title, body, context.sessionId);
     return;
   }
-  // Linux: the shell posts it natively, with Allow once / Decline / Open.
-  if (!isMacPlatform()) {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(NOTIFY_EVENT, { title, body, sessionId: context.sessionId ?? null, approvalEventId: context.approvalEventId ?? null });
-    return;
-  }
-  if (!(await ensureNotificationPermission())) return;
-  const { sendNotification } = await loadNotification();
-  sendNotification({ title, body });
+  // The shell posts it, with Allow once / Decline / Open where the platform
+  // allows: notify-rust on Linux, Notification Center on macOS. It also asks
+  // for the permission; a clicked action comes back as ACTION_EVENT.
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(NOTIFY_EVENT, { title, body, sessionId: context.sessionId ?? null, approvalEventId: context.approvalEventId ?? null });
 }

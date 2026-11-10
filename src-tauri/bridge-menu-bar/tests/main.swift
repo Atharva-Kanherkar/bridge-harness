@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import UserNotifications
 
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() { fatalError(message) }
@@ -76,6 +77,30 @@ check(dottedIcon.isTemplate && dottedIcon.size == plainIcon.size, "The dotted ic
 check(dottedIcon.tiffRepresentation != plainIcon.tiffRepresentation, "The dot is drawn")
 let colored = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in NSColor.systemBlue.setFill(); rect.fill(); return true }
 check(!iconWithUnreadDot(colored).isTemplate, "A colored provider icon keeps its colors")
+
+// Notification banners: what each request becomes, and what a click says.
+let categories = Dictionary(uniqueKeysWithValues: notificationCategories().map { ($0.identifier, $0) })
+check(categories["bridge.approval"]?.actions.map(\.identifier) == ["allow-once", "decline", "open"], "An approval offers Allow once, Decline and Open")
+check(categories["bridge.approval"]?.actions[0].options.contains(.authenticationRequired) == true, "Allowing from a locked Mac needs it unlocked")
+check(categories["bridge.approval"]?.actions[1].options.contains(.destructive) == true, "Decline reads as destructive")
+check(categories["bridge.approval"]?.actions[2].options.contains(.foreground) == true, "Open brings Bridge forward")
+check(categories["bridge.chat"]?.actions.map(\.identifier) == ["open"], "A chat banner offers Open only")
+let approvalRequest = notificationRequest(Data(#"{"title":"Bridge needs you","body":"Run tests?","sessionId":"s1","approvalEventId":42}"#.utf8))!
+check(approvalRequest.content.categoryIdentifier == "bridge.approval", "A request with an approval id gets the approval actions")
+check(approvalRequest.identifier == "bridge.chat.s1", "One banner per chat: a newer one replaces the older")
+check(approvalRequest.content.userInfo["sessionId"] as? String == "s1" && (approvalRequest.content.userInfo["approvalEventId"] as? NSNumber)?.int64Value == 42, "The ids ride in userInfo")
+check(approvalRequest.content.sound == nil, "No banner sound: Bridge plays its own")
+let chatRequest = notificationRequest(Data(#"{"title":"Turn completed","body":"Fix login","sessionId":"s2","approvalEventId":null}"#.utf8))!
+check(chatRequest.content.categoryIdentifier == "bridge.chat" && chatRequest.content.userInfo["approvalEventId"] == nil, "A chat without an approval gets Open only")
+let bareRequest = notificationRequest(Data(#"{"title":"Handled already","body":"Answered elsewhere."}"#.utf8))!
+check(bareRequest.content.categoryIdentifier.isEmpty && !bareRequest.identifier.hasPrefix("bridge.chat."), "No chat, no actions")
+check(notificationRequest(Data("{}".utf8)) == nil && notificationRequest(Data(#"{"title":"","body":"x"}"#.utf8)) == nil, "Not a request, no banner")
+let clickInfo: [AnyHashable: Any] = ["sessionId": "s1", "approvalEventId": NSNumber(value: 42)]
+check(notificationClickJSON(UNNotificationDefaultActionIdentifier, clickInfo) == #"{"action":"default","approvalEventId":42,"sessionId":"s1"}"#, "A body click is the default action")
+check(notificationClickJSON("allow-once", clickInfo) == #"{"action":"allow-once","approvalEventId":42,"sessionId":"s1"}"#, "Allow once carries the ids")
+check(notificationClickJSON("open", ["sessionId": "s2"]) == #"{"action":"open","sessionId":"s2"}"#, "Open without an approval id")
+check(notificationClickJSON(UNNotificationDismissActionIdentifier, clickInfo) == nil, "Dismissing says nothing")
+check(!notificationsAvailable(), "A test binary is not an app bundle")
 
 var available = fixture.selectedUsage!
 available.windows[1].usedPercent = Metric(value: 58, source: "reported", status: "current")
