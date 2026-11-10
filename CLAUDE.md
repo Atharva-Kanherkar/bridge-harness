@@ -65,6 +65,10 @@ Design references worth reading before touching those areas: [`docs/session-fore
 - `testing/*.md` are per-feature test contracts, locked before implementation and named after the branch (`feat-work-facts-ui.md`). When starting a sizeable feature, write or read the matching contract first.
 - Commits follow Conventional Commits and describe the change without citing issue or PR numbers.
 
+## Pull requests
+
+Every PR gets a plan note before any code (a Bridge note: What, Why with a Mermaid diagram, How) and PR notes in its body (What I did, Codebase affected, Users affected, Tests I ran with unedited output, Tradeoffs and risks). Save the PR notes as a Bridge note under the plan note too. The `PR notes` CI check enforces the body; validate with `node scripts/pr-format.mjs body.md` before `gh pr create`. Full rule in [`docs/pr-format.md`](docs/pr-format.md) and AGENTS.md.
+
 ## Environment
 
 `BRIDGE_DATA_DIR`, `BRIDGE_DESKTOP_HOST`, `BRIDGE_DAEMON_BIN`, `BRIDGE_CLAUDE_SIDECAR`, `BRIDGE_BROWSER_EXTENSION`, `BRIDGE_WORKER_OUTPUT_DIR`. Provider CLIs (`codex`, `claude`, `opencode`) are optional — a missing binary shows its adapter as unavailable instead of blocking startup, so check `command -v` when debugging discovery. Vendor runtimes under `runtimes/` are pinned npm closures installed with `npm ci --ignore-scripts` and verified by receipt.

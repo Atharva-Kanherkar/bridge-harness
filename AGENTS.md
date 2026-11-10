@@ -55,6 +55,15 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 
 Start from a template in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE) and you pass by filling it in. `gh issue create` bypasses templates, so write both sections by hand. The rule lives in [`scripts/issue-format.mjs`](scripts/issue-format.mjs) and is tested under `bun run test`; the full spec, including the `format-exempt` escape hatch, is [`docs/issue-format.md`](docs/issue-format.md).
 
+## Pull requests: plan note first, PR notes last
+
+**Every PR goes through two notes.** Full rule: [`docs/pr-format.md`](docs/pr-format.md).
+
+1. **Plan note, before any code.** In Bridge, a Bridge note (`notes_create`); elsewhere, a comment on the issue. Sections: **What**, **Why** (with a Mermaid diagram), **How**. It is two-way: the person edits it too, so re-read it before coding and before opening the PR. Their edits win.
+2. **PR notes, in the PR body.** Start from [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), link the plan note and issue, then fill **What I did**, **Codebase affected**, **Users affected**, **Tests I ran** (commands and output pasted unedited in a fenced block), **Tradeoffs and risks**. In Bridge, also save them as a note under the plan note.
+
+The **PR notes** CI check ([`scripts/pr-format.mjs`](scripts/pr-format.mjs)) fails a body missing any section. Run `node scripts/pr-format.mjs body.md` before `gh pr create`, which bypasses the template.
+
 ## Memory surface
 
 Memory has exactly **one** surface: the Memory screen (`src/components/MemoryDialog.tsx`), a canvas view beside the sidebar like Projects, rendered in the app's normal Graphite & Paper chrome with the same tokens as every other screen. Do not build a second memory UI, a separate dark-only memory surface, or a parallel token family for it — that was tried (the "Memory Core" constellation) and removed. Analytics (recall stats, packet budget, consolidation log) live inside its Activity tab, achromatic like the rest of the chrome.
