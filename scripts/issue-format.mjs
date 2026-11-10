@@ -29,7 +29,7 @@ const SECTIONS = [
 const HEADING = /^[ \t]{0,3}(#{2,3})[ \t]+(.+?)[ \t]*$/gm;
 
 /** Strip the parts of a body that are not content a reader would see. */
-function visibleText(markdown) {
+export function visibleText(markdown) {
   return markdown
     .replace(/<!--[\s\S]*?-->/g, '') // HTML comments (template guidance)
     .replace(/^[ \t]*[-*+][ \t]+\[[ x]\][ \t]*$/gm, '') // empty checklist rows

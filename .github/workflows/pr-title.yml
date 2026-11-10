@@ -2,7 +2,7 @@ name: Pull request policy
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
 
 # pull_request_target loads this tiny policy workflow from the protected base;
 # it never checks out or executes pull-request code and receives no production
@@ -35,3 +35,28 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: node scripts/check-pull-request-title.mjs "$PR_TITLE"
+
+  pr-notes:
+    name: PR notes
+    # Drafts are still being written; the check runs on ready_for_review.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      # The body is untrusted text, so it reaches the validator as data in an
+      # environment variable and is never interpolated into the script.
+      - name: Validate the PR notes in the body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: node scripts/pr-format.mjs
