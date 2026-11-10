@@ -19,7 +19,7 @@ We will acknowledge receipt, investigate, and work on a fix. We may ask for more
 Bridge is a **local-first** desktop app. Design assumptions that matter for security reviews:
 
 - **Provider credentials** — Sign-in runs each vendor's own login flow. Bridge does not collect, store, or log your provider API keys, OAuth tokens, or CLI credential file contents. Health and auth probes use status only, not secret values.
-- **Your code** — Repositories and worktrees live on your machine. Bridge isolates task work in Git worktrees; policy gates risky commands and writes.
+- **Your code** — Repositories and worktrees live on your machine. Bridge isolates task work in Git worktrees; policy gates risky commands and writes. A repository's own Claude settings (`.claude/settings.json`, its hooks, permission rules and MCP servers) load only for a folder Claude Code trusts, the same rule as the `claude` CLI's trust dialog.
 - **Local trust** — The runtime (`bridged`), SQLite data directory, and Unix socket handshake assume a trusted local user on the machine. Bridge is not hardened as a multi-tenant network service; do not expose its data directory or daemon socket to untrusted networks without additional controls.
 - **Telemetry** — See [`docs/observability.md`](docs/observability.md) for what is recorded locally and what is deliberately excluded (credentials, raw provider secrets, etc.).
 
