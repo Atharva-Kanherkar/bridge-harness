@@ -2795,6 +2795,8 @@ fn handle_agent_value_timed(
     let mut pending_stops: Vec<delegation::StopRequest> = Vec::new();
     let mut pending_invalid_steer: Option<String> = None;
     let mut pending_invalid_stop: Option<String> = None;
+    let mut pending_wait: Option<delegation::WaitRequest> = None;
+    let mut pending_invalid_wait: Option<String> = None;
     let mut prompt_control_turn = false;
     let mut prompt_feedback: Vec<(String, String, String)> = Vec::new();
     let mut prompt_approval_detail = None;
@@ -3607,6 +3609,33 @@ fn handle_agent_value_timed(
                         delegation::ParseOutcome::Absent => {}
                     }
                 }
+                // A wait asks Bridge to hold the listed workers' results and
+                // deliver them in one turn. It arms at the turn boundary, after
+                // this turn's delegations launched, so "all" covers them too.
+                if let Some(text) = normalized_event.text.clone() {
+                    match delegation::parse_wait_request(&text) {
+                        delegation::ParseOutcome::Parsed(wait) => {
+                            pending_wait = Some(wait);
+                            let stripped = delegation::strip_wait(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                "_Waiting for workers…_".to_owned()
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Invalid { reason, .. } => {
+                            let _ = store::event(&db, "delegation", "delegation.wait.invalid", session_id, &reason);
+                            pending_invalid_wait = Some(reason.clone());
+                            let stripped = delegation::strip_wait(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                format!("_Wait rejected: {reason}._")
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Absent => {}
+                    }
+                }
             }
             // No maintenance content frame reaches the store at all — a
             // persisted-then-hidden entry would still be in the forest, and the
@@ -3922,6 +3951,9 @@ fn handle_agent_value_timed(
             .or_default()
             .extend(pending_stops);
     }
+    if let Some(wait) = pending_wait {
+        state.delegations.lock().unwrap().pending_worker_waits.insert(session_id.to_owned(), wait);
+    }
     // The assistant message and turn completion are separate provider frames.
     // Reply only after completion instead of racing active-turn steering.
     //
@@ -3929,7 +3961,7 @@ fn handle_agent_value_timed(
     // turn that fails still ends the turn, and a request stranded because the
     // provider errored is a request the orchestrator was never told about.
     if turn_completed {
-        let (peeks, steers, stops) = {
+        let (peeks, steers, stops, wait) = {
             let mut delegations = state.delegations.lock().unwrap();
             (
                 delegations
@@ -3944,6 +3976,7 @@ fn handle_agent_value_timed(
                     .pending_worker_stops
                     .remove(session_id)
                     .unwrap_or_default(),
+                delegations.pending_worker_waits.remove(session_id),
             )
         };
         for peek in &peeks {
@@ -3958,6 +3991,11 @@ fn handle_agent_value_timed(
         for stop in &stops {
             deliver_orchestrator_stop(core, session_id, stop);
         }
+        // Before the boundary drain below, so a result already queued for a
+        // listed worker moves into the wait instead of costing its own turn.
+        if let Some(wait) = &wait {
+            arm_orchestrator_wait(core, session_id, wait);
+        }
     }
     // A steer Bridge could not even parse is fed back rather than dropped: the
     // orchestrator asked to redirect a worker and has to learn that it did not.
@@ -3966,6 +4004,9 @@ fn handle_agent_value_timed(
     }
     if let Some(reason) = &pending_invalid_stop {
         refuse_orchestrator_stop(core, session_id, reason);
+    }
+    if let Some(reason) = &pending_invalid_wait {
+        refuse_orchestrator_wait(core, session_id, reason);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -8884,6 +8925,124 @@ fn refuse_orchestrator_steer(core: &Arc<BridgeCore>, session_id: &str, reason: &
     refuse_orchestrator_request(core, session_id, reason, &notice, RefusedRequest::Steer);
 }
 
+fn refuse_orchestrator_wait(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
+    let notice = serde_json::json!({
+        "type": "bridge-wait-rejected",
+        "reason": reason,
+        "instruction": "No wait was armed: worker results will reach you one at a time, as before. Correct the block and re-emit it, or carry on without it."
+    })
+    .to_string();
+    refuse_orchestrator_request(core, session_id, reason, &notice, RefusedRequest::Wait);
+}
+
+/// Arm the orchestrator's `bridge-wait` and fire it at once if what it waits
+/// for already happened.
+fn arm_orchestrator_wait(core: &Arc<BridgeCore>, orchestrator_session_id: &str, request: &delegation::WaitRequest) {
+    let outcome = {
+        let db = core.db.lock().unwrap();
+        let Ok(transaction) = db.unchecked_transaction() else { return };
+        let Ok(outcome) = crate::orchestrator_wait::arm(&transaction, orchestrator_session_id, request, Utc::now()) else { return };
+        if transaction.commit().is_err() {
+            return;
+        }
+        if let crate::orchestrator_wait::ArmOutcome::Armed { workers, adopted } = &outcome {
+            let _ = store::event(
+                &db,
+                "delegation",
+                "delegation.wait.armed",
+                orchestrator_session_id,
+                &format!("{} workers, {adopted} result(s) already in", workers.len()),
+            );
+        }
+        outcome
+    };
+    match outcome {
+        crate::orchestrator_wait::ArmOutcome::Refused(reason) => refuse_orchestrator_wait(core, orchestrator_session_id, &reason),
+        crate::orchestrator_wait::ArmOutcome::Armed { .. } => {
+            fire_orchestrator_wait_if_due(core, orchestrator_session_id);
+        }
+    }
+}
+
+/// Fire the orchestrator's armed wait now: one `bridge-worker-results`
+/// envelope with everything held, then deliver it when the session is idle.
+/// False when nothing was armed.
+pub(crate) fn fire_orchestrator_wait(
+    core: &Arc<BridgeCore>,
+    orchestrator_session_id: &str,
+    reason: crate::orchestrator_wait::FireReason,
+    notice: Option<serde_json::Value>,
+) -> bool {
+    let fired = {
+        let db = core.db.lock().unwrap();
+        let fleet = fleet_digest(&db, orchestrator_session_id);
+        let Ok(transaction) = db.unchecked_transaction() else { return false };
+        let fired = matches!(crate::orchestrator_wait::fire(&transaction, orchestrator_session_id, reason, notice, fleet), Ok(Some(_)));
+        if !fired || transaction.commit().is_err() {
+            return false;
+        }
+        let _ = store::event(&db, "delegation", "delegation.wait.fired", orchestrator_session_id, reason.as_str());
+        true
+    };
+    if fired {
+        drain_queued_input(core, orchestrator_session_id);
+    }
+    fired
+}
+
+/// Fire the wait if its condition, a failure it breaks on, or its deadline
+/// says so.
+fn fire_orchestrator_wait_if_due(core: &Arc<BridgeCore>, orchestrator_session_id: &str) -> bool {
+    let reason = {
+        let db = core.db.lock().unwrap();
+        match crate::orchestrator_wait::armed(&db, orchestrator_session_id) {
+            Ok(Some(wait)) => crate::orchestrator_wait::due(&db, &wait, Utc::now()).ok().flatten(),
+            _ => None,
+        }
+    };
+    reason.is_some_and(|reason| fire_orchestrator_wait(core, orchestrator_session_id, reason, None))
+}
+
+/// The sweep's half: waits whose deadline passed, including ones a restart
+/// left armed.
+fn fire_due_orchestrator_waits(core: &Arc<BridgeCore>) {
+    let armed = crate::orchestrator_wait::armed_orchestrators(&core.db.lock().unwrap()).unwrap_or_default();
+    for orchestrator_session_id in armed {
+        fire_orchestrator_wait_if_due(core, &orchestrator_session_id);
+    }
+}
+
+/// What an armed wait does with a routing notice. `Some(told)` when the wait
+/// decided; `None` to deliver it as usual. An essential notice breaks the wait
+/// (unless it breaks on nothing) and travels inside the delivery; a listed
+/// worker blocked on approval breaks a wait that asks for that; informational
+/// notices are what the wait exists to save, so they are not delivered.
+pub(crate) fn route_notice_through_wait(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    child_session_id: Option<&str>,
+    kind: crate::delegation_notify::NoticeKind,
+    notice: &str,
+) -> Option<bool> {
+    use crate::delegation_notify::{NoticeClass, NoticeKind};
+    use crate::orchestrator_wait::FireReason;
+    let wait = crate::orchestrator_wait::armed(&core.db.lock().unwrap(), parent_session_id).ok().flatten()?;
+    let payload = || serde_json::from_str::<serde_json::Value>(notice).unwrap_or_else(|_| serde_json::json!({"text": notice}));
+    if kind.class() == NoticeClass::Essential && !wait.break_on.is_empty() {
+        return Some(fire_orchestrator_wait(core, parent_session_id, FireReason::Notice, Some(payload())));
+    }
+    if kind == NoticeKind::WorkerBlockedOnApproval
+        && wait.breaks_on(delegation::WaitBreak::NeedsYou)
+        && child_session_id.is_some_and(|child| wait.covers(child))
+    {
+        return Some(fire_orchestrator_wait(core, parent_session_id, FireReason::NeedsYou, Some(payload())));
+    }
+    if kind.class() == NoticeClass::Informational {
+        return Some(false);
+    }
+    None
+}
+
 fn refuse_orchestrator_stop(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
     let notice = serde_json::json!({
         "type": "bridge-stop-rejected",
@@ -8898,6 +9057,7 @@ fn refuse_orchestrator_stop(core: &Arc<BridgeCore>, session_id: &str, reason: &s
 enum RefusedRequest {
     Steer,
     Stop,
+    Wait,
 }
 
 impl RefusedRequest {
@@ -8905,6 +9065,7 @@ impl RefusedRequest {
         match self {
             Self::Steer => "steer",
             Self::Stop => "stop",
+            Self::Wait => "wait",
         }
     }
 
@@ -8912,6 +9073,7 @@ impl RefusedRequest {
         match self {
             Self::Steer => "Steer refused",
             Self::Stop => "Stop refused",
+            Self::Wait => "Wait refused",
         }
     }
 }
@@ -9801,7 +9963,23 @@ fn prepare_worker_result_delivery(
             // retain only the result history. Check ancestry in the enqueue
             // transaction so archive cannot commit between check and delivery.
             let archived = session_has_archived_ancestor(&transaction, &report.parent_session_id)?;
-            let queued = if direct_dispatch || archived { None } else {
+            // An armed bridge-wait over this worker holds the result instead,
+            // to deliver it together with the others it waits for.
+            let held = !direct_dispatch
+                && !archived
+                && crate::orchestrator_wait::armed(&transaction, &report.parent_session_id)?
+                    .is_some_and(|wait| wait.covers(&child_session_id));
+            if held {
+                crate::orchestrator_wait::hold(
+                    &transaction,
+                    &report.parent_session_id,
+                    &child_session_id,
+                    result.status.as_str(),
+                    &routing_notice,
+                    Utc::now(),
+                )?;
+            }
+            let queued = if direct_dispatch || archived || held { None } else {
                 Some(session_input::enqueue(&transaction, &report.parent_session_id, &routing_notice, &result.summary)?)
             };
             let result_event = agent::NormalizedEvent {
@@ -9816,6 +9994,7 @@ fn prepare_worker_result_delivery(
                     "evidenceId": report.evidence_id,
                     "delivered": false,
                     "queued": queued.is_some(),
+                    "held": held,
                     "queuedInputId": queued.as_ref().map(|input| &input.id),
                     "status": result.status.as_str(),
                     "repository": evidence_payload,
@@ -9836,6 +10015,9 @@ fn prepare_worker_result_delivery(
             transaction.commit()?;
             drop(db);
             core.events.publish(CoreEvent::Agent(stored));
+            if held {
+                fire_orchestrator_wait_if_due(core, &report.parent_session_id);
+            }
         }
         if !direct_dispatch { drain_queued_input(core, &report.parent_session_id); }
         let workspace_id = state
@@ -12414,6 +12596,8 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         for session_id in sessions {
             drain_queued_input(&core, &session_id);
         }
+        // A bridge-wait past its deadline, including one a restart left armed.
+        fire_due_orchestrator_waits(&core);
         // What is still queued now has no adapter to drain into, or is waiting
         // on a turn. The first kind is the person's to know about.
         escalate_stranded_input(&core);
@@ -17061,6 +17245,131 @@ mod submit_input_tests {
             assert!(sent.lock().unwrap().is_empty());
         }
         assert!(drain_queued_input(&core, "parent"));
+    }
+
+    /* ── bridge-wait: hold results, deliver them once ─────────────────────── */
+
+    fn wait_request(json: &str) -> delegation::WaitRequest {
+        let delegation::ParseOutcome::Parsed(request) = delegation::parse_wait_request(&format!("```bridge-wait\n{json}\n```")) else {
+            panic!("fixture wait did not parse");
+        };
+        request
+    }
+
+    fn sent_json(sent: &Arc<Mutex<Vec<String>>>) -> Vec<serde_json::Value> {
+        sent.lock().unwrap().iter().filter_map(|text| serde_json::from_str(text).ok()).collect()
+    }
+
+    #[test]
+    fn a_turn_ending_with_bridge_wait_arms_it_and_hides_the_block() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        attach_to(&core, "parent", true);
+        let turn = Arc::new(Mutex::new(Some("turn-1".into())));
+        handle_agent_value(&core, "parent", &turn, &codex_agent_message("Three workers are running.\n```bridge-wait\n{\"until\":\"all_done\"}\n```"));
+        assert!(
+            crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_none(),
+            "a wait arms at the turn's end, not mid-turn"
+        );
+        handle_agent_value(&core, "parent", &turn, &codex_turn_completed());
+        let wait = crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().expect("armed at the boundary");
+        assert_eq!(wait.workers, ["child"], "\"all\" is the parent's running workers");
+        let shown: Vec<String> = core
+            .db
+            .lock()
+            .unwrap()
+            .prepare("SELECT payload FROM session_entries WHERE session_id='parent' AND payload LIKE '%Three workers%'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let texts: Vec<String> = shown
+            .iter()
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .filter_map(|payload| payload["text"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(texts, ["Three workers are running."], "the person reads the prose, not the block");
+        assert!(ledger_kinds(&core, "delegation.wait.").contains(&"delegation.wait.armed".to_owned()));
+    }
+
+    #[test]
+    fn a_held_result_reaches_an_armed_orchestrator_in_one_delivery() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        arm_orchestrator_wait(&core, "parent", &wait_request("{}"));
+        report_to_parent(&core, "child", &result);
+        prepare_pending_worker_results(&core);
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered.len(), 1, "one turn: {delivered:?}");
+        assert_eq!(delivered[0]["type"], "bridge-worker-results");
+        assert_eq!(delivered[0]["reason"], "all_done");
+        assert_eq!(delivered[0]["results"][0]["type"], "bridge-worker-result");
+        assert_eq!(delivered[0]["results"][0]["childSessionId"], "child");
+        assert!(crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_none());
+        let held: bool = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT payload FROM session_entries WHERE session_id='parent' AND kind='delegation.result'", [], |row| row.get::<_, String>(0))
+            .map(|payload| payload.contains("\"held\":true"))
+            .unwrap();
+        assert!(held, "the transcript still records the result, marked held");
+    }
+
+    #[test]
+    fn a_wait_over_a_worker_that_is_not_yours_is_refused_back() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", true);
+        arm_orchestrator_wait(&core, "parent", &wait_request(r#"{"workers":["stranger"]}"#));
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered[0]["type"], "bridge-wait-rejected");
+        assert!(delivered[0]["reason"].as_str().unwrap().contains("stranger"));
+        assert!(crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_none());
+        assert!(parent_event_kinds(&core).contains(&"delegation.rejected".to_owned()) || !ledger_kinds(&core, "delegation.wait.refused").is_empty());
+    }
+
+    #[test]
+    fn an_essential_notice_breaks_the_wait_and_rides_inside_it() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        arm_orchestrator_wait(&core, "parent", &wait_request("{}"));
+        let stopped = serde_json::json!({"type": "bridge-worker-stopped", "childSessionId": "child"}).to_string();
+        let told = crate::delegation_notify::deliver_routing_notice(&core, "parent", Some("child"), crate::delegation_notify::NoticeKind::WorkerStopped, &stopped);
+        assert!(told);
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered.len(), 1, "the notice is not a turn of its own");
+        assert_eq!(delivered[0]["type"], "bridge-worker-results");
+        assert_eq!(delivered[0]["reason"], "notice");
+        assert_eq!(delivered[0]["notice"]["type"], "bridge-worker-stopped");
+        assert_eq!(delivered[0]["stillRunning"], serde_json::json!(["child"]));
+    }
+
+    #[test]
+    fn an_informational_notice_is_held_back_while_a_wait_is_armed() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", false);
+        arm_orchestrator_wait(&core, "parent", &wait_request("{}"));
+        let unblocked = serde_json::json!({"type": "bridge-worker-unblocked", "childSessionId": "child"}).to_string();
+        let told = crate::delegation_notify::deliver_routing_notice(&core, "parent", Some("child"), crate::delegation_notify::NoticeKind::WorkerUnblocked, &unblocked);
+        assert!(!told);
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_some(), "still waiting");
+    }
+
+    #[test]
+    fn without_a_wait_a_result_is_its_own_delivery_as_before() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        report_to_parent(&core, "child", &result);
+        prepare_pending_worker_results(&core);
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0]["type"], "bridge-worker-result");
     }
 
     /// The whole point of the change: a user who can see a worker going the wrong

@@ -1,0 +1,55 @@
+{
+  "fanOut": [
+    {
+      "id": "fanout-research",
+      "task": "I want three short research write-ups, done in parallel: how SQLite's WAL checkpointing works, how Postgres VACUUM deals with MVCC bloat, and how RocksDB decides when to compact. Each one is independent of the others."
+    },
+    {
+      "id": "fanout-audit",
+      "task": "Audit three separate parts of our codebase at the same time for dead code and unused exports: the auth module, the billing module and the search module. The repository isn't on this machine, but your workers get a checkout. They don't depend on each other; I just want one report per module."
+    },
+    {
+      "id": "fanout-design",
+      "task": "Draft three independent design notes for our API, in parallel: one on rate limiting, one on retry policy for clients, and one on idempotency keys. Keep each note focused on its own topic."
+    }
+  ],
+  "digest": {
+    "id": "timeout-digest",
+    "task": "I want three short research write-ups, done in parallel: how SQLite's WAL checkpointing works, how Postgres VACUUM deals with MVCC bloat, and how RocksDB decides when to compact. Each one is independent of the others.",
+    "stillRunningLabel": "RocksDB",
+    "envelope": {
+      "type": "bridge-worker-results",
+      "reason": "timeout",
+      "results": [
+        {
+          "type": "bridge-worker-result",
+          "childSessionId": "worker-sqlite",
+          "status": "completed",
+          "summary": "SQLite WAL: writers append to the -wal file; a checkpoint copies pages back to the main database, automatically once the WAL reaches 1000 pages by default, and readers keep their snapshot until they finish.",
+          "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical."
+        },
+        {
+          "type": "bridge-worker-result",
+          "childSessionId": "worker-postgres",
+          "status": "completed",
+          "summary": "Postgres VACUUM: dead tuples left by MVCC are marked reusable; autovacuum triggers on a scale factor of the table size; VACUUM FULL rewrites the table and takes an exclusive lock.",
+          "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical."
+        }
+      ],
+      "stillRunning": [
+        "worker-rocksdb"
+      ],
+      "notice": null,
+      "fleet": [
+        {
+          "sessionId": "worker-rocksdb",
+          "label": "Research \u00b7 RocksDB compaction",
+          "lifecycle": "running",
+          "resultStatus": "pending",
+          "currentActivity": "reading the leveled compaction docs"
+        }
+      ],
+      "instruction": "Your bridge-wait timed out. The results below arrived; the workers in stillRunning have not reported. Do not claim the task is done: report what finished, say what is still running, and wait again or peek if you need them."
+    }
+  }
+}
