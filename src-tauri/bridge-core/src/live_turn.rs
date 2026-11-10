@@ -2910,6 +2910,19 @@ fn handle_agent_value_timed(
         let mut root_events = Vec::new();
         for event in normalized {
             if event.data.get("subagent").is_some() {
+                // Codex and OpenCode report a child's requests only on the
+                // child, so bill them to the chat that owns its process. The
+                // child's context window is its own: no reading for the parent.
+                if event.kind == "usage.updated" {
+                    let _ = policy::record_provider_usage(
+                        &db,
+                        workspace_id.as_deref().unwrap_or(session_id),
+                        session_id,
+                        observed_turn_id.as_deref(),
+                        &format!("provider.{adapter_id}"),
+                        &event.data,
+                    );
+                }
                 match crate::harness_subagents::route(&db, session_id, &event, &serde_json::json!({"adapter":adapter_id})) {
                     Ok(events) => {
                         let state_changed=events.iter().any(|e|matches!(e.kind.as_str(),"subagent.started"|"subagent.completed"|"subagent.status"|"permission.requested"|"question.requested"));
@@ -18107,6 +18120,27 @@ mod permission_policy_tests {
         handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/completed","params":{"threadId":"root","turn":{"id":"root-turn","status":"completed"}}}));
         assert!(turn.lock().unwrap().is_none());
         let status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(status,"ready");
+    }
+
+    #[test]
+    fn a_codex_child_threads_token_usage_is_billed_to_its_parent_chat() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let turn=Arc::new(Mutex::new(Some("root-turn".into())));
+        // A child thread's requests appear only in its own usage frames; the
+        // root thread's `last` never includes them.
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"child-turn"}}}));
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"thread/tokenUsage/updated","params":{"threadId":"child","turnId":"child-turn","tokenUsage":{
+            "last":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500},
+            "total":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500},
+            "modelContextWindow":272000}}}));
+        let db=core.db.lock().unwrap();
+        let (rows,output):(i64,i64)=db.query_row("SELECT count(*),COALESCE(SUM(output_tokens),0) FROM usage_ledger WHERE session_id='chat'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!((rows,output),(1,300));
+        let child_rows:i64=db.query_row("SELECT count(*) FROM usage_ledger WHERE session_id!='chat'",[],|r|r.get(0)).unwrap();
+        assert_eq!(child_rows,0);
+        let window:Option<i64>=db.query_row("SELECT context_percent FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();
+        assert_eq!(window,None,"a child's context is not the parent's");
     }
 
     #[test]

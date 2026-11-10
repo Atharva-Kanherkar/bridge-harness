@@ -178,6 +178,6 @@ parent retires the family.
 On startup or parent process exit, unfinished children are recorded as
 `interrupted`, with `parent_process_exited`. The existing session-status wire
 vocabulary exposes this as `stopped`; the durable event retains the precise
-reason. Child usage frames do not create another ledger entry: the provider's
-parent result and usage import remain authoritative. Title and memory jobs
-exclude these processless sessions.
+reason. Child usage is billed to the parent's ledger and budgets, never to
+the child, and a child's context-window readings never move the parent's.
+Title and memory jobs exclude these processless sessions.

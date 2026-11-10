@@ -143,7 +143,7 @@ pub fn route(
         ended_at=CASE WHEN ?5 THEN NULL WHEN ?3 THEN COALESCE(ended_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE ended_at END
         WHERE id=?1 AND (status NOT IN ('completed','failed','interrupted') OR ?3 OR ?5)",params![child,status,terminal(event),turn,turn_started])?;
     }
-    // Child usage is already included by the provider's parent ledger/import.
+    // The caller bills child usage to the parent; the child keeps no copy.
     if event.kind != "usage.updated" {
         let mut child_event = event.clone();
         child_event.data["childSessionId"] = json!(child);
