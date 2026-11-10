@@ -1695,6 +1695,27 @@ mod catalogue_tests {
         assert!(models[3].supported_effort_levels.as_ref().unwrap().is_empty());
     }
     #[test]
+    fn the_fable_5_2_catalog_resolves_aliases_to_new_releases() {
+        // Rows as the 0.3.322 SDK reports them, trimmed to the fields Bridge reads.
+        let models = parse_discovered_models(&serde_json::from_str::<Value>(r#"{"models":[
+            {"value":"default","resolvedModel":"claude-opus-5-5","displayName":"Default (recommended)","description":"Opus 5.5 · Best for everyday, complex tasks","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+            {"value":"fable","resolvedModel":"claude-fable-5-2","displayName":"Fable 5.2","description":"For your toughest challenges","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+            {"value":"haiku","resolvedModel":"claude-haiku-5-5","displayName":"Haiku 5.5","description":"Fastest for quick answers","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+            {"value":"claude-fable-5-1","resolvedModel":"claude-fable-5-1","displayName":"Fable 5.1","description":"Most capable for your hardest and longest-running tasks","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]}
+        ]}"#).unwrap().to_string()).unwrap();
+        let ids: Vec<_> = models.iter().map(|model| (model.id.as_str(), model.label.as_str())).collect();
+        assert_eq!(ids, [
+            ("claude-opus-5-5", "Opus 5.5"),
+            ("claude-fable-5-2", "Fable 5.2"),
+            ("claude-haiku-5-5", "Haiku 5.5"),
+            ("claude-fable-5-1", "Fable 5.1"),
+        ]);
+        for model in &models[1..] {
+            assert!(!model.is_default);
+            assert_eq!(model.supported_effort_levels.clone().unwrap(), ["low", "medium", "high", "xhigh", "max"]);
+        }
+    }
+    #[test]
     fn ignores_malformed_rows_and_unresolved_default() {
         let models = parse_discovered_models("{\"models\":[{}, {\"value\":\"default\"}, {\"value\":\"sonnet\",\"displayName\":\"Sonnet\"}]}" ).unwrap();
         assert_eq!(models.len(), 1);
