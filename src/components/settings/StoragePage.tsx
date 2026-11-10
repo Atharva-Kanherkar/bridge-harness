@@ -18,7 +18,6 @@ import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { DiskEntry, DiskListing, DiskOverview, DiskSuggestion } from "../../types";
 import { cleanupTotal, diskBytes, displayPath, storageSnapshot, withSnapshot, type StoragePlanItem } from "../../diskSpace";
-import { Skeleton } from "../ui/skeleton";
 import { StorageAgentContext, type StorageAgentHost } from "../StoragePlanCard";
 import { GhostButton, PrimaryButton, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
@@ -230,7 +229,7 @@ function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onT
   return <section aria-label="Everything on this Mac">
     <SectionHeading
       title="Everything on this Mac"
-      detail={listing ? <span className="flex items-center gap-1.5">{diskBytes(listing.sizeBytes)}{listing.measuring && <span role="status" aria-label="Still measuring" title="Still measuring" className="flex items-center"><Skeleton className="size-1.5 rounded-full" /></span>}</span> : undefined}
+      detail={listing ? <span className="flex items-center gap-1.5">{diskBytes(listing.sizeBytes)}{listing.measuring && <span role="status" aria-label="Still measuring" title="Still measuring" className="size-1.5 rounded-full bg-muted-foreground" />}</span> : undefined}
       action={<>
         <span role="group" aria-label="Start from" className="flex rounded-lg bg-muted p-0.5 text-caption">
           {ROOTS.map(item => <button

@@ -88,12 +88,12 @@ beforeEach(() => {
 });
 
 describe("BridgeSidebar responsive rail", () => {
-  it("draws the rail's trailing slot after Gitplace", () => {
-    const html = render({ onOpenGitplace: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
-    const gitplace = html.indexOf('aria-label="Gitplace"');
+  it("draws the rail's trailing slot after Pulls", () => {
+    const html = render({ onOpenPulls: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
+    const pulls = html.indexOf('aria-label="Pulls"');
     const usage = html.indexOf('aria-label="Open usage — test"');
-    expect(gitplace).toBeGreaterThan(-1);
-    expect(usage).toBeGreaterThan(gitplace);
+    expect(pulls).toBeGreaterThan(-1);
+    expect(usage).toBeGreaterThan(pulls);
   });
 
   it("marks a chat whose agents are still working after its own turn ended", () => {

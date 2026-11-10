@@ -8,18 +8,20 @@ import { useAttributionSettings } from "../attributionSettings";
 import type { Project, Workspace } from "../types";
 
 // GitHub as a place of its own. The dock pane only exists inside a chat, so
-// with no chat open there was no way to look at a pull request. Gitplace hosts
+// with no chat open there was no way to look at a pull request. Pulls hosts
 // the same pane at full width, for any project Bridge knows about, and needs
 // no session: every GitHub read is keyed on the workspace alone.
 
-export const GITPLACE_REPO_KEY = "bridge.gitplace.workspace";
+// The stored key keeps the old name: people who already chose a repository
+// must not lose that choice because the screen was renamed.
+export const PULLS_REPO_KEY = "bridge.gitplace.workspace";
 
-export type GitplaceRepo = { workspace: Workspace; label: string };
+export type PullsRepo = { workspace: Workspace; label: string };
 
 /// One entry per project: its task worktrees share a remote, so listing each
 /// of them would show the same repository several times. The newest worktree
 /// stands for the project. Workspaces with no folder have nothing to read.
-export function gitplaceRepos(workspaces: Workspace[], projects: Project[]): GitplaceRepo[] {
+export function pullsRepos(workspaces: Workspace[], projects: Project[]): PullsRepo[] {
   const byKey = new Map<string, Workspace>();
   for (const workspace of workspaces) {
     if (!workspace.path) continue;
@@ -33,14 +35,14 @@ export function gitplaceRepos(workspaces: Workspace[], projects: Project[]): Git
 }
 
 function readRemembered(): string | null {
-  try { return window.localStorage.getItem(GITPLACE_REPO_KEY); } catch { return null; }
+  try { return window.localStorage.getItem(PULLS_REPO_KEY); } catch { return null; }
 }
 
 function remember(workspaceId: string) {
-  try { window.localStorage.setItem(GITPLACE_REPO_KEY, workspaceId); } catch { /* private mode: not remembered */ }
+  try { window.localStorage.setItem(PULLS_REPO_KEY, workspaceId); } catch { /* private mode: not remembered */ }
 }
 
-export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProject }: {
+export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }: {
   workspaces: Workspace[];
   projects: Project[];
   /** A review comment's file lives in a worktree, so opening it needs a chat
@@ -48,7 +50,7 @@ export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProjec
   onJumpToFile: (workspaceId: string, path: string, line: number | undefined, headBranch: string) => void;
   onAddProject: () => void;
 }) {
-  const repos = useMemo(() => gitplaceRepos(workspaces, projects), [workspaces, projects]);
+  const repos = useMemo(() => pullsRepos(workspaces, projects), [workspaces, projects]);
   const [chosen, setChosen] = useState<string | null>(readRemembered);
   const attribution = useAttributionSettings();
   const current = repos.find(repo => repo.workspace.id === chosen)
@@ -60,7 +62,7 @@ export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProjec
     return <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
       <span className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-xs"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
       <h2 className="mt-2 font-display text-[15px] font-semibold text-foreground">Add a project with a GitHub remote</h2>
-      <p className="max-w-sm text-[13px] text-muted-foreground">Gitplace shows pull requests and issues for the projects Bridge knows about. None has a folder yet.</p>
+      <p className="max-w-sm text-[13px] text-muted-foreground">Pulls shows pull requests and issues for the projects Bridge knows about. None has a folder yet.</p>
       <button type="button" onClick={onAddProject} className="mt-2 min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">Add a project</button>
     </div>;
   }
@@ -71,7 +73,7 @@ export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProjec
     menu.close();
   };
 
-  return <div data-gitplace className="flex h-full min-h-0 flex-col">
+  return <div data-pulls className="flex h-full min-h-0 flex-col">
     <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-5">
       <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-card text-foreground shadow-xs">
         <FolderGit2 size={15} strokeWidth={1.7} aria-hidden="true" />

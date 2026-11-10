@@ -51,8 +51,8 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
-import { GitplaceScreen } from "./components/GitplaceScreen";
-import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
+import { PullsScreen } from "./components/PullsScreen";
+import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -1224,13 +1224,13 @@ function AppContent() {
   /** Jump-to-diff from a review comment: open the editor at the commented
    * file/line. When the PR head branch is not what this workspace has checked
    * out, the file still opens (read it, don't edit it) with a hint saying so. */
-  /** Gitplace has no chat of its own: open the newest chat in the comment's
+  /** Pulls has no chat of its own: open the newest chat in the comment's
    * workspace and jump there, or start one when the workspace has none. */
-  function jumpFromGitplace(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
+  function jumpFromPulls(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
     const chat = topSessions
       .filter(candidate => candidate.workspaceId === workspaceId)
       .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
-    setPendingGitplaceJump({ workspaceId, path, line, headBranch });
+    setPendingPullsJump({ workspaceId, path, line, headBranch });
     if (chat) {
       openSession(chat.id);
       return;
@@ -1358,18 +1358,18 @@ function AppContent() {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
   }
 
-  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // A review-comment jump from Pulls: the file lives in a worktree, so the
   // jump waits until a chat in that workspace is the one on screen, through a
   // draft's first message if it has to. Declared after the workspace-change
   // reset of the code reveal, so it runs after it.
-  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<GitplaceJump>();
+  const [pendingPullsJump, setPendingPullsJump] = useState<PullsJump>();
   useEffect(() => {
-    if (!pendingGitplaceJump) return;
-    const step = gitplaceJumpStep(pendingGitplaceJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
+    if (!pendingPullsJump) return;
+    const step = pullsJumpStep(pendingPullsJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
     if (step === "wait") return;
-    if (step === "jump") jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
-    setPendingGitplaceJump(undefined);
-  }, [pendingGitplaceJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
+    if (step === "jump") jumpToReviewComment(pendingPullsJump.path, pendingPullsJump.line, pendingPullsJump.headBranch);
+    setPendingPullsJump(undefined);
+  }, [pendingPullsJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -3309,7 +3309,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3366,7 +3366,7 @@ function AppContent() {
       notesActive={view === "notes"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
-      gitplaceActive={view === "gitplace"}
+      pullsActive={view === "pulls"}
       agentFleetActive={view === "agent-fleet"}
       missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
@@ -3386,7 +3386,7 @@ function AppContent() {
       onOpenMemory={() => setView("memory")}
       onOpenNotes={() => setView("notes")}
       onOpenUsage={() => setView("usage")}
-      onOpenGitplace={() => setView("gitplace")}
+      onOpenPulls={() => setView("pulls")}
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
@@ -3465,10 +3465,10 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
-        onJumpToFile={jumpFromGitplace}
+        onJumpToFile={jumpFromPulls}
         onAddProject={() => setNewProjectOpen(true)}
       /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
