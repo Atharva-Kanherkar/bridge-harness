@@ -44,6 +44,7 @@ mod usage_overview;
 mod voice;
 mod models;
 mod notes;
+mod outgoing;
 mod projects;
 mod routing;
 mod sessions;
@@ -80,6 +81,7 @@ pub use usage_overview::*;
 pub use voice::*;
 pub use models::*;
 pub use notes::*;
+pub use outgoing::*;
 pub use projects::*;
 pub use routing::*;
 pub use sessions::*;
@@ -339,6 +341,12 @@ typed_methods![
     (DeletePaths, DeletePathsParams, DiskDeleteResult),
     (EmptyTrash, _, EmptyTrashResult),
     // notes
+    // outgoing: drafted messages for a person or a place
+    (ListOutgoing, ListOutgoingParams, ListOutgoingResult),
+    (UpdateOutgoing, UpdateOutgoingParams, UpdateOutgoingResult),
+    (CopyOutgoing, CopyOutgoingParams, CopyOutgoingResult),
+    (DiscardOutgoing, DiscardOutgoingParams, DiscardOutgoingResult),
+    (ReadOutgoingAttachment, ReadOutgoingAttachmentParams, ReadOutgoingAttachmentResult),
     (ListNotes, ListNotesParams, NotesList),
     (ReadPage, ReadPageParams, NotePage),
     (CaptureNote, CaptureNoteParams, Note),

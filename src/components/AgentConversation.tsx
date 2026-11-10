@@ -14,6 +14,8 @@ import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
 import { isVisualItem } from "../transcript/visual";
+import { OutgoingCard } from "./OutgoingCard";
+import { isOutgoingItem } from "../transcript/outgoing";
 import { openExternalUrl } from "../externalLinks";
 import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
@@ -1013,7 +1015,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     entry={entry}
     instant={instant}
     highlighted={!!highlightEntryId && entry.kind === "item" && entry.item.entryId === highlightEntryId}
-    sessionId={session?.id}
+    // An archived transcript has events but no session; rows that load
+    // their own records (a drafted message) still need to know the chat.
+    sessionId={session?.id ?? historySessionId}
     delivery={entry.kind === "item" ? delivery.get(entry.item.key) : undefined}
     latest={entry.kind === "item" && entry.item.key === latestReplyKey}
     readOnly={readOnly}
@@ -1627,6 +1631,7 @@ const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, rea
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
   if (isVisualItem(item)) return <VisualCall item={item} turnActive={turnActive}/>;
+  if (isOutgoingItem(item)) return <OutgoingCard item={item} sessionId={sessionId} readOnly={readOnly}/>;
   return <ActivityGroup items={[item]} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/>;
 });
 
@@ -1645,7 +1650,7 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
   if (entry.kind === "raw-group") return <TranscriptRow instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>;
   return <TranscriptRow
     instant={instant}
-    tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
+    tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item) && !isOutgoingItem(entry.item)) ? "alert" : "quiet"}
     id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
     entryId={entry.item.entryId}
     className={highlighted ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}

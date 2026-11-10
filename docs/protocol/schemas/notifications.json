@@ -91,6 +91,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "outgoing/changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]
