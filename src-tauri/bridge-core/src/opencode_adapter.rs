@@ -1337,6 +1337,19 @@ impl AdapterRuntime for OpenCodeRuntime {
         };
         self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode subagent")
     }
+    fn stop_subagent_request(&self, provider_id: &str, _turn_id: Option<&str>) -> Option<crate::adapters::InterruptRequest> {
+        let client = self.client.as_ref()?.clone();
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{provider_id}/abort"),
+            ServerApi::V2 => format!("/api/session/{provider_id}/interrupt"),
+        };
+        let url = self.api.url(&self.base_url, &path, &self.directory);
+        Some(Box::new(move || {
+            client.post(url).timeout(Duration::from_secs(10)).send()
+                .and_then(Response::error_for_status)
+                .map(|_| ()).map_err(http_error("interrupt OpenCode subagent"))
+        }))
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let client = self.client.as_ref()?.clone();
         let path = match self.api {

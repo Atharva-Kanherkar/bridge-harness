@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { stopTaskFrame, childPermissions } from "./subagents.mjs";
+import { stopTaskFrame, childPermissions, withChildPermissions } from "./subagents.mjs";
 // Bridge ↔ Claude Agent SDK sidecar.
 //
 // Replaces the per-turn `claude -p` spawn. One long-lived process drives a
@@ -112,7 +112,7 @@ function userMessage(content) {
 const options = config.catalog === true ? catalogOptions() : buildOptions(config);
 
 const permissions = childPermissions(writeFrame, sessionId);
-if (config.catalog !== true) options.canUseTool = permissions.canUseTool;
+if (config.catalog !== true) withChildPermissions(options, permissions);
 const run = query({ prompt: input, options });
 
 // Catalogue discovery is a short-lived control-plane request. It uses the

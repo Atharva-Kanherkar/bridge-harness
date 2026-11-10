@@ -212,6 +212,8 @@ pub trait AdapterRuntime: Send {
     fn stop_subagent(&self, _provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid("This harness does not support subagent Stop".into()))
     }
+    /// Snapshot a subagent Stop that can run without retaining the adapter map.
+    fn stop_subagent_request(&self, _provider_id: &str, _turn_id: Option<&str>) -> Option<InterruptRequest> { None }
     /// Snapshot an interrupt that can run without retaining the adapter map.
     /// Unsupported transports use the host's bounded process fallback.
     fn interrupt_request(&self) -> Option<InterruptRequest> { None }
