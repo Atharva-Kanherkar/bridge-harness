@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
+import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
@@ -90,7 +91,7 @@ export type GitHubPaneProps = {
    * distinguishes "open it again" from a re-render. */
   intent?: { view: GithubLinkView; nonce: number };
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
-  /** `dock` (default) is the 440px chat pane. `page` is Gitplace's full-width
+  /** `dock` (default) is the 440px chat pane. `page` is Pulls's full-width
    *  screen: the repo slug never truncates, and at 1100px and up an open pull
    *  request or issue sits beside its list instead of replacing it. */
   layout?: "dock" | "page";
@@ -291,11 +292,24 @@ function CommentTime({ iso }: { iso: string }) {
   return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-[11px] text-muted-foreground">{relativeTime(iso, new Date())}</time>;
 }
 
-/** Placeholder rows shaped like the list they precede, instead of a bare
- * spinner in an empty pane. */
-function ListSkeleton({ label }: { label: string }) {
-  return <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
-    <SkeletonRows label={label} rows={6} lead="dot" />
+/** Placeholder rows with optional connection context above the shared list. */
+function ListSkeleton({ label, notice }: { label: string; notice?: React.ReactNode }) {
+  return <SkeletonRegion label={label} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+    {notice}
+    <SkeletonRows rows={6} lead="dot" />
+  </SkeletonRegion>;
+}
+
+/** First paint, while `gh` availability and the repository resolve. The pane
+ *  shows its real structure (rows filling in) with the connect step named
+ *  inside it, never a lone spinner on a blank surface. */
+function ConnectingNotice() {
+  return <div className="mb-3 flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5">
+    <LoaderCircle size={14} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+    <span className="min-w-0">
+      <span className="block text-[12px] font-medium text-foreground">Connecting to GitHub…</span>
+      <span className="block text-[11px] leading-relaxed text-muted-foreground">Resolving the CLI and repository.</span>
+    </span>
   </div>;
 }
 
@@ -387,10 +401,11 @@ function ListSearch({ value, onChange, placeholder }: { value: string; onChange:
 
 export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, onJumpToFile, layout = "dock" }: GitHubPaneProps) {
   const page = layout === "page";
-  const [status, setStatus] = useState<GithubStatusResult>();
-  const [prs, setPrs] = useState<PullRequestListItem[]>();
-  const [issues, setIssues] = useState<GithubIssuesResult["issues"]>();
-  const [repositoryOverview, setRepositoryOverview] = useState<GithubRepositoryResult>();
+  const remembered = surfaceSnapshot(workspaceId);
+  const [status, setStatus] = useState<GithubStatusResult | undefined>(remembered?.status);
+  const [prs, setPrs] = useState<PullRequestListItem[] | undefined>(remembered?.prs);
+  const [issues, setIssues] = useState<GithubIssuesResult["issues"] | undefined>(remembered?.issues);
+  const [repositoryOverview, setRepositoryOverview] = useState<GithubRepositoryResult | undefined>(remembered?.repositoryOverview);
   const [surfaceTab, setSurfaceTab] = useState<SurfaceTab>("pulls");
   const [surfaceError, setSurfaceError] = useState<string>();
   const [tabErrors, setTabErrors] = useState<Partial<Record<SurfaceTab, string>>>({});
@@ -410,15 +425,24 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
 
   const alive = useRef(true);
   const refreshingChecks = useRef(false);
+  const surfaceLoad = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const loadSurface = useCallback(async (fresh = false) => {
+    const generation = ++surfaceLoad.current;
+    const current = () => alive.current && surfaceLoad.current === generation;
     setRefreshing(true);
     try {
       const next = await bridgeApi.githubStatus(workspaceId, fresh);
-      if (!alive.current) return;
+      if (!current()) return;
       setStatus(next);
       setSurfaceError(undefined);
+      // Keep successful reads only while the repository identity is stable.
+      // A reconnect or sign-out must clear the previous repository's content.
+      const snapshot = rememberSurface(workspaceId, { status: next });
+      setPrs(snapshot.prs);
+      setIssues(snapshot.issues);
+      setRepositoryOverview(snapshot.repositoryOverview);
       // With no repository resolved, every read below fails with the same
       // resolution error. Asking anyway only turns a setup step into three
       // error notices, so the pane offers Connect instead.
@@ -426,7 +450,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         const settle = async <T,>(tab: SurfaceTab, read: Promise<T>, apply: (value: T) => void) => {
           try {
             const value = await read;
-            if (!alive.current) return;
+            if (!current()) return;
             apply(value);
             setTabErrors(current => {
               const nextErrors = { ...current };
@@ -434,7 +458,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
               return nextErrors;
             });
           } catch (error) {
-            if (!alive.current) return;
+            if (!current()) return;
             setTabErrors(current => ({
               ...current,
               [tab]: errorMessage(error),
@@ -442,9 +466,18 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           }
         };
         await Promise.all([
-          settle("pulls", bridgeApi.githubPullRequests(workspaceId), value => setPrs(value.pullRequests)),
-          settle("issues", bridgeApi.githubIssues(workspaceId), value => setIssues(value.issues)),
-          settle("repository", bridgeApi.githubRepository(workspaceId), setRepositoryOverview),
+          settle("pulls", bridgeApi.githubPullRequests(workspaceId), value => {
+            setPrs(value.pullRequests);
+            rememberSurface(workspaceId, { status: next, prs: value.pullRequests });
+          }),
+          settle("issues", bridgeApi.githubIssues(workspaceId), value => {
+            setIssues(value.issues);
+            rememberSurface(workspaceId, { status: next, issues: value.issues });
+          }),
+          settle("repository", bridgeApi.githubRepository(workspaceId), value => {
+            setRepositoryOverview(value);
+            rememberSurface(workspaceId, { status: next, repositoryOverview: value });
+          }),
         ]);
       } else {
         setPrs(undefined);
@@ -453,9 +486,9 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         setTabErrors({});
       }
     } catch (error) {
-      if (alive.current) setSurfaceError(errorMessage(error));
+      if (current()) setSurfaceError(errorMessage(error));
     } finally {
-      if (alive.current) setRefreshing(false);
+      if (current()) setRefreshing(false);
     }
   }, [workspaceId]);
 
@@ -522,7 +555,12 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [workspaceId]);
 
   useEffect(() => {
-    setStatus(undefined); setPrs(undefined); setIssues(undefined); setRepositoryOverview(undefined); setSurfaceError(undefined); setTabErrors({});
+    // Reset, and rehydrate: a workspace the surface has seen before paints
+    // its remembered reads immediately and lets loadSurface revalidate them
+    // in the background. An unseen workspace remembers nothing, so this is
+    // the old clear-to-undefined behavior for it.
+    const remembered = surfaceSnapshot(workspaceId);
+    setStatus(remembered?.status); setPrs(remembered?.prs); setIssues(remembered?.issues); setRepositoryOverview(remembered?.repositoryOverview); setSurfaceError(undefined); setTabErrors({});
     setSelected(undefined); setDetail(undefined); setDetailError(undefined);
     setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
     void loadSurface();
@@ -607,7 +645,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   if (surfaceError) {
     body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{surfaceError}</PaneNotice>;
   } else if (!status) {
-    body = <PaneNotice icon={LoaderCircle} spin title="Checking GitHub…">Resolving the CLI and repository.</PaneNotice>;
+    body = <ListSkeleton label="Connecting to GitHub" notice={<ConnectingNotice />} />;
   } else if (status.availability.status === "notInstalled") {
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {
@@ -786,7 +824,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11px] text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
     {sideList
       ? <div className="flex min-h-0 flex-1">
-          <div data-gitplace-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
+          <div data-pulls-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">{body}</div>
         </div>
       : body}

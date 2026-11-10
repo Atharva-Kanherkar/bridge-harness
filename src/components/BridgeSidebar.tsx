@@ -451,7 +451,7 @@ export type BridgeSidebarProps = {
   memoryPending?: number;
   marketplaceActive: boolean;
   usageActive?: boolean;
-  gitplaceActive?: boolean;
+  pullsActive?: boolean;
   agentFleetActive: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
@@ -480,10 +480,10 @@ export type BridgeSidebarProps = {
   notesActive?: boolean;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
-  /** Drawn at the end of the bottom rail, after Gitplace: the usage dot. */
+  /** Drawn at the end of the bottom rail, after Pulls: the usage dot. */
   railTrailing?: React.ReactNode;
   /** GitHub for any repository, with no chat open. */
-  onOpenGitplace?: () => void;
+  onOpenPulls?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   /** Open the search field on `query` and search deeper, as `/find` does.
@@ -520,7 +520,7 @@ export function BridgeSidebar({
   notesActive = false,
   marketplaceActive,
   usageActive = false,
-  gitplaceActive = false,
+  pullsActive = false,
   agentFleetActive,
   missionControlActive,
   settingsActive,
@@ -541,7 +541,7 @@ export function BridgeSidebar({
   onOpenNotes,
   onOpenUsage,
   railTrailing,
-  onOpenGitplace,
+  onOpenPulls,
   onOpenSettings,
   onOpenSession,
   searchRequest,
@@ -858,7 +858,7 @@ export function BridgeSidebar({
           <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} badge={pendingBadge(memoryPending)} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
-          {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
+          {onOpenPulls && <ActionRow icon={GitPullRequest} label="Pulls" onClick={onOpenPulls} active={pullsActive} />}
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
@@ -966,12 +966,12 @@ export function BridgeSidebar({
         </div>
 
         {/* A rail of achromatic icon buttons pinned to the bottom: settings
-            (the account's settings entry) and Gitplace. */}
+            (the account's settings entry) and Pulls. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
           <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
-          {/* Source control is Gitplace. The usage dot follows it: a quick
+          {/* Source control is Pulls. The usage dot follows it: a quick
               look at account quota, with the Usage row for the full screen. */}
-          {onOpenGitplace && <RailBottomButton label="Gitplace" active={gitplaceActive} onClick={onOpenGitplace}>
+          {onOpenPulls && <RailBottomButton label="Pulls" active={pullsActive} onClick={onOpenPulls}>
             <GitPullRequest size={16} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>}
           {railTrailing}

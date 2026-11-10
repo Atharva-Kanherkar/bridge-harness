@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
+import { forgetSurfaces, rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { GitHubPane } from "./GitHubPane";
 import type { GithubPullRequestResult, GithubStatusResult } from "../protocol/generated/protocol";
 import type { GithubLinkView } from "../githubLinks";
@@ -74,6 +76,7 @@ const buttonByText = (text: string) => [...document.body.querySelectorAll("butto
 afterEach(async () => {
   await act(async () => { root?.unmount(); });
   host?.remove(); root = undefined; host = undefined; vi.restoreAllMocks();
+  forgetSurfaces();
   vi.useRealTimers();
 });
 
@@ -287,6 +290,120 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Safe GitHub surface");
     expect(host!.textContent).toContain("Refresh failed: temporary GitHub outage");
     expect(statusRead).toHaveBeenLastCalledWith("w", true);
+    expect(surfaceSnapshot("w")?.prs).toEqual([summary]);
+  });
+
+  it("shows the connecting skeleton while the status resolves, not a lone spinner", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockReturnValue(new Promise(() => undefined));
+    await mount();
+    const state = host!.querySelector('[role="status"][aria-label="Connecting to GitHub"]');
+    expect(state).not.toBeNull();
+    expect(state!.textContent).toContain("Resolving the CLI and repository.");
+    // Structure, not a blank surface: placeholder rows ride beneath the notice.
+    expect(state!.querySelectorAll("[data-skeleton-row]").length).toBeGreaterThan(0);
+  });
+
+  it("includes remembered rows in the initial render before effects run", () => {
+    rememberSurface("w", { status, prs: [summary] });
+    const html = renderToStaticMarkup(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => {}} />);
+    expect(html).toContain("Safe GitHub surface");
+    expect(html).not.toContain('aria-label="Connecting to GitHub"');
+  });
+
+  it("paints remembered content immediately and revalidates in the background", async () => {
+    rememberSurface("w", { status, prs: [summary] });
+    // Neither read resolves: the first paint must come from the snapshot.
+    vi.spyOn(bridgeApi, "githubStatus").mockReturnValue(new Promise(() => undefined));
+    vi.spyOn(bridgeApi, "githubPullRequests").mockReturnValue(new Promise(() => undefined));
+    await mount();
+    expect(host!.textContent).toContain("Safe GitHub surface");
+    expect(host!.querySelector('[aria-label="Connecting to GitHub"]')).toBeNull();
+  });
+
+  it("applies revalidated lists over remembered content", async () => {
+    rememberSurface("w", { status, prs: [summary] });
+    const fresh = { ...summary, number: 2, title: "Freshly revalidated" };
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue(status);
+    vi.spyOn(bridgeApi, "githubPullRequests").mockResolvedValue({ pullRequests: [fresh] });
+    await mount();
+    expect(host!.textContent).toContain("Freshly revalidated");
+    expect(host!.textContent).not.toContain("Safe GitHub surface");
+  });
+
+  it("remembers real reads as each tab loads and reopens all tabs without fetching", async () => {
+    mockReads();
+    const issue = { number: 17, title: "Remembered issue", state: "open" as const, author: { login: "atharva" }, labels: [], createdAt: "now", updatedAt: "now", url: "https://example.test/issues/17" };
+    const overview = { nameWithOwner: "bridge/harness", description: "Remembered overview", visibility: "PUBLIC", defaultBranch: "main", primaryLanguage: "Rust", url: "https://example.test/repo", openIssues: 1, openPullRequests: 1, labels: [] };
+    let finishIssues!: (value: { issues: typeof issue[] }) => void;
+    vi.spyOn(bridgeApi, "githubIssues").mockReturnValue(new Promise(resolve => { finishIssues = resolve; }));
+    vi.spyOn(bridgeApi, "githubRepository").mockResolvedValue(overview);
+    await mount();
+    // One pending tab must not prevent the completed tabs from being cached.
+    expect(surfaceSnapshot("w")?.prs).toEqual([summary]);
+    expect(surfaceSnapshot("w")?.repositoryOverview).toEqual(overview);
+    await act(async () => { finishIssues({ issues: [issue] }); await flush(); });
+    await act(async () => { root?.unmount(); }); host?.remove();
+    vi.mocked(bridgeApi.githubStatus).mockReturnValue(new Promise(() => {}));
+    await mount();
+    expect(host!.textContent).toContain("Safe GitHub surface");
+    await click(host!.querySelector('button[aria-label="Issues"]') as HTMLButtonElement);
+    expect(host!.textContent).toContain("Remembered issue");
+    await click(host!.querySelector('button[aria-label="Repository"]') as HTMLButtonElement);
+    expect(host!.textContent).toContain("Remembered overview");
+  });
+
+  it("clears old repository data when revalidation resolves a different repository", async () => {
+    rememberSurface("w", { status, prs: [summary], issues: [], repositoryOverview: { url: "https://old.example.test" } as never });
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ ...status, repository: { host: "github.com", owner: "bridge", name: "other" } });
+    vi.spyOn(bridgeApi, "githubPullRequests").mockRejectedValue(new Error("new repository unavailable"));
+    vi.spyOn(bridgeApi, "githubIssues").mockReturnValue(new Promise(() => {}));
+    vi.spyOn(bridgeApi, "githubRepository").mockReturnValue(new Promise(() => {}));
+    await mount();
+    expect(host!.textContent).toContain("bridge/other");
+    expect(host!.textContent).not.toContain("Safe GitHub surface");
+    expect(surfaceSnapshot("w")?.prs).toBeUndefined();
+    expect(surfaceSnapshot("w")?.repositoryOverview).toBeUndefined();
+    expect(host!.querySelector('[aria-label="Open bridge/other on GitHub"]')?.getAttribute("href")).toBe("https://github.com/bridge/other");
+  });
+
+  it("forgets lists after sign-out even when the next sign-in list fails", async () => {
+    rememberSurface("w", { status, prs: [summary] });
+    const statusRead = vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "notAuthenticated", remediation: "gh auth login" }, repository: null });
+    await mount();
+    expect(surfaceSnapshot("w")?.prs).toBeUndefined();
+    await act(async () => { root?.unmount(); }); host?.remove();
+    statusRead.mockResolvedValue(status);
+    vi.spyOn(bridgeApi, "githubPullRequests").mockRejectedValue(new Error("permission denied"));
+    await mount();
+    expect(host!.textContent).not.toContain("Safe GitHub surface");
+  });
+
+  it("ignores list reads from a load superseded by a signed-out refresh", async () => {
+    const statusRead = vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue(status);
+    let finishPrs!: (value: { pullRequests: typeof summary[] }) => void;
+    vi.spyOn(bridgeApi, "githubPullRequests").mockReturnValue(new Promise(resolve => { finishPrs = resolve; }));
+    vi.spyOn(bridgeApi, "githubIssues").mockReturnValue(new Promise(() => {}));
+    vi.spyOn(bridgeApi, "githubRepository").mockReturnValue(new Promise(() => {}));
+    await mount();
+    const signedOut: GithubStatusResult = { availability: { status: "notAuthenticated", remediation: "gh auth login" }, repository: null };
+    statusRead.mockResolvedValue(signedOut);
+    await click(host!.querySelector('button[aria-label="Refresh GitHub"]') as HTMLButtonElement);
+    await act(async () => { finishPrs({ pullRequests: [summary] }); await flush(); });
+    expect(surfaceSnapshot("w")).toEqual({ status: signedOut });
+    expect(host!.textContent).toContain("Sign in to GitHub");
+    await act(async () => { root?.unmount(); }); host?.remove();
+    statusRead.mockReturnValue(new Promise(() => {}));
+    await mount();
+    expect(host!.textContent).toContain("Sign in to GitHub");
+    expect(host!.textContent).not.toContain("Safe GitHub surface");
+  });
+
+  it("does not leak another workspace's remembered content", async () => {
+    rememberSurface("other", { status, prs: [summary] });
+    vi.spyOn(bridgeApi, "githubStatus").mockReturnValue(new Promise(() => undefined));
+    await mount({ workspaceId: "w" });
+    expect(host!.textContent).not.toContain("Safe GitHub surface");
+    expect(host!.querySelector('[aria-label="Connecting to GitHub"]')).not.toBeNull();
   });
 
   it("renders explicit unavailable, sign-in, empty, and error states", async () => {
