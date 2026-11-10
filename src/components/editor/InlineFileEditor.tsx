@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./CodeEditor";
@@ -54,9 +55,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
     setBuffer(loaded);
   }, [buffer?.seed, path, workspaceId]);
 
-  if (!buffer) return <div className="flex items-center gap-2 px-3.5 py-4 text-[12px] text-muted-foreground">
-    <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> Opening {path}…
-  </div>;
+  if (!buffer) return <SkeletonRegion label={`Opening ${path}`} className="px-3.5 py-4"><SkeletonText lines={6} /></SkeletonRegion>;
 
   if (buffer.state === "error" && !buffer.baseSha) {
     return <p className="px-3.5 py-4 text-[12px] leading-relaxed text-destructive">{buffer.message}</p>;

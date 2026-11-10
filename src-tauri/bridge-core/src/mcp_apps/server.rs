@@ -262,7 +262,7 @@ mod tests {
         fn get(&self, path: &str) -> Result<Value, (u16, String)> {
             assert_eq!(path, "tools");
             match self.access {
-                Some("write") => Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set"]})),
+                Some("write") => Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set", "notes_draw"]})),
                 Some(_) => Ok(json!({"access": "read", "tools": ["notes_search", "notes_read"]})),
                 None => Err((0, "Bridge is not reachable".into())),
             }
@@ -355,7 +355,7 @@ mod tests {
     fn notes_tools_listed_only_with_url_and_token() {
         assert_eq!(tool_names(&mut VisualServer::default()), vec!["visualize"]);
         let (mut server, calls) = with_core(Some("write"));
-        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set"]);
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_draw", "notes_set"]);
         let created = server.handle(&request(2, "tools/call", json!({"name": "notes_create", "arguments": {"title": "Sync libraries", "content": "- yrs"}}))).unwrap();
         assert_eq!(created["result"]["isError"], false);
         assert_eq!(created["result"]["structuredContent"]["created"]["id"], "p1");

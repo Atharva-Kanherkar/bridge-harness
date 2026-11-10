@@ -1,0 +1,10 @@
+{"type":"excalidraw","version":2,"source":"bridge","elements":[
+{"type":"rectangle","id":"form","x":0,"y":0,"width":180,"height":80,"label":{"text":"Login form"},"roundness":{"type":3}},
+{"type":"diamond","id":"check","x":310,"y":0,"width":180,"height":80,"label":{"text":"Valid?"}},
+{"type":"rectangle","id":"home","x":620,"y":0,"width":180,"height":80,"label":{"text":"Home"},"roundness":{"type":3},"fillStyle":"solid","backgroundColor":"#b2f2bb"},
+{"type":"ellipse","id":"retry","x":620,"y":140,"width":180,"height":80,"label":{"text":"Show error"},"roundness":{"type":3},"strokeColor":"#e03131"},
+{"type":"text","id":"hint","x":0,"y":-80,"text":"rate limited after 5 tries","fontSize":20},
+{"type":"arrow","id":"e1","x":186,"y":40,"width":118,"height":0,"points":[[0,0],[118,0]],"start":{"id":"form"},"end":{"id":"check"},"endArrowhead":"arrow","label":{"text":"submit"}},
+{"type":"arrow","id":"e2","x":496,"y":40,"width":118,"height":0,"points":[[0,0],[118,0]],"start":{"id":"check"},"end":{"id":"home"},"endArrowhead":"arrow","label":{"text":"yes"}},
+{"type":"arrow","id":"e3","x":494,"y":82,"width":122,"height":55,"points":[[0,0],[122,55]],"start":{"id":"check"},"end":{"id":"retry"},"endArrowhead":"arrow","label":{"text":"no"},"strokeStyle":"dashed"}
+],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}

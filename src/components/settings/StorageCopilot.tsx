@@ -1,11 +1,11 @@
-// The Storage page's copilot rail: one standing chat docked beside the
-// listing rather than a new chat per question. It is a direct chat created
-// with the `storage` purpose, so its brief is a system prompt of its own
-// (`storage_agent.rs`), its history survives between visits, and it stays
-// reachable from the sidebar like any other chat.
+// The Storage page's copilot rail: a chat docked beside the listing. Each
+// storage chat is a direct chat created with the `storage` purpose, so its
+// brief is a system prompt of its own (`storage_agent.rs`). A visit opens on a
+// blank rail; earlier storage chats are listed under Recent and stay reachable
+// from the sidebar like any other chat.
 
 import { useState, type ReactNode } from "react";
-import { ArrowUp, Boxes, Container, FolderSearch, HardDrive, ListChecks, Sparkles } from "lucide-react";
+import { ArrowUp, Boxes, ChevronRight, Container, FolderSearch, HardDrive, ListChecks, MessageSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface StorageQuickAsk { label: string; prompt: string; icon: typeof Sparkles; series: string }
@@ -26,22 +26,24 @@ export interface StorageCopilotHost {
   ask: (prompt: string) => void;
   /** The rail. `brief` folds what the page measured onto a message. */
   render: (brief: (question: string) => string, selectedCount: number) => ReactNode;
+  /** The page opened: the host may clear the rail back to a blank chat. */
+  onVisit?: () => void;
 }
 
-export function StorageCopilot({ chat, selectedCount, starting = false, onAsk }: {
-  /** The docked chat, once the storage chat exists. */
+/** An earlier storage chat the rail can reopen. */
+export interface StorageRecentChat { id: string; title: string; at: string }
+
+export function StorageCopilot({ chat, selectedCount, starting = false, recent = [], onOpenRecent, onAsk }: {
+  /** The docked chat, once a storage chat is open. */
   chat?: ReactNode;
   selectedCount: number;
   starting?: boolean;
+  recent?: readonly StorageRecentChat[];
+  onOpenRecent?: (id: string) => void;
   onAsk: (question: string) => void;
 }) {
-  if (chat) {
-    return <div className={cn(RAIL, "gap-2")}>
-      <QuickAsks compact selectedCount={selectedCount} disabled={starting} onAsk={onAsk} />
-      <div className="min-h-0 flex-1">{chat}</div>
-    </div>;
-  }
-  return <StorageCopilotIntro selectedCount={selectedCount} starting={starting} onAsk={onAsk} />;
+  if (chat) return <div className={RAIL}>{chat}</div>;
+  return <StorageCopilotIntro selectedCount={selectedCount} starting={starting} recent={recent} onOpenRecent={onOpenRecent} onAsk={onAsk} />;
 }
 
 /** The rail fills the window beside the page (title bar, sticky offset, and
@@ -50,35 +52,35 @@ const RAIL = "flex h-[38rem] flex-col lg:sticky lg:top-6 lg:h-[calc(100dvh-6rem)
 
 const selectedAsk = (count: number) => `Tell me what the ${count} item${count === 1 ? "" : "s"} I selected are, and whether I can delete them.`;
 
-/** One-click requests. Compact above a live chat (a scrolling chip row); a
- *  grid of tiles before the chat exists. */
-function QuickAsks({ compact = false, selectedCount, disabled, onAsk }: { compact?: boolean; selectedCount: number; disabled: boolean; onAsk: (prompt: string) => void }) {
+const when = (at: string) => {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "";
+  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000);
+  if (days < 1) return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (days < 7) return date.toLocaleDateString([], { weekday: "short" });
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+
+/** One-click requests, as a grouped list: an icon, the request, a chevron. */
+function QuickAsks({ selectedCount, disabled, onAsk }: { selectedCount: number; disabled: boolean; onAsk: (prompt: string) => void }) {
   const asks = selectedCount > 0
     ? [{ label: `Explain the ${selectedCount} selected`, prompt: selectedAsk(selectedCount), icon: ListChecks, series: "bg-ctx-6" }, ...STORAGE_QUICK_ASKS]
     : STORAGE_QUICK_ASKS;
-  if (compact) {
-    return <ul aria-label="Quick asks" className="flex shrink-0 gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none]">
-      {asks.map(ask => <li key={ask.label} className="shrink-0">
-        <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
-          <span aria-hidden="true" className={cn("size-1.5 rounded-full", ask.series)} />{ask.label}
-        </button>
-      </li>)}
-    </ul>;
-  }
-  return <ul aria-label="Quick asks" className="grid grid-cols-2 gap-2 [&>li:last-child:nth-child(odd)]:col-span-2">
+  return <ul aria-label="Quick asks" className="divide-y divide-border/60 overflow-hidden rounded-xl bg-muted/40 ring-1 ring-inset ring-border/60">
     {asks.map(ask => {
       const Icon = ask.icon;
       return <li key={ask.label}>
-        <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="flex h-full w-full flex-col items-start gap-2 rounded-xl border border-border bg-card p-3 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
-          <span aria-hidden="true" className={cn("grid size-6 place-items-center rounded-md text-background", ask.series)}><Icon size={13} /></span>
-          {ask.label}
+        <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="group flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent disabled:opacity-40">
+          <span aria-hidden="true" className={cn("grid size-6 shrink-0 place-items-center rounded-md text-background", ask.series)}><Icon size={13} /></span>
+          <span className="min-w-0 flex-1 truncate">{ask.label}</span>
+          <ChevronRight size={13} aria-hidden="true" className="shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5" />
         </button>
       </li>;
     })}
   </ul>;
 }
 
-function StorageCopilotIntro({ selectedCount, starting, onAsk }: { selectedCount: number; starting: boolean; onAsk: (question: string) => void }) {
+function StorageCopilotIntro({ selectedCount, starting, recent, onOpenRecent, onAsk }: { selectedCount: number; starting: boolean; recent: readonly StorageRecentChat[]; onOpenRecent?: (id: string) => void; onAsk: (question: string) => void }) {
   const [question, setQuestion] = useState("");
   const submit = (text: string) => {
     if (!text.trim() || starting) return;
@@ -87,28 +89,41 @@ function StorageCopilotIntro({ selectedCount, starting, onAsk }: { selectedCount
   };
   // Shaped like the chat it becomes: what it can do on top, the starting
   // points in the middle, the composer pinned to the bottom.
-  return <aside aria-label="Ask Bridge" className={cn(RAIL, "overflow-hidden rounded-xl border border-border bg-background")}>
-    <header className="shrink-0 border-b border-border px-4 py-3">
-      <h3 className="text-ui font-medium text-foreground">Storage agent</h3>
-      <p className="mt-1 text-caption leading-relaxed text-muted-foreground">
-        Sees what this page measured, digs deeper with read-only commands, and proposes cleanups as plans you tick and approve. Nothing moves without you.
-      </p>
-    </header>
-    <div className="min-h-0 flex-1 overflow-y-auto p-3">
-      <p className="mb-2 px-1 text-caption text-muted-foreground">Start with</p>
+  return <aside aria-label="Ask Bridge" className={cn(RAIL, "overflow-hidden rounded-2xl border border-border bg-card shadow-sm")}>
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-6">
+      <div className="flex flex-col items-center text-center">
+        <span aria-hidden="true" className="grid size-10 place-items-center rounded-xl bg-gradient-to-b from-foreground/90 to-foreground/70 text-background shadow-sm"><HardDrive size={18} /></span>
+        <h3 className="mt-3 font-display text-ui font-semibold text-foreground">Storage assistant</h3>
+        <p className="mt-1 max-w-[18rem] text-caption leading-relaxed text-muted-foreground">
+          Sees what this page measured, digs deeper with read-only commands, and proposes cleanups you approve. Nothing moves without you.
+        </p>
+      </div>
+      <p className="mb-1.5 mt-6 px-1 text-[11px] font-medium text-muted-foreground">Suggestions</p>
       <QuickAsks selectedCount={selectedCount} disabled={starting} onAsk={submit} />
+      {recent.length > 0 && onOpenRecent && <>
+        <p className="mb-1.5 mt-5 px-1 text-[11px] font-medium text-muted-foreground">Recent</p>
+        <ul aria-label="Recent storage chats" className="divide-y divide-border/60 overflow-hidden rounded-xl bg-muted/40 ring-1 ring-inset ring-border/60">
+          {recent.map(item => <li key={item.id}>
+            <button type="button" onClick={() => onOpenRecent(item.id)} className="flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-caption outline-none transition-colors hover:bg-accent focus-visible:bg-accent">
+              <MessageSquare size={13} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-foreground">{item.title}</span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">{when(item.at)}</span>
+            </button>
+          </li>)}
+        </ul>
+      </>}
     </div>
-    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-card p-1.5 focus-within:ring-2 focus-within:ring-ring">
+    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-background p-1.5 transition-shadow focus-within:border-ring/60 focus-within:ring-3 focus-within:ring-ring/20">
       <textarea
         aria-label="Ask about your storage"
         value={question}
-        rows={3}
-        placeholder="What's using my space?"
+        rows={2}
+        placeholder={starting ? "Starting…" : "Ask about your storage…"}
         onChange={event => setQuestion(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
         className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"
       />
-      <button type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting} className="grid size-7 shrink-0 place-items-center rounded-md bg-foreground text-background transition-opacity hover:opacity-90 disabled:opacity-30">
+      <button type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting} className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-90 disabled:opacity-30">
         <ArrowUp size={14} aria-hidden="true" />
       </button>
     </form>

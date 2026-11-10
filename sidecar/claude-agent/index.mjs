@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { buildOptions, catalogOptions } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
 import { probeUsage, readContextUsage } from "./usage.mjs";
+import { isTrustedFolder } from "./trust.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -108,7 +109,9 @@ function userMessage(content) {
   };
 }
 
-const options = config.catalog === true ? catalogOptions() : buildOptions(config);
+const options = config.catalog === true
+  ? catalogOptions()
+  : buildOptions({ ...config, projectTrusted: isTrustedFolder(config.cwd) });
 
 const run = query({ prompt: input, options });
 

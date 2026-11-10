@@ -10,6 +10,13 @@ import { BLOCK_CHOICES } from "./slash";
 
 // No core assets in jsdom: images draw from a fake url, which still exercises
 // the caption and the resize handles.
+// Excalidraw itself needs a real canvas; the block around it is what is tested here.
+vi.mock("./drawingCanvas", () => ({
+  DrawingPreview: ({ scene }: { scene: { elements: unknown[] } }) => <p data-preview="">{scene.elements.length} elements</p>,
+  DrawingEditor: ({ body, onSave, onClose }: { body: string; onSave: (body: string) => void; onClose: () => void }) => <div data-drawing-editor="">
+    <button type="button" onClick={() => { onSave(body.replace('"elements":[\n', '"elements":[\n{"id":"n","type":"rectangle","x":0,"y":0,"width":10,"height":10,"version":1},\n')); onClose(); }}>Save drawing</button>
+  </div>,
+}));
 vi.mock("./assets", async actual => ({ ...(await actual<typeof import("./assets")>()), assetUrl: async (source: string) => `blob:asset${source}` }));
 
 let host: HTMLDivElement;
@@ -546,6 +553,55 @@ describe("rich fences", () => {
     expect(figure()).toBeNull();
     expect(source().hidden).toBe(false);
     expect(source().textContent).toBe("const x = 1;");
+  });
+
+  describe("drawings", () => {
+    const SCENE = '{"type":"excalidraw","version":2,"source":"bridge","elements":[\n{"id":"a","type":"rectangle","x":0,"y":0,"width":10,"height":10,"version":3}\n],"appState":{},"files":{}}';
+    const PAGE = `Before\n\n\`\`\`excalidraw\n${SCENE}\n\`\`\`\n\nAfter\n`;
+    const drawingBlock = () => host.querySelector("[data-drawing]");
+    const pressDrawing = async () => {
+      await act(async () => { host.querySelector("[data-drawing] button")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+      await settle();
+    };
+
+    it("draws an excalidraw fence in place, hides its JSON, and round-trips it", async () => {
+      const { onChange } = await mount(PAGE);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(drawingBlock()?.textContent).toContain("1 elements");
+      expect(source().hidden).toBe(true);
+      await typeAfter("Before", "!");
+      await commit();
+      expect(onChange).toHaveBeenLastCalledWith(PAGE.replace("Before", "Before!"));
+    });
+
+    it("opens the editor on a click and saves the scene into the fence", async () => {
+      const { onChange } = await mount(PAGE);
+      await pressDrawing();
+      expect(host.ownerDocument.querySelector("[data-drawing-editor]")).not.toBeNull();
+      await act(async () => { [...host.ownerDocument.querySelectorAll("button")].find(node => node.textContent === "Save drawing")!.click(); });
+      await commit();
+      const saved = onChange.mock.calls.at(-1)![0] as string;
+      expect(saved.startsWith("Before\n\n```excalidraw\n{")).toBe(true);
+      expect(saved).toContain('{"id":"n","type":"rectangle"');
+      expect(saved).toContain('{"id":"a","type":"rectangle"');
+      expect(saved.endsWith("```\n\nAfter\n")).toBe(true);
+      expect(host.ownerDocument.querySelector("[data-drawing-editor]")).toBeNull();
+    });
+
+    it("shows a fence that is not a scene as code", async () => {
+      await mount("```excalidraw\nnot json\n```\n");
+      expect(drawingBlock()).toBeNull();
+      expect(source().hidden).toBe(false);
+    });
+
+    it("the slash menu inserts an empty drawing", async () => {
+      const { onChange } = await mount("first\n");
+      await act(async () => { editor().chain().focus("end").insertContent({ type: "paragraph" }).run(); });
+      await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "drawing")!.run(editor(), {} as never); });
+      await commit();
+      expect(onChange).toHaveBeenLastCalledWith('first\n\n```excalidraw\n{"type":"excalidraw","version":2,"source":"bridge","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}\n```\n');
+      expect(drawingBlock()?.textContent).toContain("Empty drawing. Click to draw.");
+    });
   });
 
   it("the slash menu inserts a mermaid block", async () => {

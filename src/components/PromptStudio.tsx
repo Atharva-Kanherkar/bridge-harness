@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { Download as DownloadSimple, Plus } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { CompiledPromptPreviewResult, PromptSectionStatePayload, PromptSectionView, PromptStackView, PromptTargetChoice } from "../types";
@@ -420,7 +421,7 @@ export function PromptStudio() {
       {isEmptyTarget
         ? <SettingsRow label="Direct sessions run on the provider's own system prompt. There is nothing here for Bridge to override." />
         : !stack
-          ? <SettingsRow label="Loading…" />
+          ? <SkeletonRows label="Loading prompt sections" rows={3} framed={false} />
           : stack.sections.map(item => {
               const key = docKeyFor(target, item.id);
               return <SettingsRow
@@ -475,7 +476,7 @@ function CompiledPreview({ preview, previewError, prefixChanged }: {
   return <SettingsGroup label="Compiled preview" note="What this target actually sends">
     {previewError && <SettingsRow label={<span role="alert" className="text-destructive">{previewError}</span>} />}
     {!preview
-      ? <SettingsRow label="Loading preview…" />
+      ? <SkeletonRows label="Loading preview" rows={2} framed={false} />
       : <>
           <SettingsRow label="Exact Bridge bytes" description={`${preview.prefixBytes} bytes · ${preview.prefixTokenEstimate} tokens est`} />
           {prefixChanged && <SettingsRow

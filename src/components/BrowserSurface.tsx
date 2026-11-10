@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Camera, ChevronRight, Chrome, ExternalLink, Eye, Hand, LoaderCircle, MousePointer2, Plug, RefreshCw, ScrollText, ShieldAlert, TerminalSquare, Unplug } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { AlertTriangle, Camera, ChevronRight, Chrome, ExternalLink, Eye, Hand, MousePointer2, Plug, RefreshCw, ScrollText, ShieldAlert, TerminalSquare, Unplug } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
 import type { BrowserBridgeSnapshot, BrowserElement } from "../types";
@@ -112,7 +113,7 @@ export function BrowserSurface({ visible = true, onClose, onError, onSupervision
       {onClose && <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Browser Surface"><ChevronRight size={14} /></Button>}
     </header>
 
-    {!snapshot ? <div className="grid flex-1 place-items-center text-muted-foreground"><LoaderCircle className="animate-spin" size={18} /></div> : !snapshot.nativeHostInstalled ? <SetupCard snapshot={snapshot} busy={busy} onInstall={() => void run(bridgeApi.installBrowserNativeHost)} /> : !snapshot.transportConnected ? <ConnectCard snapshot={snapshot} /> : !snapshot.lease ? <TabPicker snapshot={snapshot} busy={busy} onRefresh={() => void action("list_tabs")} onAttach={tabId => void action("attach", { tabId })} /> : <>
+    {!snapshot ? <div className="min-h-0 flex-1 overflow-hidden p-4"><SkeletonRows label="Loading browser" rows={3} lead="icon" /></div> : !snapshot.nativeHostInstalled ? <SetupCard snapshot={snapshot} busy={busy} onInstall={() => void run(bridgeApi.installBrowserNativeHost)} /> : !snapshot.transportConnected ? <ConnectCard snapshot={snapshot} /> : !snapshot.lease ? <TabPicker snapshot={snapshot} busy={busy} onRefresh={() => void action("list_tabs")} onAttach={tabId => void action("attach", { tabId })} /> : <>
       <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/20 px-2 py-1.5">
         {(["page", "elements", "timeline", "debug", "metrics"] as Pane[]).map(value => <button key={value} type="button" onClick={() => setPane(value)} aria-pressed={pane === value} className={`min-h-7 shrink-0 rounded-md px-2.5 py-1 text-[12px] capitalize ${pane === value ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}>{value}</button>)}
         <div className="ml-auto flex shrink-0 items-center gap-1">

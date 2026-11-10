@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { MenuBarSettings, ProviderUsageOverviews } from "../../protocol/generated/protocol";
@@ -98,7 +99,7 @@ export function MenuBarSettingsPage() {
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {connection && <p role="status" className="text-xs text-muted-foreground">{connection}</p>}
     {saved && <p role="status" className="text-xs text-muted-foreground">Menu Bar settings saved.</p>}
-    {!settings && !error && <p role="status" className="text-sm text-muted-foreground">Loading Menu Bar settings…</p>}
+    {!settings && !error && <SkeletonRows label="Loading Menu Bar settings" rows={4} trailing />}
     {settings && <>
       <SettingsGroup label="Display">
         <SettingsRow label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."

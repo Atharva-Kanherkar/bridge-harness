@@ -1,4 +1,5 @@
 import { ProviderLoginPane } from "./ProviderLoginPane";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import type { UsageProvider } from "../usage";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridgeApi } from "../api";
@@ -243,7 +244,7 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
     </SettingsGroup>;
   }
   if (!state.agents) {
-    return <SettingsGroup label="Installed"><SettingsRow label="Loading agents…" /></SettingsGroup>;
+    return <SettingsGroup label="Installed"><SkeletonRows label="Loading agents" rows={3} lead="icon" trailing framed={false} /></SettingsGroup>;
   }
 
   return <>

@@ -300,7 +300,7 @@ describe("GitHubPane", () => {
     expect(state).not.toBeNull();
     expect(state!.textContent).toContain("Resolving the CLI and repository.");
     // Structure, not a blank surface: placeholder rows ride beneath the notice.
-    expect(state!.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+    expect(state!.querySelectorAll("[data-skeleton-row]").length).toBeGreaterThan(0);
   });
 
   it("includes remembered rows in the initial render before effects run", () => {

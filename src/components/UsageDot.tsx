@@ -5,6 +5,7 @@
 // Quota semantics (real zero, stale, unavailable) come from the backend; this
 // file draws them and never infers a value.
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { createPortal } from "react-dom";
 import { BarChart3, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -319,7 +320,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
           {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] leading-relaxed text-destructive">{error}</p>}
-          {overviews == null && !error && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading usage</div>}
+          {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} rowClassName="px-0 py-3" />}
           {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>
