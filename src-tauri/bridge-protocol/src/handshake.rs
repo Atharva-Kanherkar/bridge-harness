@@ -110,9 +110,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.29 adds `attention/post` and the `posted` attention kind.** A 1.28
 /// client decodes `posted` as `other` and shows nothing for it, so it still
 /// pairs; a new client needs 1.29 for the method.
+/// **1.30 adds `sessions/wait`.** A new client must not pair with an older
+/// daemon, whose waits would fail with `method_not_found`; a 1.29 client
+/// still pairs with a 1.30 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 29,
+    minor: 30,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -393,6 +396,15 @@ mod tests {
         let post = ProtocolVersion { major: 1, minor: 29 };
         assert!(!before.accepts(post));
         assert!(post.accepts(before), "a 1.28 client still pairs with a 1.29 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn wait_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 29 };
+        let wait = ProtocolVersion { major: 1, minor: 30 };
+        assert!(!before.accepts(wait));
+        assert!(wait.accepts(before), "a 1.29 client still pairs with a 1.30 daemon");
         assert!(PROTOCOL_VERSION.accepts(before));
     }
 

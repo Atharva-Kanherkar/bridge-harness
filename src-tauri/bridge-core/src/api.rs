@@ -4338,6 +4338,39 @@ fn wire_attention_kind(kind: crate::attention::AttentionKind) -> wire::Attention
     }
 }
 
+/// Wait on a chat's ledger state. Blocks the calling thread, never a lock.
+pub fn wait_session(core: &Arc<BridgeCore>, params: &wire::WaitParams) -> Result<wire::WaitResult, BridgeError> {
+    use crate::attention_wait::WaitState;
+    let until = params
+        .until
+        .iter()
+        .map(|state| match state {
+            wire::WaitState::Finished => Ok(WaitState::Finished),
+            wire::WaitState::Failed => Ok(WaitState::Failed),
+            wire::WaitState::NeedsYou => Ok(WaitState::NeedsYou),
+            wire::WaitState::Idle => Ok(WaitState::Idle),
+            wire::WaitState::Other => Err(BridgeError::Invalid("unknown state in until".into())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let outcome = crate::attention_wait::wait(
+        core,
+        &params.session_id,
+        &until,
+        params.timeout_ms.map(std::time::Duration::from_millis),
+        params.after_sequence,
+    )?;
+    Ok(wire::WaitResult {
+        state: match outcome.state {
+            WaitState::Finished => wire::WaitState::Finished,
+            WaitState::Failed => wire::WaitState::Failed,
+            WaitState::NeedsYou => wire::WaitState::NeedsYou,
+            WaitState::Idle => wire::WaitState::Idle,
+        },
+        matched: outcome.matched,
+        item: outcome.item.map(attention_item),
+    })
+}
+
 fn attention_item(row: crate::attention::AttentionRow) -> wire::AttentionItem {
     use crate::attention::Severity;
     wire::AttentionItem {

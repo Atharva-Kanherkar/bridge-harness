@@ -443,6 +443,11 @@ pub fn dispatch(
             reply(api::mark_attention_seen(core, &p))
         }
         MethodName::UnreadSummary => reply(api::unread_summary(core)),
+        MethodName::Wait => {
+            // Long-lived: it holds this connection, never the database.
+            let p: wire::WaitParams = decode(method, params)?;
+            reply(api::wait_session(core, &p))
+        }
         MethodName::Post => {
             let p: wire::PostParams = decode(method, params)?;
             reply(api::post_attention(core, &p))
@@ -1390,6 +1395,37 @@ mod tests {
         assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
         let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
             .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn a_wait_returns_when_another_thread_ends_the_turn() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title,active_turn_id) VALUES('s','claude','Chat','working','direct','Fix login','t1')", [])
+            .unwrap();
+        let writer = {
+            let core = core.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let db = core.db.lock().unwrap();
+                db.execute("UPDATE sessions SET status='ready', active_turn_id=NULL WHERE id='s'", []).unwrap();
+                let mut ended = bridge_core::agent::NormalizedEvent::new("turn.completed");
+                ended.status = Some("completed".into());
+                bridge_core::store::session_event(&db, "s", &ended, &json!({})).unwrap();
+            })
+        };
+        let result = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": ["finished", "needsYou"], "timeoutMs": 5000}))).unwrap();
+        writer.join().unwrap();
+        assert_eq!(result["state"], json!("finished"));
+        assert_eq!(result["matched"], json!(true));
+        assert_eq!(result["item"]["kind"], json!("finished"));
+        let error = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": []}))).expect_err("an empty until is refused");
+        assert_eq!(error.code, ErrorCode::Invalid.code());
+        let error = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": ["idle"], "turnId": "t1"}))).expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

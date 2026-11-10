@@ -650,6 +650,64 @@ pub struct AttentionPage {
     pub latest_sequence: i64,
 }
 
+const ROW_COLUMNS: &str = "sequence,id,kind,severity,session_id,approval_event_id,title,body,created_at,resolved_at,seen_at";
+
+/// One row from a `SELECT ROW_COLUMNS`, or `None` for a kind or severity this
+/// build does not know (written by a newer build sharing the directory).
+fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<AttentionRow>> {
+    let kind: String = row.get(2)?;
+    let severity: String = row.get(3)?;
+    let (Some(kind), Some(severity)) = (AttentionKind::parse(&kind), Severity::parse(&severity)) else {
+        return Ok(None);
+    };
+    Ok(Some(AttentionRow {
+        sequence: row.get(0)?,
+        id: row.get(1)?,
+        kind,
+        severity,
+        session_id: row.get(4)?,
+        approval_event_id: row.get(5)?,
+        title: row.get(6)?,
+        body: row.get(7)?,
+        created_at: row.get(8)?,
+        resolved_at: row.get(9)?,
+        seen_at: row.get(10)?,
+    }))
+}
+
+/// The chat's request still waiting on the person, if its newest row is one.
+pub fn open_request(db: &Connection, session_id: &str) -> Result<Option<AttentionRow>, BridgeError> {
+    let row = db
+        .query_row(
+            &format!(
+                "SELECT {ROW_COLUMNS} FROM attention_events
+                 WHERE session_id=?1 AND audience=?2 ORDER BY sequence DESC LIMIT 1"
+            ),
+            params![session_id, HUMAN],
+            read_row,
+        )
+        .optional()?
+        .flatten();
+    Ok(row.filter(|row| row.kind == AttentionKind::NeedsYou && row.resolved_at.is_none()))
+}
+
+/// The chat's first finished or failed turn after `after`, superseded or not:
+/// a later row hiding it from clients does not undo that the turn ended.
+pub fn first_turn_end_after(db: &Connection, session_id: &str, after: i64) -> Result<Option<AttentionRow>, BridgeError> {
+    Ok(db
+        .query_row(
+            &format!(
+                "SELECT {ROW_COLUMNS} FROM attention_events
+                 WHERE session_id=?1 AND audience=?2 AND sequence>?3 AND kind IN ('finished','failed')
+                 ORDER BY sequence ASC LIMIT 1"
+            ),
+            params![session_id, HUMAN, after],
+            read_row,
+        )
+        .optional()?
+        .flatten())
+}
+
 /// The person's rows after `after_sequence`, oldest first, without superseded
 /// ones. `latest_sequence` lets a fresh client start its cursor without paging.
 pub fn list(
@@ -659,47 +717,19 @@ pub fn list(
     unseen_only: bool,
 ) -> Result<AttentionPage, BridgeError> {
     let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
-    let mut statement = db.prepare(
-        "SELECT sequence,id,kind,severity,session_id,approval_event_id,title,body,created_at,resolved_at,seen_at
-         FROM attention_events
+    let mut statement = db.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM attention_events
          WHERE audience=?1 AND sequence>?2 AND superseded_by IS NULL AND (?3=0 OR seen_at IS NULL)
-         ORDER BY sequence ASC LIMIT ?4",
-    )?;
-    let rows = statement.query_map(
-        params![HUMAN, after_sequence.unwrap_or(0), unseen_only, limit],
-        |row| {
-            let kind: String = row.get(2)?;
-            let severity: String = row.get(3)?;
-            Ok((
-                kind,
-                severity,
-                AttentionRow {
-                    sequence: row.get(0)?,
-                    id: row.get(1)?,
-                    kind: AttentionKind::Finished,
-                    severity: Severity::Informational,
-                    session_id: row.get(4)?,
-                    approval_event_id: row.get(5)?,
-                    title: row.get(6)?,
-                    body: row.get(7)?,
-                    created_at: row.get(8)?,
-                    resolved_at: row.get(9)?,
-                    seen_at: row.get(10)?,
-                },
-            ))
-        },
-    )?;
+         ORDER BY sequence ASC LIMIT ?4"
+    ))?;
+    let rows = statement.query_map(params![HUMAN, after_sequence.unwrap_or(0), unseen_only, limit], read_row)?;
     let mut items = Vec::new();
     for row in rows {
-        let (kind, severity, mut item) = row?;
         // A kind this build does not know came from a newer one sharing the
         // data directory; skipping it beats failing the whole read.
-        let (Some(kind), Some(severity)) = (AttentionKind::parse(&kind), Severity::parse(&severity)) else {
-            continue;
-        };
-        item.kind = kind;
-        item.severity = severity;
-        items.push(item);
+        if let Some(item) = row? {
+            items.push(item);
+        }
     }
     Ok(AttentionPage { items, latest_sequence: latest_sequence(db)? })
 }
