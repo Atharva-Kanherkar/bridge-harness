@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod assets;
 pub mod database;
+pub mod drawing;
 pub mod doc;
 #[cfg(test)]
 mod evals;
