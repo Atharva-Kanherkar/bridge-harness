@@ -2961,13 +2961,14 @@ function AppContent() {
   const stopWorker = useCallback(async (childSessionId: string) => {
     setState(await bridgeApi.stopSession(childSessionId));
   }, []);
-  // Stop ends everything this chat has running: the orchestrator's turn if it
-  // has one, and every live agent under it. Sending is untouched, so a message
-  // typed while agents run still goes only to the orchestrator.
+  const stoppableAgentIds = useMemo(() => chatAgents.filter(id =>
+    state.sessions.find(item => item.id === id)?.kind !== "harness_subagent"), [chatAgents, state.sessions]);
+  // Stop cancels this chat's turn and its Bridge workers. Provider-owned
+  // children use the Stop on their own row.
   const stopChat = useCallback(() => {
     if (turnActive) requestStop();
-    for (const id of chatAgents) void stopWorker(id).catch(value => setError(errorMessage(value)));
-  }, [turnActive, requestStop, chatAgents, stopWorker]);
+    for (const id of stoppableAgentIds) void stopWorker(id).catch(value => setError(errorMessage(value)));
+  }, [turnActive, requestStop, stoppableAgentIds, stopWorker]);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -3769,7 +3770,7 @@ function AppContent() {
                     activeAction={activeAction}
                     activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
                     stopping={stopping}
-                    agentsWorking={chatAgents.length > 0}
+                    agentsWorking={stoppableAgentIds.length > 0}
                     onStop={session ? stopChat : undefined}
                     voiceAvailable={voice.available}
                     voiceState={voice.state}

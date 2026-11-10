@@ -647,6 +647,19 @@ describe("the dock in the session view", () => {
     } finally { spy.mockRestore(); }
   });
 
+  it("the parent composer Stop preserves harness subagents", async () => {
+    const real=await bridgeApi.state();
+    const state=vi.spyOn(bridgeApi,"state").mockResolvedValue({ ...real,sessions:real.sessions.map(item=>item.id==="session-1w"?{...item,kind:"harness_subagent"}:item) });
+    const stop=vi.spyOn(bridgeApi,"stopSession").mockResolvedValue(real);
+    const interrupt=vi.spyOn(bridgeApi,"interruptTurn").mockResolvedValue();
+    try {
+      await mountApp();await openWorkspaceSession("4 files");
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]')!);
+      expect(interrupt).toHaveBeenCalledWith("session-1");
+      expect(stop).not.toHaveBeenCalledWith("session-1w");
+    } finally {state.mockRestore();stop.mockRestore();interrupt.mockRestore();}
+  });
+
   it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
     expect(container.querySelector("header")).not.toBeNull();
