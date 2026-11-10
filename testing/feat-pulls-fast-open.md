@@ -69,7 +69,8 @@ Faster loads:
 Timing eval, run on this machine against the real checkout and real `gh`:
 
 ```bash
-cargo test -p bridge-core --test github_load_eval -- --ignored --nocapture
+BRIDGE_GITHUB_EVAL_WORKSPACE=/path/to/checkout \
+  cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core --lib eval_surface_open_latency -- --ignored --nocapture
 ```
 
 - Reports cold and warm latency of status + PR-list loads (backend view).
@@ -77,3 +78,20 @@ cargo test -p bridge-core --test github_load_eval -- --ignored --nocapture
   baseline numbers quoted in the PR description.
 - Frontend reopen latency is demonstrated by the SWR unit test (cached mount paints
   synchronously before any fetch resolves).
+
+## Review regression contract
+
+- Successful PR, issue and overview reads must be remembered independently as
+  each read completes. A real first mount followed by unmount and reopen must
+  paint all three tabs while revalidation is pending.
+- Failed refreshes retain the last successful data for the same repository.
+- A changed repository identity or unavailable status clears remembered lists
+  and overview. Data from the old repository must not appear under a new slug.
+- Confirmed writes always resolve the workspace's current repository, even if
+  an earlier read populated the resolution cache before a remote change.
+- Run the focused frontend and GitHub backend suites, then `bun run build` and
+  `bun run test`. Report unrelated baseline failures explicitly.
+
+Review smoke: mount Pulls, let the lists load, leave and reopen with reads held
+pending; cached rows remain visible. Change the resolved repository and fail
+its list reads; old rows and overview links must be absent.
