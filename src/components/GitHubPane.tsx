@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
+import { rememberSurface, surfaceSnapshot, type GithubSurfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "./Markdown";
@@ -449,6 +450,11 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       if (!alive.current) return;
       setStatus(next);
       setSurfaceError(undefined);
+      // A successful status is the moment the remembered snapshot flips to
+      // this read's view of the workspace. List reads merge into it as they
+      // land, so a failed list never erases the last good one.
+      const snapshot: GithubSurfaceSnapshot = { ...surfaceSnapshot(workspaceId), status: next };
+      rememberSurface(workspaceId, snapshot);
       // With no repository resolved, every read below fails with the same
       // resolution error. Asking anyway only turns a setup step into three
       // error notices, so the pane offers Connect instead.
@@ -472,14 +478,26 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           }
         };
         await Promise.all([
-          settle("pulls", bridgeApi.githubPullRequests(workspaceId), value => setPrs(value.pullRequests)),
-          settle("issues", bridgeApi.githubIssues(workspaceId), value => setIssues(value.issues)),
-          settle("repository", bridgeApi.githubRepository(workspaceId), setRepositoryOverview),
+          settle("pulls", bridgeApi.githubPullRequests(workspaceId), value => {
+            setPrs(value.pullRequests);
+            snapshot.prs = value.pullRequests;
+          }),
+          settle("issues", bridgeApi.githubIssues(workspaceId), value => {
+            setIssues(value.issues);
+            snapshot.issues = value.issues;
+          }),
+          settle("repository", bridgeApi.githubRepository(workspaceId), value => {
+            setRepositoryOverview(value);
+            snapshot.repositoryOverview = value;
+          }),
         ]);
       } else {
         setPrs(undefined);
         setIssues(undefined);
         setRepositoryOverview(undefined);
+        snapshot.prs = undefined;
+        snapshot.issues = undefined;
+        snapshot.repositoryOverview = undefined;
         setTabErrors({});
       }
     } catch (error) {
@@ -552,7 +570,12 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [workspaceId]);
 
   useEffect(() => {
-    setStatus(undefined); setPrs(undefined); setIssues(undefined); setRepositoryOverview(undefined); setSurfaceError(undefined); setTabErrors({});
+    // Reset, and rehydrate: a workspace the surface has seen before paints
+    // its remembered reads immediately and lets loadSurface revalidate them
+    // in the background. An unseen workspace remembers nothing, so this is
+    // the old clear-to-undefined behavior for it.
+    const remembered = surfaceSnapshot(workspaceId);
+    setStatus(remembered?.status); setPrs(remembered?.prs); setIssues(remembered?.issues); setRepositoryOverview(remembered?.repositoryOverview); setSurfaceError(undefined); setTabErrors({});
     setSelected(undefined); setDetail(undefined); setDetailError(undefined);
     setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
     void loadSurface();
