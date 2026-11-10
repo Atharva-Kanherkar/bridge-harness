@@ -38,7 +38,7 @@ import {
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
-import { rememberSurface, surfaceSnapshot, type GithubSurfaceSnapshot } from "../githubSurfaceCache";
+import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "./Markdown";
@@ -418,10 +418,11 @@ function ListSearch({ value, onChange, placeholder }: { value: string; onChange:
 
 export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, onJumpToFile, layout = "dock" }: GitHubPaneProps) {
   const page = layout === "page";
-  const [status, setStatus] = useState<GithubStatusResult>();
-  const [prs, setPrs] = useState<PullRequestListItem[]>();
-  const [issues, setIssues] = useState<GithubIssuesResult["issues"]>();
-  const [repositoryOverview, setRepositoryOverview] = useState<GithubRepositoryResult>();
+  const remembered = surfaceSnapshot(workspaceId);
+  const [status, setStatus] = useState<GithubStatusResult | undefined>(remembered?.status);
+  const [prs, setPrs] = useState<PullRequestListItem[] | undefined>(remembered?.prs);
+  const [issues, setIssues] = useState<GithubIssuesResult["issues"] | undefined>(remembered?.issues);
+  const [repositoryOverview, setRepositoryOverview] = useState<GithubRepositoryResult | undefined>(remembered?.repositoryOverview);
   const [surfaceTab, setSurfaceTab] = useState<SurfaceTab>("pulls");
   const [surfaceError, setSurfaceError] = useState<string>();
   const [tabErrors, setTabErrors] = useState<Partial<Record<SurfaceTab, string>>>({});
@@ -441,20 +442,24 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
 
   const alive = useRef(true);
   const refreshingChecks = useRef(false);
+  const surfaceLoad = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const loadSurface = useCallback(async (fresh = false) => {
+    const generation = ++surfaceLoad.current;
+    const current = () => alive.current && surfaceLoad.current === generation;
     setRefreshing(true);
     try {
       const next = await bridgeApi.githubStatus(workspaceId, fresh);
-      if (!alive.current) return;
+      if (!current()) return;
       setStatus(next);
       setSurfaceError(undefined);
-      // A successful status is the moment the remembered snapshot flips to
-      // this read's view of the workspace. List reads merge into it as they
-      // land, so a failed list never erases the last good one.
-      const snapshot: GithubSurfaceSnapshot = { ...surfaceSnapshot(workspaceId), status: next };
-      rememberSurface(workspaceId, snapshot);
+      // Keep successful reads only while the repository identity is stable.
+      // A reconnect or sign-out must clear the previous repository's content.
+      const snapshot = rememberSurface(workspaceId, { status: next });
+      setPrs(snapshot.prs);
+      setIssues(snapshot.issues);
+      setRepositoryOverview(snapshot.repositoryOverview);
       // With no repository resolved, every read below fails with the same
       // resolution error. Asking anyway only turns a setup step into three
       // error notices, so the pane offers Connect instead.
@@ -462,7 +467,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         const settle = async <T,>(tab: SurfaceTab, read: Promise<T>, apply: (value: T) => void) => {
           try {
             const value = await read;
-            if (!alive.current) return;
+            if (!current()) return;
             apply(value);
             setTabErrors(current => {
               const nextErrors = { ...current };
@@ -470,7 +475,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
               return nextErrors;
             });
           } catch (error) {
-            if (!alive.current) return;
+            if (!current()) return;
             setTabErrors(current => ({
               ...current,
               [tab]: errorMessage(error),
@@ -480,30 +485,27 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         await Promise.all([
           settle("pulls", bridgeApi.githubPullRequests(workspaceId), value => {
             setPrs(value.pullRequests);
-            snapshot.prs = value.pullRequests;
+            rememberSurface(workspaceId, { status: next, prs: value.pullRequests });
           }),
           settle("issues", bridgeApi.githubIssues(workspaceId), value => {
             setIssues(value.issues);
-            snapshot.issues = value.issues;
+            rememberSurface(workspaceId, { status: next, issues: value.issues });
           }),
           settle("repository", bridgeApi.githubRepository(workspaceId), value => {
             setRepositoryOverview(value);
-            snapshot.repositoryOverview = value;
+            rememberSurface(workspaceId, { status: next, repositoryOverview: value });
           }),
         ]);
       } else {
         setPrs(undefined);
         setIssues(undefined);
         setRepositoryOverview(undefined);
-        snapshot.prs = undefined;
-        snapshot.issues = undefined;
-        snapshot.repositoryOverview = undefined;
         setTabErrors({});
       }
     } catch (error) {
-      if (alive.current) setSurfaceError(errorMessage(error));
+      if (current()) setSurfaceError(errorMessage(error));
     } finally {
-      if (alive.current) setRefreshing(false);
+      if (current()) setRefreshing(false);
     }
   }, [workspaceId]);
 

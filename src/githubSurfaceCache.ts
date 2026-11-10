@@ -25,7 +25,14 @@ export function surfaceSnapshot(workspaceId: string): GithubSurfaceSnapshot | un
  *  a status read that succeeded while a list read failed must not erase the
  *  last good list. Re-inserted so the map stays least-recently-used ordered. */
 export function rememberSurface(workspaceId: string, snapshot: GithubSurfaceSnapshot) {
-  const merged = { ...snapshots.get(workspaceId), ...snapshot };
+  const previous = snapshots.get(workspaceId);
+  const repository = snapshot.status.repository;
+  const held = previous?.status.repository;
+  const sameRepository = snapshot.status.availability.status === "available"
+    && previous?.status.availability.status === "available"
+    && repository && held
+    && repository.host === held.host && repository.owner === held.owner && repository.name === held.name;
+  const merged = { ...(sameRepository ? previous : undefined), ...snapshot };
   snapshots.delete(workspaceId);
   snapshots.set(workspaceId, merged);
   while (snapshots.size > REMEMBERED) {
@@ -33,6 +40,7 @@ export function rememberSurface(workspaceId: string, snapshot: GithubSurfaceSnap
     if (oldest === undefined) break;
     snapshots.delete(oldest);
   }
+  return merged;
 }
 
 /** Test seam: the cache outlives components by design, so a test that seeds

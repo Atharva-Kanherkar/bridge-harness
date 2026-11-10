@@ -10,13 +10,23 @@ beforeEach(() => forgetSurfaces());
 describe("rememberSurface", () => {
   it("merges over the previous snapshot instead of replacing it", () => {
     rememberSurface("w", { status, prs: [{ number: 1 } as never], issues: [], repositoryOverview: { url: "https://github.test" } as never });
-    rememberSurface("w", { status: signedOut });
+    rememberSurface("w", { status });
     expect(surfaceSnapshot("w")).toEqual({
-      status: signedOut,
+      status,
       prs: [{ number: 1 }],
       issues: [],
       repositoryOverview: { url: "https://github.test" },
     });
+  });
+
+  it("drops cached resources when the repository or availability changes", () => {
+    const other = { ...status, repository: { ...status.repository!, name: "other" } };
+    rememberSurface("w", { status, prs: [{ number: 1 } as never], issues: [] });
+    rememberSurface("w", { status: other });
+    expect(surfaceSnapshot("w")).toEqual({ status: other });
+    rememberSurface("w", { status: other, prs: [{ number: 2 } as never] });
+    rememberSurface("w", { status: signedOut });
+    expect(surfaceSnapshot("w")).toEqual({ status: signedOut });
   });
 
   it("keeps the least-recently-used workspaces within the cap", () => {
