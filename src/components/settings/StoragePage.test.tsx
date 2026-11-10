@@ -168,3 +168,34 @@ it("has no copilot when nothing can open a chat", async () => {
   await render();
   expect(host.querySelector("aside[aria-label='Ask Bridge']")).toBeNull();
 });
+
+it("tells the host the page opened, so the rail can start blank", async () => {
+  const onVisit = vi.fn();
+  await act(async () => { root.render(<StoragePage copilot={{ ask: () => {}, onVisit, render: () => null }} />); });
+  expect(onVisit).toHaveBeenCalledTimes(1);
+});
+
+it("reopens an earlier storage chat from Recent", async () => {
+  const open = vi.fn();
+  await act(async () => {
+    root.render(<StorageCopilot selectedCount={0} onAsk={() => {}} recent={[{ id: "s-1", title: "Docker cleanup", at: "" }]} onOpenRecent={open} />);
+  });
+  expect(host.querySelector("[aria-label='Recent storage chats']")?.textContent).toContain("Docker cleanup");
+  await act(async () => { button("Docker cleanup")!.click(); });
+  expect(open).toHaveBeenCalledWith("s-1");
+});
+
+it("folds slivers of the home folder into other instead of colouring them", async () => {
+  const real = bridgeApi.scanDirectory;
+  vi.spyOn(bridgeApi, "scanDirectory").mockImplementation(async (path, refresh) => {
+    const listing = await real(path, refresh);
+    return { ...listing, measuring: true, entries: [
+      { ...listing.entries[0], sizeBytes: null, measuring: true },
+      { ...listing.entries[0], name: "advaita-mobile.png", path: `${listing.path}/advaita-mobile.png`, kind: "file", sizeBytes: 348_000, measuring: false, protectedReason: null },
+    ] };
+  });
+  await render();
+  const legend = host.querySelector("section[aria-label='Disk'] ul")?.textContent ?? "";
+  expect(legend).not.toContain("advaita-mobile.png");
+  expect(legend).toContain("Apps, system, and other");
+});
