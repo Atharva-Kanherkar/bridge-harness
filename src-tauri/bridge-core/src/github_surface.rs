@@ -3792,4 +3792,43 @@ mod tests {
         assert_eq!(message, "No failed runs to re-run.");
         assert_eq!(invocation_count(&fake, "run rerun"), 0);
     }
+
+    /// Timing eval, not a correctness gate: measures what a pane open pays
+    /// against a real checkout with a real, authenticated `gh`. Run with
+    ///
+    /// ```text
+    /// BRIDGE_GITHUB_EVAL_WORKSPACE=/path/to/checkout \
+    ///   cargo test -p bridge-core --lib eval_surface_open_latency -- --ignored --nocapture
+    /// ```
+    ///
+    /// The first sequence is a cold open (empty caches); the second is the
+    /// warm open a reader gets when they come back within the TTL. Without
+    /// the env var the test does nothing, so ordinary `cargo test` runs stay
+    /// hermetic.
+    #[test]
+    #[ignore = "measures a real gh against a real checkout; run with --ignored"]
+    fn eval_surface_open_latency() {
+        let workspace = match std::env::var("BRIDGE_GITHUB_EVAL_WORKSPACE") {
+            Ok(path) if !path.is_empty() => PathBuf::from(path),
+            _ => return,
+        };
+        let surface = GithubSurface::discover();
+        assert_eq!(surface.availability(), GithubAvailability::Available, "the eval needs an authenticated gh");
+
+        let open = |surface: &GithubSurface, label: &str| {
+            let started = Instant::now();
+            let repository = surface.resolve_repository(&workspace).expect("resolvable");
+            let resolved = started.elapsed();
+            let started = Instant::now();
+            let _ = surface.list_prs(&workspace).expect("prs");
+            let _ = surface.list_issues(&workspace).expect("issues");
+            let _ = surface.repository_overview(&workspace).expect("overview");
+            let lists = started.elapsed();
+            println!("{label}: resolve {resolved:?} + lists {lists:?} = {:?}", resolved + lists);
+            repository
+        };
+
+        open(&surface, "cold open (empty caches)");
+        open(&surface, "warm open (within the TTL)");
+    }
 }
