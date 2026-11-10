@@ -2572,6 +2572,8 @@ fn interaction_payload(
 ) -> Result<(Value, String, bool), BridgeError> {
     let terminal_child: bool = db.query_row("SELECT kind='harness_subagent' AND status IN ('completed','failed','interrupted','stopped') FROM sessions WHERE id=?1", [session_id], |r| r.get(0))?;
     if terminal_child { return Err(BridgeError::Invalid("This subagent is no longer running".into())); }
+    let ended_interaction:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id=?1 AND kind=replace(?2,'requested','resolved') AND json_extract(payload,'$.data.requestEventId')=?3 AND json_extract(payload,'$.data.reason')='subagent_ended')",params![session_id,expected_kind,event_id],|r|r.get(0))?;
+    if ended_interaction { return Err(BridgeError::Invalid("This subagent interaction has ended".into())); }
     let (kind, payload, adapter_id): (String, String, String) = db.query_row(
         "SELECT e.kind,e.payload,s.harness FROM session_entries e
          JOIN sessions s ON s.id=e.session_id

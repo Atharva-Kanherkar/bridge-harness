@@ -18092,6 +18092,10 @@ mod permission_policy_tests {
             ] {handle_agent_value(&core,"chat",&turn,&frame);}
             assert_eq!(turn.lock().unwrap().as_deref(),Some("root-turn"));
         }
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/started","params":{"threadId":"one","turn":{"id":"second-turn"}}}));
+        let resumed:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE provider_session_id='one' AND kind='harness_subagent'",[],|r|r.get(0)).unwrap();
+        assert_eq!(resumed,"working");
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/completed","params":{"threadId":"one","turn":{"id":"second-turn","status":"completed"}}}));
         {
             let db=core.db.lock().unwrap();
             let status:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(status,"working");
@@ -18185,6 +18189,13 @@ mod permission_policy_tests {
             let mut done=agent::NormalizedEvent::new("subagent.completed");done.status=Some("interrupted".into());done.data=serde_json::json!({"subagent":{"sessionId":"child"}});
             crate::harness_subagents::route(&db,"chat",&done,&serde_json::json!({})).unwrap();row};
         assert!(crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap_err().to_string().contains("no longer running"));
+        {
+            let db=core.db.lock().unwrap();
+            let mut restart=agent::NormalizedEvent::new("subagent.status");
+            restart.data=serde_json::json!({"subagent":{"sessionId":"child"},"turnStarted":true,"turn":{"id":"next-turn"}});
+            crate::harness_subagents::route(&db,"chat",&restart,&serde_json::json!({})).unwrap();
+        }
+        assert!(crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap_err().to_string().contains("interaction has ended"));
         assert!(handles.responded.lock().unwrap().is_empty());
     }
 

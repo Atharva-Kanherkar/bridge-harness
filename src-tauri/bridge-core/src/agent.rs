@@ -226,10 +226,12 @@ pub fn normalize_opencode_message_with_state(
             // A newly created session can announce idle before its first
             // turn. Only an idle after observed work completes that child.
             if idle && child.turn_active != Some(true) { return vec![]; }
+            let starting=!idle && child.turn_active!=Some(true);
             child.turn_active=Some(!idle);
             let mut events=if idle {flush_pending_text(child)} else {vec![]};
             let mut event=with_data(if idle {"subagent.completed"} else {"subagent.status"},&properties,properties.clone());
             event.status=Some(if idle {"completed"} else {"working"}.into());
+            if starting { event.data["turnStarted"]=json!(true); }
             events.push(event);
             for event in &mut events {tag_subagent(event,&child_session,&child_info);}
             events
@@ -250,7 +252,7 @@ pub fn normalize_opencode_message_with_state(
         }
         _ => {
             let child_state=state.child_streams.entry(child_session.clone()).or_default();
-            child_state.turn_active=Some(true);
+            if child_state.turn_active.is_none() { child_state.turn_active=Some(true); }
             let mut events = normalize_opencode_root_frame(event_type, &properties, child_state);
             for event in &mut events {
                 tag_subagent(event, &child_session, &child_info);
@@ -800,7 +802,8 @@ pub fn normalize_codex_message_with_state(
             }
             match event.kind.as_str() {
                 "session.started" => event.kind = "subagent.started".into(),
-                "turn.started" | "session.status" => event.kind = "subagent.status".into(),
+                "turn.started" => { event.kind = "subagent.status".into(); event.data["turnStarted"] = json!(true); }
+                "session.status" => event.kind = "subagent.status".into(),
                 "turn.completed" => { event.kind = "subagent.status".into(); event.data["turnCompleted"] = json!(true); }
                 _ => {}
             }

@@ -67,6 +67,25 @@ pub fn route(
         tx.execute("INSERT OR IGNORE INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,started_at,depth,parent_session_id,provider_session_id,account,trace_id)
         SELECT ?2,workspace_id,harness,?3,'working','estimated',model,?4,?3,cwd,strftime('%Y-%m-%dT%H:%M:%fZ','now'),COALESCE(depth,0)+1,id,?5,account,COALESCE(trace_id,id) FROM sessions WHERE id=?1",params![parent,child,title,KIND,provider])?;
     }
+    let turn = event
+        .data
+        .pointer("/turn/id")
+        .or_else(|| event.data.get("turnId"))
+        .and_then(Value::as_str);
+    let turn_started = event.data.get("turnStarted").and_then(Value::as_bool) == Some(true);
+    let turn_completed = event.data.get("turnCompleted").and_then(Value::as_bool) == Some(true);
+    if (turn_started || turn_completed) && turn.is_some() {
+        let replayed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id=?1 AND kind='subagent.status' AND json_extract(payload,'$.data.turnCompleted')=1 AND COALESCE(json_extract(payload,'$.data.turn.id'),json_extract(payload,'$.data.turnId'))=?2)",params![child,turn],|r|r.get(0))?;
+        let active: Option<String> = tx.query_row(
+            "SELECT active_turn_id FROM sessions WHERE id=?1",
+            [&child],
+            |r| r.get(0),
+        )?;
+        if replayed || (turn_completed && active.as_deref().is_some_and(|id| Some(id) != turn)) {
+            tx.commit()?;
+            return Ok(vec![]);
+        }
+    }
     // Replace fallback labels once the lifecycle's actual description arrives.
     if event.kind == "subagent.started" {
         tx.execute(
@@ -111,22 +130,18 @@ pub fn route(
     } else {
         "working"
     };
-    let turn = event
-        .data
-        .pointer("/turn/id")
-        .or_else(|| event.data.get("turnId"))
-        .and_then(Value::as_str);
     // A late tool/progress frame cannot revive a terminal child.
     if created
+        || turn_started
         || terminal(event)
         || matches!(
             event.kind.as_str(),
             "subagent.status" | "permission.requested" | "question.requested"
         )
     {
-        tx.execute("UPDATE sessions SET status=CASE WHEN status='waiting' AND ?2='working' THEN status ELSE ?2 END,active_turn_id=CASE WHEN ?3 THEN NULL ELSE COALESCE(?4,active_turn_id) END,
-        ended_at=CASE WHEN ?3 THEN COALESCE(ended_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE ended_at END
-        WHERE id=?1 AND (status NOT IN ('completed','failed','interrupted') OR ?3)",params![child,status,terminal(event),turn])?;
+        tx.execute("UPDATE sessions SET status=CASE WHEN status='waiting' AND ?2='working' AND NOT ?5 THEN status ELSE ?2 END,active_turn_id=CASE WHEN ?3 THEN NULL ELSE COALESCE(?4,active_turn_id) END,
+        ended_at=CASE WHEN ?5 THEN NULL WHEN ?3 THEN COALESCE(ended_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE ended_at END
+        WHERE id=?1 AND (status NOT IN ('completed','failed','interrupted') OR ?3 OR ?5)",params![child,status,terminal(event),turn,turn_started])?;
     }
     // Child usage is already included by the provider's parent ledger/import.
     if event.kind != "usage.updated" {
@@ -338,5 +353,56 @@ mod tests {
         assert!(events.iter().any(|e| e.session_id == child
             && e.kind == "permission.resolved"
             && e.status.as_deref() == Some("cancelled")));
+    }
+    #[test]
+    fn new_child_turns_reopen_the_session_but_old_turn_replays_do_not() {
+        let db = db();
+        let frame = |kind: &str, turn: &str| {
+            let mut e = event("subagent.status", "one");
+            e.status = Some(
+                if kind == "turnStarted" {
+                    "working"
+                } else {
+                    "completed"
+                }
+                .into(),
+            );
+            e.data[kind] = json!(true);
+            e.data["turn"] = json!({"id":turn});
+            e
+        };
+        route(&db, "parent", &frame("turnStarted", "first"), &json!({})).unwrap();
+        route(&db, "parent", &frame("turnCompleted", "first"), &json!({})).unwrap();
+        assert!(
+            route(&db, "parent", &frame("turnStarted", "first"), &json!({}))
+                .unwrap()
+                .is_empty()
+        );
+        route(&db, "parent", &frame("turnStarted", "second"), &json!({})).unwrap();
+        assert!(
+            route(&db, "parent", &frame("turnCompleted", "first"), &json!({}))
+                .unwrap()
+                .is_empty()
+        );
+        let (status, turn, ended): (String, String, Option<String>) = db
+            .query_row(
+                "SELECT status,active_turn_id,ended_at FROM sessions WHERE kind='harness_subagent'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (status, turn, ended),
+            ("working".into(), "second".into(), None)
+        );
+        route(&db, "parent", &frame("turnCompleted", "second"), &json!({})).unwrap();
+        let pointers: i64 = db
+            .query_row(
+                "SELECT count(*) FROM session_entries WHERE session_id='parent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pointers, 2);
     }
 }
