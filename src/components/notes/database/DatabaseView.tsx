@@ -8,6 +8,7 @@
 // after its write lands, or goes back when the write is refused.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../../api";
 import type { DatabaseGroup, DatabaseRow, NoteDatabase, NoteDatabaseView, NoteProperty, NoteSchemaChange, NoteViewInput, QueryDatabaseParams, Workspace } from "../../../types";
 import { DatabaseBoard, GROUP_LIMIT } from "./DatabaseBoard";
@@ -350,7 +351,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
 
   const run = useCallback((params: Omit<QueryDatabaseParams, "databaseId">) => bridgeApi.queryDatabase({ databaseId, ...params }), [databaseId]);
 
-  if (!database) return <p role="status" className="m-0 py-3 text-[13px] text-muted-foreground">Loading the database…</p>;
+  if (!database) return <SkeletonRows label="Loading the database" rows={4} meta={false} className="my-3" />;
 
   const body: ViewBodyProps | null = view && effective ? {
     database, view, query: effective, rows: shown, groups, run, version, host,
@@ -369,7 +370,7 @@ export function DatabaseView({ databaseId, database: given, viewId, bounded = fa
       onSave={() => void override.save(view, query => saveView(() => ({ filter: query.filter, sorts: query.sorts, groupBy: query.groupBy }), view))}
     />}
     {rows === null || !body
-      ? <p role="status" className="m-0 py-3 text-[13px] text-muted-foreground">Loading rows…</p>
+      ? <SkeletonRows label="Loading rows" rows={4} meta={false} framed={false} className="py-1" />
       : view?.type === "board" ? <DatabaseBoard {...body} />
         : view?.type === "calendar" ? <DatabaseCalendar {...body} />
           : view?.type === "list" ? <DatabaseList {...body} />

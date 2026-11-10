@@ -3,6 +3,7 @@
 // what fills it and what Bridge adds. Numbers come only from what each harness
 // reports; a window that cannot report says why instead of showing a zero.
 import { useEffect, useState } from "react";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { Layers, Minimize2, TrendingUp } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
@@ -386,10 +387,11 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
               <p className="text-[13px] font-medium text-foreground">Context is unavailable</p>
               <p className="mt-1 text-[12px] text-muted-foreground">This Bridge daemon does not report context windows yet. Restart Bridge after updating.</p>
             </div>
-            : <div className="flex flex-col items-center gap-3 px-4 py-12 text-center">
-              <Spinner className="size-5 text-muted-foreground" />
-              <p className="text-[12px] text-muted-foreground">Reading context windows…</p>
-            </div>)
+            : <SkeletonRegion label="Reading context windows" className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-2"><Skeleton className="h-14 rounded-xl" /><Skeleton index={1} className="h-14 rounded-xl" /></div>
+              <Skeleton index={2} className="h-4 w-full rounded-full" />
+              <SkeletonText index={3} lines={4} />
+            </SkeletonRegion>)
           : <>
             {windows.length > 1 && <div role="tablist" aria-label="Context windows" className="mb-4 grid auto-cols-[minmax(11rem,1fr)] grid-flow-col gap-2 overflow-x-auto pb-1">
               {windows.map(window => <WindowTab key={window.sessionId} window={window} selected={window.sessionId === detail?.sessionId} onSelect={() => setSelected(window.sessionId)} />)}

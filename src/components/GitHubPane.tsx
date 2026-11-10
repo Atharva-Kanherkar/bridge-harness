@@ -40,6 +40,7 @@ import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Markdown } from "./Markdown";
 import { ProviderLoginPane } from "./ProviderLoginPane";
 import { relativeTime } from "./workDashboard";
@@ -290,40 +291,25 @@ function CommentTime({ iso }: { iso: string }) {
   return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-[11px] text-muted-foreground">{relativeTime(iso, new Date())}</time>;
 }
 
-const SKELETON_BAR = "animate-pulse rounded bg-muted-foreground/10";
-const SKELETON_WIDTHS = ["w-3/5", "w-2/5", "w-1/2", "w-3/4", "w-2/5", "w-2/3"] as const;
-
 /** Placeholder rows shaped like the list they precede, instead of a bare
  * spinner in an empty pane. */
 function ListSkeleton({ label }: { label: string }) {
-  return <div role="status" aria-label={label} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
-    <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-      {SKELETON_WIDTHS.map((width, index) => <div key={index} className="flex items-start gap-2.5 px-3 py-3">
-        <span className={cn("mt-0.5 size-[15px] shrink-0 rounded-full", SKELETON_BAR)} />
-        <span className="min-w-0 flex-1">
-          <span className={cn("block h-3", SKELETON_BAR, width)} />
-          <span className={cn("mt-1.5 block h-2.5 w-1/4", SKELETON_BAR)} />
-        </span>
-      </div>)}
-    </div>
+  return <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+    <SkeletonRows label={label} rows={6} lead="dot" />
   </div>;
 }
 
 /** Placeholder shaped like a PR/issue detail: meta line, title, branch line,
  * then a few body bars. */
 function DetailSkeleton({ label }: { label: string }) {
-  return <div role="status" aria-label={label} className="min-h-0 flex-1 overflow-y-auto">
-    <div className="border-b border-border px-4 pb-3 pt-3.5">
-      <span className={cn("block h-3 w-28", SKELETON_BAR)} />
-      <span className={cn("mt-2 block h-4 w-4/5", SKELETON_BAR)} />
-      <span className={cn("mt-2 block h-3 w-2/5", SKELETON_BAR)} />
+  return <SkeletonRegion label={label} className="min-h-0 flex-1 overflow-y-auto">
+    <div className="flex flex-col gap-2 border-b border-border px-4 pb-3 pt-3.5">
+      <Skeleton className="w-28" />
+      <Skeleton index={1} className="h-4 w-4/5" />
+      <Skeleton index={2} className="w-2/5" />
     </div>
-    <div className="space-y-2.5 px-4 py-4">
-      <span className={cn("block h-3 w-full", SKELETON_BAR)} />
-      <span className={cn("block h-3 w-11/12", SKELETON_BAR)} />
-      <span className={cn("block h-3 w-3/5", SKELETON_BAR)} />
-    </div>
-  </div>;
+    <SkeletonText index={3} className="px-4 py-4" />
+  </SkeletonRegion>;
 }
 
 /** The check rollup as a bar rather than a number pair. Segments are widths,

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { AlertCircle, ExternalLink, RefreshCw } from "lucide-react";
 import type { WorkBoard, WorkFactAction, WorkTask } from "../protocol/generated/protocol";
 import { hasOpenableEvidence, sourceLabel, type TaskAction } from "./workTasks";
@@ -80,7 +81,7 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
             <button type="button" onClick={onRefresh} className={`${buttonClass} mt-3`}>Try again</button>
           </div>
         ) : !board ? (
-          <p role="status" className="text-sm text-muted-foreground">Loading activity…</p>
+          <SkeletonRows label="Loading activity" rows={3} lead="dot" />
         ) : items.length === 0 ? (
           <div className="rounded-xl border border-border p-6 text-center">
             <h3 className="text-sm font-medium">No recent activity to show</h3>

@@ -1,4 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Download, ExternalLink, LoaderCircle, RotateCcw, Search, ShieldCheck, Trash2, X } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -49,7 +50,7 @@ export function SkillMarketplace() {
       <div className="relative mt-6"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14}/><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search skills" placeholder="Search skills, publishers, or capabilities" className="h-9 rounded-lg pl-10 text-[13px]"/></div>
       <div className="mt-5 flex flex-wrap items-center justify-between gap-3"><div className="u-segmented flex-wrap">{(["community", "personal"] as const).map(value => <button type="button" key={value} aria-pressed={scope === value} data-active={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div><div className="u-segmented flex-wrap">{(["all", "codex", "claude", "opencode"] as const).map(value => <button type="button" key={value} aria-pressed={provider === value} data-active={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div></div>
       {failure && <div className="mt-3 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-caption text-destructive"><AlertTriangle className="mt-0.5 shrink-0" size={12}/><span className="min-w-0 break-words">{failure}</span></div>}
-      {!catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Reading local capabilities…</div>}
+      {!catalog && <SkeletonRows label="Reading local capabilities" rows={5} lead="icon" className="mt-4" />}
       {catalog && scope === "community" && <div className="mt-4 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{community.map(skill => {
         const open = expanded === skill.id;
         const installed = skill.providerStates.filter(state => state.installed);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { LoaderCircle as CircleNotch } from "lucide-react";
+import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
@@ -276,7 +276,10 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     />}
     <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
 
-      {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
+      {busy && !config ? <SkeletonRegion label="Loading settings" className="mx-auto w-full max-w-page space-y-6 px-5 pb-12 pt-6 sm:px-8">
+        <div className="space-y-2"><Skeleton className="h-6 w-48" /><Skeleton index={1} className="w-72 max-w-full" /></div>
+        <SkeletonRows rows={4} trailing />
+      </SkeletonRegion> : null}
 
       {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
       {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} onOpenAgents={() => navigate("agents")} />}
