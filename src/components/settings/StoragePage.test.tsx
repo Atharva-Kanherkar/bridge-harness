@@ -197,5 +197,5 @@ it("folds slivers of the home folder into other instead of colouring them", asyn
   await render();
   const legend = host.querySelector("section[aria-label='Disk'] ul")?.textContent ?? "";
   expect(legend).not.toContain("advaita-mobile.png");
-  expect(legend).toContain("Measuring your home folder");
+  expect(legend).toContain("Apps, system, and other");
 });
