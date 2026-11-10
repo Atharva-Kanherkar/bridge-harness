@@ -564,9 +564,6 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
     Ok(wire::GithubChecksResult { checks })
 }
 
-/// The pull requests attached to one chat, newest first, with live state.
-/// Reading (re)arms the poller, so a reopened chat resumes background updates
-/// without the GitHub pane being open.
 /// A chat's drafted messages, oldest first.
 pub fn list_outgoing(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ListOutgoingResult, BridgeError> {
     let db = core.db.lock().unwrap();
@@ -620,6 +617,9 @@ pub fn discard_outgoing(core: &Arc<BridgeCore>, id: &str) -> Result<wire::Discar
     Ok(wire::DiscardOutgoingResult { item })
 }
 
+/// The pull requests attached to one chat, newest first, with live state.
+/// Reading (re)arms the poller, so a reopened chat resumes background updates
+/// without the GitHub pane being open.
 pub fn github_session_prs(
     core: &Arc<BridgeCore>,
     session_id: &str,

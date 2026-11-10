@@ -1651,8 +1651,6 @@ export const bridgeApi = {
    * server caches — a reopened chat or a manual retry. */
   githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
     hasBackend() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
-  /** Attach a chat to a PR by URL or number; verified server-side against the
-   * chat's workspace repository. */
   /** A chat's drafted messages, oldest first, discarded ones included. */
   listOutgoing: (sessionId: string): Promise<ListOutgoingResult> =>
     hasBackend() ? call("outgoing/list_outgoing", { sessionId }) : Promise.resolve(mockListOutgoing(sessionId)),
@@ -1668,6 +1666,8 @@ export const bridgeApi = {
     hasBackend() ? call("outgoing/copy_outgoing", { id, revision }) : mockCopyOutgoing(id, revision),
   discardOutgoing: (id: string): Promise<DiscardOutgoingResult> =>
     hasBackend() ? call("outgoing/discard_outgoing", { id }) : mockDiscardOutgoing(id),
+  /** Attach a chat to a PR by URL or number; verified server-side against the
+   * chat's workspace repository. */
   githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
     hasBackend() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
   searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>

@@ -33,7 +33,7 @@ pub fn install_store(db: &Connection) -> Result<(), BridgeError> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS outgoing_messages (
             id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             destination TEXT NOT NULL,
             body TEXT NOT NULL,
             rendered TEXT NOT NULL,
@@ -221,8 +221,14 @@ pub fn list(db: &Connection, session_id: &str) -> Result<Vec<OutgoingMessage>, B
     Ok(items)
 }
 
+/// The drafts a chat holds that its person has not put away. Discarding one
+/// frees its slot: the cap stops a looping agent, not a person who said no.
 pub fn count_for_session(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
-    Ok(db.query_row("SELECT COUNT(*) FROM outgoing_messages WHERE session_id=?1", params![session_id], |row| row.get(0))?)
+    Ok(db.query_row(
+        "SELECT COUNT(*) FROM outgoing_messages WHERE session_id=?1 AND state != 'discarded'",
+        params![session_id],
+        |row| row.get(0),
+    )?)
 }
 
 /// What a body looks like after the agent-side pass: every fixable rule
@@ -415,6 +421,9 @@ pub(crate) mod tests {
 
     pub(crate) fn store() -> Connection {
         let db = Connection::open_in_memory().unwrap();
+        // These tests exercise the store alone, with chat ids that have no
+        // `sessions` row; the cascade itself is covered against a real store.
+        db.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
         install_store(&db).unwrap();
         db
     }
@@ -535,6 +544,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn deleting_a_chat_deletes_its_drafts() {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/outgoing','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/outgoing/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('chat','w','claude','chat','ready');",
+        )
+        .unwrap();
+        let item = create_draft(&db, "chat", slack(), "one", "r", &[], "t1").unwrap();
+        db.execute("DELETE FROM sessions WHERE id='chat'", []).unwrap();
+        assert_eq!(get(&db, &item.id).unwrap(), None, "a deleted chat takes its drafts with it");
+    }
+
+    #[test]
     fn list_is_per_chat_and_oldest_first() {
         let db = store();
         let first = create_draft(&db, "a", slack(), "1", "r", &[], "t1").unwrap();
@@ -543,6 +566,6 @@ pub(crate) mod tests {
         discard(&db, &third.id, "t4").unwrap();
         let ids: Vec<String> = list(&db, "a").unwrap().into_iter().map(|item| item.id).collect();
         assert_eq!(ids, vec![first.id, third.id]);
-        assert_eq!(count_for_session(&db, "a").unwrap(), 2);
+        assert_eq!(count_for_session(&db, "a").unwrap(), 1, "a discarded draft stays stored but frees its slot");
     }
 }

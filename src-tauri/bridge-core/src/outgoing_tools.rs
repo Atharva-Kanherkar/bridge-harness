@@ -21,7 +21,8 @@ pub const WRITE_TOOLS: [&str; 1] = [DRAFT];
 /// here, so it does not paste the same text into its reply.
 pub const DRAFT_NOTE: &str = "Shown to the person as a draft card they can edit, copy and send themselves. You cannot send it. Do not repeat the message in your reply; say in a sentence what you drafted and for whom.";
 
-/// Exactly the three fields the tool offers. A `state`, `revision` or
+/// Exactly the fields the tool offers: `to`, `body`, `reason` and, only when
+/// the person asked for an image, `attachments`. A `state`, `revision` or
 /// anything else makes the call invalid rather than honored.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +148,11 @@ mod tests {
         }
         assert_eq!(run(&db, "chat", true, DRAFT, &args("one more")).err().unwrap().status, 429);
         assert!(run(&db, "other", true, DRAFT, &args("fine")).is_ok(), "the cap is per chat");
+        // Discarding is the person saying no: it frees the slot it took.
+        for item in outgoing::list(&db, "chat").unwrap() {
+            outgoing::discard(&db, &item.id, "t").unwrap();
+        }
+        assert!(run(&db, "chat", true, DRAFT, &args("after the person cleared them")).is_ok());
     }
 
     #[test]

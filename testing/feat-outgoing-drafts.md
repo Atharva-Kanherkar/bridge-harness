@@ -18,7 +18,12 @@ Slice 1 of #920 (Outgoing). A chat agent drafts a message addressed to a person 
 - `attachments` (optional): up to 4 absolute paths to local image files, only when the person asked to include an image or screenshot. Each must be a PNG, JPEG, GIF or WebP by its content (magic bytes), not just its extension, and at most 10 MB. Anything else is refused and nothing is stored. GitHub destinations refuse attachments (the API cannot attach uploads to a comment).
 - On success one `outgoing_messages` row is stored with `state = draft`, `revision = 1`, and the tool returns `{ id, state, destination, rendered, lint, note }`. `note` tells the agent the person reviews and sends it themselves and that it should not repeat the text.
 - Agent drafts get every fixable hard rule applied before storing (em dashes, AI attribution lines). Each fix is recorded as a lint finding with `fixed: true`, so the card can say what changed.
-- At most 20 drafts per chat; the 21st is refused (429) so a looping agent cannot flood the store.
+- At most 20 drafts per chat that the person has not discarded; the 21st is refused (429) so a looping agent cannot flood the store, while discarding one frees its slot. A chat's rows go with it when it is deleted (`session_id` cascades).
+
+### Wire
+
+- The `outgoing` domain ships on protocol **1.31**. `handshake.rs` records it: a new client must not pair with an older daemon, whose `outgoing/*` calls would fail with `method_not_found`; a 1.30 client still pairs with a 1.31 daemon and never shows a draft card.
+- OpenCode's permission rules deny `bridge_outgoing_draft` in a read-only session, the same way they deny `bridge_memory_propose`; Ask modes let it run because the card, not the tool, is where a message becomes real.
 
 ### Style rules (built-in, slice 1)
 
@@ -89,7 +94,7 @@ Rust (`bridge-core`):
 - `outgoing_tools::tests::read_only_access_cannot_draft`
 - `outgoing_tools::tests::per_chat_cap_is_enforced`
 - `notes::tool::tests` extended: `Access::Write.tools()` contains `outgoing_draft`, `Access::ReadOnly.tools()` does not.
-- `store` migration test: schema 70 creates `outgoing_messages`.
+- `store` migration test: schema 73 creates `outgoing_messages`.
 
 Frontend (Vitest):
 
