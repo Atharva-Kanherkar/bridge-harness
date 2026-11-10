@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 71;
+const LATEST_SCHEMA_VERSION: i64 = 73;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -755,9 +755,15 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // What a person should know about: chats that finished, failed or
             // need them. See `attention`.
             70 => crate::attention::install_store(&transaction)?,
+            // One usage-history cursor row per transcript instead of one
+            // document covering every transcript. See `usage_import::scan`.
+            71 => crate::usage_import::scan::install_file_cursors(&transaction)?,
+            // An orchestrator's armed bridge-wait and the worker results it
+            // holds. See `orchestrator_wait`.
+            72 => crate::orchestrator_wait::install_store(&transaction)?,
             // Messages a chat drafted for a person or a place: the text, where
             // it is addressed, its style findings and its revision.
-            71 => crate::outgoing::install_store(&transaction)?,
+            73 => crate::outgoing::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -6759,7 +6765,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_71_adds_the_outgoing_store() {
+    fn migration_73_adds_the_outgoing_store() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir.path().join("bridge.db")).unwrap();
         let columns: Vec<String> = db
@@ -6770,7 +6776,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
-        assert_eq!(current_schema_version(&db).unwrap(), 71);
+        assert_eq!(current_schema_version(&db).unwrap(), 73);
     }
 
     #[test]

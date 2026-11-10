@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
 import type { ReviewerHarnessSettings, ReviewerSettings } from "../../protocol/generated/protocol";
@@ -53,7 +54,7 @@ export function ReviewerSettingsSection({ adapters }: { adapters: AdapterDescrip
   };
   const changePrompt = (systemPrompt: string) => { setSaved(false); setSettings(current => current ? { ...current, systemPrompt } : current); };
   if (error && !settings) return <p role="alert" className="text-sm text-destructive">{error}</p>;
-  if (!settings) return <p role="status" className="text-sm text-muted-foreground">Loading reviewer settings...</p>;
+  if (!settings) return <SkeletonRows label="Loading reviewer settings" rows={3} trailing />;
   return <form data-reviewer-settings onSubmit={event => { event.preventDefault(); void save(); }} className="space-y-5">
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <SettingsGroup label="Pull request reviewer" note="What the GitHub pane's Review button launches. A blank model or effort falls back to the Reviewer model profile, then the harness default. OpenCode cannot run read-only, so its reviewer works from an isolated worktree behind an approval.">

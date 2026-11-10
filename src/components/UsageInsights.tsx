@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SkeletonCards } from "@/components/ui/skeleton";
 import { LoaderCircle, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
@@ -148,12 +149,11 @@ export function Themes({ report }: { report: Pick<UsageInsightsReport, "themes">
   </div>;
 }
 
-function Skeleton({ step }: { step: number }) {
-  return <div role="status" aria-live="polite" className="space-y-4">
-    <div className="flex items-center gap-2 text-caption text-muted-foreground"><LoaderCircle size={13} className="animate-spin" aria-hidden="true" />{LOADING_STEPS[Math.min(step, LOADING_STEPS.length - 1)]}…</div>
-    <div className="grid gap-4 lg:grid-cols-3">
-      {[0, 1, 2, 3, 4, 5].map(index => <div key={index} className={cn(CARD, "h-40 bg-[linear-gradient(100deg,transparent_30%,var(--color-muted)_50%,transparent_70%)] bg-[length:200%_100%] motion-safe:animate-[insight-shimmer_1.6s_linear_infinite]")} style={{ animationDelay: `${index * 120}ms` }} />)}
-    </div>
+/** The analysis is a named multi-step wait, so it narrates its step above the card shapes. */
+function InsightsSkeleton({ step }: { step: number }) {
+  return <div className="space-y-4">
+    <p role="status" aria-live="polite" className="text-caption text-muted-foreground">{LOADING_STEPS[Math.min(step, LOADING_STEPS.length - 1)]}…</p>
+    <SkeletonCards label="Loading insights" count={6} />
   </div>;
 }
 
@@ -184,7 +184,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
     {loading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{report ? "Analyse again" : "Analyse my usage"}
   </button>;
 
-  if (loading && !report) return <Skeleton step={step} />;
+  if (loading && !report) return <InsightsSkeleton step={step} />;
 
   if (!report) {
     const status = result?.status ?? "empty";

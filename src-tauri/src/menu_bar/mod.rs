@@ -21,6 +21,8 @@ enum Work {
     Opened,
     SettingsChanged,
     Snapshot,
+    /// Unread chats changed: reread them alone, with no usage work.
+    Attention,
     Stop,
 }
 
@@ -38,6 +40,25 @@ struct Presentation {
     usage: Option<ProviderUsageOverviews>,
     refreshing: bool,
     error: Option<String>,
+    /// Unread chats, from `attention/unread_summary`. `None` until the first
+    /// read succeeds; a failed read keeps the last counts.
+    attention: Option<AttentionCounts>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttentionCounts {
+    total: u32,
+    needs_you: u32,
+}
+
+/// A read-only ledger query: it never starts a provider or a usage refresh.
+fn read_attention(app: &tauri::AppHandle, host: &OnceLock<HostMode>, presentation: &mut Presentation) {
+    let summary = call(app, host, MethodName::UnreadSummary)
+        .and_then(|v| serde_json::from_value::<bridge_protocol::messages::UnreadSummary>(v).map_err(|e| e.to_string()));
+    if let Ok(summary) = summary {
+        presentation.attention = Some(AttentionCounts { total: summary.total, needs_you: summary.needs_you });
+    }
 }
 
 fn call(
@@ -61,6 +82,9 @@ fn call_with_params(
             let value = match method {
                 MethodName::GetMenuBarSettings => serde_json::to_value(
                     bridge_core::api::get_menu_bar_settings(&core).map_err(|e| e.to_string())?,
+                ),
+                MethodName::UnreadSummary => serde_json::to_value(
+                    bridge_core::api::unread_summary(&core).map_err(|e| e.to_string())?,
                 ),
                 MethodName::GetProviderUsageOverviews => serde_json::to_value(
                     bridge_core::api::get_provider_usage_overviews(&core)
@@ -140,15 +164,20 @@ extern "C" fn action(action: i32) {
 }
 
 fn publish(app: &tauri::AppHandle, presentation: &Presentation) {
-    let Ok(bytes) = serde_json::to_vec(presentation) else {
-        return;
-    };
     if let Some(usage) = &presentation.usage {
         let _ = app.emit("bridge-provider-usage-overviews", usage);
         if let Some(codex) = usage.providers.iter().find(|p| p.provider == "codex") {
             let _ = app.emit("bridge-usage-overview", codex);
         }
     }
+    publish_native(presentation);
+}
+
+/// The native item only. An unread change has no usage news for the webview.
+fn publish_native(presentation: &Presentation) {
+    let Ok(bytes) = serde_json::to_vec(presentation) else {
+        return;
+    };
     #[cfg(target_os = "macos")]
     bridge_menu_bar::run_on_main_thread(move || {
         let result = diagnostics::native_boundary(|| unsafe { bridge_menu_bar::update(&bytes) });
@@ -200,6 +229,12 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
         app.listen("account-usage", move |_| {
             let _ = signal.try_send(Work::Snapshot);
         });
+        // The webview sends the unread total for the Dock badge whenever it
+        // changes; the same moment is when the menu bar should reread it.
+        let signal = send.clone();
+        app.listen(crate::dock_badge::BADGE_EVENT, move |_| {
+            let _ = signal.try_send(Work::Attention);
+        });
         let worker = std::thread::Builder::new()
             .name("menu-bar-host".into())
             .spawn(move || {
@@ -208,13 +243,29 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     usage: None,
                     refreshing: false,
                     error: None,
+                    attention: None,
                 };
                 let mut last_refresh: Option<Instant> = None;
                 let mut last_snapshot = Instant::now();
                 let mut next = Work::SettingsChanged;
+                // When the next quiet-period snapshot is due. Only a full pass
+                // moves it, so unread wakes cannot starve the usage tick.
+                let mut tick = Instant::now() + Duration::from_secs(30);
                 loop {
                     if matches!(next, Work::Stop) {
                         break;
+                    }
+                    read_attention(&handle, &host, &mut presentation);
+                    if matches!(next, Work::Attention) {
+                        // Unread changes come often while agents work; none of
+                        // them is a reason to touch settings or usage.
+                        publish_native(&presentation);
+                        next = match receive.recv_timeout(tick.saturating_duration_since(Instant::now())) {
+                            Ok(work) => work,
+                            Err(mpsc::RecvTimeoutError::Timeout) => Work::Snapshot,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        };
+                        continue;
                     }
                     // Settings are read before every refresh, so a hidden or
                     // disabled provider never starts another scheduled probe.
@@ -318,6 +369,7 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     }
                     presentation.refreshing = false;
                     publish(&handle, &presentation);
+                    tick = Instant::now() + Duration::from_secs(30);
                     next = match receive.recv_timeout(Duration::from_secs(30)) {
                         Ok(work) => work,
                         Err(mpsc::RecvTimeoutError::Timeout) => Work::Snapshot,
@@ -356,5 +408,28 @@ pub fn shutdown() {
         unsafe {
             bridge_menu_bar::destroy();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Swift tests decode this same fixture, so both sides agree on the
+    /// unread counts' wire names.
+    #[test]
+    fn the_snapshot_carries_unread_counts_as_the_native_fixture_does() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../bridge-protocol/tests/fixtures/menu-bar-presentation.json")).unwrap();
+        let presentation = Presentation {
+            settings: serde_json::from_value(fixture["settings"].clone()).unwrap(),
+            usage: serde_json::from_value(fixture["usage"].clone()).unwrap(),
+            refreshing: false,
+            error: None,
+            attention: Some(AttentionCounts { total: 4, needs_you: 1 }),
+        };
+        assert_eq!(serde_json::to_value(&presentation).unwrap(), fixture);
+        let unknown = Presentation { attention: None, ..presentation };
+        assert_eq!(serde_json::to_value(&unknown).unwrap()["attention"], Value::Null);
     }
 }

@@ -19,6 +19,7 @@ import { isOutgoingItem } from "../transcript/outgoing";
 import { openExternalUrl } from "../externalLinks";
 import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
@@ -1478,32 +1479,31 @@ function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: str
 /// "fetched and empty" (a genuinely new chat) and keeps the greeting. It sits
 /// in the transcript's own column and padding, so the real rows replace it in
 /// place. No copy: shimmer bars plus a screen-reader label.
-const SKELETON_ROWS: readonly { kind: "user" | "prose" | "tool"; bars: readonly string[]; delay: string }[] = [
-  { kind: "user", bars: ["w-2/5"], delay: "[animation-delay:0ms]" },
-  { kind: "prose", bars: ["w-full", "w-11/12", "w-3/5"], delay: "[animation-delay:90ms]" },
-  { kind: "tool", bars: ["w-1/3"], delay: "[animation-delay:180ms]" },
-  { kind: "prose", bars: ["w-10/12", "w-2/5"], delay: "[animation-delay:270ms]" },
-  { kind: "user", bars: ["w-1/3"], delay: "[animation-delay:360ms]" },
-  { kind: "prose", bars: ["w-full", "w-3/4"], delay: "[animation-delay:450ms]" },
+const SKELETON_ROWS: readonly { kind: "user" | "prose" | "tool"; bars: readonly string[] }[] = [
+  { kind: "user", bars: ["w-2/5"] },
+  { kind: "prose", bars: ["w-full", "w-11/12", "w-3/5"] },
+  { kind: "tool", bars: ["w-1/3"] },
+  { kind: "prose", bars: ["w-10/12", "w-2/5"] },
+  { kind: "user", bars: ["w-1/3"] },
+  { kind: "prose", bars: ["w-full", "w-3/4"] },
 ];
 
 function ChatHistorySkeleton({ density }: { density: "comfortable" | "compact" }) {
-  return <div role="status" aria-label="Loading conversation" className={cn("absolute inset-0 overflow-hidden animate-skeleton-in",
+  return <SkeletonRegion label="Loading conversation" className={cn("absolute inset-0 overflow-hidden",
     density === "compact" ? "px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5" aria-hidden="true">
       {SKELETON_ROWS.map((row, index) => row.kind === "user"
-        ? <span key={index} data-skeleton-row="user" className={cn("skeleton-shimmer ml-auto block h-10 max-w-[85%] rounded-2xl", row.bars[0], row.delay)} />
+        ? <span key={index} data-skeleton-row="user" className="flex justify-end"><Skeleton index={index} className={cn("h-10 max-w-[85%] rounded-2xl", row.bars[0])} /></span>
         : row.kind === "tool"
           ? <span key={index} data-skeleton-row="tool" className="flex h-10 items-center gap-2.5 rounded-xl border border-border/70 px-3">
-            <span className={cn("skeleton-shimmer size-3.5 shrink-0 rounded", row.delay)} />
-            <span className={cn("skeleton-shimmer block h-2.5 rounded", row.bars[0], row.delay)} />
+            <Skeleton index={index} className="size-3.5 shrink-0" />
+            <Skeleton index={index} className={cn("h-2.5", row.bars[0])} />
           </span>
           : <span key={index} data-skeleton-row="prose" className="flex flex-col gap-3 py-1">
-            {row.bars.map(width => <span key={width} className={cn("skeleton-shimmer block h-3 rounded", width, row.delay)} />)}
+            {row.bars.map(width => <Skeleton key={width} index={index} className={width} />)}
           </span>)}
     </div>
-    <span className="sr-only">Loading conversation</span>
-  </div>;
+  </SkeletonRegion>;
 }
 
 function Empty({ title, copy, parts }: { title: string; copy: string; parts?: GreetingPart[] }) {

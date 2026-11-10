@@ -19,6 +19,8 @@ pub mod agent_integration;
 pub mod agent_lifecycle;
 pub mod analytics;
 pub mod attention;
+pub mod attention_presence;
+pub mod attention_wait;
 pub mod api;
 pub mod attribution_settings;
 pub mod delegation_notify;
@@ -47,6 +49,8 @@ pub mod browser_clone_signin;
 pub mod clone_browser_tool;
 #[cfg(all(test, target_os = "macos"))]
 mod clone_browser_eval;
+#[cfg(test)]
+mod orchestrator_wait_eval;
 /// Composes the clone process, guard, sign-in, and agent tool into the
 /// actual flow: approve, spawn, sign in, arm, drive, and destroy.
 #[cfg(target_os = "macos")]
@@ -123,6 +127,7 @@ pub mod opencode_adapter;
 mod opencode_v2;
 pub mod pi_adapter;
 pub mod orchestrator;
+pub mod orchestrator_wait;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;

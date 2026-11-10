@@ -4,6 +4,8 @@
 // finish after a short delay and announce `notes/page_changed` the way the
 // core does, and images kept by path.
 
+import humanArchitecture from "../testing/fixtures/excalidraw/human-architecture.excalidraw?raw";
+import agentLogin from "../testing/fixtures/excalidraw/agent-login.excalidraw?raw";
 import { rebaseDraft, noteDisplayTitle } from "./notesDraft";
 import type { CreateDatabaseParams, CreatePageParams, DatabaseGroup, DatabaseQueryResult, DatabaseRow, DeleteViewParams, EditPageParams, ListNotesParams, NoteBacklink, NoteDatabase, NoteDatabaseView, NoteJobQueued, NoteOption, NoteProperty, NoteSort, NoteViewInput, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, SplitItemParams, StructureNoteParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import { SEEDED_VIEWS } from "./notesSystemViews";
@@ -98,7 +100,21 @@ function seed() {
   );
   make("need to fix the onbaording flow, ppl drop at step 3\n- add a skip button\n- shorter copy on the welcome screen\nalso: pricing page idea, monthly vs yearly toggle", PERSON, {});
   // `bun run dev` opens on a database to try; tests keep the two pages above.
-  if (import.meta.env.MODE !== "test") seedMockReadingList();
+  if (import.meta.env.MODE !== "test") {
+    seedMockReadingList();
+    seedMockDrawings();
+  }
+}
+
+/** "Sign-in sketches": a drawing a person made and one an agent made, for
+ *  `bun run dev`. The same scenes the drawing tests and evals use. */
+function seedMockDrawings() {
+  const fence = (scene: string) => `\`\`\`excalidraw\n${scene.trim()}\n\`\`\``;
+  make(
+    `Backend as we drew it in the planning call. The red box is the one I want gone.\n\n${fence(humanArchitecture)}\n\nThe login flow, drawn by the notes agent:\n\n${fence(agentLogin)}\n`,
+    PERSON,
+    { title: "Sign-in sketches", state: "open", tags: ["design"] },
+  );
 }
 
 /** "Reading list": ten rows across every property type, for `bun run dev`. */

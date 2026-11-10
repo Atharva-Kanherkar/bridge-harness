@@ -40,7 +40,7 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null }) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -50,7 +50,9 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
         // User settings are required for user skills, commands, agents, and native
         // connector sign-in. Bridge's PreToolUse hook remains authoritative for
         // read-only workers even when user permissions contain broader allows.
-        settingSources: ["user", "project", "local"],
+        // A folder's own settings can run commands and widen permissions, so
+        // they load only for a folder Claude Code trusts (see trust.mjs).
+        settingSources: projectTrusted ? ["user", "project", "local"] : ["user"],
         skills: "all",
         strictMcpConfig: false,
         mcpServers,

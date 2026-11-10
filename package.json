@@ -61,6 +61,7 @@
     "@codemirror/search": "^6",
     "@codemirror/state": "^6",
     "@codemirror/view": "^6",
+    "@excalidraw/excalidraw": "^0.18.1",
     "@floating-ui/dom": "^1.8.0",
     "@fontsource-variable/bricolage-grotesque": "^5.2.10",
     "@fontsource-variable/dm-sans": "^5.2.8",

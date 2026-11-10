@@ -168,7 +168,10 @@ impl VisualServer {
             }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
-                let chat_tool = name.starts_with("notes_") || name.starts_with("memory_") || name.starts_with("outgoing_");
+                let chat_tool = name.starts_with("notes_")
+                    || name.starts_with("memory_")
+                    || name.starts_with("outgoing_")
+                    || name == crate::notes::tool::NOTIFY_USER;
                 if let (Some(notes), true) = (&self.notes, chat_tool) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                     reply(id, notes.call(name, &arguments))
@@ -262,7 +265,7 @@ mod tests {
         fn get(&self, path: &str) -> Result<Value, (u16, String)> {
             assert_eq!(path, "tools");
             match self.access {
-                Some("write") => Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set"]})),
+                Some("write") => Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set", "notes_draw"]})),
                 Some(_) => Ok(json!({"access": "read", "tools": ["notes_search", "notes_read"]})),
                 None => Err((0, "Bridge is not reachable".into())),
             }
@@ -349,6 +352,20 @@ mod tests {
     }
 
     #[test]
+    fn notify_user_is_forwarded_to_the_core_like_the_memory_tools() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let link = NotesLink::new(Box::new(MemoryCore { calls: calls.clone() }));
+        let mut server = VisualServer::with_notes(Some(link));
+        let asked = server
+            .handle(&request(2, "tools/call", json!({"name": "notify_user", "arguments": {"title": "Postgres or SQLite?"}})))
+            .unwrap();
+        assert_eq!(asked["result"]["isError"], false);
+        assert_eq!(calls.lock().unwrap()[0], ("notify_user".to_owned(), json!({"title": "Postgres or SQLite?"})));
+        let description = notes_tools::all_definitions().into_iter().find(|tool| tool["name"] == "notify_user").unwrap()["description"].as_str().unwrap().to_owned();
+        assert!(description.contains("Not for progress"), "{description}");
+    }
+
+    #[test]
     fn the_memory_tool_descriptions_carry_when_and_when_not() {
         let definitions = notes_tools::all_definitions();
         let describe = |name: &str| definitions.iter().find(|tool| tool["name"] == name).unwrap()["description"].as_str().unwrap().to_owned();
@@ -367,7 +384,7 @@ mod tests {
     fn notes_tools_listed_only_with_url_and_token() {
         assert_eq!(tool_names(&mut VisualServer::default()), vec!["visualize"]);
         let (mut server, calls) = with_core(Some("write"));
-        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set"]);
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_draw", "notes_set"]);
         let created = server.handle(&request(2, "tools/call", json!({"name": "notes_create", "arguments": {"title": "Sync libraries", "content": "- yrs"}}))).unwrap();
         assert_eq!(created["result"]["isError"], false);
         assert_eq!(created["result"]["structuredContent"]["created"]["id"], "p1");

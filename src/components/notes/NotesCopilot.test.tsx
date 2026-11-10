@@ -83,3 +83,16 @@ it("holds the docked chat to the same rule once the chat exists", async () => {
   expect(contextOf(sent[1])).toContain("seq 5");
   expect(sent[2]).toBe("hello");
 });
+
+it("offers to act on a drawing only on a page with one, and never sends its JSON", async () => {
+  const onAsk = vi.fn(async (_message: string) => true);
+  act(() => root.render(<NotesCopilot page={page(3)} onAsk={onAsk} />));
+  expect(host.textContent).not.toContain("Act on the drawing");
+  const drawn = page(4, "# Launch\n\n```excalidraw\n{\"type\":\"excalidraw\",\"elements\":[\n{\"id\":\"a\",\"type\":\"rectangle\"}\n]}\n```\n");
+  act(() => root.render(<NotesCopilot page={drawn} onAsk={onAsk} />));
+  await send("Act on the drawing");
+  const sent = splitNotesContext(onAsk.mock.calls[0][0]);
+  expect(sent.text).toContain("Read the drawing on the open page");
+  expect(sent.context).toContain("[drawing 1: call notes_read on this page");
+  expect(sent.context).not.toContain("\"elements\"");
+});

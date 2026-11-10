@@ -4,6 +4,7 @@
 // new change, so nothing in the history is ever lost, including the restore.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import { historyEntries, lineDiff, type HistoryEntry } from "../../notesHistory";
 import type { NotePage } from "../../types";
@@ -82,7 +83,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
             {failure && <p role="alert" className="m-0 text-[13px] text-destructive">{failure}</p>}
-            {!failure && !shown && <p className="m-0 text-[13px] text-muted-foreground">Loading…</p>}
+            {!failure && !shown && <SkeletonRegion label="Loading version"><SkeletonText lines={6} /></SkeletonRegion>}
             {shown && view === "version" && <div className="note-md"><Markdown text={shown.markdown} /></div>}
             {shown && view === "changes" && (same
               ? <p className="m-0 text-[13px] text-muted-foreground">This is the page as it is now.</p>

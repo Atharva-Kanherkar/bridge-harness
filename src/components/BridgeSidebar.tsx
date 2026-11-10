@@ -5,7 +5,7 @@ import {  Archive, Check, Clock, Bot,
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
-import type { Session, SessionStatus, Workspace } from "../types";
+import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
@@ -54,10 +54,12 @@ function toggleKey(keys: Set<string>, key: string): Set<string> {
 }
 
 // Working, waiting, and failure states pair a status dot with readable text.
-function rowStatus(status: SessionStatus, liveAgents = 0): { label: string; dot: string } | null {
+// An unread request anywhere in the chat's tree reads as waiting too: workers
+// never get a row, so their approvals surface on the chat that started them.
+function rowStatus(status: SessionStatus, liveAgents = 0, unread?: AttentionKind): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
+  if (bucket === "waiting" || unread === "needsYou") return { label: "needs you", dot: "bg-warning" };
   if (bucket === "active") return { label: "working", dot: "bg-success" };
-  if (bucket === "waiting") return { label: "needs you", dot: "bg-warning" };
   if (bucket === "failed") return { label: "failed", dot: "bg-destructive" };
   // The orchestrator's turn is over but the agents it started are not. A
   // different dot, because the chat is busy without being the one working.
@@ -77,6 +79,7 @@ function ChatRow({
   forkLabel,
   onJumpToParent,
   liveAgents,
+  unread,
 }: {
   chat: Session;
   active: boolean;
@@ -90,12 +93,14 @@ function ChatRow({
   onJumpToParent?: () => void;
   /** Live agents under this chat, counted by the host from every session. */
   liveAgents?: number;
+  /** The strongest unread kind in this chat's tree, from the attention ledger. */
+  unread?: AttentionKind;
 }) {
   const name = chatName(chat);
   // The hover names the chat in full: the ladder's longest rung, whatever width shows.
   const full = chat.titleLadder?.at(-1) ?? name;
   const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
-  const status = rowStatus(chat.status, liveAgents);
+  const status = rowStatus(chat.status, liveAgents, unread);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -118,11 +123,15 @@ function ChatRow({
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-        <FittedTitle
-          title={name}
-          ladder={chat.title ? chat.titleLadder : undefined}
-          className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}
-        />
+        {unread && <span className="sr-only">Unread: </span>}
+        <span className="flex min-w-0 items-center gap-1.5">
+          {unread && <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />}
+          <FittedTitle
+            title={name}
+            ladder={chat.title ? chat.titleLadder : undefined}
+            className={cn("min-w-0 flex-1 truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", (active || unread) && "font-medium")}
+          />
+        </span>
         {/* The fork origin is extra context, not a replacement for the status
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}
@@ -429,6 +438,9 @@ export type BridgeSidebarProps = {
   /** Each chat's live descendant agents. Workers never reach `chats`, so the
    * host counts them from every session and hands the answer in. */
   liveAgents?: LiveAgents;
+  /** Top-level chat id to the strongest unread kind in its tree
+   * (`attention/unread_summary`'s `byChat`). */
+  unread?: Readonly<Record<string, AttentionKind>>;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
@@ -499,6 +511,7 @@ export type BridgeSidebarProps = {
 export function BridgeSidebar({
   chats,
   liveAgents,
+  unread,
   workspaces,
   activeSessionId,
   projectsActive,
@@ -925,6 +938,7 @@ export function BridgeSidebar({
                     forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                     liveAgents={liveAgents?.get(chat.id)?.length}
+                    unread={unread?.[chat.id]}
                   />
                 );
               })}

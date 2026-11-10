@@ -37,6 +37,7 @@ const groupSeries = (group: string) => GROUP_SERIES[group] ?? 2;
 const GROUP_LABEL: Record<string, string> = { developer: "Developer", caches: "Cache", files: "Files" };
 
 const TILE = "rounded-xl border border-border bg-card";
+const PLACEHOLDER = "inline-block h-[0.75em] w-[3.5em] rounded-full bg-foreground/10 align-middle motion-safe:animate-pulse";
 
 const ROOTS = [
   { label: "Home", path: null },
@@ -61,7 +62,11 @@ function SectionHeading({ title, detail, action }: { title: string; detail?: Rea
 
 function Size({ entry }: { entry: Pick<DiskEntry, "sizeBytes" | "measuring"> & { partial?: boolean } }) {
   if (entry.sizeBytes === null || entry.sizeBytes === undefined) {
-    return <span className="text-muted-foreground motion-safe:animate-pulse">{entry.measuring ? "Measuring" : "—"}</span>;
+    // Still being measured: a quiet bar the size of a number, not a word
+    // repeated on every row. `em` keeps it in step with the text it replaces.
+    return entry.measuring
+      ? <span role="status" aria-label="Measuring" className={PLACEHOLDER} />
+      : <span className="text-muted-foreground">—</span>;
   }
   return <span title={entry.partial ? "Some items inside could not be read, so this is a lower bound." : undefined}>
     {entry.partial ? "≥ " : ""}{diskBytes(entry.sizeBytes)}
@@ -90,7 +95,10 @@ function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
 }) {
   const volume = overview?.volume;
   if (!volume) return null;
-  const top = (home?.entries ?? []).filter(entry => (entry.sizeBytes ?? 0) > 0).slice(0, SERIES.length);
+  // Slivers under half a percent of the disk fold into "other", so while the
+  // folders are still measuring a stray file never earns a colour.
+  const top = (home?.entries ?? []).filter(entry => (entry.sizeBytes ?? 0) >= volume.totalBytes * 0.005).slice(0, SERIES.length);
+  const pending = home?.measuring ? Math.max(Math.min(4, SERIES.length - top.length), 0) : 0;
   const named = top.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0);
   const other = Math.max(volume.usedBytes - named, 0);
   const share = (value: number) => `${Math.max((value / volume.totalBytes) * 100, value > 0 ? 0.4 : 0)}%`;
@@ -123,6 +131,10 @@ function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
             <span className="min-w-0 flex-1 truncate text-foreground">{entry.name}</span>
             <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(entry.sizeBytes)}</span>
           </button>
+        </li>)}
+        {Array.from({ length: pending }, (_, index) => <li key={`pending-${index}`} aria-hidden="true" className="flex items-center gap-2 px-1.5 py-1 text-caption">
+          <span className="size-2.5 shrink-0 rounded-[3px] bg-foreground/10" />
+          <span className={cn(PLACEHOLDER, "w-[7em]")} />
         </li>)}
         <li className="flex items-center gap-2 px-1.5 py-1 text-caption">
           <span className={cn("size-2.5 shrink-0 rounded-[3px]", OTHER)} />
@@ -217,22 +229,22 @@ function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onT
   return <section aria-label="Everything on this Mac">
     <SectionHeading
       title="Everything on this Mac"
-      detail={listing ? <>{diskBytes(listing.sizeBytes)}{listing.measuring ? " so far, still measuring" : ""}</> : undefined}
+      detail={listing ? <span className="flex items-center gap-1.5">{diskBytes(listing.sizeBytes)}{listing.measuring && <span role="status" aria-label="Still measuring" title="Still measuring" className="size-1.5 rounded-full bg-muted-foreground motion-safe:animate-pulse" />}</span> : undefined}
       action={<>
-        <span role="group" aria-label="Start from" className="flex rounded-lg bg-muted p-0.5">
+        <span role="group" aria-label="Start from" className="flex rounded-lg bg-muted p-0.5 text-caption">
           {ROOTS.map(item => <button
             key={item.label}
             type="button"
             aria-pressed={(root ?? null) === item.path}
             onClick={() => onRoot(item.path)}
-            className={cn("rounded-md px-2.5 py-1 text-caption outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", (root ?? null) === item.path ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
+            className={cn("rounded-md px-2.5 py-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", (root ?? null) === item.path ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
           >{item.label}</button>)}
         </span>
         <TextButton onClick={onRefresh} disabled={busy} ariaLabel="Measure this folder again">Remeasure</TextButton>
       </>}
     />
     <div className={cn(TILE, "overflow-hidden")}>
-      <div className="border-b border-border px-3 py-2">{listing ? <Breadcrumb path={listing.path} home={overview?.home} onOpen={onOpen} /> : <span className="text-caption text-muted-foreground">Measuring…</span>}</div>
+      <div className="border-b border-border px-3 py-2">{listing ? <Breadcrumb path={listing.path} home={overview?.home} onOpen={onOpen} /> : <span role="status" aria-label="Measuring" className={cn(PLACEHOLDER, "w-[9em] text-caption")} />}</div>
       {listing?.unreadable && <p className="px-3 pt-3 text-caption text-muted-foreground">{listing.unreadable}</p>}
       <ul className="divide-y divide-border/50">
         {listing?.entries.map((entry, index) => {
@@ -329,6 +341,8 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
     } catch (caught) { fail(caught); }
   }, [fail, home]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- once per visit
+  useEffect(() => { copilot?.onVisit?.(); }, []);
   useEffect(() => { void load(path); }, [path]); // eslint-disable-line react-hooks/exhaustive-deps -- reload on navigation only
 
   const measuring = Boolean(overview?.measuring || listing?.measuring || home?.measuring);
@@ -435,7 +449,10 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
           <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
         </header>
         {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
-        {!overview && !error && <p role="status" className="text-caption text-muted-foreground">Looking at your disk…</p>}
+        {!overview && !error && <div role="status" aria-label="Looking at your disk" className="grid gap-3 @2xl/storage:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+          <div className={cn(TILE, "h-48 motion-safe:animate-pulse")} />
+          <div className={cn(TILE, "h-48 motion-safe:animate-pulse")} />
+        </div>}
         <DiskSummary overview={overview} home={home} onOpen={open} onEmptyTrash={() => setConfirming("empty-trash")} busy={busy} />
 
         {note && <p role="status" className="-mt-6 text-caption text-muted-foreground">{note}</p>}

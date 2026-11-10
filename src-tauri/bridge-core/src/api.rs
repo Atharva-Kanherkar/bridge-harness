@@ -4361,6 +4361,17 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+/// Deliver a chat's queued input now, resuming its adapter if it is gone.
+pub fn deliver_queued_input(core: &Arc<BridgeCore>, params: &wire::DeliverQueuedInputParams) -> Result<wire::DeliverQueuedInputResult, BridgeError> {
+    use crate::live_turn::QueuedDelivery;
+    let disposition = match crate::live_turn::deliver_queued_now(core, &params.session_id)? {
+        QueuedDelivery::Delivered => wire::QueuedInputDelivery::Delivered,
+        QueuedDelivery::NothingQueued => wire::QueuedInputDelivery::NothingQueued,
+        QueuedDelivery::AfterCurrentTurn => wire::QueuedInputDelivery::AfterCurrentTurn,
+    };
+    Ok(wire::DeliverQueuedInputResult { disposition })
+}
+
 pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams) -> Result<wire::ListAttentionResult, BridgeError> {
     let page = crate::attention::list(&core.db.lock().unwrap(), params.after_sequence, params.limit, params.unseen_only)?;
     Ok(wire::ListAttentionResult {
@@ -4369,16 +4380,56 @@ pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams
     })
 }
 
+fn wire_attention_kind(kind: crate::attention::AttentionKind) -> wire::AttentionKind {
+    use crate::attention::AttentionKind;
+    match kind {
+        AttentionKind::Finished => wire::AttentionKind::Finished,
+        AttentionKind::Failed => wire::AttentionKind::Failed,
+        AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
+        AttentionKind::Escalation => wire::AttentionKind::Escalation,
+        AttentionKind::Posted => wire::AttentionKind::Posted,
+    }
+}
+
+/// Wait on a chat's ledger state. Blocks the calling thread, never a lock.
+pub fn wait_session(core: &Arc<BridgeCore>, params: &wire::WaitParams) -> Result<wire::WaitResult, BridgeError> {
+    use crate::attention_wait::WaitState;
+    let until = params
+        .until
+        .iter()
+        .map(|state| match state {
+            wire::WaitState::Finished => Ok(WaitState::Finished),
+            wire::WaitState::Failed => Ok(WaitState::Failed),
+            wire::WaitState::NeedsYou => Ok(WaitState::NeedsYou),
+            wire::WaitState::Idle => Ok(WaitState::Idle),
+            wire::WaitState::Other => Err(BridgeError::Invalid("unknown state in until".into())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let outcome = crate::attention_wait::wait(
+        core,
+        &params.session_id,
+        &until,
+        params.timeout_ms.map(std::time::Duration::from_millis),
+        params.after_sequence,
+    )?;
+    Ok(wire::WaitResult {
+        state: match outcome.state {
+            WaitState::Finished => wire::WaitState::Finished,
+            WaitState::Failed => wire::WaitState::Failed,
+            WaitState::NeedsYou => wire::WaitState::NeedsYou,
+            WaitState::Idle => wire::WaitState::Idle,
+        },
+        matched: outcome.matched,
+        item: outcome.item.map(attention_item),
+    })
+}
+
 fn attention_item(row: crate::attention::AttentionRow) -> wire::AttentionItem {
-    use crate::attention::{AttentionKind, Severity};
+    use crate::attention::Severity;
     wire::AttentionItem {
         sequence: row.sequence,
         id: row.id,
-        kind: match row.kind {
-            AttentionKind::Finished => wire::AttentionKind::Finished,
-            AttentionKind::Failed => wire::AttentionKind::Failed,
-            AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
-        },
+        kind: wire_attention_kind(row.kind),
         severity: match row.severity {
             Severity::Informational => wire::AttentionSeverity::Informational,
             Severity::Actionable => wire::AttentionSeverity::Actionable,
@@ -4401,6 +4452,53 @@ pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionS
         core.events.publish(CoreEvent::AttentionChanged);
     }
     Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
+}
+
+/// An agent asks for the person. Posts one `posted` row for the chat, or says
+/// the chat is rate limited.
+pub fn post_attention(core: &Arc<BridgeCore>, params: &wire::PostParams) -> Result<wire::PostResult, BridgeError> {
+    let severity = match params.severity {
+        Some(wire::AttentionSeverity::Actionable) => crate::attention::Severity::Actionable,
+        _ => crate::attention::Severity::Informational,
+    };
+    let outcome = crate::attention::post(
+        &core.db.lock().unwrap(),
+        &params.session_id,
+        &params.title,
+        params.body.as_deref(),
+        severity,
+        chrono::Utc::now(),
+    )?;
+    Ok(match outcome {
+        crate::attention::PostOutcome::Shown(_) => {
+            core.events.publish(CoreEvent::AttentionChanged);
+            wire::PostResult { shown: true, reason: wire::PostReason::Shown }
+        }
+        crate::attention::PostOutcome::RateLimited => wire::PostResult { shown: false, reason: wire::PostReason::RateLimited },
+    })
+}
+
+/// Renew one client's presence lease and say whether it posts OS banners.
+pub fn report_presence(core: &Arc<BridgeCore>, params: &wire::ReportPresenceParams) -> Result<wire::ReportPresenceResult, BridgeError> {
+    let kind = match params.client_kind {
+        wire::PresenceClientKind::Desktop => crate::attention_presence::ClientKind::Desktop,
+        wire::PresenceClientKind::Web => crate::attention_presence::ClientKind::Web,
+    };
+    let banner_owner = core.attention_presence.report(&params.client_id, kind, params.can_post_banners, params.focused, params.gone, std::time::Instant::now());
+    Ok(wire::ReportPresenceResult { banner_owner })
+}
+
+/// What is still unread, rolled up to the chats a person sees. Clients reread
+/// it on `attention/changed`.
+pub fn unread_summary(core: &Arc<BridgeCore>) -> Result<wire::UnreadSummary, BridgeError> {
+    let summary = crate::attention::unread_summary(&core.db.lock().unwrap())?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(wire::UnreadSummary {
+        total: count(summary.total()),
+        needs_you: count(summary.needs_you()),
+        by_chat: summary.by_chat.into_iter().map(|(id, kind)| (id, wire_attention_kind(kind))).collect(),
+        by_session: summary.by_session.into_iter().map(|(id, kind)| (id, wire_attention_kind(kind))).collect(),
+    })
 }
 
 pub fn get_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::GetDelegationNotifySettingsParams) -> Result<wire::DelegationNotifySettingsView, BridgeError> {

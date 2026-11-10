@@ -13,7 +13,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -61,7 +61,13 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { useAttentionSettings } from "./attentionSettings";
+import { playAttentionSound } from "./attentionSound";
+import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
 import { useAttentionFeed } from "./useAttentionFeed";
+import { useBannerOwner } from "./useBannerOwner";
+import { useUnreadSummary } from "./useUnreadSummary";
+import { useWindowFocused } from "./useWindowFocused";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
@@ -120,7 +126,7 @@ import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
 import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
-import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { readStorageChatHistory, rememberStorageChat, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE } from "./storageChat";
 import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
 import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
@@ -128,8 +134,8 @@ import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFrom
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
+import { WEB_NOTIFICATION_OPEN } from "./webNotify";
 import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
-import { isMacPlatform } from "./lib/platform";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -472,7 +478,9 @@ function AppContent() {
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
-  const [storageChatId, setStorageChatId] = useState(readStorageChatId);
+  // The rail opens blank; earlier storage chats stay one click away in Recent.
+  const [storageChatId, setStorageChatId] = useState<string | null>(null);
+  const [storageChatHistory, setStorageChatHistory] = useState(readStorageChatHistory);
   const [storageChatStarting, setStorageChatStarting] = useState(false);
   const [notesChatId, setNotesChatId] = useState(readNotesChatId);
   const [notesChatStarting, setNotesChatStarting] = useState(false);
@@ -694,9 +702,19 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
+  // A browser notification clicked (web client): open the chat it was about.
+  useEffect(() => {
+    const open = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: unknown }>).detail?.sessionId;
+      if (typeof sessionId === "string" && sessionId) openSessionRef.current(sessionId);
+    };
+    window.addEventListener(WEB_NOTIFICATION_OPEN, open);
+    return () => window.removeEventListener(WEB_NOTIFICATION_OPEN, open);
+  }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
+    // Linux (notify-rust) and macOS (Notification Center) both report clicks.
+    if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void import("@tauri-apps/api/event").then(({ listen }) => listen(ACTION_EVENT, async event => {
@@ -719,20 +737,34 @@ function AppContent() {
   // Attention notifications come from the core ledger: core decides what a
   // person should know about (a worker finishing is its orchestrator's
   // business; a worker asking for approval is the person's), and the feed
-  // hands over each new row once. In-app glass toasts always enqueue;
-  // `notifyAttention` still gates the OS banner on Bridge not being focused,
-  // and on Linux the row's approval id lets the banner answer it in place.
+  // hands over each new row once. `decide` turns it into a toast, an OS
+  // banner, or nothing: nothing for the chat on screen in a focused window,
+  // and a banner only while Bridge is in the background. On Linux the row's
+  // approval id lets the banner answer it in place.
   const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
   const attentionSessionsRef = useRef<Session[]>(state.sessions);
   attentionSessionsRef.current = state.sessions;
+  const presenceRef = useRef<Presence>({ focused: false, onScreen: new Set() });
+  const attentionSettings = useAttentionSettings();
+  const attentionSettingsRef = useRef(attentionSettings);
+  attentionSettingsRef.current = attentionSettings;
   const showAttention = useCallback((item: AttentionItem) => {
     const sessionId = item.sessionId;
-    if (!sessionId) return;
+    const decision = decide(item, presenceRef.current, attentionSettingsRef.current);
+    if (!sessionId || !decision) return;
     const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
-    const toast: AttentionToast = { key: attentionToastKey(item), sessionId, copy, firedAt: Date.now() };
+    const toast: AttentionToast = {
+      key: attentionToastKey(item),
+      sessionId,
+      copy,
+      firedAt: Date.now(),
+      durationMs: decision.durationMs,
+      ...(item.kind === "escalation" ? { actionLabel: "Deliver now" } : {}),
+    };
     // Newest per chat wins, like the ledger itself.
-    setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-3));
-    void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+    if (decision.toast) setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-TOAST_QUEUE_MAX));
+    if (decision.banner) void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+    if (decision.sound) playAttentionSound(item.kind, item.severity);
   }, []);
   useAttentionFeed(showAttention);
   // Opening a chat is seeing it, on every client. Keyed on the view too: the
@@ -742,6 +774,28 @@ function AppContent() {
   useEffect(() => {
     if (selectedSessionId && view === "workspace") void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
   }, [selectedSessionId, view]);
+  // What is still unread: the sidebar dots and the dock badge. Keyed on the
+  // session ids too, because archiving a chat changes the count without
+  // moving the ledger.
+  const sessionIdsKey = useMemo(() => state.sessions.map(item => item.id).sort().join(","), [state.sessions]);
+  const unread = useUnreadSummary(sessionIdsKey);
+  // Keyed on needsYou too: the native menu bar wakes on this event and words
+  // its row from it, so a finished chat that starts waiting at the same total
+  // must still be sent. The Dock just sets the same count again.
+  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
+  // The chat on screen in a focused window never stays unread: a turn that
+  // ends while you watch, or one that ended while Bridge was in the
+  // background, is seen once you are looking at it.
+  const windowFocused = useWindowFocused();
+  const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
+  const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  // Core names one client to post OS banners, so a second client on the same
+  // daemon does not raise a second banner for the same event.
+  const bannerOwner = useBannerOwner(windowFocused);
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []), bannerOwner };
+  useEffect(() => {
+    if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
+  }, [onScreenUnread, onScreenSessionId, unread]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -2023,7 +2077,7 @@ function AppContent() {
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the storage chat but did not return its session");
       setState(next);
-      writeStorageChatId(created.id);
+      setStorageChatHistory(rememberStorageChat(created.id));
       setStorageChatId(created.id);
       await deliverPrompt(created, prompt);
     } finally {
@@ -2031,22 +2085,41 @@ function AppContent() {
       setStorageChatStarting(false);
     }
   }
+  const storageRecent = storageChatHistory
+    .map(id => state.sessions.find(candidate => candidate.id === id))
+    .filter((candidate): candidate is Session => !!candidate && candidate.id !== storageChatId)
+    .slice(0, 5)
+    .map(candidate => ({ id: candidate.id, title: candidate.title || candidate.label, at: candidate.startedAt ?? "" }));
+  const storageWorking = !!storageSession && (!!storageSession.activeTurnId || storageSession.status === "working");
   const storageCopilot: StorageCopilotHost = {
     ask: prompt => void askStorage(prompt).catch(e => setError(errorMessage(e))),
+    // A visit starts on a blank rail, unless a reply is still coming in.
+    onVisit: () => { if (!storageWorking) setStorageChatId(null); },
     render: (brief, selectedCount) => <StorageCopilot
       selectedCount={selectedCount}
       starting={storageChatStarting}
+      recent={storageRecent}
+      onOpenRecent={setStorageChatId}
       onAsk={question => void askStorage(brief(question)).catch(e => setError(errorMessage(e)))}
       chat={storageSession && <AsideChat
         docked
         tag="storage"
+        placeholder="Ask about your storage…"
+        headerActions={<button
+          type="button"
+          onClick={() => setStorageChatId(null)}
+          disabled={storageWorking}
+          title="New chat"
+          aria-label="New storage chat"
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+        ><SquarePen size={14} aria-hidden="true" /></button>}
         session={storageSession}
         adapters={adapters}
         accounts={providerAccounts}
         events={agentEvents}
         pendingMessages={storagePending}
         queuedFollowUpCount={queuedFollowUps(storageSession.id, state.events).length}
-        working={!!storageSession.activeTurnId || storageSession.status === "working"}
+        working={storageWorking}
         suggestionSettings={suggestionSettings}
         modelSwitch={modelSwitch?.sessionId === storageSession.id ? modelSwitch : null}
         onSend={(text, attachments) => deliverPrompt(storageSession, brief(text), attachments)}
@@ -3284,6 +3357,7 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      unread={unread.byChat}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
@@ -3917,6 +3991,14 @@ function AppContent() {
         openSession(toast.sessionId);
       }}
       onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+      onAction={toast => {
+        // The only remedy so far: deliver input stranded behind a stopped agent.
+        // Any answer means the queue is handled; a failure rejects, and the
+        // card stays so the person can try again.
+        void bridgeApi.deliverQueuedInput(toast.sessionId)
+          .then(() => setAttentionToasts(current => current.filter(item => item.key !== toast.key)))
+          .catch(error => setError(errorMessage(error)));
+      }}
     />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     {INBOX_PANE_ENABLED && <ConnectorToasts
@@ -3933,7 +4015,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
-    </div>
+    {/* Last: an update can wait behind anything happening now. */}
     {availableUpdate && (
       <UpdateToast
         key={`${availableUpdate.channel}:${availableUpdate.version}`}
@@ -3942,6 +4024,7 @@ function AppContent() {
         onDismiss={() => setAvailableUpdate(undefined)}
       />
     )}
+    </div>
 
     <ProviderSignInDialog
       provider={loginProvider}

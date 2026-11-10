@@ -116,6 +116,8 @@ pub struct BridgeCore {
     pub github_surface: crate::github_surface::GithubSurface,
     pub github_poller: crate::github_poll::GithubPoller,
     pub connector_poller: crate::connector_runs_live::ConnectorPoller,
+    /// Short presence leases that name the one client posting OS banners.
+    pub attention_presence: crate::attention_presence::PresenceRegistry,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
@@ -244,6 +246,10 @@ pub struct DelegationState {
     /// A stop is queued like a steer, but it is a decision rather than
     /// guidance: it settles the worker whether or not the worker cooperates.
     pub pending_worker_stops: HashMap<String, Vec<delegation::StopRequest>>,
+    /// A `bridge-wait` arms at the turn boundary, after the turn's own
+    /// delegations have launched, so `"all"` covers the workers it just started.
+    /// One per orchestrator: the last block of the turn wins.
+    pub pending_worker_waits: HashMap<String, delegation::WaitRequest>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
@@ -368,6 +374,7 @@ impl BridgeCore {
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
+            attention_presence: crate::attention_presence::PresenceRegistry::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             chat_activity: Mutex::new(HashMap::new()),
@@ -528,6 +535,7 @@ impl BridgeCore {
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
+            attention_presence: crate::attention_presence::PresenceRegistry::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             chat_activity: Mutex::new(HashMap::new()),

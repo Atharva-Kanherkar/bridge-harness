@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LoaderCircle as CircleNotch } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath } from "../../types";
 import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT, selectCloneBrowser } from "../../cloneSettings";
@@ -34,9 +34,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
 
   if (!snapshot) {
     return <SettingsPage title="Browser copies">
-      <SettingsGroup>
-        <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
-      </SettingsGroup>
+      <SkeletonRows label="Loading browser copies" rows={3} lead="icon" trailing />
     </SettingsPage>;
   }
 

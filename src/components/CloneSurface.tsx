@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, LoaderCircle, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
@@ -130,7 +131,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
       {onClose && <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Clone Surface"><ChevronRight size={14} /></Button>}
     </header>
 
-    {!snapshot ? <div className="grid flex-1 place-items-center text-muted-foreground"><LoaderCircle className="animate-spin" size={18} /></div>
+    {!snapshot ? <div className="min-h-0 flex-1 overflow-hidden p-4"><SkeletonRows label="Loading clone" rows={3} lead="icon" /></div>
       : status === "none" ? <div className="flex flex-1 items-center justify-center overflow-y-auto px-6 py-8">
           <div className="w-full max-w-sm">
             <div className="grid size-10 place-items-center rounded-xl border border-border bg-muted/50"><Globe size={18} className="text-foreground" aria-hidden="true" /></div>

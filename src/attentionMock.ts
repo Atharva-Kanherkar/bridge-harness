@@ -2,7 +2,7 @@
 // tests read. Same rules as `bridge_core::attention` — a new row supersedes
 // the chat's older unseen rows, reads skip superseded rows, and seen is
 // per chat — so a mock-mode screen behaves like the real one.
-import type { AttentionItem, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult } from "./protocol/generated/protocol";
+import type { AttentionItem, AttentionKind, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, UnreadSummary } from "./protocol/generated/protocol";
 
 type StoredItem = AttentionItem & { superseded: boolean };
 
@@ -75,6 +75,45 @@ export function mockMarkAttentionSeen(sessionId: string): MarkAttentionSeenResul
   }
   if (updated) changed();
   return { updated };
+}
+
+/** How strongly a kind claims a chat's row, as in core's rollup. */
+const STRENGTH: Partial<Record<AttentionKind, number>> = { needsYou: 5, escalation: 4, posted: 3, failed: 2, finished: 1 };
+
+/**
+ * The unread summary core would answer. `parentOf` gives a live session's
+ * parent: `null` for a top-level chat, `undefined` for one that is gone or
+ * archived. A session is unread while its newest row is unseen and
+ * unanswered, and rolls up to the top-level chat above it.
+ */
+export function mockUnreadSummary(parentOf: (sessionId: string) => string | null | undefined): UnreadSummary {
+  const newest = new Map<string, StoredItem>();
+  for (const row of rows) if (row.sessionId) newest.set(row.sessionId, row);
+  const byChat: Record<string, AttentionKind> = {};
+  const bySession: Record<string, AttentionKind> = {};
+  for (const [sessionId, row] of newest) {
+    const strength = STRENGTH[row.kind];
+    if (row.seenAt || row.resolvedAt || !strength || parentOf(sessionId) === undefined) continue;
+    bySession[sessionId] = row.kind;
+    let current = sessionId;
+    let root: string | undefined;
+    const visited = new Set<string>();
+    while (!visited.has(current)) {
+      visited.add(current);
+      const parent = parentOf(current);
+      if (parent === undefined) break;
+      if (parent === null) { root = current; break; }
+      current = parent;
+    }
+    if (root && strength > (STRENGTH[byChat[root]] ?? 0)) byChat[root] = row.kind;
+  }
+  const chats = Object.values(byChat);
+  return {
+    total: chats.length,
+    needsYou: chats.filter(kind => kind === "needsYou" || kind === "escalation").length,
+    byChat,
+    bySession,
+  };
 }
 
 export function onMockAttentionChanged(handler: () => void): () => void {

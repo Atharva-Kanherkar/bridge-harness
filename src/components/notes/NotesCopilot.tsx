@@ -9,10 +9,11 @@ import { ArrowUp, X } from "lucide-react";
 import { notesContext, withNotesContext } from "../../notesBrief";
 import type { NotePage } from "../../types";
 
-export interface NotesQuickAsk { label: string; prompt: string; needsPage: boolean }
+export interface NotesQuickAsk { label: string; prompt: string; needsPage: boolean; needsDrawing?: boolean }
 
 /** Starting points, each a whole request. */
 export const NOTES_QUICK_ASKS: NotesQuickAsk[] = [
+  { label: "Act on the drawing", prompt: "Read the drawing on the open page. Say in two lines what it shows and what I marked. If it asks for something, do it; if it lays out a choice, decide and say why; otherwise propose next steps. Add to the drawing with notes_draw when that makes the answer clearer, and leave what I drew alone.", needsPage: true, needsDrawing: true },
   { label: "Summarize this page", prompt: "Summarize the open page in five bullets. Don't change it.", needsPage: true },
   { label: "What's missing?", prompt: "What is missing or unclear on the open page? Ask me; don't edit it.", needsPage: true },
   { label: "Research and write it up", prompt: "Research what the open page is about and write what you find as a new page under it.", needsPage: true },
@@ -41,7 +42,8 @@ export function NotesCopilot({ page, projectName, starting = false, onAsk, onClo
   const ask = (text: string) => void send(text, async message => {
     if (!(await onAsk(message))) throw new Error("not sent");
   }).catch(() => undefined);
-  const asks = NOTES_QUICK_ASKS.filter(item => page || !item.needsPage);
+  const drawn = !!page && /^ {0,3}(`{3,}|~{3,})[ \t]*excalidraw\b/im.test(page.markdown);
+  const asks = NOTES_QUICK_ASKS.filter(item => (page || !item.needsPage) && (drawn || !item.needsDrawing));
   const chat = renderChat?.(send);
 
   return <div className="flex h-full min-h-0 flex-col">

@@ -41,6 +41,7 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 - **Icons:** `lucide-react`. Keep unused icon imports out (the build is strict).
 - **Fonts:** Geist Variable (`font-sans`) for body, Bricolage Grotesque Variable (`font-display`) for headings, Geist Mono Variable (`font-mono`) for code — loaded via `@fontsource-variable/*` in `main.tsx` and wired through `@theme` tokens.
 - **Glass:** macOS-style frosted glass comes from the `.u-glass` (panels), `.u-glass-popover` (menus/toasts/dialogs), `.u-glass-soft` (cards/rows/inputs), and `.u-segmented` / `.u-segmented-item` (segmented controls) classes in `src/index.css`. Prefer them over hand-rolled `bg-white/[0.0x] backdrop-blur-*` combinations.
+- **Loading states:** one look everywhere, from [`src/components/ui/skeleton.tsx`](src/components/ui/skeleton.tsx). Content whose shape you know gets a skeleton on its first load (`SkeletonRows` for lists and settings groups, `SkeletonCards` for card grids, `SkeletonText` for prose, `Skeleton` + `SkeletonRegion` for anything bespoke). An action in flight spins inside the control that started it (Install, Refresh, Save), never alone in an empty pane. A named multi-step wait (setup, an analysis, a harness starting) may narrate one line, above a skeleton rather than instead of one. A reload keeps the last data on screen. Don't hand-roll `animate-pulse` bars or reuse `.skeleton-shimmer` directly; `src/designSystem.test.ts` fails the build on both.
 - **Transcript:** the conversation surface behaves the same for every agent, and [`docs/transcript-behavior-contract.md`](docs/transcript-behavior-contract.md) says exactly how: one thinking component, grouping invariants, stream-state meanings, and a harness id that is display and never behavior.
 - **Observability:** what Bridge records, what it deliberately does not, and how to read or export it is in [`docs/observability.md`](docs/observability.md). The transcript pane's facet, turn and problem rules live there too.
 - **Tests:** colocated `*.test.ts(x)` run under Vitest. Add coverage for logic in `utils`, `conversation`, `observability`, and `usage`.
@@ -54,6 +55,15 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 - **For agents** — repro, suspected cause with `file:line`, files and symbols to touch, wire/protocol changes, acceptance criteria, tests to add, what is out of scope. Exhaustive, because an agent that re-derives context re-derives it wrong.
 
 Start from a template in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE) and you pass by filling it in. `gh issue create` bypasses templates, so write both sections by hand. The rule lives in [`scripts/issue-format.mjs`](scripts/issue-format.mjs) and is tested under `bun run test`; the full spec, including the `format-exempt` escape hatch, is [`docs/issue-format.md`](docs/issue-format.md).
+
+## Pull requests: plan note first, PR notes last
+
+**Every PR goes through two notes.** Full rule: [`docs/pr-format.md`](docs/pr-format.md).
+
+1. **Plan note, before any code.** In Bridge, a Bridge note (`notes_create`); elsewhere, a comment on the issue. Sections: **What**, **Why** (with a Mermaid diagram), **How**. It is two-way: the person edits it too, so re-read it before coding and before opening the PR. Their edits win.
+2. **PR notes, in the PR body.** Start from [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), link the plan note and issue, then fill **What I did**, **Codebase affected**, **Users affected**, **Tests I ran** (commands and output pasted unedited in a fenced block), **Tradeoffs and risks**. In Bridge, also save them as a note under the plan note.
+
+The **PR notes** CI check ([`scripts/pr-format.mjs`](scripts/pr-format.mjs)) fails a body missing any section. Run `node scripts/pr-format.mjs body.md` before `gh pr create`, which bypasses the template.
 
 ## Memory surface
 

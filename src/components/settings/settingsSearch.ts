@@ -30,6 +30,8 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "general", label: "Active-turn behavior", description: "Steer or Queue messages sent while an agent is working" },
   { section: "menuBar", label: "Menu Bar icon", description: "Show the icon, quota used or remaining, and today's spend" },
   { section: "menuBar", label: "Providers & accounts", description: "Codex account, plan, token and model breakdown, refresh interval" },
+  { section: "notifications", label: "Notices", description: "Toast, banner and sound for needs you, a waiting result, failed and completed turns" },
+  { section: "notifications", label: "Quiet hours", description: "No banners or sounds between two times" },
   { section: "updates", label: "Beta nightly builds", description: "Opt in to signed nightly updates" },
   { section: "updates", label: "Check for updates", description: "Check the selected channel now" },
   { section: "workers", label: "Background task limits", description: "Preferred coding agent, tasks running at once, retries, usage limits and wait time" },

@@ -1,13 +1,12 @@
-import { useEffect, useRef } from "react";
-import { CircleAlert, CircleCheck, Hand, X } from "lucide-react";
+import { CircleAlert, CircleCheck, Hand } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AttentionCopy } from "../attentionCopy";
+import { ToastCard, ToastOverflow, TOASTS_SHOWN } from "./ToastCard";
 
-// Attention toast stack — same glass card language as GithubToasts /
-// ConnectorToasts / UpdateToast. Sits top-right so it does not fight the
-// bottom-right CI and connector stacks, and so "Bridge needs you" reads near
-// the window chrome the human already glances at.
+// Attention toasts, first in the shared top-right stack: "Bridge needs you"
+// reads near the window chrome the person already glances at.
 
+/** How long a toast stays when it does not say. */
 export const ATTENTION_TOAST_TTL_MS = 16_000;
 
 export type AttentionToast = {
@@ -19,6 +18,10 @@ export type AttentionToast = {
   // without this, App re-renders that only change unrelated state (e.g. the
   // git-stat poll) would pass a same-key toast through and must NOT restart it.
   firedAt?: number;
+  /** A one-click remedy beside the body, such as delivering stranded input. */
+  actionLabel?: string;
+  /** How long it stays once shown; `null` until the person acts on it. */
+  durationMs?: number | null;
 };
 
 function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
@@ -31,58 +34,52 @@ function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
   return <CircleCheck size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-success" />;
 }
 
-function ToastCard({ toast, onOpen, onDismiss }: {
+function AttentionCard({ toast, onOpen, onDismiss, onAction }: {
   toast: AttentionToast;
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
+  onAction?: (toast: AttentionToast) => void;
 }) {
-  // `onDismiss` is a fresh closure on every App render (e.g. its ~5s
-  // git-stat poll), which is not a reason to restart this timer — only a
-  // new `key`/`firedAt` occurrence is. Read the latest callback from a ref
-  // instead of depending on it directly.
-  const onDismissRef = useRef(onDismiss);
-  onDismissRef.current = onDismiss;
-  useEffect(() => {
-    const timer = window.setTimeout(() => onDismissRef.current(toast.key), ATTENTION_TOAST_TTL_MS);
-    return () => window.clearTimeout(timer);
-  }, [toast.key, toast.firedAt]);
-
-  return <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
-    <ToneIcon tone={toast.copy.tone} />
-    <button
-      type="button"
-      onClick={() => onOpen(toast)}
-      className="min-w-0 flex-1 text-left"
-      aria-label={`${toast.copy.headline} — open the chat`}
-    >
+  return <ToastCard
+    toastKey={toast.key}
+    firedAt={toast.firedAt}
+    durationMs={toast.durationMs === undefined ? ATTENTION_TOAST_TTL_MS : toast.durationMs}
+    onDismiss={onDismiss}
+    icon={<ToneIcon tone={toast.copy.tone} />}
+    onOpen={() => onOpen(toast)}
+    openLabel={`${toast.copy.headline} — open the chat`}
+    body={<>
       <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
-      <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">{toast.copy.detail}</span>
-    </button>
-    <button
+      {/* A remedy needs its reason read in full, so that detail may wrap. */}
+      <span className={cn("mt-0.5 block text-[12px] text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
+    </>}
+    footer={toast.actionLabel && onAction && <button
       type="button"
-      onClick={() => onDismiss(toast.key)}
-      aria-label="Dismiss notification"
-      className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      onClick={() => onAction(toast)}
+      className="mt-2 h-7 rounded-md border border-border px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
     >
-      <X size={13} aria-hidden="true" />
-    </button>
-  </div>;
+      {toast.actionLabel}
+    </button>}
+  />;
 }
 
-export function AttentionToasts({ toasts, onOpen, onDismiss }: {
+export function AttentionToasts({ toasts, onOpen, onDismiss, onAction }: {
   toasts: AttentionToast[];
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
+  onAction?: (toast: AttentionToast) => void;
 }) {
   if (!toasts.length) return null;
-  const shown = toasts.slice(-3);
+  // A card's timer starts when it is shown, so a queued one gets its full time.
+  const shown = toasts.slice(-TOASTS_SHOWN);
   return <div
     role="region"
     aria-label="Attention notifications"
     className="pointer-events-none flex flex-col items-end gap-2"
   >
     {shown.map(toast => (
-      <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} />
+      <AttentionCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} onAction={onAction} />
     ))}
+    <ToastOverflow count={toasts.length - shown.length} />
   </div>;
 }

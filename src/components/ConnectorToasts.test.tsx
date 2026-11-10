@@ -92,6 +92,16 @@ describe("ConnectorToasts", () => {
     expect(onDismiss).toHaveBeenCalledWith("slack:D09:1.0");
   });
 
+  it("expires on time while the parent re-renders with a fresh onDismiss", () => {
+    vi.useFakeTimers();
+    const dismissed: string[] = [];
+    mount(<ConnectorToasts toasts={[toast()]} onOpen={() => {}} onDismiss={key => dismissed.push(key)} />);
+    for (let elapsed = 0; elapsed <= CONNECTOR_TOAST_TTL_MS; elapsed += 5_000) {
+      act(() => { vi.advanceTimersByTime(5_000); root!.render(<ConnectorToasts toasts={[toast()]} onOpen={() => {}} onDismiss={key => dismissed.push(key)} />); });
+    }
+    expect(dismissed).toContain("slack:D09:1.0");
+  });
+
   it("caps the stack and counts the overflow instead of walling the screen", () => {
     const many = Array.from({ length: 6 }, (_, index) =>
       toast({ key: `slack:C${index}:1.0`, itemKey: `slack:C${index}:1.0` }));

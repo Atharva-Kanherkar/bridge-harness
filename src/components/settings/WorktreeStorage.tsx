@@ -11,6 +11,7 @@
 // pretending to be current.
 
 import { useCallback, useEffect, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
@@ -232,7 +233,7 @@ export function WorktreeStorage({ onError }: { onError?: (message: string) => vo
       {unmeasuredCount > 0 && ` ${unmeasuredCount} checkout${unmeasuredCount === 1 ? "" : "s"} not yet measured; total includes measured sizes only.`}
     </p>
     {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
-    {loading && <p role="status" className="text-caption text-muted-foreground">Loading storage inventory...</p>}
+    {loading && !usage && <SkeletonRows label="Loading storage inventory" rows={3} />}
     {usage && <RepoBreakdown repositories={usage.repositories} totalBytes={usage.totalBytes} onSelect={repo => setRepository(current => (current === repo ? "" : repo))} />}
     {note && <p role="status" className="text-caption text-muted-foreground">{note}</p>}
     {confirming && <div role="group" aria-label="Confirm cleanup" className="rounded-lg bg-muted/50 px-4 py-3">

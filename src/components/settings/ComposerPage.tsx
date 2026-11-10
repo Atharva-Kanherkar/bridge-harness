@@ -9,7 +9,7 @@
 // no save bar.
 
 import { useEffect, useState } from "react";
-import { LoaderCircle as CircleNotch } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
 import type { ChatSearchSettings, SuggestionSettings, SuggestionSettingsSnapshot } from "../../protocol/generated/protocol";
@@ -96,7 +96,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
   >
     <SettingsGroup label="Inline suggestions">
       {!draft
-        ? <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
+        ? <SkeletonRows label="Loading inline suggestions" rows={2} trailing framed={false} />
         : <>
             <SettingsRow
               label="Enabled"
@@ -132,7 +132,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
     </SettingsGroup>
     <SettingsGroup label="Chat search" note="The sidebar search finds chats from what was said in them">
       {!search
-        ? <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
+        ? <SkeletonRows label="Loading chat search" rows={2} trailing framed={false} />
         : <>
             <SettingsRow
               label="Search deeper"

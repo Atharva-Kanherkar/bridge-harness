@@ -849,6 +849,41 @@
       "resultSchema": "mark-attention-seen-result.json"
     },
     {
+      "command": "unread_summary",
+      "domain": "attention",
+      "method": "attention/unread_summary",
+      "paramsSchema": null,
+      "resultSchema": "unread-summary.json"
+    },
+    {
+      "command": "report_presence",
+      "domain": "attention",
+      "method": "attention/report_presence",
+      "paramsSchema": "report-presence-params.json",
+      "resultSchema": "report-presence-result.json"
+    },
+    {
+      "command": "post",
+      "domain": "attention",
+      "method": "attention/post",
+      "paramsSchema": "post-params.json",
+      "resultSchema": "post-result.json"
+    },
+    {
+      "command": "wait",
+      "domain": "sessions",
+      "method": "sessions/wait",
+      "paramsSchema": "wait-params.json",
+      "resultSchema": "wait-result.json"
+    },
+    {
+      "command": "deliver_queued_input",
+      "domain": "sessions",
+      "method": "sessions/deliver_queued_input",
+      "paramsSchema": "deliver-queued-input-params.json",
+      "resultSchema": "deliver-queued-input-result.json"
+    },
+    {
       "command": "start_provider_login",
       "domain": "auth",
       "method": "auth/start_provider_login",
@@ -1999,7 +2034,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 24
+    "minor": 30
   },
   "reserved": {
     "cancel": "$/cancel",

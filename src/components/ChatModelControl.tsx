@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { Check, ChevronDown, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
@@ -354,7 +355,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         <div className={cn("flex min-h-0 flex-1 @max-[410px]/model-picker:flex-col", !twoPane && "flex-col", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "min-h-24 shrink-0")}>
         <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || showAwaiting || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border @max-[410px]/model-picker:max-h-44 @max-[410px]/model-picker:w-full @max-[410px]/model-picker:border-r-0 @max-[410px]/model-picker:border-b", switchInFlight && "cursor-progress")}>
           {showAwaiting
-            ? <p role="status" className="flex items-center gap-2 px-2 py-3 text-[13px] text-muted-foreground"><LoaderCircle size={13} className="animate-spin" aria-hidden="true" />Loading models…</p>
+            ? <SkeletonRows label="Loading models…" rows={4} meta={false} framed={false} className="divide-y-0" rowClassName="min-h-8 px-2 py-1.5" />
             : chatAdapters
             // The user's own login first, then one group per extra account on
             // the same harness, sharing its catalog.

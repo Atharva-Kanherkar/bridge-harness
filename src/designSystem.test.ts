@@ -16,6 +16,9 @@ const COLOR_LITERAL_ALLOWLIST = new Set([
   // Mirrors --background per mode for the <meta name="theme-color"> tag, which
   // cannot read a CSS custom property.
   "theme.ts",
+  // An Excalidraw scene's own background, stored in the drawing file the way
+  // Excalidraw writes it; data, not a UI colour.
+  "components/notes/editor/drawingScene.ts",
 ]);
 
 const BANNED_PALETTES = [
@@ -109,6 +112,21 @@ describe("design system", () => {
         .map(value => `${file.name}: ${value.slice(0, 120)}`);
     });
     expect(flagged).toEqual([]);
+  });
+
+  it("draws every loading placeholder through the skeleton kit", () => {
+    // One shimmer, one fade-in delay, one accessibility contract. A page that
+    // reaches for `.skeleton-shimmer` itself, or pulses a muted bar, forks the
+    // look the kit exists to keep.
+    const kit = join("components", "ui", "skeleton.tsx");
+    expect(offenders(/\b(?:skeleton-shimmer|animate-skeleton-in)\b/g, name => name === kit)).toEqual([]);
+    const pulsingBars = files.flatMap(file => {
+      const classStrings = file.text.match(/"[^"\n]*"|'[^'\n]*'|`[^`\n]*`/g) ?? [];
+      return classStrings
+        .filter(value => /\banimate-pulse\b/.test(value) && /\bbg-muted\b/.test(value))
+        .map(value => `${file.name}: ${value.slice(0, 120)}`);
+    });
+    expect(pulsingBars).toEqual([]);
   });
 
   it("keeps blur off resting surfaces", () => {

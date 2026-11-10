@@ -4,6 +4,7 @@
 // Pace math is the shared `src/meter.ts` port; styling is Tailwind utilities
 // plus `.u-glass-popover` only. Series colour follows the harness.
 import { useEffect, useRef } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { Gauge, RefreshCw, X } from "lucide-react";
 import type { UsageProvider, UsageSnapshot } from "../../usage";
 import type { MeterRegistry } from "../../types";
@@ -50,7 +51,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
       </span>
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
-      {registry == null && live.length === 0 && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading meter</div>}
+      {registry == null && live.length === 0 && <SkeletonRows label="Loading meter" rows={2} framed={false} rowClassName="px-0 py-3" />}
       <MeterReadings usage={usage} nowMs={nowMs} />
       {awaiting.map(entry => <section key={entry.id} aria-label={`${entry.label} usage`} className="flex items-center gap-2 border-b border-border py-3 last:border-0">
         <HarnessMark harness={entry.id} size={12} />
