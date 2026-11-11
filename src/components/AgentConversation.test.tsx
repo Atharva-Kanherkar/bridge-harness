@@ -58,15 +58,15 @@ describe("AgentConversation", () => {
     const failure = event(2, "error", { itemId: "e1", status: "failed", text: "Insufficient credits. Add more at https://example.test/billing" });
     const onRetryTurn = vi.fn();
     const onEditTurn = vi.fn();
-    const buttons = () => [...host.querySelectorAll("button")].map(button => button.textContent);
+    const buttons = () => [...host.querySelectorAll("button")].map(button => button.getAttribute("aria-label"));
     const render = (props: Partial<React.ComponentProps<typeof AgentConversation>> = {}) => act(async () => root.render(
       <AgentConversation session={chat} events={[ask, failure]} onResolve={() => undefined} onRetryTurn={onRetryTurn} onEditTurn={onEditTurn} {...props} />,
     ));
     try {
       await render();
-      expect(buttons()).toEqual(expect.arrayContaining(["Retry", "Edit in composer"]));
-      const button = (label: string) => [...host.querySelectorAll("button")].find(item => item.textContent === label)!;
-      await act(async () => button("Retry").click());
+      expect(buttons()).toEqual(expect.arrayContaining(["Retry the same message", "Edit in composer"]));
+      const button = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+      await act(async () => button("Retry the same message").click());
       expect(onRetryTurn).toHaveBeenCalledWith(expect.objectContaining({ role: "user", text: "/rimo-bug-hunt pls use it now." }));
       await act(async () => button("Edit in composer").click());
       expect(onEditTurn).toHaveBeenCalledWith(expect.objectContaining({ role: "user", text: "/rimo-bug-hunt pls use it now." }));
@@ -74,17 +74,17 @@ describe("AgentConversation", () => {
       // The chat moved past the failure: an answer, or a newer message.
       const answer = event(3, "message.completed", { itemId: "a1", role: "assistant", status: "completed", text: "Recovered." });
       await render({ events: [ask, failure, answer] });
-      expect(buttons()).not.toContain("Retry");
+      expect(buttons()).not.toContain("Retry the same message");
       await render({ events: [ask, failure, event(3, "message.completed", { itemId: "u2", role: "user", status: "completed", text: "again" })] });
-      expect(buttons()).not.toContain("Retry");
+      expect(buttons()).not.toContain("Retry the same message");
 
       // Still running, a resend already on its way, or a history nobody can send to.
       await render({ working: true });
-      expect(buttons()).not.toContain("Retry");
+      expect(buttons()).not.toContain("Retry the same message");
       await render({ pendingMessages: [{ text: "/rimo-bug-hunt pls use it now.", after: Date.parse(sentAt) }] });
-      expect(buttons()).not.toContain("Retry");
+      expect(buttons()).not.toContain("Retry the same message");
       await render({ readOnly: true });
-      expect(buttons()).not.toContain("Retry");
+      expect(buttons()).not.toContain("Retry the same message");
       expect(buttons()).not.toContain("Edit in composer");
     } finally {
       await act(async () => root.unmount());

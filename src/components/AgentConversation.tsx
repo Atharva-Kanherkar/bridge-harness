@@ -1607,6 +1607,9 @@ function ReplyAction({ label, title, onClick, children }: { label: string; title
   >{children}</button>;
 }
 
+/// A failed turn's way back: text-sized, muted until pointed at.
+const ERROR_ACTION = "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50";
+
 /// Resends a failed turn's message; settles when the send has.
 type RetryTurn = (prompt: ConversationItem) => Promise<void> | void;
 
@@ -1710,17 +1713,23 @@ function ErrorCard({ item, errorContext, retryPrompt, onRetryTurn, onEditTurn }:
     >
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
-    <div className="min-w-0"><b className="text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
+    <div className="min-w-0 flex-1">
+      {/* The way back sits on the title line, quiet until pointed at: the
+          failure is the message, the actions are a footnote to it. */}
+      <div className="flex min-w-0 items-start gap-2">
+        <b className="min-w-0 flex-1 text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b>
+        {retryPrompt && (onRetryTurn || onEditTurn) && <div className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
+          {onRetryTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Retry the same message" title="Send the same message again" onClick={retry}>
+            {retrying ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true"/> : <RotateCcw size={11} aria-hidden="true"/>}
+            Retry
+          </button>}
+          {onEditTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Edit in composer" title="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
+            <PenLine size={11} aria-hidden="true"/>Edit
+          </button>}
+        </div>}
+      </div>
+      <p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
       {described.kind === "usage-limit" && errorContext?.allowReset && (item.harness ?? errorContext.harness) === "codex" && <LimitResetOffer />}
-      {retryPrompt && (onRetryTurn || onEditTurn) && <div className="mt-2.5 flex flex-wrap gap-2">
-        {onRetryTurn && <button type="button" disabled={retrying} className={BTN_SECONDARY} title="Send the same message again" onClick={retry}>
-          {retrying ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true"/> : <RotateCcw size={12} aria-hidden="true"/>}
-          {retrying ? "Retrying…" : "Retry"}
-        </button>}
-        {onEditTurn && <button type="button" disabled={retrying} className={BTN_SECONDARY} title="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
-          <PenLine size={12} aria-hidden="true"/>Edit in composer
-        </button>}
-      </div>}
     </div>
   </div>;
 }
