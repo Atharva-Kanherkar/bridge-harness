@@ -5,7 +5,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type Reac
 import { createPortal } from "react-dom";
 import { Extension, type Editor, type Range } from "@tiptap/core";
 import Suggestion, { type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
-import { PluginKey } from "@tiptap/pm/state";
+import { PluginKey, TextSelection } from "@tiptap/pm/state";
 import { ChevronRight, Code2, FileText, Heading1, Heading2, Heading3, Image as ImageIcon, List, ListOrdered, ListTodo, Minus, Quote, Sigma, SquareRadical, Table2, Text as TextIcon, MessageSquareText, Database, Workflow, PenLine } from "lucide-react";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
@@ -45,7 +45,13 @@ export const BLOCK_CHOICES: BlockChoice[] = [
   { id: "divider", label: "Divider", hint: "A line between sections", keywords: "hr rule separator ---", icon: icon(Minus), run: editor => editor.chain().focus().setHorizontalRule().run() },
   { id: "code", label: "Code", hint: "A block of code", keywords: "codeblock snippet ```", icon: icon(Code2), run: editor => editor.chain().focus().toggleCodeBlock().run() },
   { id: "mermaid", label: "Mermaid diagram", hint: "A flowchart or sequence drawn from text", keywords: "chart flowchart graph sequence diagram", icon: icon(Workflow), run: editor => editor.chain().focus().setCodeBlock({ language: "mermaid" }).run() },
-  { id: "drawing", label: "Drawing", hint: "Sketch it by hand; agents can read and add to it", keywords: "excalidraw sketch whiteboard draw diagram canvas", icon: icon(PenLine), run: editor => editor.chain().focus().insertContent({ type: "codeBlock", attrs: { language: "excalidraw" }, content: [{ type: "text", text: newDrawingBody() }] }).run() },
+  { id: "drawing", label: "Drawing", hint: "Sketch it by hand; agents can read and add to it", keywords: "excalidraw sketch whiteboard draw diagram canvas", icon: icon(PenLine), run: editor => editor.chain().focus().insertContent({ type: "codeBlock", attrs: { language: "excalidraw" }, content: [{ type: "text", text: newDrawingBody() }] }).command(({ tr }) => {
+    // a fence shows its source while the cursor is in it; leave the cursor after the drawing.
+    const after = tr.selection.$from.after();
+    if (!tr.doc.resolve(after).nodeAfter?.isTextblock) tr.insert(after, tr.doc.type.schema.nodes.paragraph.create());
+    tr.setSelection(TextSelection.create(tr.doc, after + 1));
+    return true;
+  }).run() },
   { id: "table", label: "Table", hint: "Rows and columns", keywords: "grid", icon: icon(Table2), run: editor => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { id: "image", label: "Image", hint: "Upload a picture", keywords: "photo picture screenshot png jpg", icon: icon(ImageIcon), run: (editor, host) => host.pickImage(editor.state.selection.from) },
   { id: "math", label: "Math block", hint: "An equation in TeX", keywords: "equation latex katex formula tex", icon: icon(SquareRadical), run: (editor, host) => host.editMath("block", editor.state.selection.from) },
