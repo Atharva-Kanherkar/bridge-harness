@@ -598,12 +598,26 @@ describe("rich fences", () => {
       const { onChange } = await mount("first\n");
       await act(async () => { editor().chain().focus("end").insertContent({ type: "paragraph" }).run(); });
       await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "drawing")!.run(editor(), {} as never); });
+      // Let the editor's deferred focus land: the cursor it brings must not be
+      // inside the new fence, or the drawing hides behind its JSON.
+      await settle(50);
       await commit();
       expect(onChange).toHaveBeenLastCalledWith('first\n\n```excalidraw\n{"type":"excalidraw","version":2,"source":"bridge","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}\n```\n');
       // the command's focus lands a frame later; the drawing must survive it.
       await act(async () => { await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0))); });
       expect(editor().isFocused).toBe(true);
       expect(drawingBlock()?.textContent).toContain("Empty drawing. Click to draw.");
+    });
+
+    it("a drawing inserted mid-page leaves the cursor in the next line without adding one", async () => {
+      const { onChange } = await mount("first\n\nlast\n");
+      await act(async () => { editor().chain().focus().setTextSelection(6).splitBlock().run(); });
+      await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "drawing")!.run(editor(), {} as never); });
+      await settle(50);
+      await commit();
+      expect(onChange).toHaveBeenLastCalledWith('first\n\n```excalidraw\n{"type":"excalidraw","version":2,"source":"bridge","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}\n```\n\nlast\n');
+      expect(drawingBlock()?.textContent).toContain("Empty drawing. Click to draw.");
+      expect(editor().state.selection.$from.parent.textContent).toBe("last");
     });
   });
 

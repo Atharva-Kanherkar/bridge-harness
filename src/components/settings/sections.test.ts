@@ -11,6 +11,7 @@ describe("settings destinations", () => {
     expect(primarySection("notifications")).toBe("general");
     expect(primarySection("prompts")).toBe("codingAgents");
     expect(primarySection("clones")).toBe("permissions");
+    expect(primarySection("keys")).toBe("permissions");
     expect(primarySection("import")).toBe("data");
   });
 });

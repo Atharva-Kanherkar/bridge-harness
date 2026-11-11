@@ -31,6 +31,22 @@ export interface BlockChoice {
 
 const icon = (Icon: typeof TextIcon) => <Icon size={16} strokeWidth={1.75} aria-hidden="true" />;
 
+/** A drawing shows as its JSON while the cursor is inside the fence, so the
+ *  cursor goes to the block below it: the new drawing then reads "Click to
+ *  draw" instead of a page of scene JSON. A paragraph is added only when no
+ *  text block follows. */
+function insertDrawing(editor: Editor) {
+  editor.chain().focus()
+    .insertContent({ type: "codeBlock", attrs: { language: "excalidraw" }, content: [{ type: "text", text: newDrawingBody() }] })
+    .command(({ tr, dispatch }) => {
+      const after = tr.selection.$from.after();
+      if (!tr.doc.nodeAt(after)?.isTextblock) tr.insert(after, editor.schema.nodes.paragraph.create());
+      if (dispatch) tr.setSelection(TextSelection.create(tr.doc, after + 1));
+      return true;
+    })
+    .run();
+}
+
 export const BLOCK_CHOICES: BlockChoice[] = [
   { id: "text", label: "Text", hint: "Plain writing", keywords: "paragraph plain", icon: icon(TextIcon), run: editor => editor.chain().focus().setParagraph().run() },
   { id: "h1", label: "Heading 1", hint: "Big section heading", keywords: "title h1 #", icon: icon(Heading1), run: editor => editor.chain().focus().setNode("heading", { level: 1 }).run() },
@@ -45,13 +61,7 @@ export const BLOCK_CHOICES: BlockChoice[] = [
   { id: "divider", label: "Divider", hint: "A line between sections", keywords: "hr rule separator ---", icon: icon(Minus), run: editor => editor.chain().focus().setHorizontalRule().run() },
   { id: "code", label: "Code", hint: "A block of code", keywords: "codeblock snippet ```", icon: icon(Code2), run: editor => editor.chain().focus().toggleCodeBlock().run() },
   { id: "mermaid", label: "Mermaid diagram", hint: "A flowchart or sequence drawn from text", keywords: "chart flowchart graph sequence diagram", icon: icon(Workflow), run: editor => editor.chain().focus().setCodeBlock({ language: "mermaid" }).run() },
-  { id: "drawing", label: "Drawing", hint: "Sketch it by hand; agents can read and add to it", keywords: "excalidraw sketch whiteboard draw diagram canvas", icon: icon(PenLine), run: editor => editor.chain().focus().insertContent({ type: "codeBlock", attrs: { language: "excalidraw" }, content: [{ type: "text", text: newDrawingBody() }] }).command(({ tr }) => {
-    // a fence shows its source while the cursor is in it; leave the cursor after the drawing.
-    const after = tr.selection.$from.after();
-    if (!tr.doc.resolve(after).nodeAfter?.isTextblock) tr.insert(after, tr.doc.type.schema.nodes.paragraph.create());
-    tr.setSelection(TextSelection.create(tr.doc, after + 1));
-    return true;
-  }).run() },
+  { id: "drawing", label: "Drawing", hint: "Sketch it by hand; agents can read and add to it", keywords: "excalidraw sketch whiteboard draw diagram canvas", icon: icon(PenLine), run: insertDrawing },
   { id: "table", label: "Table", hint: "Rows and columns", keywords: "grid", icon: icon(Table2), run: editor => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { id: "image", label: "Image", hint: "Upload a picture", keywords: "photo picture screenshot png jpg", icon: icon(ImageIcon), run: (editor, host) => host.pickImage(editor.state.selection.from) },
   { id: "math", label: "Math block", hint: "An equation in TeX", keywords: "equation latex katex formula tex", icon: icon(SquareRadical), run: (editor, host) => host.editMath("block", editor.state.selection.from) },

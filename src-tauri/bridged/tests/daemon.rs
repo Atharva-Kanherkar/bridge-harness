@@ -159,6 +159,37 @@ fn browser_frame_polling_uses_the_typed_daemon_contract() {
 }
 
 #[test]
+fn the_daemon_serves_the_api_key_proxy_its_sessions_are_told_about() {
+    // The daemon is the default host and owns every session, so it has to
+    // answer on the port the agents' instructions name.
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let endpoint = running
+        .daemon
+        .core
+        .credential_broker
+        .endpoint()
+        .expect("the daemon bound the key proxy");
+    let mut stream = std::net::TcpStream::connect(endpoint).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream
+        .write_all(b"GET /credential-proxy/s/api.github.com/user HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut stream, &mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 403"), "a call without the pass is refused: {reply}");
+    assert!(reply.contains("BRIDGE_PROXY_PASS"));
+
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (keys, _) = client.call(1, "keys/list_api_keys", None);
+    assert_eq!(keys["result"]["proxyRunning"], true);
+    let (refused, _) = client.call(2, "keys/save_api_key", Some(json!({"name": "lower_case", "hosts": []})));
+    assert!(refused.get("error").is_some(), "names are checked by the daemon: {refused}");
+    running.stop();
+}
+
+#[test]
 fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

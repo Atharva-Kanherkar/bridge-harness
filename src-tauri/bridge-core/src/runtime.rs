@@ -14,7 +14,7 @@ use crate::{
 use portable_pty::{Child, MasterPty};
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
@@ -362,7 +362,7 @@ impl BridgeCore {
             snapshot_dir: scratch.join("history-snapshots"),
             skill_store: scratch.join("skills"),
             skill_consents: Arc::new(Mutex::new(HashMap::new())),
-            credential_broker: Arc::new(credential_broker::CredentialBroker::openai().unwrap()),
+            credential_broker: Arc::new(credential_broker::CredentialBroker::new().unwrap()),
             browser_bridge: browser_bridge::BrowserBridgeSupervisor::dormant(
                 scratch.join("no-extension"),
                 scratch.join("browser-site-metrics.json"),
@@ -451,7 +451,9 @@ impl BridgeCore {
                 Some(config.data_dir.join("model-catalogs/opencode.json")),
             )?,
         );
-        let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()?);
+        let credential_broker = Arc::new(credential_broker::CredentialBroker::new()?);
+        // Names and sites only; values stay in the Keychain until a call.
+        credential_broker.load_saved(&connection)?;
 
         // The catalog, and what it contributes to resolution. `load` never
         // fails for a bad cache — a corrupt or withdrawn snapshot loses to the
@@ -981,10 +983,12 @@ pub fn start_health_server(
     adapters: Vec<AdapterDescriptor>,
     credential_broker: Arc<credential_broker::CredentialBroker>,
 ) {
+    // Bound before the thread starts, so the broker knows its port before
+    // the first session is told where to call.
+    let Some(server) = credential_broker::bind(&credential_broker) else {
+        return;
+    };
     thread::spawn(move || {
-        let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
-            return;
-        };
         for request in server.incoming_requests() {
             if request.url() == "/health" {
                 let body = serde_json::json!({
@@ -1010,74 +1014,7 @@ pub fn start_health_server(
                 let _ = request.respond(response);
                 continue;
             }
-            if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
-                // Handle each proxy call on its own thread so a slow (or
-                // deliberately slow-drip) upstream request cannot block /health
-                // liveness or serialize other agents behind the single accept loop.
-                let route = route.to_owned();
-                let method = request.method().as_str().to_owned();
-                let token = request
-                    .headers()
-                    .iter()
-                    .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
-                    .map(|header| header.value.as_str().to_owned())
-                    .unwrap_or_default();
-                let headers: Vec<(String, String)> = request
-                    .headers()
-                    .iter()
-                    .map(|header| (header.field.to_string(), header.value.as_str().to_owned()))
-                    .collect();
-                let broker = credential_broker.clone();
-                thread::spawn(move || {
-                    let mut request = request;
-                    let mut parts = route.splitn(3, '/');
-                    let session_id = parts.next().unwrap_or_default().to_owned();
-                    let reference = parts.next().unwrap_or_default().to_owned();
-                    let path_and_query = format!("/{}", parts.next().unwrap_or_default());
-                    let mut body = Vec::new();
-                    let result = request
-                        .as_reader()
-                        .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
-                        .read_to_end(&mut body)
-                        .map_err(BridgeError::Io)
-                        .and_then(|_| {
-                            broker.proxy(credential_broker::ProxyRequest {
-                                session_id,
-                                reference,
-                                method,
-                                path_and_query,
-                                headers,
-                                token,
-                                body,
-                            })
-                        });
-                    let response = match result {
-                        Ok(proxied) => {
-                            let mut response = tiny_http::Response::from_data(proxied.body)
-                                .with_status_code(proxied.status);
-                            if let Some(header) = proxied.content_type.and_then(|value| {
-                                tiny_http::Header::from_bytes("Content-Type", value).ok()
-                            }) {
-                                response.add_header(header);
-                            }
-                            response
-                        }
-                        Err(error) => {
-                            let body = serde_json::json!({"ok": false, "error": error.to_string()})
-                                .to_string();
-                            tiny_http::Response::from_string(body).with_status_code(400)
-                        }
-                    };
-                    let _ = request.respond(response);
-                });
-                continue;
-            }
-            let body = serde_json::json!({"ok": false, "error": "not found"}).to_string();
-            let mut response = tiny_http::Response::from_string(body).with_status_code(404);
-            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
-                response.add_header(header);
-            }
-            let _ = request.respond(response);
+            credential_broker::handle(request, &credential_broker);
         }
     });
 }
