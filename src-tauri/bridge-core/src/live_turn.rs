@@ -354,11 +354,12 @@ mod prompt_section_tests {
         }
     }
 
-    fn legacy_orchestrator_prompt(
+    fn expected_orchestrator_prompt(
         configured_prompt: &str,
         checkpoint_context: Option<&str>,
     ) -> prompt_compiler::CompiledPrompt {
         let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
             .stable_section("bridge_role", orchestrator::briefing())
             .stable_section("delegation_protocol", delegation::protocol(0))
             .project_rule("configured_project_rules", configured_prompt);
@@ -368,15 +369,16 @@ mod prompt_section_tests {
         compiler.compile().unwrap()
     }
 
-    fn legacy_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
+    fn expected_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
         prompt_compiler::PromptCompiler::new("session")
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
             .stable_section("rendering_note", prompts::chat_rendering_note())
             .project_rule("configured_project_rules", configured_prompt)
             .compile()
             .unwrap()
     }
 
-    fn legacy_worker_prompt(
+    fn expected_worker_prompt(
         directive: &delegation::DelegationRequest,
         depth: i64,
         branch: &str,
@@ -387,6 +389,7 @@ mod prompt_section_tests {
             "worker:{}",
             directive.role.as_str()
         ))
+        .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
         .stable_section(
             "worker_contract",
             delegation::worker_contract(directive.role, depth),
@@ -583,7 +586,7 @@ mod prompt_section_tests {
     }
 
     #[test]
-    fn default_target_stacks_match_legacy_live_bytes() {
+    fn default_target_stacks_include_shared_activity_policy() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
 
@@ -592,7 +595,7 @@ mod prompt_section_tests {
         for checkpoint in [None, Some("Restore this orchestrator checkpoint")] {
             let compiled =
                 compile_orchestrator_prompt(&orchestrator_stack, configured, checkpoint).unwrap();
-            assert_eq!(compiled, legacy_orchestrator_prompt(configured, checkpoint));
+            assert_eq!(compiled, expected_orchestrator_prompt(configured, checkpoint));
             assert_eq!(
                 compiled
                     .instructions()
@@ -605,7 +608,7 @@ mod prompt_section_tests {
         let direct_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
         let direct = compile_session_prompt(&direct_stack, configured, None).unwrap();
-        assert_eq!(direct, legacy_session_prompt(configured));
+        assert_eq!(direct, expected_session_prompt(configured));
         assert!(!direct.instructions().contains("bridge-delegate"));
         assert!(!direct.instructions().contains("worker_contract"));
 
@@ -635,7 +638,7 @@ mod prompt_section_tests {
                 .unwrap();
                 assert_eq!(
                     compiled,
-                    legacy_worker_prompt(
+                    expected_worker_prompt(
                         &directive,
                         1,
                         "bridge/prompt-studio",
@@ -2661,6 +2664,9 @@ fn spawn_reader_thread(
                 );
                 return;
             }
+            if let Ok(events) = crate::background_activity::interrupt(&db, Some(&session_id)) {
+                for event in events { core.events.publish(CoreEvent::Agent(event)); }
+            }
             let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id);
             let is_worker = store::worker_runtime(&db, &session_id)
                 .ok()
@@ -3391,7 +3397,9 @@ fn handle_agent_value_timed(
                 && normalized_event.role.as_deref() == Some("assistant")
                 && pending_compaction.is_some();
             let suppress_checkpoint_frame =
-                checkpoint_turn_active && !survives_checkpoint_turn(&normalized_event.kind);
+                checkpoint_turn_active
+                    && !survives_checkpoint_turn(&normalized_event.kind)
+                    && !is_existing_background_activity(&db, session_id, &normalized_event);
             if suppress_checkpoint_frame {
                 if let Some(data) = normalized_event.data.as_object_mut() {
                     data.insert(
@@ -4523,6 +4531,40 @@ fn survives_checkpoint_turn(kind: &str) -> bool {
             | agent::NATIVE_COMPACTION_KIND
             | agent::NATIVE_COMPACTING_KIND
     )
+}
+
+/// Checkpointing owns its new tool work, but it does not own a process that was
+/// already running. Its asynchronous progress and exit must still reach the
+/// conversation or the last durable start would keep claiming it is alive.
+fn is_existing_background_activity(
+    db: &Connection,
+    session_id: &str,
+    event: &agent::NormalizedEvent,
+) -> bool {
+    if !matches!(
+        event.kind.as_str(),
+        "tool.started" | "tool.completed" | "tool.progress"
+            | "command.started" | "command.completed" | "command.output_delta"
+    ) {
+        return false;
+    }
+    let Some(item_id) = event.item_id.as_deref() else {
+        return false;
+    };
+    // The latest stored snapshot distinguishes an existing process from a tool
+    // launched by the maintenance prompt. The latter has no persisted start.
+    db.query_row(
+        "SELECT json_extract(payload,'$.status')='inProgress'
+         FROM session_entries
+         WHERE session_id=?1
+           AND kind IN ('tool.started','tool.completed','command.started','command.completed')
+           AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId')=?2
+           AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.data.backgroundTask')=1
+         ORDER BY sequence DESC LIMIT 1",
+        params![session_id, item_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -13175,7 +13217,7 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
         }
         transaction.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
         transaction.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('working','waiting','checkpointing')) THEN 'working' ELSE 'stopped' END WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)", [session_id])?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         let mut event = agent::NormalizedEvent::new("turn.completed");
         event.status = Some("cancelled".into());
         let (title, reason) = match cause {
@@ -15511,6 +15553,60 @@ mod submit_input_tests {
             "the consumed reply still completes the checkpoint"
         );
         assert!(published.try_recv().is_err(), "the raw reply must not be published live");
+    }
+
+    #[test]
+    fn checkpointing_preserves_existing_process_progress_and_exit_but_hides_its_own_tools() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET harness='codex' WHERE id='chat'", [],
+        ).unwrap();
+        let command = |method: &str, id: &str, status: &str| serde_json::json!({
+            "method": method,
+            "params": {"item": {
+                "id": id, "type": "commandExecution", "processId": "123",
+                "command": "cargo test", "status": status,
+                "aggregatedOutput": "tests passed", "exitCode": 0,
+            }},
+        });
+        let turn = Arc::new(Mutex::new(Some("turn-1".into())));
+        handle_agent_value(&core, "chat", &turn, &command("item/started", "existing", "inProgress"));
+        begin_checkpoint(&core);
+        let mut published = core.events.subscribe();
+
+        handle_agent_value(&core, "chat", &turn, &command("item/started", "maintenance", "inProgress"));
+        handle_agent_value(&core, "chat", &turn, &serde_json::json!({
+            "method": "item/commandExecution/outputDelta",
+            "params": {"itemId": "existing", "delta": "test example ... ok\n"},
+        }));
+        handle_agent_value(&core, "chat", &turn, &command("item/completed", "existing", "completed"));
+        handle_agent_value(&core, "chat", &turn, &command("item/completed", "maintenance", "completed"));
+
+        let db = core.db.lock().unwrap();
+        let entries = store::session_entries(&db, "chat").unwrap();
+        assert!(entries.iter().any(|entry| entry.kind == "command.completed"
+            && entry.payload["itemId"] == "existing"
+            && entry.payload["status"] == "completed"));
+        assert!(!entries.iter().any(|entry| entry.payload["itemId"] == "maintenance"));
+        assert!(crate::background_activity::current(&db, "chat").unwrap().is_empty(),
+            "an exit during checkpointing must remove the previous running claim");
+        assert!(compaction_controller::CompactionController::pending(&db, "chat").unwrap().is_some(),
+            "the asynchronous process exit must not complete the checkpoint itself");
+        drop(db);
+
+        let mut saw_output = false;
+        let mut saw_exit = false;
+        while let Ok(event) = published.try_recv() {
+            if let CoreEvent::Agent(event) = event {
+                assert_ne!(event.item_id.as_deref(), Some("maintenance"));
+                if event.item_id.as_deref() == Some("existing") {
+                    saw_output |= event.kind == "command.output_delta"
+                        && event.text.as_deref() == Some("test example ... ok\n");
+                    saw_exit |= event.kind == "command.completed";
+                }
+            }
+        }
+        assert!(saw_output && saw_exit, "the running process remains observable during checkpointing");
     }
 
     #[test]

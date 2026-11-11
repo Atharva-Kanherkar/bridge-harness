@@ -216,6 +216,7 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
         projectName={project ?? undefined}
         events={events}
         forestEntries={forest?.entries}
+        activeProcessEntries={forest?.activeProcessEntries}
         entryWindow={forest?.entryWindow}
         activeLeafId={forest?.head?.activeEntryId}
         repositoryDivergence={forest?.repositoryDivergence.status}

@@ -680,6 +680,14 @@
     "SessionForestSnapshot": {
       "description": "Mirrors `bridge_core::model::SessionForestSnapshot`.",
       "properties": {
+        "activeProcessEntries": {
+          "default": [],
+          "description": "Latest running process snapshots, independent of the history window.",
+          "items": {
+            "$ref": "#/definitions/SessionEntry"
+          },
+          "type": "array"
+        },
         "completion": {
           "anyOf": [
             {

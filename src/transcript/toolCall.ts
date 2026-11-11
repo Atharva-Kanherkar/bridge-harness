@@ -65,6 +65,18 @@ export interface ToolCallDisplay {
   output?: string;
   /** Empty pending/running call whose action has not been named yet. */
   pendingIdentity?: boolean;
+  /** Tracked work with a lifecycle independent of its assistant turn. */
+  background?: boolean;
+  /** The launcher and its task are one logical operation. */
+  sourceCallId?: string;
+  /** A user-started watcher is a process, but does not imply model activity. */
+  passive?: boolean;
+  /** The model is still composing arguments; the tool has not started yet. */
+  preparing?: boolean;
+  /** Latest provider-reported progress, shown without opening the timeline. */
+  progress?: string;
+  /** A reported terminal state that does not imply a successful check. */
+  statusLabel?: string;
   status: ToolStatus;
   /**
    * A harness-spawned nested subagent (issue #667): the model asked its own
@@ -389,6 +401,12 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     exitCode: readExitCode(data),
     status: readStatus(source.status),
     subagent,
+    background: data.background === true,
+    sourceCallId: text(data.sourceCallId),
+    passive: data.passive === true,
+    preparing: data.phase === "preparing",
+    progress: text(data.progress),
+    statusLabel: source.status === "backgrounded" ? "Started in background" : source.status === "stopped" ? "Stopped" : source.status === "unknown" ? "Outcome unknown" : undefined,
   };
   const named = namedToolFacet(source, data);
   // Claude streams a tool call's start before the model has finished writing
@@ -551,4 +569,9 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   const action = text(title)?.trim();
   if (action) return { verb: "tool", glyph: "wrench", doing: `Running: ${action}`, done: `Finished: ${action}` };
   return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool", pendingIdentity: true };
+}
+
+/** Background tasks report their own liveness; ordinary calls are turn-scoped. */
+export function isToolLive(call: ToolCallDisplay, turnActive: boolean, runtimeActive = true): boolean {
+  return runtimeActive && call.status === "running" && (turnActive || call.background === true);
 }

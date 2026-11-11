@@ -2805,6 +2805,7 @@ export interface SessionEntryWindowSummary {
 }
 
 export interface SessionForestSnapshot {
+  activeProcessEntries?: SessionEntry[];
   completion?: CompletionSummary | null;
   entries: SessionEntry[];
   entryWindow: SessionEntryWindowSummary;

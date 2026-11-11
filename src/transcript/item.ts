@@ -100,6 +100,12 @@ export function itemSignature(item: ConversationItem): string {
     item.sequence,
     item.turn,
     item.tool?.status ?? "",
+    // Progress frames can be transient (event id 0), with no output text.
+    item.tool?.durationMs ?? "",
+    item.tool?.progress ?? "",
+    item.tool?.background ?? false,
+    item.tool?.passive ?? false,
+    item.tool?.statusLabel ?? "",
   ].join("\u0000");
 }
 

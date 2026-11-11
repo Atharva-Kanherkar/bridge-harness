@@ -8,6 +8,8 @@ use crate::{
     orchestrator,
 };
 
+pub const ACTIVITY_VISIBILITY_GUIDANCE: &str = "Keep ongoing work visible in Bridge. Before a long command or test run, name what you are starting. Use the runtime's tracked execution and native background-task support, retaining its task or process id and checking its real outcome. Prefer keeping output attached; avoid detached shell launchers such as nohup, disown, or a bare & with output redirected only to a file. If detaching is required, arrange an observable log and report progress and the final exit status. A launch acknowledgement is not a passing test. Use the available native task status, output or log-reading tools to report concrete progress during long waits. A Monitor delivers events to the model; starting one alone does not guarantee a live terminal in Bridge. State when output is unavailable and never claim a check passed before its completion is verified.";
+
 pub const BRIDGE_ROLE_SECTION_ID: &str = "bridge_role";
 pub const DELEGATION_PROTOCOL_SECTION_ID: &str = "delegation_protocol";
 pub const WORKER_CONTRACT_SECTION_ID: &str = "worker_contract";
@@ -306,5 +308,24 @@ mod tests {
             .find(|warning| warning.marker == "bridge-delegate")
             .expect("removing bridge-delegate produces a warning");
         assert!(delegation.message.contains("Typed delegation"));
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    #[test]
+    fn all_compiled_session_roles_receive_tracked_activity_guidance() {
+        for target in PROMPT_TARGETS {
+            let stack = crate::prompt_sections::ResolvedPromptStack {
+                target: *target,
+                sections: default_sections(*target, 1).into_iter().map(|section| crate::prompt_sections::ResolvedPromptSection { id: section.id.into(), text: section.text }).collect(),
+            };
+            let compiled = crate::prompt_compiler::compiler_for_resolved_stack(&stack).unwrap().compile().unwrap();
+            assert!(compiled.instructions().contains("native background-task"));
+            assert!(compiled.instructions().contains("launch acknowledgement is not a passing test"));
+            assert!(compiled.instructions().contains("nohup"));
+        }
     }
 }

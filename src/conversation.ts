@@ -26,6 +26,35 @@ export {
   type ToolVerb,
 } from "./transcript/toolCall";
 
+/**
+ * Reduce the runtime's active-process snapshot together with the live events
+ * that arrived after it, so a running process keeps its output and heartbeats.
+ */
+export function projectActiveProcesses(entries: SessionEntry[] | undefined, events: AgentEvent[]): ConversationItem[] {
+  const snapshots = entries?.flatMap<TranscriptEvent>(entry => {
+    const event = normalizeSessionEntry(entry);
+    if (!event) return [];
+    if (event.type === "tool.started" || event.type === "tool.completed") {
+      // Seed the reducer's output buffer so transient deltas append to the
+      // preview instead of being hidden by its older aggregatedOutput field.
+      const output = event.envelope.providerData.aggregatedOutput;
+      return [{ ...event, text: typeof output === "string" ? output : event.text,
+        envelope: { ...event.envelope, providerData: { ...event.envelope.providerData, aggregatedOutput: undefined } } }];
+    }
+    return [event];
+  }) ?? [];
+  const byProcess = new Map(snapshots.map(event => [event.envelope.itemId, event.envelope]));
+  const updates = events.filter(event => {
+    const snapshot = byProcess.get(event.itemId ?? undefined);
+    if (!snapshot || snapshot.sessionId !== event.sessionId) return false;
+    // Durable updates have an exact ordering. Live-only output/heartbeats
+    // belong after their causal anchor and must also reach the current card.
+    return event.sequence > snapshot.sequence
+      || (event.sequence === 0 && (event.causalAnchor ?? snapshot.sequence) >= snapshot.sequence);
+  }).map(normalizeAgentEvent);
+  return reduceTranscript([...snapshots, ...updates]);
+}
+
 /** Select one root-to-leaf path without relying on input array order. */
 export function selectActiveBranch(entries: SessionEntry[], activeLeafId: string | null): SessionEntry[] {
   if (!activeLeafId) return [];

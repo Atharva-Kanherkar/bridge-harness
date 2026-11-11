@@ -247,8 +247,10 @@ export type SessionEntry = Omit<WireSessionEntry, "payload"> & { payload: Record
 export type QueuedWorkerRequest = Omit<WireQueuedWorkerRequest, "request"> & { request: Record<string, unknown> };
 export type WorkerLease = Omit<WireWorkerLease, "ownedPaths"> & { ownedPaths: string[] };
 export type WorkerRuntimeRecord = Omit<WireWorkerRuntimeRecord, "lastResult"> & { lastResult: Record<string, unknown> | null };
-export type SessionForestSnapshot = Omit<WireSessionForestSnapshot, "entries" | "leaves" | "workerLeases" | "workerRuntimes" | "workerQueue"> & {
-  entries: SessionEntry[]; leaves: SessionEntry[];
+export type SessionForestSnapshot = Omit<WireSessionForestSnapshot, "entries" | "activeProcessEntries" | "leaves" | "workerLeases" | "workerRuntimes" | "workerQueue"> & {
+  entries: SessionEntry[];
+  activeProcessEntries?: SessionEntry[];
+  leaves: SessionEntry[];
   workerLeases: WorkerLease[]; workerRuntimes: WorkerRuntimeRecord[]; workerQueue: QueuedWorkerRequest[];
 };
 

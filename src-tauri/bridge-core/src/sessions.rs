@@ -928,7 +928,7 @@ impl BridgeCore {
             "completed" | "cancelled" | "failed" | "stopped" => previous_status.as_str(),
             _ => "stopped",
         };
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         transaction.execute(
             "UPDATE sessions SET status=?2,active_turn_id=NULL,
              ended_at=CASE WHEN status=?2 THEN ended_at ELSE ?3 END WHERE id=?1",
@@ -1385,7 +1385,7 @@ impl BridgeCore {
         let session_id = change.session_id.as_str();
         let db = self.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         if persist_chat_model_selection(
             &transaction,
             session_id,
@@ -1670,6 +1670,7 @@ pub fn session_forest_snapshot_with_repository_state(
     let reasons =
         store::workspace_reason_events(db, &workspace_id, store::SNAPSHOT_REASON_WINDOW)?;
     let completion = completion::latest_summary(db, session_id)?;
+    let active_process_entries = crate::background_activity::current(db, session_id)?;
     let overhead_bytes = serde_json::to_vec(&(
         &head,
         &leaves,
@@ -1679,6 +1680,7 @@ pub fn session_forest_snapshot_with_repository_state(
         &usage,
         &reasons,
         &completion,
+        &active_process_entries,
     ))
     .map(|bytes| bytes.len())
     .unwrap_or(store::SNAPSHOT_PAYLOAD_BUDGET_BYTES);
@@ -1711,6 +1713,7 @@ pub fn session_forest_snapshot_with_repository_state(
     Ok(SessionForestSnapshot {
         session_id: session_id.to_owned(),
         entries,
+        active_process_entries,
         head,
         leaves,
         worker_leases,

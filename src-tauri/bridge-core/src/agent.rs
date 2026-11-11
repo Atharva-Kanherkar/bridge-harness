@@ -1311,6 +1311,12 @@ fn normalize_item(
                 .join("");
             (!text.is_empty()).then_some(text)
         });
+    // Native execution reports the process identity and emits completion only
+    // when that process exits, including executions yielded back to the model.
+    if item_type == "commandExecution" && !item["processId"].is_null() {
+        event.data["backgroundTask"] = Value::Bool(true);
+        event.data["background"] = Value::Bool(method == "item/started");
+    }
     if item_type == "fileChange" {
         stamp_file_change_fields(&mut event.data);
         if event.title.is_none() {
@@ -1325,6 +1331,9 @@ pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
     normalize_claude_message_with_state(message, &mut ClaudeStreamState::default())
 }
 
+#[path = "claude_activity.rs"]
+mod claude_activity;
+
 #[derive(Debug, Default, Clone)]
 pub struct ClaudeStreamState {
     child_streams: HashMap<String, Box<ClaudeStreamState>>,
@@ -1333,6 +1342,7 @@ pub struct ClaudeStreamState {
     pub active_message_id: Option<String>,
     pub active_reasoning_id: Option<String>,
     thinking_blocks: std::collections::BTreeMap<String, ClaudeThinkingBlock>,
+    activity: claude_activity::ActivityState,
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
@@ -1489,6 +1499,8 @@ fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option
 
 #[derive(Debug, Clone)]
 struct ClaudeToolCall {
+    name: String,
+    description: Option<String>,
     is_subagent: bool,
     family: ClaudeToolFamily,
     started_at: Instant,
@@ -1582,6 +1594,8 @@ fn claude_tool_started(
             }
         })
         .or_insert(ClaudeToolCall {
+            name: name.into(),
+            description: None,
             is_subagent: matches!(name, "Agent" | "Task"),
             family,
             started_at: now,
@@ -1593,6 +1607,10 @@ fn claude_tool_started(
     event.status = Some("inProgress".into());
     event.data["phase"] = Value::String(phase.as_str().to_owned());
     let input = block.get("input").cloned().unwrap_or(Value::Null);
+    if let Some(call) = state.tool_calls.get_mut(&tool_id) {
+        call.description = input.get("description").and_then(Value::as_str).map(str::to_owned);
+        if name == "Monitor" { call.command = input.get("command").and_then(Value::as_str).map(str::to_owned); }
+    }
     match family {
         ClaudeToolFamily::Command => {
             if let Some(command) = input.get("command").and_then(Value::as_str) {
@@ -1770,9 +1788,10 @@ pub fn normalize_claude_message_with_state(
             || message.get("task_type").and_then(Value::as_str).is_some_and(|kind| kind != "local_agent") {
             state.ignored_tasks.insert(task.to_owned());
             if let Some(tool)=message.get("tool_use_id").and_then(Value::as_str) { state.ignored_tasks.insert(tool.to_owned()); }
-            return vec![];
+            // Not a subagent: background processes and watchers are activity.
+            return normalize_claude_message_inner(message, state);
         }
-        if state.ignored_tasks.contains(task) { return vec![]; }
+        if state.ignored_tasks.contains(task) { return normalize_claude_message_inner(message, state); }
         let old = state.tasks.get(task).cloned().unwrap_or_else(|| json!({}));
         let id = message.get("tool_use_id").or_else(|| old.get("tool_use_id")).and_then(Value::as_str).unwrap_or(task);
         if id.is_empty() { return vec![]; }
@@ -1798,6 +1817,9 @@ fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState
     let Some(kind) = message.get("type").and_then(Value::as_str) else {
         return vec![];
     };
+    if let Some(events) = claude_activity::normalize(message, &mut state.activity, &state.tool_calls) {
+        return events;
+    }
     match kind {
         "system" => {
             // A new process starts its running totals from zero.
@@ -1825,7 +1847,8 @@ fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState
             let child_streams = std::mem::take(&mut state.child_streams);
             let tasks = std::mem::take(&mut state.tasks);
             let ignored_tasks = std::mem::take(&mut state.ignored_tasks);
-            *state = ClaudeStreamState { child_streams, tasks, ignored_tasks, ..Default::default() };
+            let activity = std::mem::take(&mut state.activity);
+            *state = ClaudeStreamState { child_streams, tasks, ignored_tasks, activity, ..Default::default() };
             state.usage_cumulative = usage_cumulative;
             events.extend(normalize_claude_result(message, state));
             events
@@ -2113,6 +2136,9 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
         .cloned()
         .unwrap_or_default();
     let mut events = Vec::new();
+    if let Some(notification) = claude_activity::synthetic_notification(message) {
+        events.push(notification);
+    }
     for part in content {
         match part.get("type").and_then(Value::as_str).unwrap_or("") {
             "tool_result" => {
@@ -2129,6 +2155,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     continue;
                 }
                 let call = state.tool_calls.remove(&tool_id);
+                let (backgrounded, task_events) = claude_activity::launched(message, &tool_id, call.as_ref(), &mut state.activity);
                 let family = call
                     .as_ref()
                     .map(|call| call.family)
@@ -2153,6 +2180,8 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                         .unwrap_or(false)
                     {
                         "failed"
+                    } else if backgrounded {
+                        "backgrounded"
                     } else {
                         "completed"
                     }
@@ -2174,6 +2203,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     event.data["aggregatedOutput"] = Value::String(text.clone());
                 }
                 events.push(event);
+                events.extend(task_events);
             }
             // User text echoes are already persisted by Bridge on send_turn.
             "text" => {}
@@ -4487,11 +4517,20 @@ mod harness_subagent_tests {
         normalize_claude_message_with_state(&json!({"type":"result","subtype":"success"}), &mut state);
         let finish = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"task","status":"completed","summary":"Done"}), &mut state);
         assert_eq!(finish[0].data["subagent"]["sessionId"], "agent-call");
-        for extra in [json!({"task_type":"local_bash"}),json!({"ambient":true}),json!({"skip_transcript":true})] {
-            let mut frame=json!({"type":"system","subtype":"task_started","task_id":"ignored"});
+        for (index, extra) in [json!({"task_type":"local_bash"}),json!({"ambient":true}),json!({"skip_transcript":true})].into_iter().enumerate() {
+            let mut frame=json!({"type":"system","subtype":"task_started","task_id":format!("ignored-{index}")});
             frame.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-            assert!(normalize_claude_message_with_state(&frame,&mut state).is_empty());
+            let events = normalize_claude_message_with_state(&frame,&mut state);
+            assert!(events.iter().all(|event| !event.kind.starts_with("subagent.") && event.data.get("subagent").is_none()));
         }
+        // A background process is activity, through every bookend.
+        let bash = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"tests","task_type":"local_bash","description":"Rust tests"}), &mut state);
+        assert_eq!(bash[0].item_id.as_deref(), Some("background-task:tests"));
+        let done = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"tests","status":"completed"}), &mut state);
+        assert_eq!((done[0].kind.as_str(), done[0].status.as_deref()), ("tool.completed", Some("completed")));
+        // The level snapshot does not turn a subagent into a process.
+        let level = normalize_claude_message_with_state(&json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task","task_type":"local_agent","description":"Research"}]}), &mut state);
+        assert!(level.iter().all(|event| event.item_id.as_deref() != Some("background-task:task")));
     }
     #[test]
     fn claude_child_messages_tools_and_progress_are_attributed() {

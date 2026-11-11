@@ -1125,6 +1125,7 @@ fn the_session_forest_snapshot_mirrors_core() {
     assert_mirrors::<wire::SessionForestSnapshot>(&model::SessionForestSnapshot {
         session_id: "s-1".into(),
         entries: vec![entry.clone()],
+        active_process_entries: vec![],
         head: Some(model::SessionHead {
             session_id: "s-1".into(),
             active_entry_id: Some("e-1".into()),

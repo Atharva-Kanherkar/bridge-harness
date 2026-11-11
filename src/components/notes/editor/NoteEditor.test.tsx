@@ -603,6 +603,9 @@ describe("rich fences", () => {
       await settle(50);
       await commit();
       expect(onChange).toHaveBeenLastCalledWith('first\n\n```excalidraw\n{"type":"excalidraw","version":2,"source":"bridge","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}\n```\n');
+      // the command's focus lands a frame later; the drawing must survive it.
+      await act(async () => { await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0))); });
+      expect(editor().isFocused).toBe(true);
       expect(drawingBlock()?.textContent).toContain("Empty drawing. Click to draw.");
     });
 

@@ -707,7 +707,8 @@ mod tests {
                 .sections
                 .iter()
                 .any(|section| section.id == prompts::ADDITIONAL_GUIDANCE_SECTION_ID));
-            let mut legacy = PromptCompiler::new(target.compiler_role());
+            let mut legacy = PromptCompiler::new(target.compiler_role())
+                .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE);
             for section in prompts::default_sections(*target, 0) {
                 if section.id != prompts::ADDITIONAL_GUIDANCE_SECTION_ID {
                     legacy = legacy.stable_section(section.id, section.text);
