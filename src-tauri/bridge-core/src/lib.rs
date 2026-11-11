@@ -7,6 +7,7 @@
 //! in their own transport.
 
 pub mod account_secrets;
+pub mod api_keys;
 pub mod acp_events;
 pub mod acp_registry;
 pub mod acp_session;

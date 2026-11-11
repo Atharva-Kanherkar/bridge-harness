@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
-import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
+import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
@@ -11,6 +11,7 @@ import { StoragePlanCard } from "./StoragePlanCard";
 import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
+import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
@@ -207,6 +208,27 @@ function FoldedContext({ label, fence, series, body }: { label: string; fence: s
 }
 
 function TextRun({ text }: { text: string }) {
+  if (!text.includes("[secret:")) return <MentionRun text={text} />;
+  return <>{text.split(SECRET_PLACEHOLDER).filter(part => part !== "").map((part, index) => {
+    const reference = placeholderReference(part);
+    return reference ? <KeyChip key={index} reference={reference} /> : <MentionRun key={index} text={part} />;
+  })}</>;
+}
+
+/** A key Bridge kept out of the chat. The agent holds this placeholder and
+ *  can use the key only on the sites allowed for it; the value never left
+ *  Bridge. A saved key shows its name, a pasted one just "API key". */
+function KeyChip({ reference }: { reference: string }) {
+  const name = reference.startsWith("sec_") ? "API key" : reference;
+  return <span
+    role="img"
+    aria-label={`${name}, kept by Bridge`}
+    title={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}
+    className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-[11px] text-muted-foreground"
+  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span>;
+}
+
+function MentionRun({ text }: { text: string }) {
   const links = useContext(FileLinkContext);
   if (!links || !text.includes("@")) return <>{text}</>;
   const parts = text.split(MENTION).filter(part => part !== "");

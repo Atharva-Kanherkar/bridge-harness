@@ -17,6 +17,8 @@ import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
+import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from "./types";
+import { guessKeyKind } from "./apiKeys";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
@@ -489,6 +491,12 @@ let mockBrowserClone: BrowserCloneSnapshot = {
   screenshot: mockCloneFrame("example.com"), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
 };
 let mockCloneSettings: CloneSettings = defaultCloneSettings();
+
+const mockApiKeys: { saved: SavedApiKey[]; chat: ChatApiKey[] } = {
+  saved: [{ name: "OPENAI_API_KEY", kind: "openai", hosts: ["api.openai.com"], needsValue: false }],
+  chat: [{ reference: "sec_3f9c2a71d4b84e0f9a1c6b2d7e5f8a90", kind: "github", hosts: ["api.github.com", "uploads.github.com"], sessionId: "mock-session", sessionLabel: "Triage open issues" }],
+};
+const mockApiKeysSnapshot = (): ApiKeysSnapshot => ({ canSave: true, proxyRunning: true, saved: mockApiKeys.saved.map(key => ({ ...key })), chat: mockApiKeys.chat.map(key => ({ ...key })) });
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
@@ -1758,6 +1766,25 @@ export const bridgeApi = {
     if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
   },
   cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => hasBackend() ? call("clones/clone_requests") : [],
+  // API keys the agent uses through Bridge without reading them. Nothing here
+  // ever returns a value; the mock keeps names and sites only.
+  listApiKeys: async (): Promise<ApiKeysSnapshot> => hasBackend() ? call("keys/list_api_keys") : mockApiKeysSnapshot(),
+  saveApiKey: async (params: SaveApiKeyParams): Promise<ApiKeysSnapshot> => {
+    if (hasBackend()) return call("keys/save_api_key", params);
+    const existing = mockApiKeys.saved.find(key => key.name === params.name);
+    const fromChat = params.fromReference ? mockApiKeys.chat.find(key => key.reference === params.fromReference) : undefined;
+    if (!params.value && !fromChat && !existing) throw new Error(`There is no saved key named ${params.name}. Paste its value to add it.`);
+    const kind = fromChat?.kind ?? (params.value ? guessKeyKind(params.value) : existing?.kind) ?? "custom";
+    mockApiKeys.saved = [...mockApiKeys.saved.filter(key => key.name !== params.name), { name: params.name, kind, hosts: params.hosts, needsValue: params.value ? false : existing?.needsValue ?? false }].sort((a, b) => a.name.localeCompare(b.name));
+    if (fromChat) fromChat.savedAs = params.name;
+    return mockApiKeysSnapshot();
+  },
+  forgetApiKey: async (reference: string): Promise<ApiKeysSnapshot> => {
+    if (hasBackend()) return call("keys/forget_api_key", { reference });
+    mockApiKeys.saved = mockApiKeys.saved.filter(key => key.name !== reference);
+    mockApiKeys.chat = mockApiKeys.chat.filter(key => key.reference !== reference).map(key => key.savedAs === reference ? { ...key, savedAs: undefined } : key);
+    return mockApiKeysSnapshot();
+  },
   readCloneSettings: async (): Promise<CloneSettingsSnapshot> => hasBackend() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
   writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
     if (hasBackend()) return call("clones/write_clone_settings", { settings });

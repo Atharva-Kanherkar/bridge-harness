@@ -205,6 +205,10 @@ export type {
   AttentionItem,
   AttentionKind,
   UnreadSummary,
+  ApiKeysSnapshot,
+  SavedApiKey,
+  ChatApiKey,
+  SaveApiKeyParams,
 } from "./protocol/generated/protocol";
 
 export type {

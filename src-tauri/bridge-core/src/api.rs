@@ -5864,6 +5864,118 @@ pub fn write_clone_settings(core: &Arc<BridgeCore>, settings: &bridge_protocol::
     read_clone_settings(core)
 }
 
+/// Saved keys and this launch's chat keys, with where each may be sent.
+/// Never a value.
+pub fn list_api_keys(core: &Arc<BridgeCore>) -> Result<wire::ApiKeysSnapshot, BridgeError> {
+    let (saved, chat) = core.credential_broker.summaries();
+    let mut labels: HashMap<String, Option<String>> = HashMap::new();
+    {
+        let db = core.db.lock().unwrap_or_else(|p| p.into_inner());
+        for session in chat.iter().filter_map(|key| key.session_id.as_ref()) {
+            if !labels.contains_key(session) {
+                let label = db
+                    .query_row("SELECT label FROM sessions WHERE id=?1", params![session], |row| row.get::<_, Option<String>>(0))
+                    .optional()?
+                    .flatten();
+                labels.insert(session.clone(), label);
+            }
+        }
+    }
+    Ok(wire::ApiKeysSnapshot {
+        can_save: crate::api_keys::supported(),
+        proxy_running: core.credential_broker.endpoint().is_some(),
+        saved: saved
+            .into_iter()
+            .map(|key| wire::SavedApiKey {
+                needs_value: !core.credential_broker.saved_readable(&key.reference),
+                name: key.reference,
+                kind: key.kind,
+                hosts: key.hosts,
+            })
+            .collect(),
+        chat: chat
+            .into_iter()
+            .map(|key| {
+                let session_id = key.session_id.unwrap_or_default();
+                wire::ChatApiKey {
+                    session_label: labels.get(&session_id).cloned().flatten(),
+                    reference: key.reference,
+                    kind: key.kind,
+                    hosts: key.hosts,
+                    session_id,
+                    saved_as: key.saved_as,
+                }
+            })
+            .collect(),
+    })
+}
+
+/// Save a key for every chat: a new value, a key pasted into a chat, or new
+/// sites for a key already saved. The value goes to the Keychain only.
+pub fn save_api_key(core: &Arc<BridgeCore>, params: &wire::SaveApiKeyParams) -> Result<wire::ApiKeysSnapshot, BridgeError> {
+    use crate::api_keys;
+    let name = api_keys::validate_name(&params.name)?;
+    let hosts = api_keys::normalize_hosts(&params.hosts)?;
+    if !api_keys::supported() {
+        return Err(BridgeError::Invalid(
+            "Saving a key needs the macOS Keychain. A key pasted into a chat still works until Bridge quits.".into(),
+        ));
+    }
+    let broker = &core.credential_broker;
+    let existing = broker.saved_metadata(&name);
+    let (kind, value, alias) = match (params.value.as_deref(), params.from_reference.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(BridgeError::Invalid("Save either a new key or one from a chat, not both".into()))
+        }
+        (Some(value), None) => {
+            let value = api_keys::validate_value(value)?;
+            let kind = secret_interception::detect(&value).unwrap_or("custom").to_owned();
+            (kind, Some(value), None)
+        }
+        (None, Some(reference)) => {
+            let (kind, value) = broker.chat_key_for_saving(reference).ok_or_else(|| {
+                BridgeError::Invalid("That chat key is gone: Bridge forgets pasted keys when it quits. Paste the key here instead.".into())
+            })?;
+            (kind, Some(value), Some(reference.to_owned()))
+        }
+        (None, None) => {
+            let existing = existing.as_ref().ok_or_else(|| {
+                BridgeError::Invalid(format!("There is no saved key named {name}. Paste its value to add it."))
+            })?;
+            (existing.kind.clone(), None, None)
+        }
+    };
+    let mut aliases = existing.map(|metadata| metadata.aliases).unwrap_or_default();
+    if let Some(alias) = alias.as_ref().filter(|alias| !aliases.contains(alias)) {
+        aliases.push(alias.clone());
+    }
+    let metadata = api_keys::Metadata { kind, hosts, aliases };
+    if let Some(value) = &value {
+        api_keys::save_value(&name, value)?;
+    }
+    api_keys::put(&core.db.lock().unwrap_or_else(|p| p.into_inner()), &name, &metadata)?;
+    broker.put_saved(&name, metadata, value);
+    if let Some(reference) = &alias {
+        broker.mark_saved_as(reference, &name);
+    }
+    list_api_keys(core)
+}
+
+/// Forget a saved key (by name) or a chat key (by its `sec_…` reference).
+/// Chats that used it get a refusal on their next call.
+pub fn forget_api_key(core: &Arc<BridgeCore>, reference: &str) -> Result<wire::ApiKeysSnapshot, BridgeError> {
+    let broker = &core.credential_broker;
+    if reference.starts_with("sec_") {
+        broker.forget_chat_key(reference);
+    } else {
+        let name = crate::api_keys::validate_name(reference)?;
+        crate::api_keys::delete_value(&name)?;
+        crate::api_keys::remove(&core.db.lock().unwrap_or_else(|p| p.into_inner()), &name)?;
+        broker.remove_saved(&name);
+    }
+    list_api_keys(core)
+}
+
 pub fn clone_requests(core: &Arc<BridgeCore>) -> Vec<bridge_protocol::messages::CloneRequest> {
     #[cfg(target_os = "macos")]
     { core.browser_clone_orchestrator.pending_requests() }
@@ -7073,6 +7185,58 @@ mod clone_settings_tests {
         assert!(validate_clone_ttl(u64::MAX).is_err());
         assert!(validate_clone_ttl(1).is_ok());
         assert!(validate_clone_ttl(240).is_ok());
+    }
+
+    #[test]
+    fn api_keys_save_promote_update_and_forget_without_returning_a_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let pasted = secret_interception::intercept("ghp_apitestabcdefghijklmnopqrstuvwxyz0123");
+        let reference = pasted.sanitized.interceptions[0].reference.clone();
+        core.credential_broker.register("chat-1", pasted.captured);
+
+        let listed = list_api_keys(&core).unwrap();
+        assert_eq!(listed.chat.len(), 1);
+        assert_eq!(listed.chat[0].hosts, vec!["api.github.com", "uploads.github.com"]);
+        if !crate::api_keys::supported() {
+            assert!(save_api_key(&core, &wire::SaveApiKeyParams { name: "GH_API_TEST".into(), hosts: vec![], value: Some("x".into()), from_reference: None }).is_err());
+            return;
+        }
+
+        let saved = save_api_key(&core, &wire::SaveApiKeyParams {
+            name: "GH_API_TEST".into(),
+            hosts: vec!["https://api.github.com/user".into()],
+            value: None,
+            from_reference: Some(reference.clone()),
+        }).unwrap();
+        assert_eq!(saved.saved, vec![wire::SavedApiKey { name: "GH_API_TEST".into(), kind: "github".into(), hosts: vec!["api.github.com".into()], needs_value: false }]);
+        assert_eq!(saved.chat[0].saved_as.as_deref(), Some("GH_API_TEST"));
+        assert!(!serde_json::to_string(&saved).unwrap().contains("ghp_apitest"), "no value on the wire");
+
+        // New sites only; the value stays.
+        let updated = save_api_key(&core, &wire::SaveApiKeyParams { name: "GH_API_TEST".into(), hosts: vec!["api.github.com".into(), "*.githubusercontent.com".into()], value: None, from_reference: None }).unwrap();
+        assert_eq!(updated.saved[0].hosts, vec!["api.github.com", "*.githubusercontent.com"]);
+        assert_eq!(crate::api_keys::read_value("GH_API_TEST").unwrap().as_deref().map(String::as_str), Some("ghp_apitestabcdefghijklmnopqrstuvwxyz0123"));
+
+        // A typed value is classified; a missing key with no value is refused.
+        let typed = save_api_key(&core, &wire::SaveApiKeyParams { name: "OPENAI_API_TEST".into(), hosts: vec!["api.openai.com".into()], value: Some(" sk-proj-apitestabcdefghijklmnopqrstuvwx ".into()), from_reference: None }).unwrap();
+        assert!(typed.saved.iter().any(|key| key.name == "OPENAI_API_TEST" && key.kind == "openai"));
+        assert!(save_api_key(&core, &wire::SaveApiKeyParams { name: "MISSING_API_TEST".into(), hosts: vec![], value: None, from_reference: None }).is_err());
+
+        // A build that cannot read the Keychain item says so instead of
+        // listing a key no agent can use.
+        let fresh = Arc::new(BridgeCore::for_tests(tempfile::tempdir().unwrap().path()));
+        fresh.credential_broker.put_saved("UNREADABLE_API_TEST", crate::api_keys::Metadata { kind: "custom".into(), hosts: vec![], aliases: vec![] }, None);
+        assert!(list_api_keys(&fresh).unwrap().saved.iter().any(|key| key.name == "UNREADABLE_API_TEST" && key.needs_value));
+        assert!(list_api_keys(&core).unwrap().saved.iter().all(|key| !key.needs_value));
+
+        let forgotten = forget_api_key(&core, "GH_API_TEST").unwrap();
+        assert!(forgotten.saved.iter().all(|key| key.name != "GH_API_TEST"));
+        assert_eq!(forgotten.chat[0].saved_as, None);
+        assert_eq!(crate::api_keys::read_value("GH_API_TEST").unwrap(), None);
+        let forgotten = forget_api_key(&core, &reference).unwrap();
+        assert!(forgotten.chat.is_empty());
+        forget_api_key(&core, "OPENAI_API_TEST").unwrap();
     }
 
     #[cfg(target_os = "macos")]

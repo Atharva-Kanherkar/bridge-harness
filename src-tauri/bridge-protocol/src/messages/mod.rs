@@ -28,6 +28,7 @@ mod auth;
 mod automations;
 mod browser;
 mod clones;
+mod keys;
 mod common;
 mod completion;
 mod config;
@@ -65,6 +66,7 @@ pub use auth::*;
 pub use automations::*;
 pub use browser::*;
 pub use clones::*;
+pub use keys::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
@@ -476,6 +478,10 @@ typed_methods![
     (ReadCloneSettings, _, CloneSettingsSnapshot),
     (WriteCloneSettings, WriteCloneSettingsParams, CloneSettingsSnapshot),
     (CloneRequests, _, CloneRequestsResult),
+    // API keys
+    (ListApiKeys, _, ApiKeysSnapshot),
+    (SaveApiKey, SaveApiKeyParams, ApiKeysSnapshot),
+    (ForgetApiKey, ForgetApiKeyParams, ApiKeysSnapshot),
     // marketplace
     // agents — whether an agent's runtime is installed at all
     (ListManagedAgents, _, ManagedAgentList),

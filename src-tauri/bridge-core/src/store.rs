@@ -4244,6 +4244,10 @@ pub(crate) fn session_event_in_transaction(
     provider_meta: &serde_json::Value,
 ) -> Result<AgentEvent, BridgeError> {
     event.validate().map_err(BridgeError::Invalid)?;
+    // An agent that printed its environment must not leave the key proxy's
+    // pass in history, an export, or the live stream.
+    let scrubbed = crate::credential_broker::scrub_event(event);
+    let event = scrubbed.as_ref().unwrap_or(event);
     let parent_entry_id: Option<String> = transaction
         .query_row(
             "SELECT active_entry_id FROM session_heads WHERE session_id=?1",

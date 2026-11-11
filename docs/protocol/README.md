@@ -66,6 +66,10 @@ directory's sessions, stores, PTYs, and provider processes:
 - **Health.** `/healthz` and `/readyz` on `127.0.0.1:4318` by default
   (`--health-addr none` disables). Bind and startup failures are fatal and
   printed — never a silent no-op. Port 4317 stays private and unextended.
+- **API key proxy.** Every daemon serves the loopback proxy its agents call
+  with saved or pasted keys (`/credential-proxy/<session>/<host>/<path>`),
+  on `127.0.0.1:4317` or, when that is taken, an ephemeral port. The agents'
+  instructions name the bound port. See `testing/feat-credential-vault.md`.
 
 ```bash
 bridged --data-dir ~/Library/Application\ Support/dev.bridge.deck

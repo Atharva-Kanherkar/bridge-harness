@@ -61,7 +61,7 @@ static DETECTORS: LazyLock<Vec<Detector>> = LazyLock::new(|| {
         ),
         Detector::new(
             "notion",
-            r"(?:^|[^A-Za-z0-9])(?P<secret>secret_[A-Za-z0-9]{20,255})",
+            r"(?:^|[^A-Za-z0-9])(?P<secret>(?:secret|ntn)_[A-Za-z0-9]{20,255})",
         ),
         Detector::new(
             "aws_access_key",
@@ -106,6 +106,17 @@ pub struct InterceptedTurn {
 /// to correlate or brute-force intercepted credentials.
 pub fn sanitize(text: &str) -> SanitizedTurn {
     intercept(text).sanitized
+}
+
+/// The kind of a credential typed on its own, such as a key saved in Settings:
+/// the detector that matches the whole value, if any.
+pub fn detect(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    let intercepted = intercept(value);
+    match intercepted.captured.as_slice() {
+        [only] if only.value.as_str() == value => Some(only.detector),
+        _ => None,
+    }
 }
 
 /// Intercept a turn while retaining captured values solely for the in-process
@@ -211,6 +222,7 @@ mod tests {
         assert_intercepted("github", "github_pat_11AA22bb33CC44dd55EE66ff77GG88hh");
         assert_intercepted("slack", "xoxb-123456789012-abcdefghijklmnop");
         assert_intercepted("notion", "secret_abcdefghijklmnopqrstuvwx");
+        assert_intercepted("notion", "ntn_abcdefghijklmnopqrstuvwx1234");
         assert_intercepted("openai", "sk-proj-abcdefghijklmnopqrstuvwxyz123456");
         assert_intercepted("anthropic", "sk-ant-abcdefghijklmnopqrstuvwxyz123456");
         assert_intercepted("aws_access_key", "AKIAABCDEFGHIJKLMNOP");
@@ -261,6 +273,14 @@ mod tests {
         assert_eq!(sanitized.interceptions[0].detector, "private_key");
         assert!(!sanitized.text.contains("abc123"));
         assert!(sanitized.text.ends_with("\nthanks"));
+    }
+
+    #[test]
+    fn detects_the_kind_of_a_lone_key() {
+        assert_eq!(detect(" sk-proj-abcdefghijklmnopqrstuvwxyz123456 "), Some("openai"));
+        assert_eq!(detect("ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"), Some("github"));
+        assert_eq!(detect("plain-value"), None);
+        assert_eq!(detect("use sk-proj-abcdefghijklmnopqrstuvwxyz123456 here"), None);
     }
 
     #[test]

@@ -672,6 +672,20 @@ describe("storage agent blocks", () => {
     expect(html).not.toContain("```");
   });
 
+  it("shows a key Bridge kept out of the chat as a chip, not a raw placeholder", () => {
+    const html = renderToStaticMarkup(<MentionText text={"list my repos with [secret:sec_3f9c2a71d4b84e0f] and [secret:OPENAI_API_KEY] please"} />);
+    expect(html.startsWith("list my repos with ")).toBe(true);
+    expect(html).toContain('aria-label="API key, kept by Bridge"');
+    expect(html).toContain('aria-label="OPENAI_API_KEY, kept by Bridge"');
+    expect(html).toContain(" please");
+    expect(html.replace(/title="[^"]*"/g, "")).not.toContain("[secret:");
+  });
+
+  it("leaves bracketed text that is not a placeholder alone", () => {
+    const html = renderToStaticMarkup(<MentionText text={"see [secret: notes] and [secret:a b]"} />);
+    expect(html).toBe("see [secret: notes] and [secret:a b]");
+  });
+
   it("folds the Notes page a message carries into a chip", () => {
     const html = renderToStaticMarkup(<MentionText text={withNotesContext("tidy this", "Open page: Launch (id n1, seq 3)\n---\n```js\nx\n```")} />);
     expect(html.startsWith("tidy this")).toBe(true);

@@ -1,5 +1,7 @@
 # Issue 42 Contract: Chat secret interception and brokered OpenAI use
 
+> Brokered use (items 9, 9a, 10 and the OpenAI-only scope) is superseded by `feat-credential-vault.md`: keys of any kind, per-site allowlists, and the proxy pass in the harness environment instead of the prompt.
+
 ## Scope
 
 - Before a user-authored chat turn reaches any structured harness adapter, Bridge classifies the outbound text locally for supported credential patterns.

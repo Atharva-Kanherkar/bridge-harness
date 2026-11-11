@@ -264,6 +264,14 @@ impl Daemon {
             start_health_listener(addr, state.clone())?;
         }
 
+        // The daemon owns the sessions, so it serves the key proxy they call.
+        // Started before any session can launch, so the first one is told a
+        // port that answers. A taken port falls back to an ephemeral one;
+        // with neither, sessions are told keys are unavailable.
+        if bridge_core::credential_broker::start(core.credential_broker.clone()).is_none() {
+            eprintln!("bridged: the API key proxy could not bind a loopback port");
+        }
+
         // Maintenance loops are part of ownership, not of any client.
         bridge_core::live_turn::start_worker_maintenance(core.clone());
         bridge_core::live_turn::start_completion_check_maintenance(core.clone());

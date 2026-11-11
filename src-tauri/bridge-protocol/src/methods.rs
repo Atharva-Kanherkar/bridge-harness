@@ -341,6 +341,10 @@ methods![
     (ReadCloneSettings, "clones", "read_clone_settings"),
     (WriteCloneSettings, "clones", "write_clone_settings"),
     (CloneRequests, "clones", "clone_requests"),
+    // API keys — keys an agent uses through Bridge without reading them
+    (ListApiKeys, "keys", "list_api_keys"),
+    (SaveApiKey, "keys", "save_api_key"),
+    (ForgetApiKey, "keys", "forget_api_key"),
     // agents — the runtime lifecycle for the built-in integrations. Distinct
     // from `marketplace`, which is about plugins running inside an agent.
     (ListManagedAgents, "agents", "list_managed_agents"),
