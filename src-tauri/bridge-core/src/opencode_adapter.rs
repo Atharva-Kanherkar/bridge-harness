@@ -259,6 +259,7 @@ fn launch(
     crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
     // An extra account runs its own server on its own data folder.
     crate::provider_accounts::apply_account(&mut command, request.account);
+    crate::credential_broker::apply_proxy_pass(&mut command);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);

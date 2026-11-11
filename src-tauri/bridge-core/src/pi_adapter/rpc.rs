@@ -188,6 +188,7 @@ impl Process {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::credential_broker::apply_proxy_pass(&mut command);
         adapters::configure_process_group(&mut command);
         binary::hydrate_command_path(&mut command);
         let mut child = command.spawn()?;

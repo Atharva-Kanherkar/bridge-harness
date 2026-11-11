@@ -1069,6 +1069,15 @@ pub fn dispatch(
             reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes, p.agent_vision, p.browser))
         }
         MethodName::ReadCloneSettings => reply(api::read_clone_settings(core)),
+        MethodName::ListApiKeys => reply(api::list_api_keys(core)),
+        MethodName::SaveApiKey => {
+            let p: wire::SaveApiKeyParams = decode(method, params)?;
+            reply(api::save_api_key(core, &p))
+        }
+        MethodName::ForgetApiKey => {
+            let p: wire::ForgetApiKeyParams = decode(method, params)?;
+            reply(api::forget_api_key(core, &p.reference))
+        }
         MethodName::WriteCloneSettings => {
             let p: wire::WriteCloneSettingsParams = decode(method, params)?;
             reply(api::write_clone_settings(core, &p.settings))

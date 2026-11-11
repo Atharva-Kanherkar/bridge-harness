@@ -376,6 +376,7 @@ fn launch(
     if read_only_sandbox.is_none() {
         crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
     }
+    crate::credential_broker::apply_proxy_pass(&mut command);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);

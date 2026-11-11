@@ -410,6 +410,31 @@ async fn write_clone_settings(settings: bridge_protocol::messages::CloneSettings
 }
 
 #[tauri::command]
+async fn list_api_keys(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ApiKeysSnapshot, BridgeError> {
+    api::list_api_keys(state.inner())
+}
+
+/// Save an API key for every chat. The value goes to the macOS Keychain.
+#[tauri::command]
+async fn save_api_key(
+    name: String,
+    hosts: Vec<String>,
+    value: Option<String>,
+    from_reference: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ApiKeysSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::SaveApiKeyParams { name, hosts, value, from_reference };
+    blocking("Save key", move || api::save_api_key(&core, &params)).await
+}
+
+#[tauri::command]
+async fn forget_api_key(reference: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ApiKeysSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Forget key", move || api::forget_api_key(&core, &reference)).await
+}
+
+#[tauri::command]
 async fn clone_requests(state: State<'_, Arc<BridgeCore>>) -> Result<Vec<bridge_protocol::messages::CloneRequest>, BridgeError> {
     Ok(api::clone_requests(state.inner()))
 }
@@ -3187,6 +3212,9 @@ pub fn run() -> i32 {
             clone_input,
             read_clone_settings,
             write_clone_settings,
+            list_api_keys,
+            save_api_key,
+            forget_api_key,
             clone_requests,
             detach_browser,
             route_browser,

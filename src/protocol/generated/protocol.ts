@@ -272,6 +272,9 @@ export type BridgeMethod =
   | "clones/read_clone_settings"
   | "clones/write_clone_settings"
   | "clones/clone_requests"
+  | "keys/list_api_keys"
+  | "keys/save_api_key"
+  | "keys/forget_api_key"
   | "agents/list_managed_agents"
   | "agents/inspect_managed_agent"
   | "agents/install_managed_agent"
@@ -564,6 +567,9 @@ export const BRIDGE_METHODS = [
   { method: "clones/read_clone_settings", domain: "clones", command: "read_clone_settings" },
   { method: "clones/write_clone_settings", domain: "clones", command: "write_clone_settings" },
   { method: "clones/clone_requests", domain: "clones", command: "clone_requests" },
+  { method: "keys/list_api_keys", domain: "keys", command: "list_api_keys" },
+  { method: "keys/save_api_key", domain: "keys", command: "save_api_key" },
+  { method: "keys/forget_api_key", domain: "keys", command: "forget_api_key" },
   { method: "agents/list_managed_agents", domain: "agents", command: "list_managed_agents" },
   { method: "agents/inspect_managed_agent", domain: "agents", command: "inspect_managed_agent" },
   { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
@@ -939,6 +945,9 @@ export interface BridgeMethodParams {
   "clones/read_clone_settings": undefined;
   "clones/write_clone_settings": WriteCloneSettingsParams;
   "clones/clone_requests": undefined;
+  "keys/list_api_keys": undefined;
+  "keys/save_api_key": SaveApiKeyParams;
+  "keys/forget_api_key": ForgetApiKeyParams;
   "agents/list_managed_agents": undefined;
   "agents/inspect_managed_agent": InspectManagedAgentParams;
   "agents/install_managed_agent": InstallManagedAgentParams;
@@ -1233,6 +1242,9 @@ export interface BridgeMethodResults {
   "clones/read_clone_settings": CloneSettingsSnapshot;
   "clones/write_clone_settings": CloneSettingsSnapshot;
   "clones/clone_requests": CloneRequestsResult;
+  "keys/list_api_keys": ApiKeysSnapshot;
+  "keys/save_api_key": ApiKeysSnapshot;
+  "keys/forget_api_key": ApiKeysSnapshot;
   "agents/list_managed_agents": ManagedAgentList;
   "agents/inspect_managed_agent": ManagedAgentInspection;
   "agents/install_managed_agent": ManagedAgentOperationResult;
@@ -1393,6 +1405,15 @@ export interface BrowserSkill {
 export type CapabilityTier = "fast" | "standard" | "strong";
 
 export type ChatAccess = "ask" | "full";
+
+export interface ChatApiKey {
+  hosts: string[];
+  kind: string;
+  reference: string;
+  savedAs?: string | null;
+  sessionId: string;
+  sessionLabel?: string | null;
+}
 
 export interface ChatDefaults {
   access?: ChatAccess | null;
@@ -2716,6 +2737,13 @@ export interface RpcSuccess {
 }
 
 export type SandboxMode = "read_only" | "workspace_write" | "danger_full_access";
+
+export interface SavedApiKey {
+  hosts: string[];
+  kind: string;
+  name: string;
+  needsValue?: boolean;
+}
 
 export interface SecretInterception {
   detector: string;
@@ -5435,6 +5463,24 @@ export interface WriteCloneSettingsParams {
 }
 
 export type CloneRequestsResult = CloneRequest[];
+
+export interface ApiKeysSnapshot {
+  canSave: boolean;
+  chat: ChatApiKey[];
+  proxyRunning: boolean;
+  saved: SavedApiKey[];
+}
+
+export interface SaveApiKeyParams {
+  fromReference?: string | null;
+  hosts: string[];
+  name: string;
+  value?: string | null;
+}
+
+export interface ForgetApiKeyParams {
+  reference: string;
+}
 
 export interface ManagedAgentList {
   agents: ManagedAgentStatus[];

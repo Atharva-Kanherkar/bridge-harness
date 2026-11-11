@@ -119,8 +119,12 @@ fn keychain_read_helper(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     if args.len() > 3
-        || !["Claude Code-credentials", "dev.bridge.deck.provider-usage"]
-            .contains(&service.as_str())
+        || ![
+            "Claude Code-credentials",
+            "dev.bridge.deck.provider-usage",
+            bridge_core::api_keys::KEYCHAIN_SERVICE,
+        ]
+        .contains(&service.as_str())
     {
         return ExitCode::from(2);
     }

@@ -2,8 +2,8 @@
 //! thread is owed it.
 //!
 //! Bridge must tell a harness some things that change for reasons unrelated to
-//! the conversation: the credential-proxy capability contract (whose token is
-//! regenerated on every Bridge process start), the actual harness capability
+//! the conversation: the API key calling contract (whose port and saved keys
+//! can change between Bridge launches), the actual harness capability
 //! roots selected for this launch, and the memory packet (re-ranked on every
 //! memory edit). Volatile context used to be a variable section of the compiled prompt, which is
 //! Claude's `systemPrompt.append`, Codex's `developerInstructions` and

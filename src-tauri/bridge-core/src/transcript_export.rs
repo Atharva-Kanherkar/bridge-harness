@@ -406,6 +406,42 @@ mod tests {
     }
 
     #[test]
+    fn the_key_proxy_pass_never_reaches_history_or_an_export() {
+        // The agent is told to write the variable, but one that echoes its
+        // environment, or a harness that expands the command, would otherwise
+        // store a pass that lets any local reader spend the person's keys.
+        let (dir, db) = session_db();
+        let pass = crate::credential_broker::proxy_pass();
+        let command = format!(
+            "curl -sS -H 'x-bridge-proxy-auth: {pass}' http://127.0.0.1:4317/credential-proxy/s/api.github.com/user"
+        );
+        let mut started = NormalizedEvent::new("tool.started");
+        started.item_id = Some("call-1".into());
+        started.status = Some("inProgress".into());
+        started.title = Some(command.clone());
+        started.data = serde_json::json!({"command": command});
+        let live = store::session_event(&db, "s", &started, &serde_json::json!({"adapter": "claude"})).unwrap();
+        let mut finished = NormalizedEvent::new("command.completed");
+        finished.item_id = Some("call-2".into());
+        finished.text = Some(format!("BRIDGE_PROXY_PASS={pass}"));
+        store::session_event(&db, "s", &finished, &serde_json::json!({})).unwrap();
+
+        assert!(!format!("{live:?}").contains(pass), "the live stream is scrubbed too");
+        let stored: Vec<String> = db
+            .prepare("SELECT payload FROM session_entries WHERE session_id='s'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        assert!(stored.iter().all(|payload| !payload.contains(pass)));
+        assert!(stored[0].contains("x-bridge-proxy-auth: $BRIDGE_PROXY_PASS"), "the command stays readable");
+        let exported = std::fs::read_to_string(export_forest(&dir, &db).path).unwrap();
+        assert!(!exported.contains(pass));
+    }
+
+    #[test]
     fn the_record_carries_what_the_transcript_cannot_show_later() {
         // The point of the export: a reasoning trace and a failed tool are in
         // the file with their text intact, not summarized away.
