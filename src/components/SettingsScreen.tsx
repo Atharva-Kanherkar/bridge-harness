@@ -27,6 +27,7 @@ import type { StorageCopilotHost } from "./settings/StorageCopilot";
 import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
 import { ClonesPage } from "./settings/ClonesPage";
+import { KeysPage } from "./settings/KeysPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { primarySection, SECTION_LABELS, type Section } from "./settings/sections";
 import { ChatDefaultsPage } from "./settings/ChatDefaultsPage";
@@ -296,7 +297,10 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         busy={busy}
         saved={saved}
         onChange={policy => void savePolicy(policy)}
-        extra={<SettingsGroup label="Browser access"><SettingsRow label="Browser copies" description="How agents use a separate browser for work that needs sign-in." onOpen={() => navigate("clones")} /></SettingsGroup>}
+        extra={<>
+          <SettingsGroup label="Browser access"><SettingsRow label="Browser copies" description="How agents use a separate browser for work that needs sign-in." onOpen={() => navigate("clones")} /></SettingsGroup>
+          <SettingsGroup label="Keys"><SettingsRow label="API keys" description="Keys agents can use on the sites you allow, without ever seeing them." onOpen={() => navigate("keys")} /></SettingsGroup>
+        </>}
       />}
 
       {section === "composer" && <ComposerPage adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError} />}
@@ -308,6 +312,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "archives" && <ArchivedChatsPage />}
       {section === "workers" && <WorkersPage adapters={adapters} />}
       {section === "clones" && <ClonesPage onError={onError} />}
+      {section === "keys" && <KeysPage onError={onError} />}
       {section === "work" && <WorkSettingsSection onError={onError} onOpenBoard={onOpenWorkBoard} />}
 
       {section === "agents" && config && <PresetsPage

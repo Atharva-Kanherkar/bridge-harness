@@ -3,7 +3,7 @@ export type Section =
   | "general" | "codingAgents" | "data"
   | "appearance" | "menuBar" | "notifications" | "updates" | "permissions" | "composer" | "voice"
   | "chatDefaults" | "agents" | "models" | "prompts" | "harnesses" | "clones"
-  | "work" | "import" | "archives" | "workers" | "storage";
+  | "work" | "import" | "archives" | "workers" | "storage" | "keys";
 
 export type PrimarySection = "general" | "codingAgents" | "permissions" | "data";
 export type RailGroup = "Settings";
@@ -13,7 +13,7 @@ export const SECTION_LABELS: Record<Section, string> = {
   permissions: "Permissions", composer: "Typing & search", agents: "Agents",
   models: "Model preferences", prompts: "Bridge instructions", harnesses: "Coding agents",
   clones: "Browser copies", work: "Daily briefing", import: "Import history",
-  storage: "Disk usage", archives: "Archived chats", workers: "Background tasks",
+  storage: "Disk usage", archives: "Archived chats", workers: "Background tasks", keys: "API keys",
 };
 export const PRIMARY_SECTIONS: PrimarySection[] = ["general", "codingAgents", "permissions", "data"];
 export const SECTION_ORDER: { group: RailGroup; sections: PrimarySection[] }[] = [
@@ -22,7 +22,7 @@ export const SECTION_ORDER: { group: RailGroup; sections: PrimarySection[] }[] =
 export const ALL_SECTIONS = Object.keys(SECTION_LABELS) as Section[];
 export function primarySection(section: Section): PrimarySection {
   if (["general", "appearance", "menuBar", "notifications", "updates", "composer", "voice"].includes(section)) return "general";
-  if (["permissions", "clones"].includes(section)) return "permissions";
+  if (["permissions", "clones", "keys"].includes(section)) return "permissions";
   if (["data", "import", "storage", "archives"].includes(section)) return "data";
   return "codingAgents";
 }
