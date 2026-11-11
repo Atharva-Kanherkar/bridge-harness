@@ -160,6 +160,10 @@ pub(super) fn normalize(
                 continue;
             };
             let existed = state.tasks.contains_key(id);
+            // Subagents are child sessions, not processes.
+            if !existed && text(member, "task_type") == Some("local_agent") {
+                continue;
+            }
             let task = state
                 .tasks
                 .entry(id.into())
@@ -403,7 +407,12 @@ mod tests {
         );
     }
     fn task(subtype: &str) -> Value {
-        json!({"type":"system","subtype":subtype,"task_id":"tests","tool_use_id":"launcher","description":"Rust tests","is_backgrounded":true})
+        let mut frame = json!({"type":"system","subtype":subtype,"task_id":"tests","tool_use_id":"launcher","description":"Rust tests","is_backgrounded":true});
+        // Only the start names the kind; later bookends inherit it.
+        if subtype == "task_started" {
+            frame["task_type"] = json!("local_bash");
+        }
+        frame
     }
 
     #[test]
@@ -572,7 +581,7 @@ mod tests {
     #[test]
     fn tasks_without_tool_ids_are_visible_but_housekeeping_and_watchers_are_not_busy() {
         let mut state = ClaudeStreamState::default();
-        let standalone = json!({"type":"system","subtype":"task_started","task_id":"orphan","description":"External verification"});
+        let standalone = json!({"type":"system","subtype":"task_started","task_id":"orphan","task_type":"local_bash","description":"External verification"});
         assert_eq!(
             normalize(&standalone, &mut state)[0].title.as_deref(),
             Some("External verification")

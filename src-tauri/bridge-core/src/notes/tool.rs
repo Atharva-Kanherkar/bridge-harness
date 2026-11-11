@@ -139,6 +139,7 @@ impl Access {
                 .chain(WRITE_TOOLS.iter())
                 .chain(memory)
                 .chain(crate::memory_tools::WRITE_TOOLS.iter())
+                .chain(crate::outgoing_tools::WRITE_TOOLS.iter())
                 .chain(std::iter::once(&NOTIFY_USER))
                 .copied()
                 .collect(),
@@ -507,6 +508,22 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
             Err(error) => reply(error.status, json!({"error": error.message})),
         };
     }
+    if tool.starts_with("outgoing_") {
+        let outcome = {
+            let db = core.db.lock().unwrap();
+            crate::outgoing_tools::run(&db, session_id, access == Access::Write, tool, &args)
+        };
+        return match outcome {
+            Ok(outcome) => {
+                core.events.publish(crate::events::CoreEvent::OutgoingChanged {
+                    session_id: session_id.to_owned(),
+                    id: outcome.item.id.clone(),
+                });
+                reply(200, outcome.result)
+            }
+            Err(error) => reply(error.status, json!({"error": error.message})),
+        };
+    }
     match run(&core.notes, access, &actor, tool, &args) {
         Ok(result) => reply(200, result),
         Err(error) => reply(error.status, json!({"error": error.message})),
@@ -646,6 +663,8 @@ mod tests {
         assert_eq!(read["markdown"], "keep me as I am");
         assert_eq!(Access::ReadOnly.tools(), vec!["notes_search", "notes_read", "memory_search"]);
         assert!(Access::Write.tools().contains(&"memory_propose"));
+        assert!(Access::Write.tools().contains(&"outgoing_draft"));
+        assert!(!Access::ReadOnly.tools().contains(&"outgoing_draft"));
         assert!(!Access::ReadOnly.tools().contains(&"memory_propose"));
     }
 
@@ -807,6 +826,25 @@ mod tests {
         assert_eq!(found["records"].as_array().unwrap().len(), 0, "a proposal is not memory until approved");
         assert!(tools["tools"].as_array().unwrap().iter().any(|tool| tool == "memory_search"));
         assert_eq!(call("chat-1", &worker, "memory_search", json!({"query": "x"})).0, 401, "another chat's token");
+
+        // The outgoing tool shares the route too: a top-level chat drafts, a
+        // worker cannot, and a draft tells the UI which chat changed.
+        let chat_tools: Value = client.get(format!("{base}chat-1/tools")).header(AUTH_HEADER, &chat).send().unwrap().json().unwrap();
+        assert!(chat_tools["tools"].as_array().unwrap().iter().any(|tool| tool == "outgoing_draft"));
+        assert!(!tools["tools"].as_array().unwrap().iter().any(|tool| tool == "outgoing_draft"), "not offered to a worker");
+        let draft = json!({"to": {"slack": {"channel": "#dev"}}, "body": "Deploy is done \u{2014} all green", "reason": "tell the team"});
+        let (status, drafted) = call("chat-1", &chat, "outgoing_draft", draft.clone());
+        assert_eq!(status, 200, "{drafted}");
+        assert_eq!(drafted["rendered"], "Deploy is done, all green");
+        match events.try_recv().unwrap() {
+            crate::events::CoreEvent::OutgoingChanged { session_id, id } => {
+                assert_eq!((session_id.as_str(), Some(id.as_str())), ("chat-1", drafted["id"].as_str()));
+            }
+            other => panic!("expected OutgoingChanged, got {other:?}"),
+        }
+        assert_eq!(call("worker-1", &worker, "outgoing_draft", draft).0, 403);
+        let stored = crate::outgoing::list(&core.db.lock().unwrap(), "chat-1").unwrap();
+        assert_eq!(stored.len(), 1);
     }
 
     /// A reading list an agent made by name, with three rows.

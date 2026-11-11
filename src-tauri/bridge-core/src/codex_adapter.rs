@@ -739,6 +739,10 @@ impl AdapterRuntime for CodexRuntime {
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
     }
+    fn stop_subagent(&self, provider_id: &str, turn_id: Option<&str>) -> Result<(), BridgeError> {
+        let turn_id = turn_id.ok_or_else(|| BridgeError::Invalid("Subagent has no live turn to interrupt".into()))?;
+        self.request("turn/interrupt", json!({"threadId":provider_id,"turnId":turn_id}))
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let turn_id = self.current_turn.lock().unwrap().clone()?;
         let writer = self.writer.clone();

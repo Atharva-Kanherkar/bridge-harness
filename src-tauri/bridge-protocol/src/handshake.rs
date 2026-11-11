@@ -113,9 +113,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.30 adds `sessions/wait`.** A new client must not pair with an older
 /// daemon, whose waits would fail with `method_not_found`; a 1.29 client
 /// still pairs with a 1.30 daemon.
+/// **1.31 adds the `outgoing` domain and its `outgoing/changed` hint.** A new
+/// client must not pair with an older daemon, whose draft cards would fail
+/// with `method_not_found`; a 1.30 client still pairs with a 1.31 daemon and
+/// simply never shows a draft card.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 30,
+    minor: 31,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

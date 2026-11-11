@@ -4,8 +4,9 @@ import { readOnlyOptions } from "./read-only.mjs";
 /** The `bridge` server's tools that only read or display. */
 export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search"];
 /** The `bridge` server's tools whose only effect waits for the person's review:
- *  a memory proposal changes nothing until they approve it in Bridge. */
-export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose"];
+ *  a memory proposal changes nothing until they approve it in Bridge, and a
+ *  drafted message is a card the person edits and sends themselves. */
+export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft"];
 
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
@@ -76,6 +77,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(cwd ? { cwd } : {}),
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
     includePartialMessages: true,
+    forwardSubagentText: true,
+    perTaskStopAffordance: true,
     ...(instructions
       ? { systemPrompt: toolless ? instructions : { type: "preset", preset: "claude_code", append: instructions } }
       : {}),

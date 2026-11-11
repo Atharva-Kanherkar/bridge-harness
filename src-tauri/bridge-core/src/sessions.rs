@@ -448,6 +448,7 @@ impl BridgeCore {
         model: Option<&str>,
         worktree_policy: &str,
     ) -> Result<(String, SessionForestSnapshot, String), BridgeError> {
+        crate::harness_subagents::require_process_session(&self.db.lock().unwrap(), session_id)?;
         // A "new" worktree is a git operation: prepare it before the database
         // lock so a slow repository never stalls every other session op, and
         // remove it if the durable fork fails so a retry starts clean.
@@ -1067,6 +1068,7 @@ impl BridgeCore {
     /// machinery until the live-turn slice lands.
     pub fn begin_manual_compaction(&self, session_id: &str) -> Result<String, BridgeError> {
         let db = self.db.lock().unwrap();
+        crate::harness_subagents::require_process_session(&db, session_id)?;
         let status: String = db.query_row(
             "SELECT status FROM sessions WHERE id=?1",
             params![session_id],
@@ -1932,6 +1934,7 @@ pub(crate) fn fork_session_records(
     worktree_policy: &str,
     worktree: Option<&ForkWorktree>,
 ) -> Result<String, BridgeError> {
+    crate::harness_subagents::require_process_session(db, session_id)?;
     if !matches!(worktree_policy, "shared" | "new") {
         return Err(BridgeError::Invalid(format!(
             "Unsupported worktree policy {worktree_policy:?}; expected \"shared\" or \"new\""
@@ -2074,6 +2077,10 @@ pub(crate) fn fork_session_records(
     let fork_point_copy = fork_point_copy.ok_or_else(|| {
         BridgeError::Invalid("Session has no entries to fork".into())
     })?;
+    // A copied row that drafted a message still names the draft's id; the
+    // fork gets its own copy of each such draft so its cards can load them.
+    let copied_payloads: Vec<String> = prefix.iter().map(|entry| entry.payload.to_string()).collect();
+    crate::outgoing::clone_for_fork(&transaction, session_id, &id, &copied_payloads, &chrono::Utc::now().to_rfc3339())?;
     transaction.execute(
         "INSERT INTO session_heads(session_id,active_entry_id,native_provider_session_id,restoration_mode,resume_eligibility,latest_checkpoint_entry_id,updated_at)
          VALUES(?1,?2,NULL,'checkpoint_restored','checkpoint_restored',?3,?4)",
@@ -5636,6 +5643,36 @@ mod fork_tests {
         );
         // The untouched remaining branch of the parent is not part of the fork.
         assert!(!store::session_entries(&db, &id).unwrap().iter().any(|entry| entry.id == leaf));
+    }
+
+    /// A transcript row that drafted a message names the draft by id. The
+    /// fork copies the row verbatim, so it must also get its own copy of the
+    /// draft, or its card finds nothing.
+    #[test]
+    fn fork_clones_the_drafted_messages_its_copied_entries_reference() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let (_root, _checkpoint, _fork_point, _leaf) = seed_forkable_chat(&db);
+        let destination = bridge_protocol::messages::OutgoingDestination::SlackChannel { channel: "#dev".into() };
+        let kept = crate::outgoing::create_draft(&db, "parent", destination.clone(), "in the fork", "r", &[], "t1").unwrap();
+        let later = crate::outgoing::create_draft(&db, "parent", destination, "after the fork point", "r", &[], "t2").unwrap();
+        let forest = session_forest::SessionForest::new(&db);
+        let drafted = forest
+            .append("parent", session_forest::EntryKind::AssistantMessage, json!({ "text": "drafted", "data": { "aggregatedOutput": json!({ "id": kept.id, "state": "draft" }).to_string() } }))
+            .unwrap();
+        forest
+            .append("parent", session_forest::EntryKind::AssistantMessage, json!({ "text": "drafted later", "data": { "aggregatedOutput": json!({ "id": later.id, "state": "draft" }).to_string() } }))
+            .unwrap();
+
+        let fork = fork_ok(&db, &drafted.id, "shared", None);
+        let copies = crate::outgoing::list(&db, &fork).unwrap();
+        assert_eq!(copies.len(), 1, "only drafts named inside the copied prefix");
+        assert_ne!(copies[0].id, kept.id);
+        assert_eq!(copies[0].source_id.as_deref(), Some(kept.id.as_str()));
+        assert_eq!(copies[0].body, kept.body);
+
+        // The copy is the fork's own: editing it leaves the original alone.
+        crate::outgoing::update(&db, &copies[0].id, copies[0].revision, Some("changed in the fork"), false, None, "t3").unwrap();
+        assert_eq!(crate::outgoing::get(&db, &kept.id).unwrap().unwrap().body, "in the fork");
     }
 
     /// A fork is a conversation, not a delegated worker. Every one of these

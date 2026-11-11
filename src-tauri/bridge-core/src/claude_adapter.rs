@@ -920,6 +920,9 @@ impl AdapterRuntime for ClaudeRuntime {
     fn interrupt(&self) -> Result<(), BridgeError> {
         ClaudeRuntime::interrupt(self)
     }
+    fn stop_subagent(&self, provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        write_value(&self.writer, &json!({"type":"stop_task","task_id":provider_id}))
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let writer = self.writer.clone();
         let request = json!({"type":"control_request","request_id":format!("irq-{}", self.request_id.fetch_add(1, Ordering::Relaxed)),"request":{"subtype":"interrupt"}});

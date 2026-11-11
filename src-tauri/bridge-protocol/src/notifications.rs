@@ -125,6 +125,9 @@ notifications![
     // rebuilt state from the hint would keep what the ledger already closed.
     // Clients reread `attention/list_attention` from their cursor.
     (AttentionChanged, "attention/changed", Transient),
+    // Refetch hint: one drafted message in a chat changed. Transient: a client
+    // that missed it sees the same item on its next `outgoing/list_outgoing`.
+    (OutgoingChanged, "outgoing/changed", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

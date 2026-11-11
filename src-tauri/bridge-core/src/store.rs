@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 72;
+const LATEST_SCHEMA_VERSION: i64 = 73;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +66,8 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // lives here rather than behind a schema version (which would also copy
     // the whole store as a migration backup).
     connection.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);",
+        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
     )?;
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
@@ -74,6 +75,7 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // Then queue whatever still has nothing better than a heading, so the title
     // job names it: the harness's own title where there is one, else a generated one.
     let _ = crate::title_jobs::enqueue_backfill(&connection, Utc::now());
+    crate::harness_subagents::interrupt_orphans(&connection)?;
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
@@ -762,6 +764,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // An orchestrator's armed bridge-wait and the worker results it
             // holds. See `orchestrator_wait`.
             72 => crate::orchestrator_wait::install_store(&transaction)?,
+            // Messages a chat drafted for a person or a place: the text, where
+            // it is addressed, its style findings and its revision.
+            73 => crate::outgoing::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -3053,6 +3058,7 @@ pub fn status(value: &str) -> SessionStatus {
         "restored" => SessionStatus::Restored,
         "completed" => SessionStatus::Completed,
         "cancelled" => SessionStatus::Cancelled,
+        "interrupted" => SessionStatus::Stopped, // Preserve the existing wire status vocabulary.
         _ => SessionStatus::Idle,
     }
 }
@@ -4195,11 +4201,13 @@ fn parse_json_column(row: &rusqlite::Row<'_>, index: usize) -> serde_json::Value
 /// [`HIDDEN_VISIBILITY`]: the context projector admits only `eligible` entries
 /// and the recall trigger indexes only `eligible`/`visible`, so recording them
 /// widens the record without widening either the prompt or search.
-const HIDDEN_CONTROL_KINDS: [&str; 4] = [
+const HIDDEN_CONTROL_KINDS: [&str; 6] = [
     "turn.started",
     "turn.completed",
     "usage.updated",
     "plan.updated",
+    "subagent.started",
+    "subagent.completed",
 ];
 
 /// Written, replayed and exported — never projected into model context and
@@ -6760,6 +6768,21 @@ mod tests {
             params![id],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_73_adds_the_outgoing_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('outgoing_messages')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
+        assert_eq!(current_schema_version(&db).unwrap(), 73);
     }
 
     #[test]

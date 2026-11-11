@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
 import { reduceTranscript } from "../transcript/reducer";
@@ -11,12 +11,15 @@ import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
+import { failedTurn } from "../failedTurn";
 import { looksLikeDiff } from "./highlight";
 import { useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
 import { isVisualItem } from "../transcript/visual";
+import { OutgoingCard } from "./OutgoingCard";
+import { isOutgoingItem } from "../transcript/outgoing";
 import { openExternalUrl } from "../externalLinks";
 import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
@@ -887,7 +890,7 @@ function CurrentActivity({ items, turnActive, waiting, stopping, startup, harnes
   </div>;
 }
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -1060,6 +1063,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       delivery: message.delivery,
     };
   });
+  // The failed turn the reader can send again: once it has settled, and not
+  // while a resend of it is already on its way.
+  const retryable = !readOnly && !preview && !turnActive && !optimistic.length && (onRetryTurn || onEditTurn) ? failedTurn(visibleItems) : null;
   const lastEventAt = events.length ? new Date(events[events.length - 1]?.createdAt ?? 0).getTime() : 0;
   const clock = now ?? Date.now();
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
@@ -1076,12 +1082,15 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
   }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
+  const retryFor = (entry: Rendered) => retryable && entry.kind === "item" && entry.item.key === retryable.errorKey ? retryable : null;
   const renderEntry = (entry: Rendered, instant = false) => <TranscriptEntry
     key={entry.key}
     entry={entry}
     instant={instant}
     highlighted={!!highlightEntryId && entry.kind === "item" && entry.item.entryId === highlightEntryId}
-    sessionId={session?.id}
+    // An archived transcript has events but no session; rows that load
+    // their own records (a drafted message) still need to know the chat.
+    sessionId={session?.id ?? historySessionId}
     delivery={entry.kind === "item" ? delivery.get(entry.item.key) : undefined}
     latest={entry.kind === "item" && entry.item.key === latestReplyKey}
     readOnly={readOnly}
@@ -1099,6 +1108,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     onRewind={readOnly ? undefined : onRewindEntry}
     rewindable={entry.kind === "item" && !!leafEntryIds?.includes(entry.item.entryId ?? "")}
     errorContext={errorContext}
+    retryPrompt={retryFor(entry)?.prompt}
+    onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
+    onEditTurn={retryFor(entry) ? onEditTurn : undefined}
   />;
   return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
@@ -1667,6 +1679,12 @@ function ReplyAction({ label, title, onClick, children }: { label: string; title
   >{children}</button>;
 }
 
+/// A failed turn's way back: text-sized, muted until pointed at.
+const ERROR_ACTION = "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50";
+
+/// Resends a failed turn's message; settles when the send has.
+type RetryTurn = (prompt: ConversationItem) => Promise<void> | void;
+
 /// Copies the message as the Markdown it was written in, then ticks.
 function CopyReplyButton({ text }: { text: string }) {
   const { copied, copy } = useCopy(text, 1500);
@@ -1675,7 +1693,7 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1697,8 +1715,9 @@ const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, rea
   }
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
-  if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
+  if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext} retryPrompt={retryPrompt} onRetryTurn={onRetryTurn} onEditTurn={onEditTurn}/>;
   if (isVisualItem(item)) return <VisualCall item={item} turnActive={turnActive}/>;
+  if (isOutgoingItem(item)) return <OutgoingCard item={item} sessionId={sessionId} readOnly={readOnly}/>;
   return <ActivityGroup items={[item]} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/>;
 });
 
@@ -1717,7 +1736,7 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
   if (entry.kind === "raw-group") return <TranscriptRow instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>;
   return <TranscriptRow
     instant={instant}
-    tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
+    tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item) && !isOutgoingItem(entry.item)) ? "alert" : "quiet"}
     id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
     entryId={entry.item.entryId}
     className={highlighted ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
@@ -1733,7 +1752,7 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
 /// arrives a beat after the card, so the eye is drawn to the mark that says
 /// *what kind* of interruption this is. No shake — a graphite-and-paper
 /// transcript should not flinch.
-function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: ErrorContext }) {
+function ErrorCard({ item, errorContext, retryPrompt, onRetryTurn, onEditTurn }: { item: ConversationItem; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void }) {
   // The runtime that raised this failure, which is not necessarily the one the
   // chat is set to now: switching a chat from Codex to OpenCode used to relabel
   // every Codex failure above the switch as an OpenCode one, and hand it
@@ -1747,6 +1766,14 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
   const degraded = item.status === "degraded";
   const isUsage = !degraded && isThrottleKind(described.kind);
   const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
+  // A resend can wait on a shortcut lookup before its bubble lands; a second
+  // click in that gap must not send the message twice.
+  const [retrying, setRetrying] = useState(false);
+  const retry = () => {
+    if (!retryPrompt || !onRetryTurn || retrying) return;
+    setRetrying(true);
+    void Promise.resolve(onRetryTurn(retryPrompt)).finally(() => setRetrying(false));
+  };
   // A rate limit is a wait, not a failure — it gets the tick. A real error
   // is the one place a full wash is warranted.
   return <div role="alert" className={`my-4 flex min-w-0 gap-2.5 rounded-xl border border-x-2 p-3 ${isUsage ? "border-border border-x-warning bg-card text-warning" : "border-destructive/30 border-x-destructive bg-destructive/5 text-destructive"}`}>
@@ -1758,7 +1785,22 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
     >
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
-    <div className="min-w-0"><b className="text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
+    <div className="min-w-0 flex-1">
+      {/* The way back sits on the title line, quiet until pointed at: the
+          failure is the message, the actions are a footnote to it. */}
+      <div className="flex min-w-0 items-start gap-2">
+        <b className="min-w-0 flex-1 text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b>
+        {retryPrompt && (onRetryTurn || onEditTurn) && <div className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
+          {onRetryTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Retry the same message" title="Send the same message again" onClick={retry}>
+            {retrying ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true"/> : <RotateCcw size={11} aria-hidden="true"/>}
+            Retry
+          </button>}
+          {onEditTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Edit in composer" title="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
+            <PenLine size={11} aria-hidden="true"/>Edit
+          </button>}
+        </div>}
+      </div>
+      <p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
       {described.kind === "usage-limit" && errorContext?.allowReset && (item.harness ?? errorContext.harness) === "codex" && <LimitResetOffer />}
     </div>
   </div>;

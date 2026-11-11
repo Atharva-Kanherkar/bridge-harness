@@ -118,6 +118,26 @@ pub fn dispatch(
             let p: wire::GithubSessionPrsParams = decode(method, params)?;
             reply(api::github_session_prs(core, &p.session_id, p.refresh))
         }
+        MethodName::ListOutgoing => {
+            let p: wire::ListOutgoingParams = decode(method, params)?;
+            reply(api::list_outgoing(core, &p.session_id))
+        }
+        MethodName::UpdateOutgoing => {
+            let p: wire::UpdateOutgoingParams = decode(method, params)?;
+            reply(api::update_outgoing(core, &p.id, p.revision, p.body.as_deref(), p.apply_fixes, p.attachments.as_deref()))
+        }
+        MethodName::CopyOutgoing => {
+            let p: wire::CopyOutgoingParams = decode(method, params)?;
+            reply(api::copy_outgoing(core, &p.id, p.revision))
+        }
+        MethodName::ReadOutgoingAttachment => {
+            let p: wire::ReadOutgoingAttachmentParams = decode(method, params)?;
+            reply(api::read_outgoing_attachment(core, &p.id, p.index))
+        }
+        MethodName::DiscardOutgoing => {
+            let p: wire::DiscardOutgoingParams = decode(method, params)?;
+            reply(api::discard_outgoing(core, &p.id))
+        }
         MethodName::GithubAttachPr => {
             let p: wire::GithubAttachPrParams = decode(method, params)?;
             reply(api::github_attach_pr(core, &p.session_id, &p.reference))

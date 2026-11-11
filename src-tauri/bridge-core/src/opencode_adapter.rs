@@ -692,9 +692,10 @@ fn permission_rules(write_mode: Option<WriteMode>) -> Value {
         }
     }
     // A memory proposal waits for the person's review in Bridge, so Ask lets
-    // it run like a read; a read-only session never proposes.
+    // it run like a read; a read-only session never proposes, and never
+    // drafts a message for someone else either.
     if write_mode == Some(WriteMode::ReadOnly) {
-        for tool in crate::memory_tools::WRITE_TOOLS {
+        for tool in crate::memory_tools::WRITE_TOOLS.iter().chain(crate::outgoing_tools::WRITE_TOOLS.iter()) {
             let permission = format!("{}_{tool}", crate::mcp_apps::tool::SERVER_NAME);
             rules.push(json!({"permission": permission, "pattern":"*", "action": "deny"}));
         }
@@ -1329,6 +1330,26 @@ impl AdapterRuntime for OpenCodeRuntime {
             ServerApi::V2 => format!("/api/session/{}/interrupt", self.session_id),
         };
         self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode turn")
+    }
+    fn stop_subagent(&self, provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{provider_id}/abort"),
+            ServerApi::V2 => format!("/api/session/{provider_id}/interrupt"),
+        };
+        self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode subagent")
+    }
+    fn stop_subagent_request(&self, provider_id: &str, _turn_id: Option<&str>) -> Option<crate::adapters::InterruptRequest> {
+        let client = self.client.as_ref()?.clone();
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{provider_id}/abort"),
+            ServerApi::V2 => format!("/api/session/{provider_id}/interrupt"),
+        };
+        let url = self.api.url(&self.base_url, &path, &self.directory);
+        Some(Box::new(move || {
+            client.post(url).timeout(Duration::from_secs(10)).send()
+                .and_then(Response::error_for_status)
+                .map(|_| ()).map_err(http_error("interrupt OpenCode subagent"))
+        }))
     }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let client = self.client.as_ref()?.clone();
@@ -3500,8 +3521,10 @@ mod tests {
         for (mode, expected) in [(Some(WriteMode::Shared), "allow"), (Some(WriteMode::Isolated), "allow"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
             let v1 = permission_rules(mode);
             let v2 = crate::opencode_v2::permission_rules(&v1);
-            assert_eq!(resolve_v1(&v1, "bridge_memory_propose"), expected, "memory_propose {mode:?} v1");
-            assert_eq!(resolve_v2(&v2, "bridge_memory_propose"), expected, "memory_propose {mode:?} v2");
+            for tool in ["bridge_memory_propose", "bridge_outgoing_draft"] {
+                assert_eq!(resolve_v1(&v1, tool), expected, "{tool} {mode:?} v1");
+                assert_eq!(resolve_v2(&v2, tool), expected, "{tool} {mode:?} v2");
+            }
         }
     }
 

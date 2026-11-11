@@ -18,6 +18,7 @@
 
 import type { ConversationItem, ConversationItemType } from "./item";
 import { isVisualItem } from "./visual";
+import { isOutgoingItem } from "./outgoing";
 
 /** One top-level entry of the transcript. */
 export type Rendered =
@@ -167,9 +168,9 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
       continue;
     }
 
-    // A visual is something to read, like prose: it closes the run and stands
-    // on its own, whether it is still being drawn, drawn, or refused.
-    if (isVisualItem(item)) {
+    // A visual or a drafted message is something to read, like prose: it
+    // closes the run and stands on its own, whatever state it is in.
+    if (isVisualItem(item) || isOutgoingItem(item)) {
       closeGroup();
       pushItem(item);
       continue;
