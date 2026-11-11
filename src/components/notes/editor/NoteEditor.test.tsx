@@ -600,6 +600,8 @@ describe("rich fences", () => {
       await act(async () => { BLOCK_CHOICES.find(choice => choice.id === "drawing")!.run(editor(), {} as never); });
       await commit();
       expect(onChange).toHaveBeenLastCalledWith('first\n\n```excalidraw\n{"type":"excalidraw","version":2,"source":"bridge","elements":[],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}\n```\n');
+      // the cursor lands in the new fence, which shows its source while focused.
+      await act(async () => { editor().commands.blur(); });
       expect(drawingBlock()?.textContent).toContain("Empty drawing. Click to draw.");
     });
   });
