@@ -855,18 +855,13 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-/** A live process can outlast both its assistant reply and the loaded history. */
-function CurrentActivity({ items, turnActive, waiting, stopping, startup, harness }: {
-  items: ConversationItem[]; turnActive: boolean; waiting: boolean; stopping?: boolean;
-  startup?: NarrationView; harness?: string | null;
-}) {
+/// A live process can outlast both its assistant reply and the loaded history.
+/// Only background work lands here: the agent's own status (thinking, working,
+/// stopping) stays a transcript row, so a turn with nothing in the background
+/// draws no card.
+function CurrentActivity({ items }: { items: ConversationItem[] }) {
   return <div data-current-activity role="region" aria-label="Current activity" className="u-glass sticky bottom-4 z-10 mx-auto mt-3 w-full max-w-conversation rounded-xl border border-border px-3 py-2 shadow-sm">
-    <div role="status">
-      {startup ? <StartupStatusRow view={startup} harness={harness}/>
-        : stopping ? <ThinkingRow label="Stopping…"/>
-        : turnActive && !waiting ? <ThinkingRow label="Working"/>
-        : <p className="py-1 text-[12px] font-medium text-foreground">{waiting ? "Waiting for input" : "Background processes"}</p>}
-    </div>
+    <p role="status" className="py-1 text-[12px] font-medium text-foreground">Background processes</p>
     {items.length > 0 && <ul className="max-h-44 space-y-1 overflow-y-auto">
       {items.map(item => {
         const call = toolCallDisplay(item);
@@ -1015,9 +1010,12 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const activeProcesses = [...new Map(processCandidates.filter(item => {
     if (!isToolItem(item)) return false;
     const call = toolCallDisplay(item);
+    // The turn's own calls already draw in the transcript; only work that
+    // outlives its turn belongs in the activity card.
+    if (!call.background) return false;
     // An authoritative snapshot can remove an old live-window start. Newer
     // live starts remain visible while the next forest poll is in flight.
-    if (call.background && activeProcessEntries !== undefined && !processIds.has(item.identity) && item.sequence <= snapshotSequence) return false;
+    if (activeProcessEntries !== undefined && !processIds.has(item.identity) && item.sequence <= snapshotSequence) return false;
     return isToolLive(call, turnActive && item.turn === latestTurn, runtimeActive);
   }).map(item => [toolCallDisplay(item).sourceCallId ?? item.identity ?? item.key, item])).values()];
   // Hooks run unconditionally, ahead of the early returns below: the row
@@ -1148,6 +1146,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         </div>
         {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
         </TranscriptRow>)}
+        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>
@@ -1159,11 +1158,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           so late-growing rows (an image decoding, a code block highlighting)
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
-      {!readOnly && (startupNarration.mounted || turnActive || activeProcesses.length > 0) && <CurrentActivity
-        items={activeProcesses} turnActive={turnActive} waiting={session?.status === "waiting"} stopping={stopping}
-        startup={startupNarration.mounted && (!streaming || modelSwitch || compaction) ? startupNarration : undefined}
-        harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}
-      />}
+      {!readOnly && activeProcesses.length > 0 && <CurrentActivity items={activeProcesses}/>}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
   </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });

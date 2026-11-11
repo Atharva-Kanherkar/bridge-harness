@@ -79,7 +79,8 @@ describe("observable background work", () => {
     const events = [running("one", true), { ...running("two", true), id: 2, sequence: 2, title: "Lint", data: { background: true, command: "bun run lint" } }, event(3, "message.completed", { role: "assistant", text: "I can work while the tests run." })];
     mount(events);
     const current = host.querySelector("[data-current-activity]")!;
-    expect(current.textContent).toContain("Working");
+    expect(current.textContent).toContain("Background processes");
+    expect(current.querySelector("[data-thinking-row]")).toBeNull();
     expect(current.querySelectorAll("li")).toHaveLength(2);
     act(() => root.render(<AgentConversation session={{ ...session, status: "ready" }} working={false} events={[...events, event(4, "tool.completed", { itemId: "one", status: "completed" }), event(5, "tool.completed", { itemId: "two", status: "failed" })]} onResolve={() => {}} />));
     expect(host.querySelector("[data-current-activity]")).toBeNull();
@@ -92,7 +93,7 @@ describe("observable background work", () => {
       event(4, "message.completed", { role: "user", text: "Second task" }),
       event(5, "message.delta", { role: "assistant", status: "streaming", text: "New work" }),
     ]);
-    expect(host.querySelector("[data-current-activity]")?.querySelectorAll("li")).toHaveLength(0);
+    expect(host.querySelector("[data-current-activity]")).toBeNull();
   });
 
   it("shows explicit watchers without claiming that the model is working", () => {
@@ -162,17 +163,18 @@ describe("observable background work", () => {
     expect(host.querySelector("[data-current-activity]")?.textContent).toContain("cargo test");
   });
 
-  it("keeps foreground snapshot calls scoped to the turn where they started", () => {
+  it("leaves foreground snapshot calls to the transcript", () => {
     const start = { ...running("foreground"), id: 2, sequence: 2 };
     const firstTurn = [event(1, "message.completed", { role: "user", text: "Run tests" }), start];
     const taskEntries = durableEntriesFrom("s", [start]);
     const entries = durableEntriesFrom("s", firstTurn);
     const props = { session, working: true, activeProcessEntries: taskEntries, onResolve: () => {} };
     act(() => root.render(<AgentConversation {...props} forestEntries={entries} activeLeafId={entries.at(-1)?.id} />));
-    expect(host.querySelector("[data-current-activity]")?.querySelectorAll("li")).toHaveLength(1);
+    expect(host.querySelector("[data-check-list]")?.textContent).toContain("Running");
+    expect(host.querySelector("[data-current-activity]")).toBeNull();
     const laterEntries = durableEntriesFrom("s", [...firstTurn, event(3, "message.completed", { role: "user", text: "Next task" })]);
     act(() => root.render(<AgentConversation {...props} forestEntries={laterEntries} activeLeafId={laterEntries.at(-1)?.id} />));
-    expect(host.querySelector("[data-current-activity]")?.querySelectorAll("li")).toHaveLength(0);
+    expect(host.querySelector("[data-current-activity]")).toBeNull();
   });
 
   it("updates a running tool when transient heartbeats carry no new output", () => {
@@ -186,9 +188,18 @@ describe("observable background work", () => {
 
   it("labels argument composition as preparing rather than executing a process", () => {
     mount([event(1, "command.started", { title: "Bash", status: "inProgress", data: { name: "Bash", input: {}, phase: "preparing" } })]);
-    const current = host.querySelector("[data-current-activity]")!;
-    expect(current.textContent).toContain("Preparing");
-    expect(current.textContent).not.toContain("Running");
+    expect(host.querySelector("[data-activity-group]")?.textContent).toContain("Preparing");
+    expect(host.querySelector("[data-current-activity]")).toBeNull();
+  });
+
+  it("keeps the agent's own status in the transcript, not in a card", () => {
+    const events = [event(1, "message.completed", { role: "user", text: "Hi" })];
+    act(() => root.render(<AgentConversation session={session} working events={events} onResolve={() => {}} />));
+    expect(host.querySelector("[data-current-activity]")).toBeNull();
+    expect(host.querySelector("[data-conversation-content] [data-thinking-row]")?.textContent).toContain("Thinking");
+    act(() => root.render(<AgentConversation session={session} working stopping events={events} onResolve={() => {}} />));
+    expect(host.querySelector("[data-current-activity]")).toBeNull();
+    expect(host.textContent?.match(/Stopping…/g)).toHaveLength(1);
   });
 
   it("counts a launcher and its tracked process as one command", () => {

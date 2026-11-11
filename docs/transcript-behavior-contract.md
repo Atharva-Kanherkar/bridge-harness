@@ -202,11 +202,12 @@ Three rules over that table:
 ## Current activity and tracked processes
 
 A compact current-activity panel stays visible beside the latest reply, including
-when the originating command is above the viewport. It lists all reported running
-processes with their command or task title, latest progress, and expandable output.
-It uses the same `ThinkingRow` for the model's active state and startup narration.
-A background process can remain running while the model is idle; the panel says
-`Background processes` in that case. Explicit Monitor watches say `Watching` and
+when the originating command is above the viewport. It lists running background
+processes (`data.background: true`) with their command or task title, latest
+progress, and expandable output, under the heading `Background processes`. It
+appears only while at least one such process runs. The turn's own calls and the
+model's status (startup narration, `Thinking`, `Stopping…`) stay transcript rows,
+so an ordinary turn draws no panel. Explicit Monitor watches say `Watching` and
 do not claim that the model is working. Read-only history has no live panel.
 
 The forest snapshot carries a bounded `activeProcessEntries` projection separately
