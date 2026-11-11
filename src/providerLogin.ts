@@ -36,11 +36,15 @@ export function signInRetryPayload(retry: SignInRetry | null, sessionId: string 
 
 function lastUserPrompt(items: ConversationItem[]): SignInRetry["payload"] {
   const last = items.filter(item => item.type === "message" && item.role === "user").at(-1);
-  if (!last) return undefined;
-  const attachments = attachmentUris(last.data).map(dataUri => ({
+  return last ? userPromptPayload(last) : undefined;
+}
+
+/** A user message as the composer payload that would send it again. */
+export function userPromptPayload(message: ConversationItem): { text: string; attachments: ComposerAttachment[] } {
+  const attachments = attachmentUris(message.data).map(dataUri => ({
     id: crypto.randomUUID(),
     mediaType: dataUri.slice("data:".length, dataUri.indexOf(";")),
     dataUri,
   }));
-  return { text: last.text.trim(), attachments };
+  return { text: message.text.trim(), attachments };
 }
