@@ -2,7 +2,7 @@ import { defaultsFromSettings, WORKER_EFFORTS } from "./chatDefaults";
 import { useResolvedChatDraft } from "./useChatDefaults";
 import { ChatOptionsControl } from "./components/ChatOptionsControl";
 import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings } from "./protocol/generated/protocol";
-import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, type SignInRetry } from "./providerLogin";
+import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
@@ -20,7 +20,7 @@ import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
 import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
-import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, restoreFailedTurnAttachments, restoreFailedTurnText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -2903,6 +2903,22 @@ function AppContent() {
     loginRetry && !loginRetry.payload && forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [],
   ), [forest, loginRetry, session?.id]);
   const retryAfterSignIn = retryPayload ? () => { void sendPrompt(retryPayload.text, retryPayload.attachments); } : undefined;
+  // A failed turn's two ways back, offered on its error card. Retry is an
+  // ordinary send of the same words and images; Edit hands them back to the
+  // composer, ahead of anything typed since, and sends nothing. Both stay
+  // stable so the one row that carries them is not redrawn on every render.
+  const sendPromptRef = useRef(sendPrompt);
+  sendPromptRef.current = sendPrompt;
+  const retryFailedTurn = useCallback((prompt: ConversationItem) => {
+    const { text, attachments } = userPromptPayload(prompt);
+    return sendPromptRef.current(text, attachments);
+  }, []);
+  const editFailedTurn = useCallback((prompt: ConversationItem) => {
+    const failed = userPromptPayload(prompt);
+    setComposer(current => restoreFailedTurnText(current, failed.text));
+    setAttachments(current => restoreFailedTurnAttachments(current, failed.attachments));
+    composerRef.current?.focus();
+  }, [setComposer]);
   // Rethrow without also raising the global corner alert: the approval/question
   // card renders the failure itself.
   const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
@@ -3634,6 +3650,8 @@ function AppContent() {
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
                    onFollowUp={followUpToComposer}
+                   onRetryTurn={retryFailedTurn}
+                   onEditTurn={editFailedTurn}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as
