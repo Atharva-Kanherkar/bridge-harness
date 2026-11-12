@@ -40,6 +40,9 @@ const POLL: StdDuration = StdDuration::from_millis(500);
 const HEARTBEAT: StdDuration = StdDuration::from_secs(30);
 /// The fence a run's last message must carry.
 const RESULT_FENCE: &str = "workflow-result";
+/// How long a run waits for a person to answer one write. Waiting does not
+/// spend the run's own time limit; this is the separate ceiling on it.
+const APPROVAL_WAIT: StdDuration = StdDuration::from_secs(24 * 60 * 60);
 /// The largest preview stored for one dry-run write.
 const MAX_PREVIEW_BYTES: usize = 4096;
 
@@ -296,6 +299,11 @@ pub fn permission_decision(
     let Some((identity, input)) = request_tool(event) else {
         return Ok(Some(PermissionDecision::Decline("the request names no tool".into())));
     };
+    // Cancelled, reclaimed or settled: whatever is still talking, it no longer
+    // writes for this run.
+    if !run.status.is_active() {
+        return Ok(Some(PermissionDecision::Decline(format!("this run has ended, so `{identity}` was not sent"))));
+    }
     let (key, _) = effect_key(&run.id, &identity, &input);
     let prior: Option<String> = db
         .query_row("SELECT decision FROM workflow_run_effects WHERE effect_key=?1", params![key], |row| row.get(0))
@@ -314,6 +322,21 @@ pub fn permission_decision(
     Ok(None)
 }
 
+/// Refuse a person's approval on a run that has ended (cancelled, reclaimed
+/// or settled). Checked before the card is claimed, so a refused answer
+/// leaves the card as it was. Declining is always allowed.
+pub fn refuse_approval_after_the_run_ended(db: &Connection, session_id: &str, decision: &str) -> Result<(), BridgeError> {
+    if !matches!(decision, "accept" | "acceptForSession") {
+        return Ok(());
+    }
+    match run_for_session(db, session_id)? {
+        Some((run, _)) if !run.status.is_active() => {
+            Err(BridgeError::Invalid("This run has ended, so the write cannot be approved any more.".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Record a person's answer to a workflow session's card as an effect.
 pub fn record_human_decision(
     db: &Connection,
@@ -323,9 +346,10 @@ pub fn record_human_decision(
     actor: &str,
 ) -> Result<(), BridgeError> {
     let Some((run, _)) = run_for_session(db, session_id)? else { return Ok(()) };
+    let accepting = matches!(decision, "accept" | "acceptForSession");
     let Some(identity) = request.get("tool_name").and_then(serde_json::Value::as_str) else { return Ok(()) };
     let input = request.get("tool_input").cloned().unwrap_or_else(|| serde_json::json!({}));
-    let recorded = if matches!(decision, "accept" | "acceptForSession") { "approved" } else { "declined" };
+    let recorded = if accepting { "approved" } else { "declined" };
     record_effect(db, &run.id, identity, &input, recorded, actor)
 }
 
@@ -348,6 +372,8 @@ enum TurnEnd {
     Completed { failed: bool },
     LeaseLost,
     Budget(&'static str),
+    /// Nobody answered a write within [`APPROVAL_WAIT`].
+    ApprovalExpired,
     ProviderEnded,
 }
 
@@ -451,6 +477,10 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             wire::WorkflowRunStatus::Failed,
             Outcome { failure_code: Some(code.into()), summary: Some("The run reached its budget and was stopped.".into()), ..Outcome::default() },
         ),
+        TurnEnd::ApprovalExpired => (
+            wire::WorkflowRunStatus::Failed,
+            Outcome { failure_code: Some("approval_expired".into()), summary: Some("Nobody answered its request to change something, so the run was stopped.".into()), ..Outcome::default() },
+        ),
         TurnEnd::ProviderEnded => (
             wire::WorkflowRunStatus::Failed,
             Outcome { failure_code: Some("provider_ended".into()), summary: Some("The agent stopped before finishing its turn.".into()), ..Outcome::default() },
@@ -544,13 +574,39 @@ fn wait_for_turn(
     baseline: i64,
     budget: &wire::WorkBriefLimits,
 ) -> Result<TurnEnd, BridgeError> {
-    let deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(1) as u64);
+    wait_for_turn_within(core, run, lease_owner, session_id, baseline, budget, APPROVAL_WAIT)
+}
+
+/// [`wait_for_turn`] with the approval ceiling as a parameter, for tests.
+///
+/// The time limit is the agent's working time. While the run waits for a
+/// person the clock is paused, so a write asked at 9:00 and answered at 9:40
+/// does not fail a ten-minute run; `approval_wait` bounds that wait instead.
+fn wait_for_turn_within(
+    core: &Arc<BridgeCore>,
+    run: &wire::WorkflowRun,
+    lease_owner: &str,
+    session_id: &str,
+    baseline: i64,
+    budget: &wire::WorkBriefLimits,
+    approval_wait: StdDuration,
+) -> Result<TurnEnd, BridgeError> {
+    let mut deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(1) as u64);
     let mut last_heartbeat = Instant::now();
     let mut waiting = false;
+    let mut waiting_since: Option<Instant> = None;
     loop {
-        if Instant::now() >= deadline {
-            stop(core, session_id);
-            return Ok(TurnEnd::Budget("budget_exhausted"));
+        match waiting_since {
+            Some(since) if since.elapsed() >= approval_wait => {
+                stop(core, session_id);
+                return Ok(TurnEnd::ApprovalExpired);
+            }
+            Some(_) => {}
+            None if Instant::now() >= deadline => {
+                stop(core, session_id);
+                return Ok(TurnEnd::Budget("budget_exhausted"));
+            }
+            None => {}
         }
         let (completed, status, tool_calls) = {
             let db = core.db.lock().unwrap();
@@ -594,6 +650,11 @@ fn wait_for_turn(
             }
             workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
             waiting = now_waiting;
+            match waiting_since.take() {
+                // Answered: give back the time spent waiting.
+                Some(since) => deadline += since.elapsed(),
+                None => waiting_since = Some(Instant::now()),
+            }
         }
         if !core.adapters.lock().unwrap().contains_key(session_id) && !now_waiting {
             // One more look: the turn may have completed between the reads.
@@ -633,7 +694,9 @@ fn tokens_used(db: &Connection, session_id: &str) -> Result<Option<i64>, BridgeE
     )?)
 }
 
-fn stop(core: &Arc<BridgeCore>, session_id: &str) {
+/// Stop a run's session if its provider is still up. Stopping ends the
+/// sidecar, which answers any ask still waiting with a decline.
+pub(crate) fn stop(core: &Arc<BridgeCore>, session_id: &str) {
     if core.adapters.lock().unwrap().contains_key(session_id) {
         let _ = crate::live_turn::stop_session(core, session_id.to_owned());
     }
@@ -875,6 +938,52 @@ mod tests {
         }
         let end = wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap();
         assert_eq!(end, TurnEnd::Budget("budget_exhausted"));
+    }
+
+    #[test]
+    fn a_run_that_has_ended_writes_nothing_more() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &writable(), false);
+        let db = core.db.lock().unwrap();
+        workflow_trigger::cancel(&db, &run.run.id, Utc::now()).unwrap();
+        // Even an always-allowed tool is declined once the run is cancelled.
+        let decision = permission_decision(&db, "run-session", &ask("mcp__claude_ai_Slack__slack_send_message", "hi")).unwrap();
+        assert!(matches!(decision, Some(PermissionDecision::Decline(reason)) if reason.contains("has ended")));
+        assert!(effects(&db, &run.run.id).unwrap().is_empty());
+        // A person cannot approve a card left over from it; declining is fine.
+        let refused = refuse_approval_after_the_run_ended(&db, "run-session", "accept").unwrap_err();
+        assert!(refused.to_string().contains("has ended"), "{refused}");
+        refuse_approval_after_the_run_ended(&db, "run-session", "decline").unwrap();
+    }
+
+    #[test]
+    fn waiting_for_a_person_does_not_spend_the_time_limit() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let mut budget = test_support::definition().budget;
+        budget.max_wall_seconds = 1;
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='waiting' WHERE id='run-session'", []).unwrap();
+        let answering = core.clone();
+        let answer = std::thread::spawn(move || {
+            // Longer than the whole time limit: the person takes their time.
+            std::thread::sleep(StdDuration::from_millis(2500));
+            let db = answering.db.lock().unwrap();
+            agent_event(&db, 1, "turn.completed", Some("completed"), None);
+        });
+        let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
+        answer.join().unwrap();
+        assert_eq!(end, TurnEnd::Completed { failed: false });
+        let status = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap().status;
+        assert_eq!(status, wire::WorkflowRunStatus::WaitingApproval);
+    }
+
+    #[test]
+    fn an_unanswered_write_ends_the_run_as_approval_expired() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='waiting' WHERE id='run-session'", []).unwrap();
+        let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &test_support::definition().budget, StdDuration::from_millis(600)).unwrap();
+        assert_eq!(end, TurnEnd::ApprovalExpired);
     }
 
     #[test]

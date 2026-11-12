@@ -110,7 +110,7 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 
 - F1. A workflow saves with `projectId: null` or an existing project id and reads back byte-identical in its definition.
 - F2. Every save creates a new immutable revision; the old revision is unchanged and still readable.
-- F3. A revision that widens authority has `approved_at = null`. Widening is any of: a new server, `read` false to true, `write` never to ask, a new `alwaysAllow` identity, `files` none to worktree, a different harness, a different project. A revision that only narrows or rewords keeps approval. `always_allow_tool` revisions are approved by construction (C9).
+- F3. A revision that widens authority has `approved_at = null`. Widening is any of: a new server, `read` false to true, `write` never to ask, a new `alwaysAllow` identity, `files` none to worktree, a different harness, a different project. A revision that only narrows or rewords keeps approval. `always_allow_tool` revisions are approved by construction (C9) when the revision they extend was approved; on top of an edit still waiting for review they stay unapproved. Two granted servers whose names spell the same `mcp__<server>__` prefix are refused.
 - F4. Saving a no-project workflow twice leaves one home folder. Deleting the workflow removes it. No `projects` row is created at any point.
 - F5. A project-bound workflow whose project row or folder is gone is disabled with `disabled_reason = 'project_removed'` the next time Bridge reads or claims it; it is never orphaned or run somewhere else. (Bridge has no project-removal path today, so the check runs on read and claim.)
 - F6. Refused, each with a reason: more than one step; `files: "worktree"` without a project; connector grants on an adapter that fails C6; a cron that does not parse; consecutive fire times under 15 minutes apart; an unknown timezone; a budget outside its bounds; a grant on a server the harness's configuration does not hold; a duplicate server; an `alwaysAllow` identity that is not `mcp__<server>__<tool>` on a server granted `write: "ask"`; connector grants together with `files: "worktree"` (C7).
@@ -136,9 +136,10 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 - F19. A dry run denies every write and stores a `previewed` effect with the attempted arguments.
 - F20. Before dispatch the quota rule (C11) is checked; mid-run, hitting any budget ceiling stops the run as `failed` with `budget_exhausted`.
 - F21. A write approved or always-allowed is recorded before it executes; a second identical call in that run is denied as a duplicate (C13).
-- F22. Teardown, cancel or lease loss resolves any pending ask to decline and settles the run.
+- F22. Teardown, cancel or lease loss resolves any pending ask to decline and settles the run. Cancel stops the run's session at once, not at the next heartbeat. A run that has ended declines every later ask, and a person cannot approve a card left over from it.
+- F22a. Time spent waiting for a person's answer does not count against `maxWallSeconds`. A write nobody answers for 24 hours ends the run as `failed` with `approval_expired`.
 - F23. Outcome follows C12. Usage lands in `usage_ledger` tagged with the run id and is summed onto the run.
-- F24. Core refuses a user turn to a `workflow` session (C2).
+- F24. Core refuses a user turn to a `workflow` session (C2), through every input method including the legacy `send_turn`.
 
 ### Workflows page (P1.4)
 

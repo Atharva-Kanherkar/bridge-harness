@@ -2909,6 +2909,9 @@ fn resolve_provider_permission(
         .cloned()
         .ok_or_else(|| BridgeError::Invalid("Permission has no provider request id".into()))?;
     let item_id = payload.get("itemId").and_then(Value::as_str).map(str::to_owned);
+    if workflow_session && actor != "workflow" {
+        crate::workflow_run::refuse_approval_after_the_run_ended(&db, session_id, &decision)?;
+    }
     let claim = claim_interaction(
         &db,
         session_id,
@@ -6280,6 +6283,11 @@ pub fn run_workflow(core: &Arc<BridgeCore>, params: &wire::RunWorkflowParams) ->
 
 pub fn cancel_workflow_run(core: &Arc<BridgeCore>, params: &wire::CancelWorkflowRunParams) -> Result<wire::WorkflowRunSnapshot, BridgeError> {
     let run = crate::workflow_trigger::cancel(&core.db.lock().unwrap(), &params.run_id, chrono::Utc::now())?;
+    // Stop means now. The runner would only notice at its next heartbeat, and
+    // an always-allowed write could still go out in between.
+    if let Some(session_id) = run.session_id.as_deref() {
+        crate::workflow_run::stop(core, session_id);
+    }
     crate::workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
     Ok(wire::WorkflowRunSnapshot { run })
 }
