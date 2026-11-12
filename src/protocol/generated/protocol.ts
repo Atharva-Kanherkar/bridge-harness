@@ -92,6 +92,8 @@ export type BridgeMethod =
   | "config/save_worker_settings"
   | "config/get_chat_defaults"
   | "config/save_chat_defaults"
+  | "config/get_app_preferences"
+  | "config/save_app_preferences"
   | "sessions/resolve_chat_settings"
   | "sessions/create_configured_chat"
   | "sessions/get_chat_settings"
@@ -387,6 +389,8 @@ export const BRIDGE_METHODS = [
   { method: "config/save_worker_settings", domain: "config", command: "save_worker_settings" },
   { method: "config/get_chat_defaults", domain: "config", command: "get_chat_defaults" },
   { method: "config/save_chat_defaults", domain: "config", command: "save_chat_defaults" },
+  { method: "config/get_app_preferences", domain: "config", command: "get_app_preferences" },
+  { method: "config/save_app_preferences", domain: "config", command: "save_app_preferences" },
   { method: "sessions/resolve_chat_settings", domain: "sessions", command: "resolve_chat_settings" },
   { method: "sessions/create_configured_chat", domain: "sessions", command: "create_configured_chat" },
   { method: "sessions/get_chat_settings", domain: "sessions", command: "get_chat_settings" },
@@ -621,6 +625,7 @@ export type BridgeNotification =
   | "notes/pass_progress"
   | "attention/changed"
   | "outgoing/changed"
+  | "config/app_preferences_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -647,6 +652,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "notes/pass_progress", delivery: "transient" },
   { notification: "attention/changed", delivery: "transient" },
   { notification: "outgoing/changed", delivery: "transient" },
+  { notification: "config/app_preferences_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -852,6 +858,8 @@ export interface BridgeMethodParams {
   "config/save_worker_settings": SaveWorkerSettingsParams;
   "config/get_chat_defaults": GetChatDefaultsParams;
   "config/save_chat_defaults": SaveChatDefaultsParams;
+  "config/get_app_preferences": undefined;
+  "config/save_app_preferences": SaveAppPreferencesParams;
   "sessions/resolve_chat_settings": ResolveChatSettingsParams;
   "sessions/create_configured_chat": CreateConfiguredChatParams;
   "sessions/get_chat_settings": GetChatSettingsParams;
@@ -1062,6 +1070,8 @@ export interface BridgeMethodResults {
   "config/save_worker_settings": WorkerSettings;
   "config/get_chat_defaults": ChatDefaultsView;
   "config/save_chat_defaults": ChatDefaultsView;
+  "config/get_app_preferences": AppPreferences;
+  "config/save_app_preferences": AppPreferences;
   "sessions/resolve_chat_settings": ResolvedChatSettings;
   "sessions/create_configured_chat": ConfiguredChatResult;
   "sessions/get_chat_settings": ChatSessionSettings;
@@ -1305,6 +1315,14 @@ export interface AgentDefinition {
 }
 
 export type AgentShortcutDisposition = "launched" | "queued" | "awaitingApproval";
+
+export interface AppPreferenceValues {
+  autoExpandEdits?: boolean | null;
+  effortSelector?: EffortSelectorStyle | null;
+  showThinking?: boolean | null;
+  skin?: ThemeSkin | null;
+  theme?: ThemePreference | null;
+}
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 
@@ -1789,6 +1807,8 @@ export interface EarlierContextWindow {
 }
 
 export type Effort = "low" | "medium" | "high" | "xhigh";
+
+export type EffortSelectorStyle = "slider" | "sentence" | "list";
 
 export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
 
@@ -2923,6 +2943,10 @@ export interface TerminalRecord {
   title: string;
   workspaceId: string;
 }
+
+export type ThemePreference = "system" | "light" | "dark";
+
+export type ThemeSkin = "graphite" | "vibrancy" | "omarchy";
 
 export type TranscriptExportScope = "active_branch" | "forest";
 
@@ -4982,6 +5006,15 @@ export interface SaveChatDefaultsParams {
   defaults: ChatDefaults;
   expectedRevision: number;
   projectId?: string | null;
+}
+
+export interface AppPreferences {
+  revision: number;
+  values: AppPreferenceValues;
+}
+
+export interface SaveAppPreferencesParams {
+  values: AppPreferenceValues;
 }
 
 export interface ResolveChatSettingsParams {

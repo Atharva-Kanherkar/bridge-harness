@@ -971,6 +971,8 @@ fn emit_reconciliation<E: Fn(&str, Value)>(emit: &E) {
     emit(NotificationName::AdaptersChanged.as_str(), Value::Null);
     // The attention ledger is read from a cursor, so a gap costs one reread.
     emit(NotificationName::AttentionChanged.as_str(), Value::Null);
+    // App preferences are one small record; a gap costs one reread.
+    emit(NotificationName::AppPreferencesChanged.as_str(), Value::Null);
     // Terminals reconcile their sequenced VT checkpoints after lag or reconnect.
     emit(NotificationName::StreamLagged.as_str(), Value::Null);
 }
@@ -1178,10 +1180,10 @@ mod tests {
             seen.iter()
                 .map(|(kind, _)| kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["state-changed", "adapters-changed", "attention/changed", "stream-lagged", "session-output"],
+            vec!["state-changed", "adapters-changed", "attention/changed", "config/app_preferences_changed", "stream-lagged", "session-output"],
         );
         assert_eq!(seen[0].1, Value::Null);
-        assert_eq!(seen[4].1["data"], "x");
+        assert_eq!(seen[5].1["data"], "x");
     }
 
     #[test]

@@ -899,6 +899,10 @@ async fn get_chat_defaults(project_id: Option<String>, state: State<'_, Arc<Brid
 #[tauri::command]
 async fn save_chat_defaults(project_id: Option<String>, expected_revision:u32, defaults:bridge_protocol::messages::ChatDefaults, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatDefaultsView, BridgeError> { api::save_chat_defaults(state.inner(),&bridge_protocol::messages::SaveChatDefaultsParams {project_id,expected_revision,defaults}) }
 #[tauri::command]
+async fn get_app_preferences(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AppPreferences, BridgeError> { api::get_app_preferences(state.inner()) }
+#[tauri::command]
+async fn save_app_preferences(values: bridge_protocol::messages::AppPreferenceValues, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AppPreferences, BridgeError> { api::save_app_preferences(state.inner(), &bridge_protocol::messages::SaveAppPreferencesParams { values }) }
+#[tauri::command]
 async fn resolve_chat_settings(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:Option<bridge_protocol::messages::ChatDefaultsRevision>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ResolvedChatSettings, BridgeError> { api::resolve_chat_settings(state.inner(),&bridge_protocol::messages::ResolveChatSettingsParams {workspace_id,overrides,expected_revision}) }
 #[tauri::command]
 async fn create_configured_chat(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:bridge_protocol::messages::ChatDefaultsRevision, title:Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ConfiguredChatResult, BridgeError> {
@@ -3268,6 +3272,8 @@ pub fn run() -> i32 {
             save_worker_settings,
             get_chat_defaults,
             save_chat_defaults,
+            get_app_preferences,
+            save_app_preferences,
             resolve_chat_settings,
             create_configured_chat,
             get_chat_settings,

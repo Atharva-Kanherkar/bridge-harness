@@ -120,6 +120,8 @@ pub enum CoreEvent {
     /// by callers for forest changes: [`EventBus::publish`] derives it from
     /// the durable agent event that moved the ledger. See `attention`.
     AttentionChanged,
+    /// Refetch hint: the app preferences record moved.
+    AppPreferencesChanged,
 }
 
 impl CoreEvent {
@@ -151,13 +153,14 @@ impl CoreEvent {
             CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
             CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
             CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
+            CoreEvent::AppPreferencesChanged => NotificationName::AppPreferencesChanged,
         }
     }
 
     /// The wire payload, exactly as today's `app.emit` serializes it.
     pub fn payload(&self) -> Value {
         match self {
-            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged => Value::Null,
+            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged | CoreEvent::AppPreferencesChanged => Value::Null,
             CoreEvent::Agent(event) => serde_json::to_value(event).expect("agent event serializes"),
             CoreEvent::LearningJobChanged(payload) => payload.clone(),
             // The scope only. Rebuilding a record from the hint would leave a
@@ -248,6 +251,7 @@ struct ReconciliationState {
     /// as the agent set above, for the same reason: the hint names its scope.
     memory_scopes_changed: std::collections::BTreeSet<String>,
     attention_changed: bool,
+    app_preferences_changed: bool,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -298,6 +302,9 @@ impl EventReceiver {
         }
         if state.attention_changed {
             events.push(CoreEvent::AttentionChanged);
+        }
+        if state.app_preferences_changed {
+            events.push(CoreEvent::AppPreferencesChanged);
         }
         events
     }
@@ -382,6 +389,7 @@ impl EventBus {
                     state.memory_scopes_changed.insert(scope_key.clone());
                 }
                 CoreEvent::AttentionChanged => state.attention_changed = true,
+                CoreEvent::AppPreferencesChanged => state.app_preferences_changed = true,
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::TerminalFrame(_)
@@ -545,6 +553,7 @@ mod tests {
             CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
             CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
             CoreEvent::AttentionChanged,
+            CoreEvent::AppPreferencesChanged,
         ];
         for event in &events {
             assert_eq!(

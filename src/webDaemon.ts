@@ -405,6 +405,8 @@ export class WebDaemonClient {
   private reconcile(): void {
     this.emit("state-changed", null);
     this.emit("adapters-changed", null);
+    // App preferences are one small record; a gap costs one reread.
+    this.emit("config/app_preferences_changed", null);
     this.emit("stream-lagged", null);
   }
 

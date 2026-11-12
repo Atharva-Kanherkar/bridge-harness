@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 export const SHOW_THINKING_STORAGE_KEY = "bridge.transcript.showThinking";
 export const AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY = "bridge.transcript.autoExpandEditActivity";
 
-const SHOW_THINKING_EVENT = "bridge:transcript-settings";
+export const SHOW_THINKING_EVENT = "bridge:transcript-settings";
 
 export function readShowThinking(storage: Pick<Storage, "getItem"> = localStorage): boolean {
   try {

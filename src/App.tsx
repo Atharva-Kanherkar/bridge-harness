@@ -122,6 +122,7 @@ import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { parseFindCommand } from "./chatSearch";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
+import { startAppPreferenceSync } from "./appPreferences";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
@@ -823,6 +824,9 @@ function AppContent() {
   // off `zoomHotkeysEnabled` also removes the polyfill's own, and losing pinch
   // to fix a pinch that overshoots would be a poor trade.
   useEffect(() => installZoom(), []);
+  // Theme, skin and transcript display follow the core's record, so a chat
+  // (settings_change) or another window can change them while this one is open.
+  useEffect(() => startAppPreferenceSync(bridgeApi), []);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };

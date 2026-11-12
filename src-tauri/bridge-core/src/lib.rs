@@ -23,6 +23,7 @@ pub mod attention;
 pub mod attention_presence;
 pub mod attention_wait;
 pub mod api;
+pub mod app_preferences;
 pub mod attribution_settings;
 pub mod delegation_notify;
 pub mod automations;
