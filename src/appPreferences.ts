@@ -86,15 +86,17 @@ export function applyLocalPreferences(values: AppPreferenceValues, storage: Stor
  */
 export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = localStorage, target: Pick<Window, "addEventListener" | "removeEventListener" | "dispatchEvent"> = window): () => void {
   let stopped = false;
-  /** What this window last agreed with the core. */
-  let known: AppPreferenceValues = {};
+  /** What this window's consumers show. Not the shared cache: another window
+   *  on the same origin may already have written the value this one has yet
+   *  to paint, and only this window's own events repaint it. */
+  let rendered: AppPreferenceValues = readLocalPreferences(storage);
   /** Keys saved from here and not yet answered, so a stale read cannot undo them. */
   const pending = new Set<Key>();
 
   const save = (values: AppPreferenceValues) => {
     const keys = Object.keys(values) as Key[];
     keys.forEach(key => pending.add(key));
-    known = { ...known, ...values };
+    rendered = { ...rendered, ...values };
     void api.saveAppPreferences(values)
       .catch(() => undefined)
       .finally(() => keys.forEach(key => pending.delete(key)));
@@ -109,21 +111,20 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     }
     if (stopped) return;
     const core = record.values;
-    const local = readLocalPreferences(storage);
-    const incoming = changedKeys(core, local);
+    const incoming = changedKeys(core, rendered);
     for (const key of pending) delete (incoming as Record<string, unknown>)[key];
     const missing: Record<string, unknown> = {};
-    if (seed) for (const key of KEYS) if (core[key] == null && local[key] != null) missing[key] = local[key];
-    // Agree first, including on what is about to be seeded, so the events
-    // `apply` fires are not mistaken for local edits and saved twice.
-    known = { ...known, ...core, ...missing };
+    if (seed) for (const key of KEYS) if (core[key] == null && rendered[key] != null) missing[key] = rendered[key];
+    // Record what is about to be painted first, so the events `apply` fires
+    // are not mistaken for local edits and saved back.
+    rendered = { ...rendered, ...incoming };
     if (!isEmpty(incoming)) applyLocalPreferences(incoming, storage, target);
     if (!isEmpty(missing)) save(missing as AppPreferenceValues);
   };
 
   const onLocalChange = () => {
     if (stopped) return;
-    const outgoing = changedKeys(readLocalPreferences(storage), known);
+    const outgoing = changedKeys(readLocalPreferences(storage), rendered);
     if (!isEmpty(outgoing)) save(outgoing);
   };
 

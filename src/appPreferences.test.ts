@@ -121,3 +121,67 @@ describe("app preferences", () => {
     expect(storage.getItem("bridge.theme")).toBeNull();
   });
 });
+
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void };
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+/** A core whose reads, saves and hints the test drives by hand. */
+function scriptedCore(initial: AppPreferences) {
+  let record = initial;
+  let notify: () => void = () => undefined;
+  const saves: AppPreferenceValues[] = [];
+  const state = {
+    failSaves: false,
+    failReads: false,
+    record: () => record,
+    set: (next: AppPreferences) => { record = next; },
+    notify: () => notify(),
+    saves,
+  };
+  const api: AppPreferencesApi = {
+    getAppPreferences: vi.fn(async () => {
+      if (state.failReads) throw new Error("not attached");
+      return { revision: record.revision, values: { ...record.values } };
+    }),
+    saveAppPreferences: vi.fn(async (values: AppPreferenceValues) => {
+      saves.push(values);
+      if (state.failSaves) throw new Error("offline");
+      record = { revision: record.revision + 1, values: { ...record.values, ...values } };
+      return record;
+    }),
+    onAppPreferencesChanged: async handler => { notify = handler; return () => { notify = () => undefined; }; },
+  };
+  return { api, state };
+}
+
+/** What Settings does in one window: write the shared cache, then tell that window. */
+function chooseTheme(storage: MemoryStorage, target: EventTarget, theme: string) {
+  storage.setItem("bridge.theme", theme);
+  target.dispatchEvent(new Event(THEME_EVENT));
+}
+
+describe("app preferences across windows and a flaky backend", () => {
+  it("repaints a second window even when the first already wrote the shared cache", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem("bridge.theme", "light");
+    const core = fakeCore({ theme: "light" });
+    const first = new EventTarget();
+    const second = new EventTarget();
+    const stopFirst = startAppPreferenceSync(core.api, storage, first as unknown as Window);
+    const stopSecond = startAppPreferenceSync(core.api, storage, second as unknown as Window);
+    await settle();
+    const repainted = vi.fn();
+    second.addEventListener(THEME_EVENT, repainted);
+    chooseTheme(storage, first, "dark");
+    await settle();
+    expect(core.values().theme).toBe("dark");
+    expect(repainted).toHaveBeenCalled();
+    stopFirst();
+    stopSecond();
+  });
+});
