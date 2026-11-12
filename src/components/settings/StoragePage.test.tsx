@@ -199,3 +199,74 @@ it("folds slivers of the home folder into other instead of colouring them", asyn
   expect(legend).not.toContain("advaita-mobile.png");
   expect(legend).toContain("Apps, system, and other");
 });
+
+const divider = () => host.querySelector("[role=separator][aria-label='Resize storage assistant']") as HTMLElement | null;
+const railVar = () => (host.querySelector("[data-settings-column] > div") as HTMLElement | null)?.style.getPropertyValue("--storage-rail");
+const pointer = (target: EventTarget, type: string, clientX: number) =>
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX }));
+const key = (target: HTMLElement, name: string) =>
+  target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: name }));
+
+it("lets the assistant rail be dragged wider and remembers the width", async () => {
+  localStorage.removeItem("bridge.storage.railWidth");
+  await render(() => {});
+  const handle = divider()!;
+  expect(handle.getAttribute("aria-valuenow")).toBe("384");
+  expect(railVar()).toBe("384px");
+
+  await act(async () => {
+    pointer(handle, "pointerdown", 600);
+    pointer(window, "pointermove", 500);
+    pointer(window, "pointerup", 500);
+  });
+  expect(handle.getAttribute("aria-valuenow")).toBe("484");
+  expect(railVar()).toBe("484px");
+  expect(localStorage.getItem("bridge.storage.railWidth")).toBe("484");
+
+  // Released: further moves do nothing.
+  await act(async () => { pointer(window, "pointermove", 100); });
+  expect(handle.getAttribute("aria-valuenow")).toBe("484");
+
+  act(() => root.unmount());
+  root = createRoot(host);
+  await render(() => {});
+  expect(divider()!.getAttribute("aria-valuenow")).toBe("484");
+});
+
+it("resizes the rail from the keyboard, clamps it, and resets on double-click", async () => {
+  localStorage.removeItem("bridge.storage.railWidth");
+  await render(() => {});
+  const handle = divider()!;
+  await act(async () => { key(handle, "ArrowLeft"); });
+  expect(handle.getAttribute("aria-valuenow")).toBe("400");
+  await act(async () => { key(handle, "ArrowRight"); key(handle, "ArrowRight"); });
+  expect(handle.getAttribute("aria-valuenow")).toBe("368");
+  await act(async () => { key(handle, "End"); });
+  expect(handle.getAttribute("aria-valuenow")).toBe("720");
+  await act(async () => { key(handle, "Home"); });
+  expect(handle.getAttribute("aria-valuenow")).toBe("320");
+  await act(async () => {
+    pointer(handle, "pointerdown", 600);
+    pointer(window, "pointermove", 2000);
+    pointer(window, "pointerup", 2000);
+  });
+  expect(handle.getAttribute("aria-valuenow")).toBe("320");
+  await act(async () => { handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+  expect(handle.getAttribute("aria-valuenow")).toBe("384");
+});
+
+it("ignores a stored rail width it cannot use", async () => {
+  localStorage.setItem("bridge.storage.railWidth", "9000");
+  await render(() => {});
+  expect(divider()!.getAttribute("aria-valuenow")).toBe("720");
+  act(() => root.unmount());
+  root = createRoot(host);
+  localStorage.setItem("bridge.storage.railWidth", "wide");
+  await render(() => {});
+  expect(divider()!.getAttribute("aria-valuenow")).toBe("384");
+});
+
+it("has no resize handle without a copilot", async () => {
+  await render();
+  expect(divider()).toBeNull();
+});

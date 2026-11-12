@@ -10,9 +10,10 @@
 // The copilot rail is a standing Bridge chat docked beside the listing, with
 // its own system prompt (`storage_agent.rs`). Messages carry what this page
 // measured whenever it changed, and the agent proposes changes as
-// ```storage-plan cards the person approves here (`StoragePlanCard`).
+// ```storage-plan cards the person approves here (`StoragePlanCard`). The
+// person can drag the rail wider; its width is kept per Mac.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { FolderOpen, MessageCircle, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
@@ -45,6 +46,93 @@ const ROOTS = [
   { label: "Whole disk", path: "/" },
 ] as const;
 
+/** The assistant rail's width in px. The default is the old fixed 24rem; the
+ *  listing always keeps LISTING_MIN beside it (the grid template enforces the
+ *  same bound in CSS, so a narrower window never squeezes the listing). */
+const RAIL_DEFAULT = 384;
+const RAIL_MIN = 320;
+const RAIL_MAX = 720;
+const RAIL_STEP = 16;
+const RAIL_KEY = "bridge.storage.railWidth";
+const LISTING_MIN = 400;
+/** The gap column the drag handle sits in (2rem). */
+const RAIL_GUTTER = 32;
+
+const clampRail = (width: number, room = Infinity) =>
+  Math.round(Math.max(RAIL_MIN, Math.min(RAIL_MAX, room - RAIL_GUTTER - LISTING_MIN, width)));
+
+function storedRailWidth() {
+  const value = Number(localStorage.getItem(RAIL_KEY) ?? RAIL_DEFAULT);
+  return Number.isFinite(value) ? clampRail(value) : RAIL_DEFAULT;
+}
+
+/** The drag edge between the listing and the assistant rail. It fills the gap
+ *  between them; its line rides along with the sticky rail. */
+function RailDivider({ width, railId, gridRef, railRef, onResize }: {
+  width: number;
+  railId: string;
+  gridRef: RefObject<HTMLDivElement | null>;
+  railRef: RefObject<HTMLDivElement | null>;
+  onResize: (next: (width: number) => number) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const room = () => gridRef.current?.clientWidth || Infinity;
+  const resize = (next: (width: number) => number) => onResize(current => clampRail(next(current), room()));
+
+  const start = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const originX = event.clientX;
+    // Start from what is drawn: a narrow window may show less than was stored.
+    const origin = railRef.current?.getBoundingClientRect().width || width;
+    handle.setPointerCapture?.(event.pointerId);
+    setDragging(true);
+    // The rail sits on the right, so dragging left widens it.
+    const move = (pointer: PointerEvent) => resize(() => origin + originX - pointer.clientX);
+    const end = () => {
+      setDragging(false);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+
+  const keys = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const next = event.key === "ArrowLeft" ? (current: number) => current + RAIL_STEP
+      : event.key === "ArrowRight" ? (current: number) => current - RAIL_STEP
+      : event.key === "Home" ? () => RAIL_MIN
+      : event.key === "End" ? () => RAIL_MAX
+      : null;
+    if (next === null) return;
+    event.preventDefault();
+    resize(next);
+  };
+
+  return <div
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Resize storage assistant"
+    aria-controls={railId}
+    aria-valuenow={width}
+    aria-valuemin={RAIL_MIN}
+    aria-valuemax={RAIL_MAX}
+    tabIndex={0}
+    title="Drag to resize · double-click to reset"
+    onPointerDown={start}
+    onKeyDown={keys}
+    onDoubleClick={() => resize(() => RAIL_DEFAULT)}
+    className="group hidden cursor-col-resize touch-none outline-none lg:block"
+  >
+    <span className="sticky top-6 mx-auto flex h-[calc(100dvh-6rem)] w-3 items-center justify-center">
+      <span className={cn("h-full w-px rounded-full transition-colors group-hover:bg-ring/60 group-focus-visible:bg-ring", dragging ? "bg-ring/60" : "bg-transparent")} />
+      <span aria-hidden="true" className={cn("absolute h-8 w-1 rounded-full bg-border transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0", dragging && "opacity-0")} />
+    </span>
+  </div>;
+}
 
 type Confirming = { entries: DiskEntry[]; permanent: boolean } | "empty-trash" | null;
 
@@ -323,6 +411,11 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
   const [error, setError] = useState<string>();
   const pathRef = useRef(path);
   pathRef.current = path;
+  const [railWidth, setRailWidth] = useState(storedRailWidth);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  const railId = useId();
+  useEffect(() => { localStorage.setItem(RAIL_KEY, String(railWidth)); }, [railWidth]);
 
   const fail = useCallback((caught: unknown) => {
     setError(message(caught));
@@ -442,7 +535,14 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
   };
 
   return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
-    <div className={cn("grid gap-8", copilot && "lg:grid-cols-[minmax(0,1fr)_24rem]")}>
+    <div
+      ref={gridRef}
+      // The rail column takes the dragged width, but never less than RAIL_MIN
+      // (20rem) and never so much that the listing drops under LISTING_MIN
+      // plus the gutter (25rem + 2rem).
+      className={cn("grid gap-8", copilot && "lg:grid-cols-[minmax(0,1fr)_2rem_clamp(20rem,var(--storage-rail),calc(100%_-_27rem))] lg:gap-x-0")}
+      style={copilot ? { "--storage-rail": `${railWidth}px` } as CSSProperties : undefined}
+    >
       <div className="@container/storage min-w-0 space-y-10">
         <header>
           <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
@@ -511,7 +611,10 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
         <WorktreeStorage onError={onError} />
         {extra}
       </div>
-      {copilot && <StorageAgentContext.Provider value={agentHost}>{copilot.render(brief, selection.length)}</StorageAgentContext.Provider>}
+      {copilot && <RailDivider width={railWidth} railId={railId} gridRef={gridRef} railRef={railRef} onResize={setRailWidth} />}
+      {copilot && <div ref={railRef} id={railId} className="min-w-0">
+        <StorageAgentContext.Provider value={agentHost}>{copilot.render(brief, selection.length)}</StorageAgentContext.Provider>
+      </div>}
     </div>
 
     {selection.length > 0 && <div role="region" aria-label="Selection" className="sticky bottom-4 z-10 mx-auto mt-6 flex w-fit items-center gap-3 rounded-full bg-popover px-4 py-2 text-caption shadow-lg">
