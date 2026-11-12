@@ -346,9 +346,14 @@ fn change_new_chat(core: &Arc<BridgeCore>, setting: &Setting, value: &Value) -> 
 fn change(core: &Arc<BridgeCore>, args: &Value) -> Result<Value, ToolError> {
     let key = args.get("key").and_then(Value::as_str).ok_or_else(|| bad(format!("key and value are required, for example {{\"key\": \"appearance.theme\", \"value\": \"light\"}}. The keys are: {}.", keys().join(", "))))?;
     let setting = setting(key)?;
+    // The harness forwards arguments without checking the schema, so a call
+    // that leaves `value` out must not read as a reset.
+    let Some(value) = args.get("value").cloned() else {
+        return Err(bad(format!("{key}: a value is required. Pass the new value, or \"default\" to reset it.")));
+    };
     // The schema asks for text so every harness can send it; "default" (or
     // null) resets, which for a new-chat default means inherit.
-    let value = match args.get("value").cloned().unwrap_or(Value::Null) {
+    let value = match value {
         Value::String(text) if matches!(text.trim().to_lowercase().as_str(), "default" | "null" | "reset" | "") => Value::Null,
         other => other,
     };
@@ -444,6 +449,30 @@ mod tests {
         assert_eq!(crate::app_preferences::read(&db).unwrap().revision, 0);
         assert_eq!(crate::chat_defaults::view(&db, None).unwrap().application.revision, 0);
     }
+    #[test]
+    fn an_omitted_value_changes_nothing_and_only_an_explicit_reset_resets() {
+        let (_dir, core) = with_models();
+        change(&core, "appearance.theme", json!("dark")).unwrap();
+        change(&core, "newChat.model", json!("opus")).unwrap();
+        change(&core, "newChat.effort", json!("max")).unwrap();
+        let (app_before, chat_before) = {
+            let db = core.db.lock().unwrap();
+            (crate::app_preferences::read(&db).unwrap(), crate::chat_defaults::view(&db, None).unwrap().application)
+        };
+        for key in ["appearance.theme", "newChat.model", "newChat.effort"] {
+            let refused = run(&core, true, CHANGE_TOOL, &json!({"key": key})).unwrap_err();
+            assert!(refused.message.contains("value is required"), "{key}: {}", refused.message);
+        }
+        {
+            let db = core.db.lock().unwrap();
+            assert_eq!(crate::app_preferences::read(&db).unwrap(), app_before, "no app write");
+            assert_eq!(crate::chat_defaults::view(&db, None).unwrap().application, chat_before, "no defaults write");
+        }
+        // An explicit reset still resets.
+        assert_eq!(change(&core, "appearance.theme", json!("default")).unwrap()["value"], "system");
+        assert_eq!(change(&core, "newChat.model", Value::Null).unwrap()["value"], Value::Null);
+    }
+
     struct Stub(&'static str);
     impl crate::adapters::HarnessAdapter for Stub {
         fn as_any(&self) -> &dyn std::any::Any {
