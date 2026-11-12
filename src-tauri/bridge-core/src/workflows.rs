@@ -42,7 +42,8 @@ pub enum CreatedBy {
     DraftFromText,
     DraftFromSession,
     /// "Always allow for this workflow" on a real call. Approved by
-    /// construction: the person made exactly this widening.
+    /// construction when the revision it extends was approved: the person
+    /// made exactly this widening, and no other.
     AlwaysAllow,
 }
 
@@ -220,6 +221,7 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
     validate_budget(&definition.budget)?;
 
     let mut servers = BTreeSet::new();
+    let mut wire_names = BTreeSet::new();
     for grant in &definition.grants {
         let server = grant.server.trim();
         if server.is_empty() || server != grant.server {
@@ -233,6 +235,11 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
         }
         if !context.servers.contains(server) {
             return Err(format!("`{server}` is not a connector `{harness}` is configured with"));
+        }
+        // Tools are matched by the server's name inside `mcp__<server>__<tool>`.
+        // Two servers that spell the same there would share one grant.
+        if !wire_names.insert(wire_server_name(server)) {
+            return Err(format!("`{server}` has the same tool prefix as another granted connector; grant one of them"));
         }
     }
 
@@ -476,7 +483,10 @@ pub fn save(
         Some(id) => {
             let current = require(&transaction, id)?;
             let approved_at = match created_by {
-                CreatedBy::AlwaysAllow => Some(stamp.clone()),
+                // Approved by construction, but only on top of an approved
+                // revision: one tool allowed from a card must never approve an
+                // edit that is still waiting for review.
+                CreatedBy::AlwaysAllow => current.approved_at.is_some().then(|| stamp.clone()),
                 _ if widens(&current.definition, definition) => None,
                 // Narrowing or rewording carries the approval it already had.
                 _ => current.approved_at.clone(),
@@ -839,12 +849,50 @@ mod tests {
             save(&db, dir.path(), Some(&created.id), &definition(), CreatedBy::User).unwrap();
         }
 
-        // The always-allow path is approved by construction.
-        let mut always = definition();
-        always.grants[0].write = wire::WorkflowWriteAccess::Ask;
+        // The always-allow path is approved by construction, on top of an
+        // approved revision.
+        let mut writable = definition();
+        writable.grants[0].write = wire::WorkflowWriteAccess::Ask;
+        let current = save(&db, dir.path(), Some(&created.id), &writable, CreatedBy::User).unwrap().workflow;
+        approve(&db, &created.id, &current.revision_id).unwrap();
+        let mut always = writable.clone();
         always.always_allow = vec!["mcp__claude_ai_Slack__slack_send_message".into()];
         let result = save(&db, dir.path(), Some(&created.id), &always, CreatedBy::AlwaysAllow).unwrap();
         assert!(!result.needs_approval);
+    }
+
+    #[test]
+    fn always_allow_never_approves_an_edit_still_waiting_for_review() {
+        let (dir, db) = db();
+        let mut writable = definition();
+        writable.grants[0].write = wire::WorkflowWriteAccess::Ask;
+        let created = save(&db, dir.path(), None, &writable, CreatedBy::User).unwrap().workflow;
+        approve(&db, &created.id, &created.revision_id).unwrap();
+
+        // An edit that reaches a new connector, saved while a run of the
+        // approved revision is still asking about a write.
+        let mut widened = writable.clone();
+        widened.grants.push(wire::WorkflowGrant { server: "claude_ai_Linear".into(), read: true, write: wire::WorkflowWriteAccess::Ask });
+        assert!(save(&db, dir.path(), Some(&created.id), &widened, CreatedBy::User).unwrap().needs_approval);
+
+        // "Always allow" on that run's card records the tool and nothing else:
+        // the new connector still waits for a person.
+        let mut always = widened.clone();
+        always.always_allow = vec!["mcp__claude_ai_Slack__slack_send_message".into()];
+        let result = save(&db, dir.path(), Some(&created.id), &always, CreatedBy::AlwaysAllow).unwrap();
+        assert!(result.needs_approval, "a card must not approve the pending edit");
+        assert!(!result.workflow.approved);
+        assert!(result.workflow.definition.always_allow.contains(&"mcp__claude_ai_Slack__slack_send_message".to_owned()));
+    }
+
+    #[test]
+    fn two_granted_servers_with_one_tool_prefix_are_refused() {
+        let mut context = context();
+        context.servers.insert("claude.ai Slack".to_owned());
+        let mut twins = definition();
+        twins.grants.push(wire::WorkflowGrant { server: "claude.ai Slack".into(), read: true, write: wire::WorkflowWriteAccess::Ask });
+        let refusal = validate(&twins, &context).unwrap_err();
+        assert!(refusal.contains("same tool prefix"), "{refusal}");
     }
 
     #[test]
