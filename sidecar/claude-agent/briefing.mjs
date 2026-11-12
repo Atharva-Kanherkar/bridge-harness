@@ -130,13 +130,54 @@ export function makeBriefingGate({
 }
 
 /**
+ * The per-call gate for a workflow run with no built-in tools.
+ *
+ * Unlike a briefing, a workflow may write, so it is not synchronous in effect:
+ * a write waits on `ask`, which Bridge answers. Reads on a read-granted server
+ * run; any other call on a server granted `write: "ask"` asks; everything else
+ * is denied by name. Servers are matched by their wire form, the segment the
+ * harness puts in `mcp__<server>__<tool>`.
+ */
+export function makeWorkflowGate({ servers = [], maxArgumentBytes = 8192, ask = null } = {}) {
+  const byWire = new Map(servers.map((server) => [server.wire, server]));
+  return async function canUseTool(toolName, input, options = {}) {
+    const toolUseID = options?.toolUseID;
+    const parts = splitWireName(toolName);
+    const server = parts ? byWire.get(parts.server) : undefined;
+    if (!server) {
+      return deny(`\`${toolName}\` is not a connector this workflow may use`, toolUseID);
+    }
+    let bytes;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(input ?? {}), "utf8");
+    } catch {
+      return deny(`the arguments for \`${toolName}\` could not be measured`, toolUseID);
+    }
+    if (bytes > maxArgumentBytes) {
+      return deny(`the arguments for \`${toolName}\` are ${bytes} bytes, over the ${maxArgumentBytes}-byte limit`, toolUseID);
+    }
+    const isRead = !parts.words.some((word) => MUTATION_WORDS.has(word))
+      && parts.words.some((word) => READ_TOOL_VERBS.has(word));
+    if (isRead && server.read) return allow(toolUseID);
+    if (server.write === "ask" && typeof ask === "function") {
+      const behavior = await ask(toolName, input, toolUseID);
+      return behavior === "allow"
+        ? allow(toolUseID)
+        : deny(`\`${toolName}\` was not approved for this run`, toolUseID);
+    }
+    return deny(`\`${toolName}\` is not granted to this workflow`, toolUseID);
+  };
+}
+
+/**
  * The SDK options a briefing run uses, replacing the write-mode permission
  * options entirely rather than layering on top of them.
  *
  * `mcpServers` is filtered to the connector instances the reviewed tools belong
  * to: a server nobody reviewed a tool from has no reason to be reachable.
  */
-export function briefingOptions(briefing, mcpServers = {}) {
+export function briefingOptions(briefing, mcpServers = {}, ask = null) {
+  if (briefing?.workflow) return workflowOptions(briefing, mcpServers, ask);
   // `allowedServers` already carries the read-scope servers on the Rust side,
   // but the union is restated here so the reachable-server set and the gate's
   // scope cannot drift apart if one field is ever sent without the other.
@@ -172,6 +213,26 @@ export function briefingOptions(briefing, mcpServers = {}) {
     // emits none and every flow behind one degrades to its no-dialog behaviour.
     // This is the mechanism that makes a permission prompt or an MCP elicitation
     // unable to park a run with no human attached.
+  };
+}
+
+/**
+ * A workflow run's options: the briefing posture (nothing inherited, built-ins
+ * denied by name, strict MCP config) with the workflow gate in place of the
+ * briefing gate, and only the granted servers reachable.
+ */
+function workflowOptions(briefing, mcpServers, ask) {
+  const servers = briefing.workflow.servers ?? [];
+  const keys = new Set(servers.map((server) => server.key));
+  return {
+    permissionMode: "default",
+    // No `allowedTools`: anything pre-approved would skip the gate.
+    disallowedTools: briefing.deniedBuiltins ?? [],
+    canUseTool: makeWorkflowGate({ servers, maxArgumentBytes: briefing.maxArgumentBytes, ask }),
+    strictMcpConfig: true,
+    mcpServers: Object.fromEntries(Object.entries(mcpServers).filter(([name]) => keys.has(name))),
+    settingSources: [],
+    plugins: [],
   };
 }
 

@@ -27,6 +27,7 @@ mod approvals;
 mod attention;
 mod auth;
 mod automations;
+mod workflows;
 mod browser;
 mod clones;
 mod keys;
@@ -66,6 +67,7 @@ pub use approvals::*;
 pub use attention::*;
 pub use auth::*;
 pub use automations::*;
+pub use workflows::*;
 pub use browser::*;
 pub use clones::*;
 pub use keys::*;
@@ -516,6 +518,23 @@ typed_methods![
     (AutomationCatalog, _, _),
     (SaveAutomation, SaveAutomationParams, _),
     (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
+    // workflows
+    (ListWorkflows, _, WorkflowList),
+    (GetWorkflow, GetWorkflowParams, WorkflowSnapshot),
+    (SaveWorkflow, SaveWorkflowParams, SaveWorkflowResult),
+    (ApproveWorkflow, ApproveWorkflowParams, WorkflowSnapshot),
+    (DeleteWorkflow, DeleteWorkflowParams, UnitResult),
+    (SetWorkflowEnabled, SetWorkflowEnabledParams, WorkflowSnapshot),
+    (WorkflowOptions, _, WorkflowOptions),
+    (RunWorkflow, RunWorkflowParams, RunWorkflowResult),
+    (CancelWorkflowRun, CancelWorkflowRunParams, WorkflowRunSnapshot),
+    (ListWorkflowRuns, ListWorkflowRunsParams, WorkflowRunList),
+    (ReadWorkflowSettings, _, WorkflowSettingsSnapshot),
+    (WriteWorkflowSettings, WriteWorkflowSettingsParams, WorkflowSettingsSnapshot),
+    (AlwaysAllowTool, AlwaysAllowToolParams, AlwaysAllowToolResult),
+    (DraftWorkflowFromText, DraftWorkflowFromTextParams, WorkflowDraftResult),
+    (DraftWorkflowFromSession, DraftWorkflowFromSessionParams, WorkflowDraftResult),
+    (MarkWorkflowRunsRead, MarkWorkflowRunsReadParams, UnitResult),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

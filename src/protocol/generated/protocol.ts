@@ -301,7 +301,23 @@ export type BridgeMethod =
   | "skills/execute_skill_change"
   | "automations/automation_catalog"
   | "automations/save_automation"
-  | "automations/execute_automation_action";
+  | "automations/execute_automation_action"
+  | "workflows/list_workflows"
+  | "workflows/get_workflow"
+  | "workflows/save_workflow"
+  | "workflows/approve_workflow"
+  | "workflows/delete_workflow"
+  | "workflows/set_workflow_enabled"
+  | "workflows/workflow_options"
+  | "workflows/run_workflow"
+  | "workflows/cancel_workflow_run"
+  | "workflows/list_workflow_runs"
+  | "workflows/read_workflow_settings"
+  | "workflows/write_workflow_settings"
+  | "workflows/always_allow_tool"
+  | "workflows/draft_workflow_from_text"
+  | "workflows/draft_workflow_from_session"
+  | "workflows/mark_workflow_runs_read";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -599,6 +615,22 @@ export const BRIDGE_METHODS = [
   { method: "automations/automation_catalog", domain: "automations", command: "automation_catalog" },
   { method: "automations/save_automation", domain: "automations", command: "save_automation" },
   { method: "automations/execute_automation_action", domain: "automations", command: "execute_automation_action" },
+  { method: "workflows/list_workflows", domain: "workflows", command: "list_workflows" },
+  { method: "workflows/get_workflow", domain: "workflows", command: "get_workflow" },
+  { method: "workflows/save_workflow", domain: "workflows", command: "save_workflow" },
+  { method: "workflows/approve_workflow", domain: "workflows", command: "approve_workflow" },
+  { method: "workflows/delete_workflow", domain: "workflows", command: "delete_workflow" },
+  { method: "workflows/set_workflow_enabled", domain: "workflows", command: "set_workflow_enabled" },
+  { method: "workflows/workflow_options", domain: "workflows", command: "workflow_options" },
+  { method: "workflows/run_workflow", domain: "workflows", command: "run_workflow" },
+  { method: "workflows/cancel_workflow_run", domain: "workflows", command: "cancel_workflow_run" },
+  { method: "workflows/list_workflow_runs", domain: "workflows", command: "list_workflow_runs" },
+  { method: "workflows/read_workflow_settings", domain: "workflows", command: "read_workflow_settings" },
+  { method: "workflows/write_workflow_settings", domain: "workflows", command: "write_workflow_settings" },
+  { method: "workflows/always_allow_tool", domain: "workflows", command: "always_allow_tool" },
+  { method: "workflows/draft_workflow_from_text", domain: "workflows", command: "draft_workflow_from_text" },
+  { method: "workflows/draft_workflow_from_session", domain: "workflows", command: "draft_workflow_from_session" },
+  { method: "workflows/mark_workflow_runs_read", domain: "workflows", command: "mark_workflow_runs_read" },
 ] as const;
 
 export type BridgeNotification =
@@ -626,6 +658,8 @@ export type BridgeNotification =
   | "attention/changed"
   | "outgoing/changed"
   | "config/app_preferences_changed"
+  | "workflows/changed"
+  | "workflows/run_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -653,6 +687,8 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "attention/changed", delivery: "transient" },
   { notification: "outgoing/changed", delivery: "transient" },
   { notification: "config/app_preferences_changed", delivery: "transient" },
+  { notification: "workflows/changed", delivery: "transient" },
+  { notification: "workflows/run_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -981,6 +1017,22 @@ export interface BridgeMethodParams {
   "automations/automation_catalog": undefined;
   "automations/save_automation": SaveAutomationParams;
   "automations/execute_automation_action": ExecuteAutomationActionParams;
+  "workflows/list_workflows": undefined;
+  "workflows/get_workflow": GetWorkflowParams;
+  "workflows/save_workflow": SaveWorkflowParams;
+  "workflows/approve_workflow": ApproveWorkflowParams;
+  "workflows/delete_workflow": DeleteWorkflowParams;
+  "workflows/set_workflow_enabled": SetWorkflowEnabledParams;
+  "workflows/workflow_options": undefined;
+  "workflows/run_workflow": RunWorkflowParams;
+  "workflows/cancel_workflow_run": CancelWorkflowRunParams;
+  "workflows/list_workflow_runs": ListWorkflowRunsParams;
+  "workflows/read_workflow_settings": undefined;
+  "workflows/write_workflow_settings": WriteWorkflowSettingsParams;
+  "workflows/always_allow_tool": AlwaysAllowToolParams;
+  "workflows/draft_workflow_from_text": DraftWorkflowFromTextParams;
+  "workflows/draft_workflow_from_session": DraftWorkflowFromSessionParams;
+  "workflows/mark_workflow_runs_read": MarkWorkflowRunsReadParams;
 }
 
 /** Result types for every registered method. */
@@ -1280,6 +1332,22 @@ export interface BridgeMethodResults {
   "automations/automation_catalog": unknown;
   "automations/save_automation": unknown;
   "automations/execute_automation_action": unknown;
+  "workflows/list_workflows": WorkflowList;
+  "workflows/get_workflow": WorkflowSnapshot;
+  "workflows/save_workflow": SaveWorkflowResult;
+  "workflows/approve_workflow": WorkflowSnapshot;
+  "workflows/delete_workflow": UnitResult;
+  "workflows/set_workflow_enabled": WorkflowSnapshot;
+  "workflows/workflow_options": WorkflowOptions;
+  "workflows/run_workflow": RunWorkflowResult;
+  "workflows/cancel_workflow_run": WorkflowRunSnapshot;
+  "workflows/list_workflow_runs": WorkflowRunList;
+  "workflows/read_workflow_settings": WorkflowSettingsSnapshot;
+  "workflows/write_workflow_settings": WorkflowSettingsSnapshot;
+  "workflows/always_allow_tool": AlwaysAllowToolResult;
+  "workflows/draft_workflow_from_text": WorkflowDraftResult;
+  "workflows/draft_workflow_from_session": WorkflowDraftResult;
+  "workflows/mark_workflow_runs_read": UnitResult;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -1967,6 +2035,15 @@ export interface HealthWarning {
 export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
 
 export type InteractionResolutionDisposition = "resolved" | "alreadyResolved";
+
+export interface InteractionResolutionResult {
+  decision: string;
+  disposition: InteractionResolutionDisposition;
+  interactionKind: string;
+  reason?: string | null;
+  resolvedBy: string;
+  status: string;
+}
 
 export interface IssueDetail {
   body: string;
@@ -3475,6 +3552,123 @@ export interface WorkerSettings {
   warmRetentionMinutes: number;
 }
 
+export interface Workflow {
+  approved: boolean;
+  approvedAt?: string | null;
+  createdAt: string;
+  definition: WorkflowDefinition;
+  disabledReason?: string | null;
+  enabled: boolean;
+  id: string;
+  revision: number;
+  revisionId: string;
+  updatedAt: string;
+}
+
+export interface WorkflowDefinition {
+  alwaysAllow?: string[];
+  budget: WorkBriefLimits;
+  expectedResult?: string;
+  files: WorkflowFiles;
+  grants?: WorkflowGrant[];
+  name: string;
+  notify?: WorkflowNotify;
+  projectId?: string | null;
+  steps: WorkflowStep[];
+  trigger: WorkflowTrigger;
+}
+
+export interface WorkflowDraft {
+  definition: WorkflowDefinition;
+  notes: string[];
+}
+
+export type WorkflowFiles = "none" | "worktree";
+
+export interface WorkflowGrant {
+  read: boolean;
+  server: string;
+  write: WorkflowWriteAccess;
+}
+
+export interface WorkflowHarnessOption {
+  available: boolean;
+  connectorsAllowed: boolean;
+  connectorsReason?: string | null;
+  defaultModel?: string | null;
+  id: string;
+  label: string;
+  models: WorkBriefingModel[];
+  worktreeAllowed: boolean;
+}
+
+export interface WorkflowNotify {
+  onSuccess?: boolean;
+}
+
+export interface WorkflowRun {
+  costMicrousd?: number | null;
+  createdAt: string;
+  dryRun: boolean;
+  failureCode?: string | null;
+  finishedAt?: string | null;
+  id: string;
+  missedSlots: number;
+  quotaUnknown: boolean;
+  revisionId: string;
+  scheduledFor?: string | null;
+  sessionId?: string | null;
+  startedAt?: string | null;
+  status: WorkflowRunStatus;
+  summary?: string | null;
+  tokens?: number | null;
+  triggerKind: WorkflowTriggerKind;
+  unread: boolean;
+  workflowId: string;
+}
+
+export type WorkflowRunStatus = "queued" | "waiting_quota" | "running" | "waiting_approval" | "succeeded" | "failed" | "cancelled" | "unverified" | "skipped";
+
+export interface WorkflowServerOption {
+  connected?: boolean | null;
+  family: string;
+  id: string;
+}
+
+export interface WorkflowSettings {
+  paused: boolean;
+  quotaReservePercent: number;
+}
+
+export interface WorkflowStep {
+  effort?: string | null;
+  harness: HarnessId;
+  instructions: string;
+  model: string;
+}
+
+export interface WorkflowSummary {
+  approved: boolean;
+  disabledReason?: string | null;
+  enabled: boolean;
+  files: WorkflowFiles;
+  harness: HarnessId;
+  id: string;
+  lastRun?: WorkflowRun | null;
+  model: string;
+  name: string;
+  nextRunAt?: string | null;
+  projectId?: string | null;
+  trigger: WorkflowTrigger;
+  updatedAt: string;
+}
+
+export type WorkflowTrigger = { kind: "manual" } | { cron: string; kind: "schedule"; timezone: string };
+
+export type WorkflowTriggerKind = "manual" | "schedule" | "catch_up";
+
+export type WorkflowWriteAccess = "never" | "ask";
+
 export interface Workspace {
   additions: JsSafeI64;
   branch?: string | null;
@@ -4383,15 +4577,6 @@ export interface ResolveApprovalParams {
   eventId: number;
   optionId?: string | null;
   sessionId: string;
-}
-
-export interface InteractionResolutionResult {
-  decision: string;
-  disposition: InteractionResolutionDisposition;
-  interactionKind: string;
-  reason?: string | null;
-  resolvedBy: string;
-  status: string;
 }
 
 export interface ResolveQuestionParams {
@@ -5645,6 +5830,114 @@ export interface ExecuteAutomationActionParams {
   action: AutomationAction;
   id: string;
   provider: AutomationProvider;
+}
+
+export interface WorkflowList {
+  workflows: WorkflowSummary[];
+}
+
+export interface GetWorkflowParams {
+  workflowId: string;
+}
+
+export interface WorkflowSnapshot {
+  workflow: Workflow;
+}
+
+export interface SaveWorkflowParams {
+  definition: WorkflowDefinition;
+  workflowId?: string | null;
+}
+
+export interface SaveWorkflowResult {
+  needsApproval: boolean;
+  workflow: Workflow;
+}
+
+export interface ApproveWorkflowParams {
+  revisionId: string;
+  workflowId: string;
+}
+
+export interface DeleteWorkflowParams {
+  workflowId: string;
+}
+
+export interface SetWorkflowEnabledParams {
+  enabled: boolean;
+  workflowId: string;
+}
+
+export interface WorkflowOptions {
+  harnesses: WorkflowHarnessOption[];
+  servers: WorkflowServerOption[];
+}
+
+export interface RunWorkflowParams {
+  dryRun?: boolean;
+  requestId: string;
+  workflowId: string;
+}
+
+export interface RunWorkflowResult {
+  created: boolean;
+  run: WorkflowRun;
+}
+
+export interface CancelWorkflowRunParams {
+  runId: string;
+}
+
+export interface WorkflowRunSnapshot {
+  run: WorkflowRun;
+}
+
+export interface ListWorkflowRunsParams {
+  limit: number;
+  unreadOnly?: boolean;
+  workflowId?: string | null;
+}
+
+export interface WorkflowRunList {
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowSettingsSnapshot {
+  configured: boolean;
+  settings: WorkflowSettings;
+}
+
+export interface WriteWorkflowSettingsParams {
+  settings: WorkflowSettings;
+}
+
+export interface AlwaysAllowToolParams {
+  eventId: number;
+  sessionId: string;
+  toolIdentity: string;
+  workflowId: string;
+}
+
+export interface AlwaysAllowToolResult {
+  resolution: InteractionResolutionResult;
+  workflow: Workflow;
+}
+
+export interface DraftWorkflowFromTextParams {
+  projectId?: string | null;
+  text: string;
+}
+
+export interface WorkflowDraftResult {
+  draft: WorkflowDraft;
+}
+
+export interface DraftWorkflowFromSessionParams {
+  sessionId: string;
+}
+
+export interface MarkWorkflowRunsReadParams {
+  runIds: string[];
 }
 
 export interface VoiceTranscriptEvent {

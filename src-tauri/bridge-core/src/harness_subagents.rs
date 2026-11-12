@@ -55,6 +55,19 @@ pub fn route(
             "subagent event has no provider identity".into(),
         ));
     };
+    // A provider can name the parent's own thread (a Codex child messaging
+    // `/root`). That is the chat, not a child: a row for it would never finish.
+    let own: Option<String> = db
+        .query_row(
+            "SELECT provider_session_id FROM sessions WHERE id=?1",
+            [parent],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if own.as_deref() == Some(provider) {
+        return Ok(vec![]);
+    }
     let tx = db.unchecked_transaction()?;
     let existing: Option<String> = tx.query_row("SELECT id FROM sessions WHERE parent_session_id=?1 AND provider_session_id=?2 AND kind=?3",params![parent,provider,KIND],|r|r.get(0)).optional()?;
     let created = existing.is_none();
@@ -235,6 +248,17 @@ mod tests {
         let mut e = NormalizedEvent::new(kind);
         e.data = json!({"subagent":{"sessionId":id,"agent":"codex","title":"Research"}});
         e
+    }
+    #[test]
+    fn the_parents_own_thread_never_becomes_its_child() {
+        let db = db();
+        for kind in ["subagent.started", "subagent.progress", "message.completed"] {
+            assert!(route(&db, "parent", &event(kind, "root"), &json!({})).unwrap().is_empty());
+        }
+        let children: i64 = db
+            .query_row("SELECT count(*) FROM sessions WHERE kind='harness_subagent'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(children, 0);
     }
     #[test]
     fn interleaved_children_route_once_and_never_settle_parent() {

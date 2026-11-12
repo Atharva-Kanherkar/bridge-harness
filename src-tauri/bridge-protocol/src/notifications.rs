@@ -132,6 +132,11 @@ notifications![
     // display), whether a person or a chat changed it. Transient: a client that
     // missed it rereads `config/get_app_preferences`, whose revision is the truth.
     (AppPreferencesChanged, "config/app_preferences_changed", Transient),
+    // Refetch hint: one workflow was saved, approved, enabled, disabled or
+    // deleted. Payload `{"workflowId": "<id>"}`.
+    (WorkflowsChanged, "workflows/changed", Transient),
+    // A workflow run changed status. Payload `{"run": WorkflowRun}`.
+    (WorkflowRunChanged, "workflows/run_changed", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

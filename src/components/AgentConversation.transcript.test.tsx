@@ -60,6 +60,10 @@ const buttonWith = (text: string) =>
 const activityToggle = () => host.querySelector<HTMLButtonElement>("[data-activity-group] > button")!;
 const openActivity = () => act(() => activityToggle().click());
 describe("observable background work", () => {
+  const activity = () => host.querySelector("[data-current-activity]");
+  const panel = () => host.querySelector("[data-background-panel]");
+  const openActivity = () => act(() => { host.querySelector<HTMLButtonElement>("[data-background-pill]")?.click(); });
+  const openTask = (index = 0) => act(() => { host.querySelectorAll<HTMLButtonElement>("[data-background-panel] li > button")[index]?.click(); });
   const running = (id: string, background = false) => event(1, "tool.started", {
     itemId: id, title: "Rust workspace tests", status: "inProgress",
     data: { type: "backgroundTask", backgroundTask: true, background, command: "cargo test", progress: "Running bridge-core tests" },
@@ -78,12 +82,14 @@ describe("observable background work", () => {
   it("keeps every running process at the latest reply and removes settled processes", () => {
     const events = [running("one", true), { ...running("two", true), id: 2, sequence: 2, title: "Lint", data: { background: true, command: "bun run lint" } }, event(3, "message.completed", { role: "assistant", text: "I can work while the tests run." })];
     mount(events);
-    const current = host.querySelector("[data-current-activity]")!;
-    expect(current.textContent).toContain("Background processes");
-    expect(current.querySelector("[data-thinking-row]")).toBeNull();
-    expect(current.querySelectorAll("li")).toHaveLength(2);
+    expect(activity()?.textContent).toContain("Working in background");
+    expect(activity()?.querySelector("[data-thinking-row]")).toBeNull();
+    openActivity();
+    expect(panel()?.querySelectorAll("li")).toHaveLength(2);
     act(() => root.render(<AgentConversation session={{ ...session, status: "ready" }} working={false} events={[...events, event(4, "tool.completed", { itemId: "one", status: "completed" }), event(5, "tool.completed", { itemId: "two", status: "failed" })]} onResolve={() => {}} />));
-    expect(host.querySelector("[data-current-activity]")).toBeNull();
+    expect(panel()).toBeNull();
+    // The island names the failure before it goes, and counts the other.
+    expect(host.querySelector("[data-background-notice]")?.textContent).toBe("LintFailed · +1");
   });
 
   it("does not revive an abandoned ordinary call when another turn starts", () => {
@@ -118,7 +124,8 @@ describe("observable background work", () => {
     const taskEntries = durableEntriesFrom("s", [running("outside-window", true)]);
     const reply = forestEntry("last", "unloaded", 2000, "assistant.message", { role: "assistant", text: "Later work is done.", status: "completed" });
     act(() => root.render(<AgentConversation session={{ ...session, status: "ready" }} working={false} events={[]} forestEntries={[reply]} activeLeafId="last" activeProcessEntries={taskEntries} onResolve={() => {}} />));
-    expect(host.querySelector("[data-current-activity]")?.textContent).toContain("cargo test");
+    openActivity();
+    expect(panel()?.textContent).toContain("Rust workspace tests");
     act(() => root.render(<AgentConversation session={{ ...session, status: "ready" }} working={false} events={[running("outside-window", true)]} forestEntries={[reply]} activeLeafId="last" activeProcessEntries={[]} onResolve={() => {}} />));
     expect(host.querySelector("[data-current-activity]")).toBeNull();
   });
@@ -126,7 +133,8 @@ describe("observable background work", () => {
   it("lists active processes when loaded history is empty", () => {
     act(() => root.render(<AgentConversation session={{ ...session, status: "ready" }} working={false}
       forestEntries={[]} activeProcessEntries={durableEntriesFrom("s", [running("silent", true)])} onResolve={() => {}} />));
-    expect(host.querySelector("[data-current-activity]")?.textContent).toContain("cargo test");
+    openActivity();
+    expect(panel()?.textContent).toContain("Rust workspace tests");
   });
 
   it.each(["completed", "failed", "stopped", "unknown"])("accepts a live %s outcome before the process snapshot catches up", status => {
@@ -146,13 +154,15 @@ describe("observable background work", () => {
     const output = event(0, "command.output_delta", { sequence: 0, causalAnchor: 2000, itemId: "streaming", status: "inProgress", text: "Second test passed\n", data: {} });
     const heartbeat = (seconds: number) => event(0, "tool.progress", { sequence: 0, causalAnchor: 2000, itemId: "streaming", status: "inProgress", data: { durationMs: seconds * 1000, progress: `Running for ${seconds}s` } });
     act(() => root.render(<AgentConversation {...props} events={[output, heartbeat(7)]} />));
-    const current = host.querySelector("[data-current-activity]")!;
-    expect(current.textContent).toContain("cargo test");
-    expect(current.textContent).toContain("First test passed");
-    expect(current.textContent).toContain("Second test passed");
-    expect(current.textContent).toContain("Running for 7s");
+    openActivity();
+    expect(panel()?.textContent).toContain("Rust workspace tests");
+    expect(panel()?.textContent).toContain("Running for 7s");
+    openTask();
+    expect(panel()?.textContent).toContain("First test passed");
+    expect(panel()?.textContent).toContain("Second test passed");
+    expect(panel()?.textContent).toContain("cargo test");
     act(() => root.render(<AgentConversation {...props} events={[output, heartbeat(8)]} />));
-    expect(host.querySelector("[data-current-activity]")?.textContent).toContain("Running for 8s");
+    expect(panel()?.textContent).toContain("Running for 8s");
   });
 
   it("does not replace a resumed process with an older live outcome", () => {
@@ -160,7 +170,8 @@ describe("observable background work", () => {
     act(() => root.render(<AgentConversation session={{ ...session, status: "ready" }} working={false}
       forestEntries={[]} activeProcessEntries={taskEntries}
       events={[event(50, "tool.completed", { itemId: "resumed", status: "completed", data: { background: false } })]} onResolve={() => {}} />));
-    expect(host.querySelector("[data-current-activity]")?.textContent).toContain("cargo test");
+    openActivity();
+    expect(panel()?.textContent).toContain("Rust workspace tests");
   });
 
   it("leaves foreground snapshot calls to the transcript", () => {
@@ -209,7 +220,8 @@ describe("observable background work", () => {
     ]);
     expect(host.querySelector("[data-activity-group]")?.textContent).toContain("Running 1 command");
     expect(host.querySelector("[data-activity-group]")?.textContent).not.toContain("2 commands");
-    expect(host.querySelectorAll("[data-current-activity] li")).toHaveLength(1);
+    openActivity();
+    expect(host.querySelectorAll("[data-background-panel] li")).toHaveLength(1);
   });
 
   it("names a still-running parallel call when the last call already completed", () => {

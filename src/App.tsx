@@ -10,7 +10,8 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, use
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
-import type { ResolveReferenceResult } from "./protocol/generated/protocol";
+import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
+import { needsYouCount, workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
@@ -157,10 +158,11 @@ import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
 
-const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
+const WorkflowsScreen = lazy(() => import("./components/WorkflowsScreen").then(module => ({ default: module.WorkflowsScreen })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
+import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
@@ -284,6 +286,8 @@ function AppContent() {
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
   // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
   const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
+  // Notes acts on a link's request once; a later visit to Notes must not replay it.
+  const consumeNoteOpenRequest = useCallback(() => setNoteOpenRequest(undefined), []);
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
@@ -523,6 +527,63 @@ function AppContent() {
       return next;
     });
   };
+  // Workflow runs, app-wide: the sidebar count, Mission Control's strip, and a
+  // native notification once per run and status (see workflows/notify.ts).
+  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
+  const [workflowNames, setWorkflowNames] = useState<Map<string, string>>(() => new Map());
+  const [focusWorkflowRun, setFocusWorkflowRun] = useState<{ workflowId: string; runId: string } | null>(null);
+  const clearFocusWorkflowRun = useCallback(() => setFocusWorkflowRun(null), []);
+  const notifiedWorkflowRuns = useRef(new Set<string>());
+  const workflowNamesRef = useRef(workflowNames);
+  workflowNamesRef.current = workflowNames;
+  useEffect(() => {
+    let disposed = false;
+    const stops: Array<() => void> = [];
+    const refresh = async () => {
+      try {
+        const [list, recent] = await Promise.all([bridgeApi.listWorkflows(), bridgeApi.listWorkflowRuns({ limit: 100 })]);
+        if (disposed) return;
+        setWorkflowNames(new Map(list.workflows.map(workflow => [workflow.id, workflow.name])));
+        setWorkflowRuns(recent.runs);
+      } catch {
+        // Workflows are optional: an older daemon without them leaves the count at zero.
+      }
+    };
+    void refresh();
+    void bridgeApi.onWorkflowsChanged(() => void refresh()).then(stop => disposed ? stop() : stops.push(stop));
+    void bridgeApi.onWorkflowRunChanged(({ run }) => {
+      setWorkflowRuns(current => [run, ...current.filter(candidate => candidate.id !== run.id)]);
+      const name = workflowNamesRef.current.get(run.workflowId) ?? "A workflow";
+      const wantsSuccess = run.status === "succeeded"
+        ? bridgeApi.getWorkflow(run.workflowId).then(({ workflow }) => workflow.definition.notify?.onSuccess ?? false).catch(() => false)
+        : Promise.resolve(false);
+      void wantsSuccess.then(onSuccess => {
+        const notice = workflowNotification(run, name, onSuccess, notifiedWorkflowRuns.current);
+        // No session: a run's chat is hidden, so a notification only raises Bridge.
+        if (notice) void notifyAttention(notice.title, notice.body);
+      });
+    }).then(stop => disposed ? stop() : stops.push(stop));
+    return () => { disposed = true; stops.forEach(stop => stop()); };
+  }, []);
+  const openWorkflowRun = useCallback((run: WorkflowRun) => {
+    setFocusWorkflowRun({ workflowId: run.workflowId, runId: run.id });
+    setView("workflows");
+  }, []);
+
+  // Sidebar "Save as workflow…": draft from the chat (no model call) and open
+  // the Workflows page with the editor prefilled. Nothing is saved yet.
+  const [workflowDraft, setWorkflowDraft] = useState<WorkflowDraft | null>(null);
+  const clearWorkflowDraft = useCallback(() => setWorkflowDraft(null), []);
+  const saveChatAsWorkflow = async (chat: Session) => {
+    try {
+      const { draft } = await bridgeApi.draftWorkflowFromSession(chat.id);
+      setWorkflowDraft(draft);
+      setView("workflows");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   // Sidebar "Fork chat…": the dialog needs an entry to fork at, so resolve the
   // chat's head first. A chat with no messages has nothing to fork.
   const forkChatFromSidebar = async (chat: Session) => {
@@ -3329,7 +3390,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3395,8 +3456,9 @@ function AppContent() {
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenSavedSetups={() => setView("saved-setups")}
-      onOpenAutomations={() => setView("automations")}
-      automationsActive={view === "automations"}
+      onOpenWorkflows={() => setView("workflows")}
+      workflowsActive={view === "workflows"}
+      workflowsBadge={needsYouCount(workflowRuns)}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
@@ -3416,6 +3478,7 @@ function AppContent() {
       // a mention there would land in a composer nobody can see.
       onMentionChat={session ? mentionChat : undefined}
       onForkChat={chat => void forkChatFromSidebar(chat)}
+      onSaveChatAsWorkflow={chat => void saveChatAsWorkflow(chat)}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
@@ -3463,13 +3526,14 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "notes" ? <Suspense fallback={<PanelLoading label="Opening notes…"/>}><NotesScreen
+      /> : view === "notes" ? <Suspense fallback={<NotesScreenSkeleton />}><NotesScreen
         adapters={adapters}
         workspaces={state.workspaces}
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
         openRequest={noteOpenRequest}
+        onOpenRequestHandled={consumeNoteOpenRequest}
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
@@ -3485,7 +3549,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
@@ -3504,6 +3568,9 @@ function AppContent() {
         onFocusSession={openSession}
         onStopWorker={stopWorker}
         onNewChat={workspaceId => void startChatInWorkspace(workspaceId)}
+        workflowRuns={workflowRuns}
+        workflowNames={workflowNames}
+        onOpenWorkflowRun={openWorkflowRun}
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}

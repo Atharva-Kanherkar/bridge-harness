@@ -1,0 +1,454 @@
+{
+  "context": {
+    "servers": [
+      {
+        "id": "claude.ai Slack",
+        "family": "slack",
+        "connected": true
+      },
+      {
+        "id": "claude.ai Linear",
+        "family": "linear",
+        "connected": true
+      },
+      {
+        "id": "claude.ai Gmail",
+        "family": "gmail",
+        "connected": true
+      },
+      {
+        "id": "claude.ai Notion",
+        "family": "notion",
+        "connected": true
+      },
+      {
+        "id": "claude.ai Google Calendar",
+        "family": "unknown",
+        "connected": true
+      }
+    ],
+    "timezone": "Asia/Kolkata",
+    "harness": "claude",
+    "model": "haiku"
+  },
+  "bar": {
+    "minTriggerExact": 27,
+    "maxOverGrants": 0,
+    "maxUnderGrants": 3
+  },
+  "cases": [
+    {
+      "sentence": "Every weekday at 9am, summarise my unread Slack mentions.",
+      "expected": {
+        "cron": "0 9 * * 1-5",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekday Slack Mentions Summary\",\n  \"instructions\": \"Retrieve all unread mentions from Slack. Provide a clear summary of each mention, including who mentioned the user, what they said, and which channel or conversation it occurred in.\",\n  \"expectedResult\": \"A summary of all unread Slack mentions for the user.\",\n  \"schedule\": {\n    \"cron\": \"0 9 * * 1-5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"slack\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Each Monday at 10, list the Linear issues assigned to me that are overdue.",
+      "expected": {
+        "cron": "0 10 * * 1",
+        "grants": [
+          {
+            "server": "claude.ai Linear",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Overdue Issues Report\",\n  \"instructions\": \"Every Monday at 10 AM, query Linear for all issues assigned to the current user that have passed their due date. Compile and present a list of these overdue issues with their keys, titles, and due dates.\",\n  \"expectedResult\": \"A list of all overdue Linear issues currently assigned to the user.\",\n  \"schedule\": {\n    \"cron\": \"0 10 * * 1\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"linear\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Friday at 4pm, find unpaid invoice emails in Gmail and summarise them.",
+      "expected": {
+        "cron": "0 16 * * 5",
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Unpaid Invoice Summary\",\n  \"instructions\": \"Every Friday at 4pm, search Gmail for unpaid invoice emails. Look for keywords and patterns indicating unpaid invoices such as 'unpaid', 'invoice', 'payment due', 'overdue', or 'amount due'. Extract and summarize all unpaid invoices found, including invoice amounts, due dates, customer/vendor names, and any other relevant details. Present the results as a clear, organized summary.\",\n  \"expectedResult\": \"A comprehensive summary of all unpaid invoices found in Gmail emails for the week.\",\n  \"schedule\": {\n    \"cron\": \"0 16 * * 5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Gmail\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every morning at 8:30, post a summary of yesterday's Linear activity to #team on Slack.",
+      "expected": {
+        "cron": "30 8 * * *",
+        "grants": [
+          {
+            "server": "claude.ai Linear",
+            "write": false
+          },
+          {
+            "server": "claude.ai Slack",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Daily Linear Activity Summary\",\n  \"instructions\": \"Every morning at 8:30 AM, retrieve all Linear activity from yesterday, create a concise summary of completed work, closed issues, and key updates, then post this summary to the #team channel on Slack.\",\n  \"expectedResult\": \"A summary of yesterday's Linear activity is posted to the #team Slack channel.\",\n  \"schedule\": {\n    \"cron\": \"30 8 * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every day at 6pm, check Notion for pages I edited today and list them.",
+      "expected": {
+        "cron": "0 18 * * *",
+        "grants": [
+          {
+            "server": "claude.ai Notion",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Daily Notion Edits Check\",\n  \"instructions\": \"Every day at 6:00 PM, query Notion for all pages edited by the user today. Retrieve the list of pages with their titles and last edit timestamps. Return the complete list of pages edited today.\",\n  \"expectedResult\": \"A list of Notion pages edited by the user today with their titles and edit times.\",\n  \"schedule\": {\n    \"cron\": \"0 18 * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Notion\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "On the first of every month at 9, summarise last month's Linear issues closed by my team.",
+      "expected": {
+        "cron": "0 9 1 * *",
+        "grants": [
+          {
+            "server": "claude.ai Linear",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Monthly Team Issues Summary\",\n  \"instructions\": \"On the first day of each month at 9 AM, retrieve all Linear issues that were closed by the user's team during the previous calendar month and generate a comprehensive summary of these issues.\",\n  \"expectedResult\": \"A summary of all Linear issues closed by the team in the previous month.\",\n  \"schedule\": {\n    \"cron\": \"0 9 1 * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Whenever I press run, draft replies to my unanswered Gmail threads from this week.",
+      "expected": {
+        "cron": null,
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Draft Gmail Replies\",\n  \"instructions\": \"Search Gmail for all threads received this week that remain unanswered (no response from the user yet). For each unanswered thread, generate and save a draft reply in Gmail. Each draft should be thoughtful and contextually appropriate based on the thread content.\",\n  \"expectedResult\": \"Generates and saves draft replies for each unanswered Gmail thread from the current week.\",\n  \"schedule\": null,\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Gmail\",\n      \"read\": true,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every weekday at 9:15, look at my Google Calendar and tell me which meetings have no agenda.",
+      "expected": {
+        "cron": "15 9 * * 1-5",
+        "grants": [
+          {
+            "server": "claude.ai Google Calendar",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Daily Agenda Check\",\n  \"instructions\": \"Every weekday at 9:15 AM, retrieve all meetings from the user's Google Calendar for today. Identify any meetings that don't have an agenda or description. Report these meetings back to the user.\",\n  \"expectedResult\": \"A list of meetings scheduled for today that have no agenda or description.\",\n  \"schedule\": {\n    \"cron\": \"15 9 * * 1-5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"unknown\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every hour, check Slack for messages mentioning 'outage' and summarise them.",
+      "expected": {
+        "cron": "0 * * * *",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Hourly Slack Outage Summary\",\n  \"instructions\": \"Every hour, search Slack for all messages containing the word 'outage' from the past hour. Collect and summarize these messages, including the channel name, sender, timestamp, and key content. If no messages mention 'outage', report that no outages were reported. Present the summary in a clear, organized format.\",\n  \"expectedResult\": \"A summary of all Slack messages mentioning 'outage' from the past hour, organized by channel with key details.\",\n  \"schedule\": {\n    \"cron\": \"0 * * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"slack\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Sunday at 7pm, write a weekly review page in Notion from my Linear issues.",
+      "expected": {
+        "cron": "0 19 * * 0",
+        "grants": [
+          {
+            "server": "claude.ai Linear",
+            "write": false
+          },
+          {
+            "server": "claude.ai Notion",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Linear Review to Notion\",\n  \"instructions\": \"Every Sunday at 7pm, retrieve all Linear issues from the past week. Create a new Notion page titled 'Weekly Review - [current week]' and populate it with a structured summary of these issues, organized by status or priority, including key details such as title, assignee, status, and description.\",\n  \"expectedResult\": \"A new weekly review page is created in Notion containing a summary of Linear issues from the past week, organized by status or priority.\",\n  \"schedule\": {\n    \"cron\": \"0 19 * * 0\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"claude.ai Notion\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Summarise the #design channel on Slack.",
+      "expected": {
+        "cron": null,
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Summarize #design Slack Channel\",\n  \"instructions\": \"Access the #design channel on Slack and retrieve recent messages. Create a comprehensive summary highlighting key topics, discussions, decisions, and action items from the channel.\",\n  \"expectedResult\": \"A summary document of the #design channel's recent activity and important takeaways.\",\n  \"schedule\": null,\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every weekday at 5pm, reply in Slack to anyone who asked me a question today with a short acknowledgement.",
+      "expected": {
+        "cron": "0 17 * * 1-5",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekday Slack Question Acknowledgements\",\n  \"instructions\": \"Every weekday at 5pm, review all Slack messages received that day to identify questions directed at you. Send a brief acknowledgement reply to each person who asked you a question, thanking them for their inquiry.\",\n  \"expectedResult\": \"Sends short acknowledgement replies in Slack to everyone who asked you questions during that day\",\n  \"schedule\": {\n    \"cron\": \"0 17 * * 1-5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": true,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Tuesday at 11am, create a Linear issue for each bug reported in #support on Slack that week.",
+      "expected": {
+        "cron": "0 11 * * 2",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          },
+          {
+            "server": "claude.ai Linear",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Bug Report to Linear Issues\",\n  \"instructions\": \"Every Tuesday at 11am, review the #support channel on Slack for bug reports from the past week. For each bug reported, create a corresponding Linear issue with the bug details, description, and any relevant context from the Slack message.\",\n  \"expectedResult\": \"A Linear issue is created for each bug reported in the #support Slack channel during the past week.\",\n  \"schedule\": {\n    \"cron\": \"0 11 * * 2\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Each morning at 7, give me a two-line briefing of my Gmail inbox.",
+      "expected": {
+        "cron": "0 7 * * *",
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Morning Gmail Briefing\",\n  \"instructions\": \"Each morning at 7 AM, read the Gmail inbox and generate a concise two-line summary of the most important emails or key takeaways. Send this briefing as a Slack message to the user.\",\n  \"expectedResult\": \"A two-line summary of the most important emails is sent via Slack each morning at 7 AM\",\n  \"schedule\": {\n    \"cron\": \"0 7 * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"gmail\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"slack\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Monday at 9, archive Gmail newsletters older than a week.",
+      "expected": {
+        "cron": "0 9 * * 1",
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Archive Old Newsletters\",\n  \"instructions\": \"Every Monday at 9 AM, search Gmail for all newsletters received more than 7 days ago and archive them. Identify newsletters by their source or newsletter characteristics, then move any emails older than one week to the archive folder.\",\n  \"expectedResult\": \"All Gmail newsletters older than one week are moved to the archive.\",\n  \"schedule\": {\n    \"cron\": \"0 9 * * 1\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"gmail\",\n      \"read\": true,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "At 10pm every day, list tomorrow's calendar events.",
+      "expected": {
+        "cron": "0 22 * * *",
+        "grants": [
+          {
+            "server": "claude.ai Google Calendar",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Tomorrow's Calendar Events\",\n  \"instructions\": \"Retrieve and list all calendar events scheduled for tomorrow.\",\n  \"expectedResult\": \"A list of calendar events scheduled for the next day.\",\n  \"schedule\": {\n    \"cron\": \"0 22 * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"unknown\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every two hours, look for new Linear issues labelled urgent and tell me.",
+      "expected": {
+        "cron": "0 */2 * * *",
+        "grants": [
+          {
+            "server": "claude.ai Linear",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Monitor Urgent Linear Issues\",\n  \"instructions\": \"Query Linear for issues with the 'urgent' label that were created or updated in the last 2 hours. Send a Slack message to the user listing any issues found.\",\n  \"expectedResult\": \"A Slack message containing a list of urgent Linear issues that were created or updated in the last 2 hours.\",\n  \"schedule\": {\n    \"cron\": \"0 */2 * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every weekday at noon, label Gmail messages from customers as 'customer'.",
+      "expected": {
+        "cron": "0 12 * * 1-5",
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Label customer emails daily\",\n  \"instructions\": \"Every weekday at noon, search Gmail for recent messages from customers. Identify customer messages based on external sender domains or customer-related content. Apply the 'customer' label to these messages.\",\n  \"expectedResult\": \"Recent customer emails in Gmail are labeled with the 'customer' label.\",\n  \"schedule\": {\n    \"cron\": \"0 12 * * 1-5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"gmail\",\n      \"read\": true,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Find the Notion page for our roadmap and summarise what changed this week.",
+      "expected": {
+        "cron": null,
+        "grants": [
+          {
+            "server": "claude.ai Notion",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Roadmap Summary\",\n  \"instructions\": \"Access the Notion page for the team's roadmap. Identify all changes made during the current week and provide a clear, concise summary of what changed, including new items added, items completed, and any modifications to existing items.\",\n  \"expectedResult\": \"A summary of all changes made to the roadmap during the current week.\",\n  \"schedule\": null,\n  \"servers\": [\n    {\n      \"server\": \"notion\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Friday at 5:30pm, send me an email recap of the Slack threads I starred.",
+      "expected": {
+        "cron": "30 17 * * 5",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          },
+          {
+            "server": "claude.ai Gmail",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Slack Stars Email Recap\",\n  \"instructions\": \"Every Friday at 5:30pm, retrieve all threads the user has starred in Slack, compile a summary of the key points and discussions from those threads, and send a formatted email recap to the user.\",\n  \"expectedResult\": \"An email containing a recap of all starred Slack threads is sent to the user at 5:30pm Friday.\",\n  \"schedule\": {\n    \"cron\": \"30 17 * * 5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"slack\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"gmail\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every weekday at 8, check my calendar and Slack and tell me what to prepare for.",
+      "expected": {
+        "cron": "0 8 * * 1-5",
+        "grants": [
+          {
+            "server": "claude.ai Google Calendar",
+            "write": false
+          },
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Morning Weekday Briefing\",\n  \"instructions\": \"Every weekday at 8 AM, check the user's calendar for upcoming events and review their Slack messages and notifications. Summarize the key items and provide a briefing of what they need to prepare for during the day.\",\n  \"expectedResult\": \"A concise morning briefing summarizing the day's calendar events and important Slack items with actionable preparation recommendations.\",\n  \"schedule\": {\n    \"cron\": \"0 8 * * 1-5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Google Calendar\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Wednesday at 3pm, comment on stale Linear issues asking for an update.",
+      "expected": {
+        "cron": "0 15 * * 3",
+        "grants": [
+          {
+            "server": "claude.ai Linear",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly stale Linear issues follow-up\",\n  \"instructions\": \"Every Wednesday at 3pm, find all stale (inactive/unresolved) issues in Linear and post a comment on each asking for a status update.\",\n  \"expectedResult\": \"Comments requesting updates have been posted on all identified stale Linear issues.\",\n  \"schedule\": {\n    \"cron\": \"0 15 * * 3\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": true,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Whenever I run it, read the latest messages in #releases and summarise.",
+      "expected": {
+        "cron": null,
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Summarize Latest #releases Messages\",\n  \"instructions\": \"Read the latest messages from the #releases Slack channel and provide a clear, concise summary of their content.\",\n  \"expectedResult\": \"A summary of the latest messages posted in the #releases Slack channel.\",\n  \"schedule\": null,\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every day at 9am and 5pm, summarise new Gmail from my manager.",
+      "expected": {
+        "cron": "0 9,17 * * *",
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Daily Manager Email Summary\",\n  \"instructions\": \"Every day at 9am and 5pm, check Gmail for new emails from the manager and generate a concise summary of the new messages received.\",\n  \"expectedResult\": \"A summary of new emails from the manager is generated and provided to the user.\",\n  \"schedule\": {\n    \"cron\": \"0 9,17 * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"gmail\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every Saturday at 10, list Notion tasks due next week.",
+      "expected": {
+        "cron": "0 10 * * 6",
+        "grants": [
+          {
+            "server": "claude.ai Notion",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Weekly Notion Task List\",\n  \"instructions\": \"Every Saturday at 10 AM, retrieve all tasks from Notion that are due in the following week (Monday through Sunday), and generate a formatted list displaying each task with its due date.\",\n  \"expectedResult\": \"A formatted list of all Notion tasks due in the following week is generated.\",\n  \"schedule\": {\n    \"cron\": \"0 10 * * 6\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"notion\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Every weekday at 6pm, update the status of my Linear issues based on today's Slack discussion.",
+      "expected": {
+        "cron": "0 18 * * 1-5",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          },
+          {
+            "server": "claude.ai Linear",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Update Linear Issues from Slack Discussion\",\n  \"instructions\": \"Every weekday at 6pm, review today's Slack conversations to identify discussions about Linear issues. Extract the key decisions, status changes, and updates mentioned. Update the status of relevant Linear issues based on the discussion context, mapping issue references to actual Linear issues and applying the appropriate status changes.\",\n  \"expectedResult\": \"Linear issue statuses are updated to reflect decisions and outcomes from today's Slack discussions.\",\n  \"schedule\": {\n    \"cron\": \"0 18 * * 1-5\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"claude.ai Linear\",\n      \"read\": true,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Check QuickBooks for overdue invoices every Monday at 9.",
+      "expected": {
+        "cron": "0 9 * * 1",
+        "grants": []
+      },
+      "reply": "```json\n{\n  \"name\": \"Check QuickBooks Overdue Invoices\",\n  \"instructions\": \"Every Monday at 9 AM Asia/Kolkata time, check QuickBooks for overdue invoices. Review all outstanding invoices and identify any that are past their due date. Report all findings.\",\n  \"expectedResult\": \"A report of all overdue invoices currently in QuickBooks.\",\n  \"schedule\": {\n    \"cron\": \"0 9 * * 1\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [],\n  \"needsApps\": [\"QuickBooks\"]\n}\n```"
+    },
+    {
+      "sentence": "Every 30 minutes, check Slack DMs and summarise anything urgent.",
+      "expected": {
+        "cron": "*/30 * * * *",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Check Slack DMs and Summarize Urgent Messages\",\n  \"instructions\": \"Every 30 minutes, check all unread direct messages in Slack. Identify and summarize any messages that are urgent or require immediate attention. Flag messages containing urgency indicators such as 'urgent', 'ASAP', 'critical', 'blocked', or messages from key contacts. Present findings as a concise summary.\",\n  \"expectedResult\": \"A summary of urgent Slack direct messages, or confirmation that no urgent messages require attention.\",\n  \"schedule\": {\n    \"cron\": \"*/30 * * * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"slack\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "On the 15th of each month at noon, post a reminder in #finance on Slack to submit expenses.",
+      "expected": {
+        "cron": "0 12 15 * *",
+        "grants": [
+          {
+            "server": "claude.ai Slack",
+            "write": true
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Monthly Expense Submission Reminder\",\n  \"instructions\": \"On the 15th of each month at noon, post a message to the #finance Slack channel reminding team members to submit their monthly expenses.\",\n  \"expectedResult\": \"A reminder message is posted to the #finance Slack channel.\",\n  \"schedule\": {\n    \"cron\": \"0 12 15 * *\",\n    \"timezone\": \"Asia/Kolkata\"\n  },\n  \"servers\": [\n    {\n      \"server\": \"claude.ai Slack\",\n      \"read\": false,\n      \"write\": true\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    },
+    {
+      "sentence": "Read my Gmail and Calendar and tell me if I double-booked anything this week.",
+      "expected": {
+        "cron": null,
+        "grants": [
+          {
+            "server": "claude.ai Gmail",
+            "write": false
+          },
+          {
+            "server": "claude.ai Google Calendar",
+            "write": false
+          }
+        ]
+      },
+      "reply": "```json\n{\n  \"name\": \"Check for Weekly Double-Bookings\",\n  \"instructions\": \"Read the user's Google Calendar and Gmail for this week starting 2026-10-29. Identify all scheduled events and meetings, including calendar entries and email meeting invitations/confirmations. Find any overlapping time slots where the user has two or more events scheduled simultaneously. Report all double-bookings with event names, times, and which services they appear in.\",\n  \"expectedResult\": \"A report listing any double-booked time slots for this week with event details, or confirmation that no conflicts were found.\",\n  \"schedule\": null,\n  \"servers\": [\n    {\n      \"server\": \"gmail\",\n      \"read\": true,\n      \"write\": false\n    },\n    {\n      \"server\": \"unknown\",\n      \"read\": true,\n      \"write\": false\n    }\n  ],\n  \"needsApps\": []\n}\n```"
+    }
+  ]
+}

@@ -57,7 +57,7 @@ function announce(page: MockPage, actor: string) {
 
 function live(id: string): MockPage {
   const page = pages.find(candidate => candidate.note.id === id && !candidate.deleted);
-  if (!page) throw new Error("no such note");
+  if (!page) throw new Error("note not found"); // the core's words
   return page;
 }
 

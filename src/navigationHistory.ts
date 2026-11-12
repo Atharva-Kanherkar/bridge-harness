@@ -1,4 +1,4 @@
-export type AppView = "workspace" | "agent-fleet" | "mission-control" | "work" | "projects" | "memory" | "notes" | "marketplace" | "usage" | "pulls" | "settings" | "automations" | "archives" | "saved-setups" | "briefing-settings";
+export type AppView = "workspace" | "agent-fleet" | "mission-control" | "work" | "projects" | "memory" | "notes" | "marketplace" | "usage" | "pulls" | "settings" | "workflows" | "archives" | "saved-setups" | "briefing-settings";
 
 export type AppPlace = {
   view: AppView;

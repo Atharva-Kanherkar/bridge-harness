@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
@@ -76,6 +76,7 @@ function ChatRow({
   onArchive,
   onMention,
   onFork,
+  onSaveAsWorkflow,
   forkLabel,
   onJumpToParent,
   liveAgents,
@@ -89,6 +90,7 @@ function ChatRow({
   onArchive?: () => void;
   onMention?: () => void;
   onFork?: () => void;
+  onSaveAsWorkflow?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
   /** Live agents under this chat, counted by the host from every session. */
@@ -157,6 +159,7 @@ function ChatRow({
       name={name}
       onMention={onMention}
       onFork={onFork}
+      onSaveAsWorkflow={onSaveAsWorkflow}
       onArchive={onArchive}
       forkLabel={forkLabel}
       onJumpToParent={onJumpToParent}
@@ -174,6 +177,7 @@ function ChatRowMenu({
   name,
   onMention,
   onFork,
+  onSaveAsWorkflow,
   onArchive,
   forkLabel,
   onJumpToParent,
@@ -182,6 +186,7 @@ function ChatRowMenu({
   name: string;
   onMention?: () => void;
   onFork?: () => void;
+  onSaveAsWorkflow?: () => void;
   onArchive?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
@@ -223,6 +228,12 @@ function ChatRowMenu({
           <button type="button" role="menuitem" className={item} onClick={run(onFork)}>
             <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">Fork chat…</span>
+          </button>
+        )}
+        {onSaveAsWorkflow && (
+          <button type="button" role="menuitem" className={item} onClick={run(onSaveAsWorkflow)}>
+            <WorkflowIcon size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Save as workflow…</span>
           </button>
         )}
         {onJumpToParent && forkLabel && (
@@ -463,8 +474,10 @@ export type BridgeSidebarProps = {
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
   onOpenSavedSetups?: () => void;
-  onOpenAutomations?: () => void;
-  automationsActive?: boolean;
+  onOpenWorkflows?: () => void;
+  workflowsActive?: boolean;
+  /** Workflow runs waiting on the person plus unread results. */
+  workflowsBadge?: number;
   /** Per-project "+" on a project group header, grouped-by-project only —
    * skips the picker step since the group already names the workspace. */
   onNewChatInProject?: (workspaceId: string) => void;
@@ -495,6 +508,8 @@ export type BridgeSidebarProps = {
   onMentionChat?: (chat: Session) => void;
   /** Open the fork dialog at this chat's head. */
   onForkChat?: (chat: Session) => void;
+  /** Draft a workflow from this chat and open it in the Workflows page. */
+  onSaveChatAsWorkflow?: (chat: Session) => void;
   /** Hidden, not shrunk: from `sm` up a collapsed rail gives back every pixel
    * and leaves nothing on screen. When set, the rail uses this state instead of
    * its own. */
@@ -530,8 +545,9 @@ export function BridgeSidebar({
   onCloseMobile,
   onOpenNewChat,
   onOpenSavedSetups,
-  onOpenAutomations,
-  automationsActive = false,
+  onOpenWorkflows,
+  workflowsActive = false,
+  workflowsBadge = 0,
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
@@ -548,6 +564,7 @@ export function BridgeSidebar({
   onArchiveChat,
   onMentionChat,
   onForkChat,
+  onSaveChatAsWorkflow,
   collapsed: collapsedProp,
   onCollapsedChange,
   showWindowNav = true,
@@ -847,7 +864,7 @@ export function BridgeSidebar({
 
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          {onOpenAutomations && <ActionRow icon={Clock} label="Scheduled tasks" onClick={onOpenAutomations} active={automationsActive} />}
+          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" badge={workflowsBadge > 0 ? { count: String(workflowsBadge), label: `${workflowsBadge} waiting for you` } : undefined} onClick={onOpenWorkflows} active={workflowsActive} />}
           {/* The work-board stays off the nav for now. Routing props remain on the
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
@@ -935,6 +952,7 @@ export function BridgeSidebar({
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
                     onMention={onMentionChat && (() => onMentionChat(chat))}
                     onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}
+                    onSaveAsWorkflow={onSaveChatAsWorkflow && chat.kind !== "worker" ? () => onSaveChatAsWorkflow(chat) : undefined}
                     forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                     liveAgents={liveAgents?.get(chat.id)?.length}

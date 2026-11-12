@@ -1,6 +1,7 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
+import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
 import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
 import { harnessLabel } from "./utils";
@@ -1512,6 +1513,161 @@ function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
   return { level: sessionOverride ?? mockNotifyGlobal, globalLevel: mockNotifyGlobal, sessionOverride };
 }
 
+// Workflows in mock mode: an in-memory store that follows the Rust rules the
+// screens depend on (a revision per save, approval cleared by any widening,
+// a stale revision refused). Validation proper is Rust's.
+const mockWorkflowOptions: WorkflowOptions = {
+  harnesses: [
+    { id: "claude", label: "Claude Code", available: true, connectorsAllowed: true, connectorsReason: null, worktreeAllowed: true, defaultModel: "haiku",
+      models: [{ id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true }, { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false }] },
+    { id: "codex", label: "Codex", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: "gpt-5.5",
+      connectorsReason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
+      models: [{ id: "gpt-5.5", label: "GPT-5.5", tier: "standard", defaultForBriefing: false }] },
+    { id: "opencode", label: "OpenCode", available: true, connectorsAllowed: false, worktreeAllowed: true, defaultModel: null,
+      connectorsReason: "its permission rules are coarse families, so one reviewed connector tool cannot be admitted without admitting its neighbours", models: [] },
+  ],
+  servers: [
+    { id: "claude.ai Slack", family: "slack", connected: true },
+    { id: "claude.ai Linear", family: "linear", connected: true },
+    { id: "claude.ai Gmail", family: "gmail", connected: false },
+  ],
+};
+
+const mockWorkflowDefinition: WorkflowDefinition = {
+  name: "Morning brief",
+  projectId: null,
+  steps: [{ harness: "claude", model: "haiku", instructions: "Read my unread Slack mentions and the Linear issues assigned to me. Summarise what needs a reply or a decision today in at most five lines." }],
+  trigger: { kind: "schedule", cron: "0 9 * * 1-5", timezone: "Asia/Kolkata" },
+  grants: [{ server: "claude.ai Slack", read: true, write: "never" }, { server: "claude.ai Linear", read: true, write: "never" }],
+  alwaysAllow: [],
+  files: "none",
+  budget: { maxWallSeconds: 600, maxTurns: 24, maxToolCalls: 64, maxOutputTokens: null, costCeilingMicrousd: 500000 },
+  expectedResult: "Five lines or fewer, each naming the person or issue.",
+  notify: { onSuccess: false },
+};
+
+let mockWorkflows: Workflow[] = [{
+  id: "wf-morning-brief", enabled: true, disabledReason: null, revisionId: "wf-morning-brief-r1", revision: 1,
+  approved: true, approvedAt: "2026-10-27T09:00:00Z", definition: mockWorkflowDefinition,
+  createdAt: "2026-10-27T09:00:00Z", updatedAt: "2026-10-27T09:00:00Z",
+}];
+
+// Mock mode's `workflows/run_changed`, so the sidebar count follows mark-read
+// the way it does against the daemon.
+const mockWorkflowRunListeners = new Set<(payload: { run: WorkflowRun }) => void>();
+let mockWorkflowRuns: WorkflowRun[] = [{
+  id: "run-morning-1", workflowId: "wf-morning-brief", revisionId: "wf-morning-brief-r1", triggerKind: "schedule", missedSlots: 0,
+  dryRun: false, status: "succeeded", failureCode: null, summary: "3 Slack mentions need replies; 2 Linear issues moved to In review.",
+  sessionId: null, quotaUnknown: false, costMicrousd: 40000, tokens: 18200, unread: true,
+  scheduledFor: "2026-10-28T03:30:00.000Z", startedAt: "2026-10-28T03:30:02.000Z", finishedAt: "2026-10-28T03:31:14.000Z", createdAt: "2026-10-28T03:30:01.000Z",
+}];
+// A run waiting on a write, so the run view shows its transcript and a card.
+mockWorkflowRuns.unshift({
+  id: "run-morning-2", workflowId: "wf-morning-brief", revisionId: "wf-morning-brief-r1", triggerKind: "manual", missedSlots: 0,
+  dryRun: false, status: "waiting_approval", failureCode: null, summary: null, sessionId: "wf-run-session", quotaUnknown: false,
+  costMicrousd: null, tokens: 4100, unread: true, scheduledFor: null, startedAt: "2026-10-28T23:30:02.000Z", finishedAt: null,
+  createdAt: "2026-10-28T23:30:01.000Z",
+});
+mockState.agentEvents.push(
+  agentEvent(9001, "wf-run-session", "user.message", { role: "user", text: "Someone pressed Run now. Do the job now." }),
+  agentEvent(9002, "wf-run-session", "tool.started", { data: { toolName: "mcp__claude_ai_Slack__slack_search_messages" } }),
+  agentEvent(9003, "wf-run-session", "tool.started", { data: { toolName: "mcp__claude_ai_Linear__list_issues" } }),
+  agentEvent(9004, "wf-run-session", "assistant.message", { role: "assistant", text: "Three mentions need replies. I drafted a note to #team to say I'm on it." }),
+  agentEvent(9005, "wf-run-session", "permission.requested", { status: "pending", title: "Use claude_ai_Slack · slack_send_message?", data: { tool_name: "mcp__claude_ai_Slack__slack_send_message", tool_input: { channel: "#team", text: "On it: replying to the three threads this morning." } } }),
+);
+let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settings: { paused: false, quotaReservePercent: 25 } };
+
+/** The mock's mirror of `workflows::widens`. */
+function mockWorkflowWidens(previous: WorkflowDefinition, next: WorkflowDefinition): boolean {
+  if (previous.projectId !== next.projectId) return true;
+  if (previous.steps[0]?.harness !== next.steps[0]?.harness) return true;
+  if (previous.files === "none" && next.files === "worktree") return true;
+  const grantWidens = (next.grants ?? []).some(grant => {
+    const old = (previous.grants ?? []).find(candidate => candidate.server === grant.server);
+    return !old || (grant.read && !old.read) || (grant.write === "ask" && old.write === "never");
+  });
+  return grantWidens || (next.alwaysAllow ?? []).some(identity => !(previous.alwaysAllow ?? []).includes(identity));
+}
+
+function mockWorkflowSummary(workflow: Workflow): WorkflowSummary {
+  const step = workflow.definition.steps[0];
+  return {
+    id: workflow.id, name: workflow.definition.name, projectId: workflow.definition.projectId ?? null,
+    enabled: workflow.enabled, disabledReason: workflow.disabledReason, approved: workflow.approved,
+    trigger: workflow.definition.trigger, harness: step.harness, model: step.model,
+    files: workflow.definition.files, updatedAt: workflow.updatedAt,
+    nextRunAt: null,
+    lastRun: mockWorkflowRuns.find(run => run.workflowId === workflow.id) ?? null,
+  };
+}
+
+function mockRequireWorkflow(workflowId: string): Workflow {
+  const workflow = mockWorkflows.find(candidate => candidate.id === workflowId);
+  if (!workflow) throw new Error(`workflow ${workflowId} does not exist`);
+  return workflow;
+}
+
+export const mockWorkflowApi = {
+  list(): WorkflowList {
+    return { workflows: [...mockWorkflows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(mockWorkflowSummary) };
+  },
+  save(workflowId: string | null, definition: WorkflowDefinition): SaveWorkflowResult {
+    const stamp = new Date().toISOString();
+    if (!workflowId) {
+      const id = `wf-${Math.random().toString(36).slice(2, 10)}`;
+      const workflow: Workflow = { id, enabled: true, disabledReason: null, revisionId: `${id}-r1`, revision: 1, approved: false,
+        approvedAt: null, definition: structuredClone(definition), createdAt: stamp, updatedAt: stamp };
+      mockWorkflows = [...mockWorkflows, workflow];
+      return { workflow: structuredClone(workflow), needsApproval: true };
+    }
+    const current = mockRequireWorkflow(workflowId);
+    const approved = current.approved && !mockWorkflowWidens(current.definition, definition);
+    const revision = current.revision + 1;
+    const next: Workflow = { ...current, revision, revisionId: `${current.id}-r${revision}`, approved,
+      approvedAt: approved ? current.approvedAt : null, definition: structuredClone(definition), updatedAt: stamp };
+    mockWorkflows = mockWorkflows.map(workflow => workflow.id === workflowId ? next : workflow);
+    return { workflow: structuredClone(next), needsApproval: !approved };
+  },
+  approve(workflowId: string, revisionId: string): WorkflowSnapshot {
+    const current = mockRequireWorkflow(workflowId);
+    if (current.revisionId !== revisionId) throw new Error(`workflow ${workflowId} changed since revision ${revisionId}; review revision ${current.revision} instead`);
+    const next = { ...current, approved: true, approvedAt: current.approvedAt ?? new Date().toISOString() };
+    mockWorkflows = mockWorkflows.map(workflow => workflow.id === workflowId ? next : workflow);
+    return { workflow: structuredClone(next) };
+  },
+  setEnabled(workflowId: string, enabled: boolean): WorkflowSnapshot {
+    const next = { ...mockRequireWorkflow(workflowId), enabled, disabledReason: null, updatedAt: new Date().toISOString() };
+    mockWorkflows = mockWorkflows.map(workflow => workflow.id === workflowId ? next : workflow);
+    return { workflow: structuredClone(next) };
+  },
+  remove(workflowId: string): void {
+    mockRequireWorkflow(workflowId);
+    mockWorkflows = mockWorkflows.filter(workflow => workflow.id !== workflowId);
+    mockWorkflowRuns = mockWorkflowRuns.filter(run => run.workflowId !== workflowId);
+  },
+  // Mock mode has no runner, so a run settles the way the desktop app's does
+  // without one: failed, with the reason.
+  run(workflowId: string, requestId: string, dryRun: boolean): RunWorkflowResult {
+    const workflow = mockRequireWorkflow(workflowId);
+    if (!workflow.enabled) throw new Error(`${workflow.definition.name} cannot run: it is turned off`);
+    if (!workflow.approved && !dryRun) throw new Error(`${workflow.definition.name} waits for approval`);
+    if (mockWorkflowSettings.settings.paused) throw new Error("Workflows are paused");
+    const existing = mockWorkflowRuns.find(run => run.id === `run-${workflowId}-${requestId}`);
+    if (existing) return { run: structuredClone(existing), created: false };
+    const stamp = new Date().toISOString();
+    const run: WorkflowRun = {
+      id: `run-${workflowId}-${requestId}`, workflowId, revisionId: workflow.revisionId, triggerKind: "manual", missedSlots: 0, dryRun,
+      status: "failed", failureCode: "desktop_required", summary: "Running workflows requires the desktop app.", sessionId: null,
+      quotaUnknown: false, costMicrousd: null, tokens: null, unread: true, scheduledFor: null, startedAt: null, finishedAt: stamp, createdAt: stamp,
+    };
+    mockWorkflowRuns = [run, ...mockWorkflowRuns];
+    return { run: structuredClone(run), created: true };
+  },
+  runs(workflowId: string | null, unreadOnly: boolean, limit: number): WorkflowRunList {
+    return { runs: mockWorkflowRuns.filter(run => (!workflowId || run.workflowId === workflowId) && (!unreadOnly || run.unread)).slice(0, limit).map(run => structuredClone(run)) };
+  },
+};
+
 export const bridgeApi = {
   /** The app preferences record (theme, skin, transcript display). The core
    *  keeps it so a chat or another window can change it; see `appPreferences.ts`. */
@@ -1846,6 +2002,105 @@ export const bridgeApi = {
     return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
   },
   automationCatalog: (): Promise<AutomationCatalog> => hasBackend() ? call("automations/automation_catalog") as Promise<AutomationCatalog> : Promise.resolve(structuredClone(mockAutomations)),
+  // Workflows: repeatable jobs on the user's own harness. Validation, approval
+  // and widening are Rust's; the mock mirrors only what the screens rely on.
+  listWorkflows: async (): Promise<WorkflowList> => {
+    if (hasBackend()) return call("workflows/list_workflows");
+    return mockWorkflowApi.list();
+  },
+  getWorkflow: async (workflowId: string): Promise<WorkflowSnapshot> => {
+    if (hasBackend()) return call("workflows/get_workflow", { workflowId });
+    return { workflow: structuredClone(mockRequireWorkflow(workflowId)) };
+  },
+  saveWorkflow: async (workflowId: string | null, definition: WorkflowDefinition): Promise<SaveWorkflowResult> => {
+    if (hasBackend()) return call("workflows/save_workflow", { workflowId, definition });
+    return mockWorkflowApi.save(workflowId, definition);
+  },
+  approveWorkflow: async (workflowId: string, revisionId: string): Promise<WorkflowSnapshot> => {
+    if (hasBackend()) return call("workflows/approve_workflow", { workflowId, revisionId });
+    return mockWorkflowApi.approve(workflowId, revisionId);
+  },
+  deleteWorkflow: async (workflowId: string): Promise<void> => {
+    if (hasBackend()) { await call("workflows/delete_workflow", { workflowId }); return; }
+    mockWorkflowApi.remove(workflowId);
+  },
+  setWorkflowEnabled: async (workflowId: string, enabled: boolean): Promise<WorkflowSnapshot> => {
+    if (hasBackend()) return call("workflows/set_workflow_enabled", { workflowId, enabled });
+    return mockWorkflowApi.setEnabled(workflowId, enabled);
+  },
+  workflowOptions: async (): Promise<WorkflowOptions> => {
+    if (hasBackend()) return call("workflows/workflow_options");
+    return structuredClone(mockWorkflowOptions);
+  },
+  // Run now. `requestId` makes a double click one run.
+  runWorkflow: async (workflowId: string, requestId: string, dryRun = false): Promise<RunWorkflowResult> => {
+    if (hasBackend()) return call("workflows/run_workflow", { workflowId, requestId, dryRun });
+    return mockWorkflowApi.run(workflowId, requestId, dryRun);
+  },
+  cancelWorkflowRun: async (runId: string): Promise<WorkflowRunSnapshot> => {
+    if (hasBackend()) return call("workflows/cancel_workflow_run", { runId });
+    const run = mockWorkflowRuns.find(candidate => candidate.id === runId);
+    if (!run) throw new Error(`workflow run ${runId} does not exist`);
+    throw new Error(`workflow run ${runId} already finished`);
+  },
+  listWorkflowRuns: async (query: { workflowId?: string | null; unreadOnly?: boolean; limit: number }): Promise<WorkflowRunList> => {
+    if (hasBackend()) return call("workflows/list_workflow_runs", { workflowId: query.workflowId ?? null, unreadOnly: query.unreadOnly ?? false, limit: query.limit });
+    return mockWorkflowApi.runs(query.workflowId ?? null, query.unreadOnly ?? false, query.limit);
+  },
+  readWorkflowSettings: async (): Promise<WorkflowSettingsSnapshot> => {
+    if (hasBackend()) return call("workflows/read_workflow_settings");
+    return structuredClone(mockWorkflowSettings);
+  },
+  writeWorkflowSettings: async (settings: WorkflowSettings): Promise<WorkflowSettingsSnapshot> => {
+    if (hasBackend()) return call("workflows/write_workflow_settings", { settings });
+    if (settings.quotaReservePercent < 0 || settings.quotaReservePercent > 90) throw new Error("The quota reserve is between 0 and 90 percent");
+    mockWorkflowSettings = { configured: true, settings: { ...settings } };
+    return structuredClone(mockWorkflowSettings);
+  },
+  // Draft a workflow from a sentence: a tool-less model turn, then Rust's own
+  // rules decide what survives. Nothing is saved.
+  draftWorkflowFromText: async (text: string, projectId: string | null = null): Promise<WorkflowDraftResult> => {
+    if (hasBackend()) return call("workflows/draft_workflow_from_text", { text, projectId });
+    const definition = structuredClone(mockWorkflowDefinition);
+    definition.name = text.split(/\s+/).slice(0, 6).join(" ");
+    definition.steps[0].instructions = text;
+    definition.trigger = { kind: "manual" };
+    definition.grants = [];
+    definition.expectedResult = "";
+    return { draft: { definition, notes: ["Drafting needs the desktop app, so this is your sentence as written. Fill in the rest below."] } };
+  },
+  // Draft from a chat: its first request, its agent, and the servers it used.
+  draftWorkflowFromSession: async (sessionId: string): Promise<WorkflowDraftResult> => {
+    if (hasBackend()) return call("workflows/draft_workflow_from_session", { sessionId });
+    const session = mockState.sessions.find(candidate => candidate.id === sessionId);
+    if (!session) throw new Error(`chat ${sessionId} does not exist`);
+    const definition = structuredClone(mockWorkflowDefinition);
+    definition.name = session.title?.trim() || session.label;
+    definition.trigger = { kind: "manual" };
+    definition.grants = [];
+    return { draft: { definition, notes: [`Made from the chat "${definition.name}". Check the instructions read as a standing job, then set when it runs.`] } };
+  },
+  // "Always allow for this workflow" on a run's pending card: answers the card
+  // and records the tool in a new, already-approved revision.
+  alwaysAllowWorkflowTool: async (workflowId: string, sessionId: string, eventId: number, toolIdentity: string): Promise<AlwaysAllowToolResult> => {
+    if (hasBackend()) return call("workflows/always_allow_tool", { workflowId, sessionId, eventId, toolIdentity });
+    throw new Error("Approving a workflow run's tool requires the desktop app.");
+  },
+  markWorkflowRunsRead: async (runIds: string[]): Promise<void> => {
+    if (hasBackend()) { await call("workflows/mark_workflow_runs_read", { runIds }); return; }
+    const changed = mockWorkflowRuns.filter(run => run.unread && runIds.includes(run.id)).map(run => ({ ...run, unread: false }));
+    mockWorkflowRuns = mockWorkflowRuns.map(run => changed.find(candidate => candidate.id === run.id) ?? run);
+    changed.forEach(run => mockWorkflowRunListeners.forEach(listener => listener({ run: structuredClone(run) })));
+  },
+  onWorkflowRunChanged: (handler: (payload: { run: WorkflowRun }) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<{ run: WorkflowRun }>("workflows/run_changed", handler);
+    mockWorkflowRunListeners.add(handler);
+    return Promise.resolve(() => { mockWorkflowRunListeners.delete(handler); });
+  },
+  onWorkflowsChanged: (handler: (payload: { workflowId: string }) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<{ workflowId: string }>("workflows/changed", handler);
+    return Promise.resolve(() => {});
+  },
   saveAutomation: async (draft: SaveAutomationParams): Promise<AutomationSaveResult> => {
     if (hasBackend()) return call("automations/save_automation", draft) as Promise<AutomationSaveResult>;
     if (draft.provider !== "claude") throw new Error(`${draft.provider} does not expose native automation saving`);

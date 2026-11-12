@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import { buildOptions, catalogOptions } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
 import { probeUsage, readContextUsage } from "./usage.mjs";
+import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
 
 // Which copy of the Agent SDK to load.
@@ -110,9 +111,11 @@ function userMessage(content) {
   };
 }
 
+// A workflow run's write calls wait on Bridge's answer; see ask.mjs.
+const asks = createAskRelay(writeFrame);
 const options = config.catalog === true
   ? catalogOptions()
-  : buildOptions({ ...config, projectTrusted: isTrustedFolder(config.cwd) });
+  : buildOptions({ ...config, projectTrusted: isTrustedFolder(config.cwd) }, asks.ask);
 
 const permissions = childPermissions(writeFrame, sessionId);
 if (config.catalog !== true) withChildPermissions(options, permissions);
@@ -147,14 +150,20 @@ rl.on("line", (line) => {
     const blocks = userContentBlocks(frame);
     if (blocks) input.push(userMessage(blocks));
   } else if (frame.type === "control_response") {
-    permissions.respond(frame);
+    // One channel, two askers with their own request ids: a workflow run's
+    // write (`wf-N`, ask.mjs) and a subagent's prompt (`child-permission-N`).
+    if (!asks.resolve(frame)) permissions.respond(frame);
   } else if (frame.type === "stop_task") {
     void stopTaskFrame(run, frame).catch(error => writeFrame({ type: "system", subtype: "subagent_stop_failed", task_id: frame.task_id, error: String(error) }));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
+    asks.denyPending();
     void run.interrupt().catch(() => {});
   }
 });
-rl.on("close", () => input.close());
+rl.on("close", () => {
+  asks.close();
+  input.close();
+});
 
 // After each turn, report the live window as Claude Code measures it. One read
 // in flight at most, and never awaited by the pump: a slow or missing control

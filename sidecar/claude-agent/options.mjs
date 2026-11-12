@@ -69,12 +69,12 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
   const authority = isBriefing({ briefing })
-    ? briefingOptions(briefing, mcpServers)
+    ? briefingOptions(briefing, mcpServers, ask)
     : {
         // User settings are required for user skills, commands, agents, and native
         // connector sign-in. Bridge's PreToolUse hook remains authoritative for

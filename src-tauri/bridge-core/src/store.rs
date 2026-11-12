@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 73;
+const LATEST_SCHEMA_VERSION: i64 = 74;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -767,6 +767,8 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Messages a chat drafted for a person or a place: the text, where
             // it is addressed, its style findings and its revision.
             73 => crate::outgoing::install_store(&transaction)?,
+            // Workflows: definitions, immutable revisions, runs and effects.
+            74 => crate::workflows::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -6786,7 +6788,8 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
-        assert_eq!(current_schema_version(&db).unwrap(), 73);
+        // Later migrations may follow; this one must have run.
+        assert!(current_schema_version(&db).unwrap() >= 73);
     }
 
     #[test]
