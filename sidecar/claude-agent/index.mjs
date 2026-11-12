@@ -150,14 +150,14 @@ rl.on("line", (line) => {
     const blocks = userContentBlocks(frame);
     if (blocks) input.push(userMessage(blocks));
   } else if (frame.type === "control_response") {
-    permissions.respond(frame);
+    // One channel, two askers with their own request ids: a workflow run's
+    // write (`wf-N`, ask.mjs) and a subagent's prompt (`child-permission-N`).
+    if (!asks.resolve(frame)) permissions.respond(frame);
   } else if (frame.type === "stop_task") {
     void stopTaskFrame(run, frame).catch(error => writeFrame({ type: "system", subtype: "subagent_stop_failed", task_id: frame.task_id, error: String(error) }));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
     asks.denyPending();
     void run.interrupt().catch(() => {});
-  } else if (frame.type === "control_response") {
-    asks.resolve(frame);
   }
 });
 rl.on("close", () => {

@@ -17,6 +17,8 @@ function textOf(message) {
   return (content ?? []).filter((block) => block?.type === "text").map((block) => block.text).join("\n");
 }
 
+const FILE_EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
 const resultBlock = (status, summary) => `\n\`\`\`workflow-result\n${JSON.stringify({ status, summary })}\n\`\`\``;
 
 export function query({ prompt, options = {} }) {
@@ -40,7 +42,10 @@ export function query({ prompt, options = {} }) {
   async function* tool(name, input, effect) {
     const id = `toolu_${randomUUID()}`;
     yield assistant([{ type: "tool_use", id, name, input }]);
-    const verdict = options.canUseTool
+    // As in the SDK, `canUseTool` is asked only when a call would prompt.
+    // Under `acceptEdits` a file edit does not, so it runs without asking.
+    const prompts = !(options.permissionMode === "acceptEdits" && FILE_EDIT_TOOLS.has(name));
+    const verdict = prompts && options.canUseTool
       ? await options.canUseTool(name, input, { toolUseID: id, signal: new AbortController().signal })
       : { behavior: "allow" };
     const allowed = verdict?.behavior === "allow";
