@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { mockCreateDatabase, mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, mockUpdateNote, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
+import { mockCreateDatabase, mockCreatePage, mockDeleteNote, mockListNotes, mockNotesAgentWrite, mockReadPage, mockUpdateNote, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
 import type { AdapterDescriptor, Session, Workspace } from "../types";
 import type { Editor } from "@tiptap/core";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
@@ -200,6 +200,111 @@ describe("open request", () => {
     await act(async () => { root.render(<NotesScreen {...props({ openRequest: { id: second.id, nonce: 3 } })} />); });
     await settle();
     expect(host.querySelector("main")?.textContent).toContain("Another page");
+  });
+});
+
+describe("loading and failure", () => {
+  const gate = () => { let open!: () => void; const opened = new Promise<void>(resolve => { open = resolve; }); return { opened, open }; };
+  const main = () => host.querySelector("main")!;
+  const list = () => host.querySelector("aside[aria-label='Notes list']")!;
+
+  it("draws the page's outline, titled from the list, while its read is out", async () => {
+    const id = mockIdOf("Local-first sync libraries");
+    const read = bridgeApi.readNotePage;
+    const slow = gate();
+    vi.spyOn(bridgeApi, "readNotePage").mockImplementation(async asked => { if (asked === id) await slow.opened; return read(asked); });
+    await render();
+    await openNote("Local-first sync libraries");
+    const outline = main().querySelector("[role='status'][aria-busy='true']");
+    expect(outline?.getAttribute("aria-label")).toBe("Opening Local-first sync libraries");
+    expect(main().querySelector("[aria-current='page']")?.textContent).toBe("Local-first sync libraries");
+    expect(main().textContent).not.toContain("Opening…");
+    expect(main().querySelector("article")).toBeNull();
+    await act(async () => { slow.open(); });
+    await settle();
+    expect(main().querySelector("[aria-busy='true']")).toBeNull();
+    expect(main().querySelector("article")?.getAttribute("aria-label")).toBe("Local-first sync libraries");
+  });
+
+  it("says a deleted page is gone instead of waiting on it, and leads back to Notes", async () => {
+    const page = mockCreatePage({ title: "Deleted since", content: "" });
+    mockDeleteNote(page.id);
+    const given = await render({ openRequest: { id: page.id, nonce: 1 } });
+    const alert = main().querySelector("[role='alert']");
+    expect(alert?.textContent).toContain("This page is gone");
+    expect(button("Try again", alert!)).toBeUndefined();
+    expect(main().querySelector("[aria-busy='true']")).toBeNull();
+    expect(given.onError).not.toHaveBeenCalled();
+    await click(button("Back to Notes", alert!));
+    expect(main().textContent).toContain("Your words, kept as typed");
+  });
+
+  it("says why a read failed and opens the page on Try again", async () => {
+    const id = mockIdOf("Local-first sync libraries");
+    const read = bridgeApi.readNotePage;
+    let failures = 1;
+    vi.spyOn(bridgeApi, "readNotePage").mockImplementation(async asked => {
+      if (asked === id && failures-- > 0) throw new Error("database is locked");
+      return read(asked);
+    });
+    await render();
+    await openNote("Local-first sync libraries");
+    const alert = main().querySelector("[role='alert']")!;
+    expect(alert.textContent).toContain("This page didn't open");
+    expect(alert.textContent).toContain("database is locked");
+    await click(button("Try again", alert));
+    expect(main().querySelector("[role='alert']")).toBeNull();
+    expect(main().querySelector("article")?.getAttribute("aria-label")).toBe("Local-first sync libraries");
+  });
+
+  it("draws the list's rows and tabs in outline until the first read lands", async () => {
+    const query = bridgeApi.queryDatabase;
+    const slow = gate();
+    vi.spyOn(bridgeApi, "queryDatabase").mockImplementation(async params => { await slow.opened; return query(params); });
+    await render();
+    expect(list().querySelector("[role='status'][aria-label='Loading notes']")).not.toBeNull();
+    expect(list().textContent).not.toContain("Nothing here yet");
+    expect(rowTitles()).toEqual([]);
+    await act(async () => { slow.open(); });
+    await settle();
+    expect(list().querySelector("[aria-label='Loading notes']")).toBeNull();
+    expect(rowTitles().some(title => title.startsWith("Local-first sync libraries"))).toBe(true);
+  });
+
+  it("says the list did not load, with Try again, instead of an empty list", async () => {
+    const listNotes = bridgeApi.listNotes;
+    let failures = 1;
+    vi.spyOn(bridgeApi, "listNotes").mockImplementation(async params => {
+      if (failures-- > 0) throw new Error("bridged is not answering");
+      return listNotes(params);
+    });
+    await render();
+    const alert = list().querySelector("[role='alert']")!;
+    expect(alert.textContent).toContain("Notes didn't load");
+    expect(alert.textContent).toContain("bridged is not answering");
+    expect(list().querySelector("[aria-label='Loading notes']")).toBeNull();
+    await click(button("Try again", alert));
+    expect(list().querySelector("[role='alert']")).toBeNull();
+    expect(rowTitles().some(title => title.startsWith("Local-first sync libraries"))).toBe(true);
+  });
+
+  it("lists what All would when the core sends no tabs' database", async () => {
+    const listNotes = bridgeApi.listNotes;
+    vi.spyOn(bridgeApi, "listNotes").mockImplementation(async params => ({ ...(await listNotes(params)), systemDatabaseId: null }));
+    await render();
+    expect(list().querySelector("[aria-label='Loading notes']")).toBeNull();
+    expect(rowTitles().some(title => title.startsWith("Local-first sync libraries"))).toBe(true);
+  });
+
+  it("acts on an open request once, so a later visit does not replay it", async () => {
+    const page = mockCreatePage({ title: "Linked once", content: "" });
+    const request = { id: page.id, nonce: 1 };
+    const onOpenRequestHandled = vi.fn();
+    await render({ openRequest: request, onOpenRequestHandled });
+    expect(onOpenRequestHandled).toHaveBeenCalledTimes(1);
+    await act(async () => { root.render(<NotesScreen {...props({ openRequest: request, onOpenRequestHandled })} />); });
+    await settle();
+    expect(onOpenRequestHandled).toHaveBeenCalledTimes(1);
   });
 });
 

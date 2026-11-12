@@ -7,7 +7,7 @@
 // core merge it. The list collapses (`toggle-notes-list`) so the page can take the width.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, MoreHorizontal, PanelLeft, Plus, Search, Settings2, Table2 } from "lucide-react";
+import { ChevronRight, FileQuestion, MoreHorizontal, PanelLeft, Plus, RotateCw, Search, Settings2, Table2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { taskBrief } from "../notesBrief";
 import { noteDisplayTitle, pageTitled, plainPreview } from "../notesDraft";
@@ -26,6 +26,7 @@ import { useViewOverride } from "./notes/database/useViewOverride";
 import { ViewToolbar } from "./notes/database/ViewToolbar";
 import { chatName } from "./sidebarChats";
 import { NotePageView } from "./notes/NotePageView";
+import { NoteListSkeleton, NotePageSkeleton, NoteTabsSkeleton, readListOpen, writeListOpen } from "./notes/NotesSkeleton";
 import type { StartChoice } from "./notes/NotePickers";
 
 export const JOB_POLL_MS = 1500;
@@ -48,8 +49,6 @@ export interface NotesCopilotHost {
 
 const CHAT_OPEN_KEY = "bridge.notes.chatOpen";
 const readChatOpen = () => { try { return localStorage.getItem(CHAT_OPEN_KEY) === "1"; } catch { return false; } };
-const LIST_OPEN_KEY = "bridge.notes.listOpen";
-const readListOpen = () => { try { return localStorage.getItem(LIST_OPEN_KEY) !== "0"; } catch { return true; } };
 const EXPANDED_KEY = "bridge.notes.expandedPages";
 const readExpanded = (): Set<string> => { try { return new Set<string>(JSON.parse(localStorage.getItem(EXPANDED_KEY) ?? "[]") as string[]); } catch { return new Set(); } };
 
@@ -65,6 +64,8 @@ export interface NotesScreenProps {
   listToggleRequest?: number;
   /** A new nonce opens that page (a `bridge://p/<id>` link clicked elsewhere). */
   openRequest?: { id: string; nonce: number };
+  /** The open request was acted on: drop it, so a later visit does not replay it. */
+  onOpenRequestHandled?: () => void;
   /** Start a Bridge chat with `message` as its first turn; resolves to its id. */
   onStartChat: (request: NoteChatRequest) => Promise<string | undefined>;
   onOpenChat: (sessionId: string) => void;
@@ -75,10 +76,14 @@ export interface NotesScreenProps {
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** The core's answer for a page that is deleted or was never there. */
+const isGone = (detail: string) => /\bnot found\b/i.test(detail);
+/** The "All" tab's rows, for a list read that came without the tabs' database. */
+const allTab = (notes: Note[]) => notes.filter(note => note.state !== "archived" && !(note.kind === "task" && note.parentId));
 /** The harness that wrote a page, when an agent did. */
 const agentHarness = (note: Note) => /^agent:([^:]+):/.exec(note.lastActor)?.[1] ?? /^agent:([^:]+):/.exec(note.createdBy)?.[1];
 
-export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, openRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
+export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, openRequest, onOpenRequestHandled, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
   const [list, setList] = useState<NotesList | null>(null);
   // Every note, search or not: links, moves and breadcrumbs resolve against
   // all pages, never just the ones a search shows.
@@ -98,6 +103,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState<NotePage | null>(null);
+  // Why the selected page did not open. Shown in its place, so a failed read
+  // never leaves the pane waiting on nothing.
+  const [openFailure, setOpenFailure] = useState<{ id: string; detail: string } | null>(null);
+  // Why the first list read failed, while there are no rows to keep showing.
+  const [listFailure, setListFailure] = useState<string | null>(null);
   // Captures on their way to the core. A failed one stays here, with its
   // words, until it is retried or discarded: nothing typed is ever dropped.
   const [pending, setPending] = useState<{ key: string; body: string; failed?: string }[]>([]);
@@ -119,7 +129,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   }), []);
   const toggleExpand = useCallback((id: string) => changeExpanded(next => { if (next.has(id)) next.delete(id); else next.add(id); }), [changeExpanded]);
   const toggleList = useCallback(() => setListOpen(current => {
-    try { localStorage.setItem(LIST_OPEN_KEY, current ? "0" : "1"); } catch { /* storage off */ }
+    writeListOpen(!current);
     return !current;
   }), []);
   useEffect(() => { if (listToggleRequest) toggleList(); }, [listToggleRequest, toggleList]);
@@ -134,6 +144,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const select = useCallback((id: string | null) => {
     selected.current = id;
     setSelectedId(id);
+    setOpenFailure(null);
     if (!id) setPage(null);
   }, []);
   // List reads overlap too (a search typed while a refresh is out); only the
@@ -174,8 +185,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         cursor = result.nextCursor ?? null;
       } while (cursor);
       setTabNotes(notes);
+      setListFailure(null);
     } catch (error) {
-      if (ticket === tabRequest.current) fail(error);
+      if (ticket !== tabRequest.current) return;
+      fail(error);
+      setListFailure(message(error));
     }
   }, [fail]);
   const refreshList = useCallback(async (searchOnly = false) => {
@@ -190,6 +204,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       ]);
       if (ticket !== listRequest.current) return;
       setList(next);
+      if (!next.systemDatabaseId) setListFailure(null);
       // The page list commits while this read is still the newest, before
       // any later await lets a newer read land first.
       if (whole || !query) {
@@ -208,7 +223,9 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       }
       await refreshTab();
     } catch (error) {
-      if (ticket === listRequest.current) fail(error);
+      if (ticket !== listRequest.current) return;
+      fail(error);
+      setListFailure(message(error));
     }
   }, [fail, refreshTab]);
   // Reads of the same page can overlap (several live updates in a row). Only
@@ -269,10 +286,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     const ticket = ++pageRequest.current;
     try {
       showPage(await bridgeApi.readNotePage(id), ticket);
-    } catch (error) { fail(error); }
-  }, [fail, select, showPage]);
+    } catch (error) {
+      // The pane says why, with a way on; a newer read or another page wins.
+      if (ticket === pageRequest.current && selected.current === id) setOpenFailure({ id, detail: message(error) });
+    }
+  }, [select, showPage]);
   useEffect(() => {
-    if (openRequest) void open(openRequest.id);
+    if (!openRequest) return;
+    void open(openRequest.id);
+    onOpenRequestHandled?.();
   }, [openRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async (key: string, body: string) => {
@@ -381,7 +403,14 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   // A task lives under its page; any other page under a page (one an agent
   // wrote from the open page, say) is nested under it in the list, one an
   // expand/collapse chevron away.
-  const visible = tabNotes ?? [];
+  // Without the tabs' database (the core could not read it) the list still
+  // shows what the "All" tab would, rather than waiting on tabs that never come.
+  const untabbed = !!list && !list.systemDatabaseId;
+  const rows = tabNotes ?? (untabbed ? allTab(list.notes) : null);
+  const visible = rows ?? [];
+  const listWaiting = rows === null && !listFailure;
+  // The page being opened, as the list knows it: its title shows before its read lands.
+  const opening = selectedId && openFailure?.id !== selectedId ? byId.get(selectedId) : undefined;
   // A seeded tab keeps the list's old behaviors (the tree, pending captures,
   // its empty sentence); an edited or new one is a plain flat list.
   const kind = effective ? seededKind({ filter: effective.filter }) : "all";
@@ -466,7 +495,8 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
           <Search size={13} className="shrink-0 text-faint" aria-hidden="true" />
           <input aria-label="Search notes" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search notes" className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-faint" />
         </label>
-        <div role="tablist" aria-label="Filter notes" className="mt-2 flex flex-wrap gap-0.5">
+        {!system && listWaiting && <NoteTabsSkeleton className="mt-2" />}
+        <div role="tablist" aria-label="Filter notes" className={clsx("flex flex-wrap gap-0.5", tabViews.length > 0 && "mt-2")}>
           {tabViews.map(view => {
             const active = view.id === activeView?.id;
             return <span key={view.id} className={clsx("inline-flex items-center rounded-md", active && "bg-accent")}>
@@ -511,7 +541,13 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         /> : visible.map(note => <li key={note.id}>
           <NoteRow note={note} active={note.id === selectedId} parent={note.parentId ? byId.get(note.parentId) : undefined} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => void open(note.id)} />
         </li>)}
-        {tabNotes && !visible.length && !pending.length && <li className="px-3 py-8 text-center text-[12.5px] leading-relaxed text-muted-foreground">
+        {listWaiting && <li><NoteListSkeleton rows={pending.length ? 3 : 6} /></li>}
+        {rows === null && listFailure && <li role="alert" className="px-3 py-8 text-center">
+          <p className="m-0 text-[13px] font-medium text-foreground">Notes didn't load</p>
+          <p className="m-0 mx-auto mt-1 max-w-56 break-words text-[12px] leading-relaxed text-muted-foreground">{listFailure}</p>
+          <button type="button" onClick={() => { setListFailure(null); void refreshList(); }} className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[12.5px] text-foreground ring-1 ring-border transition-colors hover:bg-accent"><RotateCw size={12} aria-hidden="true" />Try again</button>
+        </li>}
+        {rows && !visible.length && !pending.length && <li className="px-3 py-8 text-center text-[12.5px] leading-relaxed text-muted-foreground">
           {query ? "No notes match." : (kind && EMPTY[kind]) ?? "Nothing matches this view."}
         </li>}
       </ul>
@@ -548,7 +584,20 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         onOpenChat={onOpenChat}
         onDeleted={() => { select(null); void refreshList(); }}
         onError={onError}
-      /> : <EmptyPage loading={!!selectedId} chatOpen={chatOpen} onToggleChat={copilot ? toggleChat : undefined} onShowList={listOpen ? undefined : toggleList} onNewPage={() => void createPage()} onCapture={() => setFocusCapture(value => value + 1)} />}
+      /> : <div className="flex h-full flex-col">
+        <PaneHeader
+          crumb={selectedId ? (opening ? noteDisplayTitle(opening) : "") : undefined}
+          chatOpen={chatOpen}
+          onToggleChat={copilot ? toggleChat : undefined}
+          onShowList={listOpen ? undefined : toggleList}
+          onBack={() => select(null)}
+        />
+        {!selectedId
+          ? <EmptyPage onNewPage={() => void createPage()} onCapture={() => setFocusCapture(value => value + 1)} />
+          : openFailure?.id === selectedId
+            ? <PageUnavailable detail={openFailure.detail} onRetry={() => void open(selectedId)} onBack={() => select(null)} />
+            : <NotePageSkeleton title={opening?.title?.trim() || null} />}
+      </div>}
     </main>
 
     {copilot && chatOpen && <aside aria-label="Notes agent panel" className="hidden min-h-0 w-[24rem] shrink-0 flex-col border-l border-border lg:flex">{copilot.render(page, toggleChat)}</aside>}
@@ -691,24 +740,55 @@ function NotesFooter({ root, onNewPage, onNewDatabase, onResetTabs, onError }: {
   </div>;
 }
 
-function EmptyPage({ loading, chatOpen, onToggleChat, onShowList, onNewPage, onCapture }: { loading: boolean; chatOpen: boolean; onToggleChat?: () => void; onShowList?: () => void; onNewPage: () => void; onCapture: () => void }) {
-  return <div className="flex h-full flex-col">
-    <header className="flex h-12 shrink-0 items-center justify-end px-3">
-      {onShowList && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onShowList} className="mr-auto hidden size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
-      {onToggleChat && <Pill aria-pressed={chatOpen} active={chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
-    </header>
-    {loading
-      ? <p className="m-0 px-8 text-[13px] text-muted-foreground">Opening…</p>
-      : <div className="grid flex-1 place-items-center px-8 pb-24">
-        <div className="max-w-sm text-center">
-          <h2 className="m-0 text-[1.375rem] font-semibold tracking-[-0.015em] text-foreground">Your words, kept as typed</h2>
-          <p className="m-0 mt-2 text-[13.5px] leading-relaxed text-muted-foreground">Capture a thought, or start a page. Structure and tasks run only when you ask, and any chat can write a page here.</p>
-          <div className="mt-6 flex items-center justify-center gap-1">
-            <PrimaryButton onClick={onNewPage}>New page</PrimaryButton>
-            <Pill onClick={onCapture}>Capture <span className="text-faint">{chordLabel("capture-note")}</span></Pill>
-          </div>
-        </div>
-      </div>}
+/**
+ * The pane's header while no page is drawn, laid out like a page's own: the
+ * list toggle and breadcrumb on the left, Ask AI on the right, so nothing
+ * moves when the page arrives. `crumb` is the opening page's title ("" while
+ * unknown); without it there is no breadcrumb.
+ */
+function PaneHeader({ crumb, chatOpen, onToggleChat, onShowList, onBack }: { crumb?: string; chatOpen: boolean; onToggleChat?: () => void; onShowList?: () => void; onBack: () => void }) {
+  return <header className="flex h-12 shrink-0 items-center gap-1 px-3">
+    <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
+      {onShowList && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onShowList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
+      {crumb !== undefined && <>
+        <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
+        {crumb && <>
+          <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
+          <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{crumb}</span>
+        </>}
+      </>}
+    </nav>
+    {onToggleChat && <Pill aria-pressed={chatOpen} active={chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
+  </header>;
+}
+
+function EmptyPage({ onNewPage, onCapture }: { onNewPage: () => void; onCapture: () => void }) {
+  return <div className="grid flex-1 place-items-center px-8 pb-24">
+    <div className="max-w-sm text-center">
+      <h2 className="m-0 text-[1.375rem] font-semibold tracking-[-0.015em] text-foreground">Your words, kept as typed</h2>
+      <p className="m-0 mt-2 text-[13.5px] leading-relaxed text-muted-foreground">Capture a thought, or start a page. Structure and tasks run only when you ask, and any chat can write a page here.</p>
+      <div className="mt-6 flex items-center justify-center gap-1">
+        <PrimaryButton onClick={onNewPage}>New page</PrimaryButton>
+        <Pill onClick={onCapture}>Capture <span className="text-faint">{chordLabel("capture-note")}</span></Pill>
+      </div>
+    </div>
+  </div>;
+}
+
+/** A page that did not open: gone for good, or a read that failed and can be tried again. */
+function PageUnavailable({ detail, onRetry, onBack }: { detail: string; onRetry: () => void; onBack: () => void }) {
+  const gone = isGone(detail);
+  return <div role="alert" className="grid flex-1 place-items-center px-8 pb-24">
+    <div className="max-w-sm text-center">
+      <span aria-hidden="true" className="mx-auto grid size-10 place-items-center rounded-xl bg-muted text-muted-foreground"><FileQuestion size={18} strokeWidth={1.75} /></span>
+      <h2 className="m-0 mt-4 text-[1.125rem] font-semibold tracking-[-0.01em] text-foreground">{gone ? "This page is gone" : "This page didn't open"}</h2>
+      <p className="m-0 mt-1.5 break-words text-[13px] leading-relaxed text-muted-foreground">{gone ? "It was deleted, in Bridge or by an agent." : detail}</p>
+      <div className="mt-5 flex items-center justify-center gap-1">
+        {gone
+          ? <PrimaryButton onClick={onBack}>Back to Notes</PrimaryButton>
+          : <><PrimaryButton onClick={onRetry}>Try again</PrimaryButton><Pill onClick={onBack}>Back to Notes</Pill></>}
+      </div>
+    </div>
   </div>;
 }
 
