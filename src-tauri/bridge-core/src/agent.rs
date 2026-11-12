@@ -781,6 +781,19 @@ pub fn normalize_codex_message_with_state(
     message: &Value,
     state: &mut CodexStreamState,
 ) -> Vec<NormalizedEvent> {
+    let mut events = normalize_codex_frame(message, state);
+    // A `subAgentActivity` item names the thread it touched. When a child
+    // messages its parent, that thread is the root itself, and tagging it would
+    // make the chat a child of itself that never finishes.
+    if let Some(root) = state.root_thread_id.as_deref() {
+        events.retain(|event| {
+            event.data.pointer("/subagent/sessionId").and_then(Value::as_str) != Some(root)
+        });
+    }
+    events
+}
+
+fn normalize_codex_frame(message: &Value, state: &mut CodexStreamState) -> Vec<NormalizedEvent> {
     if let Some(root) = message.get("_bridgeRootThreadId").and_then(Value::as_str) {
         state.root_thread_id = Some(root.to_owned());
     }
@@ -4553,6 +4566,17 @@ mod harness_subagent_tests {
             assert_eq!(events[0].kind,expected);
             assert_eq!(events[0].data["subagent"]["sessionId"],"child");
         }
+    }
+    #[test]
+    fn codex_activity_toward_the_root_thread_is_not_a_subagent() {
+        let mut state = CodexStreamState { root_thread_id: Some("root".into()), ..Default::default() };
+        let item = |thread: &str| json!({"method":"item/started","params":{"threadId":thread,"item":{"type":"subAgentActivity","kind":"interacted","agentThreadId":"root","agentPath":"/root"}}});
+        // A child messaging its parent, reported on the child's thread and on the root's.
+        assert!(normalize_codex_message_with_state(&item("child"), &mut state).is_empty());
+        assert!(normalize_codex_message_with_state(&item("root"), &mut state).is_empty());
+        // Activity about a real child still routes.
+        let child = normalize_codex_message_with_state(&json!({"method":"item/started","params":{"threadId":"root","item":{"type":"subAgentActivity","kind":"started","agentThreadId":"child","agentPath":"/root/research"}}}), &mut state);
+        assert_eq!(child[0].data["subagent"]["sessionId"], "child");
     }
     #[test]
     fn ordinary_tool_output_is_not_mistaken_for_an_agent_launch() {
