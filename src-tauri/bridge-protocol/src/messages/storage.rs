@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 pub struct DiskVolume {
     pub mount_point: String,
     pub total_bytes: u64,
-    /// What a new file could use right now.
+    /// What macOS says is available: free space plus what it can purge on
+    /// demand, the figure Finder and System Settings show.
     pub free_bytes: u64,
     pub used_bytes: u64,
 }
@@ -47,7 +48,8 @@ pub struct ScanDirectoryParams {
     /// Absolute path. Omitted means the home folder.
     #[serde(default)]
     pub path: Option<String>,
-    /// Drop cached sizes under this path and measure again.
+    /// Measure everything under this path again. The last sizes keep
+    /// showing, flagged `measuring`, until the new ones land.
     #[serde(default)]
     pub refresh: bool,
 }
@@ -86,6 +88,10 @@ pub struct DiskSuggestion {
     /// `safe` when the owning tool rebuilds it on demand; `review` when it
     /// may hold something a person wants to keep.
     pub safety: String,
+    /// Set when Bridge will not delete the folder as a whole (Downloads,
+    /// `~/Library/Caches`): the person chooses what inside it goes.
+    #[serde(default)]
+    pub protected_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -10,6 +10,10 @@
 //! Deleting moves to the Trash by default. Bridge refuses a short list of
 //! places where a deletion breaks the machine or Bridge itself; everything
 //! else in the home folder and `/Applications` is the person's to decide.
+//! Folders their owner made read-only (Go's module cache is full of them) are
+//! made writable first, because macOS will neither move nor empty them
+//! otherwise, and what macOS's privacy protection keeps from Bridge is handed
+//! to Finder, which may move it to the Trash.
 
 use bridge_protocol::messages as wire;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -35,6 +39,15 @@ struct Measured {
     items: u64,
     partial: bool,
     at: Instant,
+    /// Asked to be measured again. The number still shows until the new one
+    /// lands, so a refresh never blanks the page.
+    stale: bool,
+}
+
+impl Measured {
+    fn fresh(&self) -> bool {
+        !self.stale && self.at.elapsed() < FRESH_FOR
+    }
 }
 
 #[derive(Default)]
@@ -67,8 +80,7 @@ impl Scanner {
     fn lookup(self: &Arc<Self>, path: &Path, urgent: bool) -> (Option<Measured>, bool) {
         let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
         let known = state.sizes.get(path).copied();
-        let fresh = known.is_some_and(|measured| measured.at.elapsed() < FRESH_FOR);
-        if fresh {
+        if known.is_some_and(|measured| measured.fresh()) {
             return (known, false);
         }
         if state.pending.insert(path.to_path_buf()) {
@@ -105,10 +117,14 @@ impl Scanner {
             let path = {
                 let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
                 loop {
-                    if let Some(path) = state.queue.pop_front() {
-                        break path;
+                    match state.queue.pop_front() {
+                        // A walk of a folder above it measured it meanwhile.
+                        Some(path) if state.sizes.get(&path).is_some_and(|measured| measured.fresh()) => {
+                            state.pending.remove(&path);
+                        }
+                        Some(path) => break path,
+                        None => state = self.wake.wait(state).unwrap_or_else(|poison| poison.into_inner()),
                     }
-                    state = self.wake.wait(state).unwrap_or_else(|poison| poison.into_inner());
                 }
             };
             let mut recorded = Vec::new();
@@ -119,7 +135,7 @@ impl Scanner {
             for (child, measured) in recorded {
                 state.sizes.insert(child, measured);
             }
-            state.sizes.insert(path.clone(), Measured { bytes, items, partial, at });
+            state.sizes.insert(path.clone(), Measured { bytes, items, partial, at, stale: false });
             state.pending.remove(&path);
         }
     }
@@ -147,7 +163,7 @@ impl Scanner {
         // A fresh measurement of a subfolder stands in for walking it again.
         if depth > 0 {
             let state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
-            if let Some(measured) = state.sizes.get(path).filter(|measured| measured.at.elapsed() < FRESH_FOR) {
+            if let Some(measured) = state.sizes.get(path).filter(|measured| measured.fresh()) {
                 return (measured.bytes, measured.items, measured.partial);
             }
         }
@@ -164,15 +180,20 @@ impl Scanner {
             partial |= child_partial;
         }
         if depth > 0 && depth <= RECORD_DEPTH {
-            recorded.push((path.to_path_buf(), Measured { bytes, items, partial, at: Instant::now() }));
+            recorded.push((path.to_path_buf(), Measured { bytes, items, partial, at: Instant::now(), stale: false }));
         }
         (bytes, items, partial)
     }
 
-    /// Forget every measurement at or under `path` so the next look walks it.
-    fn forget(&self, path: &Path) {
+    /// Measure everything at or under `path` again, keeping the last numbers
+    /// on show until the new ones land.
+    fn expire(&self, path: &Path) {
         let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
-        state.sizes.retain(|known, _| !known.starts_with(path));
+        for (known, measured) in state.sizes.iter_mut() {
+            if known.starts_with(path) {
+                measured.stale = true;
+            }
+        }
     }
 
     /// `path` is gone: drop its measurements and take its size off every
@@ -255,6 +276,9 @@ impl Guard {
                 ["Library", folder] if LIBRARY_ROOTS.contains(folder) => {
                     return Some("Apps keep their settings and data here. Delete what is inside it instead.".into())
                 }
+                ["Library", "Caches" | "Logs"] => {
+                    return Some("macOS and apps expect this folder to exist. Delete what is inside it instead.".into())
+                }
                 _ => return None,
             }
         }
@@ -286,7 +310,7 @@ fn timestamp(time: std::io::Result<SystemTime>) -> Option<String> {
 /// One folder's children, largest first, with the sizes known so far.
 pub fn list(scanner: &Arc<Scanner>, guard: &Guard, path: &Path, refresh: bool) -> wire::DiskListing {
     if refresh {
-        scanner.forget(path);
+        scanner.expire(path);
     }
     let parent = path.parent().map(|parent| parent.display().to_string());
     let mut listing = wire::DiskListing {
@@ -380,7 +404,8 @@ const KNOWN: &[Known] = &[
     Known { id: "ios-backups", label: "iPhone and iPad backups", group: "files", relative: "Library/Application Support/MobileSync/Backup", safety: "review", description: "Local device backups. Keep the latest if you have no iCloud backup." },
 ];
 
-pub fn overview(scanner: &Arc<Scanner>, home: &Path) -> wire::DiskOverview {
+pub fn overview(scanner: &Arc<Scanner>, guard: &Guard) -> wire::DiskOverview {
+    let home = guard.home.as_path();
     let mut measuring = false;
     let suggestions = KNOWN
         .iter()
@@ -398,6 +423,7 @@ pub fn overview(scanner: &Arc<Scanner>, home: &Path) -> wire::DiskOverview {
                 size_bytes: measured.map(|measured| measured.bytes),
                 measuring: pending,
                 safety: known.safety.into(),
+                protected_reason: guard.protected_reason(&path),
             })
         })
         .collect();
@@ -414,13 +440,50 @@ fn volume(path: &Path) -> Option<wire::DiskVolume> {
     }
     let block = stats.f_frsize as u64;
     let total_bytes = stats.f_blocks as u64 * block;
-    let free_bytes = stats.f_bavail as u64 * block;
+    // statvfs leaves out what APFS can purge on demand (snapshots, caches,
+    // iCloud copies). Finder and System Settings count it as available, so a
+    // page that did not would show a fuller disk than the Mac says it is.
+    let unpurged = stats.f_bavail as u64 * block;
+    let free_bytes = available_for_important_use(path).filter(|bytes| *bytes <= total_bytes).map_or(unpurged, |bytes| bytes.max(unpurged));
     Some(wire::DiskVolume {
         mount_point: "/".into(),
         total_bytes,
         free_bytes,
         used_bytes: total_bytes.saturating_sub(free_bytes),
     })
+}
+
+/// What macOS says a person could still store on the volume holding `path`:
+/// free space plus what it would purge to make room.
+#[cfg(target_os = "macos")]
+fn available_for_important_use(path: &Path) -> Option<u64> {
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFStringRef;
+    use core_foundation::url::{CFURLRef, CFURL};
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFURLVolumeAvailableCapacityForImportantUsageKey: CFStringRef;
+        fn CFURLCopyResourcePropertyForKey(url: CFURLRef, key: CFStringRef, value: *mut CFTypeRef, error: *mut CFTypeRef) -> u8;
+    }
+    let url = CFURL::from_path(path, true)?;
+    let mut value: CFTypeRef = std::ptr::null();
+    // SAFETY: the URL is live for the call, the key is a CoreFoundation
+    // constant, and a non-null result is owned by us (the Copy rule).
+    let found = unsafe {
+        CFURLCopyResourcePropertyForKey(url.as_concrete_TypeRef(), kCFURLVolumeAvailableCapacityForImportantUsageKey, &mut value, std::ptr::null_mut())
+    };
+    if found == 0 || value.is_null() {
+        return None;
+    }
+    // SAFETY: `value` came from a Copy function, so we own one reference.
+    let value = unsafe { CFType::wrap_under_create_rule(value) };
+    value.downcast::<CFNumber>()?.to_i64().and_then(|bytes| u64::try_from(bytes).ok())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn available_for_important_use(_path: &Path) -> Option<u64> {
+    None
 }
 
 /// Delete or trash each path the guard allows. One refusal does not stop the
@@ -513,6 +576,13 @@ fn remove_at(scanner: &Arc<Scanner>, parent: &Parent, path: &Path, home: &Path, 
     } else {
         std::fs::symlink_metadata(parent.real.join(&parent.name)).map(|meta| meta.blocks() * 512).unwrap_or(0)
     };
+    if meta.is_dir() {
+        // macOS refuses to move a folder its owner cannot write to, and an
+        // emptied Trash or a permanent delete cannot clear one that holds
+        // such folders. They are the person's own, so lift the read-only bit
+        // first. Best effort: whatever stays read-only is reported below.
+        let _ = lift_read_only_tree(&parent.dir, &parent.name);
+    }
     let outcome = if !permanent {
         cap_std::fs::Dir::open_ambient_dir(home.join(".Trash"), cap_std::ambient_authority())
             .and_then(|trash| move_into(&parent.dir, &parent.name, &trash, TRASH_NAME_ATTEMPTS))
@@ -522,18 +592,101 @@ fn remove_at(scanner: &Arc<Scanner>, parent: &Parent, path: &Path, home: &Path, 
     } else {
         parent.dir.remove_file(&parent.name)
     };
-    outcome.map(|()| bytes).map_err(|error| describe(&error, permanent))
+    match outcome {
+        Ok(()) => Ok(bytes),
+        // Privacy protection or a locked item. Finder can often move what
+        // Bridge may not touch; it is handed the resolved path, never a
+        // symlink, and only ever moves to the Trash.
+        Err(error) if !permanent && denied(&error) && !meta.file_type().is_symlink() => {
+            finder_trash(&parent.real.join(&parent.name)).map(|()| bytes).map_err(|finder| format!("{} Finder could not move it either: {finder}", describe(&error, permanent)))
+        }
+        Err(error) => Err(describe(&error, permanent)),
+    }
+}
+
+fn denied(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES))
 }
 
 fn describe(error: &std::io::Error, permanent: bool) -> String {
-    if error.raw_os_error() == Some(libc::EXDEV) {
-        return "It is on another volume, so it cannot go to this Trash. Delete it permanently instead.".into();
-    }
-    match error.kind() {
-        std::io::ErrorKind::PermissionDenied => "macOS did not allow it. Finder may be able to remove it.".into(),
+    match error.raw_os_error() {
+        Some(libc::EXDEV) => "It is on another volume, so it cannot go to this Trash. Delete it permanently instead.".into(),
+        Some(libc::EPERM) if permanent => "macOS protects it (privacy protection or a locked item). Move it to the Trash instead, which goes through Finder.".into(),
+        Some(libc::EPERM) => "macOS protects it (privacy protection or a locked item).".into(),
+        Some(libc::EACCES) => "You do not have permission to change it or the folder that holds it.".into(),
+        Some(libc::ENOENT) => "It no longer exists.".into(),
+        Some(libc::EBUSY) => "It is in use. Quit the app using it and try again.".into(),
         _ if permanent => format!("Could not delete it: {error}"),
         _ => format!("Could not move it to the Trash: {error}"),
     }
+}
+
+/// Make `name` and every folder under it writable, readable, and searchable
+/// by its owner, so it can be moved and later emptied. Never follows a
+/// symlink and never touches a folder someone else owns.
+fn lift_read_only_tree(parent: &cap_std::fs::Dir, name: &std::ffi::OsStr) -> std::io::Result<()> {
+    let mut stack = vec![open_dir_nofollow(parent, name)?];
+    while let Some(dir) = stack.pop() {
+        lift_read_only(&dir)?;
+        for entry in dir.entries()?.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                if let Ok(child) = open_dir_nofollow(&dir, &entry.file_name()) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn open_dir_nofollow(parent: &cap_std::fs::Dir, name: &std::ffi::OsStr) -> std::io::Result<cap_std::fs::Dir> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: the name is NUL-terminated and the parent handle is open; a
+    // returned descriptor is owned by the File below.
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh descriptor nothing else owns.
+    Ok(cap_std::fs::Dir::from_std_file(unsafe { std::fs::File::from_raw_fd(fd) }))
+}
+
+fn lift_read_only(dir: &cap_std::fs::Dir) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fstat fills the zeroed struct for an open descriptor.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(dir.as_raw_fd(), &mut stat) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mode = u32::from(stat.st_mode) & 0o7777;
+    // SAFETY: geteuid has no preconditions.
+    if mode & 0o700 == 0o700 || stat.st_uid != unsafe { libc::geteuid() } {
+        return Ok(());
+    }
+    // SAFETY: fchmod on an open descriptor we own.
+    if unsafe { libc::fchmod(dir.as_raw_fd(), (mode | 0o700) as libc::mode_t) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Ask Finder to move one item to the Trash. The path travels as an
+/// argument, never inside the script.
+#[cfg(all(target_os = "macos", not(test)))]
+fn finder_trash(path: &Path) -> Result<(), String> {
+    let mut command = std::process::Command::new("/usr/bin/osascript");
+    command
+        .args(["-e", "on run argv", "-e", "tell application \"Finder\" to delete (POSIX file (item 1 of argv) as alias)", "-e", "end run"])
+        .arg(path);
+    run_finder(command)
+}
+
+/// Tests never drive the person's Finder.
+#[cfg(any(not(target_os = "macos"), test))]
+fn finder_trash(_path: &Path) -> Result<(), String> {
+    Err("Finder is not available here.".into())
 }
 
 const TRASH_NAME_ATTEMPTS: usize = 1000;
@@ -582,40 +735,45 @@ pub fn empty_trash() -> wire::EmptyTrashResult {
     if !cfg!(target_os = "macos") {
         return wire::EmptyTrashResult { emptied: false, detail: Some("Emptying the Trash is only supported on macOS.".into()) };
     }
-    let child = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", "tell application \"Finder\" to empty trash"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        Err(error) => return wire::EmptyTrashResult { emptied: false, detail: Some(error.to_string()) },
-    };
+    let mut command = std::process::Command::new("/usr/bin/osascript");
+    command.args(["-e", "tell application \"Finder\" to empty trash"]);
+    match run_finder(command) {
+        Ok(()) => wire::EmptyTrashResult { emptied: true, detail: None },
+        Err(detail) => wire::EmptyTrashResult { emptied: false, detail: Some(detail) },
+    }
+}
+
+/// Run an osascript that drives Finder and turn its failure into words.
+#[cfg_attr(test, allow(dead_code))]
+fn run_finder(mut command: std::process::Command) -> Result<(), String> {
+    let child = command.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn();
+    let mut child = child.map_err(|error| error.to_string())?;
     // The first run asks the person to let Bridge control Finder; give them
     // time to answer, but do not hold the connection forever.
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return wire::EmptyTrashResult { emptied: true, detail: None },
+            Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(_)) => {
                 let mut stderr = String::new();
                 if let Some(mut pipe) = child.stderr.take() {
                     use std::io::Read;
                     let _ = pipe.read_to_string(&mut stderr);
                 }
-                let detail = if stderr.contains("-1743") {
+                return Err(if stderr.contains("-1743") {
                     "macOS blocked Bridge from controlling Finder. Allow it under Privacy & Security > Automation.".into()
+                } else if stderr.contains("-128") {
+                    "It was cancelled.".into()
                 } else {
-                    stderr.trim().to_string()
-                };
-                return wire::EmptyTrashResult { emptied: false, detail: Some(detail) };
+                    stderr.trim().trim_end_matches('.').rsplit(": ").next().unwrap_or("Finder refused").trim().to_string() + "."
+                });
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
             Ok(None) => {
                 let _ = child.kill();
-                return wire::EmptyTrashResult { emptied: false, detail: Some("Finder did not answer in time.".into()) };
+                return Err("Finder did not answer in time.".into());
             }
-            Err(error) => return wire::EmptyTrashResult { emptied: false, detail: Some(error.to_string()) },
+            Err(error) => return Err(error.to_string()),
         }
     }
 }
@@ -664,7 +822,11 @@ mod tests {
         for refused in ["/", "/Users", "/Users/someone", "/Users/someone/Library", "/Users/someone/Documents", "/Users/someone/.Trash", "/Users/someone/.ssh/id_ed25519", "/Users/someone/Library/Keychains/login.keychain-db", "/Users/someone/Library/Application Support", "/Users/someone/Library/Application Support/bridge/bridge.db", "/System/Library", "/usr/local/bin", "/Applications", "/Users/someone/../other"] {
             assert!(guard.protected_reason(Path::new(refused)).is_some(), "{refused} should be refused");
         }
-        for allowed in ["/Users/someone/Downloads/installer.dmg", "/Users/someone/.npm", "/Users/someone/Library/Caches", "/Users/someone/Library/Application Support/Slack", "/Users/someone/code/app/node_modules", "/Applications/Old.app"] {
+        // Folders macOS expects to exist go only one item at a time.
+        for whole in ["/Users/someone/Downloads", "/Users/someone/Library/Caches", "/Users/someone/Library/Logs"] {
+            assert!(guard.protected_reason(Path::new(whole)).is_some(), "{whole} should be refused as a whole");
+        }
+        for allowed in ["/Users/someone/Downloads/installer.dmg", "/Users/someone/.npm", "/Users/someone/Library/Caches/com.app", "/Users/someone/Library/Logs/old.log", "/Users/someone/Library/Application Support/Slack", "/Users/someone/code/app/node_modules", "/Applications/Old.app"] {
             assert_eq!(guard.protected_reason(Path::new(allowed)), None, "{allowed} should be allowed");
         }
     }
@@ -786,5 +948,114 @@ mod tests {
         remove_at(&Scanner::new(), &parent, &target, home.path(), true).unwrap();
         assert!(outside.path().join("victim").exists(), "the delete followed the swapped symlink");
         assert!(!home.path().join("a-moved/victim").exists());
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A Go-style module cache: folders their owner made read-only.
+    fn read_only_tree(root: &Path) {
+        std::fs::create_dir_all(root.join("mod/pkg@v1/inner")).unwrap();
+        std::fs::write(root.join("mod/pkg@v1/inner/go.mod"), vec![0u8; 4096]).unwrap();
+        for folder in ["mod/pkg@v1/inner", "mod/pkg@v1", "mod"] {
+            std::fs::set_permissions(root.join(folder), std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+    }
+
+    fn writable(root: &Path) {
+        for entry in walkdir(root) {
+            let _ = std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    fn walkdir(root: &Path) -> Vec<PathBuf> {
+        let mut found = vec![root.to_path_buf()];
+        if let Ok(children) = std::fs::read_dir(root) {
+            for child in children.flatten() {
+                if child.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    let _ = std::fs::set_permissions(child.path(), std::fs::Permissions::from_mode(0o755));
+                    found.extend(walkdir(&child.path()));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_read_only_folder_still_moves_to_the_trash_and_can_be_emptied() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".Trash")).unwrap();
+        read_only_tree(home.path());
+        let target = home.path().join("mod").display().to_string();
+        let result = delete(&Scanner::new(), &guard(home.path()), &[target.clone()], false);
+        assert_eq!(result.deleted, vec![target], "{:?}", result.failed);
+        let trashed = home.path().join(".Trash/mod");
+        assert!(trashed.join("pkg@v1/inner/go.mod").exists());
+        // Emptying the Trash is a plain recursive delete; nothing in it may
+        // still be read-only.
+        std::fs::remove_dir_all(&trashed).expect("the trashed tree can be emptied");
+    }
+
+    #[test]
+    fn a_read_only_folder_can_be_deleted_permanently() {
+        let home = tempfile::tempdir().unwrap();
+        read_only_tree(home.path());
+        let target = home.path().join("mod").display().to_string();
+        let result = delete(&Scanner::new(), &guard(home.path()), &[target.clone()], true);
+        assert_eq!(result.deleted, vec![target], "{:?}", result.failed);
+        assert!(!home.path().join("mod").exists());
+    }
+
+    #[test]
+    fn lifting_read_only_folders_never_follows_a_symlink_out() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("locked")).unwrap();
+        std::fs::set_permissions(outside.path().join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::create_dir_all(home.path().join("cache")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("locked"), home.path().join("cache/link")).unwrap();
+        lift_read_only_tree(&open(home.path()), "cache".as_ref()).unwrap();
+        let mode = std::fs::metadata(outside.path().join("locked")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o555, "a folder outside the tree was changed");
+        writable(outside.path());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_last_sizes_on_show_while_measuring_again() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("big")).unwrap();
+        std::fs::write(home.path().join("big/a"), vec![1u8; 64 * 1024]).unwrap();
+        let scanner = Scanner::new();
+        let guard = guard(home.path());
+        let before = settle(&scanner, &guard, home.path()).entries[0].size_bytes.unwrap();
+        std::fs::write(home.path().join("big/b"), vec![1u8; 512 * 1024]).unwrap();
+        // Still fresh: an ordinary look does not walk again.
+        assert_eq!(list(&scanner, &guard, home.path(), false).entries[0].size_bytes, Some(before));
+        let refreshed = list(&scanner, &guard, home.path(), true);
+        assert_eq!(refreshed.entries[0].size_bytes, Some(before), "a refresh must not blank the number");
+        let after = settle(&scanner, &guard, home.path()).entries[0].size_bytes.unwrap();
+        assert!(after >= before + 512 * 1024, "{after} should include the new file");
+    }
+
+    #[test]
+    fn suggestions_say_when_only_what_is_inside_can_go() {
+        let home = tempfile::tempdir().unwrap();
+        for folder in ["Downloads", ".npm", "Library/Caches"] {
+            std::fs::create_dir_all(home.path().join(folder)).unwrap();
+        }
+        let overview = overview(&Scanner::new(), &guard(home.path()));
+        let reason = |id: &str| overview.suggestions.iter().find(|item| item.id == id).map(|item| item.protected_reason.is_some());
+        assert_eq!(reason("downloads"), Some(true));
+        assert_eq!(reason("app-caches"), Some(true));
+        assert_eq!(reason("npm"), Some(false));
+    }
+
+    #[test]
+    fn free_space_is_never_less_than_what_statvfs_reports() {
+        let volume = volume(Path::new("/")).unwrap();
+        assert!(volume.free_bytes <= volume.total_bytes);
+        // macOS answers with what it could purge counted in.
+        #[cfg(target_os = "macos")]
+        assert!(available_for_important_use(Path::new("/")).is_some_and(|bytes| bytes > 0));
+        assert_eq!(volume.used_bytes, volume.total_bytes - volume.free_bytes);
     }
 }

@@ -1853,6 +1853,7 @@ export interface DiskSuggestion {
   label: string;
   measuring: boolean;
   path: string;
+  protectedReason?: string | null;
   safety: string;
   sizeBytes?: number | null;
 }
