@@ -6788,7 +6788,8 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
-        assert_eq!(current_schema_version(&db).unwrap(), 73);
+        // Later migrations may follow; this one must have run.
+        assert!(current_schema_version(&db).unwrap() >= 73);
     }
 
     #[test]
