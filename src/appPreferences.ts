@@ -90,36 +90,56 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
    *  on the same origin may already have written the value this one has yet
    *  to paint, and only this window's own events repaint it. */
   let rendered: AppPreferenceValues = readLocalPreferences(storage);
-  /** Keys saved from here and not yet answered, so a stale read cannot undo them. */
-  const pending = new Set<Key>();
+  /** Choices made here that the core has not acknowledged. They stay this
+   *  window's values, a read never paints over them, and they are sent again
+   *  after a failed save until one succeeds. */
+  let dirty: AppPreferenceValues = {};
+  let saving = false;
   /** The newest core revision this window has seen, from a read or a save's
    *  reply. Replies can arrive out of order (the web client reads on several
    *  lanes), so an older snapshot is dropped rather than painted. */
   let revision = -1;
-  /** A read skipped a key because this window's own save of it was still in
-   *  flight. That read may have been newer than the save, so read again once
-   *  the save settles rather than keep this window's value forever. */
-  let skipped = false;
   const accept = (record: AppPreferences): boolean => {
     if (record.revision < revision) return false;
     revision = record.revision;
     return true;
   };
+  /** A read skipped a key because this window had not yet saved its own value.
+   *  That read may have been newer than the save, so read again once the save
+   *  lands rather than keep this window's value forever. */
+  let skipped = false;
 
-  const save = (values: AppPreferenceValues) => {
-    const keys = Object.keys(values) as Key[];
-    keys.forEach(key => pending.add(key));
-    rendered = { ...rendered, ...values };
-    void api.saveAppPreferences(values)
-      .then(accept)
+  /** Send every unacknowledged choice, one save at a time so replies cannot
+   *  cross. A failure keeps them dirty for the next read, hint or retry. */
+  const flush = () => {
+    if (stopped || saving || isEmpty(dirty)) return;
+    const sending = { ...dirty };
+    saving = true;
+    let saved = false;
+    void api.saveAppPreferences(sending)
+      .then(record => {
+        saved = true;
+        for (const key of Object.keys(sending) as Key[]) {
+          if (dirty[key] === sending[key]) delete (dirty as Record<string, unknown>)[key];
+        }
+        accept(record);
+      })
       .catch(() => undefined)
       .finally(() => {
-        keys.forEach(key => pending.delete(key));
-        if (skipped && pending.size === 0 && !stopped) {
+        saving = false;
+        if (stopped || !saved) return;
+        if (!isEmpty(dirty)) flush();
+        else if (skipped) {
           skipped = false;
           void pull(false);
         }
       });
+  };
+
+  const save = (values: AppPreferenceValues) => {
+    rendered = { ...rendered, ...values };
+    dirty = { ...dirty, ...values };
+    flush();
   };
 
   const pull = async (seed: boolean) => {
@@ -132,7 +152,7 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     if (stopped || !accept(record)) return;
     const core = record.values;
     const incoming = changedKeys(core, rendered);
-    for (const key of pending) {
+    for (const key of Object.keys(dirty) as Key[]) {
       if (key in incoming) skipped = true;
       delete (incoming as Record<string, unknown>)[key];
     }
@@ -143,6 +163,8 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     rendered = { ...rendered, ...incoming };
     if (!isEmpty(incoming)) applyLocalPreferences(incoming, storage, target);
     if (!isEmpty(missing)) save(missing as AppPreferenceValues);
+    // A read means the core answers again: retry anything still unsaved.
+    flush();
   };
 
   const onLocalChange = () => {

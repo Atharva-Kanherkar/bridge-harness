@@ -232,4 +232,30 @@ describe("app preferences across windows and a flaky backend", () => {
     expect(storage.getItem("bridge.theme")).toBe("system");
     stop();
   });
+
+  it("keeps a choice whose save failed and retries it instead of taking the core's older value", async () => {
+    const storage = new MemoryStorage();
+    const target = new EventTarget();
+    const core = scriptedCore({ revision: 1, values: { theme: "light" } });
+    const stop = startAppPreferenceSync(core.api, storage, target as unknown as Window);
+    await settle();
+    core.state.failSaves = true;
+    chooseTheme(storage, target, "dark");
+    await settle();
+    expect(storage.getItem("bridge.theme")).toBe("dark");
+    // The connection comes back and the host sends its reconciliation hint.
+    // The core's older light must never be painted over the person's choice,
+    // not even for the moment before the retried save lands.
+    const written: string[] = [];
+    const setItem = storage.setItem.bind(storage);
+    storage.setItem = (key: string, value: string) => { if (key === "bridge.theme") written.push(value); setItem(key, value); };
+    core.state.failSaves = false;
+    core.state.notify();
+    await settle();
+    expect(written).not.toContain("light");
+    expect(storage.getItem("bridge.theme")).toBe("dark");
+    expect(core.state.record().values.theme).toBe("dark");
+    expect(core.state.saves).toEqual([{ theme: "dark" }, { theme: "dark" }]);
+    stop();
+  });
 });
