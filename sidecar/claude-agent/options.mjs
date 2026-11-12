@@ -2,11 +2,17 @@ import { briefingOptions, isBriefing } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
 /** The `bridge` server's tools that only read or display. */
-export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search"];
+export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read"];
 /** The `bridge` server's tools whose only effect waits for the person's review:
  *  a memory proposal changes nothing until they approve it in Bridge, and a
  *  drafted message is a card the person edits and sends themselves. */
 export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft"];
+/** Bridge's own settings, changed at the person's request: the theme, how
+ *  chats show thinking, what a new chat starts on. The catalog cannot widen
+ *  what an agent may do (no access, permissions, keys or budgets), every
+ *  change shows in the transcript and is undone the same way, so asking first
+ *  would only turn "make the theme light" into a refusal. */
+export const BRIDGE_PREFERENCE_TOOLS = ["mcp__bridge__settings_change"];
 
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
@@ -17,9 +23,10 @@ export function permissionOptions(mode, networkAllowed = false, mcpServers = {})
       // Bridge renders no Claude permission prompt, so anything that needs one
       // is refused outright. Bridge's own read-only tools change nothing and
       // run, and so does a memory proposal, which Bridge itself puts in front
-      // of the person; notes writes stay refused until Bridge asks for them.
+      // of the person, and a change to Bridge's own settings; notes writes
+      // stay refused until Bridge asks for them.
       return mcpServers.bridge
-        ? { permissionMode: "acceptEdits", allowedTools: [...BRIDGE_READ_TOOLS, ...BRIDGE_REVIEWED_TOOLS] }
+        ? { permissionMode: "acceptEdits", allowedTools: [...BRIDGE_READ_TOOLS, ...BRIDGE_REVIEWED_TOOLS, ...BRIDGE_PREFERENCE_TOOLS] }
         : { permissionMode: "acceptEdits" };
     case "Full":
     default:
