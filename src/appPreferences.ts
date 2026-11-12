@@ -96,6 +96,10 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
    *  reply. Replies can arrive out of order (the web client reads on several
    *  lanes), so an older snapshot is dropped rather than painted. */
   let revision = -1;
+  /** A read skipped a key because this window's own save of it was still in
+   *  flight. That read may have been newer than the save, so read again once
+   *  the save settles rather than keep this window's value forever. */
+  let skipped = false;
   const accept = (record: AppPreferences): boolean => {
     if (record.revision < revision) return false;
     revision = record.revision;
@@ -109,7 +113,13 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     void api.saveAppPreferences(values)
       .then(accept)
       .catch(() => undefined)
-      .finally(() => keys.forEach(key => pending.delete(key)));
+      .finally(() => {
+        keys.forEach(key => pending.delete(key));
+        if (skipped && pending.size === 0 && !stopped) {
+          skipped = false;
+          void pull(false);
+        }
+      });
   };
 
   const pull = async (seed: boolean) => {
@@ -122,7 +132,10 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     if (stopped || !accept(record)) return;
     const core = record.values;
     const incoming = changedKeys(core, rendered);
-    for (const key of pending) delete (incoming as Record<string, unknown>)[key];
+    for (const key of pending) {
+      if (key in incoming) skipped = true;
+      delete (incoming as Record<string, unknown>)[key];
+    }
     const missing: Record<string, unknown> = {};
     if (seed) for (const key of KEYS) if (core[key] == null && rendered[key] != null) missing[key] = rendered[key];
     // Record what is about to be painted first, so the events `apply` fires

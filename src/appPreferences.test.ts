@@ -207,4 +207,29 @@ describe("app preferences across windows and a flaky backend", () => {
     expect(storage.getItem("bridge.theme")).toBe("dark");
     stop();
   });
+
+  it("lands a newer change made elsewhere while this window's save was in flight", async () => {
+    const storage = new MemoryStorage();
+    const target = new EventTarget();
+    let record: AppPreferences = { revision: 1, values: { theme: "light" } };
+    let notify: () => void = () => undefined;
+    const save = deferred<AppPreferences>();
+    const api: AppPreferencesApi = {
+      getAppPreferences: async () => record,
+      saveAppPreferences: vi.fn(() => save.promise),
+      onAppPreferencesChanged: async handler => { notify = handler; return () => undefined; },
+    };
+    const stop = startAppPreferenceSync(api, storage, target as unknown as Window);
+    await settle();
+    chooseTheme(storage, target, "dark");
+    await settle();
+    // Our save lands as revision 2, then another window stores system as 3.
+    record = { revision: 3, values: { theme: "system" } };
+    notify();
+    await settle();
+    save.resolve({ revision: 2, values: { theme: "dark" } });
+    await settle();
+    expect(storage.getItem("bridge.theme")).toBe("system");
+    stop();
+  });
 });
