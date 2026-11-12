@@ -394,6 +394,13 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
             summary: Some(error.to_string()),
             ..Outcome::default()
         };
+        let bound = workflow_trigger::require_run(&core.db.lock().unwrap(), &run_id).ok();
+        if let Some(bound) = bound {
+            if let Some(session_id) = bound.session_id.as_deref() {
+                let _ = settle(core, &bound, &lease_owner, session_id, wire::WorkflowRunStatus::Failed, outcome);
+                return;
+            }
+        }
         let settled = workflow_trigger::finish(
             &core.db.lock().unwrap(),
             &run_id,
@@ -472,7 +479,6 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     }
 
     let end = wait_for_turn(core, &run, &lease_owner, &session_id, baseline, &definition.budget)?;
-    let tokens = tokens_used(&core.db.lock().unwrap(), &session_id)?;
     let (status, outcome) = match end {
         TurnEnd::LeaseLost => {
             // Cancelled or reclaimed: someone else settled the run.
@@ -510,7 +516,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             }
         }
     };
-    settle(core, &run, &lease_owner, &session_id, status, Outcome { tokens, quota_unknown, ..outcome })
+    settle(core, &run, &lease_owner, &session_id, status, Outcome { quota_unknown, ..outcome })
 }
 
 /// Where the run works: the workflow home, a scratch folder for a
@@ -597,7 +603,7 @@ fn wait_for_turn_within(
     budget: &wire::WorkBriefLimits,
     approval_wait: StdDuration,
 ) -> Result<TurnEnd, BridgeError> {
-    let mut deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(1) as u64);
+    let mut deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(0) as u64);
     let mut last_heartbeat = Instant::now();
     let mut waiting = false;
     let mut waiting_since: Option<Instant> = None;
@@ -614,7 +620,7 @@ fn wait_for_turn_within(
             }
             None => {}
         }
-        let (completed, status, tool_calls) = {
+        let (completed, status, exhausted) = {
             let db = core.db.lock().unwrap();
             if last_heartbeat.elapsed() >= HEARTBEAT {
                 if !workflow_trigger::heartbeat(&db, &run.id, lease_owner, Utc::now())? {
@@ -634,19 +640,16 @@ fn wait_for_turn_within(
             let status: Option<String> = db
                 .query_row("SELECT status FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
                 .optional()?;
-            let tool_calls: i64 = db.query_row(
-                "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND sequence>?2 AND kind='tool.started'",
-                params![session_id, baseline],
-                |row| row.get(0),
-            )?;
-            (completed, status, tool_calls)
+            (completed, status, budget_reached(&db, session_id, baseline, budget)?)
         };
-        if let Some(status) = completed {
-            return Ok(TurnEnd::Completed { failed: matches!(status.as_deref(), Some("failed" | "error")) });
-        }
-        if tool_calls > budget.max_tool_calls {
+        // Usage often arrives in the same provider frame as completion.
+        // Check ceilings first so a final result cannot outrun its budget.
+        if exhausted {
             stop(core, session_id);
             return Ok(TurnEnd::Budget("budget_exhausted"));
+        }
+        if let Some(status) = completed {
+            return Ok(TurnEnd::Completed { failed: matches!(status.as_deref(), Some("failed" | "error")) });
         }
         let now_waiting = status.as_deref() == Some("waiting");
         if now_waiting != waiting {
@@ -692,12 +695,41 @@ fn last_message(db: &Connection, session_id: &str, baseline: i64) -> Result<Opti
         .optional()?)
 }
 
-fn tokens_used(db: &Connection, session_id: &str) -> Result<Option<i64>, BridgeError> {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RunUsage {
+    tokens: Option<i64>,
+    output_tokens: i64,
+    cost_microusd: Option<i64>,
+}
+
+fn usage_used(db: &Connection, session_id: &str) -> Result<RunUsage, BridgeError> {
     Ok(db.query_row(
-        "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) FROM usage_ledger WHERE session_id=?1",
+        "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),
+                COALESCE(SUM(output_tokens),0), SUM(cost_microusd)
+         FROM usage_ledger WHERE session_id=?1",
         params![session_id],
-        |row| row.get(0),
+        |row| Ok(RunUsage { tokens: row.get(0)?, output_tokens: row.get(1)?, cost_microusd: row.get(2)? }),
     )?)
+}
+
+fn budget_reached(db: &Connection, session_id: &str, baseline: i64, budget: &wire::WorkBriefLimits) -> Result<bool, BridgeError> {
+    let (turns, tools): (i64, i64) = db.query_row(
+        "SELECT COUNT(DISTINCT CASE
+            WHEN (kind IN ('assistant.message','message.completed')
+                  AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant')
+              OR (kind IN ('tool.started','command.started','file_change.started','reasoning.completed')
+                  AND json_extract(payload,'$.data.assistantMessageId') IS NOT NULL)
+            THEN COALESCE(json_extract(payload,'$.data.assistantMessageId'),json_extract(payload,'$.itemId'),id) END),
+          COUNT(DISTINCT CASE WHEN kind IN ('tool.started','command.started','file_change.started')
+            THEN COALESCE(json_extract(payload,'$.itemId'),id) END)
+         FROM session_entries WHERE session_id=?1 AND sequence>?2",
+        params![session_id, baseline],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let usage = usage_used(db, session_id)?;
+    Ok(turns >= budget.max_turns || tools >= budget.max_tool_calls
+        || budget.max_output_tokens.is_some_and(|limit| usage.output_tokens >= limit)
+        || budget.cost_ceiling_microusd.is_some_and(|limit| usage.cost_microusd.is_some_and(|cost| cost >= limit)))
 }
 
 /// Stop a run's session if its provider is still up. Stopping ends the
@@ -714,9 +746,12 @@ fn settle(
     lease_owner: &str,
     session_id: &str,
     status: wire::WorkflowRunStatus,
-    outcome: Outcome,
+    mut outcome: Outcome,
 ) -> Result<(), BridgeError> {
     stop(core, session_id);
+    let usage = usage_used(&core.db.lock().unwrap(), session_id)?;
+    outcome.tokens = usage.tokens;
+    outcome.cost_microusd = usage.cost_microusd;
     if workflow_trigger::finish(&core.db.lock().unwrap(), &run.id, lease_owner, status, &outcome, Utc::now())? {
         workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
     }
@@ -918,7 +953,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(tokens_used(&db, "run-session").unwrap(), Some(175));
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(175));
     }
 
     fn agent_event(db: &Connection, sequence: i64, kind: &str, status: Option<&str>, text: Option<&str>) {
@@ -944,6 +979,142 @@ mod tests {
         }
         let end = wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap();
         assert_eq!(end, TurnEnd::Budget("budget_exhausted"));
+    }
+
+    fn ledger(db: &Connection, session_id: &str, input: i64, output: i64, cost: Option<i64>) {
+        db.execute(
+            "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,cost_microusd,source,created_at)
+             VALUES('',?1,?2,?3,?4,'reported','now')",
+            params![session_id, input, output, cost],
+        ).unwrap();
+    }
+
+    #[test]
+    fn each_numeric_ceiling_stops_even_a_completed_turn_at_equality() {
+        for ceiling in ["turns", "tools", "output", "cost"] {
+            let (dir, core) = test_support::core();
+            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            let mut budget = test_support::definition().budget;
+            match ceiling {
+                "turns" => budget.max_turns = 1,
+                "tools" => budget.max_tool_calls = 1,
+                "output" => budget.max_output_tokens = Some(8),
+                "cost" => budget.cost_ceiling_microusd = Some(16),
+                _ => unreachable!(),
+            }
+            {
+                let db = core.db.lock().unwrap();
+                agent_event(&db, 1, "assistant.message", None, Some("done"));
+                agent_event(&db, 2, "tool.started", None, None);
+                ledger(&db, "run-session", 100, 8, Some(16));
+                agent_event(&db, 3, "turn.completed", Some("completed"), None);
+            }
+            let end = wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap();
+            assert_eq!(end, TurnEnd::Budget("budget_exhausted"), "{ceiling}");
+            settle(&core, &run.run, &run.lease_owner, "run-session", wire::WorkflowRunStatus::Failed,
+                Outcome { failure_code: Some("budget_exhausted".into()), ..Outcome::default() }).unwrap();
+            let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+            assert_eq!(settled.status, wire::WorkflowRunStatus::Failed);
+            assert_eq!(settled.failure_code.as_deref(), Some("budget_exhausted"));
+            assert_eq!(settled.tokens, Some(108));
+            assert_eq!(settled.cost_microusd, Some(16));
+        }
+    }
+
+    #[test]
+    fn budget_counts_ignore_prior_entries_other_sessions_and_input_tokens() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        let mut budget = test_support::definition().budget;
+        budget.max_turns = 2;
+        budget.max_tool_calls = 2;
+        budget.max_output_tokens = Some(10);
+        budget.cost_ceiling_microusd = Some(20);
+        agent_event(&db, 1, "assistant.message", None, Some("old"));
+        agent_event(&db, 2, "tool.started", None, None);
+        agent_event(&db, 3, "assistant.message", None, Some("new"));
+        agent_event(&db, 4, "tool.started", None, None);
+        ledger(&db, "run-session", 10_000, 9, Some(19));
+        ledger(&db, "other-session", 1, 1_000_000, Some(1_000_000));
+        assert!(!budget_reached(&db, "run-session", 2, &budget).unwrap());
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap());
+        budget.max_output_tokens = None;
+        budget.cost_ceiling_microusd = None;
+        ledger(&db, "run-session", 0, 1_000_000, Some(1_000_000));
+        assert!(!budget_reached(&db, "run-session", 2, &budget).unwrap(), "optional ceilings are absent");
+    }
+
+    #[test]
+    fn budget_counts_tool_only_messages_and_deduplicates_snapshots() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        let frame = serde_json::json!({"type":"assistant","message":{"id":"m1","role":"assistant","content":[
+            {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}},
+            {"type":"tool_use","id":"t2","name":"Write","input":{"file_path":"x","content":"x"}}
+        ]}});
+        for _ in 0..2 {
+            for event in crate::agent::normalize_claude_message(&frame) {
+                crate::store::session_event(&db, "run-session", &event, &serde_json::json!({})).unwrap();
+            }
+        }
+        let mut budget = test_support::definition().budget;
+        budget.max_turns = 2;
+        budget.max_tool_calls = 3;
+        assert!(!budget_reached(&db, "run-session", 0, &budget).unwrap(), "one message, two calls despite repeated snapshots");
+        budget.max_tool_calls = 2;
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "file and shell calls both count");
+        budget.max_tool_calls = 3;
+        budget.max_turns = 1;
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "a tool-only message spends a turn");
+    }
+
+    #[test]
+    fn wall_time_is_a_separate_budget_ceiling() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let mut budget = test_support::definition().budget;
+        // A zero remaining working budget is exhausted immediately. API
+        // validation already refuses saving a nonpositive configured limit.
+        budget.max_wall_seconds = 0;
+        agent_event(&core.db.lock().unwrap(), 1, "turn.completed", Some("completed"), None);
+        let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
+        assert_eq!(end, TurnEnd::Budget("budget_exhausted"));
+    }
+
+    #[test]
+    fn settlement_keeps_missing_zero_and_summed_ledger_costs() {
+        for status in [wire::WorkflowRunStatus::Succeeded, wire::WorkflowRunStatus::Failed] {
+            let (dir, core) = test_support::core();
+            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            {
+                let db = core.db.lock().unwrap();
+                assert_eq!(usage_used(&db, "run-session").unwrap(), RunUsage::default());
+                ledger(&db, "run-session", 100, 20, None);
+                assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, None);
+                ledger(&db, "run-session", 50, 5, Some(0));
+                assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, Some(0));
+                ledger(&db, "run-session", 0, 0, Some(12));
+                ledger(&db, "run-session", 0, 0, Some(7));
+            }
+            settle(&core, &run.run, &run.lease_owner, "run-session", status, Outcome::default()).unwrap();
+            let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+            assert_eq!(settled.status, status);
+            assert_eq!(settled.tokens, Some(175));
+            assert_eq!(settled.cost_microusd, Some(19));
+        }
+    }
+
+    #[test]
+    fn cancellation_preserves_recorded_usage() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        ledger(&db, "run-session", 100, 20, Some(12));
+        let cancelled = workflow_trigger::cancel(&db, &run.run.id, Utc::now()).unwrap();
+        assert_eq!(cancelled.tokens, Some(120));
+        assert_eq!(cancelled.cost_microusd, Some(12));
     }
 
     #[test]

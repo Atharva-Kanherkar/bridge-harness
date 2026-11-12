@@ -456,7 +456,9 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
         let changed = db.execute(
             &format!(
                 "UPDATE workflow_runs SET status='failed', failure_code='lease_expired', lease_owner=NULL,
-                    lease_expires_at=NULL, finished_at=?3, unread=1
+                    lease_expires_at=NULL, finished_at=?3, unread=1,
+                    tokens=(SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) FROM usage_ledger WHERE session_id=workflow_runs.session_id),
+                    cost_microusd=(SELECT SUM(cost_microusd) FROM usage_ledger WHERE session_id=workflow_runs.session_id)
                  WHERE id=?1 AND lease_expires_at=?2 AND status IN {ACTIVE}"
             ),
             params![id, expiry, stamp(now)],
@@ -519,7 +521,9 @@ pub fn unpark_waiting(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Claimed
 pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire::WorkflowRun, BridgeError> {
     let changed = db.execute(
         &format!(
-            "UPDATE workflow_runs SET status='cancelled', lease_owner=NULL, lease_expires_at=NULL, finished_at=?2
+            "UPDATE workflow_runs SET status='cancelled', lease_owner=NULL, lease_expires_at=NULL, finished_at=?2,
+                tokens=(SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) FROM usage_ledger WHERE session_id=workflow_runs.session_id),
+                cost_microusd=(SELECT SUM(cost_microusd) FROM usage_ledger WHERE session_id=workflow_runs.session_id)
              WHERE id=?1 AND status IN {ACTIVE}"
         ),
         params![run_id, stamp(now)],

@@ -1952,7 +1952,7 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .map(|session| format!("claude-live-{session}"))
         })
         .unwrap_or_else(|| "claude-live".into());
-    match event_type {
+    let mut normalized = match event_type {
         "message_start" => {
             if let Some(id) = event
                 .pointer("/message/id")
@@ -1974,7 +1974,7 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                         return vec![];
                     }
                     let mut normalized = NormalizedEvent::new("message.delta");
-                    normalized.item_id = Some(message_id);
+                    normalized.item_id = Some(message_id.clone());
                     normalized.role = Some("assistant".into());
                     normalized.status = Some("streaming".into());
                     normalized.text = Some(text.to_owned());
@@ -2063,7 +2063,11 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .collect()
         }
         _ => vec![],
+    };
+    for event in &mut normalized {
+        event.data["assistantMessageId"] = json!(message_id);
     }
+    normalized
 }
 
 fn normalize_claude_assistant(
@@ -2137,6 +2141,12 @@ fn normalize_claude_assistant(
             }
             _ => {}
         }
+    }
+    // Tool-only and thinking-only messages spend the same model-turn budget
+    // as prose. Keep their shared identity so streamed/snapshot blocks count
+    // once, even when one assistant message contains several tool calls.
+    for event in &mut events {
+        event.data["assistantMessageId"] = json!(message_id);
     }
     events
 }
