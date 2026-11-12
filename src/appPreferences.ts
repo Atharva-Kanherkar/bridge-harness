@@ -79,10 +79,11 @@ export function applyLocalPreferences(values: AppPreferenceValues, storage: Stor
 }
 
 /**
- * Keep this window and the core in step. On start the core's values win; a key
- * only this window has is seeded into the core once. After that a change made
- * here is saved, and a change made anywhere else arrives as a hint and is
- * applied. Returns a stop function.
+ * Keep this window and the core in step. On the first read that succeeds the
+ * core's values win and a key only this window has is seeded into the core.
+ * After that a change made here is saved (and kept until the core takes it),
+ * and a change made anywhere else arrives as a hint and is applied. Returns a
+ * stop function.
  */
 export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = localStorage, target: Pick<Window, "addEventListener" | "removeEventListener" | "dispatchEvent"> = window): () => void {
   let stopped = false;
@@ -108,6 +109,22 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
    *  That read may have been newer than the save, so read again once the save
    *  lands rather than keep this window's value forever. */
   let skipped = false;
+  /** Seeding waits for the first read that succeeds, whenever that is. */
+  let hydrated = false;
+  /** One pending retry for a failed read or save. A first read can fail before
+   *  the web client attaches, and attaching sends no hint, so without this the
+   *  window would never hydrate. Backs off from one second to thirty. */
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let failures = 0;
+  const retryLater = () => {
+    if (stopped || retryTimer) return;
+    const delay = Math.min(30_000, 1_000 * 2 ** failures);
+    failures += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      void pull();
+    }, delay);
+  };
 
   /** Send every unacknowledged choice, one save at a time so replies cannot
    *  cross. A failure keeps them dirty for the next read, hint or retry. */
@@ -124,14 +141,14 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
         }
         accept(record);
       })
-      .catch(() => undefined)
+      .catch(retryLater)
       .finally(() => {
         saving = false;
         if (stopped || !saved) return;
         if (!isEmpty(dirty)) flush();
         else if (skipped) {
           skipped = false;
-          void pull(false);
+          void pull();
         }
       });
   };
@@ -142,14 +159,18 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     flush();
   };
 
-  const pull = async (seed: boolean) => {
+  const pull = async () => {
     let record: AppPreferences;
     try {
       record = await api.getAppPreferences();
     } catch {
+      retryLater();
       return;
     }
+    failures = 0;
     if (stopped || !accept(record)) return;
+    const seed = !hydrated;
+    hydrated = true;
     const core = record.values;
     const incoming = changedKeys(core, rendered);
     for (const key of Object.keys(dirty) as Key[]) {
@@ -176,14 +197,15 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
   target.addEventListener(THEME_EVENT, onLocalChange);
   target.addEventListener(SHOW_THINKING_EVENT, onLocalChange);
   let unlisten: (() => void) | undefined;
-  void api.onAppPreferencesChanged(() => { void pull(false); }).then(off => {
+  void api.onAppPreferencesChanged(() => { void pull(); }).then(off => {
     if (stopped) off();
     else unlisten = off;
-  });
-  void pull(true);
+  }, () => undefined);
+  void pull();
 
   return () => {
     stopped = true;
+    if (retryTimer) clearTimeout(retryTimer);
     target.removeEventListener(THEME_EVENT, onLocalChange);
     target.removeEventListener(SHOW_THINKING_EVENT, onLocalChange);
     unlisten?.();

@@ -258,4 +258,38 @@ describe("app preferences across windows and a flaky backend", () => {
     expect(core.state.saves).toEqual([{ theme: "dark" }, { theme: "dark" }]);
     stop();
   });
+
+  it("seeds local-only keys after a first read that failed, when the next hint arrives", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem("bridge.skin", "vibrancy");
+    // Nothing in the core to apply, so no repaint event can seed by accident.
+    const core = scriptedCore({ revision: 0, values: {} });
+    core.state.failReads = true;
+    const stop = startAppPreferenceSync(core.api, storage, new EventTarget() as unknown as Window);
+    await settle();
+    core.state.failReads = false;
+    core.state.notify();
+    await settle();
+    expect(core.state.saves).toEqual([{ skin: "vibrancy" }]);
+    expect(core.state.record().values).toEqual({ skin: "vibrancy" });
+    stop();
+  });
+
+  it("retries the first read on its own when no hint ever comes", async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = new MemoryStorage();
+      const core = scriptedCore({ revision: 1, values: { theme: "light" } });
+      core.state.failReads = true;
+      const stop = startAppPreferenceSync(core.api, storage, new EventTarget() as unknown as Window);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(storage.getItem("bridge.theme")).toBeNull();
+      core.state.failReads = false;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(storage.getItem("bridge.theme")).toBe("light");
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
