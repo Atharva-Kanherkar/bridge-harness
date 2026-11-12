@@ -138,7 +138,9 @@ fn live() {
         };
         started_chats += 1;
         let mut runtime = started.runtime;
-        runtime.send_turn(case.ask).unwrap();
+        // Debugging a harness: ask something else in the case's setting.
+        let ask = std::env::var("BRIDGE_SETTINGS_TOOLS_EVAL_ASK").unwrap_or_else(|_| case.ask.to_owned());
+        runtime.send_turn(&ask).unwrap();
         let mut tools: Vec<String> = Vec::new();
         let mut said = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
@@ -166,6 +168,9 @@ fn live() {
             }
             let mut done = false;
             for event in registry.normalize(&harness(), &value) {
+                if std::env::var_os("BRIDGE_SETTINGS_TOOLS_EVAL_DEBUG").is_some() {
+                    println!("       event {} {} {}", event.kind, event.title.clone().unwrap_or_default(), crate::notes::guards::clip(&event.text.clone().unwrap_or_default(), 160));
+                }
                 if event.kind == "tool.started" {
                     tools.push(event.title.clone().unwrap_or_default());
                 }
