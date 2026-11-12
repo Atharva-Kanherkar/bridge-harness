@@ -92,12 +92,22 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
   let rendered: AppPreferenceValues = readLocalPreferences(storage);
   /** Keys saved from here and not yet answered, so a stale read cannot undo them. */
   const pending = new Set<Key>();
+  /** The newest core revision this window has seen, from a read or a save's
+   *  reply. Replies can arrive out of order (the web client reads on several
+   *  lanes), so an older snapshot is dropped rather than painted. */
+  let revision = -1;
+  const accept = (record: AppPreferences): boolean => {
+    if (record.revision < revision) return false;
+    revision = record.revision;
+    return true;
+  };
 
   const save = (values: AppPreferenceValues) => {
     const keys = Object.keys(values) as Key[];
     keys.forEach(key => pending.add(key));
     rendered = { ...rendered, ...values };
     void api.saveAppPreferences(values)
+      .then(accept)
       .catch(() => undefined)
       .finally(() => keys.forEach(key => pending.delete(key)));
   };
@@ -109,7 +119,7 @@ export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = 
     } catch {
       return;
     }
-    if (stopped) return;
+    if (stopped || !accept(record)) return;
     const core = record.values;
     const incoming = changedKeys(core, rendered);
     for (const key of pending) delete (incoming as Record<string, unknown>)[key];

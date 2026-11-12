@@ -184,4 +184,27 @@ describe("app preferences across windows and a flaky backend", () => {
     stopFirst();
     stopSecond();
   });
+
+  it("ignores a snapshot older than one it already accepted", async () => {
+    const storage = new MemoryStorage();
+    const reads: Deferred<AppPreferences>[] = [];
+    let notify: () => void = () => undefined;
+    const api: AppPreferencesApi = {
+      getAppPreferences: () => { const read = deferred<AppPreferences>(); reads.push(read); return read.promise; },
+      saveAppPreferences: vi.fn(async values => ({ revision: 99, values })),
+      onAppPreferencesChanged: async handler => { notify = handler; return () => undefined; },
+    };
+    const stop = startAppPreferenceSync(api, storage, new EventTarget() as unknown as Window);
+    reads[0].resolve({ revision: 1, values: { theme: "light" } });
+    await settle();
+    notify();
+    notify();
+    // Replies on separate lanes: the newer read answers first.
+    reads[2].resolve({ revision: 3, values: { theme: "dark" } });
+    await settle();
+    reads[1].resolve({ revision: 2, values: { theme: "light" } });
+    await settle();
+    expect(storage.getItem("bridge.theme")).toBe("dark");
+    stop();
+  });
 });
