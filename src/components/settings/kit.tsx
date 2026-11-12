@@ -331,7 +331,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
   disabled?: boolean;
   label: string;
   placeholder?: string;
-  type?: "text" | "password";
+  type?: "text" | "password" | "time";
   width?: string;
   mono?: boolean;
   onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;

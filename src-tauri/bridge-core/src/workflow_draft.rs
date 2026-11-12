@@ -407,6 +407,8 @@ impl DraftModel for ClaudeDraftModel {
                 .start(
                     "claude",
                     StartRequest {
+                        session_id: None,
+                        account: None,
                         cwd: &cwd,
                         model: Some(&self.model),
                         effort: None,

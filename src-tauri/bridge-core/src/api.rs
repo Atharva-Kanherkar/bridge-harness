@@ -564,6 +564,59 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
     Ok(wire::GithubChecksResult { checks })
 }
 
+/// A chat's drafted messages, oldest first.
+pub fn list_outgoing(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ListOutgoingResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    Ok(wire::ListOutgoingResult { items: crate::outgoing::list(&db, session_id)? })
+}
+
+fn outgoing_changed(core: &Arc<BridgeCore>, item: &wire::OutgoingMessage) {
+    core.events.publish(CoreEvent::OutgoingChanged { session_id: item.session_id.clone(), id: item.id.clone() });
+}
+
+/// The person's edit or Fix of a draft, against the revision they saw.
+pub fn update_outgoing(
+    core: &Arc<BridgeCore>,
+    id: &str,
+    revision: u32,
+    body: Option<&str>,
+    apply_fixes: bool,
+    attachments: Option<&[String]>,
+) -> Result<wire::UpdateOutgoingResult, BridgeError> {
+    let item = {
+        let db = core.db.lock().unwrap();
+        crate::outgoing::update(&db, id, revision, body, apply_fixes, attachments, &chrono::Utc::now().to_rfc3339())?
+    };
+    outgoing_changed(core, &item);
+    Ok(wire::UpdateOutgoingResult { item })
+}
+
+/// The text to put on the clipboard; the client writes it there.
+pub fn copy_outgoing(core: &Arc<BridgeCore>, id: &str, revision: u32) -> Result<wire::CopyOutgoingResult, BridgeError> {
+    let (text, item) = {
+        let db = core.db.lock().unwrap();
+        crate::outgoing::copy(&db, id, revision, &chrono::Utc::now().to_rfc3339())?
+    };
+    outgoing_changed(core, &item);
+    Ok(wire::CopyOutgoingResult { text, item })
+}
+
+/// One image a draft carries, read and checked again for the card.
+pub fn read_outgoing_attachment(core: &Arc<BridgeCore>, id: &str, index: u32) -> Result<wire::ReadOutgoingAttachmentResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let (mime, data_base64) = crate::outgoing::read_attachment(&db, id, index)?;
+    Ok(wire::ReadOutgoingAttachmentResult { mime, data_base64 })
+}
+
+pub fn discard_outgoing(core: &Arc<BridgeCore>, id: &str) -> Result<wire::DiscardOutgoingResult, BridgeError> {
+    let item = {
+        let db = core.db.lock().unwrap();
+        crate::outgoing::discard(&db, id, &chrono::Utc::now().to_rfc3339())?
+    };
+    outgoing_changed(core, &item);
+    Ok(wire::DiscardOutgoingResult { item })
+}
+
 /// The pull requests attached to one chat, newest first, with live state.
 /// Reading (re)arms the poller, so a reopened chat resumes background updates
 /// without the GitHub pane being open.
@@ -1523,12 +1576,27 @@ pub fn update_chat_model(
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
+    update_chat_model_with_account(core, session_id, harness, model, effort, None)
+}
+
+/// [`update_chat_model`] with the account the chat signs in with. `None`
+/// keeps the chat's account on the same harness; the harness id is the
+/// user's own login.
+pub fn update_chat_model_with_account(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    harness: &Harness,
+    model: Option<&str>,
+    effort: Option<&str>,
+    account: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     // Exclusive for the whole plan -> teardown -> commit window: a concurrent
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
     let _lifecycle = core.claim_session_lifecycle(session_id, "model switch")?;
     crate::chat_defaults::validate_model_switch(&core.db.lock().unwrap(), &core.adapter_registry, session_id, &store::harness_name(harness))?;
-    let change = core.plan_chat_model_change(session_id, harness, model)?;
+    let account = account.map_or(crate::sessions::AccountRequest::Keep, crate::sessions::AccountRequest::Choose);
+    let change = core.plan_chat_selection_change(session_id, harness, model, account)?;
     let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
         "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1601,7 +1669,7 @@ pub fn update_chat_model(
         }
         let db = core.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         transaction.execute(
             "UPDATE sessions SET effort=?2 WHERE id=?1 AND active_turn_id IS NULL",
             rusqlite::params![session_id, next_effort],
@@ -2428,10 +2496,11 @@ fn resolve_legacy_approval(
             Some("approval_resolved"),
         )?;
     }
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     let adapters = core.adapters.lock().unwrap();
     let runtime = adapters
-        .get(session_id)
+        .get(&adapter_owner)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let response = if is_question {
         runtime.reject_question(request_id)
@@ -2473,7 +2542,7 @@ fn resolve_legacy_approval(
     )?;
     if !is_worker {
         db.execute(
-            "UPDATE sessions SET status='working' WHERE id=?1",
+            "UPDATE sessions SET status='working' WHERE id=?1 AND (kind!='harness_subagent' OR status NOT IN ('completed','failed','interrupted','stopped'))",
             params![session_id],
         )?;
     }
@@ -2554,6 +2623,10 @@ fn interaction_payload(
     event_id: i64,
     expected_kind: &str,
 ) -> Result<(Value, String, bool), BridgeError> {
+    let terminal_child: bool = db.query_row("SELECT kind='harness_subagent' AND status IN ('completed','failed','interrupted','stopped') FROM sessions WHERE id=?1", [session_id], |r| r.get(0))?;
+    if terminal_child { return Err(BridgeError::Invalid("This subagent is no longer running".into())); }
+    let ended_interaction:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id=?1 AND kind=replace(?2,'requested','resolved') AND json_extract(payload,'$.data.requestEventId')=?3 AND json_extract(payload,'$.data.reason')='subagent_ended')",params![session_id,expected_kind,event_id],|r|r.get(0))?;
+    if ended_interaction { return Err(BridgeError::Invalid("This subagent interaction has ended".into())); }
     let (kind, payload, adapter_id): (String, String, String) = db.query_row(
         "SELECT e.kind,e.payload,s.harness FROM session_entries e
          JOIN sessions s ON s.id=e.session_id
@@ -2697,7 +2770,7 @@ fn finish_interaction(
             )?;
         } else {
             transaction.execute(
-                "UPDATE sessions SET status='working' WHERE id=?1",
+                "UPDATE sessions SET status='working' WHERE id=?1 AND (kind!='harness_subagent' OR status NOT IN ('completed','failed','interrupted','stopped'))",
                 params![session_id],
             )?;
         }
@@ -2855,11 +2928,12 @@ fn resolve_provider_permission(
     if workflow_session && actor != "workflow" {
         crate::workflow_run::record_human_decision(&db, session_id, &details, &decision, actor)?;
     }
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 
     let adapters = core.adapters.lock().unwrap();
-    let response = match adapters.get(session_id) {
+    let response = match adapters.get(&adapter_owner) {
         Some(runtime) => runtime.respond_with_option(request_id, &decision, option_id.as_deref()),
         None => Err(BridgeError::Invalid(
             "Structured adapter session is not running".into(),
@@ -2947,11 +3021,12 @@ pub fn resolve_question(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 
     let adapters = core.adapters.lock().unwrap();
-    let response = match (adapters.get(session_id), request_method) {
+    let response = match (adapters.get(&adapter_owner), request_method) {
         (None, _) => Err(BridgeError::Invalid(
             "Structured adapter session is not running".into(),
         )),
@@ -4326,6 +4401,146 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+/// Deliver a chat's queued input now, resuming its adapter if it is gone.
+pub fn deliver_queued_input(core: &Arc<BridgeCore>, params: &wire::DeliverQueuedInputParams) -> Result<wire::DeliverQueuedInputResult, BridgeError> {
+    use crate::live_turn::QueuedDelivery;
+    let disposition = match crate::live_turn::deliver_queued_now(core, &params.session_id)? {
+        QueuedDelivery::Delivered => wire::QueuedInputDelivery::Delivered,
+        QueuedDelivery::NothingQueued => wire::QueuedInputDelivery::NothingQueued,
+        QueuedDelivery::AfterCurrentTurn => wire::QueuedInputDelivery::AfterCurrentTurn,
+    };
+    Ok(wire::DeliverQueuedInputResult { disposition })
+}
+
+pub fn list_attention(core: &Arc<BridgeCore>, params: &wire::ListAttentionParams) -> Result<wire::ListAttentionResult, BridgeError> {
+    let page = crate::attention::list(&core.db.lock().unwrap(), params.after_sequence, params.limit, params.unseen_only)?;
+    Ok(wire::ListAttentionResult {
+        items: page.items.into_iter().map(attention_item).collect(),
+        latest_sequence: page.latest_sequence,
+    })
+}
+
+fn wire_attention_kind(kind: crate::attention::AttentionKind) -> wire::AttentionKind {
+    use crate::attention::AttentionKind;
+    match kind {
+        AttentionKind::Finished => wire::AttentionKind::Finished,
+        AttentionKind::Failed => wire::AttentionKind::Failed,
+        AttentionKind::NeedsYou => wire::AttentionKind::NeedsYou,
+        AttentionKind::Escalation => wire::AttentionKind::Escalation,
+        AttentionKind::Posted => wire::AttentionKind::Posted,
+    }
+}
+
+/// Wait on a chat's ledger state. Blocks the calling thread, never a lock.
+pub fn wait_session(core: &Arc<BridgeCore>, params: &wire::WaitParams) -> Result<wire::WaitResult, BridgeError> {
+    use crate::attention_wait::WaitState;
+    let until = params
+        .until
+        .iter()
+        .map(|state| match state {
+            wire::WaitState::Finished => Ok(WaitState::Finished),
+            wire::WaitState::Failed => Ok(WaitState::Failed),
+            wire::WaitState::NeedsYou => Ok(WaitState::NeedsYou),
+            wire::WaitState::Idle => Ok(WaitState::Idle),
+            wire::WaitState::Other => Err(BridgeError::Invalid("unknown state in until".into())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let outcome = crate::attention_wait::wait(
+        core,
+        &params.session_id,
+        &until,
+        params.timeout_ms.map(std::time::Duration::from_millis),
+        params.after_sequence,
+    )?;
+    Ok(wire::WaitResult {
+        state: match outcome.state {
+            WaitState::Finished => wire::WaitState::Finished,
+            WaitState::Failed => wire::WaitState::Failed,
+            WaitState::NeedsYou => wire::WaitState::NeedsYou,
+            WaitState::Idle => wire::WaitState::Idle,
+        },
+        matched: outcome.matched,
+        item: outcome.item.map(attention_item),
+    })
+}
+
+fn attention_item(row: crate::attention::AttentionRow) -> wire::AttentionItem {
+    use crate::attention::Severity;
+    wire::AttentionItem {
+        sequence: row.sequence,
+        id: row.id,
+        kind: wire_attention_kind(row.kind),
+        severity: match row.severity {
+            Severity::Informational => wire::AttentionSeverity::Informational,
+            Severity::Actionable => wire::AttentionSeverity::Actionable,
+        },
+        session_id: row.session_id,
+        approval_event_id: row.approval_event_id,
+        title: row.title,
+        body: row.body,
+        created_at: row.created_at,
+        resolved_at: row.resolved_at,
+        seen_at: row.seen_at,
+    }
+}
+
+/// Seen is a server fact: opening a chat on any client clears it everywhere,
+/// so every client hears about it through `attention/changed`.
+pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionSeenParams) -> Result<wire::MarkAttentionSeenResult, BridgeError> {
+    let updated = crate::attention::mark_seen(&core.db.lock().unwrap(), &params.session_id)?;
+    if updated > 0 {
+        core.events.publish(CoreEvent::AttentionChanged);
+    }
+    Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
+}
+
+/// An agent asks for the person. Posts one `posted` row for the chat, or says
+/// the chat is rate limited.
+pub fn post_attention(core: &Arc<BridgeCore>, params: &wire::PostParams) -> Result<wire::PostResult, BridgeError> {
+    let severity = match params.severity {
+        Some(wire::AttentionSeverity::Actionable) => crate::attention::Severity::Actionable,
+        _ => crate::attention::Severity::Informational,
+    };
+    let outcome = crate::attention::post(
+        &core.db.lock().unwrap(),
+        &params.session_id,
+        &params.title,
+        params.body.as_deref(),
+        severity,
+        chrono::Utc::now(),
+    )?;
+    Ok(match outcome {
+        crate::attention::PostOutcome::Shown(_) => {
+            core.events.publish(CoreEvent::AttentionChanged);
+            wire::PostResult { shown: true, reason: wire::PostReason::Shown }
+        }
+        crate::attention::PostOutcome::RateLimited => wire::PostResult { shown: false, reason: wire::PostReason::RateLimited },
+    })
+}
+
+/// Renew one client's presence lease and say whether it posts OS banners.
+pub fn report_presence(core: &Arc<BridgeCore>, params: &wire::ReportPresenceParams) -> Result<wire::ReportPresenceResult, BridgeError> {
+    let kind = match params.client_kind {
+        wire::PresenceClientKind::Desktop => crate::attention_presence::ClientKind::Desktop,
+        wire::PresenceClientKind::Web => crate::attention_presence::ClientKind::Web,
+    };
+    let banner_owner = core.attention_presence.report(&params.client_id, kind, params.can_post_banners, params.focused, params.gone, std::time::Instant::now());
+    Ok(wire::ReportPresenceResult { banner_owner })
+}
+
+/// What is still unread, rolled up to the chats a person sees. Clients reread
+/// it on `attention/changed`.
+pub fn unread_summary(core: &Arc<BridgeCore>) -> Result<wire::UnreadSummary, BridgeError> {
+    let summary = crate::attention::unread_summary(&core.db.lock().unwrap())?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(wire::UnreadSummary {
+        total: count(summary.total()),
+        needs_you: count(summary.needs_you()),
+        by_chat: summary.by_chat.into_iter().map(|(id, kind)| (id, wire_attention_kind(kind))).collect(),
+        by_session: summary.by_session.into_iter().map(|(id, kind)| (id, wire_attention_kind(kind))).collect(),
+    })
+}
+
 pub fn get_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::GetDelegationNotifySettingsParams) -> Result<wire::DelegationNotifySettingsView, BridgeError> {
     crate::delegation_notify::view(&core.db.lock().unwrap(), params.session_id.as_deref())
 }
@@ -4946,10 +5161,24 @@ pub fn save_harness_config(
     let opencode_settings = (config.id == "opencode")
         .then(|| agent_config::opencode_settings(Some(&config)))
         .transpose()?;
+    let accounts_may_change = crate::provider_accounts::supports_accounts(&config.id);
+    // Keys of accounts this save removes, deleted once the save lands.
+    let dropped_keys = keyed_accounts(core, &config.id).map(|before| {
+        let after: Vec<String> = crate::provider_accounts::accounts(&config.id, &config.advanced)
+            .map(|accounts| accounts.into_iter().map(|account| account.id).collect())
+            .unwrap_or_default();
+        before.into_iter().filter(|id| !after.contains(id)).collect::<Vec<_>>()
+    });
+    let harness = config.id.clone();
     let next = agent_config::save_harness(&core.db.lock().unwrap(), config)?;
+    forget_account_keys(&harness, dropped_keys.unwrap_or_default());
     if let Some(settings) = opencode_settings {
         let directory = opencode_directory(None)?;
         let _ = core.adapter_registry.refresh_opencode(settings, &directory);
+    }
+    // Every window's model picker lists the accounts; let them re-read.
+    if accounts_may_change {
+        core.events.publish(crate::events::CoreEvent::StateChanged);
     }
     Ok(next)
 }
@@ -4958,7 +5187,12 @@ pub fn reset_harness_config(
     core: &Arc<BridgeCore>,
     id: &str,
 ) -> Result<agent_config::ConfigState, BridgeError> {
+    let dropped_keys = keyed_accounts(core, id).unwrap_or_default();
     let next = agent_config::reset_harness(&core.db.lock().unwrap(), id)?;
+    forget_account_keys(id, dropped_keys);
+    if crate::provider_accounts::supports_accounts(id) {
+        core.events.publish(crate::events::CoreEvent::StateChanged);
+    }
     if id == "opencode" {
         let directory = opencode_directory(None)?;
         let _ = core
@@ -4977,13 +5211,69 @@ pub fn refresh_opencode_catalog(
     core.adapter_registry.refresh_opencode(settings, &directory)
 }
 
+/// The stored accounts of a harness whose accounts sign in with a saved key,
+/// or `None` for any other harness.
+fn keyed_accounts(core: &Arc<BridgeCore>, harness: &str) -> Option<Vec<String>> {
+    let driver = crate::provider_accounts::driver(harness)?;
+    if !matches!(driver.login, crate::provider_accounts::AccountLogin::ApiKey { .. }) {
+        return None;
+    }
+    let db = core.db.lock().unwrap();
+    let advanced = agent_config::state(&db).ok()?.harnesses.into_iter().find(|item| item.id == harness)?.advanced;
+    Some(crate::provider_accounts::accounts(harness, &advanced).ok()?.into_iter().map(|account| account.id).collect())
+}
+
+fn forget_account_keys(harness: &str, ids: Vec<String>) {
+    for id in ids {
+        // A key that cannot be removed is reported by the next save; the
+        // account itself is already gone.
+        let _ = crate::account_secrets::delete(harness, &id);
+    }
+}
+
+/// Save the API key of an extra account on an agent whose accounts sign in
+/// with a key. The key goes to the macOS Keychain, never into settings.
+pub fn set_account_api_key(
+    core: &Arc<BridgeCore>,
+    harness: &str,
+    account: &str,
+    api_key: &str,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let driver = crate::provider_accounts::driver(harness)
+        .ok_or_else(|| BridgeError::Invalid(format!("{harness} does not support extra accounts")))?;
+    if !matches!(driver.login, crate::provider_accounts::AccountLogin::ApiKey { .. }) {
+        return Err(BridgeError::Invalid(format!(
+            "{} accounts sign in inside their own folder, not with a key saved by Bridge",
+            driver.label
+        )));
+    }
+    let db = core.db.lock().unwrap();
+    agent_config::account(&db, harness, account)?;
+    crate::account_secrets::save(harness, account, api_key)?;
+    agent_config::state(&db)
+}
+
 pub fn set_opencode_provider_api_key(
     core: &Arc<BridgeCore>,
     provider_id: &str,
     api_key: &str,
     directory: Option<String>,
+    account: Option<String>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
+    // An extra account keeps its key in its own data folder, so a private
+    // OpenCode server for that folder stores it. The global catalog, which
+    // describes the user's own login, is left alone.
+    if let Some(id) = crate::provider_accounts::normalize_choice("opencode", account.as_deref()) {
+        let record = agent_config::account(&core.db.lock().unwrap(), "opencode", &id)?;
+        let launch = crate::provider_accounts::prepare_launch(
+            "opencode",
+            &record,
+            &crate::provider_accounts::HostHomes::from_env(),
+        )?;
+        let settings = core.adapter_registry.opencode_settings()?;
+        return opencode_adapter::set_provider_api_key_for(&settings, &directory, provider_id, api_key, Some(&launch));
+    }
     let save = || core.adapter_registry
         .set_opencode_provider_api_key(&directory, provider_id, api_key);
     if provider_id == "opencode-go" {
@@ -5605,6 +5895,118 @@ pub fn write_clone_settings(core: &Arc<BridgeCore>, settings: &bridge_protocol::
     core.db.lock().unwrap_or_else(|p| p.into_inner()).execute(
         "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('browser_clones','settings',?1,?2,?2) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at", params![payload, now])?;
     read_clone_settings(core)
+}
+
+/// Saved keys and this launch's chat keys, with where each may be sent.
+/// Never a value.
+pub fn list_api_keys(core: &Arc<BridgeCore>) -> Result<wire::ApiKeysSnapshot, BridgeError> {
+    let (saved, chat) = core.credential_broker.summaries();
+    let mut labels: HashMap<String, Option<String>> = HashMap::new();
+    {
+        let db = core.db.lock().unwrap_or_else(|p| p.into_inner());
+        for session in chat.iter().filter_map(|key| key.session_id.as_ref()) {
+            if !labels.contains_key(session) {
+                let label = db
+                    .query_row("SELECT label FROM sessions WHERE id=?1", params![session], |row| row.get::<_, Option<String>>(0))
+                    .optional()?
+                    .flatten();
+                labels.insert(session.clone(), label);
+            }
+        }
+    }
+    Ok(wire::ApiKeysSnapshot {
+        can_save: crate::api_keys::supported(),
+        proxy_running: core.credential_broker.endpoint().is_some(),
+        saved: saved
+            .into_iter()
+            .map(|key| wire::SavedApiKey {
+                needs_value: !core.credential_broker.saved_readable(&key.reference),
+                name: key.reference,
+                kind: key.kind,
+                hosts: key.hosts,
+            })
+            .collect(),
+        chat: chat
+            .into_iter()
+            .map(|key| {
+                let session_id = key.session_id.unwrap_or_default();
+                wire::ChatApiKey {
+                    session_label: labels.get(&session_id).cloned().flatten(),
+                    reference: key.reference,
+                    kind: key.kind,
+                    hosts: key.hosts,
+                    session_id,
+                    saved_as: key.saved_as,
+                }
+            })
+            .collect(),
+    })
+}
+
+/// Save a key for every chat: a new value, a key pasted into a chat, or new
+/// sites for a key already saved. The value goes to the Keychain only.
+pub fn save_api_key(core: &Arc<BridgeCore>, params: &wire::SaveApiKeyParams) -> Result<wire::ApiKeysSnapshot, BridgeError> {
+    use crate::api_keys;
+    let name = api_keys::validate_name(&params.name)?;
+    let hosts = api_keys::normalize_hosts(&params.hosts)?;
+    if !api_keys::supported() {
+        return Err(BridgeError::Invalid(
+            "Saving a key needs the macOS Keychain. A key pasted into a chat still works until Bridge quits.".into(),
+        ));
+    }
+    let broker = &core.credential_broker;
+    let existing = broker.saved_metadata(&name);
+    let (kind, value, alias) = match (params.value.as_deref(), params.from_reference.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(BridgeError::Invalid("Save either a new key or one from a chat, not both".into()))
+        }
+        (Some(value), None) => {
+            let value = api_keys::validate_value(value)?;
+            let kind = secret_interception::detect(&value).unwrap_or("custom").to_owned();
+            (kind, Some(value), None)
+        }
+        (None, Some(reference)) => {
+            let (kind, value) = broker.chat_key_for_saving(reference).ok_or_else(|| {
+                BridgeError::Invalid("That chat key is gone: Bridge forgets pasted keys when it quits. Paste the key here instead.".into())
+            })?;
+            (kind, Some(value), Some(reference.to_owned()))
+        }
+        (None, None) => {
+            let existing = existing.as_ref().ok_or_else(|| {
+                BridgeError::Invalid(format!("There is no saved key named {name}. Paste its value to add it."))
+            })?;
+            (existing.kind.clone(), None, None)
+        }
+    };
+    let mut aliases = existing.map(|metadata| metadata.aliases).unwrap_or_default();
+    if let Some(alias) = alias.as_ref().filter(|alias| !aliases.contains(alias)) {
+        aliases.push(alias.clone());
+    }
+    let metadata = api_keys::Metadata { kind, hosts, aliases };
+    if let Some(value) = &value {
+        api_keys::save_value(&name, value)?;
+    }
+    api_keys::put(&core.db.lock().unwrap_or_else(|p| p.into_inner()), &name, &metadata)?;
+    broker.put_saved(&name, metadata, value);
+    if let Some(reference) = &alias {
+        broker.mark_saved_as(reference, &name);
+    }
+    list_api_keys(core)
+}
+
+/// Forget a saved key (by name) or a chat key (by its `sec_…` reference).
+/// Chats that used it get a refusal on their next call.
+pub fn forget_api_key(core: &Arc<BridgeCore>, reference: &str) -> Result<wire::ApiKeysSnapshot, BridgeError> {
+    let broker = &core.credential_broker;
+    if reference.starts_with("sec_") {
+        broker.forget_chat_key(reference);
+    } else {
+        let name = crate::api_keys::validate_name(reference)?;
+        crate::api_keys::delete_value(&name)?;
+        crate::api_keys::remove(&core.db.lock().unwrap_or_else(|p| p.into_inner()), &name)?;
+        broker.remove_saved(&name);
+    }
+    list_api_keys(core)
 }
 
 pub fn clone_requests(core: &Arc<BridgeCore>) -> Vec<bridge_protocol::messages::CloneRequest> {
@@ -6258,6 +6660,35 @@ mod tests {
         let roots = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: String::new(), offset: 0, root_session_id: None }).unwrap();
         assert_eq!(roots.chats[0].id, "kept");
         assert!(!fixture.chat_worktree.exists());
+    }
+
+    #[test]
+    fn account_keys_are_saved_for_key_agents_only_and_go_with_the_account() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let harness = |id: &str| {
+            crate::agent_config::state(&core.db.lock().unwrap()).unwrap().harnesses.into_iter().find(|item| item.id == id).unwrap()
+        };
+        let mut cursor = harness("cursor");
+        cursor.advanced = serde_json::json!({"accounts": [{"id": "api-work", "label": "Work"}, {"id": "api-team", "label": "Team"}]});
+        super::save_harness_config(&core, cursor.clone()).unwrap();
+
+        assert!(super::set_account_api_key(&core, "cursor", "api-gone", "key").unwrap_err().to_string().contains("no longer in Settings"));
+        assert!(super::set_account_api_key(&core, "claude", "x", "key").unwrap_err().to_string().contains("their own folder"));
+        assert!(super::set_account_api_key(&core, "grok", "x", "key").unwrap_err().to_string().contains("does not support"));
+        super::set_account_api_key(&core, "cursor", "api-work", "key_work").unwrap();
+        super::set_account_api_key(&core, "cursor", "api-team", "key_team").unwrap();
+        let stored = serde_json::to_string(&harness("cursor").advanced).unwrap();
+        assert!(!stored.contains("key_work"), "a key never enters the settings record: {stored}");
+
+        // Removing an account deletes its key; the other stays.
+        cursor.advanced = serde_json::json!({"accounts": [{"id": "api-team", "label": "Team"}]});
+        super::save_harness_config(&core, cursor).unwrap();
+        assert_eq!(crate::account_secrets::read("cursor", "api-work").unwrap(), None);
+        assert!(crate::account_secrets::read("cursor", "api-team").unwrap().is_some());
+        // Resetting the harness deletes them all.
+        super::reset_harness_config(&core, "cursor").unwrap();
+        assert_eq!(crate::account_secrets::read("cursor", "api-team").unwrap(), None);
     }
 
     /// Putting a conversation away should not require first resolving its
@@ -7081,6 +7512,58 @@ mod clone_settings_tests {
         assert!(validate_clone_ttl(240).is_ok());
     }
 
+    #[test]
+    fn api_keys_save_promote_update_and_forget_without_returning_a_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let pasted = secret_interception::intercept("ghp_apitestabcdefghijklmnopqrstuvwxyz0123");
+        let reference = pasted.sanitized.interceptions[0].reference.clone();
+        core.credential_broker.register("chat-1", pasted.captured);
+
+        let listed = list_api_keys(&core).unwrap();
+        assert_eq!(listed.chat.len(), 1);
+        assert_eq!(listed.chat[0].hosts, vec!["api.github.com", "uploads.github.com"]);
+        if !crate::api_keys::supported() {
+            assert!(save_api_key(&core, &wire::SaveApiKeyParams { name: "GH_API_TEST".into(), hosts: vec![], value: Some("x".into()), from_reference: None }).is_err());
+            return;
+        }
+
+        let saved = save_api_key(&core, &wire::SaveApiKeyParams {
+            name: "GH_API_TEST".into(),
+            hosts: vec!["https://api.github.com/user".into()],
+            value: None,
+            from_reference: Some(reference.clone()),
+        }).unwrap();
+        assert_eq!(saved.saved, vec![wire::SavedApiKey { name: "GH_API_TEST".into(), kind: "github".into(), hosts: vec!["api.github.com".into()], needs_value: false }]);
+        assert_eq!(saved.chat[0].saved_as.as_deref(), Some("GH_API_TEST"));
+        assert!(!serde_json::to_string(&saved).unwrap().contains("ghp_apitest"), "no value on the wire");
+
+        // New sites only; the value stays.
+        let updated = save_api_key(&core, &wire::SaveApiKeyParams { name: "GH_API_TEST".into(), hosts: vec!["api.github.com".into(), "*.githubusercontent.com".into()], value: None, from_reference: None }).unwrap();
+        assert_eq!(updated.saved[0].hosts, vec!["api.github.com", "*.githubusercontent.com"]);
+        assert_eq!(crate::api_keys::read_value("GH_API_TEST").unwrap().as_deref().map(String::as_str), Some("ghp_apitestabcdefghijklmnopqrstuvwxyz0123"));
+
+        // A typed value is classified; a missing key with no value is refused.
+        let typed = save_api_key(&core, &wire::SaveApiKeyParams { name: "OPENAI_API_TEST".into(), hosts: vec!["api.openai.com".into()], value: Some(" sk-proj-apitestabcdefghijklmnopqrstuvwx ".into()), from_reference: None }).unwrap();
+        assert!(typed.saved.iter().any(|key| key.name == "OPENAI_API_TEST" && key.kind == "openai"));
+        assert!(save_api_key(&core, &wire::SaveApiKeyParams { name: "MISSING_API_TEST".into(), hosts: vec![], value: None, from_reference: None }).is_err());
+
+        // A build that cannot read the Keychain item says so instead of
+        // listing a key no agent can use.
+        let fresh = Arc::new(BridgeCore::for_tests(tempfile::tempdir().unwrap().path()));
+        fresh.credential_broker.put_saved("UNREADABLE_API_TEST", crate::api_keys::Metadata { kind: "custom".into(), hosts: vec![], aliases: vec![] }, None);
+        assert!(list_api_keys(&fresh).unwrap().saved.iter().any(|key| key.name == "UNREADABLE_API_TEST" && key.needs_value));
+        assert!(list_api_keys(&core).unwrap().saved.iter().all(|key| !key.needs_value));
+
+        let forgotten = forget_api_key(&core, "GH_API_TEST").unwrap();
+        assert!(forgotten.saved.iter().all(|key| key.name != "GH_API_TEST"));
+        assert_eq!(forgotten.chat[0].saved_as, None);
+        assert_eq!(crate::api_keys::read_value("GH_API_TEST").unwrap(), None);
+        let forgotten = forget_api_key(&core, &reference).unwrap();
+        assert!(forgotten.chat.is_empty());
+        forget_api_key(&core, "OPENAI_API_TEST").unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn clone_settings_round_trip_through_the_native_store() {
@@ -7125,4 +7608,203 @@ pub fn get_chat_settings(core: &Arc<BridgeCore>, session_id: &str) -> Result<wir
 }
 pub fn update_chat_options(core: &Arc<BridgeCore>, params: &wire::UpdateChatOptionsParams) -> Result<wire::ChatSessionSettings, BridgeError> {
     crate::chat_defaults::update_options(core,params)
+}
+
+// ---- notes ---------------------------------------------------------------
+// Bridge Notes. Every write goes through `NotesService`, the one write path;
+// a person's calls arrive here with actor `person`, agents arrive through the
+// notes tools with their own actor (see `notes::tool`).
+
+fn notes_list_filter(params: &wire::ListNotesParams) -> crate::notes::service::ListFilter {
+    crate::notes::service::ListFilter {
+        query: params.query.clone(),
+        tags: params.tags.clone().unwrap_or_default(),
+        kind: params.kind.clone(),
+        state: params.state.clone(),
+        parent_id: params.parent_id.clone(),
+        include_archived: params.include_archived.unwrap_or(false),
+        limit: None,
+    }
+}
+
+/// Pages, model jobs worth showing, and the folder pages are mirrored to.
+/// Imports outside edits first, so a list reflects the files on disk.
+pub fn list_notes(core: &Arc<BridgeCore>, params: &wire::ListNotesParams) -> Result<wire::NotesList, BridgeError> {
+    if let Err(error) = crate::notes::projector::import_changes(&core.notes) {
+        eprintln!("[notes] import before list failed: {error}");
+    }
+    Ok(wire::NotesList {
+        notes: core.notes.list(&notes_list_filter(params))?,
+        jobs: core.notes.with_db(crate::notes::jobs::recent)?,
+        root: core.notes.root().to_string_lossy().into_owned(),
+        system_database_id: core.notes.system_database().ok(),
+    })
+}
+
+pub fn read_page(core: &Arc<BridgeCore>, params: &wire::ReadPageParams) -> Result<wire::NotePage, BridgeError> {
+    core.notes.read(&params.id)
+}
+
+pub fn capture_note(core: &Arc<BridgeCore>, params: &wire::CaptureNoteParams) -> Result<wire::Note, BridgeError> {
+    core.notes.capture(&params.body, crate::notes::service::PERSON)
+}
+
+pub(crate) fn notes_create_page(params: &wire::CreatePageParams) -> crate::notes::service::CreatePage {
+    crate::notes::service::CreatePage {
+        title: params.title.clone(),
+        content: params.content.clone(),
+        parent_id: params.parent_id.clone(),
+        kind: params.kind.clone(),
+        tags: params.tags.clone().unwrap_or_default(),
+        workspace_id: params.workspace_id.clone(),
+        ..Default::default()
+    }
+}
+
+pub fn create_page(core: &Arc<BridgeCore>, params: &wire::CreatePageParams) -> Result<wire::Note, BridgeError> {
+    core.notes.create(notes_create_page(params), crate::notes::service::PERSON)
+}
+
+pub(crate) fn notes_edit_page(params: &wire::EditPageParams) -> crate::notes::service::EditPage {
+    crate::notes::service::EditPage {
+        id: params.id.clone(),
+        base_seq: params.base_seq,
+        text: params.text.clone(),
+        edits: params.edits.clone().unwrap_or_default(),
+        append: params.append.clone(),
+        allow_deleting_children: params.allow_deleting_children.unwrap_or(false),
+    }
+}
+
+pub fn edit_page(core: &Arc<BridgeCore>, params: &wire::EditPageParams) -> Result<wire::NoteEditResult, BridgeError> {
+    core.notes.edit(notes_edit_page(params), crate::notes::service::PERSON)
+}
+
+pub(crate) fn notes_update_note(params: &wire::UpdateNoteParams) -> crate::notes::service::UpdateNote {
+    crate::notes::service::UpdateNote {
+        id: params.id.clone(),
+        parent_id: params.parent_id.clone(),
+        clear_parent: params.clear_parent,
+        title: params.title.clone(),
+        kind: params.kind.clone(),
+        tags: params.tags.clone(),
+        workspace_id: params.workspace_id.clone(),
+        clear_workspace: params.clear_workspace.unwrap_or(false),
+        state: params.state.clone(),
+        add_session_id: params.add_session_id.clone(),
+        values: params.values.clone().unwrap_or_default().into_iter().map(|(prop, value)| (prop, (!value.is_null()).then_some(value))).collect(),
+    }
+}
+
+pub fn update_note(core: &Arc<BridgeCore>, params: &wire::UpdateNoteParams) -> Result<wire::Note, BridgeError> {
+    core.notes.update(notes_update_note(params), crate::notes::service::PERSON)
+}
+
+/// Make a database page, with its first properties and views.
+pub fn create_database(core: &Arc<BridgeCore>, params: &wire::CreateDatabaseParams) -> Result<wire::NotePage, BridgeError> {
+    use crate::notes::wire;
+    let properties = params.properties.as_deref().unwrap_or_default().iter().map(wire::new_property).collect::<Result<Vec<_>, _>>()?;
+    let views = params
+        .views
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, view)| wire::view_input(&bridge_protocol::messages::NoteViewInput { order: view.order.or(Some(index as i64)), ..view.clone() }, None).map(|(_, view)| view))
+        .collect::<Result<Vec<_>, _>>()?;
+    let note = core.notes.create_database(
+        crate::notes::service::CreateDatabase { title: params.title.clone(), parent_id: params.parent_id.clone(), workspace_id: params.workspace_id.clone(), properties, views, ..Default::default() },
+        crate::notes::service::PERSON,
+    )?;
+    core.notes.read(&note.id)
+}
+
+/// Change a database's schema in one validated batch.
+pub fn update_schema(core: &Arc<BridgeCore>, params: &wire::UpdateSchemaParams) -> Result<wire::NoteDatabase, BridgeError> {
+    let ops = params.changes.iter().map(crate::notes::wire::schema_op).collect::<Result<Vec<_>, _>>()?;
+    core.notes.update_schema(&params.id, &ops, crate::notes::service::PERSON)?;
+    Ok(crate::notes::wire::database(&core.notes.database(&params.id)?))
+}
+
+/// Save one view: a new one without an id, a replacement with one.
+pub fn save_view(core: &Arc<BridgeCore>, params: &wire::SaveViewParams) -> Result<wire::NoteDatabaseView, BridgeError> {
+    let database = core.notes.database(&params.database_id)?;
+    let (view_id, view) = crate::notes::wire::view_input(&params.view, Some(&database))?;
+    if let Some(view_id) = &view_id {
+        if !database.views.contains_key(view_id) {
+            return Err(BridgeError::Invalid(format!("no view {view_id} to replace")));
+        }
+    }
+    let id = core.notes.put_view(&params.database_id, view_id.as_deref(), view, crate::notes::service::PERSON)?;
+    let saved = core.notes.database(&params.database_id)?;
+    Ok(crate::notes::wire::view(&id, &saved.views[&id]))
+}
+
+pub fn delete_view(core: &Arc<BridgeCore>, params: &wire::DeleteViewParams) -> Result<wire::UnitResult, BridgeError> {
+    core.notes.delete_view(&params.database_id, &params.view_id, crate::notes::service::PERSON)?;
+    Ok(wire::UnitResult(()))
+}
+
+/// Filter, sort, group and page one database's rows.
+pub fn query_database(core: &Arc<BridgeCore>, params: &wire::QueryDatabaseParams) -> Result<wire::DatabaseQueryResult, BridgeError> {
+    let result = core.notes.query_database(&params.database_id, &crate::notes::wire::query_spec(params))?;
+    Ok(crate::notes::wire::query_result(result))
+}
+
+pub fn delete_note(core: &Arc<BridgeCore>, params: &wire::DeleteNoteParams) -> Result<wire::UnitResult, BridgeError> {
+    core.notes.delete(&params.id, crate::notes::service::PERSON)?;
+    Ok(wire::UnitResult(()))
+}
+
+/// Queue the opt-in Structure pass. Nothing runs until someone asks.
+pub fn structure_note(core: &Arc<BridgeCore>, params: &wire::StructureNoteParams) -> Result<wire::NoteJobQueued, BridgeError> {
+    let job_id = core.notes.request_pass(&params.id, crate::notes::jobs::STRUCTURE, params.harness.as_deref(), params.model.as_deref())?;
+    Ok(wire::NoteJobQueued { job_id })
+}
+
+/// Queue the opt-in Turn into tasks pass on the chosen (or default) harness.
+pub fn extract_tasks(core: &Arc<BridgeCore>, params: &wire::ExtractTasksParams) -> Result<wire::NoteJobQueued, BridgeError> {
+    let job_id = core.notes.request_pass(&params.id, crate::notes::jobs::TASKS, params.harness.as_deref(), params.model.as_deref())?;
+    Ok(wire::NoteJobQueued { job_id })
+}
+
+pub fn split_item(core: &Arc<BridgeCore>, params: &wire::SplitItemParams) -> Result<wire::Note, BridgeError> {
+    core.notes.split_item(&params.id, params.item_index as usize, crate::notes::service::PERSON)
+}
+
+/// A page's versions, newest first, for its history.
+pub fn page_history(core: &Arc<BridgeCore>, params: &wire::PageHistoryParams) -> Result<wire::NoteHistory, BridgeError> {
+    core.notes.history(&params.id)
+}
+
+pub fn read_version(core: &Arc<BridgeCore>, params: &wire::ReadVersionParams) -> Result<wire::NoteVersionPage, BridgeError> {
+    core.notes.read_version(&params.id, params.seq)
+}
+
+/// The person restores a version's words as a new change.
+pub fn restore_version(core: &Arc<BridgeCore>, params: &wire::RestoreVersionParams) -> Result<wire::NoteEditResult, BridgeError> {
+    core.notes.restore_version(&params.id, params.seq, crate::notes::service::PERSON)
+}
+
+/// `notes/put_asset_part`: one part of an image upload.
+pub fn put_asset_part(core: &Arc<BridgeCore>, params: &wire::PutAssetPartParams) -> Result<wire::NoteAssetPart, BridgeError> {
+    core.notes.put_asset_part(params.upload_id.as_deref(), &params.data)
+}
+
+/// `notes/finish_asset`: store an upload as a page asset.
+pub fn finish_asset(core: &Arc<BridgeCore>, params: &wire::FinishAssetParams) -> Result<wire::NoteAsset, BridgeError> {
+    core.notes.finish_asset(&params.upload_id, &params.mime)
+}
+
+/// `notes/read_asset`: a stored asset's bytes.
+pub fn read_asset(core: &Arc<BridgeCore>, params: &wire::ReadAssetParams) -> Result<wire::NoteAssetData, BridgeError> {
+    core.notes.read_asset(&params.path)
+}
+
+pub fn get_notes_settings(core: &Arc<BridgeCore>) -> Result<wire::NotesSettings, BridgeError> {
+    core.notes.settings()
+}
+
+pub fn save_notes_settings(core: &Arc<BridgeCore>, params: &wire::SaveNotesSettingsParams) -> Result<wire::NotesSettings, BridgeError> {
+    core.notes.save_settings(params.auto_structure, params.root.clone())
 }

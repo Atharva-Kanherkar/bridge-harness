@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor, Workspace } from "../../types";
 import type { WorkerSettings } from "../../protocol/generated/protocol";
@@ -39,7 +40,7 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <SettingsGroup><SettingsRow label="Workspace" control={<Select label="Background tasks workspace" disabled={busy} value={workspace} onChange={setWorkspace} options={workspaces.map(item => ({ value: item.id, label: item.title }))} />} /></SettingsGroup>
     {!workspace && <p className="text-sm text-muted-foreground">Connect a workspace to configure background tasks. These controls do not apply to direct chats with a coding agent.</p>}
-    {workspace && !settings && !error && <p role="status" className="text-sm text-muted-foreground">Loading task settings...</p>}
+    {workspace && !settings && !error && <SkeletonRows label="Loading task settings" rows={4} trailing />}
     {settings && <form onSubmit={event => { event.preventDefault(); void save(); }} className="space-y-5">
       <SettingsGroup label="Agent choices" note="Model preferences and choices for a specific task override this default. Advanced settings can exclude an agent from background tasks while keeping it available for chats.">
         <SettingsRow label="Preferred coding agent" control={<Select label="Preferred coding agent" disabled={busy} value={settings.defaultHarness ?? ""} onChange={value => change({ defaultHarness: value || null })} options={[{ value: "", label: "Automatic" }, ...adapters.filter(item => ["codex", "claude", "opencode"].includes(item.id)).map(item => ({ value: item.id, label: `${item.label}${item.available ? "" : " (unavailable)"}` }))]} />} />

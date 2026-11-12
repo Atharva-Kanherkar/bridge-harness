@@ -187,17 +187,7 @@ pub fn resume_with_settings(
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
     launch(
-        StartRequest {
-            cwd: request.cwd,
-            model: request.model,
-            effort: request.effort,
-            instructions: request.instructions,
-            write_mode: request.write_mode,
-            read_only_sandbox: request.read_only_sandbox,
-            briefing: request.briefing,
-            interactive: request.interactive,
-            on_progress: request.on_progress,
-        },
+        request.as_start(),
         Some(request.provider_session_id),
         settings,
         false,
@@ -249,7 +239,7 @@ fn launch(
     // whatever inline config the user already passes OpenCode.
     let visualize = (!completion_only
         && crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing))
-        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id.filter(|_| request.interactive)))
         .flatten();
     if let Some(config) = chat_config_content(
         visualize.as_ref(),
@@ -267,6 +257,9 @@ fn launch(
         // instead of a generic exit.
         .stderr(Stdio::piped());
     crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
+    // An extra account runs its own server on its own data folder.
+    crate::provider_accounts::apply_account(&mut command, request.account);
+    crate::credential_broker::apply_proxy_pass(&mut command);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -684,6 +677,29 @@ fn permission_rules(write_mode: Option<WriteMode>) -> Value {
             rules.push(json!({"permission":"external_directory", "pattern":"*", "action":"ask"}));
         }
         None | Some(WriteMode::Full) => {}
+    }
+    // Bridge's notes write tools. OpenCode names MCP tools `<server>_<tool>`
+    // and matches permissions by that name, so the catch-all `allow` above
+    // would let Ask change a person's notes without asking.
+    let notes_action = match write_mode {
+        Some(WriteMode::ReadOnly) => Some("deny"),
+        Some(WriteMode::Shared | WriteMode::Isolated) => Some("ask"),
+        None | Some(WriteMode::Full) => None,
+    };
+    if let Some(action) = notes_action {
+        for tool in crate::notes::tool::WRITE_TOOLS {
+            let permission = format!("{}_{tool}", crate::mcp_apps::tool::SERVER_NAME);
+            rules.push(json!({"permission": permission, "pattern":"*", "action": action}));
+        }
+    }
+    // A memory proposal waits for the person's review in Bridge, so Ask lets
+    // it run like a read; a read-only session never proposes, and never
+    // drafts a message for someone else either.
+    if write_mode == Some(WriteMode::ReadOnly) {
+        for tool in crate::memory_tools::WRITE_TOOLS.iter().chain(crate::outgoing_tools::WRITE_TOOLS.iter()) {
+            let permission = format!("{}_{tool}", crate::mcp_apps::tool::SERVER_NAME);
+            rules.push(json!({"permission": permission, "pattern":"*", "action": "deny"}));
+        }
     }
     Value::Array(rules)
 }
@@ -1316,6 +1332,26 @@ impl AdapterRuntime for OpenCodeRuntime {
         };
         self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode turn")
     }
+    fn stop_subagent(&self, provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{provider_id}/abort"),
+            ServerApi::V2 => format!("/api/session/{provider_id}/interrupt"),
+        };
+        self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode subagent")
+    }
+    fn stop_subagent_request(&self, provider_id: &str, _turn_id: Option<&str>) -> Option<crate::adapters::InterruptRequest> {
+        let client = self.client.as_ref()?.clone();
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{provider_id}/abort"),
+            ServerApi::V2 => format!("/api/session/{provider_id}/interrupt"),
+        };
+        let url = self.api.url(&self.base_url, &path, &self.directory);
+        Some(Box::new(move || {
+            client.post(url).timeout(Duration::from_secs(10)).send()
+                .and_then(Response::error_for_status)
+                .map(|_| ()).map_err(http_error("interrupt OpenCode subagent"))
+        }))
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let client = self.client.as_ref()?.clone();
         let path = match self.api {
@@ -1701,11 +1737,21 @@ pub fn discover(
     settings: &OpenCodeSettings,
     directory: &str,
 ) -> Result<OpenCodeCatalog, BridgeError> {
+    discover_for(settings, directory, None)
+}
+
+/// [`discover`] as an extra account sees it: its own data folder, its own
+/// connected providers.
+pub fn discover_for(
+    settings: &OpenCodeSettings,
+    directory: &str,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) -> Result<OpenCodeCatalog, BridgeError> {
     let executable = resolve_executable(settings)?;
     let version = ensure_supported_version(&executable)?;
     let api = ServerApi::of(&version);
     if api == ServerApi::V2 {
-        return with_control_server(&executable, directory, api, |client, base_url| {
+        return with_control_server_for(&executable, directory, api, account, |client, base_url| {
             let get = |path: &str, action: &'static str| {
                 client
                     .get(format!("{base_url}{path}"))
@@ -1731,7 +1777,7 @@ pub fn discover(
             .map_err(BridgeError::Adapter)
         });
     }
-    with_control_server(&executable, directory, api, |client, base_url| {
+    with_control_server_for(&executable, directory, api, account, |client, base_url| {
         let providers = checked_json(
             client
                 .get(endpoint(base_url, "/provider", directory))
@@ -1763,6 +1809,18 @@ pub fn set_provider_api_key(
     provider_id: &str,
     api_key: &str,
 ) -> Result<OpenCodeCatalog, BridgeError> {
+    set_provider_api_key_for(settings, directory, provider_id, api_key, None)
+}
+
+/// Connect a provider key inside an extra account's data folder: a private
+/// OpenCode server for that folder stores it, so Bridge never holds it.
+pub fn set_provider_api_key_for(
+    settings: &OpenCodeSettings,
+    directory: &str,
+    provider_id: &str,
+    api_key: &str,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) -> Result<OpenCodeCatalog, BridgeError> {
     validate_provider_id(provider_id)?;
     if api_key.trim().is_empty() {
         return Err(BridgeError::Invalid(
@@ -1771,7 +1829,7 @@ pub fn set_provider_api_key(
     }
     let executable = resolve_executable(settings)?;
     let api = ServerApi::of(&ensure_supported_version(&executable)?);
-    with_control_server(&executable, directory, api, |client, base_url| {
+    with_control_server_for(&executable, directory, api, account, |client, base_url| {
         if api == ServerApi::V2 {
             let integration_id = v2_integration_for(client, base_url, provider_id)?;
             return checked_status(
@@ -1795,7 +1853,7 @@ pub fn set_provider_api_key(
         )?;
         Ok(())
     })?;
-    discover(settings, directory)
+    discover_for(settings, directory, account)
 }
 
 pub fn remove_provider_auth(
@@ -1913,6 +1971,16 @@ fn with_control_server<T>(
     api: ServerApi,
     action: impl FnOnce(&Client, &str) -> Result<T, BridgeError>,
 ) -> Result<T, BridgeError> {
+    with_control_server_for(executable, directory, api, None, action)
+}
+
+fn with_control_server_for<T>(
+    executable: &Path,
+    directory: &str,
+    api: ServerApi,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+    action: impl FnOnce(&Client, &str) -> Result<T, BridgeError>,
+) -> Result<T, BridgeError> {
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let password = uuid::Uuid::new_v4().to_string();
@@ -1929,6 +1997,7 @@ fn with_control_server<T>(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    crate::provider_accounts::apply_account(&mut command, account);
     crate::adapters::configure_process_group(&mut command);
     let child = command.spawn()?;
     let ledger = crate::process_ledger::record_launch("opencode.control", directory, child.id());
@@ -3206,6 +3275,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let started = start_with_settings(
             StartRequest {
+                session_id: None,
                 cwd: directory.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
@@ -3214,6 +3284,7 @@ mod tests {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
             &OpenCodeSettings {
@@ -3351,6 +3422,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut started = start_with_settings(
             StartRequest {
+                session_id: None,
                 cwd: directory.path().to_str().unwrap(),
                 model: Some("opencode-go/glm-5.2"),
                 effort: None,
@@ -3359,6 +3431,7 @@ mod tests {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
             &OpenCodeSettings {
@@ -3419,6 +3492,41 @@ mod tests {
         assert!(has_rule(&read_only, "edit", "deny"));
         let isolated = permission_rules(Some(WriteMode::Isolated));
         assert!(has_rule(&isolated, "edit", "ask"));
+    }
+
+    #[test]
+    fn ask_mode_asks_before_notes_writes_in_both_api_versions() {
+        // OpenCode applies the last matching rule; MCP tools match by their
+        // `<server>_<tool>` name.
+        fn resolve_v1(rules: &Value, tool: &str) -> String {
+            rules.as_array().unwrap().iter().rev()
+                .find(|rule| rule["permission"] == "*" || rule["permission"] == tool)
+                .map(|rule| rule["action"].as_str().unwrap().to_owned()).unwrap()
+        }
+        fn resolve_v2(rules: &Value, tool: &str) -> String {
+            rules.as_array().unwrap().iter().rev()
+                .find(|rule| rule["action"] == "*" || rule["action"] == tool)
+                .map(|rule| rule["effect"].as_str().unwrap().to_owned()).unwrap()
+        }
+        for tool in ["bridge_notes_create", "bridge_notes_edit", "bridge_notes_append", "bridge_notes_set", "bridge_notes_draw"] {
+            for (mode, expected) in [(Some(WriteMode::Shared), "ask"), (Some(WriteMode::Isolated), "ask"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
+                let v1 = permission_rules(mode);
+                let v2 = crate::opencode_v2::permission_rules(&v1);
+                assert_eq!(resolve_v1(&v1, tool), expected, "{tool} {mode:?} v1");
+                assert_eq!(resolve_v2(&v2, tool), expected, "{tool} {mode:?} v2");
+            }
+        }
+        for tool in ["bridge_notes_search", "bridge_notes_read", "bridge_visualize", "bridge_memory_search"] {
+            assert_eq!(resolve_v1(&permission_rules(Some(WriteMode::Shared)), tool), "allow", "{tool} reads freely");
+        }
+        for (mode, expected) in [(Some(WriteMode::Shared), "allow"), (Some(WriteMode::Isolated), "allow"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
+            let v1 = permission_rules(mode);
+            let v2 = crate::opencode_v2::permission_rules(&v1);
+            for tool in ["bridge_memory_propose", "bridge_outgoing_draft"] {
+                assert_eq!(resolve_v1(&v1, tool), expected, "{tool} {mode:?} v1");
+                assert_eq!(resolve_v2(&v2, tool), expected, "{tool} {mode:?} v2");
+            }
+        }
     }
 
     #[test]
@@ -3488,6 +3596,7 @@ mod model_variant_tests {
         let launch = crate::mcp_apps::ServerLaunch {
             command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
             args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         };
         let content: serde_json::Value = serde_json::from_str(
             &chat_config_content(Some(&launch), Some(r#"{"theme":"system"}"#)).unwrap(),

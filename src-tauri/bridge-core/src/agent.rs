@@ -47,6 +47,7 @@ pub struct OpenCodeStreamState {
     /// another child), keyed by session id. Their frames are tagged, and their
     /// lifecycle never drives the root turn.
     children: HashMap<String, OpenCodeChildSession>,
+    child_streams: HashMap<String, Box<OpenCodeStreamState>>,
     /// Assistant prose that has only ever arrived as deltas, keyed by text part
     /// in first-seen order. OpenCode does not reliably finish a text part with a
     /// snapshot, so a reply that existed only as deltas used to live in the
@@ -197,7 +198,10 @@ pub fn normalize_opencode_message_with_state(
                             .map(str::to_owned),
                     },
                 );
-                return vec![];
+                let mut event=with_data("subagent.started", &properties, properties.clone());
+                tag_subagent(&mut event,child,state.children.get(child).unwrap());
+                event.status=Some("working".into());
+                return vec![event];
             }
         }
     }
@@ -215,8 +219,24 @@ pub fn normalize_opencode_message_with_state(
     match event_type {
         // A child's turn is not the root's turn, and its plan, compaction and
         // session records belong to it alone.
-        "session.status" | "session.idle" | "session.created" | "session.updated"
-        | "todo.updated" | "session.compacted" | "session.diff" => vec![],
+        "session.status" | "session.idle" => {
+            let status=properties.pointer("/status/type").and_then(Value::as_str).unwrap_or("idle");
+            let idle=event_type=="session.idle" || status=="idle";
+            let child=state.child_streams.entry(child_session.clone()).or_default();
+            // A newly created session can announce idle before its first
+            // turn. Only an idle after observed work completes that child.
+            if idle && child.turn_active != Some(true) { return vec![]; }
+            let starting=!idle && child.turn_active!=Some(true);
+            child.turn_active=Some(!idle);
+            let mut events=if idle {flush_pending_text(child)} else {vec![]};
+            let mut event=with_data(if idle {"subagent.completed"} else {"subagent.status"},&properties,properties.clone());
+            event.status=Some(if idle {"completed"} else {"working"}.into());
+            if starting { event.data["turnStarted"]=json!(true); }
+            events.push(event);
+            for event in &mut events {tag_subagent(event,&child_session,&child_info);}
+            events
+        }
+        "session.created" | "session.updated" | "todo.updated" | "session.compacted" | "session.diff" => vec![],
         // A dead subagent is news, but the root turn is still running: the
         // parent's `task` part will settle it.
         "session.error" => {
@@ -225,10 +245,15 @@ pub fn normalize_opencode_message_with_state(
             event.title = Some("OpenCode subagent error".into());
             event.text = opencode_error_text(&properties);
             tag_subagent(&mut event, &child_session, &child_info);
-            vec![event]
+            let mut completed=event.clone();
+            completed.kind="subagent.completed".into();
+            completed.status=Some("failed".into());
+            vec![event,completed]
         }
         _ => {
-            let mut events = normalize_opencode_root_frame(event_type, &properties, state);
+            let child_state=state.child_streams.entry(child_session.clone()).or_default();
+            if child_state.turn_active.is_none() { child_state.turn_active=Some(true); }
+            let mut events = normalize_opencode_root_frame(event_type, &properties, child_state);
             for event in &mut events {
                 tag_subagent(event, &child_session, &child_info);
             }
@@ -704,6 +729,8 @@ impl NormalizedEvent {
 
 #[derive(Debug, Default, Clone)]
 pub struct CodexStreamState {
+    pub root_thread_id: Option<String>,
+    child_streams: HashMap<String, Box<CodexStreamState>>,
     pub active_reasoning_id: Option<String>,
     pub reasoning_counter: usize,
     /// The turn whose compaction boundary has already been recorded.
@@ -754,6 +781,47 @@ pub fn normalize_codex_message_with_state(
     message: &Value,
     state: &mut CodexStreamState,
 ) -> Vec<NormalizedEvent> {
+    if let Some(root) = message.get("_bridgeRootThreadId").and_then(Value::as_str) {
+        state.root_thread_id = Some(root.to_owned());
+    }
+    let params = &message["params"];
+    let thread = params.get("threadId").or_else(|| params.pointer("/thread/id")).and_then(Value::as_str);
+    let spawned = params.pointer("/thread/source/subAgent/thread_spawn").is_some()
+        || params.pointer("/thread/source/subAgent/threadSpawn").is_some();
+    if let Some(thread) = thread.filter(|id| spawned || state.root_thread_id.as_deref().is_some_and(|root| root != *id)) {
+        let child = state.child_streams.entry(thread.to_owned()).or_default();
+        let mut events = if message.get("id").is_some() {
+            normalize_codex_request(message).into_iter().collect()
+        } else {
+            normalize_codex_message_inner(message, child)
+        };
+        for event in &mut events {
+            if event.data.get("subagent").is_none() {
+                tag_harness_subagent(event, thread, params.pointer("/thread/agentRole").and_then(Value::as_str).unwrap_or("codex"),
+                    params.pointer("/thread/agentNickname").and_then(Value::as_str).unwrap_or("Codex subagent"));
+            }
+            match event.kind.as_str() {
+                "session.started" => event.kind = "subagent.started".into(),
+                "turn.started" => { event.kind = "subagent.status".into(); event.data["turnStarted"] = json!(true); }
+                "session.status" => event.kind = "subagent.status".into(),
+                "turn.completed" => { event.kind = "subagent.status".into(); event.data["turnCompleted"] = json!(true); }
+                _ => {}
+            }
+        }
+        return events;
+    }
+    if message.get("id").is_some() && message.get("method").is_some() {
+        return normalize_codex_request(message).into_iter().collect();
+    }
+    normalize_codex_message_inner(message, state)
+}
+
+fn tag_harness_subagent(event: &mut NormalizedEvent, id: &str, agent: &str, title: &str) {
+    if !event.data.is_object() { event.data = json!({"providerData":event.data}); }
+    event.data["subagent"] = json!({"sessionId":id,"agent":agent,"title":title});
+}
+
+fn normalize_codex_message_inner(message: &Value, state: &mut CodexStreamState) -> Vec<NormalizedEvent> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return codex_turn_start_rejection(message).into_iter().collect();
     };
@@ -988,6 +1056,19 @@ pub fn normalize_codex_message_with_state(
                 .pointer("/item/type")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            if item_type == "subAgentActivity" {
+                let item = &params["item"];
+                let Some(id) = item.get("agentThreadId").and_then(Value::as_str) else { return vec![]; };
+                let kind = item.get("kind").and_then(Value::as_str).unwrap_or("started");
+                let mut event = with_data(match kind {
+                    "completed" | "interrupted" => "subagent.completed",
+                    "started" => "subagent.started",
+                    _ => "subagent.progress",
+                }, &params, item.clone());
+                event.status = Some(match kind { "completed" => "completed", "interrupted" => "interrupted", _ => "working" }.into());
+                tag_harness_subagent(&mut event, id, "codex", item.get("agentPath").and_then(Value::as_str).unwrap_or("Codex subagent"));
+                return vec![event];
+            }
             if item_type == "reasoning" {
                 if method == "item/started" {
                     let id = params
@@ -1230,6 +1311,12 @@ fn normalize_item(
                 .join("");
             (!text.is_empty()).then_some(text)
         });
+    // Native execution reports the process identity and emits completion only
+    // when that process exits, including executions yielded back to the model.
+    if item_type == "commandExecution" && !item["processId"].is_null() {
+        event.data["backgroundTask"] = Value::Bool(true);
+        event.data["background"] = Value::Bool(method == "item/started");
+    }
     if item_type == "fileChange" {
         stamp_file_change_fields(&mut event.data);
         if event.title.is_none() {
@@ -1244,11 +1331,18 @@ pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
     normalize_claude_message_with_state(message, &mut ClaudeStreamState::default())
 }
 
+#[path = "claude_activity.rs"]
+mod claude_activity;
+
 #[derive(Debug, Default, Clone)]
 pub struct ClaudeStreamState {
+    child_streams: HashMap<String, Box<ClaudeStreamState>>,
+    tasks: HashMap<String, Value>,
+    ignored_tasks: std::collections::HashSet<String>,
     pub active_message_id: Option<String>,
     pub active_reasoning_id: Option<String>,
     thinking_blocks: std::collections::BTreeMap<String, ClaudeThinkingBlock>,
+    activity: claude_activity::ActivityState,
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
@@ -1405,6 +1499,9 @@ fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option
 
 #[derive(Debug, Clone)]
 struct ClaudeToolCall {
+    name: String,
+    description: Option<String>,
+    is_subagent: bool,
     family: ClaudeToolFamily,
     started_at: Instant,
     /// The Bash command, kept so the completion event can name it — the
@@ -1497,6 +1594,9 @@ fn claude_tool_started(
             }
         })
         .or_insert(ClaudeToolCall {
+            name: name.into(),
+            description: None,
+            is_subagent: matches!(name, "Agent" | "Task"),
             family,
             started_at: now,
             command: None,
@@ -1507,6 +1607,10 @@ fn claude_tool_started(
     event.status = Some("inProgress".into());
     event.data["phase"] = Value::String(phase.as_str().to_owned());
     let input = block.get("input").cloned().unwrap_or(Value::Null);
+    if let Some(call) = state.tool_calls.get_mut(&tool_id) {
+        call.description = input.get("description").and_then(Value::as_str).map(str::to_owned);
+        if name == "Monitor" { call.command = input.get("command").and_then(Value::as_str).map(str::to_owned); }
+    }
     match family {
         ClaudeToolFamily::Command => {
             if let Some(command) = input.get("command").and_then(Value::as_str) {
@@ -1652,9 +1756,70 @@ pub fn normalize_claude_message_with_state(
     message: &Value,
     state: &mut ClaudeStreamState,
 ) -> Vec<NormalizedEvent> {
+    if let Some(id) = message.get("parent_tool_use_id").or_else(|| message.pointer("/request/agentID")).and_then(Value::as_str) {
+        if state.ignored_tasks.contains(id) { return vec![]; }
+        let id = state.tasks.get(id).and_then(|task| task.get("tool_use_id")).and_then(Value::as_str).unwrap_or(id).to_owned();
+        let child = state.child_streams.entry(id.clone()).or_default();
+        let mut events = normalize_claude_message_inner(message, child);
+        for event in &mut events {
+            tag_harness_subagent(event, &id, message.get("subagent_type").and_then(Value::as_str).unwrap_or("claude"),
+                message.get("task_description").and_then(Value::as_str).unwrap_or("Claude subagent"));
+            if matches!(event.kind.as_str(), "turn.started" | "turn.completed" | "session.status") {
+                event.kind = "subagent.status".into();
+            }
+        }
+        return events;
+    }
+    let subtype = message.get("subtype").and_then(Value::as_str).unwrap_or("");
+    if message.get("type").and_then(Value::as_str) == Some("system") && subtype == "subagent_stop_failed" {
+        let task=message.get("task_id").and_then(Value::as_str).unwrap_or("");
+        if task.is_empty() {return vec![];}
+        let id=state.tasks.get(task).and_then(|task|task.get("tool_use_id")).and_then(Value::as_str).unwrap_or(task);
+        let mut event=with_data("error",message,message.clone());
+        event.status=Some("warning".into());event.title=Some("Could not stop subagent".into());
+        event.text=message.get("error").and_then(Value::as_str).map(str::to_owned);
+        tag_harness_subagent(&mut event,id,"claude","Claude subagent");
+        return vec![event];
+    }
+    if message.get("type").and_then(Value::as_str) == Some("system") && subtype.starts_with("task_") {
+        let task = message.get("task_id").and_then(Value::as_str).unwrap_or("");
+        if message.get("ambient").and_then(Value::as_bool) == Some(true)
+            || message.get("skip_transcript").and_then(Value::as_bool) == Some(true)
+            || message.get("task_type").and_then(Value::as_str).is_some_and(|kind| kind != "local_agent") {
+            state.ignored_tasks.insert(task.to_owned());
+            if let Some(tool)=message.get("tool_use_id").and_then(Value::as_str) { state.ignored_tasks.insert(tool.to_owned()); }
+            // Not a subagent: background processes and watchers are activity.
+            return normalize_claude_message_inner(message, state);
+        }
+        if state.ignored_tasks.contains(task) { return normalize_claude_message_inner(message, state); }
+        let old = state.tasks.get(task).cloned().unwrap_or_else(|| json!({}));
+        let id = message.get("tool_use_id").or_else(|| old.get("tool_use_id")).and_then(Value::as_str).unwrap_or(task);
+        if id.is_empty() { return vec![]; }
+        let mut event = with_data(match subtype {
+            "task_started" => "subagent.started", "task_notification" => "subagent.completed",
+            "task_progress" => "subagent.progress", "task_updated" => "subagent.status", _ => return vec![],
+        }, message, message.clone());
+        tag_harness_subagent(&mut event, id,
+            message.get("subagent_type").or_else(|| old.get("subagent_type")).and_then(Value::as_str).unwrap_or("claude"),
+            message.get("description").or_else(|| old.get("description")).and_then(Value::as_str).unwrap_or("Claude subagent"));
+        event.data["taskId"] = json!(task);
+        if let Some(depth)=message.get("spawn_depth") { event.data["subagent"]["depth"]=depth.clone(); }
+        event.status = Some(message.get("status").or_else(|| message.pointer("/patch/status")).and_then(Value::as_str)
+            .unwrap_or(if subtype == "task_notification" {"completed"} else {"working"}).to_owned());
+        event.text = message.get("summary").and_then(Value::as_str).map(str::to_owned);
+        if subtype == "task_started" { state.tasks.insert(task.to_owned(), message.clone()); }
+        return vec![event];
+    }
+    normalize_claude_message_inner(message, state)
+}
+
+fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
     let Some(kind) = message.get("type").and_then(Value::as_str) else {
         return vec![];
     };
+    if let Some(events) = claude_activity::normalize(message, &mut state.activity, &state.tool_calls) {
+        return events;
+    }
     match kind {
         "system" => {
             // A new process starts its running totals from zero.
@@ -1662,6 +1827,12 @@ pub fn normalize_claude_message_with_state(
                 state.usage_cumulative = ClaudeUsageCumulative::default();
             }
             normalize_claude_system(message)
+        }
+        "tool_progress" => {
+            let mut event = with_data("tool.progress", message, message.clone());
+            event.item_id = message.get("tool_use_id").and_then(Value::as_str).map(str::to_owned);
+            event.title = message.get("tool_name").and_then(Value::as_str).map(str::to_owned);
+            vec![event]
         }
         "stream_event" => normalize_claude_stream(message, state),
         "assistant" => normalize_claude_assistant(message, state),
@@ -1673,7 +1844,11 @@ pub fn normalize_claude_message_with_state(
                 .filter_map(|(id, block)| complete_claude_thinking(id, block))
                 .collect();
             let usage_cumulative = std::mem::take(&mut state.usage_cumulative);
-            *state = ClaudeStreamState::default();
+            let child_streams = std::mem::take(&mut state.child_streams);
+            let tasks = std::mem::take(&mut state.tasks);
+            let ignored_tasks = std::mem::take(&mut state.ignored_tasks);
+            let activity = std::mem::take(&mut state.activity);
+            *state = ClaudeStreamState { child_streams, tasks, ignored_tasks, activity, ..Default::default() };
             state.usage_cumulative = usage_cumulative;
             events.extend(normalize_claude_result(message, state));
             events
@@ -1961,6 +2136,9 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
         .cloned()
         .unwrap_or_default();
     let mut events = Vec::new();
+    if let Some(notification) = claude_activity::synthetic_notification(message) {
+        events.push(notification);
+    }
     for part in content {
         match part.get("type").and_then(Value::as_str).unwrap_or("") {
             "tool_result" => {
@@ -1969,7 +2147,15 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     .and_then(Value::as_str)
                     .unwrap_or("tool")
                     .to_owned();
+                let output = part.get("content").map(Value::to_string).unwrap_or_default();
+                let is_subagent = state.tool_calls.get(&tool_id).is_some_and(|call| call.is_subagent)
+                    || state.child_streams.contains_key(&tool_id)
+                    || state.tasks.values().any(|task| task.get("tool_use_id").and_then(Value::as_str) == Some(tool_id.as_str()));
+                if is_subagent && output.contains("Async agent launched successfully") {
+                    continue;
+                }
                 let call = state.tool_calls.remove(&tool_id);
+                let (backgrounded, task_events) = claude_activity::launched(message, &tool_id, call.as_ref(), &mut state.activity);
                 let family = call
                     .as_ref()
                     .map(|call| call.family)
@@ -1994,6 +2180,8 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                         .unwrap_or(false)
                     {
                         "failed"
+                    } else if backgrounded {
+                        "backgrounded"
                     } else {
                         "completed"
                     }
@@ -2015,6 +2203,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     event.data["aggregatedOutput"] = Value::String(text.clone());
                 }
                 events.push(event);
+                events.extend(task_events);
             }
             // User text echoes are already persisted by Bridge on send_turn.
             "text" => {}
@@ -2889,7 +3078,9 @@ mod tests {
             "the child's busy/idle never opened or closed a turn; the root idle closed the first and the unattributed error failed the second"
         );
         let child_kinds: Vec<_> = events.iter().filter(|e| e.data["subagent"]["sessionId"] == "ses_child").map(|e| e.kind.as_str()).collect();
-        assert_eq!(child_kinds, vec!["reasoning.started", "reasoning.delta", "reasoning.completed", "command.completed", "message.completed"]);
+        assert_eq!(child_kinds.iter().filter(|kind| !kind.starts_with("subagent.")).copied().collect::<Vec<_>>(), vec!["reasoning.started", "reasoning.delta", "reasoning.completed", "command.completed", "message.completed"]);
+        assert!(child_kinds.contains(&"subagent.started"));
+        assert!(child_kinds.contains(&"subagent.completed"));
         let child_text = events.iter().find(|e| e.kind == "message.completed" && e.data["subagent"]["sessionId"] == "ses_child").unwrap();
         assert_eq!(child_text.data["subagent"]["title"], "Look up the facts");
         assert_eq!(child_text.text.as_deref(), Some("The answer is 42."));
@@ -2902,13 +3093,15 @@ mod tests {
     }
 
     #[test]
-    fn opencode_child_session_error_is_a_warning_not_a_turn_end() {
+    fn opencode_child_session_error_ends_only_the_child() {
         let mut state = OpenCodeStreamState::default();
         normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"root","info":{"id":"root"}}}), &mut state);
         normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"root","status":{"type":"busy"}}}), &mut state);
         normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"kid","info":{"id":"kid","parentID":"root","agent":"explore","title":"Scan"}}}), &mut state);
         let events = normalize_opencode_message_with_state(&json!({"type":"session.error","properties":{"sessionID":"kid","error":{"name":"UnknownError","data":{"message":"subagent crashed"}}}}), &mut state);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].kind, "subagent.completed");
+        assert_eq!(events[1].status.as_deref(), Some("failed"));
         assert_eq!(events[0].kind, "error");
         assert_eq!(events[0].status.as_deref(), Some("warning"));
         assert_eq!(events[0].text.as_deref(), Some("subagent crashed"));
@@ -4300,4 +4493,92 @@ mod tests {
         assert_eq!(patch[0].data["additions"], 2);
         assert_eq!(patch[0].data["deletions"], 2);
     }
+}
+
+#[cfg(test)]
+mod harness_subagent_tests {
+    use super::*;
+    #[test]
+    fn codex_child_turn_does_not_reset_root_stream() {
+        let mut state = CodexStreamState { root_thread_id: Some("root".into()), active_reasoning_id: Some("root-thinking".into()), ..Default::default() };
+        let events = normalize_codex_message_with_state(&json!({"method":"turn/completed","params":{"threadId":"child","turn":{"id":"child-turn","status":"completed"}}}), &mut state);
+        assert_eq!(events[0].kind, "subagent.status");
+        assert_eq!(events[0].data["subagent"]["sessionId"], "child");
+        assert_eq!(state.active_reasoning_id.as_deref(), Some("root-thinking"));
+        let root = normalize_codex_message_with_state(&json!({"method":"turn/completed","params":{"threadId":"root","turn":{"status":"completed"}}}), &mut state);
+        assert_eq!(root[0].kind, "turn.completed");
+        assert!(root[0].data.get("subagent").is_none());
+    }
+    #[test]
+    fn claude_lifecycle_survives_parent_result_and_filters_other_tasks() {
+        let mut state = ClaudeStreamState::default();
+        let start = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"agent-call","task_type":"local_agent","description":"Research"}), &mut state);
+        assert_eq!(start[0].kind, "subagent.started");
+        normalize_claude_message_with_state(&json!({"type":"result","subtype":"success"}), &mut state);
+        let finish = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"task","status":"completed","summary":"Done"}), &mut state);
+        assert_eq!(finish[0].data["subagent"]["sessionId"], "agent-call");
+        for (index, extra) in [json!({"task_type":"local_bash"}),json!({"ambient":true}),json!({"skip_transcript":true})].into_iter().enumerate() {
+            let mut frame=json!({"type":"system","subtype":"task_started","task_id":format!("ignored-{index}")});
+            frame.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let events = normalize_claude_message_with_state(&frame,&mut state);
+            assert!(events.iter().all(|event| !event.kind.starts_with("subagent.") && event.data.get("subagent").is_none()));
+        }
+        // A background process is activity, through every bookend.
+        let bash = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"tests","task_type":"local_bash","description":"Rust tests"}), &mut state);
+        assert_eq!(bash[0].item_id.as_deref(), Some("background-task:tests"));
+        let done = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"tests","status":"completed"}), &mut state);
+        assert_eq!((done[0].kind.as_str(), done[0].status.as_deref()), ("tool.completed", Some("completed")));
+        // The level snapshot does not turn a subagent into a process.
+        let level = normalize_claude_message_with_state(&json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task","task_type":"local_agent","description":"Research"}]}), &mut state);
+        assert!(level.iter().all(|event| event.item_id.as_deref() != Some("background-task:task")));
+    }
+    #[test]
+    fn claude_child_messages_tools_and_progress_are_attributed() {
+        let mut state=ClaudeStreamState::default();
+        for frame in [
+            json!({"type":"assistant","parent_tool_use_id":"child","message":{"id":"m","content":[{"type":"text","text":"Child reply"}]}}),
+            json!({"type":"user","parent_tool_use_id":"child","message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":"ok"}]}}),
+            json!({"type":"tool_progress","parent_tool_use_id":"child","tool_use_id":"tool","tool_name":"Read"})
+        ] {
+            let events=normalize_claude_message_with_state(&frame,&mut state);
+            assert!(!events.is_empty());
+            assert!(events.iter().all(|e| e.data["subagent"]["sessionId"]=="child"));
+        }
+        assert!(normalize_claude_message_with_state(&json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"child","content":"Async agent launched successfully. Internal metadata"}]}}),&mut state).is_empty());
+    }
+    #[test]
+    fn codex_activity_maps_all_lifecycle_kinds() {
+        for (kind,expected) in [("started","subagent.started"),("interacted","subagent.progress"),("completed","subagent.completed"),("interrupted","subagent.completed")] {
+            let events=normalize_codex_message(&json!({"method":"item/started","params":{"threadId":"root","item":{"type":"subAgentActivity","kind":kind,"agentThreadId":"child","agentPath":"/root/research"}}}));
+            assert_eq!(events[0].kind,expected);
+            assert_eq!(events[0].data["subagent"]["sessionId"],"child");
+        }
+    }
+    #[test]
+    fn ordinary_tool_output_is_not_mistaken_for_an_agent_launch() {
+        let mut state=ClaudeStreamState::default();
+        normalize_claude_message_with_state(&json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"echo test"}}]}}),&mut state);
+        let events=normalize_claude_message_with_state(&json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash","content":"Async agent launched successfully"}]}}),&mut state);
+        assert_eq!(events[0].kind,"command.completed");
+    }
+
+    #[test]
+    fn opencode_initial_idle_does_not_finish_a_new_subagent() {
+        let mut state=OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"info":{"id":"root"}}}),&mut state);
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"info":{"id":"child","parentID":"root"}}}),&mut state);
+        let status=|kind|json!({"type":"session.status","properties":{"sessionID":"child","status":{"type":kind}}});
+        assert!(normalize_opencode_message_with_state(&status("idle"),&mut state).is_empty());
+        assert_eq!(normalize_opencode_message_with_state(&status("busy"),&mut state)[0].kind,"subagent.status");
+        assert_eq!(normalize_opencode_message_with_state(&status("idle"),&mut state)[0].kind,"subagent.completed");
+    }
+
+    #[test]
+    fn a_claude_stop_rejection_is_a_child_warning_not_a_completion() {
+        let mut state=ClaudeStreamState::default();
+        normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"agent","task_type":"local_agent"}),&mut state);
+        let events=normalize_claude_message_with_state(&json!({"type":"system","subtype":"subagent_stop_failed","task_id":"task","error":"Task is not stoppable yet"}),&mut state);
+        assert_eq!(events[0].kind,"error");assert_eq!(events[0].status.as_deref(),Some("warning"));assert_eq!(events[0].data["subagent"]["sessionId"],"agent");
+    }
+
 }

@@ -69,6 +69,30 @@ export function withoutSent(current: ComposerDraft, sent: ComposerDraft): Compos
 }
 
 /**
+ * Put a failed turn's words back to be added to, ahead of what is typed.
+ *
+ * Asking twice must not paste them twice: words that already lead the draft
+ * are not added again.
+ */
+export function restoreFailedTurnText(current: string, failed: string): string {
+  const leads = !!failed.trim() && withoutSentText(current, failed) !== current;
+  return leads ? current : mergeFailedText(current, failed);
+}
+
+/**
+ * A failed turn's images, read back from the transcript. They get fresh ids on
+ * every read, so one already in the composer is recognised by its data.
+ */
+export function restoreFailedTurnAttachments(current: readonly ComposerAttachment[], failed: readonly ComposerAttachment[]): ComposerAttachment[] {
+  const held = new Set(current.map(attachment => attachment.dataUri));
+  return [...failed.filter(attachment => !held.has(attachment.dataUri)), ...current];
+}
+
+export function restoreFailedTurn(current: ComposerDraft, failed: ComposerDraft): ComposerDraft {
+  return { text: restoreFailedTurnText(current.text, failed.text), attachments: restoreFailedTurnAttachments(current.attachments, failed.attachments) };
+}
+
+/**
  * Drafts of the chats not on screen. The one on screen lives in the composer's
  * own state; this holds the rest until their chat is opened again.
  *

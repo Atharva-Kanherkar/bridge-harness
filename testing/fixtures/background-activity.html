@@ -1,0 +1,35 @@
+<!doctype html>
+<html class="dark">
+<head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Background activity regression fixture</title></head>
+<body class="m-0 bg-background text-foreground">
+<div id="app" class="relative h-screen"></div>
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { AgentConversation } from '/src/components/AgentConversation.tsx';
+import '/src/index.css';
+import '@fontsource-variable/geist';
+const root = createRoot(document.getElementById('app'));
+const session = { id: 's', workspaceId: 'w', harness: 'claude', label: 'Chat', status: 'working', startedAt: new Date().toISOString(), endedAt: null, metricSource: 'reported', kind: 'chat' };
+const event = (id, kind, overrides = {}) => ({ id, sessionId: 's', sequence: id, protocolVersion: 1, kind, itemId: `i${id}`, role: null, status: 'completed', title: null, text: null, data: {}, providerMeta: {}, createdAt: new Date().toISOString(), ...overrides });
+const start = event(2, 'tool.started', { itemId: 'task-tests', title: 'Rust workspace tests', status: 'inProgress', data: { type: 'backgroundTask', backgroundTask: true, background: true, command: 'cargo test --workspace', progress: 'Running bridge-core tests' } });
+window.showActivity = (mode = 'running', harness = 'claude') => {
+  const events = [
+    event(1, 'message.completed', { role: 'user', text: 'Run all tests and keep me informed.' }),
+    start,
+    event(3, 'message.completed', { role: 'assistant', text: 'The frontend tests passed. The Rust tests are still running in the background.' }),
+  ];
+  const running = mode === 'running';
+  if (!running) events.push(event(4, 'turn.completed'));
+  if (['completed', 'failed', 'unknown'].includes(mode)) {
+    const output = mode === 'completed' ? '402 passed' : mode === 'failed' ? 'test compile_project FAILED' : 'Runtime ended. Outcome unavailable.';
+    events.push(event(5, 'tool.completed', { itemId: 'task-tests', status: mode, title: 'Rust workspace tests', text: output, data: { ...start.data, background: false, progress: output, aggregatedOutput: output } }));
+  }
+  if (mode === 'stream') events.push(event(7, 'command.output_delta', { itemId: 'task-tests', status: 'inProgress', text: 'running 402 tests\ntest compile_project ... ok\n' }));
+  if (mode === 'many') for (let i = 0; i < 35; i++) events.push(event(10 + i, 'message.completed', { role: 'assistant', text: 'A completed update from another part of the task. This should not hide the running tests.' }));
+  root.render(React.createElement(AgentConversation, { session: { ...session, harness, status: running ? 'working' : 'ready' }, working: running, events, onResolve: () => {} }));
+};
+window.showActivity();
+</script>
+</body>
+</html>

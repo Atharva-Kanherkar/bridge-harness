@@ -79,6 +79,22 @@
     },
     {
       "delivery": "transient",
+      "notification": "notes/page_changed"
+    },
+    {
+      "delivery": "transient",
+      "notification": "notes/pass_progress"
+    },
+    {
+      "delivery": "transient",
+      "notification": "attention/changed"
+    },
+    {
+      "delivery": "transient",
+      "notification": "outgoing/changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "workflows/changed"
     },
     {

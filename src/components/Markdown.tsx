@@ -1,12 +1,17 @@
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
-import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
+import { Check, Copy, KeyRound, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
+import { parseNoteLink } from "../noteLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
+import { ExpandButton, VisualFullscreen } from "./VisualFullscreen";
 import { StoragePlanCard } from "./StoragePlanCard";
+import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
+import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
+import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
@@ -35,18 +40,32 @@ function isTableRow(line: string): boolean {
   return line.includes("|");
 }
 
-/** Classify a fenced block by its info string into a rich-content block kind. */
-function fencedBlock(lang: string, body: string): Block {
+export type RichFenceKind = "diagram" | "mermaid" | "math" | "html";
+
+/** The figure a fence's info string asks for, or null for plain code. Chat and
+ *  the notes editor both read fences through this one table. */
+export function richFenceKind(lang: string): RichFenceKind | null {
   const key = lang.trim().toLowerCase();
-  if (key === "diagram") return { kind: "diagram", spec: body };
-  if (key === "mermaid") return { kind: "mermaid", code: body };
-  if (key === "storage-plan") return { kind: "storage-plan", body };
-  if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
-  if (key === "html") return { kind: "html", html: body };
+  if (key === "diagram" || key === "mermaid" || key === "html") return key;
+  if (key === "math" || key === "latex" || key === "tex") return "math";
+  return null;
+}
+
+/** Classify a fenced block by its info string into a rich-content block
+ *  kind. Without rich fences every fence is code, as GitHub and Slack show
+ *  it: a preview of text bound elsewhere must not run chat-only widgets. */
+function fencedBlock(lang: string, body: string, richFences = true): Block {
+  if (!richFences) return { kind: "code", lang, body };
+  if (lang.trim().toLowerCase() === "storage-plan") return { kind: "storage-plan", body };
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return { kind, spec: body };
+  if (kind === "mermaid") return { kind, code: body };
+  if (kind === "math") return { kind, tex: body };
+  if (kind === "html") return { kind, html: body };
   return { kind: "code", lang, body };
 }
 
-export function splitBlocks(source: string): Block[] {
+export function splitBlocks(source: string, { richFences = true }: { richFences?: boolean } = {}): Block[] {
   const blocks: Block[] = [];
   const lines = source.replaceAll("\r\n", "\n").split("\n");
   let index = 0;
@@ -60,7 +79,7 @@ export function splitBlocks(source: string): Block[] {
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
       index += 1;
-      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n")));
+      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n"), richFences));
       continue;
     }
     if (trimmed.startsWith("$$")) {
@@ -170,20 +189,46 @@ const MENTION = /(@[\w~@./-]+)/g;
 export function MentionText({ text }: { text: string }) {
   // A Storage chat folds what the page measured onto the end of a message.
   // The person wrote the question, not the numbers, so the numbers fold away.
+  // The Notes chat does the same with the open page.
   const { text: prose, snapshot } = splitSnapshot(text);
-  if (snapshot === null) return <TextRun text={text} />;
-  return <>
-    <TextRun text={prose} />
-    <details className="mt-1.5 text-caption text-muted-foreground">
-      <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-[11px] marker:hidden hover:text-foreground">
-        <span aria-hidden="true" className="mr-1 inline-block size-1.5 rounded-full bg-ctx-1 align-middle" />Storage page snapshot
-      </summary>
-      <pre aria-label={SNAPSHOT_FENCE} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{snapshot}</pre>
-    </details>
-  </>;
+  if (snapshot !== null) return <><TextRun text={prose} /><FoldedContext label="Storage page snapshot" fence={SNAPSHOT_FENCE} series="bg-ctx-1" body={snapshot} /></>;
+  const { text: asked, context } = splitNotesContext(text);
+  if (context !== null) return <><TextRun text={asked} /><FoldedContext label="Notes page" fence={NOTES_CONTEXT_FENCE} series="bg-ctx-2" body={context} /></>;
+  return <TextRun text={text} />;
+}
+
+/** What a page attached to a message, folded into a chip the person can open. */
+function FoldedContext({ label, fence, series, body }: { label: string; fence: string; series: string; body: string }) {
+  return <details className="mt-1.5 text-caption text-muted-foreground">
+    <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-[11px] marker:hidden hover:text-foreground">
+      <span aria-hidden="true" className={`mr-1 inline-block size-1.5 rounded-full align-middle ${series}`} />{label}
+    </summary>
+    <pre aria-label={fence} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{body}</pre>
+  </details>;
 }
 
 function TextRun({ text }: { text: string }) {
+  if (!text.includes("[secret:")) return <MentionRun text={text} />;
+  return <>{text.split(SECRET_PLACEHOLDER).filter(part => part !== "").map((part, index) => {
+    const reference = placeholderReference(part);
+    return reference ? <KeyChip key={index} reference={reference} /> : <MentionRun key={index} text={part} />;
+  })}</>;
+}
+
+/** A key Bridge kept out of the chat. The agent holds this placeholder and
+ *  can use the key only on the sites allowed for it; the value never left
+ *  Bridge. A saved key shows its name, a pasted one just "API key". */
+function KeyChip({ reference }: { reference: string }) {
+  const name = reference.startsWith("sec_") ? "API key" : reference;
+  return <span
+    role="img"
+    aria-label={`${name}, kept by Bridge`}
+    title={`Bridge kept this key out of the chat. The agent sees only [secret:${reference}] and can use it on the sites allowed in Settings, Permissions, API keys.`}
+    className="mx-0.5 inline-flex items-baseline gap-1 rounded-md border border-border bg-foreground/[0.04] px-1.5 font-mono text-[11px] text-muted-foreground"
+  ><KeyRound size={10} aria-hidden="true" className="self-center" />{name}</span>;
+}
+
+function MentionRun({ text }: { text: string }) {
   const links = useContext(FileLinkContext);
   if (!links || !text.includes("@")) return <>{text}</>;
   const parts = text.split(MENTION).filter(part => part !== "");
@@ -288,7 +333,8 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2), allowLinks)}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1), allowLinks)}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
-    // A link only renders as an anchor when `externalLinks` would claim it.
+    // A link only renders as an anchor when `externalLinks` would claim it
+    // (http(s), mailto, or a notes page link).
     // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
     // keeps the webview's default action, and the Tauri webview sets no CSP,
     // so a `javascript:` href in agent- or GitHub-authored markdown would run
@@ -296,9 +342,10 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
     if (link && allowLinks) {
       // Link labels may themselves be a URL (GitHub's normalizer emits this
       // shape). Keep their inline formatting without creating a nested anchor.
-      return isExternalUrl(link[2])
-        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>
-        : <span key={index}>{renderInline(link[1], false)}</span>;
+      if (isExternalUrl(link[2])) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>;
+      // A notes page: the interceptor opens it inside Bridge, never a browser.
+      if (parseNoteLink(link[2])) return <a key={index} href={link[2].trim()} data-note-link="">{renderInline(link[1], false)}</a>;
+      return <span key={index}>{renderInline(link[1], false)}</span>;
     }
     // A URL an agent typed as prose is still a link the reader means to follow.
     // It goes through the same click interceptor as a written-out one, so a
@@ -318,8 +365,13 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   // the very first render after a change already falls back to plain.
   const [cache, setCache] = useState<{ body: string; lang: string; html: string } | null>(null);
   const html = cache && cache.body === body && cache.lang === lang ? cache.html : escapeHtml(body);
+  // A long chat can hold dozens of fences, all mounted when the reader jumps
+  // into older history. Only the ones that reach the viewport are worth a
+  // tokenization pass; the rest stay plain until they are scrolled to.
+  const [blockRef, visible] = useInViewport<HTMLDivElement>();
 
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     // Debounced: see `COLORIZE_DEBOUNCE_MS` — a streaming reply re-renders
     // this on every delta, and a still-growing fence shouldn't schedule a
@@ -328,10 +380,10 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
       void colorizeCode(body, lang).then(result => { if (live) setCache({ body, lang, html: result }); });
     }, COLORIZE_DEBOUNCE_MS);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [body, lang]);
+  }, [body, lang, visible]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
   return (
-    <div className="code-block">
+    <div ref={blockRef} className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
         <CopyButton text={body} className="code-block-copy" />
@@ -350,6 +402,7 @@ function DiagramBlock({ spec }: { spec: string }) {
       return null;
     }
   }, [spec]);
+  const [fullscreen, setFullscreen] = useState(false);
 
   if (!parsed) {
     return (
@@ -361,8 +414,16 @@ function DiagramBlock({ spec }: { spec: string }) {
   }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={spec} className="rich-block-copy" />
+      <div className="rich-block-actions">
+        <CopyButton text={spec} className="rich-block-copy" />
+        <ExpandButton onClick={() => setFullscreen(true)} />
+      </div>
       <DiagramFigure spec={parsed} />
+      <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="diagram">
+        {/* The same figure, not a copy: the overlay only changes the width it
+            is laid out at, so nothing about the drawing can drift. */}
+        <DiagramFigure spec={parsed} />
+      </VisualFullscreen>
     </div>
   );
 }
@@ -373,6 +434,7 @@ function MermaidBlock({ code }: { code: string }) {
   const dark = useDarkTheme();
   const [rendered, setRendered] = useState<{ code: string; dark: boolean; svg: string } | null>(null);
   const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const id = useRef("");
   if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
 
@@ -402,8 +464,16 @@ function MermaidBlock({ code }: { code: string }) {
     return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
   }
   return <div className="rich-block my-[0.9em]">
-    <CopyButton text={code} className="rich-block-copy" />
+    <div className="rich-block-actions">
+      <CopyButton text={code} className="rich-block-copy" />
+      <ExpandButton onClick={() => setFullscreen(true)} />
+    </div>
     <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="mermaid">
+      {/* Mermaid bakes a `max-width` onto its own <svg>; the overlay's canvas
+          rule overrides it so the drawing can use the window's width. */}
+      <div role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    </VisualFullscreen>
   </div>;
 }
 
@@ -462,10 +532,20 @@ function HtmlBlock({ html }: { html: string }) {
   );
 }
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+/** A rich fence drawn exactly as chat draws it; nothing for plain code. */
+export function RichFence({ lang, body }: { lang: string; body: string }) {
+  const kind = richFenceKind(lang);
+  if (kind === "diagram") return <DiagramBlock spec={body} />;
+  if (kind === "mermaid") return <MermaidBlock code={body} />;
+  if (kind === "math") return <MathBlock tex={body} />;
+  if (kind === "html") return <HtmlBlock html={body} />;
+  return null;
+}
+
+export const Markdown = memo(function Markdown({ text, richFences = true }: { text: string; richFences?: boolean }) {
   return (
     <div className="md">
-      {splitBlocks(text).map((block, index) => {
+      {splitBlocks(text, { richFences }).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
         if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;

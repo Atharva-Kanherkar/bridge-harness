@@ -5,6 +5,7 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod dock_badge;
 mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
@@ -229,6 +230,36 @@ async fn github_connect(workspace_id: String, remote_url: String, state: State<'
 }
 
 #[tauri::command]
+async fn list_outgoing(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListOutgoingResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("drafted messages", move || api::list_outgoing(&core, &session_id)).await
+}
+
+#[tauri::command]
+async fn update_outgoing(id: String, revision: u32, body: Option<String>, apply_fixes: bool, attachments: Option<Vec<String>>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::UpdateOutgoingResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("edit drafted message", move || api::update_outgoing(&core, &id, revision, body.as_deref(), apply_fixes, attachments.as_deref())).await
+}
+
+#[tauri::command]
+async fn copy_outgoing(id: String, revision: u32, state: State<'_, Arc<BridgeCore>>) -> Result<wire::CopyOutgoingResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("copy drafted message", move || api::copy_outgoing(&core, &id, revision)).await
+}
+
+#[tauri::command]
+async fn read_outgoing_attachment(id: String, index: u32, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ReadOutgoingAttachmentResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("read drafted image", move || api::read_outgoing_attachment(&core, &id, index)).await
+}
+
+#[tauri::command]
+async fn discard_outgoing(id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::DiscardOutgoingResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("discard drafted message", move || api::discard_outgoing(&core, &id)).await
+}
+
+#[tauri::command]
 async fn github_session_prs(session_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSessionPrsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("chat pull requests", move || api::github_session_prs(&core, &session_id, refresh)).await
@@ -376,6 +407,31 @@ async fn read_clone_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge
 #[tauri::command]
 async fn write_clone_settings(settings: bridge_protocol::messages::CloneSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
     api::write_clone_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
+async fn list_api_keys(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ApiKeysSnapshot, BridgeError> {
+    api::list_api_keys(state.inner())
+}
+
+/// Save an API key for every chat. The value goes to the macOS Keychain.
+#[tauri::command]
+async fn save_api_key(
+    name: String,
+    hosts: Vec<String>,
+    value: Option<String>,
+    from_reference: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ApiKeysSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::SaveApiKeyParams { name, hosts, value, from_reference };
+    blocking("Save key", move || api::save_api_key(&core, &params)).await
+}
+
+#[tauri::command]
+async fn forget_api_key(reference: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ApiKeysSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Forget key", move || api::forget_api_key(&core, &reference)).await
 }
 
 #[tauri::command]
@@ -1057,6 +1113,44 @@ async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSet
 }
 
 #[tauri::command]
+async fn list_attention(after_sequence: Option<i64>, limit: Option<u32>, unseen_only: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ListAttentionResult, BridgeError> {
+    api::list_attention(state.inner(), &bridge_protocol::messages::ListAttentionParams { after_sequence, limit, unseen_only })
+}
+
+/// Resuming an adapter spawns a provider process, so off the async runtime.
+#[tauri::command]
+async fn deliver_queued_input(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DeliverQueuedInputResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Queued input delivery", move || api::deliver_queued_input(&core, &bridge_protocol::messages::DeliverQueuedInputParams { session_id })).await
+}
+
+#[tauri::command]
+async fn wait(session_id: String, until: Vec<bridge_protocol::messages::WaitState>, timeout_ms: Option<u64>, after_sequence: Option<i64>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WaitResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Session wait", move || api::wait_session(&core, &bridge_protocol::messages::WaitParams { session_id, until, timeout_ms, after_sequence })).await
+}
+
+#[tauri::command]
+async fn post(session_id: String, title: String, body: Option<String>, severity: Option<bridge_protocol::messages::AttentionSeverity>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::PostResult, BridgeError> {
+    api::post_attention(state.inner(), &bridge_protocol::messages::PostParams { session_id, title, body, severity })
+}
+
+#[tauri::command]
+async fn report_presence(client_id: String, client_kind: bridge_protocol::messages::PresenceClientKind, can_post_banners: Option<bool>, focused: bool, gone: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReportPresenceResult, BridgeError> {
+    api::report_presence(state.inner(), &bridge_protocol::messages::ReportPresenceParams { client_id, client_kind, can_post_banners, focused, gone })
+}
+
+#[tauri::command]
+async fn unread_summary(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnreadSummary, BridgeError> {
+    api::unread_summary(state.inner())
+}
+
+#[tauri::command]
+async fn mark_attention_seen(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::MarkAttentionSeenResult, BridgeError> {
+    api::mark_attention_seen(state.inner(), &bridge_protocol::messages::MarkAttentionSeenParams { session_id })
+}
+
+#[tauri::command]
 async fn get_delegation_notify_settings(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DelegationNotifySettingsView, BridgeError> {
     api::get_delegation_notify_settings(state.inner(), &bridge_protocol::messages::GetDelegationNotifySettingsParams { session_id })
 }
@@ -1107,6 +1201,145 @@ async fn delete_paths(paths: Vec<String>, permanent: bool, state: State<'_, Arc<
 async fn empty_trash(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::EmptyTrashResult, BridgeError> {
     let core = state.inner().clone();
     blocking("empty trash", move || api::empty_trash(&core)).await
+}
+
+#[tauri::command]
+async fn list_notes(query: Option<String>, tags: Option<Vec<String>>, kind: Option<String>, state: Option<String>, parent_id: Option<String>, include_archived: Option<bool>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesList, BridgeError> {
+    let core = core.inner().clone();
+    blocking("list notes", move || api::list_notes(&core, &bridge_protocol::messages::ListNotesParams { query, tags, kind, state, parent_id, include_archived })).await
+}
+
+#[tauri::command]
+async fn read_page(id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotePage, BridgeError> {
+    let core = core.inner().clone();
+    blocking("read page", move || api::read_page(&core, &bridge_protocol::messages::ReadPageParams { id })).await
+}
+
+#[tauri::command]
+async fn capture_note(body: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("capture note", move || api::capture_note(&core, &bridge_protocol::messages::CaptureNoteParams { body })).await
+}
+
+#[tauri::command]
+async fn create_page(title: Option<String>, content: Option<String>, parent_id: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("create page", move || api::create_page(&core, &bridge_protocol::messages::CreatePageParams { title, content, parent_id, kind, tags, workspace_id })).await
+}
+
+#[tauri::command]
+async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edits: Option<Vec<bridge_protocol::messages::NoteTextEdit>>, append: Option<bridge_protocol::messages::NoteAppend>, allow_deleting_children: Option<bool>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteEditResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("edit page", move || api::edit_page(&core, &bridge_protocol::messages::EditPageParams { id, base_seq, text, edits, append, allow_deleting_children })).await
+}
+
+#[tauri::command]
+async fn update_note(id: String, parent_id: Option<String>, clear_parent: Option<bool>, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, values: Option<std::collections::BTreeMap<String, serde_json::Value>>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, parent_id, clear_parent: clear_parent.unwrap_or(false), title, kind, tags, workspace_id, clear_workspace, state, add_session_id, values })).await
+}
+
+#[tauri::command]
+async fn create_database(title: Option<String>, parent_id: Option<String>, workspace_id: Option<String>, properties: Option<Vec<bridge_protocol::messages::NotePropertyInput>>, views: Option<Vec<bridge_protocol::messages::NoteViewInput>>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotePage, BridgeError> {
+    let core = core.inner().clone();
+    blocking("create database", move || api::create_database(&core, &bridge_protocol::messages::CreateDatabaseParams { title, parent_id, workspace_id, properties, views })).await
+}
+
+#[tauri::command]
+async fn update_schema(id: String, changes: Vec<bridge_protocol::messages::NoteSchemaChange>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteDatabase, BridgeError> {
+    let core = core.inner().clone();
+    blocking("update schema", move || api::update_schema(&core, &bridge_protocol::messages::UpdateSchemaParams { id, changes })).await
+}
+
+#[tauri::command]
+async fn save_view(database_id: String, view: bridge_protocol::messages::NoteViewInput, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteDatabaseView, BridgeError> {
+    let core = core.inner().clone();
+    blocking("save view", move || api::save_view(&core, &bridge_protocol::messages::SaveViewParams { database_id, view })).await
+}
+
+#[tauri::command]
+async fn delete_view(database_id: String, view_id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnitResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("delete view", move || api::delete_view(&core, &bridge_protocol::messages::DeleteViewParams { database_id, view_id })).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn query_database(database_id: String, view_id: Option<String>, filter: Option<serde_json::Value>, sorts: Option<Vec<bridge_protocol::messages::NoteSort>>, group_by: Option<bridge_protocol::messages::NoteGroupBy>, group_limit: Option<u32>, query: Option<String>, today: Option<String>, limit: Option<u32>, cursor: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DatabaseQueryResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("query database", move || api::query_database(&core, &bridge_protocol::messages::QueryDatabaseParams { database_id, view_id, filter, sorts, group_by, group_limit, query, today, limit, cursor })).await
+}
+
+#[tauri::command]
+async fn delete_note(id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnitResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("delete note", move || api::delete_note(&core, &bridge_protocol::messages::DeleteNoteParams { id })).await
+}
+
+#[tauri::command]
+async fn structure_note(id: String, harness: Option<String>, model: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteJobQueued, BridgeError> {
+    let core = core.inner().clone();
+    blocking("structure note", move || api::structure_note(&core, &bridge_protocol::messages::StructureNoteParams { id, harness, model })).await
+}
+
+#[tauri::command]
+async fn extract_tasks(id: String, harness: Option<String>, model: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteJobQueued, BridgeError> {
+    let core = core.inner().clone();
+    blocking("extract tasks", move || api::extract_tasks(&core, &bridge_protocol::messages::ExtractTasksParams { id, harness, model })).await
+}
+
+#[tauri::command]
+async fn split_item(id: String, item_index: u32, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("split item", move || api::split_item(&core, &bridge_protocol::messages::SplitItemParams { id, item_index })).await
+}
+
+#[tauri::command]
+async fn page_history(id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteHistory, BridgeError> {
+    let core = core.inner().clone();
+    blocking("page history", move || api::page_history(&core, &bridge_protocol::messages::PageHistoryParams { id })).await
+}
+
+#[tauri::command]
+async fn read_version(id: String, seq: i64, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteVersionPage, BridgeError> {
+    let core = core.inner().clone();
+    blocking("read version", move || api::read_version(&core, &bridge_protocol::messages::ReadVersionParams { id, seq })).await
+}
+
+#[tauri::command]
+async fn restore_version(id: String, seq: i64, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteEditResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("restore version", move || api::restore_version(&core, &bridge_protocol::messages::RestoreVersionParams { id, seq })).await
+}
+
+#[tauri::command]
+async fn put_asset_part(upload_id: Option<String>, data: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteAssetPart, BridgeError> {
+    let core = core.inner().clone();
+    blocking("put asset part", move || api::put_asset_part(&core, &bridge_protocol::messages::PutAssetPartParams { upload_id, data })).await
+}
+
+#[tauri::command]
+async fn finish_asset(upload_id: String, mime: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteAsset, BridgeError> {
+    let core = core.inner().clone();
+    blocking("finish asset", move || api::finish_asset(&core, &bridge_protocol::messages::FinishAssetParams { upload_id, mime })).await
+}
+
+#[tauri::command]
+async fn read_asset(path: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteAssetData, BridgeError> {
+    let core = core.inner().clone();
+    blocking("read asset", move || api::read_asset(&core, &bridge_protocol::messages::ReadAssetParams { path })).await
+}
+
+#[tauri::command]
+async fn get_notes_settings(core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesSettings, BridgeError> {
+    let core = core.inner().clone();
+    blocking("notes settings", move || api::get_notes_settings(&core)).await
+}
+
+#[tauri::command]
+async fn save_notes_settings(auto_structure: Option<bool>, root: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesSettings, BridgeError> {
+    let core = core.inner().clone();
+    blocking("save notes settings", move || api::save_notes_settings(&core, &bridge_protocol::messages::SaveNotesSettingsParams { auto_structure, root })).await
 }
 
 #[tauri::command]
@@ -1488,13 +1721,26 @@ async fn set_opencode_provider_api_key(
     provider_id: String,
     api_key: String,
     directory: Option<String>,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let core = state.inner().clone();
     blocking("OpenCode authentication", move || {
-        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory)
+        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory, account)
     })
     .await
+}
+
+/// Save an extra account's API key in the macOS Keychain (Cursor accounts).
+#[tauri::command]
+async fn set_account_api_key(
+    harness: String,
+    account: String,
+    api_key: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Account key", move || api::set_account_api_key(&core, &harness, &account, &api_key)).await
 }
 
 #[tauri::command]
@@ -1854,13 +2100,14 @@ async fn update_chat_model(
     harness: Harness,
     model: Option<String>,
     effort: Option<String>,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Stopping the old adapter can block on process teardown; run the whole
     // claim -> teardown -> commit window on the blocking pool.
     let core = state.inner().clone();
     blocking("Adapter shutdown", move || {
-        api::update_chat_model(&core, &session_id, &harness, model.as_deref(), effort.as_deref())
+        api::update_chat_model_with_account(&core, &session_id, &harness, model.as_deref(), effort.as_deref(), account.as_deref())
     })
     .await
 }
@@ -2908,8 +3155,11 @@ fn select_host(
     });
     // Omarchy theme sync. Linux-only and inert unless Omarchy is detected.
     omarchy::install(app.handle());
-    // Linux notifications with Allow once / Decline / Open.
+    // OS banners with Allow once / Decline / Open: notify-rust on Linux, the
+    // native center on macOS (installed here, on the main thread, during launch).
     notifications::install(app.handle());
+    // The unread count on the app icon, sent by the webview.
+    dock_badge::install(app.handle());
     quick_prompt::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
@@ -3069,6 +3319,8 @@ fn setup_embedded(
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
+    bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+    bridge_core::notes::live::start_note_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_worktree_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
@@ -3129,6 +3381,11 @@ pub fn run() -> i32 {
             github_connect,
             github_session_prs,
             github_attach_pr,
+            list_outgoing,
+            update_outgoing,
+            copy_outgoing,
+            discard_outgoing,
+            read_outgoing_attachment,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,
@@ -3145,6 +3402,9 @@ pub fn run() -> i32 {
             clone_input,
             read_clone_settings,
             write_clone_settings,
+            list_api_keys,
+            save_api_key,
+            forget_api_key,
             clone_requests,
             detach_browser,
             route_browser,
@@ -3222,6 +3482,13 @@ pub fn run() -> i32 {
             save_reviewer_settings,
             get_delegation_notify_settings,
             save_delegation_notify_settings,
+            list_attention,
+            mark_attention_seen,
+            unread_summary,
+            report_presence,
+            post,
+            wait,
+            deliver_queued_input,
             get_attribution_settings,
             save_attribution_settings,
             get_chat_search_settings,
@@ -3231,6 +3498,29 @@ pub fn run() -> i32 {
             scan_directory,
             delete_paths,
             empty_trash,
+            list_notes,
+            read_page,
+            capture_note,
+            create_page,
+            edit_page,
+            update_note,
+            delete_note,
+            create_database,
+            update_schema,
+            save_view,
+            delete_view,
+            query_database,
+            structure_note,
+            extract_tasks,
+            split_item,
+            page_history,
+            read_version,
+            restore_version,
+            put_asset_part,
+            finish_asset,
+            read_asset,
+            get_notes_settings,
+            save_notes_settings,
             sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,
@@ -3269,6 +3559,7 @@ pub fn run() -> i32 {
             reset_harness_config,
             refresh_opencode_catalog,
             set_opencode_provider_api_key,
+            set_account_api_key,
             remove_opencode_provider_auth,
             save_agent_config,
             delete_agent_config,
@@ -3865,10 +4156,14 @@ mod tests {
                         "{} takes different arguments than its contract names",
                         method.as_str()
                     );
+                    let required = bridge_protocol::TypedMethod::params_required_fields(method).unwrap_or_default();
                     for (argument, (_, schema)) in command.iter().zip(contract.iter()) {
-                        assert_eq!(
-                            rust_parameter_shape(method, &argument.name, &argument.kind),
-                            schema_parameter_shape(schema),
+                        assert!(
+                            command_parameter_shape_matches(
+                                rust_parameter_shape(method, &argument.name, &argument.kind),
+                                schema,
+                                required.contains(&argument.name),
+                            ),
                             "{} parameter {} has a different type from its contract",
                             method.as_str(),
                             argument.name
@@ -3881,6 +4176,57 @@ mod tests {
                 ),
             }
         }
+    }
+
+    // Serde defaults make a non-nullable scalar omittable on the wire. Tauri
+    // decodes each argument independently, so its native signature still needs
+    // Option<T>; the command then supplies the protocol's default.
+    fn command_parameter_shape_matches(native: ParameterShape, schema: &serde_json::Value, required: bool) -> bool {
+        let shape = schema_parameter_shape(schema);
+        native == shape || (!required && schema.get("default").is_some() && !matches!(shape, ParameterShape::Optional(_)) && native == ParameterShape::Optional(Box::new(shape)))
+    }
+
+    #[test]
+    fn signature_comparison_preserves_defaults_requiredness_and_boolean_types() {
+        let schema = serde_json::json!({"type": "boolean", "default": false});
+        let optional_bool = ParameterShape::Optional(Box::new(ParameterShape::Boolean));
+        assert!(command_parameter_shape_matches(optional_bool.clone(), &schema, false));
+        assert!(command_parameter_shape_matches(ParameterShape::Boolean, &schema, false));
+        assert!(!command_parameter_shape_matches(optional_bool.clone(), &schema, true));
+        assert!(!command_parameter_shape_matches(optional_bool, &serde_json::json!({"type": "boolean"}), false));
+        assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &schema, false));
+        let any_json = serde_json::json!({"default": null});
+        assert!(command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::Json)), &any_json, false));
+        assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &any_json, false));
+        let method = bridge_protocol::MethodName::UpdateNote;
+        assert!(!bridge_protocol::TypedMethod::params_required_fields(method).unwrap().contains(&"clearParent".to_owned()));
+        let fields = bridge_protocol::TypedMethod::params_schema_fields(method).unwrap();
+        let clear_parent = &fields.iter().find(|(name, _)| name == "clearParent").unwrap().1;
+        assert_eq!(clear_parent["default"], false);
+    }
+
+    #[test]
+    fn notes_commands_take_every_optional_field_as_option() {
+        // A field the wire lets a client omit must be an `Option` in the
+        // Tauri command too: its argument decoder rejects a missing key for
+        // any other type, and the params struct's serde defaults never run.
+        let source = include_str!("lib.rs");
+        let mut checked = 0;
+        for method in bridge_protocol::MethodName::ALL.iter().copied().filter(|method| method.domain() == "notes") {
+            let Some(arguments) = command_arguments(source, method.command_name()) else { continue };
+            let required = bridge_protocol::TypedMethod::params_required_fields(method).unwrap_or_default();
+            for argument in arguments.iter().filter(|argument| !required.contains(&argument.name)) {
+                checked += 1;
+                assert!(
+                    argument.kind.starts_with("Option<"),
+                    "{} {} may be omitted on the wire but the command requires it ({})",
+                    method.as_str(),
+                    argument.name,
+                    argument.kind
+                );
+            }
+        }
+        assert!(checked > 10, "the notes commands have optional fields to check");
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4069,6 +4415,9 @@ mod tests {
                 );
                 ParameterShape::Optional(Box::new(schema_type_shape(non_null[0], schema)))
             }
+            // No type constraint at all (an optional `serde_json::Value`,
+            // which schemars writes as `{"default": null}`): any JSON value.
+            None if schema.as_object().is_some_and(|object| object.keys().all(|key| matches!(key.as_str(), "default" | "description"))) => ParameterShape::Json,
             _ => panic!("unsupported params schema: {schema}"),
         }
     }

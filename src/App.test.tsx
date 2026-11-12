@@ -69,7 +69,7 @@ describe("ChatModelControl", () => {
 
     const opus = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus"))!;
     await act(async () => opus.click());
-    expect(onChange).toHaveBeenCalledWith("claude", "opus");
+    expect(onChange).toHaveBeenCalledWith("claude", "opus", null);
     await act(async () => root.unmount());
   });
 });
@@ -818,7 +818,7 @@ describe("the dock in the session view", () => {
     const opus = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Opus"))!;
     await click(opus);
     const asideId = updateSpy.mock.calls[0]?.[0];
-    expect(updateSpy).toHaveBeenCalledWith(asideId, "claude", "opus");
+    expect(updateSpy).toHaveBeenCalledWith(asideId, "claude", "opus", undefined, "claude");
     expect(asideId).not.toBe("session-1");
   });
 
@@ -995,15 +995,15 @@ describe("the dock in the session view", () => {
     expect(outside).toHaveLength(0);
   });
 
-  // A review-comment jump from Gitplace into a workspace with no chat: the
+  // A review-comment jump from Pulls into a workspace with no chat: the
   // draft's first message creates the chat, and the file still opens in it.
-  it("keeps a Gitplace file jump through a new chat's first message", async () => {
+  it("keeps a Pulls file jump through a new chat's first message", async () => {
     const real = await bridgeApi.state();
     const lonely = real.workspaces.find(workspace => workspace.id === "demo-3")!;
     vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
     const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
     await mountApp();
-    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Gitplace")!);
+    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Pulls")!);
     await settle(4);
     await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
     await settle(4);
@@ -1181,5 +1181,94 @@ describe("the dock in the session view", () => {
     await click(other);
     await settle(4);
     expect(chatRows().some(row => (row.getAttribute("title") ?? "").includes("Fork of"))).toBe(true);
+  });
+});
+
+// A new chat's harness/model is resolved by the host, so the first frames have
+// no answer and possibly no provider catalog either. The pill must show the last
+// confirmed choice, or say it is loading, never a fallback it is about to drop.
+describe("a new chat's model before the host answers", () => {
+  const LAST_DRAFT = "bridge.chat.lastDraftModel";
+  let health: Awaited<ReturnType<typeof bridgeApi.health>>;
+
+  beforeAll(async () => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    health = await bridgeApi.health();
+  });
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value); },
+        removeItem: (key: string) => { store.delete(key); },
+        clear: () => store.clear(),
+      },
+    });
+    observedWidth = 1280;
+  });
+
+  afterEach(async () => {
+    if (root) await act(async () => root.unmount());
+    container?.remove();
+    resizeObservers.clear();
+    vi.restoreAllMocks();
+  });
+
+  // Every adapter reports an empty catalog: discovery has not landed.
+  const discovering = () => ({
+    ...health,
+    adapters: health.adapters.map(adapter => ({ ...adapter, models: [], defaultModel: null })),
+  });
+  const pill = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Chat model:"]');
+
+  it("paints the last confirmed model while every catalog is empty", async () => {
+    localStorage.setItem(LAST_DRAFT, JSON.stringify({ harness: "opencode", model: "opencode-go/kimi", label: "Kimi K2.5" }));
+    vi.spyOn(bridgeApi, "health").mockResolvedValue(discovering());
+    vi.spyOn(bridgeApi, "resolveChatSettings").mockImplementation(() => new Promise(() => {}));
+    await mountApp();
+    expect(pill()?.textContent).toContain("Kimi K2.5");
+    expect(pill()?.textContent).not.toContain("Default");
+    expect(pill()?.getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("stores the host's resolution for a draft with no override", async () => {
+    await mountApp();
+    await settle(2);
+    const stored = JSON.parse(localStorage.getItem(LAST_DRAFT) ?? "null");
+    expect(stored?.harness).toBeTruthy();
+    expect(stored?.model).toBeTruthy();
+    // The label comes from the catalog, so the next chat can paint the name
+    // before discovery lands.
+    expect(stored?.label).toBeTruthy();
+  });
+
+  it("does not store a one-off pick as the next chat's default", async () => {
+    await mountApp();
+    await settle(2);
+    const before = JSON.parse(localStorage.getItem(LAST_DRAFT) ?? "null");
+    expect(pill()).not.toBeNull();
+    await click(pill()!);
+    const opus = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent?.includes("Claude Opus"));
+    expect(opus).toBeTruthy();
+    await click(opus!);
+    await settle(2);
+    // The next chat is created from saved defaults, not from this draft's
+    // override, so remembering the pick would make the pill lie.
+    expect(JSON.parse(localStorage.getItem(LAST_DRAFT) ?? "null")).toEqual(before);
+  });
+
+  it("says it is loading when there is nothing confirmed and no catalog yet", async () => {
+    vi.spyOn(bridgeApi, "health").mockResolvedValue(discovering());
+    vi.spyOn(bridgeApi, "resolveChatSettings").mockImplementation(() => new Promise(() => {}));
+    await mountApp();
+    expect(pill()?.textContent).not.toContain("Loading models");
+    // The grace period: a fast local read never flashes a spinner.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)); });
+    expect(pill()?.textContent).toContain("Loading models…");
+    expect(pill()?.getAttribute("aria-busy")).toBe("true");
   });
 });

@@ -119,18 +119,38 @@ pub fn discover_sources(env: &SourceEnv) -> Vec<DiscoveredAnalyticsSource> {
 
 /// Runs one bounded, incremental batch against a source and persists it.
 ///
-/// `request.cursor` overrides the cursor stored on the source row; when it is
-/// `None` the stored cursor is used, which is what a caller wants for "scan
-/// whatever is new". The returned `next_cursor` is always the position to
-/// resume from, and `coverage` is `partial` when `max_records` stopped the
-/// batch before the source was exhausted.
+/// For the database source, `request.cursor` overrides the cursor stored on
+/// the source row; when it is `None` the stored cursor is used, which is what
+/// a caller wants for "scan whatever is new". JSONL sources keep one cursor
+/// per file in their own table and always resume from it; their
+/// `next_cursor` is a short progress token, not a position. `coverage` is
+/// `partial` when `max_records` stopped the batch before the source was
+/// exhausted.
 pub fn scan(
     db: &Connection,
     request: &AnalyticsScanRequest,
     env: &SourceEnv,
 ) -> Result<AnalyticsScanResult, BridgeError> {
+    scan_listed(db, request, env, None)
+}
+
+/// [`scan`] with the files from [`list_source_files`], taken before the
+/// caller locked `db`.
+pub(crate) fn scan_listed(
+    db: &Connection,
+    request: &AnalyticsScanRequest,
+    env: &SourceEnv,
+    listing: Option<Vec<scan::ListedFile>>,
+) -> Result<AnalyticsScanResult, BridgeError> {
     request.validate()?;
-    scan::run(db, request, env)
+    scan::run_listed(db, request, env, listing)
+}
+
+/// Walks a JSONL source's transcript tree. Needs no database, so a caller
+/// holding a shared connection can do it before taking the lock; other
+/// sources have nothing to list.
+pub(crate) fn list_source_files(source: &DiscoveredAnalyticsSource) -> Option<Vec<scan::ListedFile>> {
+    matches!(source.agent.as_str(), "claude" | "codex").then(|| scan::list_jsonl_files(&source.location))
 }
 
 /// Plain-data summary of one `scan_all` pass, mirrored on the wire later.
@@ -521,17 +541,25 @@ mod tests {
             "SELECT COUNT(*) FROM agent_usage_observations WHERE numeric_usage_json LIKE '%SECRET%'",
         );
         assert_eq!(leaked, 0);
-        let (state, imported, cursor): (String, i64, Option<String>) = h
+        let (state, imported): (String, i64) = h
             .db
             .query_row(
-                "SELECT coverage_state, records_imported, scan_cursor FROM agent_usage_sources WHERE agent='claude'",
+                "SELECT coverage_state, records_imported FROM agent_usage_sources WHERE agent='claude'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(state, "complete");
         assert_eq!(imported, 3);
-        assert!(cursor.unwrap().contains("sess-1.jsonl"));
+        assert_eq!(
+            count(&h.db, "SELECT COUNT(*) FROM agent_usage_file_cursors WHERE relative_path LIKE '%sess-1.jsonl' AND complete=1"),
+            1
+        );
+        let token: String = h
+            .db
+            .query_row("SELECT scan_cursor FROM agent_usage_sources WHERE agent='claude'", [], |row| row.get(0))
+            .unwrap();
+        assert!(token.starts_with("files:1;"), "the source row holds a progress token, not every file's position: {token}");
     }
 
     #[test]

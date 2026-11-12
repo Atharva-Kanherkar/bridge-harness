@@ -11,7 +11,7 @@ how to get the record out.
 
 Every adapter normalizes into one event vocabulary before anything is stored
 (`agent.rs` for Codex's native protocol, `acp_events.rs` for the ACP runtimes,
-the Claude sidecar for Claude). `store::session_event_in_transaction` is the
+`agent.rs` for Claude SDK frames). `store::session_event_in_transaction` is the
 single door through which a normalized event becomes durable history, and the
 session forest — `session_entries` — is the only place that history lives.
 
@@ -157,3 +157,46 @@ exactly when the total is a multiple of the page size.
 - [`transcript-behavior-contract.md`](transcript-behavior-contract.md) — what
   the rendered conversation does, over normalized items and nothing else
 - [`local-history.md`](local-history.md), [`compaction-and-resume.md`](compaction-and-resume.md)
+
+## Background activity
+
+Native task starts, useful task-progress snapshots and terminal notifications are
+normalized to durable tool lifecycles under one task identity. Periodic tool
+heartbeats remain transient `tool.progress` frames. The launcher can finish before
+the process does; its `backgrounded` status is not a successful test result.
+Claude's task membership snapshot reconciles missed bookends. A task that vanishes
+without an outcome records `unknown`, and runtime teardown or startup recovery
+records the same state for any remaining live process. Native Codex executions
+with a reported process id use this independent lifecycle too.
+
+Synthetic SDK messages whose typed origin is `task-notification`, including
+Monitor events, are recorded as inspectable `Background update` tool rows.
+Ordinary user echoes stay suppressed. Housekeeping is excluded from activity;
+explicitly launched Monitor processes are visible as passive watchers.
+Bridge can show only the output and progress the runtime supplies. The current
+activity panel distinguishes a running process from a working model, and shared
+prompt guidance asks agents to keep execution and logs observable.
+
+## Harness subagents
+
+A provider-owned subagent is recorded as a `harness_subagent` child session.
+Its provider identity is `provider_session_id`; its parent owns the adapter,
+permissions and usage. Child tools, messages and approval requests are stored
+in the child's forest. The parent stores only `subagent.started` and
+`subagent.completed` pointers, with `data.childSessionId` and hidden context
+visibility. These pointers can be rendered and exported but do not enter the
+parent's model context or recall index.
+
+These sessions have no worker runtime, worktree, policy budget or process of
+their own. Sending, resuming, forking and compacting one returns an Invalid
+error with the stable `harness_subagent_processless` reason. Stop and approval
+replies address the child through the parent's live adapter. A parent turn Stop
+preserves that shared process while children remain active. Archiving the
+parent retires the family.
+
+On startup or parent process exit, unfinished children are recorded as
+`interrupted`, with `parent_process_exited`. The existing session-status wire
+vocabulary exposes this as `stopped`; the durable event retains the precise
+reason. Child usage is billed to the parent's ledger and budgets, never to
+the child, and a child's context-window readings never move the parent's.
+Title and memory jobs exclude these processless sessions.

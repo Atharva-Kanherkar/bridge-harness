@@ -21,6 +21,7 @@ describe("recordState", () => {
   it("crosses status with provenance", () => {
     expect(recordState(rec("a"))).toBe("pinned");
     expect(recordState(rec("b", { provenance: "model_proposal" }))).toBe("active");
+    expect(recordState(rec("b2", { provenance: "agent_proposal" }))).toBe("active");
     expect(recordState(rec("c", { status: "proposed", provenance: "model_proposal" }))).toBe("proposed");
     expect(recordState(rec("d", { status: "superseded" }))).toBe("superseded");
     expect(recordState(rec("e", { status: "deleted" }))).toBe("tombstoned");

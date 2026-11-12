@@ -114,6 +114,20 @@ notifications![
     (ConnectorItemResolved, "connectors/item_resolved", Transient),
     // Refetch hint: something in one family's inbox changed.
     (ConnectorInboxChanged, "connectors/inbox_changed", Transient),
+    // A notes page changed: who changed it and its new sequence. Transient: a
+    // client that missed it rereads the page, whose `seq` is authoritative.
+    (NotesPageChanged, "notes/page_changed", Transient),
+    // A Structure or Turn into tasks reply so far, while it streams. Transient:
+    // the settled job and its stored result are the truth.
+    (NotesPassProgress, "notes/pass_progress", Transient),
+    // Refetch hint: the attention ledger may have moved. No rows ride along,
+    // for the same reason `memory-changed` carries no records: a client that
+    // rebuilt state from the hint would keep what the ledger already closed.
+    // Clients reread `attention/list_attention` from their cursor.
+    (AttentionChanged, "attention/changed", Transient),
+    // Refetch hint: one drafted message in a chat changed. Transient: a client
+    // that missed it sees the same item on its next `outgoing/list_outgoing`.
+    (OutgoingChanged, "outgoing/changed", Transient),
     // Refetch hint: one workflow was saved, approved, enabled, disabled or
     // deleted. Payload `{"workflowId": "<id>"}`.
     (WorkflowsChanged, "workflows/changed", Transient),
@@ -178,6 +192,7 @@ mod tests {
             NotificationName::VoiceTranscript,
             NotificationName::SessionStartup,
             NotificationName::StreamLagged,
+            NotificationName::AttentionChanged,
         ] {
             assert_eq!(
                 transient.delivery(),

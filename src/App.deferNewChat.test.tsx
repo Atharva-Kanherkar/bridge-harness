@@ -127,6 +127,57 @@ describe("deferred new-chat creation (#350)", () => {
     expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project") ?? null).toBeNull();
   });
 
+  it("delivers a leading issue number as the first message of a new chat", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut");
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    const composer = composerField()!;
+    await type(composer, "#389 needs investigation");
+    await act(async () => pressEnter(composer));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledWith(expect.any(String), "#389 needs investigation", [], "steer");
+  });
+
+  it("accepts an image with a leading issue number in a new chat", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    const composer = composerField()!;
+    await type(composer, "#389 needs investigation");
+    const file = new File(["image bytes"], "screenshot.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { items: { 0: { kind: "file", type: "image/png", getAsFile: () => file }, length: 1 } } });
+    await act(async () => composer.dispatchEvent(paste));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    await act(async () => pressEnter(composer));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+
+    expect(submit).toHaveBeenCalledWith(expect.any(String), "#389 needs investigation", [expect.objectContaining({ mediaType: "image/png" })], "steer");
+  });
+
+  it("sends a leading issue number as the selected specialist's objective", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Agent: None"]')!.click());
+    const specialist = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Agent"] [role="menuitemradio"]')].find(item => item.textContent !== "No agent")!;
+    await act(async () => specialist.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+    const creates = spyCreates();
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut").mockResolvedValue({ disposition: "launched", agentId: "specialist", agentName: "Specialist", role: "research", interceptions: [] });
+    await type(composerField()!, "#389 needs investigation");
+    await act(async () => pressEnter(composerField()!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+
+    const result: Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>> = await creates.configured.mock.results[0].value;
+    const target = result.configuration.settings.target;
+    expect(target.kind).toBe("agent");
+    if (target.kind !== "agent") throw new Error("expected specialist target");
+    expect(dispatch).toHaveBeenCalledWith(result.sessionId, target.agentId, "#389 needs investigation");
+  });
+
   it("an empty submit creates nothing and keeps the draft open", async () => {
     await act(async () => byLabel("New Chat")!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
@@ -271,6 +322,60 @@ describe("deferred new-chat creation (#350)", () => {
     const created=result.state.sessions.find(s=>s.id===result.sessionId);
     expect(created?.kind).toBe("direct");
 
+  });
+  it("starts a new chat on the extra account picked in the draft", async () => {
+    const config = await bridgeApi.configState();
+    const claude = config.harnesses.find(harness => harness.id === "claude")!;
+    await act(async () => { await bridgeApi.saveHarnessConfig({ ...claude, advanced: { accounts: [{ id: "personal", label: "Personal", homePath: "~/.claude_personal" }] } }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const picker = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat model:"))!;
+    await act(async () => picker.click());
+    const group = [...document.querySelectorAll<HTMLElement>('[role="group"]')].find(item => item.getAttribute("aria-label")?.endsWith("· Personal"));
+    expect(group, "the account has its own picker group").toBeTruthy();
+    await act(async () => group!.querySelector<HTMLButtonElement>('button[role="option"]')!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(picker.getAttribute("aria-label")).toContain("Personal");
+
+    const creates = spyCreates();
+    await type(composerField()!, "bill the other subscription");
+    await act(async () => pressEnter(composerField()!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    expect(creates.configured.mock.calls[0][0].overrides.model).toMatchObject({ harness: "claude", account: "personal" });
+    const result: Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>> = await creates.configured.mock.results[0].value;
+    expect(result.state.sessions.find(session => session.id === result.sessionId)?.account).toBe("personal");
+    await act(async () => { await bridgeApi.resetHarnessConfig("claude"); });
+  });
+  it("drops the draft's account when a specialist is chosen, since it runs on your own login", async () => {
+    const config = await bridgeApi.configState();
+    const claude = config.harnesses.find(harness => harness.id === "claude")!;
+    await act(async () => { await bridgeApi.saveHarnessConfig({ ...claude, advanced: { accounts: [{ id: "personal", label: "Personal", homePath: "~/.claude_personal" }] } }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const picker = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat model:"))!;
+    await act(async () => picker().click());
+    const group = [...document.querySelectorAll<HTMLElement>('[role="group"]')].find(item => item.getAttribute("aria-label")?.endsWith("· Personal"))!;
+    await act(async () => group.querySelector<HTMLButtonElement>('button[role="option"]')!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(picker().getAttribute("aria-label")).toContain("Personal");
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Agent: None"]')!.click());
+    const specialist = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Agent"] [role="menuitemradio"]')].find(item => item.textContent !== "No agent")!;
+    await act(async () => specialist.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+    expect(picker().getAttribute("aria-label")).not.toContain("Personal");
+
+    const creates = spyCreates();
+    await type(composerField()!, "look into the flaky test");
+    await act(async () => pressEnter(composerField()!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    expect(creates.configured.mock.calls[0][0].overrides.model?.account).toBeUndefined();
+    const result: Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>> = await creates.configured.mock.results[0].value;
+    expect(result.configuration.settings.model.account ?? null).toBeNull();
+    expect(result.state.sessions.find(session => session.id === result.sessionId)?.account ?? null).toBeNull();
+    await act(async () => { await bridgeApi.resetHarnessConfig("claude"); });
   });
   it("starts with saved project settings and keeps access edits local to the draft",async()=>{
     const state=await bridgeApi.state();const projectId=state.workspaces.find(w=>w.id==="demo-1")!.projectId!;

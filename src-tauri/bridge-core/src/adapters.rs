@@ -209,6 +209,11 @@ pub trait AdapterRuntime: Send {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
+    fn stop_subagent(&self, _provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This harness does not support subagent Stop".into()))
+    }
+    /// Snapshot a subagent Stop that can run without retaining the adapter map.
+    fn stop_subagent_request(&self, _provider_id: &str, _turn_id: Option<&str>) -> Option<InterruptRequest> { None }
     /// Snapshot an interrupt that can run without retaining the adapter map.
     /// Unsupported transports use the host's bounded process fallback.
     fn interrupt_request(&self) -> Option<InterruptRequest> { None }
@@ -593,6 +598,9 @@ pub type StartupProgress<'a> = &'a dyn Fn(StartupPhase);
 
 #[derive(Clone, Copy)]
 pub struct StartRequest<'a> {
+    /// The Bridge session this process serves, when there is one. Lets an
+    /// interactive chat's tool server act for that chat (the notes tools).
+    pub session_id: Option<&'a str>,
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -610,6 +618,11 @@ pub struct StartRequest<'a> {
     /// job. Decides attachments such as `visualize`. A separate axis from
     /// `write_mode`: configured chats carry an explicit write authority too.
     pub interactive: bool,
+    /// The extra account this chat signs in with: the variables to set and to
+    /// remove, prepared by [`crate::provider_accounts::prepare_launch`].
+    /// `None` inherits the user's own login. Adapters without accounts ignore
+    /// it; the others hand it to [`crate::provider_accounts::apply_account`].
+    pub account: Option<&'a crate::provider_accounts::AccountLaunch>,
     /// See [`StartupProgress`].
     pub on_progress: Option<StartupProgress<'a>>,
 }
@@ -619,6 +632,7 @@ pub struct StartRequest<'a> {
 impl std::fmt::Debug for StartRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StartRequest")
+            .field("session_id", &self.session_id)
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
@@ -627,6 +641,7 @@ impl std::fmt::Debug for StartRequest<'_> {
             .field("read_only_sandbox", &self.read_only_sandbox)
             .field("briefing", &self.briefing)
             .field("interactive", &self.interactive)
+            .field("account", &self.account)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
     }
@@ -634,6 +649,9 @@ impl std::fmt::Debug for StartRequest<'_> {
 
 #[derive(Clone, Copy)]
 pub struct ResumeRequest<'a> {
+    /// See [`StartRequest::session_id`]. A resumed or forked chat keeps its
+    /// notes tools only if this is carried.
+    pub session_id: Option<&'a str>,
     pub provider_session_id: &'a str,
     /// Fork `provider_session_id` into a NEW thread instead of resuming it in
     /// place. Codex-only (`thread/fork`); other adapters ignore it — which is
@@ -650,6 +668,8 @@ pub struct ResumeRequest<'a> {
     pub briefing: Option<&'a BriefingRuntimePolicy>,
     /// See [`StartRequest::interactive`].
     pub interactive: bool,
+    /// See [`StartRequest::account`].
+    pub account: Option<&'a crate::provider_accounts::AccountLaunch>,
     /// See [`StartupProgress`].
     pub on_progress: Option<StartupProgress<'a>>,
 }
@@ -657,6 +677,7 @@ pub struct ResumeRequest<'a> {
 impl std::fmt::Debug for ResumeRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResumeRequest")
+            .field("session_id", &self.session_id)
             .field("provider_session_id", &self.provider_session_id)
             .field("fork", &self.fork)
             .field("cwd", &self.cwd)
@@ -667,8 +688,29 @@ impl std::fmt::Debug for ResumeRequest<'_> {
             .field("read_only_sandbox", &self.read_only_sandbox)
             .field("briefing", &self.briefing)
             .field("interactive", &self.interactive)
+            .field("account", &self.account)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
+    }
+}
+
+impl<'a> ResumeRequest<'a> {
+    /// The launch a resume makes: every start field, the Bridge session
+    /// included. Adapters resume through this so no field is dropped.
+    pub fn as_start(&self) -> StartRequest<'a> {
+        StartRequest {
+            session_id: self.session_id,
+            cwd: self.cwd,
+            model: self.model,
+            effort: self.effort,
+            instructions: self.instructions,
+            write_mode: self.write_mode,
+            read_only_sandbox: self.read_only_sandbox,
+            briefing: self.briefing,
+            interactive: self.interactive,
+            account: self.account,
+            on_progress: self.on_progress,
+        }
     }
 }
 
@@ -1794,26 +1836,13 @@ impl HarnessAdapter for CodexAdapter {
         codex_adapter::supports_native_fork()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
-        if value.get("id").is_some() && value.get("method").is_some() {
-            agent::normalize_codex_request(value).into_iter().collect()
-        } else {
-            // Standard Codex app-server stdio notifications carry threadId on
-            // thread/turn boundaries, but omit session identity on mid-turn deltas.
-            // Stream state therefore resolves the session key when present and
-            // safely defaults to "default", with per-turn counter resets in
-            // CodexStreamState preventing cross-turn reasoning collision.
-            let session_key = value
-                .pointer("/params/conversationId")
-                .or_else(|| value.pointer("/params/threadId"))
-                .or_else(|| value.pointer("/params/sessionID"))
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                .to_owned();
-            let mut streams = self.streams.lock().unwrap();
-            let state = streams.entry(session_key).or_default();
-            agent::normalize_codex_message_with_state(value, state)
-        }
+        let session_key = value.get("_bridgeRootThreadId")
+            .or_else(|| value.pointer("/params/threadId"))
+            .and_then(Value::as_str).unwrap_or("default").to_owned();
+        let mut streams = self.streams.lock().unwrap();
+        agent::normalize_codex_message_with_state(value, streams.entry(session_key).or_default())
     }
+
     fn forget_session(&self, provider_session_id: &str) {
         if provider_session_id != "default" {
             self.streams.lock().unwrap().remove(provider_session_id);
@@ -1977,6 +2006,38 @@ impl HarnessAdapter for ClaudeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_requests_carry_the_bridge_session_into_launches() {
+        let request = ResumeRequest {
+            session_id: Some("chat-1"),
+            provider_session_id: "provider-thread",
+            fork: true,
+            cwd: "/tmp/chat",
+            model: Some("m"),
+            effort: None,
+            instructions: None,
+            write_mode: Some(WriteMode::Full),
+            read_only_sandbox: None,
+            briefing: None,
+            interactive: true,
+            account: None,
+            on_progress: None,
+        };
+        let start = request.as_start();
+        assert_eq!(start.session_id, Some("chat-1"));
+        assert!(start.interactive);
+        assert_eq!((start.cwd, start.model, start.write_mode), ("/tmp/chat", Some("m"), Some(WriteMode::Full)));
+        crate::notes::tool::serve_listener().unwrap();
+        let env = crate::notes::tool::launch_env(start.session_id.unwrap());
+        assert!(env.iter().any(|(key, value)| key == crate::notes::tool::ENV_URL && value.ends_with("/chat-1")));
+        // Every adapter resumes through `as_start`, so none can drop the session.
+        for source in [include_str!("claude_adapter.rs"), include_str!("codex_adapter.rs"), include_str!("opencode_adapter.rs")] {
+            let resume = &source[source.find("pub fn resume").expect("a resume entry point")..];
+            let body = &resume[..resume.find("\n}\n").unwrap()];
+            assert!(body.contains("request.as_start()"), "{body}");
+        }
+    }
     use crate::model::ModelCatalogDiagnostics;
 
     fn descriptor_completes_during_catalog_refresh(
@@ -2301,10 +2362,12 @@ mod tests {
         for (id, label, expected) in [
             ("claude-opus-5-5", "Opus 5.5", CapabilityTier::Strong),
             ("claude-fable-5-1", "Fable", CapabilityTier::Strong),
+            ("claude-fable-5-2", "Fable 5.2", CapabilityTier::Strong),
             ("gpt-6-astra", "GPT-6-Astra", CapabilityTier::Strong),
             ("gpt-6-sol", "GPT-6-Sol", CapabilityTier::Strong),
             ("gpt-6-luna", "GPT-6-Luna", CapabilityTier::Fast),
             ("claude-haiku-4-5", "Haiku 4.5", CapabilityTier::Fast),
+            ("claude-haiku-5-5", "Haiku 5.5", CapabilityTier::Fast),
             ("claude-sonnet-5", "Sonnet 5", CapabilityTier::Standard),
             ("claude-sonnet-5-5", "Sonnet 5.5", CapabilityTier::Standard),
         ] {
@@ -2696,8 +2759,8 @@ mod tests {
         };
         assert_eq!(adapter.normalize(&created("root", None))[0].kind, "session.started");
         adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "root", "status": {"type": "busy"}}}));
-        assert!(adapter.normalize(&created("child", Some("root"))).is_empty());
-        assert!(adapter.normalize(&created("grandchild", Some("child"))).is_empty());
+        assert_eq!(adapter.normalize(&created("child", Some("root")))[0].kind, "subagent.started");
+        assert_eq!(adapter.normalize(&created("grandchild", Some("child")))[0].kind, "subagent.started");
         // A child's completion must not close the root's turn, and its text is
         // tagged as subagent work inside the root's stream.
         assert!(adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "grandchild", "status": {"type": "idle"}}})).is_empty());

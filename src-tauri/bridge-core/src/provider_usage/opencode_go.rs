@@ -1,11 +1,18 @@
 //! OpenCode Go's account usage API; no browser cookies or inference calls.
 use super::*;
-use std::{io::Read, path::PathBuf, time::Duration};
+use rusqlite::OptionalExtension;
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use zeroize::Zeroizing;
 
 const MAX_AUTH_BYTES: usize = 1_048_576;
 
-pub(super) fn api_key() -> Result<Option<Zeroizing<String>>, String> {
+/// Bearer tokens to try in order. The environment override and OpenCode 2.x's
+/// own store are each authoritative; 1.x's `auth.json` is read only without them.
+pub(super) fn credentials() -> Result<Vec<Zeroizing<String>>, String> {
     let content = match std::env::var("OPENCODE_AUTH_CONTENT") {
         Ok(value) if !value.is_empty() => Some(Zeroizing::new(value)),
         Err(std::env::VarError::NotUnicode(_)) => {
@@ -13,13 +20,125 @@ pub(super) fn api_key() -> Result<Option<Zeroizing<String>>, String> {
         }
         _ => None,
     };
-    let path = std::env::var_os("XDG_DATA_HOME")
+    let data = std::env::var_os("XDG_DATA_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .map(|base| base.join("opencode/auth.json"));
+        .map(|base| base.join("opencode"));
     let fallback = std::env::var("OPENCODE_API_KEY").ok().map(Zeroizing::new);
-    key_from_sources(content, path, fallback)
+    if content.is_none() {
+        if let Some(data) = &data {
+            let stored = stored_credentials(
+                &data.join("opencode.db"),
+                chrono::Utc::now().timestamp_millis(),
+            )?;
+            if let Some(stored) = stored {
+                return Ok(if stored.is_empty() {
+                    trimmed(fallback).into_iter().collect()
+                } else {
+                    stored
+                });
+            }
+        }
+    }
+    Ok(
+        key_from_sources(content, data.map(|data| data.join("auth.json")), fallback)?
+            .into_iter()
+            .collect(),
+    )
+}
+
+/// OpenCode 2.x keeps credentials in its database's `credential` table. A Go
+/// API key comes first; the signed-in OpenCode account follows, so an expired
+/// key still reads usage when OpenCode itself is signed in. `None` means 1.x.
+fn stored_credentials(path: &Path, now_ms: i64) -> Result<Option<Vec<Zeroizing<String>>>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let unreadable = "Could not read OpenCode authentication. Check access to its database.";
+    let db = crate::usage_import::opencode::open_read_only(path).map_err(|_| unreadable)?;
+    let _ = db.busy_timeout(Duration::from_secs(2));
+    let has_table = db
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='credential'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|_| unreadable)?
+        .is_some();
+    if !has_table {
+        return Ok(None);
+    }
+    let mut statement = db
+        .prepare("SELECT integration_id, value FROM credential WHERE integration_id IN ('opencode-go','opencode') ORDER BY COALESCE(active,0) DESC, time_updated DESC")
+        .map_err(|_| unreadable)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Zeroizing::new(row.get::<_, String>(1)?),
+            ))
+        })
+        .map_err(|_| unreadable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| unreadable)?;
+    #[derive(Deserialize)]
+    struct Stored {
+        #[serde(rename = "type")]
+        kind: String,
+        key: Option<String>,
+        access: Option<String>,
+        expires: Option<i64>,
+        metadata: Option<Metadata>,
+    }
+    #[derive(Deserialize)]
+    struct Metadata {
+        server: Option<String>,
+    }
+    let (mut key, mut account, mut expired) = (None, None, false);
+    for (integration, value) in rows {
+        let Ok(stored) = serde_json::from_str::<Stored>(&value) else {
+            continue;
+        };
+        if integration == "opencode-go"
+            && key.is_none()
+            && matches!(stored.kind.as_str(), "key" | "api")
+        {
+            key = trimmed(stored.key.map(Zeroizing::new));
+        } else if integration == "opencode" && account.is_none() && stored.kind == "oauth" {
+            // The token goes only to opencode.ai, so a self-hosted console's sign-in is skipped.
+            let server = stored.metadata.and_then(|metadata| metadata.server);
+            if server.is_some_and(|server| {
+                reqwest::Url::parse(&server)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .as_deref()
+                    != Some("opencode.ai")
+            }) {
+                continue;
+            }
+            if stored.expires.is_some_and(|expires| expires <= now_ms) {
+                expired = true;
+                continue;
+            }
+            account = trimmed(stored.access.map(Zeroizing::new));
+        }
+    }
+    let found = key.into_iter().chain(account).collect::<Vec<_>>();
+    if found.is_empty() && expired {
+        return Err(
+            "Your OpenCode sign-in has expired. Open OpenCode to renew it, then refresh usage."
+                .into(),
+        );
+    }
+    Ok(Some(found))
+}
+
+fn trimmed(value: Option<Zeroizing<String>>) -> Option<Zeroizing<String>> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| Zeroizing::new(value.trim().to_string()))
 }
 
 fn key_from_sources(
@@ -98,14 +217,39 @@ fn key_from_contents(
         .map(|key| Zeroizing::new(key.trim().to_string())))
 }
 
-pub(super) fn read(key: &str) -> Result<AccountUsage, String> {
-    let request = http::client()?
-        .get("https://opencode.ai/zen/go/v1/usage")
-        .timeout(Duration::from_secs(5))
-        .header("Accept", "application/json");
-    let authorization = Zeroizing::new(format!("Bearer {key}"));
-    let value = http::json(http::secret(request, false, &authorization)?, "OpenCode Go")?;
+pub(super) fn read(credentials: &[Zeroizing<String>]) -> Result<AccountUsage, String> {
+    let client = http::client()?;
+    let value = first_accepted(credentials, |credential| {
+        let request = client
+            .get("https://opencode.ai/zen/go/v1/usage")
+            .timeout(Duration::from_secs(5))
+            .header("Accept", "application/json");
+        let authorization = Zeroizing::new(format!("Bearer {credential}"));
+        let request =
+            http::secret(request, false, &authorization).map_err(|message| http::RequestError {
+                message,
+                retryable: false,
+                rejected: false,
+            })?;
+        http::json_result(request, "OpenCode Go")
+    })?;
     parse(&value, chrono::Utc::now().timestamp())
+}
+
+/// Tries each credential in turn and moves on only when one is refused.
+fn first_accepted(
+    credentials: &[Zeroizing<String>],
+    mut fetch: impl FnMut(&str) -> Result<Value, http::RequestError>,
+) -> Result<Value, String> {
+    let mut refused = None;
+    for credential in credentials {
+        match fetch(credential) {
+            Ok(value) => return Ok(value),
+            Err(error) if error.rejected => refused = Some(error.message),
+            Err(error) => return Err(error.message),
+        }
+    }
+    Err(refused.unwrap_or_else(|| "Connect OpenCode Go in Menu Bar settings.".into()))
 }
 
 fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
@@ -209,6 +353,164 @@ mod tests {
         assert!(key_from_sources(None, Some(path.clone()), None).is_err());
         std::fs::remove_file(&path).unwrap();
         assert!(key_from_sources(None, Some(path), None).unwrap().is_none());
+    }
+
+    fn store(rows: &[(&str, Option<i64>, i64, serde_json::Value)]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, connector_id text, method_id text, active integer, time_created integer NOT NULL, time_updated integer NOT NULL);").unwrap();
+        for (index, (integration, active, updated, value)) in rows.iter().enumerate() {
+            db.execute(
+                "INSERT INTO credential VALUES (?1, ?2, 'label', ?3, NULL, NULL, ?4, 0, ?5)",
+                rusqlite::params![
+                    format!("cred_{index}"),
+                    integration,
+                    value.to_string(),
+                    active,
+                    updated
+                ],
+            )
+            .unwrap();
+        }
+        (dir, path)
+    }
+
+    fn account(access: &str, expires: i64, server: &str) -> Value {
+        json!({"type": "oauth", "methodID": "device", "refresh": "refresh", "access": access, "expires": expires, "metadata": {"server": server, "orgName": "Default"}})
+    }
+
+    fn tokens(found: Option<Vec<Zeroizing<String>>>) -> Vec<String> {
+        found
+            .unwrap()
+            .iter()
+            .map(|token| token.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn opencode_2_store_tries_the_go_key_then_the_signed_in_account() {
+        let (_dir, path) = store(&[
+            (
+                "opencode",
+                Some(1),
+                1,
+                account(" access ", 2_000, "https://opencode.ai/console"),
+            ),
+            (
+                "openai",
+                None,
+                1,
+                json!({"type": "key", "key": "openai-key"}),
+            ),
+            (
+                "opencode-go",
+                None,
+                1,
+                json!({"type": "key", "key": "old-go-key"}),
+            ),
+            (
+                "opencode-go",
+                None,
+                2,
+                json!({"type": "key", "key": " go-key "}),
+            ),
+        ]);
+        assert_eq!(
+            tokens(stored_credentials(&path, 1_000).unwrap()),
+            ["go-key", "access"]
+        );
+    }
+
+    #[test]
+    fn opencode_2_store_skips_expired_or_foreign_sign_ins() {
+        let (_dir, path) = store(&[(
+            "opencode",
+            Some(1),
+            1,
+            account("access", 1_000, "https://console.example.com"),
+        )]);
+        assert!(tokens(stored_credentials(&path, 0).unwrap()).is_empty());
+        let (_dir, path) = store(&[(
+            "opencode",
+            Some(1),
+            1,
+            account("access", 1_000, "https://opencode.ai/console"),
+        )]);
+        assert!(stored_credentials(&path, 1_000)
+            .unwrap_err()
+            .contains("expired"));
+        let (_dir, path) = store(&[
+            (
+                "opencode",
+                Some(1),
+                1,
+                account("access", 1_000, "https://opencode.ai/console"),
+            ),
+            (
+                "opencode-go",
+                None,
+                1,
+                json!({"type": "key", "key": "go-key"}),
+            ),
+        ]);
+        assert_eq!(
+            tokens(stored_credentials(&path, 1_000).unwrap()),
+            ["go-key"]
+        );
+    }
+
+    #[test]
+    fn a_database_without_a_credential_table_is_opencode_1() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(stored_credentials(&dir.path().join("opencode.db"), 0)
+            .unwrap()
+            .is_none());
+        let path = dir.path().join("opencode.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE session (id text);")
+            .unwrap();
+        assert!(stored_credentials(&path, 0).unwrap().is_none());
+    }
+
+    fn refused(message: &str, rejected: bool) -> http::RequestError {
+        http::RequestError {
+            message: message.into(),
+            retryable: false,
+            rejected,
+        }
+    }
+
+    #[test]
+    fn only_a_refused_credential_moves_on_to_the_next() {
+        let credentials = [
+            Zeroizing::new("expired".to_string()),
+            Zeroizing::new("account".to_string()),
+        ];
+        let mut tried = Vec::new();
+        let value = first_accepted(&credentials, |token| {
+            tried.push(token.to_string());
+            if token == "expired" {
+                Err(refused("expired key", true))
+            } else {
+                Ok(response())
+            }
+        })
+        .unwrap();
+        assert_eq!(tried, ["expired", "account"]);
+        assert_eq!(value, response());
+
+        let mut tried = 0;
+        let error = first_accepted(&credentials, |_| {
+            tried += 1;
+            Err(refused("timed out", false))
+        })
+        .unwrap_err();
+        assert_eq!((tried, error.as_str()), (1, "timed out"));
+
+        let error = first_accepted(&credentials, |token| Err(refused(token, true))).unwrap_err();
+        assert_eq!(error, "account");
     }
 
     fn response() -> Value {

@@ -1,21 +1,29 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
-import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type ToolGlyph, type ToolVerb } from "../conversation";
+import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
+import { isToolLive } from "../transcript/toolCall";
+import { reduceTranscript } from "../transcript/reducer";
+import type { TranscriptEvent } from "../transcript/events";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
+import { failedTurn } from "../failedTurn";
 import { looksLikeDiff } from "./highlight";
+import { useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
 import { isVisualItem } from "../transcript/visual";
+import { OutgoingCard } from "./OutgoingCard";
+import { isOutgoingItem } from "../transcript/outgoing";
 import { openExternalUrl } from "../externalLinks";
 import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
@@ -23,7 +31,7 @@ import { computeNarration, type NarrationView } from "../startupNarration";
 import { useAutoExpandEditActivity, useShowThinking } from "../transcriptSettings";
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
-import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
+import { CappedOutput, CommandPanel, EffectChip, TerminalBlock, toolIcon } from "./CommandOutput";
 import { CHECK_LABEL } from "../transcript/checks";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
@@ -33,6 +41,10 @@ import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSum
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
+
+// React warns when a layout effect is reached by `react-dom/server`. The effect
+// is still layout-only on the client, where the transcript actually lives.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
@@ -87,11 +99,14 @@ const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg borde
 /// so a row present on the first render appears without animating and only the
 /// rows that actually arrive later rise in — switching sessions must not replay
 /// the whole history.
-function TranscriptRow({ tone = "quiet", className, id, entryId, children }: {
+function TranscriptRow({ tone = "quiet", className, id, entryId, instant = false, children }: {
   tone?: "quiet" | "alert";
   className?: string;
   id?: string;
   entryId?: string;
+  /** Mount in place without an entrance animation: the row was already part of
+   *  the conversation, it just arrived from a hydration slice. */
+  instant?: boolean;
   children: ReactNode;
 }) {
   // An error has further to travel than an ordinary row: the extra 6px and the
@@ -104,8 +119,8 @@ function TranscriptRow({ tone = "quiet", className, id, entryId, children }: {
       id={id}
       data-entry-id={entryId}
       className={className}
-      layout="position"
-      initial={{ opacity: 0, y: alert ? 12 : 6 }}
+      layout={instant ? false : "position"}
+      initial={instant ? false : { opacity: 0, y: alert ? 12 : 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -4 }}
       transition={transition}
@@ -177,9 +192,13 @@ function summarize(items: ConversationItem[], live: boolean): string {
   // A web search and a code search share a verb but not a sentence: `rg` in
   // the repo is not "searching the web".
   let web = 0;
+  const counted = new Set<string>();
   for (const item of items) {
     if (!isToolItem(item)) continue;
     const call = toolCallDisplay(item);
+    const identity = call.sourceCallId ?? item.identity ?? item.key;
+    if (counted.has(identity)) continue;
+    counted.add(identity);
     counts[call.verb] += 1;
     if (call.verb === "search" && call.glyph === "globe") web += 1;
   }
@@ -290,8 +309,8 @@ type CheckState = "running" | "passed" | "failed" | "pending";
 /// status the provider left it with, and that is a true fact about the wire,
 /// but the row must not keep claiming live work the model is no longer doing:
 /// it reads as `pending`, the state that claims nothing.
-function checkState(call: ReturnType<typeof toolCallDisplay>, turnActive: boolean): CheckState {
-  if (call.status === "running") return turnActive ? "running" : "pending";
+function checkState(call: ReturnType<typeof toolCallDisplay>, turnActive: boolean, runtimeActive: boolean): CheckState {
+  if (call.status === "running") return isToolLive(call, turnActive, runtimeActive) ? "running" : "pending";
   if (call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || call.check?.failures) return "failed";
   return call.status === "completed" ? "passed" : "pending";
 }
@@ -319,10 +338,11 @@ function CheckGlyph({ state }: { state: CheckState }) {
 
 const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: ConversationItem; turnActive?: boolean }) {
   const call = toolCallDisplay(item);
+  const runtimeActive = useContext(RuntimeActive);
   // A call can report itself running forever: the provider may never send its
   // completion, or the turn may be stopped mid-call. Once the turn is over the
   // row stops claiming to run, without rewriting what the wire said.
-  const live = turnActive && call.status === "running";
+  const live = isToolLive(call, turnActive, runtimeActive);
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
   const body = call.patch ? "patch" : call.subagent ? "subagent" : call.command ? "command" : call.verb === "run" && call.output ? "terminal" : call.output ? "output" : null;
@@ -331,10 +351,10 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
   // one keeps it collapsed.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const open = (toggled ?? !!call.patch) && !!body;
-  const check = call.check && call.command ? { ...call.check, state: checkState(call, turnActive) } : undefined;
+  const check = call.check && call.command ? { ...call.check, state: checkState(call, turnActive, runtimeActive) } : undefined;
   // What the call was for, in the harness's own words when it gave any; else
   // what Bridge read off the call. A check is named by the command it ran.
-  const label = check ? call.command! : call.intent ?? `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
+  const label = check ? call.command! : call.statusLabel ? `${call.statusLabel}: ${call.target ?? item.title ?? "task"}` : call.intent ?? `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
   // The command itself trails the title, muted, unless the title already is it.
   const suffix = !check && call.command && !label.includes(call.command) ? call.command : undefined;
   // A shell row names its path inside the command; a second label would repeat it.
@@ -401,8 +421,8 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
             {call.verb === "edit" && call.additions !== undefined && (
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
-            {call.durationMs !== undefined && !live && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
-            {check && <span className={cn("text-[11px] tracking-wide", CHECK_STATE[check.state].tone)}>{CHECK_STATE[check.state].word}</span>}
+            {call.durationMs !== undefined && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
+            {check && <span className={cn("text-[11px] tracking-wide", CHECK_STATE[check.state].tone)}>{call.statusLabel ?? CHECK_STATE[check.state].word}</span>}
             {/* Only what needs a look earns a glyph: running, or failed. A tick
                 on every settled row was noise the eye had to skip. */}
             {!check && (live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
@@ -453,12 +473,14 @@ const SELF_OPENING_STEPS = 3;
 /// "needs the agent" wants the broken step, not the ninety-nine that were
 /// fine. "Show all" reveals the whole timeline from there.
 const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpandEditActivity }: { items: ConversationItem[]; turnActive: boolean; autoExpandEditActivity: boolean }) {
+  const runtimeActive = useContext(RuntimeActive);
   const tools = useMemo(() => items.filter(isToolItem), [items]);
   // Live is a claim about the *work*, not about the transcript. A thought left
   // streaming by a provider that never settles it must not keep a finished run
   // spinning forever, and neither must a tool call whose completion never
   // arrived: the turn is the outer bound of both.
-  const live = turnActive && tools.some(item => item.status === "inProgress" || item.status === "streaming");
+  const live = tools.some(item => isToolLive(toolCallDisplay(item), turnActive, runtimeActive));
+  const watching = live && tools.filter(item => isToolLive(toolCallDisplay(item), turnActive, runtimeActive)).every(item => toolCallDisplay(item).passive);
   // A failed call is the agent's work, not the reader's. The marker names who
   // has to act instead of raising a human-attention alarm over a failure the
   // orchestrator exists to absorb.
@@ -501,11 +523,13 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   // One collapsed line for the whole run: the summary, then a mono step count on
   // the right. The count is the number of tool calls folded away, faint because
   // it is a measure of the work rather than the work itself.
-  const stepCount = tools.length;
+  const stepCount = new Set(tools.map(item => toolCallDisplay(item).sourceCallId ?? item.identity ?? item.key)).size;
   // What the run is doing right now, for a reader watching it work. One line,
   // not the whole timeline: the point of collapsing is that the tail is where
   // the news is.
-  const current = live ? toolCallDisplay(tools[tools.length - 1]) : undefined;
+  const currentItem = [...tools].reverse().find(item => isToolLive(toolCallDisplay(item), turnActive, runtimeActive));
+  const current = currentItem ? toolCallDisplay(currentItem) : undefined;
+  const progress = current?.progress ?? [...tools].reverse().map(toolCallDisplay).find(call => call.progress)?.progress;
   // Wall-clock the run occupied, not the sum of call durations: overlapping
   // tool calls would otherwise be counted twice. Each item contributes the
   // window [start, start+duration]; the trailer reports the union's span, which
@@ -521,7 +545,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   const summary = summarize(items, live);
   // One faint line, Codex-style: how long the run took, then what it did. With
   // no timestamps the summary is the headline rather than a wrong duration.
-  const headline = live ? "Working" : workedMs > 0 ? `Worked for ${formatThoughtDuration(workedMs)}` : summary;
+  const headline = live ? watching ? "Watching" : "Working" : workedMs > 0 ? `Worked for ${formatThoughtDuration(workedMs)}` : summary;
   return (
     <div data-activity-group className="min-w-0">
       <button
@@ -531,7 +555,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
         title={summary}
         onClick={onToggle}
       >
-        {live && <PulseDot size={7}/>}
+        {live && (watching ? <Circle size={7} className="shrink-0"/> : <PulseDot size={7}/>)}
         {!live && needsAgent && <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>}
         <span className="shrink-0">{headline}</span>
         {!live && needsAgent && <span className="shrink-0 text-destructive">· needs the agent</span>}
@@ -544,7 +568,8 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
       {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
         {checks.map(item => <ActionRow key={item.key} item={item} turnActive={turnActive}/>)}
       </div>}
-      {current && !current.check && !expanded && <NowCard item={tools[tools.length - 1]} items={items}/>}
+      {currentItem && current && !current.check && !expanded && <NowCard item={currentItem} items={items}/>}
+      {!expanded && progress && <p role="status" className="truncate px-1.5 pb-1 text-[12px] text-muted-foreground">{progress}</p>}
       <Disclosure open={expanded}>
         <motion.div
           className="grid min-w-0 gap-px pb-1"
@@ -633,7 +658,7 @@ const SHOWN_PLAN_STEPS = 6;
 /// it has been running, the newest output, and the plan around it.
 function NowCard({ item, items }: { item: ConversationItem; items: ConversationItem[] }) {
   const call = toolCallDisplay(item);
-  const title = call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
+  const title = call.passive ? `Watching${call.target ? ` ${call.target}` : ""}` : call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
   const command = call.command && !title.includes(call.command) ? call.command : undefined;
   const tail = useMemo(() => outputTail(call.output), [call.output]);
   const plan = useMemo(() => latestPlan(items), [items]);
@@ -761,6 +786,7 @@ const TranscriptHarness = createContext<string | null | undefined>(undefined);
 /// the conversation root, beside the harness, so every thinking row reads the
 /// same preference from the same subscription.
 const ShowThinking = createContext(true);
+const RuntimeActive = createContext(true);
 
 /// The one "the agent is thinking" row: the harness mark and a pulsing word.
 /// The cold-start wait, a reply whose first token has not landed, and a
@@ -817,11 +843,51 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 /// `working`; both answer the same question.
 const ACTIVE_SESSION_STATUSES = new Set(["starting", "working", "waiting", "checkpointing", "resuming", "warm"]);
 
+// Stable defaults. A literal default array or function is a new identity on
+// every internal render, and each row's memo comparison would see a changed
+// prop even when nothing about the row changed. Hydration re-renders the
+// transcript once per slice, so an unstable default turns a 48-row slice into a
+// whole-transcript render.
+const NO_EVENTS: AgentEvent[] = [];
+const NO_PENDING_MESSAGES: readonly PendingMessage[] = [];
+const NO_PENDING_ADOPTIONS: WorkerRepositoryBinding[] = [];
+const NO_ANSWER: ResolveQuestion = async () => undefined;
+
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+/// A live process can outlast both its assistant reply and the loaded history.
+/// Only background work lands here: the agent's own status (thinking, working,
+/// stopping) stays a transcript row, so a turn with nothing in the background
+/// draws no card.
+function CurrentActivity({ items }: { items: ConversationItem[] }) {
+  return <div data-current-activity role="region" aria-label="Current activity" className="u-glass sticky bottom-4 z-10 mx-auto mt-3 w-full max-w-conversation rounded-xl border border-border px-3 py-2 shadow-sm">
+    <p role="status" className="py-1 text-[12px] font-medium text-foreground">Background processes</p>
+    {items.length > 0 && <ul className="max-h-44 space-y-1 overflow-y-auto">
+      {items.map(item => {
+        const call = toolCallDisplay(item);
+        const output = call.output?.trimEnd();
+        const lastLine = output?.slice(output.lastIndexOf("\n") + 1);
+        return <li key={item.identity ?? item.key} className="min-w-0">
+          <details className="group/process min-w-0">
+            <summary className="flex min-h-7 cursor-pointer list-none items-center gap-2 rounded-md text-[12px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+              {call.passive ? <Circle size={7} className="shrink-0"/> : <PulseDot size={5}/>}
+              <span className="min-w-0 truncate font-mono text-foreground">{call.command ?? call.target ?? item.title ?? call.doing}</span>
+              <span className="ml-auto shrink-0 text-[11px]">{call.preparing ? "Preparing" : call.passive ? "Watching" : "Running"}</span>
+              <ChevronRight size={12} className="shrink-0 group-open/process:rotate-90"/>
+            </summary>
+            <TerminalBlock command={call.command} output={call.output}/>
+            {!call.output && <p className="px-3 py-2 text-[12px] text-muted-foreground">The runtime has not provided output yet.</p>}
+          </details>
+          {(call.progress || lastLine) && <p className="truncate pl-3.5 font-mono text-[11px] text-muted-foreground">{call.progress ?? lastLine}</p>}
+        </li>;
+      })}
+    </ul>}
+  </div>;
+}
+
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
-  useLayoutEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
     pending.ids.push(...recordStreamCommit(events));
     pending.ids = pending.ids.slice(-512);
@@ -875,6 +941,27 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const shownItems = showThinking
     ? renderedItems
     : renderedItems.filter(entry => entry.kind !== "item" || entry.item.type !== "reasoning" || isStreamingText(entry.item.status));
+  // Selecting a chat swaps `session` a commit before its forest snapshot
+  // follows, so this is also the guard `ScrollFollow` places against: it keys
+  // its remembered offset by the same id, and the row window resets with it.
+  const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
+  const transcriptKey = session?.id ?? historySessionId ?? "preview";
+  const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
+  // A search/recall jump must land on a row that exists, and a chat reopening
+  // at a remembered offset needs its full height to restore it. Every other
+  // open mounts the newest rows and hydrates the rest above them.
+  //
+  // The remembered answer is captured once per chat: re-reading it every
+  // render would turn a reader scrolling up mid-stream into a full mount of
+  // the whole history, which is the stall this window exists to avoid.
+  const rememberedAway = useMemo(() => readPositions.get(transcriptKey)?.pinned === false, [transcriptKey]);
+  const fullTranscript = !!highlightEntryId || rememberedAway;
+  const { start: windowStart, instantBefore } = useTranscriptWindow(
+    shownItems.length,
+    transcriptKey,
+    fullTranscript,
+    transcriptIsForThisSession,
+  );
 
   // Every file name in the transcript resolves against this one set; without
   // an opener the transcript renders exactly as before.
@@ -890,9 +977,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     return { has: path => paths.has(path), open: onOpenFile };
   }, [workspaceFiles, onOpenFile]);
 
-  const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
-  // The turn is the gate for every liveness claim below. `working` is the
-  // surface's answer when it has one; otherwise the session's own status is.
   const turnActive = working ?? ACTIVE_SESSION_STATUSES.has(session?.status ?? "");
   // Only while the session still has a turn: a window that kept the
   // announcement of a compaction the turn never closed must not claim one.
@@ -901,6 +985,39 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // the optimistic one: queued until the queue lets them go, steering until
   // the running step answers. A read-only history has nothing still in flight.
   const delivery = useMemo(() => readOnly ? new Map<string, DeliveryNote>() : deliveryNotes(visibleItems, queuedFollowUps, turnActive), [readOnly, visibleItems, queuedFollowUps, turnActive]);
+  // The fallback runtime for an error row. Memoized so an idle hydration slice,
+  // which changes none of its inputs, does not hand every mounted row a new
+  // object and defeat its memo comparison.
+  const errorContext: ErrorContext = useMemo(() => ({
+    harness: session?.harness ?? undefined,
+    provider: providerLabel(session?.harness),
+    snapshot: latestUsageSnapshot(events),
+    allowReset: session?.kind === "chat" && !readOnly && !preview,
+  }), [session?.harness, session?.kind, events, readOnly, preview]);
+  const runtimeActive = !readOnly && !["stopped", "failed", "completed", "cancelled"].includes(session?.status ?? "");
+  const latestTurn = visibleItems.at(-1)?.turn ?? 0;
+  // Background processes and abandoned calls from earlier turns must not
+  // suppress the model's own status while a new request is starting.
+  const streaming = turnActive && visibleItems.some(item => item.turn === latestTurn
+    && (item.status === "streaming" || item.status === "inProgress"));
+  const processSnapshots = useMemo(() => projectActiveProcesses(activeProcessEntries, events), [activeProcessEntries, events]);
+  const processIds = useMemo(() => new Set(processSnapshots.map(item => item.identity)), [processSnapshots]);
+  const snapshotSequence = Math.max(0, ...forestEntries?.map(entry => entry.sequence) ?? []);
+  const visibleTurns = new Map(visibleItems.map(item => [item.identity, item.turn]));
+  const processCandidates = activeProcessEntries === undefined ? visibleItems : mergeConversationProjections(
+    processSnapshots.map(item => ({ ...item, turn: visibleTurns.get(item.identity) ?? item.turn })), visibleItems,
+  );
+  const activeProcesses = [...new Map(processCandidates.filter(item => {
+    if (!isToolItem(item)) return false;
+    const call = toolCallDisplay(item);
+    // The turn's own calls already draw in the transcript; only work that
+    // outlives its turn belongs in the activity card.
+    if (!call.background) return false;
+    // An authoritative snapshot can remove an old live-window start. Newer
+    // live starts remain visible while the next forest poll is in flight.
+    if (activeProcessEntries !== undefined && !processIds.has(item.identity) && item.sequence <= snapshotSequence) return false;
+    return isToolLive(call, turnActive && item.turn === latestTurn, runtimeActive);
+  }).map(item => [toolCallDisplay(item).sourceCallId ?? item.identity ?? item.key, item])).values()];
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
@@ -919,17 +1036,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // render through the normal path below so a turn that starts mid-fetch is
   // never hidden behind the skeleton.
   const historyPending = !!session && !preview && forestEntries === undefined;
-  if (historyPending && !visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton />;
-  if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
+  if (historyPending && !visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton density={density} />;
+  if (!visibleItems.length && !activeProcesses.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
   // A send is answered only by a user turn newer than the newest identical one
   // the chat already had when it was sent, so repeating "yes" or "continue"
   // still shows its bubble at once. A send with neither words nor images has
   // nothing to draw.
   const answered = answeredPending(pendingMessages, visibleItems);
   const optimistic = pendingMessages.filter((message, index) => !answered.has(index) && (message.text.trim().length > 0 || (message.attachments?.length ?? 0) > 0));
-  // The session's *current* runtime, and its meter. Only a fallback: a row
-  // that knows which runtime raised it outranks both (see `ErrorCard`).
-  const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events), allowReset: session?.kind === "chat" && !readOnly && !preview };
   // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
   // an earlier pending message lands as a real message, the bubbles after it
   // keep their identity — one ghost fades, and no survivor flips its text.
@@ -947,17 +1061,17 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       delivery: message.delivery,
     };
   });
+  // The failed turn the reader can send again: once it has settled, and not
+  // while a resend of it is already on its way.
+  const retryable = !readOnly && !preview && !turnActive && !optimistic.length && (onRetryTurn || onEditTurn) ? failedTurn(visibleItems) : null;
   const lastEventAt = events.length ? new Date(events[events.length - 1]?.createdAt ?? 0).getTime() : 0;
   const clock = now ?? Date.now();
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
-  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
-  // Selecting a chat swaps `session` a commit before its forest snapshot
-  // follows, so the render in between shows the previous chat's history under
-  // the new chat's id. `ScrollFollow` must not place against that: it would
-  // measure the wrong transcript and count the chat as opened.
-  const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
-  const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
+  const activitySignature = activeProcesses.map(item => `${item.identity}:${item.eventId}:${item.text.length}`).join(":");
+  // Hydration is a layout change above the reader: when they are pinned to the
+  // bottom it must re-place them there, and when they scrolled up it must not.
+  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}:${shownItems.length - windowStart}:${activitySignature}`;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   // The reply whose action bar stays visible: the last settled assistant message.
   let latestReplyKey: string | undefined;
@@ -966,7 +1080,37 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
   }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
+  const retryFor = (entry: Rendered) => retryable && entry.kind === "item" && entry.item.key === retryable.errorKey ? retryable : null;
+  const renderEntry = (entry: Rendered, instant = false) => <TranscriptEntry
+    key={entry.key}
+    entry={entry}
+    instant={instant}
+    highlighted={!!highlightEntryId && entry.kind === "item" && entry.item.entryId === highlightEntryId}
+    // An archived transcript has events but no session; rows that load
+    // their own records (a drafted message) still need to know the chat.
+    sessionId={session?.id ?? historySessionId}
+    delivery={entry.kind === "item" ? delivery.get(entry.item.key) : undefined}
+    latest={entry.kind === "item" && entry.item.key === latestReplyKey}
+    readOnly={readOnly}
+    turnActive={turnActive && (entry.kind === "group" ? entry.items.some(item => item.turn === latestTurn) : entry.kind === "item" && entry.item.turn === latestTurn)}
+    autoExpandEditActivity={autoExpandEditActivity}
+    onResolve={onResolve}
+    onAnswerQuestion={onAnswerQuestion}
+    onOpenSession={onOpenSession}
+    onRefreshBase={readOnly ? undefined : onRefreshBase}
+    onRetryWorker={readOnly ? undefined : onRetryWorker}
+    onOpenAgent={onOpenAgent}
+    onRetryCompaction={readOnly ? undefined : onRetryCompaction}
+    onRemember={readOnly ? undefined : onRemember}
+    onForkSession={readOnly ? undefined : onForkSession}
+    onRewind={readOnly ? undefined : onRewindEntry}
+    rewindable={entry.kind === "item" && !!leafEntryIds?.includes(entry.item.entryId ?? "")}
+    errorContext={errorContext}
+    retryPrompt={retryFor(entry)?.prompt}
+    onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
+    onEditTurn={retryFor(entry) ? onEditTurn : undefined}
+  />;
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -991,18 +1135,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           removals (a resolved optimistic bubble, the working shimmer) still
           get their exit. */}
       <AnimatePresence initial={false} key={session?.id ?? "preview"}>
-        {shownItems.map(entry => entry.kind === "group"
-          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/></TranscriptRow>
-          : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
-          : <TranscriptRow
-              key={entry.key}
-              tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
-              id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
-              entryId={entry.item.entryId}
-              className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
-            >
-              <ItemView item={entry.item} sessionId={session?.id} delivery={delivery.get(entry.item.key)} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
-            </TranscriptRow>)}
+        {/* Hydrated rows mount in place without an entrance: they were always
+            part of the conversation, they just arrived from an idle slice. */}
+        {shownItems.slice(windowStart).map((entry, index) => renderEntry(entry, windowStart + index < instantBefore))}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
@@ -1023,8 +1158,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           so late-growing rows (an image decoding, a code block highlighting)
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
+      {!readOnly && activeProcesses.length > 0 && <CurrentActivity items={activeProcesses}/>}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1230,7 +1366,7 @@ function scrollInstantly(el: HTMLElement, top: number): number {
   return target;
 }
 
-function ScrollFollow({ sessionKey, populated, signature, className, children }: { sessionKey: string; populated: boolean; signature: string; className?: string; children: React.ReactNode }) {
+function ScrollFollow({ sessionKey, populated, signature, windowStart, total, compensate, className, children }: { sessionKey: string; populated: boolean; signature: string; windowStart: number; total: number; compensate: boolean; className?: string; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const pinned = useRef(true);
   // The chat this instance's state describes, and whether that chat has had its
@@ -1243,11 +1379,22 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
   const placedTop = useRef<number | null>(null);
   // How long a scroll counts as still settling, and so as still ours to finish.
   const settleUntil = useRef(0);
+  // The previous commit's head window and height. Hydration adds rows above
+  // the reader; scroll anchoring is off (WebKit does not implement it), so the
+  // height that arrived is added to `scrollTop` before paint.
+  const previousFrame = useRef<{ key: string; windowStart: number; total: number; height: number } | null>(null);
+  // `pinned`, mirrored into state so the jump button can render. The ref stays
+  // the source of truth: placement reads it synchronously, mid-commit.
+  const [away, setAway] = useState(false);
+  const jumpTransition = useMotionTransition(MOTION_DURATION.tick);
 
   const place = useCallback((el: HTMLDivElement, top: number, pin: boolean) => {
     pinned.current = pin;
+    setAway(!pin);
     settleUntil.current = Date.now() + SETTLE_MS;
-    placedTop.current = scrollInstantly(el, top);
+    const target = scrollInstantly(el, top);
+    placedTop.current = target;
+    return target;
   }, []);
 
   /// The opening placement: the last-read position when this chat has one, the
@@ -1287,9 +1434,34 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
       landed.current = false;
       pinned.current = true;
       placedTop.current = null;
+      previousFrame.current = null;
+      setAway(false);
     }
     if (populated && !landed.current) land(el);
   }, [land, sessionKey, populated]);
+
+  // Hydration prepends rows. Keep the reader's text where it was by adding the
+  // height that arrived above them, before the frame paints. Chromium can do
+  // this with scroll anchoring, but WKWebView and WebKitGTK do not implement
+  // it, so the scroller disables anchoring and this runs on every engine.
+  useIsomorphicLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const height = el.scrollHeight;
+    const previous = previousFrame.current;
+    previousFrame.current = { key: sessionKey, windowStart, total, height };
+    if (!previous || previous.key !== sessionKey) return;
+    // A shrink changes the branch; it is not history arriving above a reader.
+    // A full mount is a jump to a row, not hydration.
+    if (total < previous.total || windowStart >= previous.windowStart) return;
+    if (!compensate || pinned.current) return;
+    const delta = height - previous.height;
+    if (delta <= 0) return;
+    const target = place(el, el.scrollTop + delta, false);
+    // The reader did not leave their text; the transcript moved under them.
+    // Remember the offset that still points at that text.
+    rememberReadPosition(sessionKey, { top: target, pinned: false });
+  });
 
   // The opening placement's second chance, and live follow after it: while the
   // reader is at the bottom, every new item and every streamed character keeps
@@ -1318,7 +1490,14 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
     return () => observer.disconnect();
   }, [place, sessionKey]);
 
-  return <div ref={attach} className={className} onScroll={event => {
+  // Back to the latest message, instantly and pinned, so live follow resumes
+  // from the same placement the opening landing uses.
+  const jump = useCallback(() => {
+    const el = ref.current;
+    if (el) place(el, el.scrollHeight, true);
+  }, [place]);
+
+  return <><div ref={attach} className={className} onScroll={event => {
     const el = event.currentTarget;
     const placed = placedTop.current;
     placedTop.current = null;
@@ -1326,8 +1505,25 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
     // what used to disarm live follow halfway through its own animation.
     if (placed !== null && Math.abs(el.scrollTop - placed) <= 2) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_SLACK;
+    setAway(!pinned.current);
     rememberReadPosition(sessionKey, { top: el.scrollTop, pinned: pinned.current });
-  }}>{children}</div>;
+  }}>{children}</div>
+  {/* A sibling of the scroller, not a child: it holds still while the
+      transcript moves, and clears the host's 2rem bottom fade. */}
+  <AnimatePresence>
+    {away && <motion.button
+      key="jump"
+      type="button"
+      aria-label="Jump to latest message"
+      title="Jump to latest"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 6 }}
+      transition={jumpTransition}
+      onClick={jump}
+      className="u-glass-popover absolute bottom-10 left-1/2 z-10 -ml-4 inline-flex size-8 items-center justify-center rounded-full text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+    ><ArrowDown className="size-4" aria-hidden="true"/></motion.button>}
+  </AnimatePresence></>;
 }
 
 /// *This item is in progress.* A running tool call, a plan step being executed,
@@ -1353,17 +1549,36 @@ function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: str
   return <Empty title={greeting.headline} copy={greeting.hint} parts={greeting.parts} />;
 }
 
-/// A quiet loading state for an existing chat. `forestEntries === undefined`
-/// means "not yet fetched"; `[]` means "fetched and empty" (a genuinely new
-/// chat) and keeps the greeting.
-function ChatHistorySkeleton() {
-  return <div role="status" aria-label="Loading conversation" className="absolute inset-0 grid place-items-center px-4">
-    <div className="inline-flex items-center gap-2 text-caption text-muted-foreground" aria-hidden="true">
-      <LoaderCircle size={12} className="animate-spin" />
-      <span>Opening conversation</span>
+/// Placeholder rows shaped like a transcript while an existing chat's history
+/// loads. `forestEntries === undefined` means "not yet fetched"; `[]` means
+/// "fetched and empty" (a genuinely new chat) and keeps the greeting. It sits
+/// in the transcript's own column and padding, so the real rows replace it in
+/// place. No copy: shimmer bars plus a screen-reader label.
+const SKELETON_ROWS: readonly { kind: "user" | "prose" | "tool"; bars: readonly string[] }[] = [
+  { kind: "user", bars: ["w-2/5"] },
+  { kind: "prose", bars: ["w-full", "w-11/12", "w-3/5"] },
+  { kind: "tool", bars: ["w-1/3"] },
+  { kind: "prose", bars: ["w-10/12", "w-2/5"] },
+  { kind: "user", bars: ["w-1/3"] },
+  { kind: "prose", bars: ["w-full", "w-3/4"] },
+];
+
+function ChatHistorySkeleton({ density }: { density: "comfortable" | "compact" }) {
+  return <SkeletonRegion label="Loading conversation" className={cn("absolute inset-0 overflow-hidden",
+    density === "compact" ? "px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
+    <div className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5" aria-hidden="true">
+      {SKELETON_ROWS.map((row, index) => row.kind === "user"
+        ? <span key={index} data-skeleton-row="user" className="flex justify-end"><Skeleton index={index} className={cn("h-10 max-w-[85%] rounded-2xl", row.bars[0])} /></span>
+        : row.kind === "tool"
+          ? <span key={index} data-skeleton-row="tool" className="flex h-10 items-center gap-2.5 rounded-xl border border-border/70 px-3">
+            <Skeleton index={index} className="size-3.5 shrink-0" />
+            <Skeleton index={index} className={cn("h-2.5", row.bars[0])} />
+          </span>
+          : <span key={index} data-skeleton-row="prose" className="flex flex-col gap-3 py-1">
+            {row.bars.map(width => <Skeleton key={width} index={index} className={width} />)}
+          </span>)}
     </div>
-    <span className="sr-only">Loading conversation</span>
-  </div>;
+  </SkeletonRegion>;
 }
 
 function Empty({ title, copy, parts }: { title: string; copy: string; parts?: GreetingPart[] }) {
@@ -1459,6 +1674,12 @@ function ReplyAction({ label, title, onClick, children }: { label: string; title
   >{children}</button>;
 }
 
+/// A failed turn's way back: text-sized, muted until pointed at.
+const ERROR_ACTION = "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50";
+
+/// Resends a failed turn's message; settles when the send has.
+type RetryTurn = (prompt: ConversationItem) => Promise<void> | void;
+
 /// Copies the message as the Markdown it was written in, then ticks.
 function CopyReplyButton({ text }: { text: string }) {
   const { copied, copy } = useCopy(text, 1500);
@@ -1467,7 +1688,7 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1489,10 +1710,35 @@ function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, aut
   }
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
-  if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
+  if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext} retryPrompt={retryPrompt} onRetryTurn={onRetryTurn} onEditTurn={onEditTurn}/>;
   if (isVisualItem(item)) return <VisualCall item={item} turnActive={turnActive}/>;
+  if (isOutgoingItem(item)) return <OutgoingCard item={item} sessionId={sessionId} readOnly={readOnly}/>;
   return <ActivityGroup items={[item]} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/>;
-}
+});
+
+/// One row of the transcript. Memoized as a whole: an idle slice mounts a few
+/// older rows, and every row already on screen must not be re-rendered just
+/// because the parent mapped over a longer window. The entry object and every
+/// prop below are stable across that slice; the new rows are the only work.
+const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highlighted, ...itemProps }: {
+  entry: Rendered;
+  instant: boolean;
+  highlighted: boolean;
+} & Omit<React.ComponentProps<typeof ItemView>, "item">) {
+  if (entry.kind === "group") return <TranscriptRow instant={instant}>
+    <ActivityGroup items={entry.items} turnActive={itemProps.turnActive} autoExpandEditActivity={itemProps.autoExpandEditActivity}/>
+  </TranscriptRow>;
+  if (entry.kind === "raw-group") return <TranscriptRow instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>;
+  return <TranscriptRow
+    instant={instant}
+    tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item) && !isOutgoingItem(entry.item)) ? "alert" : "quiet"}
+    id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
+    entryId={entry.item.entryId}
+    className={highlighted ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
+  >
+    <ItemView {...itemProps} item={entry.item}/>
+  </TranscriptRow>;
+});
 
 /// A failure, stated plainly.
 ///
@@ -1501,7 +1747,7 @@ function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, aut
 /// arrives a beat after the card, so the eye is drawn to the mark that says
 /// *what kind* of interruption this is. No shake — a graphite-and-paper
 /// transcript should not flinch.
-function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: ErrorContext }) {
+function ErrorCard({ item, errorContext, retryPrompt, onRetryTurn, onEditTurn }: { item: ConversationItem; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void }) {
   // The runtime that raised this failure, which is not necessarily the one the
   // chat is set to now: switching a chat from Codex to OpenCode used to relabel
   // every Codex failure above the switch as an OpenCode one, and hand it
@@ -1515,6 +1761,14 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
   const degraded = item.status === "degraded";
   const isUsage = !degraded && isThrottleKind(described.kind);
   const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
+  // A resend can wait on a shortcut lookup before its bubble lands; a second
+  // click in that gap must not send the message twice.
+  const [retrying, setRetrying] = useState(false);
+  const retry = () => {
+    if (!retryPrompt || !onRetryTurn || retrying) return;
+    setRetrying(true);
+    void Promise.resolve(onRetryTurn(retryPrompt)).finally(() => setRetrying(false));
+  };
   // A rate limit is a wait, not a failure — it gets the tick. A real error
   // is the one place a full wash is warranted.
   return <div role="alert" className={`my-4 flex min-w-0 gap-2.5 rounded-xl border border-x-2 p-3 ${isUsage ? "border-border border-x-warning bg-card text-warning" : "border-destructive/30 border-x-destructive bg-destructive/5 text-destructive"}`}>
@@ -1526,7 +1780,22 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
     >
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
-    <div className="min-w-0"><b className="text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
+    <div className="min-w-0 flex-1">
+      {/* The way back sits on the title line, quiet until pointed at: the
+          failure is the message, the actions are a footnote to it. */}
+      <div className="flex min-w-0 items-start gap-2">
+        <b className="min-w-0 flex-1 text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b>
+        {retryPrompt && (onRetryTurn || onEditTurn) && <div className="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
+          {onRetryTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Retry the same message" title="Send the same message again" onClick={retry}>
+            {retrying ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true"/> : <RotateCcw size={11} aria-hidden="true"/>}
+            Retry
+          </button>}
+          {onEditTurn && <button type="button" disabled={retrying} className={ERROR_ACTION} aria-label="Edit in composer" title="Put the message back in the composer to add to it" onClick={() => onEditTurn(retryPrompt)}>
+            <PenLine size={11} aria-hidden="true"/>Edit
+          </button>}
+        </div>}
+      </div>
+      <p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
       {described.kind === "usage-limit" && errorContext?.allowReset && (item.harness ?? errorContext.harness) === "codex" && <LimitResetOffer />}
     </div>
   </div>;

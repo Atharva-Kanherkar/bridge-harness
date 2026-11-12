@@ -190,7 +190,9 @@ describe("sending a message reacts before the daemon answers", () => {
     vi.spyOn(bridgeApi, "prepareTurn").mockResolvedValue({ text: "hello [secret:sec_1]", interceptions: [] });
     await send("hello sk-live-secret");
     await settle(4);
-    expect(container.textContent).toContain("hello [secret:sec_1]");
+    // The placeholder draws as a chip, once: the rewrite replaced the bubble.
+    expect(container.querySelectorAll('[aria-label="API key, kept by Bridge"]')).toHaveLength(1);
+    expect(container.textContent).toContain("hello API key");
     expect(container.textContent).not.toContain("sk-live-secret");
   });
 

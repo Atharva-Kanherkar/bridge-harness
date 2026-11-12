@@ -12,3 +12,8 @@ declare module "*.html?raw" {
   const html: string;
   export default html;
 }
+
+declare module "*.excalidraw?raw" {
+  const scene: string;
+  export default scene;
+}

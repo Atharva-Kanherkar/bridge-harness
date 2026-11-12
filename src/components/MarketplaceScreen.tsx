@@ -1,4 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -201,14 +202,8 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 }
 
 function PluginListSkeleton() {
-  return <div data-testid="plugin-catalog-skeleton" aria-label="Loading apps" className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-    {Array.from({ length: 6 }, (_, index) => <div key={index} className="flex min-h-18 items-center gap-3.5 px-4 py-3.5">
-      <span className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-muted" />
-      <span className="min-w-0 flex-1">
-        <span className="block h-3 w-40 max-w-[40%] animate-pulse rounded bg-muted" />
-        <span className="mt-2 block h-3 w-72 max-w-[80%] animate-pulse rounded bg-muted/70" />
-      </span>
-    </div>)}
+  return <div data-testid="plugin-catalog-skeleton" className="mt-3">
+    <SkeletonRows label="Loading apps" rows={6} lead="tile" rowClassName="min-h-18 gap-3.5 px-4 py-3.5" />
   </div>;
 }
 

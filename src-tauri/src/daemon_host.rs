@@ -969,6 +969,8 @@ fn emit_reconciliation<E: Fn(&str, Value)>(emit: &E) {
     use bridge_protocol::notifications::NotificationName;
     emit(NotificationName::StateChanged.as_str(), Value::Null);
     emit(NotificationName::AdaptersChanged.as_str(), Value::Null);
+    // The attention ledger is read from a cursor, so a gap costs one reread.
+    emit(NotificationName::AttentionChanged.as_str(), Value::Null);
     // Terminals reconcile their sequenced VT checkpoints after lag or reconnect.
     emit(NotificationName::StreamLagged.as_str(), Value::Null);
 }
@@ -1176,10 +1178,10 @@ mod tests {
             seen.iter()
                 .map(|(kind, _)| kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["state-changed", "adapters-changed", "stream-lagged", "session-output"],
+            vec!["state-changed", "adapters-changed", "attention/changed", "stream-lagged", "session-output"],
         );
         assert_eq!(seen[0].1, Value::Null);
-        assert_eq!(seen[3].1["data"], "x");
+        assert_eq!(seen[4].1["data"], "x");
     }
 
     #[test]

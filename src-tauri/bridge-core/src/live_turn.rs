@@ -109,6 +109,9 @@ fn compile_purposed_session_prompt(
     if let Some(brief) = crate::storage_agent::section(purpose) {
         compiler = compiler.stable_section(crate::storage_agent::SECTION_ID, brief);
     }
+    if let Some(brief) = crate::notes::agent::section(purpose) {
+        compiler = compiler.stable_section(crate::notes::agent::SECTION_ID, brief);
+    }
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
     }
@@ -160,6 +163,10 @@ fn launch_session_context(
     if worker_prompt_proposal_capability(&state.db.lock().unwrap(), session_id) {
         capabilities.push_str("\n\n");
         capabilities.push_str(delegation::prompt_change_protocol(true));
+    }
+    if let Some(guidance) = crate::memory_tools::session_guidance(&state.db.lock().unwrap(), session_id) {
+        capabilities.push_str("\n\n");
+        capabilities.push_str(guidance);
     }
     session_context::build(
         &capabilities,
@@ -330,6 +337,18 @@ mod prompt_section_tests {
         assert_ne!(plain.metadata.prefix_hash, storage.metadata.prefix_hash);
     }
 
+    #[test]
+    fn a_notes_chat_carries_its_brief_as_a_stable_section() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let stack = prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+        let plain = compile_purposed_session_prompt(&stack, "", None, None).unwrap();
+        let notes = compile_purposed_session_prompt(&stack, "", None, Some(crate::notes::agent::PURPOSE)).unwrap();
+        assert!(!plain.stable_prefix.contains("notes-context"));
+        assert!(notes.stable_prefix.contains("```notes-context"));
+        assert!(notes.stable_prefix.contains(crate::notes::agent::SECTION_ID));
+        assert!(!notes.stable_prefix.contains(crate::storage_agent::SECTION_ID));
+    }
+
     fn directive(role: delegation::WorkerRole) -> delegation::DelegationRequest {
         delegation::DelegationRequest {
             schema_version: delegation::SCHEMA_VERSION,
@@ -353,11 +372,12 @@ mod prompt_section_tests {
         }
     }
 
-    fn legacy_orchestrator_prompt(
+    fn expected_orchestrator_prompt(
         configured_prompt: &str,
         checkpoint_context: Option<&str>,
     ) -> prompt_compiler::CompiledPrompt {
         let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
             .stable_section("bridge_role", orchestrator::briefing())
             .stable_section("delegation_protocol", delegation::protocol(0))
             .project_rule("configured_project_rules", configured_prompt);
@@ -367,15 +387,16 @@ mod prompt_section_tests {
         compiler.compile().unwrap()
     }
 
-    fn legacy_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
+    fn expected_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
         prompt_compiler::PromptCompiler::new("session")
+            .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
             .stable_section("rendering_note", prompts::chat_rendering_note())
             .project_rule("configured_project_rules", configured_prompt)
             .compile()
             .unwrap()
     }
 
-    fn legacy_worker_prompt(
+    fn expected_worker_prompt(
         directive: &delegation::DelegationRequest,
         depth: i64,
         branch: &str,
@@ -386,6 +407,7 @@ mod prompt_section_tests {
             "worker:{}",
             directive.role.as_str()
         ))
+        .stable_section("activity_visibility", prompts::ACTIVITY_VISIBILITY_GUIDANCE)
         .stable_section(
             "worker_contract",
             delegation::worker_contract(directive.role, depth),
@@ -582,7 +604,7 @@ mod prompt_section_tests {
     }
 
     #[test]
-    fn default_target_stacks_match_legacy_live_bytes() {
+    fn default_target_stacks_include_shared_activity_policy() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
 
@@ -591,7 +613,7 @@ mod prompt_section_tests {
         for checkpoint in [None, Some("Restore this orchestrator checkpoint")] {
             let compiled =
                 compile_orchestrator_prompt(&orchestrator_stack, configured, checkpoint).unwrap();
-            assert_eq!(compiled, legacy_orchestrator_prompt(configured, checkpoint));
+            assert_eq!(compiled, expected_orchestrator_prompt(configured, checkpoint));
             assert_eq!(
                 compiled
                     .instructions()
@@ -604,7 +626,7 @@ mod prompt_section_tests {
         let direct_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
         let direct = compile_session_prompt(&direct_stack, configured, None).unwrap();
-        assert_eq!(direct, legacy_session_prompt(configured));
+        assert_eq!(direct, expected_session_prompt(configured));
         assert!(!direct.instructions().contains("bridge-delegate"));
         assert!(!direct.instructions().contains("worker_contract"));
 
@@ -634,7 +656,7 @@ mod prompt_section_tests {
                 .unwrap();
                 assert_eq!(
                     compiled,
-                    legacy_worker_prompt(
+                    expected_worker_prompt(
                         &directive,
                         1,
                         "bridge/prompt-studio",
@@ -1096,6 +1118,88 @@ mod start_model_tests {
     }
 }
 
+/// The extra account a root chat signs in with, made ready to launch
+/// (`provider_accounts`). `None` is the user's own login. A chat whose account
+/// was removed from Settings, or has no key yet, is refused with a message
+/// that names it, rather than quietly billed to another login.
+fn launch_account(
+    core: &BridgeCore,
+    session_id: &str,
+    adapter_id: &str,
+) -> Result<Option<crate::provider_accounts::AccountLaunch>, BridgeError> {
+    use rusqlite::OptionalExtension;
+    let account = {
+        let db = core.db.lock().unwrap();
+        let id: Option<String> = db
+            .query_row("SELECT account FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+            .optional()?
+            .flatten();
+        id.map(|id| agent_config::account(&db, adapter_id, &id)).transpose()?
+    };
+    // Off the database lock: a shadow home or data overlay is linked on disk,
+    // and a key is read from the Keychain.
+    account
+        .map(|account| {
+            crate::provider_accounts::prepare_launch(
+                adapter_id,
+                &account,
+                &crate::provider_accounts::HostHomes::from_env(),
+            )
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod account_launch_tests {
+    use super::launch_account;
+    use crate::{agent_config, runtime::BridgeCore};
+    use rusqlite::params;
+    use serde_json::json;
+
+    fn set_accounts(core: &BridgeCore, harness: &str, accounts: serde_json::Value) {
+        let db = core.db.lock().unwrap();
+        let mut config = agent_config::state(&db).unwrap().harnesses.into_iter().find(|item| item.id == harness).unwrap();
+        config.advanced = json!({"accounts": accounts});
+        agent_config::save_harness(&db, config).unwrap();
+    }
+
+    fn chat(core: &BridgeCore, id: &str, harness: &str, account: Option<&str>) {
+        core.db.lock().unwrap()
+            .execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,account) VALUES(?1,?2,'Chat','idle','reported',?3)",
+                params![id, harness, account],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn launch_resolves_the_account_home_and_refuses_a_removed_account() {
+        let scratch = tempfile::tempdir().unwrap();
+        let homes = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(scratch.path());
+        let claude_home = homes.path().join("claude-personal");
+        let shared = homes.path().join("codex");
+        let shadow = homes.path().join("codex-personal");
+        set_accounts(&core, "claude", json!([{"id": "personal", "label": "Personal", "homePath": claude_home}]));
+        set_accounts(&core, "codex", json!([{"id": "personal", "label": "Personal", "homePath": shared, "shadowHomePath": shadow}]));
+        chat(&core, "own", "claude", None);
+        chat(&core, "claude-chat", "claude", Some("personal"));
+        chat(&core, "codex-chat", "codex", Some("personal"));
+
+        let value = |session: &str, harness: &str, variable: &str| {
+            launch_account(&core, session, harness).unwrap().and_then(|launch| launch.value(variable).map(std::path::PathBuf::from))
+        };
+        assert!(launch_account(&core, "own", "claude").unwrap().is_none(), "no account keeps the user's own login");
+        assert_eq!(value("claude-chat", "claude", "CLAUDE_CONFIG_DIR"), Some(claude_home));
+        assert_eq!(value("codex-chat", "codex", "CODEX_HOME"), Some(shadow.clone()));
+        assert_eq!(std::fs::read_link(shadow.join("sessions")).unwrap(), shared.join("sessions"), "the shadow home is linked before launch");
+
+        set_accounts(&core, "claude", json!([]));
+        let error = launch_account(&core, "claude-chat", "claude").unwrap_err().to_string();
+        assert!(error.contains("Claude Code account \"personal\" is no longer in Settings"), "{error}");
+    }
+}
+
 pub fn start_session(
     core: &Arc<BridgeCore>,
     workspace_id: String,
@@ -1294,10 +1398,12 @@ pub fn start_session(
         checkpoint_context.is_some(),
         false,
     );
+    let account_launch = launch_account(state, &session_id, adapter_id)?;
     let start_fresh = |instructions: &str| {
         state.adapter_registry.start(
             dispatch_id,
             adapters::StartRequest {
+                session_id: Some(session_id.as_str()),
                 cwd: &path,
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
@@ -1306,6 +1412,7 @@ pub fn start_session(
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
+                account: account_launch.as_ref(),
                 on_progress: None,
             },
         )
@@ -1330,6 +1437,7 @@ pub fn start_session(
             match state.adapter_registry.resume(
                 dispatch_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider_id,
                     fork: false,
                     cwd: &path,
@@ -1340,6 +1448,7 @@ pub fn start_session(
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
+                    account: account_launch.as_ref(),
                     on_progress: None,
                 },
             ) {
@@ -1918,10 +2027,12 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             phase,
         });
     };
+    let account_launch = launch_account(state, &session_id, adapter_id)?;
     let start_fresh = |instructions: &str| {
         registry.start(
             &launch_adapter_id,
             adapters::StartRequest {
+                session_id: Some(session_id.as_str()),
                 cwd: &launch_cwd,
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
@@ -1930,6 +2041,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 interactive,
                 read_only_sandbox: None,
                 briefing: workflow_policy.as_ref(),
+                account: account_launch.as_ref(),
                 on_progress: Some(&on_startup_progress),
             },
         )
@@ -1954,6 +2066,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider,
                     fork: true,
                     cwd: &launch_cwd,
@@ -1964,6 +2077,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: workflow_policy.as_ref(),
+                    account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -2024,6 +2138,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider,
                     fork: false,
                     cwd: &launch_cwd,
@@ -2034,6 +2149,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: workflow_policy.as_ref(),
+                    account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -2583,6 +2699,9 @@ fn spawn_reader_thread(
                 );
                 return;
             }
+            if let Ok(events) = crate::background_activity::interrupt(&db, Some(&session_id)) {
+                for event in events { core.events.publish(CoreEvent::Agent(event)); }
+            }
             let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id);
             let is_worker = store::worker_runtime(&db, &session_id)
                 .ok()
@@ -2595,6 +2714,8 @@ fn spawn_reader_thread(
                     |row| row.get(0),
                 )
                 .ok();
+            // Workers and chats alike: their provider children ended with them.
+            let _ = crate::harness_subagents::interrupt_children(&db, &session_id);
             if !is_worker {
                 stop_direct_session_after_reader_exit(&db, &session_id);
             }
@@ -2717,6 +2838,8 @@ fn handle_agent_value_timed(
     let mut pending_stops: Vec<delegation::StopRequest> = Vec::new();
     let mut pending_invalid_steer: Option<String> = None;
     let mut pending_invalid_stop: Option<String> = None;
+    let mut pending_wait: Option<delegation::WaitRequest> = None;
+    let mut pending_invalid_wait: Option<String> = None;
     let mut prompt_control_turn = false;
     let mut prompt_feedback: Vec<(String, String, String)> = Vec::new();
     let mut prompt_approval_detail = None;
@@ -2816,14 +2939,54 @@ fn handle_agent_value_timed(
         // Provider echoes may include hidden user-role file context, so do not
         // duplicate them into the visible conversation.
         let normalization_started = std::time::Instant::now();
-        let mut normalized = state
+        // Only Codex needs the root thread stamped on; other frames are not copied.
+        let mut frame = std::borrow::Cow::Borrowed(value);
+        if adapter_id == "codex" {
+            let root: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1", params![session_id], |r| r.get(0)).ok().flatten();
+            if let Some(root) = root { frame.to_mut()["_bridgeRootThreadId"] = serde_json::json!(root); }
+        }
+        let normalized = state
             .adapter_registry
-            .normalize(&adapter_id, value)
+            .normalize(&adapter_id, &frame)
             .into_iter()
             .filter(|event| {
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
             })
             .collect::<Vec<_>>();
+        // Route before any root error/turn/control handling. Child prose is
+        // never interpreted as a Bridge delegation or prompt mutation.
+        let mut root_events = Vec::new();
+        for event in normalized {
+            if event.data.get("subagent").is_some() {
+                // Codex and OpenCode report a child's requests only on the
+                // child, so bill them to the chat that owns its process. The
+                // child's context window is its own: no reading for the parent.
+                if event.kind == "usage.updated" {
+                    let _ = policy::record_provider_usage(
+                        &db,
+                        workspace_id.as_deref().unwrap_or(session_id),
+                        session_id,
+                        observed_turn_id.as_deref(),
+                        &format!("provider.{adapter_id}"),
+                        &event.data,
+                    );
+                }
+                match crate::harness_subagents::route(&db, session_id, &event, &serde_json::json!({"adapter":adapter_id})) {
+                    Ok(events) => {
+                        let state_changed=events.iter().any(|e|matches!(e.kind.as_str(),"subagent.started"|"subagent.completed"|"subagent.status"|"permission.requested"|"question.requested"));
+                        for stored in events {
+                            if stored.kind=="permission.requested" && should_auto_approve_permission(&db, session_id, &event) {
+                                pending_auto_approvals.push((stored.session_id.clone(), stored.sequence));
+                            }
+                            state.events.publish(CoreEvent::Agent(stored));
+                        }
+                        if state_changed { state.events.publish(CoreEvent::StateChanged); }
+                    }
+                    Err(error) => { let _ = store::event(&db,"adapter","subagent.routing_failed",session_id,&error.to_string()); }
+                }
+            } else { root_events.push(event); }
+        }
+        let mut normalized = root_events;
         let normalization_ms = normalization_started.elapsed().as_secs_f64() * 1000.0;
         // Interrupting a provider to honor a user's Stop click routinely makes
         // it emit an "error" frame (an aborted turn, a broken pipe, a non-zero
@@ -2894,6 +3057,7 @@ fn handle_agent_value_timed(
         });
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
+            if event.data.get("subagent").is_some() { continue; }
             if checkpoint_turn_active
                 && !matches!(
                     event.kind.as_str(),
@@ -2965,7 +3129,7 @@ fn handle_agent_value_timed(
                             .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
                     if !checkpointing_worker && !completes_prompt_control {
                         let _ = db.execute(
-                            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
+                            "UPDATE sessions SET status=CASE WHEN status='stopped' THEN status ELSE 'ready' END,active_turn_id=NULL WHERE id=?1",
                             params![session_id],
                         );
                     }
@@ -3279,13 +3443,26 @@ fn handle_agent_value_timed(
                 && normalized_event.role.as_deref() == Some("assistant")
                 && pending_compaction.is_some();
             let suppress_checkpoint_frame =
-                checkpoint_turn_active && !survives_checkpoint_turn(&normalized_event.kind);
+                checkpoint_turn_active
+                    && !survives_checkpoint_turn(&normalized_event.kind)
+                    && !is_existing_background_activity(&db, session_id, &normalized_event);
             if suppress_checkpoint_frame {
                 if let Some(data) = normalized_event.data.as_object_mut() {
                     data.insert(
                         "bridgeInternalOrigin".into(),
                         serde_json::json!("compaction"),
                     );
+                }
+            } else if checkpoint_turn_active {
+                // The frames a checkpoint keeps for the supervisor (its boundary,
+                // a failure) are still Bridge's maintenance, not the person's
+                // turn. Not `bridgeInternalOrigin`: the transcript hides that,
+                // and the boundary must stay visible to it.
+                if !normalized_event.data.is_object() {
+                    normalized_event.data = serde_json::json!({});
+                }
+                if let Some(data) = normalized_event.data.as_object_mut() {
+                    data.insert("bridgeCheckpointTurn".into(), serde_json::json!(true));
                 }
             }
             if is_checkpoint_reply {
@@ -3529,6 +3706,33 @@ fn handle_agent_value_timed(
                         delegation::ParseOutcome::Absent => {}
                     }
                 }
+                // A wait asks Bridge to hold the listed workers' results and
+                // deliver them in one turn. It arms at the turn boundary, after
+                // this turn's delegations launched, so "all" covers them too.
+                if let Some(text) = normalized_event.text.clone() {
+                    match delegation::parse_wait_request(&text) {
+                        delegation::ParseOutcome::Parsed(wait) => {
+                            pending_wait = Some(wait);
+                            let stripped = delegation::strip_wait(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                "_Waiting for workers…_".to_owned()
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Invalid { reason, .. } => {
+                            let _ = store::event(&db, "delegation", "delegation.wait.invalid", session_id, &reason);
+                            pending_invalid_wait = Some(reason.clone());
+                            let stripped = delegation::strip_wait(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                format!("_Wait rejected: {reason}._")
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Absent => {}
+                    }
+                }
             }
             // No maintenance content frame reaches the store at all — a
             // persisted-then-hidden entry would still be in the forest, and the
@@ -3554,7 +3758,7 @@ fn handle_agent_value_timed(
                     // chose not to persist, and answering 0 would resolve whatever
                     // approval happens to sit at that sequence.
                     if auto_approve_this_event && event.kind == "permission.requested" && event.sequence > 0 {
-                        pending_auto_approvals.push(event.sequence);
+                        pending_auto_approvals.push((session_id.to_owned(), event.sequence));
                     }
                     if let Some(decision) = workflow_decision.clone() {
                         if event.kind == "permission.requested" && event.sequence > 0 {
@@ -3755,6 +3959,11 @@ fn handle_agent_value_timed(
                 }
             }
         }
+        // A heading is a stand-in. If that is still all the chat has, the title
+        // job names it properly off this path (see `title_jobs`).
+        if let Ok(db) = state.db.lock() {
+            let _ = crate::title_jobs::enqueue_after_turn(&db, session_id, Utc::now());
+        }
     }
 
     if turn_completed {
@@ -3792,8 +4001,8 @@ fn handle_agent_value_timed(
 
     // Before the parent is told a child is blocked: if policy already answered
     // the approval, nobody is blocked and mirroring a card would be a lie.
-    for event_id in pending_auto_approvals {
-        apply_bypass_approval(core, session_id, event_id);
+    for (approval_session, event_id) in pending_auto_approvals {
+        apply_bypass_approval(core, &approval_session, event_id);
     }
     for (event_id, decision) in pending_workflow_decisions {
         crate::api::resolve_workflow_permission(core, session_id, event_id, &decision);
@@ -3847,6 +4056,9 @@ fn handle_agent_value_timed(
             .or_default()
             .extend(pending_stops);
     }
+    if let Some(wait) = pending_wait {
+        state.delegations.lock().unwrap().pending_worker_waits.insert(session_id.to_owned(), wait);
+    }
     // The assistant message and turn completion are separate provider frames.
     // Reply only after completion instead of racing active-turn steering.
     //
@@ -3854,7 +4066,7 @@ fn handle_agent_value_timed(
     // turn that fails still ends the turn, and a request stranded because the
     // provider errored is a request the orchestrator was never told about.
     if turn_completed {
-        let (peeks, steers, stops) = {
+        let (peeks, steers, stops, wait) = {
             let mut delegations = state.delegations.lock().unwrap();
             (
                 delegations
@@ -3869,6 +4081,7 @@ fn handle_agent_value_timed(
                     .pending_worker_stops
                     .remove(session_id)
                     .unwrap_or_default(),
+                delegations.pending_worker_waits.remove(session_id),
             )
         };
         for peek in &peeks {
@@ -3883,6 +4096,11 @@ fn handle_agent_value_timed(
         for stop in &stops {
             deliver_orchestrator_stop(core, session_id, stop);
         }
+        // Before the boundary drain below, so a result already queued for a
+        // listed worker moves into the wait instead of costing its own turn.
+        if let Some(wait) = &wait {
+            arm_orchestrator_wait(core, session_id, wait);
+        }
     }
     // A steer Bridge could not even parse is fed back rather than dropped: the
     // orchestrator asked to redirect a worker and has to learn that it did not.
@@ -3891,6 +4109,9 @@ fn handle_agent_value_timed(
     }
     if let Some(reason) = &pending_invalid_stop {
         refuse_orchestrator_stop(core, session_id, reason);
+    }
+    if let Some(reason) = &pending_invalid_wait {
+        refuse_orchestrator_wait(core, session_id, reason);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -4364,6 +4585,40 @@ fn survives_checkpoint_turn(kind: &str) -> bool {
             | agent::NATIVE_COMPACTION_KIND
             | agent::NATIVE_COMPACTING_KIND
     )
+}
+
+/// Checkpointing owns its new tool work, but it does not own a process that was
+/// already running. Its asynchronous progress and exit must still reach the
+/// conversation or the last durable start would keep claiming it is alive.
+fn is_existing_background_activity(
+    db: &Connection,
+    session_id: &str,
+    event: &agent::NormalizedEvent,
+) -> bool {
+    if !matches!(
+        event.kind.as_str(),
+        "tool.started" | "tool.completed" | "tool.progress"
+            | "command.started" | "command.completed" | "command.output_delta"
+    ) {
+        return false;
+    }
+    let Some(item_id) = event.item_id.as_deref() else {
+        return false;
+    };
+    // The latest stored snapshot distinguishes an existing process from a tool
+    // launched by the maintenance prompt. The latter has no persisted start.
+    db.query_row(
+        "SELECT json_extract(payload,'$.status')='inProgress'
+         FROM session_entries
+         WHERE session_id=?1
+           AND kind IN ('tool.started','tool.completed','command.started','command.completed')
+           AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId')=?2
+           AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.data.backgroundTask')=1
+         ORDER BY sequence DESC LIMIT 1",
+        params![session_id, item_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -5864,6 +6119,7 @@ pub fn launch_worker_outcome(
                 state.adapter_registry.resume(
                     &dispatch_id,
                     adapters::ResumeRequest {
+                        session_id: None,
                         provider_session_id,
                         fork: false,
                         cwd: &reservation.path,
@@ -5874,6 +6130,7 @@ pub fn launch_worker_outcome(
                         read_only_sandbox: read_only_sandbox.as_ref(),
                         briefing: None,
                         interactive: false,
+                        account: None,
                         on_progress: None,
                     },
                 )
@@ -5892,6 +6149,7 @@ pub fn launch_worker_outcome(
                         state.adapter_registry.start(
                             &dispatch_id,
                             adapters::StartRequest {
+                                session_id: None,
                                 cwd: &reservation.path,
                                 model: Some(model.as_str()),
                                 effort: Some(&effort),
@@ -5900,6 +6158,7 @@ pub fn launch_worker_outcome(
                                 read_only_sandbox: read_only_sandbox.as_ref(),
                                 briefing: None,
                                 interactive: false,
+                                account: None,
                                 on_progress: None,
                             },
                         )
@@ -5911,6 +6170,7 @@ pub fn launch_worker_outcome(
                     state.adapter_registry.start(
                         &dispatch_id,
                         adapters::StartRequest {
+                            session_id: None,
                             cwd: &reservation.path,
                             model: Some(model.as_str()),
                             effort: Some(&effort),
@@ -5919,6 +6179,7 @@ pub fn launch_worker_outcome(
                             read_only_sandbox: read_only_sandbox.as_ref(),
                             briefing: None,
                             interactive: false,
+                            account: None,
                             on_progress: None,
                         },
                     )
@@ -5931,6 +6192,7 @@ pub fn launch_worker_outcome(
             .start(
                 &dispatch_id,
                 adapters::StartRequest {
+                    session_id: None,
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
@@ -5939,6 +6201,7 @@ pub fn launch_worker_outcome(
                     read_only_sandbox: read_only_sandbox.as_ref(),
                     briefing: None,
                     interactive: false,
+                    account: None,
                     on_progress: None,
                 },
             )
@@ -8804,6 +9067,124 @@ fn refuse_orchestrator_steer(core: &Arc<BridgeCore>, session_id: &str, reason: &
     refuse_orchestrator_request(core, session_id, reason, &notice, RefusedRequest::Steer);
 }
 
+fn refuse_orchestrator_wait(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
+    let notice = serde_json::json!({
+        "type": "bridge-wait-rejected",
+        "reason": reason,
+        "instruction": "No wait was armed: worker results will reach you one at a time, as before. Correct the block and re-emit it, or carry on without it."
+    })
+    .to_string();
+    refuse_orchestrator_request(core, session_id, reason, &notice, RefusedRequest::Wait);
+}
+
+/// Arm the orchestrator's `bridge-wait` and fire it at once if what it waits
+/// for already happened.
+fn arm_orchestrator_wait(core: &Arc<BridgeCore>, orchestrator_session_id: &str, request: &delegation::WaitRequest) {
+    let outcome = {
+        let db = core.db.lock().unwrap();
+        let Ok(transaction) = db.unchecked_transaction() else { return };
+        let Ok(outcome) = crate::orchestrator_wait::arm(&transaction, orchestrator_session_id, request, Utc::now()) else { return };
+        if transaction.commit().is_err() {
+            return;
+        }
+        if let crate::orchestrator_wait::ArmOutcome::Armed { workers, adopted } = &outcome {
+            let _ = store::event(
+                &db,
+                "delegation",
+                "delegation.wait.armed",
+                orchestrator_session_id,
+                &format!("{} workers, {adopted} result(s) already in", workers.len()),
+            );
+        }
+        outcome
+    };
+    match outcome {
+        crate::orchestrator_wait::ArmOutcome::Refused(reason) => refuse_orchestrator_wait(core, orchestrator_session_id, &reason),
+        crate::orchestrator_wait::ArmOutcome::Armed { .. } => {
+            fire_orchestrator_wait_if_due(core, orchestrator_session_id);
+        }
+    }
+}
+
+/// Fire the orchestrator's armed wait now: one `bridge-worker-results`
+/// envelope with everything held, then deliver it when the session is idle.
+/// False when nothing was armed.
+pub(crate) fn fire_orchestrator_wait(
+    core: &Arc<BridgeCore>,
+    orchestrator_session_id: &str,
+    reason: crate::orchestrator_wait::FireReason,
+    notice: Option<serde_json::Value>,
+) -> bool {
+    let fired = {
+        let db = core.db.lock().unwrap();
+        let fleet = fleet_digest(&db, orchestrator_session_id);
+        let Ok(transaction) = db.unchecked_transaction() else { return false };
+        let fired = matches!(crate::orchestrator_wait::fire(&transaction, orchestrator_session_id, reason, notice, fleet), Ok(Some(_)));
+        if !fired || transaction.commit().is_err() {
+            return false;
+        }
+        let _ = store::event(&db, "delegation", "delegation.wait.fired", orchestrator_session_id, reason.as_str());
+        true
+    };
+    if fired {
+        drain_queued_input(core, orchestrator_session_id);
+    }
+    fired
+}
+
+/// Fire the wait if its condition, a failure it breaks on, or its deadline
+/// says so.
+fn fire_orchestrator_wait_if_due(core: &Arc<BridgeCore>, orchestrator_session_id: &str) -> bool {
+    let reason = {
+        let db = core.db.lock().unwrap();
+        match crate::orchestrator_wait::armed(&db, orchestrator_session_id) {
+            Ok(Some(wait)) => crate::orchestrator_wait::due(&db, &wait, Utc::now()).ok().flatten(),
+            _ => None,
+        }
+    };
+    reason.is_some_and(|reason| fire_orchestrator_wait(core, orchestrator_session_id, reason, None))
+}
+
+/// The sweep's half: waits whose deadline passed, including ones a restart
+/// left armed.
+fn fire_due_orchestrator_waits(core: &Arc<BridgeCore>) {
+    let armed = crate::orchestrator_wait::armed_orchestrators(&core.db.lock().unwrap()).unwrap_or_default();
+    for orchestrator_session_id in armed {
+        fire_orchestrator_wait_if_due(core, &orchestrator_session_id);
+    }
+}
+
+/// What an armed wait does with a routing notice. `Some(told)` when the wait
+/// decided; `None` to deliver it as usual. An essential notice breaks the wait
+/// (unless it breaks on nothing) and travels inside the delivery; a listed
+/// worker blocked on approval breaks a wait that asks for that; informational
+/// notices are what the wait exists to save, so they are not delivered.
+pub(crate) fn route_notice_through_wait(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    child_session_id: Option<&str>,
+    kind: crate::delegation_notify::NoticeKind,
+    notice: &str,
+) -> Option<bool> {
+    use crate::delegation_notify::{NoticeClass, NoticeKind};
+    use crate::orchestrator_wait::FireReason;
+    let wait = crate::orchestrator_wait::armed(&core.db.lock().unwrap(), parent_session_id).ok().flatten()?;
+    let payload = || serde_json::from_str::<serde_json::Value>(notice).unwrap_or_else(|_| serde_json::json!({"text": notice}));
+    if kind.class() == NoticeClass::Essential && !wait.break_on.is_empty() {
+        return Some(fire_orchestrator_wait(core, parent_session_id, FireReason::Notice, Some(payload())));
+    }
+    if kind == NoticeKind::WorkerBlockedOnApproval
+        && wait.breaks_on(delegation::WaitBreak::NeedsYou)
+        && child_session_id.is_some_and(|child| wait.covers(child))
+    {
+        return Some(fire_orchestrator_wait(core, parent_session_id, FireReason::NeedsYou, Some(payload())));
+    }
+    if kind.class() == NoticeClass::Informational {
+        return Some(false);
+    }
+    None
+}
+
 fn refuse_orchestrator_stop(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
     let notice = serde_json::json!({
         "type": "bridge-stop-rejected",
@@ -8818,6 +9199,7 @@ fn refuse_orchestrator_stop(core: &Arc<BridgeCore>, session_id: &str, reason: &s
 enum RefusedRequest {
     Steer,
     Stop,
+    Wait,
 }
 
 impl RefusedRequest {
@@ -8825,6 +9207,7 @@ impl RefusedRequest {
         match self {
             Self::Steer => "steer",
             Self::Stop => "stop",
+            Self::Wait => "wait",
         }
     }
 
@@ -8832,6 +9215,7 @@ impl RefusedRequest {
         match self {
             Self::Steer => "Steer refused",
             Self::Stop => "Stop refused",
+            Self::Wait => "Wait refused",
         }
     }
 }
@@ -9721,7 +10105,23 @@ fn prepare_worker_result_delivery(
             // retain only the result history. Check ancestry in the enqueue
             // transaction so archive cannot commit between check and delivery.
             let archived = session_has_archived_ancestor(&transaction, &report.parent_session_id)?;
-            let queued = if direct_dispatch || archived { None } else {
+            // An armed bridge-wait over this worker holds the result instead,
+            // to deliver it together with the others it waits for.
+            let held = !direct_dispatch
+                && !archived
+                && crate::orchestrator_wait::armed(&transaction, &report.parent_session_id)?
+                    .is_some_and(|wait| wait.covers(&child_session_id));
+            if held {
+                crate::orchestrator_wait::hold(
+                    &transaction,
+                    &report.parent_session_id,
+                    &child_session_id,
+                    result.status.as_str(),
+                    &routing_notice,
+                    Utc::now(),
+                )?;
+            }
+            let queued = if direct_dispatch || archived || held { None } else {
                 Some(session_input::enqueue(&transaction, &report.parent_session_id, &routing_notice, &result.summary)?)
             };
             let result_event = agent::NormalizedEvent {
@@ -9736,6 +10136,7 @@ fn prepare_worker_result_delivery(
                     "evidenceId": report.evidence_id,
                     "delivered": false,
                     "queued": queued.is_some(),
+                    "held": held,
                     "queuedInputId": queued.as_ref().map(|input| &input.id),
                     "status": result.status.as_str(),
                     "repository": evidence_payload,
@@ -9756,6 +10157,9 @@ fn prepare_worker_result_delivery(
             transaction.commit()?;
             drop(db);
             core.events.publish(CoreEvent::Agent(stored));
+            if held {
+                fire_orchestrator_wait_if_due(core, &report.parent_session_id);
+            }
         }
         if !direct_dispatch { drain_queued_input(core, &report.parent_session_id); }
         let workspace_id = state
@@ -10465,6 +10869,7 @@ pub fn prepare_turn(
     if !exists {
         return Err(BridgeError::Invalid("Chat session does not exist".into()));
     }
+    crate::harness_subagents::require_process_session(&state.db.lock().unwrap(), &session_id)?;
     let intercepted = secret_interception::intercept(&text);
     state
         .credential_broker
@@ -10691,6 +11096,26 @@ fn prepare_input(
             if let Some(scope_key) = changed_scope {
                 core.events.publish(CoreEvent::MemoryChanged { scope_key });
             }
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Note { body } => {
+            // Your words, saved exactly as typed (credentials were already
+            // replaced with markers upstream). No model is called.
+            let text = if body.trim().is_empty() {
+                "Usage: /note <text>. Saves your words to the Notes Inbox exactly as typed. No model is called.".to_string()
+            } else {
+                match core.notes.capture(&body, crate::notes::service::PERSON) {
+                    Ok(note) => {
+                        let mut reply = format!("Saved to your Notes Inbox: \"{}\"", crate::notes::guards::clip(note.preview.lines().next().unwrap_or_default(), 60));
+                        if !sanitized_input.interceptions.is_empty() {
+                            reply.push_str(". A credential in it was replaced with a marker.");
+                        }
+                        reply
+                    }
+                    Err(error) => error.to_string(),
+                }
+            };
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
@@ -12325,6 +12750,7 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
             );
         }
     }
+    let mut attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
         prepare_pending_worker_results(&core);
@@ -12336,7 +12762,96 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         for session_id in sessions {
             drain_queued_input(&core, &session_id);
         }
+        // A bridge-wait past its deadline, including one a restart left armed.
+        fire_due_orchestrator_waits(&core);
+        // What is still queued now has no adapter to drain into, or is waiting
+        // on a turn. The first kind is the person's to know about.
+        escalate_stranded_input(&core);
+        // Last, so this tick's escalations and anything committed without an
+        // agent event go out as one hint.
+        publish_attention_if_moved(&core, &mut attention_seen);
     });
+}
+
+fn escalate_stranded_input(core: &Arc<BridgeCore>) {
+    let live: std::collections::HashSet<String> = core.adapters.lock().unwrap().keys().cloned().collect();
+    let db = core.db.lock().unwrap();
+    // Its changes move the ledger revision; the sweep's next step publishes.
+    let _ = crate::attention::escalate_stranded(&db, &live, Utc::now());
+}
+
+/// What Deliver now did. Every variant means the queue is handled, so the
+/// card can go; a failure is an error instead, so it stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedDelivery {
+    Delivered,
+    /// Nothing was queued, or another drain had already claimed it.
+    NothingQueued,
+    /// The adapter is live and mid-turn; the ordinary boundary drain delivers.
+    AfterCurrentTurn,
+}
+
+/// Deliver a chat's queued input now, at the person's request: resume its
+/// adapter through the same path their own send takes if it is gone, then
+/// drain. The unattended sweep never does this (#252); a click is not
+/// unattended.
+pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<QueuedDelivery, BridgeError> {
+    ensure_session_not_archived(core, session_id)?;
+    // A worker resumes only through its orchestrator, inside its pool
+    // reservation and with its sandbox and write scope. `resume_for_send` is
+    // the generic chat launcher and would drop all three.
+    let worker: bool = core.db.lock().unwrap().query_row(
+        "SELECT parent_session_id IS NOT NULL OR COALESCE(depth,0)>0 FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if worker {
+        return Err(BridgeError::Invalid(
+            "This is a worker; it resumes through its orchestrator, not from here.".into(),
+        ));
+    }
+    let queued = session_input::next_queued(&core.db.lock().unwrap(), session_id)?.is_some();
+    if !queued {
+        return Ok(QueuedDelivery::NothingQueued);
+    }
+    if !core.adapters.lock().unwrap().contains_key(session_id) {
+        resume_for_send(core, session_id)?;
+    }
+    if drain_queued_input(core, session_id) {
+        return Ok(QueuedDelivery::Delivered);
+    }
+    // The drain answers only "delivered or not". Tell the cases apart, because
+    // only a handled queue may take the remedy away.
+    let db = core.db.lock().unwrap();
+    if session_input::next_queued(&db, session_id)?.is_none() {
+        return Ok(QueuedDelivery::NothingQueued);
+    }
+    let mid_turn: bool = db.query_row(
+        "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing') FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if mid_turn && core.adapters.lock().unwrap().contains_key(session_id) {
+        return Ok(QueuedDelivery::AfterCurrentTurn);
+    }
+    Err(BridgeError::Invalid(
+        "Bridge could not hand the waiting input to the agent; it is still queued. Try again.".into(),
+    ))
+}
+
+/// The guarantee behind `attention/changed`. The event bus derives the hint
+/// from published agent events, but some writes publish none (a typed scope
+/// approval from `policy::record_decision`, for one). The ledger's revision
+/// moves with every committed change, so comparing it each sweep catches
+/// those within one interval, and never before their commit.
+pub(crate) fn publish_attention_if_moved(core: &Arc<BridgeCore>, seen: &mut i64) -> bool {
+    let Ok(revision) = crate::attention::revision(&core.db.lock().unwrap()) else { return false };
+    if revision == *seen {
+        return false;
+    }
+    *seen = revision;
+    core.events.publish(CoreEvent::AttentionChanged);
+    true
 }
 
 fn record_recoverable_adapter_failure(
@@ -12629,6 +13144,7 @@ pub fn stop_worker_session(
     }
     verify_read_only_worker(core, session_id);
     let db = state.db.lock().unwrap();
+    crate::harness_subagents::interrupt_children(&db, session_id)?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
     let workspace_id: String = db.query_row(
         "SELECT workspace_id FROM sessions WHERE id=?1",
@@ -12681,15 +13197,76 @@ fn announce_worker_cancellation(core: &Arc<BridgeCore>, child_session_id: &str, 
     );
 }
 
+fn stop_harness_subagent(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let (parent,target,turn) = crate::harness_subagents::stop_target(&core.db.lock().unwrap(),session_id)?;
+    let request = {
+        let adapters=core.adapters.lock().unwrap();
+        let runtime=adapters.get(&parent).ok_or_else(||BridgeError::Invalid("Parent harness is no longer running".into()))?;
+        match runtime.stop_subagent_request(&target,turn.as_deref()) {
+            Some(request) => request,
+            None => { runtime.stop_subagent(&target,turn.as_deref())?; Box::new(|| Ok(())) as adapters::InterruptRequest }
+        }
+    };
+    run_provider_request(request)?;
+    let db=core.db.lock().unwrap();
+    let provider:String=db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1",[session_id],|r|r.get(0))?;
+    let mut event=agent::NormalizedEvent::new("subagent.progress");
+    event.status=Some("working".into());
+    event.title=Some("Stop requested".into());
+    event.data=serde_json::json!({"subagent":{"sessionId":provider},"reason":"user_stopped","stopRequested":true});
+    for stored in crate::harness_subagents::route(&db,&parent,&event,&serde_json::json!({"source":"user"}))? {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(())
+}
+
+/// Run a snapshotted provider call with no lock held. OpenCode's is blocking
+/// HTTP, kept on its own thread so its client never drops on an async runtime.
+fn run_provider_request(request: adapters::InterruptRequest) -> Result<(), BridgeError> {
+    thread::spawn(request)
+        .join()
+        .map_err(|_| BridgeError::Adapter("Provider stop request panicked".into()))?
+}
+
+/// Keep the shared process and reader alive when cancelling only the root
+/// turn. Otherwise the normal hard-stop path would kill every provider child.
+fn interrupt_parent_with_live_subagents(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool,BridgeError> {
+    let has_children:bool=core.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE parent_session_id=?1 AND kind='harness_subagent' AND status IN ('working','waiting','starting','ready'))",[session_id],|r|r.get(0))?;
+    if !has_children {return Ok(false);}
+    let _lifecycle=core.claim_session_lifecycle(session_id,"stop parent turn")?;
+    let request = {
+        let adapters=core.adapters.lock().unwrap();
+        let Some(runtime)=adapters.get(session_id) else {return Ok(false);};
+        // The abort error this provokes is the Stop, not a failure.
+        core.user_stop_requested.lock().unwrap().insert(session_id.to_owned());
+        match runtime.interrupt_request() {
+            Some(request) => request,
+            None => { runtime.interrupt()?; Box::new(|| Ok(())) as adapters::InterruptRequest }
+        }
+    };
+    run_provider_request(request)?;
+    let db=core.db.lock().unwrap();
+    db.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL WHERE id=?1",[session_id])?;
+    db.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",[session_id])?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(true)
+}
+
 /// Composer Stop is a cancellation boundary, not an unbounded graceful abort.
 /// Close the reader gate and settle this chat before disposing its process.
 /// Its persisted provider session remains available for the next user send.
 pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    if crate::harness_subagents::is_child(&core.db.lock().unwrap(), session_id)? {
+        return stop_harness_subagent(core, session_id);
+    }
     let is_worker = core.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         [session_id], |row| row.get::<_, bool>(0),
     )?;
+    // A worker's Stop cancels the worker, children included.
     if is_worker { return stop_worker_session(core, session_id, StopCause::User); }
+    if interrupt_parent_with_live_subagents(core, session_id)? { return Ok(()); }
     stop_turn(core, session_id, TurnStop::User)
 }
 
@@ -12720,7 +13297,7 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
         }
         transaction.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
         transaction.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('working','waiting','checkpointing')) THEN 'working' ELSE 'stopped' END WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)", [session_id])?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         let mut event = agent::NormalizedEvent::new("turn.completed");
         event.status = Some("cancelled".into());
         let (title, reason) = match cause {
@@ -12731,6 +13308,7 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
         event.data = serde_json::json!({"reason":reason});
         let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
         transaction.commit()?;
+        let _ = crate::harness_subagents::interrupt_children(&db, session_id);
         core.deactivate_reader_launch(session_id);
         // The reader gate suppresses shutdown frames. Do not leave a marker
         // that could swallow a genuine error during the next cold resume.
@@ -12758,6 +13336,10 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
 /// returns. Callers retire the root first, so a worker's cancellation cannot
 /// start a new turn on it.
 pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str, cause: StopCause<'_>) -> Result<(), BridgeError> {
+    if crate::harness_subagents::is_child(&core.db.lock().unwrap(),session_id)? {
+        // Its owner was retired first; archive never starts a child process.
+        return Ok(());
+    }
     // A worker is a child with a runtime record. Real workers keep the default
     // `kind`, so the kind column cannot identify them. An unsettled worker is
     // settled even without a live process: its lease still counts toward
@@ -12801,6 +13383,7 @@ pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str,
 /// A hidden family cannot be resumed by a stale window or queued input. Check
 /// under the lifecycle claim so a start cannot slip in after archive commits.
 fn ensure_session_not_archived(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    crate::harness_subagents::require_process_session(&core.db.lock().unwrap(), session_id)?;
     if session_has_archived_ancestor(&core.db.lock().unwrap(), session_id)? {
         return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
     }
@@ -12823,6 +13406,10 @@ pub fn stop_session(
     session_id: String,
 ) -> Result<BridgeState, BridgeError> {
     let state = core;
+    if crate::harness_subagents::is_child(&state.db.lock().unwrap(), &session_id)? {
+        stop_harness_subagent(core, &session_id)?;
+        return store::state(&state.db.lock().unwrap());
+    }
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
     state.browser_bridge.revoke_session(&session_id);
     #[cfg(target_os = "macos")]
@@ -12955,6 +13542,7 @@ fn record_shutdown_reason(
     session_id: &str,
     reason: adapters::ShutdownReason,
 ) -> Result<(), BridgeError> {
+    crate::harness_subagents::interrupt_children(db, session_id)?;
     session_supervisor::SessionSupervisor::clear_adapter_process(db, session_id)?;
     session_forest::SessionForest::new(db)
         .append(
@@ -15040,6 +15628,50 @@ mod submit_input_tests {
     }
 
     #[test]
+    fn typed_approval_without_an_agent_event_still_hints() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let mut seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap();
+        let mut published = core.events.subscribe();
+        // policy::record_decision appends a scope approval through the typed
+        // forest and publishes no agent event for it.
+        crate::session_forest::SessionForest::new(&core.db.lock().unwrap())
+            .append("chat", crate::session_forest::EntryKind::ApprovalRequested, serde_json::json!({"approvalId": "scope:1"}))
+            .unwrap();
+        assert!(published.try_recv().is_err(), "nothing was published for the typed write");
+
+        assert!(publish_attention_if_moved(&core, &mut seen), "the sweep sees the committed ledger move");
+        assert!(matches!(published.try_recv(), Ok(CoreEvent::AttentionChanged)));
+        assert!(!publish_attention_if_moved(&core, &mut seen), "and says so once");
+
+        // A seen stamp moves no sequence, but it is still news to other clients.
+        crate::attention::mark_seen(&core.db.lock().unwrap(), "chat").unwrap();
+        assert!(publish_attention_if_moved(&core, &mut seen));
+    }
+
+    #[test]
+    fn a_checkpoint_turn_raises_no_attention() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let finished = |core: &Arc<BridgeCore>| -> i64 {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM attention_events WHERE session_id='chat' AND kind='finished'", [], |row| row.get(0))
+                .unwrap()
+        };
+        // The status is the maintenance-turn tombstone a checkpoint turn keeps
+        // until its own boundary.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='checkpointing' WHERE id='chat'", []).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+        assert_eq!(finished(&core), 0, "a checkpoint's boundary is maintenance, not the person's turn");
+
+        // The same chat's own turn still raises one.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='working' WHERE id='chat'", []).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-2".into()))), &codex_turn_completed());
+        assert_eq!(finished(&core), 1);
+    }
+
+    #[test]
     fn checkpoint_reply_is_consumed_without_entering_the_conversation() {
         let (_fixture, core, _managed_root) = core_with_chat("ready");
         core.db
@@ -15082,6 +15714,60 @@ mod submit_input_tests {
             "the consumed reply still completes the checkpoint"
         );
         assert!(published.try_recv().is_err(), "the raw reply must not be published live");
+    }
+
+    #[test]
+    fn checkpointing_preserves_existing_process_progress_and_exit_but_hides_its_own_tools() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET harness='codex' WHERE id='chat'", [],
+        ).unwrap();
+        let command = |method: &str, id: &str, status: &str| serde_json::json!({
+            "method": method,
+            "params": {"item": {
+                "id": id, "type": "commandExecution", "processId": "123",
+                "command": "cargo test", "status": status,
+                "aggregatedOutput": "tests passed", "exitCode": 0,
+            }},
+        });
+        let turn = Arc::new(Mutex::new(Some("turn-1".into())));
+        handle_agent_value(&core, "chat", &turn, &command("item/started", "existing", "inProgress"));
+        begin_checkpoint(&core);
+        let mut published = core.events.subscribe();
+
+        handle_agent_value(&core, "chat", &turn, &command("item/started", "maintenance", "inProgress"));
+        handle_agent_value(&core, "chat", &turn, &serde_json::json!({
+            "method": "item/commandExecution/outputDelta",
+            "params": {"itemId": "existing", "delta": "test example ... ok\n"},
+        }));
+        handle_agent_value(&core, "chat", &turn, &command("item/completed", "existing", "completed"));
+        handle_agent_value(&core, "chat", &turn, &command("item/completed", "maintenance", "completed"));
+
+        let db = core.db.lock().unwrap();
+        let entries = store::session_entries(&db, "chat").unwrap();
+        assert!(entries.iter().any(|entry| entry.kind == "command.completed"
+            && entry.payload["itemId"] == "existing"
+            && entry.payload["status"] == "completed"));
+        assert!(!entries.iter().any(|entry| entry.payload["itemId"] == "maintenance"));
+        assert!(crate::background_activity::current(&db, "chat").unwrap().is_empty(),
+            "an exit during checkpointing must remove the previous running claim");
+        assert!(compaction_controller::CompactionController::pending(&db, "chat").unwrap().is_some(),
+            "the asynchronous process exit must not complete the checkpoint itself");
+        drop(db);
+
+        let mut saw_output = false;
+        let mut saw_exit = false;
+        while let Ok(event) = published.try_recv() {
+            if let CoreEvent::Agent(event) = event {
+                assert_ne!(event.item_id.as_deref(), Some("maintenance"));
+                if event.item_id.as_deref() == Some("existing") {
+                    saw_output |= event.kind == "command.output_delta"
+                        && event.text.as_deref() == Some("test example ... ok\n");
+                    saw_exit |= event.kind == "command.completed";
+                }
+            }
+        }
+        assert!(saw_output && saw_exit, "the running process remains observable during checkpointing");
     }
 
     #[test]
@@ -16228,6 +16914,77 @@ mod submit_input_tests {
     }
 
     #[test]
+    fn deliver_now_delivers_once() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let sent = attach(&core, false);
+        session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
+
+        assert_eq!(deliver_queued_now(&core, "chat").unwrap(), QueuedDelivery::Delivered);
+        assert_eq!(deliver_queued_now(&core, "chat").unwrap(), QueuedDelivery::NothingQueued, "nothing left to deliver");
+        assert_eq!(sent.lock().unwrap().as_slice(), ["worker report".to_owned()]);
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn deliver_now_reports_a_failed_write_as_an_error() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_handles(&core, false);
+        handles.refuse.store(true, Ordering::SeqCst);
+        session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
+
+        // The drain swallows the provider error and releases the row; the
+        // person must hear that it failed, not see their remedy vanish.
+        let message = deliver_queued_now(&core, "chat").unwrap_err().to_string();
+        assert!(message.contains("still queued"), "{message}");
+        assert!(handles.sent.lock().unwrap().is_empty());
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 1);
+    }
+
+    #[test]
+    fn deliver_now_refuses_a_worker_and_launches_nothing() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth,parent_session_id)
+                 VALUES('worker',NULL,'no-such-harness','Worker','stopped','reported','orchestrator',1,'chat')",
+                [],
+            )
+            .unwrap();
+        session_input::enqueue(&core.db.lock().unwrap(), "worker", "steer", "steer").unwrap();
+
+        // A worker resumes only through its orchestrator, inside its pool
+        // reservation and sandbox. The generic launcher would drop both.
+        let message = deliver_queued_now(&core, "worker").unwrap_err().to_string();
+        assert!(!message.contains("could not resume it"), "no launch was attempted: {message}");
+        assert!(message.contains("orchestrator"), "{message}");
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "worker").unwrap(), 1);
+    }
+
+    #[test]
+    fn deliver_now_resumes_an_adapterless_chat() {
+        let (_fixture, core, _managed_root) = core_with_chat("stopped");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth)
+                 VALUES('ghost',NULL,'no-such-harness','Ghost','stopped','reported','orchestrator',0)",
+                [],
+            )
+            .unwrap();
+        session_input::enqueue(&core.db.lock().unwrap(), "ghost", "worker report", "worker report").unwrap();
+
+        // The click attempts the same resume a send would; this harness cannot
+        // launch, so the reason comes back and the row waits.
+        let message = deliver_queued_now(&core, "ghost").unwrap_err().to_string();
+        assert!(message.contains("could not resume it"), "{message}");
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "ghost").unwrap(), 1);
+        assert_eq!(deliver_queued_now(&core, "chat").unwrap(), QueuedDelivery::NothingQueued, "a chat with nothing queued is not resumed");
+    }
+
+    #[test]
     fn a_send_into_an_adapterless_session_attempts_a_resume_not_a_raw_error() {
         let (_fixture, core, _managed_root) = core_with_chat("stopped");
         core.db
@@ -16862,6 +17619,131 @@ mod submit_input_tests {
             assert!(sent.lock().unwrap().is_empty());
         }
         assert!(drain_queued_input(&core, "parent"));
+    }
+
+    /* ── bridge-wait: hold results, deliver them once ─────────────────────── */
+
+    fn wait_request(json: &str) -> delegation::WaitRequest {
+        let delegation::ParseOutcome::Parsed(request) = delegation::parse_wait_request(&format!("```bridge-wait\n{json}\n```")) else {
+            panic!("fixture wait did not parse");
+        };
+        request
+    }
+
+    fn sent_json(sent: &Arc<Mutex<Vec<String>>>) -> Vec<serde_json::Value> {
+        sent.lock().unwrap().iter().filter_map(|text| serde_json::from_str(text).ok()).collect()
+    }
+
+    #[test]
+    fn a_turn_ending_with_bridge_wait_arms_it_and_hides_the_block() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        attach_to(&core, "parent", true);
+        let turn = Arc::new(Mutex::new(Some("turn-1".into())));
+        handle_agent_value(&core, "parent", &turn, &codex_agent_message("Three workers are running.\n```bridge-wait\n{\"until\":\"all_done\"}\n```"));
+        assert!(
+            crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_none(),
+            "a wait arms at the turn's end, not mid-turn"
+        );
+        handle_agent_value(&core, "parent", &turn, &codex_turn_completed());
+        let wait = crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().expect("armed at the boundary");
+        assert_eq!(wait.workers, ["child"], "\"all\" is the parent's running workers");
+        let shown: Vec<String> = core
+            .db
+            .lock()
+            .unwrap()
+            .prepare("SELECT payload FROM session_entries WHERE session_id='parent' AND payload LIKE '%Three workers%'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let texts: Vec<String> = shown
+            .iter()
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .filter_map(|payload| payload["text"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(texts, ["Three workers are running."], "the person reads the prose, not the block");
+        assert!(ledger_kinds(&core, "delegation.wait.").contains(&"delegation.wait.armed".to_owned()));
+    }
+
+    #[test]
+    fn a_held_result_reaches_an_armed_orchestrator_in_one_delivery() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        arm_orchestrator_wait(&core, "parent", &wait_request("{}"));
+        report_to_parent(&core, "child", &result);
+        prepare_pending_worker_results(&core);
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered.len(), 1, "one turn: {delivered:?}");
+        assert_eq!(delivered[0]["type"], "bridge-worker-results");
+        assert_eq!(delivered[0]["reason"], "all_done");
+        assert_eq!(delivered[0]["results"][0]["type"], "bridge-worker-result");
+        assert_eq!(delivered[0]["results"][0]["childSessionId"], "child");
+        assert!(crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_none());
+        let held: bool = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT payload FROM session_entries WHERE session_id='parent' AND kind='delegation.result'", [], |row| row.get::<_, String>(0))
+            .map(|payload| payload.contains("\"held\":true"))
+            .unwrap();
+        assert!(held, "the transcript still records the result, marked held");
+    }
+
+    #[test]
+    fn a_wait_over_a_worker_that_is_not_yours_is_refused_back() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", true);
+        arm_orchestrator_wait(&core, "parent", &wait_request(r#"{"workers":["stranger"]}"#));
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered[0]["type"], "bridge-wait-rejected");
+        assert!(delivered[0]["reason"].as_str().unwrap().contains("stranger"));
+        assert!(crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_none());
+        assert!(parent_event_kinds(&core).contains(&"delegation.rejected".to_owned()) || !ledger_kinds(&core, "delegation.wait.refused").is_empty());
+    }
+
+    #[test]
+    fn an_essential_notice_breaks_the_wait_and_rides_inside_it() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        arm_orchestrator_wait(&core, "parent", &wait_request("{}"));
+        let stopped = serde_json::json!({"type": "bridge-worker-stopped", "childSessionId": "child"}).to_string();
+        let told = crate::delegation_notify::deliver_routing_notice(&core, "parent", Some("child"), crate::delegation_notify::NoticeKind::WorkerStopped, &stopped);
+        assert!(told);
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered.len(), 1, "the notice is not a turn of its own");
+        assert_eq!(delivered[0]["type"], "bridge-worker-results");
+        assert_eq!(delivered[0]["reason"], "notice");
+        assert_eq!(delivered[0]["notice"]["type"], "bridge-worker-stopped");
+        assert_eq!(delivered[0]["stillRunning"], serde_json::json!(["child"]));
+    }
+
+    #[test]
+    fn an_informational_notice_is_held_back_while_a_wait_is_armed() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", false);
+        arm_orchestrator_wait(&core, "parent", &wait_request("{}"));
+        let unblocked = serde_json::json!({"type": "bridge-worker-unblocked", "childSessionId": "child"}).to_string();
+        let told = crate::delegation_notify::deliver_routing_notice(&core, "parent", Some("child"), crate::delegation_notify::NoticeKind::WorkerUnblocked, &unblocked);
+        assert!(!told);
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(crate::orchestrator_wait::armed(&core.db.lock().unwrap(), "parent").unwrap().is_some(), "still waiting");
+    }
+
+    #[test]
+    fn without_a_wait_a_result_is_its_own_delivery_as_before() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        report_to_parent(&core, "child", &result);
+        prepare_pending_worker_results(&core);
+        let delivered = sent_json(&sent);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0]["type"], "bridge-worker-result");
     }
 
     /// The whole point of the change: a user who can see a worker going the wrong
@@ -17796,6 +18678,218 @@ mod permission_policy_tests {
             ledger(&core, "approval."),
             vec!["approval.auto_allowed".to_owned()]
         );
+    }
+
+    #[test]
+    fn harness_children_cannot_end_the_root_turn_or_publish_their_reply_as_root() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let turn=Arc::new(Mutex::new(Some("root-turn".into())));
+        for child in ["one","two","three"] {
+            for frame in [
+                serde_json::json!({"method":"turn/started","params":{"threadId":child,"turn":{"id":format!("{child}-turn")}}}),
+                serde_json::json!({"method":"item/completed","params":{"threadId":child,"item":{"type":"agentMessage","id":format!("{child}-reply"),"text":"Only in child"}}}),
+                serde_json::json!({"method":"turn/completed","params":{"threadId":child,"turn":{"id":format!("{child}-turn"),"status":"completed"}}})
+            ] {handle_agent_value(&core,"chat",&turn,&frame);}
+            assert_eq!(turn.lock().unwrap().as_deref(),Some("root-turn"));
+        }
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/started","params":{"threadId":"one","turn":{"id":"second-turn"}}}));
+        let resumed:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE provider_session_id='one' AND kind='harness_subagent'",[],|r|r.get(0)).unwrap();
+        assert_eq!(resumed,"working");
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/completed","params":{"threadId":"one","turn":{"id":"second-turn","status":"completed"}}}));
+        {
+            let db=core.db.lock().unwrap();
+            let status:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(status,"working");
+            let root=store::session_entries(&db,"chat").unwrap();
+            assert_eq!(root.len(),6);
+            assert!(root.iter().all(|entry|entry.kind.starts_with("subagent.") && entry.context_visibility=="hidden"));
+            let replies:i64=db.query_row("SELECT count(*) FROM session_entries WHERE kind='assistant.message' AND session_id!='chat'",[],|r|r.get(0)).unwrap();assert_eq!(replies,3);
+        }
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/completed","params":{"threadId":"root","turn":{"id":"root-turn","status":"completed"}}}));
+        assert!(turn.lock().unwrap().is_none());
+        let status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(status,"ready");
+    }
+
+    #[test]
+    fn a_codex_child_threads_token_usage_is_billed_to_its_parent_chat() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let turn=Arc::new(Mutex::new(Some("root-turn".into())));
+        // A child thread's requests appear only in its own usage frames; the
+        // root thread's `last` never includes them.
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"child-turn"}}}));
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"method":"thread/tokenUsage/updated","params":{"threadId":"child","turnId":"child-turn","tokenUsage":{
+            "last":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500},
+            "total":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500},
+            "modelContextWindow":272000}}}));
+        let db=core.db.lock().unwrap();
+        let (rows,output):(i64,i64)=db.query_row("SELECT count(*),COALESCE(SUM(output_tokens),0) FROM usage_ledger WHERE session_id='chat'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!((rows,output),(1,300));
+        let child_rows:i64=db.query_row("SELECT count(*) FROM usage_ledger WHERE session_id!='chat'",[],|r|r.get(0)).unwrap();
+        assert_eq!(child_rows,0);
+        let window:Option<i64>=db.query_row("SELECT context_percent FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();
+        assert_eq!(window,None,"a child's context is not the parent's");
+    }
+
+    #[test]
+    fn a_harness_child_permission_is_persisted_and_answered_through_the_parent() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let handles=attach(&core,"chat");
+        let mut frame=approval_frame(42);
+        frame["params"]["threadId"]=serde_json::json!("child-thread");
+        deliver(&core,&frame);
+        let (child,sequence)={let db=core.db.lock().unwrap();
+            db.query_row("SELECT session_id,sequence FROM session_entries WHERE kind='permission.requested'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap()};
+        assert_ne!(child,"chat");
+        crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap();
+        assert_eq!(handles.responded.lock().unwrap()[0].0,serde_json::json!(42));
+        let db=core.db.lock().unwrap();
+        let root:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(root,"working");
+        assert!(store::session_entries(&db,&child).unwrap().iter().any(|entry|entry.kind=="permission.resolved"));
+    }
+
+    #[test]
+    fn harness_child_stop_and_parent_stop_keep_siblings_and_the_shared_runtime() {
+        struct Spy(Arc<Mutex<Vec<String>>>);
+        impl adapters::AdapterRuntime for Spy {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{self.0.lock().unwrap().push("root interrupt".into());Ok(())}
+            fn stop_subagent(&self,id:&str,turn:Option<&str>)->Result<(),BridgeError>{self.0.lock().unwrap().push(format!("{id}:{}",turn.unwrap()));Ok(())}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn stop(&mut self,_:adapters::ShutdownReason){panic!("must preserve shared process");}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        let calls=Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Spy(calls.clone())));
+        let child={let db=core.db.lock().unwrap();
+            for id in ["one","two"] {
+                let mut event=agent::NormalizedEvent::new("subagent.status");
+                event.data=serde_json::json!({"subagent":{"sessionId":id},"turn":{"id":format!("{id}-turn")}});
+                crate::harness_subagents::route(&db,"chat",&event,&serde_json::json!({})).unwrap();
+            }
+            db.query_row("SELECT id FROM sessions WHERE provider_session_id='one'",[],|r|r.get::<_,String>(0)).unwrap()};
+        cancel_visible_turn(&core,&child).unwrap();
+        let child_status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id=?1",[&child],|r|r.get(0)).unwrap();
+        assert_eq!(child_status,"working","a written stop request is not a provider completion acknowledgement");
+        cancel_visible_turn(&core,"chat").unwrap();
+        assert_eq!(*calls.lock().unwrap(),vec!["one:one-turn","root interrupt"]);
+        assert!(core.adapters.lock().unwrap().contains_key("chat"));
+        let status:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE provider_session_id='two'",[],|r|r.get(0)).unwrap();assert_eq!(status,"working");
+        assert!(start_chat(&core,child.clone()).unwrap_err().to_string().contains("harness_subagent_processless"));
+        assert!(submit_input(&core,child.clone(),"hello".into()).unwrap_err().to_string().contains("harness_subagent_processless"));
+        assert!(core.begin_manual_compaction(&child).unwrap_err().to_string().contains("harness_subagent_processless"));
+        assert!(core.fork_session(&child,"ignored",None,None,None,"shared").unwrap_err().to_string().contains("harness_subagent_processless"));
+        // Drop the spy without calling its process destructor contract.
+        core.adapters.lock().unwrap().remove("chat");
+    }
+
+    #[test]
+    fn harness_stops_never_hold_the_adapter_map_across_a_provider_call() {
+        // OpenCode's abort is a blocking HTTP request. Holding the map across
+        // it would stall every other chat's sends and approvals.
+        struct Spy { core: std::sync::Weak<BridgeCore>, free: Arc<Mutex<Vec<bool>>> }
+        impl Spy {
+            fn probe(&self) -> Option<adapters::InterruptRequest> {
+                let (core, free) = (self.core.clone(), self.free.clone());
+                Some(Box::new(move || { free.lock().unwrap().push(core.upgrade().unwrap().adapters.try_lock().is_ok()); Ok(()) }))
+            }
+        }
+        impl adapters::AdapterRuntime for Spy {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{panic!("interrupted under the adapter map")}
+            fn interrupt_request(&self)->Option<adapters::InterruptRequest>{self.probe()}
+            fn stop_subagent(&self,_:&str,_:Option<&str>)->Result<(),BridgeError>{panic!("stopped under the adapter map")}
+            fn stop_subagent_request(&self,_:&str,_:Option<&str>)->Option<adapters::InterruptRequest>{self.probe()}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn stop(&mut self,_:adapters::ShutdownReason){panic!("must preserve shared process");}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        let free=Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Spy{core:Arc::downgrade(&core),free:free.clone()}));
+        let child={let db=core.db.lock().unwrap();
+            let mut event=agent::NormalizedEvent::new("subagent.status");
+            event.data=serde_json::json!({"subagent":{"sessionId":"kid"},"turn":{"id":"kid-turn"}});
+            crate::harness_subagents::route(&db,"chat",&event,&serde_json::json!({})).unwrap();
+            db.query_row("SELECT id FROM sessions WHERE kind='harness_subagent'",[],|r|r.get::<_,String>(0)).unwrap()};
+        cancel_visible_turn(&core,&child).unwrap();
+        cancel_visible_turn(&core,"chat").unwrap();
+        assert_eq!(*free.lock().unwrap(),vec![true,true]);
+        core.adapters.lock().unwrap().remove("chat");
+    }
+
+    #[test]
+    fn a_parent_stop_that_keeps_children_swallows_the_abort_error_it_provokes() {
+        struct Spy;
+        impl adapters::AdapterRuntime for Spy {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{Ok(())}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn stop(&mut self,_:adapters::ShutdownReason){panic!("must preserve shared process");}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='opencode',provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Spy));
+        {
+            let db=core.db.lock().unwrap();
+            let mut event=agent::NormalizedEvent::new("subagent.started");
+            event.data=serde_json::json!({"subagent":{"sessionId":"kid"}});
+            crate::harness_subagents::route(&db,"chat",&event,&serde_json::json!({})).unwrap();
+        }
+        cancel_visible_turn(&core,"chat").unwrap();
+        // OpenCode answers an abort with a session error on the root.
+        let turn=Arc::new(Mutex::new(None));
+        handle_agent_value(&core,"chat",&turn,&serde_json::json!({"type":"session.error","properties":{"sessionID":"root","error":{"name":"MessageAbortedError","data":{"message":"The operation was aborted."}}}}));
+        {
+            let db=core.db.lock().unwrap();
+            let status:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();
+            assert_eq!(status,"stopped");
+            assert!(store::session_entries(&db,"chat").unwrap().iter().all(|entry|entry.kind!="error"));
+        }
+        core.adapters.lock().unwrap().remove("chat");
+    }
+
+    #[test]
+    fn harness_live_codex_capture_replays_into_three_isolated_sessions() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root-thread',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        let fixture:serde_json::Value=serde_json::from_str(include_str!("../../../testing/fixtures/codex-subagents.json")).unwrap();
+        let turn=Arc::new(Mutex::new(Some("root-turn".into())));
+        for frame in fixture["frames"].as_array().unwrap() {handle_agent_value(&core,"chat",&turn,frame);}
+        let db=core.db.lock().unwrap();
+        let children:i64=db.query_row("SELECT count(*) FROM sessions WHERE parent_session_id='chat' AND kind='harness_subagent'",[],|r|r.get(0)).unwrap();assert_eq!(children,3);
+        let pointers:i64=db.query_row("SELECT count(*) FROM session_entries WHERE session_id='chat' AND kind IN ('subagent.started','subagent.completed')",[],|r|r.get(0)).unwrap();assert_eq!(pointers,6);
+        let root:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();assert_eq!(root,"working");
+        let child_replies:i64=db.query_row("SELECT count(*) FROM session_entries WHERE session_id!='chat' AND kind='assistant.message' AND json_extract(payload,'$.text') LIKE '%TEST_CHILD_%'",[],|r|r.get(0)).unwrap();assert_eq!(child_replies,3);
+    }
+
+    #[test]
+    fn a_finished_harness_child_cannot_accept_a_stale_permission() {
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root' WHERE id='chat'",[]).unwrap();
+        let handles=attach(&core,"chat");let mut frame=approval_frame(42);frame["params"]["threadId"]=serde_json::json!("child");deliver(&core,&frame);
+        let (child,sequence)={let db=core.db.lock().unwrap();
+            let row=db.query_row("SELECT session_id,sequence FROM session_entries WHERE kind='permission.requested'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap();
+            let mut done=agent::NormalizedEvent::new("subagent.completed");done.status=Some("interrupted".into());done.data=serde_json::json!({"subagent":{"sessionId":"child"}});
+            crate::harness_subagents::route(&db,"chat",&done,&serde_json::json!({})).unwrap();row};
+        assert!(crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap_err().to_string().contains("no longer running"));
+        {
+            let db=core.db.lock().unwrap();
+            let mut restart=agent::NormalizedEvent::new("subagent.status");
+            restart.data=serde_json::json!({"subagent":{"sessionId":"child"},"turnStarted":true,"turn":{"id":"next-turn"}});
+            crate::harness_subagents::route(&db,"chat",&restart,&serde_json::json!({})).unwrap();
+        }
+        assert!(crate::api::resolve_approval(&core,&child,sequence,"accept",None).unwrap_err().to_string().contains("interaction has ended"));
+        assert!(handles.responded.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -19190,6 +20284,29 @@ mod retry_settlement_tests {
             )
             .expect("a refusal the user can see, not just a ledger row");
         assert!(refusal.contains("not one of your workers"), "{refusal}");
+    }
+
+    /// A provider subagent inside a worker must not turn the worker's Stop
+    /// into a parent-turn interrupt. The worker is still cancelled, and the
+    /// child it owned ends with its process.
+    #[test]
+    fn stopping_a_worker_with_a_live_harness_subagent_still_cancels_the_worker() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            let mut event = agent::NormalizedEvent::new("subagent.started");
+            event.data = serde_json::json!({"subagent":{"sessionId":"provider-child"}});
+            crate::harness_subagents::route(&db, "child", &event, &serde_json::json!({})).unwrap();
+        }
+
+        cancel_visible_turn(&core, "child").unwrap();
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(store::worker_runtime(&db, "child").unwrap().unwrap().lifecycle_state, "cancelled");
+        let status: String = db
+            .query_row("SELECT status FROM sessions WHERE kind='harness_subagent'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "interrupted");
     }
 
     /// `Waiting → Cancelled` is a legal transition the settle path used to

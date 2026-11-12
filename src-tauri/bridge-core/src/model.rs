@@ -520,6 +520,13 @@ pub struct Session {
     /// these are the only honest way to tell a fork from a delegated worker.
     pub fork_parent_session_id: Option<String>,
     pub fork_parent_entry_id: Option<String>,
+    /// The extra Claude or Codex account this chat signs in with
+    /// (`provider_accounts`); `None` is the user's own login.
+    pub account: Option<String>,
+    /// `title` at several lengths, shortest first (`title_jobs`). Only served
+    /// while it still belongs to the stored title.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub title_ladder: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -781,6 +788,9 @@ pub struct PolicyLimits {
 pub struct SessionForestSnapshot {
     pub session_id: String,
     pub entries: Vec<SessionEntry>,
+    /// Latest running process snapshots, independent of the history window.
+    #[serde(default)]
+    pub active_process_entries: Vec<SessionEntry>,
     pub head: Option<SessionHead>,
     pub leaves: Vec<SessionEntry>,
     pub worker_leases: Vec<WorkerLease>,

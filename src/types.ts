@@ -43,6 +43,35 @@ export type { WireKind } from "./transcript/wire";
 export type {
   AdapterDescriptor,
   AgentDefinition,
+  Note,
+  NoteEditResult,
+  NoteAsset,
+  NoteAssetData,
+  NoteAssetPart,
+  NoteHistory,
+  NoteJob,
+  NotePage,
+  NoteDatabase,
+  NoteDatabaseView,
+  NoteProperty,
+  NoteOption,
+  NoteOptionInput,
+  NotePropertyInput,
+  NoteViewProperty,
+  NoteViewInput,
+  NoteSort,
+  NoteGroupBy,
+  NoteSchemaChange,
+  DatabaseRow,
+  DatabaseGroup,
+  DatabaseQueryResult,
+  QueryDatabaseParams,
+  NoteVersion,
+  NoteVersionPage,
+  NotesList,
+  NotesSettings,
+  StructuredItem,
+  StructuredView,
   ApprovalDecision,
   AuthState,
   AutomationAction,
@@ -108,6 +137,7 @@ export type {
   MemoryCapabilities,
   ProviderMemoryCommand,
   MemoryExtractionSettings,
+  MemoryConsolidationSettings,
   MemoryExtractionRun,
   MemoryInjectionSettings,
   MemoryPacketAudit,
@@ -172,6 +202,13 @@ export type {
   RiskTier,
   MarketplaceAction,
   MarketplaceProvider,
+  AttentionItem,
+  AttentionKind,
+  UnreadSummary,
+  ApiKeysSnapshot,
+  SavedApiKey,
+  ChatApiKey,
+  SaveApiKeyParams,
 } from "./protocol/generated/protocol";
 
 export type {
@@ -210,8 +247,10 @@ export type SessionEntry = Omit<WireSessionEntry, "payload"> & { payload: Record
 export type QueuedWorkerRequest = Omit<WireQueuedWorkerRequest, "request"> & { request: Record<string, unknown> };
 export type WorkerLease = Omit<WireWorkerLease, "ownedPaths"> & { ownedPaths: string[] };
 export type WorkerRuntimeRecord = Omit<WireWorkerRuntimeRecord, "lastResult"> & { lastResult: Record<string, unknown> | null };
-export type SessionForestSnapshot = Omit<WireSessionForestSnapshot, "entries" | "leaves" | "workerLeases" | "workerRuntimes" | "workerQueue"> & {
-  entries: SessionEntry[]; leaves: SessionEntry[];
+export type SessionForestSnapshot = Omit<WireSessionForestSnapshot, "entries" | "activeProcessEntries" | "leaves" | "workerLeases" | "workerRuntimes" | "workerQueue"> & {
+  entries: SessionEntry[];
+  activeProcessEntries?: SessionEntry[];
+  leaves: SessionEntry[];
   workerLeases: WorkerLease[]; workerRuntimes: WorkerRuntimeRecord[]; workerQueue: QueuedWorkerRequest[];
 };
 
@@ -233,6 +272,19 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }
+
+/** A database filter: the generated contract carries it as JSON. Refined here
+ *  to the grammar the core's planner accepts (`notes/query.rs`). */
+export type DatabaseFilter =
+  | { and: DatabaseFilter[] }
+  | { or: DatabaseFilter[] }
+  | { property: string; op: string; value?: unknown };
+
+/** `notes/page_changed`: a page committed a change. A refetch hint; `actor`
+ *  is `person`, `agent:<harness>:<session>`, `file-import` or `model:*`. */
+export interface NotePageChangedPayload { pageId: string; actor: string; seq: number }
+/** `notes/pass_progress`: a Structure or Turn into tasks reply so far. */
+export interface NotePassProgressPayload { jobId: string; pageId: string; kind: string; text: string }
 
 /** `session-startup` cold-start phase, observed at a real adapter launch
  *  boundary. Transient and best-effort: never replayed, never a timer. */

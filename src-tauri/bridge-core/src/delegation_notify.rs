@@ -187,6 +187,11 @@ pub fn deliver_routing_notice(
     if !level_delivers(level, class) {
         return false;
     }
+    // An armed bridge-wait decides first: it may carry this notice inside its
+    // one delivery, or hold it back.
+    if let Some(told) = crate::live_turn::route_notice_through_wait(core, parent_session_id, child_session_id, kind, notice) {
+        return told;
+    }
     let mut body = notice.to_owned();
     // Scoped by data directory so two cores in one process never share a window.
     let scope = core.database_path.to_string_lossy();

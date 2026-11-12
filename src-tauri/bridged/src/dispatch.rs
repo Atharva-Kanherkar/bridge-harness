@@ -118,6 +118,26 @@ pub fn dispatch(
             let p: wire::GithubSessionPrsParams = decode(method, params)?;
             reply(api::github_session_prs(core, &p.session_id, p.refresh))
         }
+        MethodName::ListOutgoing => {
+            let p: wire::ListOutgoingParams = decode(method, params)?;
+            reply(api::list_outgoing(core, &p.session_id))
+        }
+        MethodName::UpdateOutgoing => {
+            let p: wire::UpdateOutgoingParams = decode(method, params)?;
+            reply(api::update_outgoing(core, &p.id, p.revision, p.body.as_deref(), p.apply_fixes, p.attachments.as_deref()))
+        }
+        MethodName::CopyOutgoing => {
+            let p: wire::CopyOutgoingParams = decode(method, params)?;
+            reply(api::copy_outgoing(core, &p.id, p.revision))
+        }
+        MethodName::ReadOutgoingAttachment => {
+            let p: wire::ReadOutgoingAttachmentParams = decode(method, params)?;
+            reply(api::read_outgoing_attachment(core, &p.id, p.index))
+        }
+        MethodName::DiscardOutgoing => {
+            let p: wire::DiscardOutgoingParams = decode(method, params)?;
+            reply(api::discard_outgoing(core, &p.id))
+        }
         MethodName::GithubAttachPr => {
             let p: wire::GithubAttachPrParams = decode(method, params)?;
             reply(api::github_attach_pr(core, &p.session_id, &p.reference))
@@ -276,7 +296,7 @@ pub fn dispatch(
         }
         MethodName::UpdateChatModel => {
             let p: wire::UpdateChatModelParams = decode(method, params)?;
-            reply(api::update_chat_model(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref()))
+            reply(api::update_chat_model_with_account(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref(), p.account.as_deref()))
         }
         MethodName::CarrySessionHandoff => {
             let p: wire::CarrySessionHandoffParams = decode(method, params)?;
@@ -430,6 +450,32 @@ pub fn dispatch(
             reply(api::stop_session(core, p.session_id))
         }
 
+        MethodName::ListAttention => {
+            let p: wire::ListAttentionParams = decode(method, params)?;
+            reply(api::list_attention(core, &p))
+        }
+        MethodName::DeliverQueuedInput => {
+            let p: wire::DeliverQueuedInputParams = decode(method, params)?;
+            reply(api::deliver_queued_input(core, &p))
+        }
+        MethodName::MarkAttentionSeen => {
+            let p: wire::MarkAttentionSeenParams = decode(method, params)?;
+            reply(api::mark_attention_seen(core, &p))
+        }
+        MethodName::UnreadSummary => reply(api::unread_summary(core)),
+        MethodName::Wait => {
+            // Long-lived: it holds this connection, never the database.
+            let p: wire::WaitParams = decode(method, params)?;
+            reply(api::wait_session(core, &p))
+        }
+        MethodName::Post => {
+            let p: wire::PostParams = decode(method, params)?;
+            reply(api::post_attention(core, &p))
+        }
+        MethodName::ReportPresence => {
+            let p: wire::ReportPresenceParams = decode(method, params)?;
+            reply(api::report_presence(core, &p))
+        }
         MethodName::ResolveApproval => {
             let p: wire::ResolveApprovalParams = decode(method, params)?;
             reply(api::resolve_approval(
@@ -575,6 +621,95 @@ pub fn dispatch(
             reply(api::delete_paths(core, &p))
         }
         MethodName::EmptyTrash => reply(api::empty_trash(core)),
+        MethodName::ListNotes => {
+            let p: wire::ListNotesParams = decode(method, params)?;
+            reply(api::list_notes(core, &p))
+        }
+        MethodName::ReadPage => {
+            let p: wire::ReadPageParams = decode(method, params)?;
+            reply(api::read_page(core, &p))
+        }
+        MethodName::CaptureNote => {
+            let p: wire::CaptureNoteParams = decode(method, params)?;
+            reply(api::capture_note(core, &p))
+        }
+        MethodName::CreatePage => {
+            let p: wire::CreatePageParams = decode(method, params)?;
+            reply(api::create_page(core, &p))
+        }
+        MethodName::EditPage => {
+            let p: wire::EditPageParams = decode(method, params)?;
+            reply(api::edit_page(core, &p))
+        }
+        MethodName::UpdateNote => {
+            let p: wire::UpdateNoteParams = decode(method, params)?;
+            reply(api::update_note(core, &p))
+        }
+        MethodName::DeleteNote => {
+            let p: wire::DeleteNoteParams = decode(method, params)?;
+            reply(api::delete_note(core, &p))
+        }
+        MethodName::CreateDatabase => {
+            let p: wire::CreateDatabaseParams = decode(method, params)?;
+            reply(api::create_database(core, &p))
+        }
+        MethodName::UpdateSchema => {
+            let p: wire::UpdateSchemaParams = decode(method, params)?;
+            reply(api::update_schema(core, &p))
+        }
+        MethodName::SaveView => {
+            let p: wire::SaveViewParams = decode(method, params)?;
+            reply(api::save_view(core, &p))
+        }
+        MethodName::DeleteView => {
+            let p: wire::DeleteViewParams = decode(method, params)?;
+            reply(api::delete_view(core, &p))
+        }
+        MethodName::QueryDatabase => {
+            let p: wire::QueryDatabaseParams = decode(method, params)?;
+            reply(api::query_database(core, &p))
+        }
+        MethodName::StructureNote => {
+            let p: wire::StructureNoteParams = decode(method, params)?;
+            reply(api::structure_note(core, &p))
+        }
+        MethodName::ExtractTasks => {
+            let p: wire::ExtractTasksParams = decode(method, params)?;
+            reply(api::extract_tasks(core, &p))
+        }
+        MethodName::SplitItem => {
+            let p: wire::SplitItemParams = decode(method, params)?;
+            reply(api::split_item(core, &p))
+        }
+        MethodName::PageHistory => {
+            let p: wire::PageHistoryParams = decode(method, params)?;
+            reply(api::page_history(core, &p))
+        }
+        MethodName::ReadVersion => {
+            let p: wire::ReadVersionParams = decode(method, params)?;
+            reply(api::read_version(core, &p))
+        }
+        MethodName::RestoreVersion => {
+            let p: wire::RestoreVersionParams = decode(method, params)?;
+            reply(api::restore_version(core, &p))
+        }
+        MethodName::PutAssetPart => {
+            let p: wire::PutAssetPartParams = decode(method, params)?;
+            reply(api::put_asset_part(core, &p))
+        }
+        MethodName::FinishAsset => {
+            let p: wire::FinishAssetParams = decode(method, params)?;
+            reply(api::finish_asset(core, &p))
+        }
+        MethodName::ReadAsset => {
+            let p: wire::ReadAssetParams = decode(method, params)?;
+            reply(api::read_asset(core, &p))
+        }
+        MethodName::SaveNotesSettings => {
+            let p: wire::SaveNotesSettingsParams = decode(method, params)?;
+            reply(api::save_notes_settings(core, &p))
+        }
+        MethodName::GetNotesSettings => reply(api::get_notes_settings(core)),
         MethodName::ArchiveChat => {
             let p: wire::ArchiveChatParams = decode(method, params)?;
             reply(api::archive_chat(core, &p.session_id))
@@ -756,7 +891,11 @@ pub fn dispatch(
         }
         MethodName::SetOpencodeProviderApiKey => {
             let p: wire::SetOpencodeProviderApiKeyParams = decode(method, params)?;
-            reply(api::set_opencode_provider_api_key(core, &p.provider_id, &p.api_key, p.directory))
+            reply(api::set_opencode_provider_api_key(core, &p.provider_id, &p.api_key, p.directory, p.account))
+        }
+        MethodName::SetAccountApiKey => {
+            let p: wire::SetAccountApiKeyParams = decode(method, params)?;
+            reply(api::set_account_api_key(core, &p.harness, &p.account, &p.api_key))
         }
         MethodName::RemoveOpencodeProviderAuth => {
             let p: wire::RemoveOpencodeProviderAuthParams = decode(method, params)?;
@@ -930,6 +1069,15 @@ pub fn dispatch(
             reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes, p.agent_vision, p.browser))
         }
         MethodName::ReadCloneSettings => reply(api::read_clone_settings(core)),
+        MethodName::ListApiKeys => reply(api::list_api_keys(core)),
+        MethodName::SaveApiKey => {
+            let p: wire::SaveApiKeyParams = decode(method, params)?;
+            reply(api::save_api_key(core, &p))
+        }
+        MethodName::ForgetApiKey => {
+            let p: wire::ForgetApiKeyParams = decode(method, params)?;
+            reply(api::forget_api_key(core, &p.reference))
+        }
         MethodName::WriteCloneSettings => {
             let p: wire::WriteCloneSettingsParams = decode(method, params)?;
             reply(api::write_clone_settings(core, &p.settings))
@@ -1400,6 +1548,124 @@ mod tests {
         // rather than something quietly ignored.
         let error = dispatch(&core, MethodName::GetWorkBoard, Some(json!({})))
             .expect_err("params must be refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn attention_ledger_reads_and_marks_seen_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let empty = dispatch(&core, MethodName::ListAttention, None).unwrap();
+        assert_eq!(empty, json!({"items": [], "latestSequence": 0}));
+        let nothing_unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(nothing_unread, json!({"total": 0, "needsYou": 0, "byChat": {}, "bySession": {}}));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('s','claude','Chat','ready','direct','Fix login')",
+                [],
+            )
+            .unwrap();
+            let mut ended = bridge_core::agent::NormalizedEvent::new("turn.completed");
+            ended.status = Some("completed".into());
+            bridge_core::store::session_event(&db, "s", &ended, &json!({})).unwrap();
+        }
+        let page = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
+        assert_eq!(page["latestSequence"], json!(1));
+        assert_eq!(page["items"][0]["kind"], json!("finished"));
+        assert_eq!(page["items"][0]["severity"], json!("informational"));
+        assert_eq!(page["items"][0]["body"], json!("Fix login · Claude finished its turn"));
+        let unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(unread, json!({"total": 1, "needsYou": 0, "byChat": {"s": "finished"}, "bySession": {"s": "finished"}}));
+
+        let seen = dispatch(&core, MethodName::MarkAttentionSeen, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(seen, json!({"updated": 1}));
+        let unseen = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
+        assert_eq!(unseen["items"], json!([]));
+        assert_eq!(dispatch(&core, MethodName::UnreadSummary, None).unwrap()["total"], json!(0));
+
+        let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        let error = dispatch(&core, MethodName::ListAttention, Some(json!({"cursor": 1}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+
+        let nothing = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(nothing, json!({"disposition": "nothingQueued"}), "nothing queued, nothing resumed");
+        let error = dispatch(&core, MethodName::DeliverQueuedInput, Some(json!({"sessionId": "s", "force": true})))
+            .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn a_wait_returns_when_another_thread_ends_the_turn() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title,active_turn_id) VALUES('s','claude','Chat','working','direct','Fix login','t1')", [])
+            .unwrap();
+        let writer = {
+            let core = core.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let db = core.db.lock().unwrap();
+                db.execute("UPDATE sessions SET status='ready', active_turn_id=NULL WHERE id='s'", []).unwrap();
+                let mut ended = bridge_core::agent::NormalizedEvent::new("turn.completed");
+                ended.status = Some("completed".into());
+                bridge_core::store::session_event(&db, "s", &ended, &json!({})).unwrap();
+            })
+        };
+        let result = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": ["finished", "needsYou"], "timeoutMs": 5000}))).unwrap();
+        writer.join().unwrap();
+        assert_eq!(result["state"], json!("finished"));
+        assert_eq!(result["matched"], json!(true));
+        assert_eq!(result["item"]["kind"], json!("finished"));
+        let error = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": []}))).expect_err("an empty until is refused");
+        assert_eq!(error.code, ErrorCode::Invalid.code());
+        let error = dispatch(&core, MethodName::Wait, Some(json!({"sessionId": "s", "until": ["idle"], "turnId": "t1"}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn an_agent_post_lands_in_the_ledger_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('s','claude','Chat','ready','direct','Fix login')", [])
+            .unwrap();
+        let posted = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "Which database?", "severity": "actionable"}))).unwrap();
+        assert_eq!(posted, json!({"shown": true, "reason": "shown"}));
+        let page = dispatch(&core, MethodName::ListAttention, None).unwrap();
+        assert_eq!(page["items"][0]["kind"], json!("posted"));
+        assert_eq!(page["items"][0]["severity"], json!("actionable"));
+        assert_eq!(page["items"][0]["title"], json!("Which database?"));
+        let error = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "  "}))).expect_err("an empty title is refused");
+        assert_eq!(error.code, ErrorCode::Invalid.code());
+        let error = dispatch(&core, MethodName::Post, Some(json!({"sessionId": "s", "title": "x", "sound": "request"}))).expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn presence_names_one_banner_owner_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let report = |client: &str, kind: &str, focused: bool| {
+            dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": client, "clientKind": kind, "focused": focused}))).unwrap()
+        };
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));
+        assert_eq!(report("other", "desktop", false), json!({"bannerOwner": false}));
+        assert_eq!(report("web", "web", true), json!({"bannerOwner": true}));
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": false}), "the focused web client owns");
+        let capable = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "canPostBanners": true, "focused": false}))).unwrap();
+        assert_eq!(capable, json!({"bannerOwner": true}), "the tab can post banners and was focused last");
+        let gone = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "web", "clientKind": "web", "focused": false, "gone": true}))).unwrap();
+        assert_eq!(gone, json!({"bannerOwner": false}));
+        assert_eq!(report("desk", "desktop", false), json!({"bannerOwner": true}));
+        let error = dispatch(&core, MethodName::ReportPresence, Some(json!({"clientId": "x", "clientKind": "desktop", "focused": true, "visibleSessionId": "s"})))
+            .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

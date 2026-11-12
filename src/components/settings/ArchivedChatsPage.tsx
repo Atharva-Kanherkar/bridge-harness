@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Archive, ArrowLeft, ArchiveRestore } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { ArchivedChat } from "../../protocol/generated/protocol";
@@ -96,7 +97,7 @@ export function ArchivedChatsPage() {
       <SettingsGroup label={viewing?.title} note="Read-only transcript. Reasoning, tools and interactions use the same conversation view; historical actions are disabled.">
         <div className="relative h-[60dvh] min-h-64">
           {loading && events.length === 0
-            ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading conversation...</p>
+            ? <SkeletonRegion label="Loading conversation" className="flex flex-col gap-5 p-4"><Skeleton className="ml-auto h-10 w-2/5 rounded-2xl" /><SkeletonText index={1} /><SkeletonText index={2} lines={2} /></SkeletonRegion>
             : <AgentConversation key={viewing?.id} readOnly events={events} onResolve={() => undefined} />}
         </div>
       </SettingsGroup>
@@ -106,7 +107,7 @@ export function ArchivedChatsPage() {
       </div>
     </> : <>
       <input type="search" aria-label="Search archived chats" placeholder="Search by chat or project name" value={query} onChange={event => { setQuery(event.target.value); setOffset(0); }} className="h-10 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-ring" />
-      {loading ? <p role="status" className="text-sm text-muted-foreground">Loading archived chats...</p> : <SettingsGroup label="Conversations">
+      {loading ? <SkeletonRows label="Loading archived chats" rows={4} trailing /> : <SettingsGroup label="Conversations">
         {chats.length === 0 ? <div className="p-8 text-center text-muted-foreground"><Archive size={24} className="mx-auto mb-3" /><p className="text-sm">{query ? "No archived chats match your search." : "No archived chats yet."}</p></div> : <ul className="divide-y divide-border">
           {chats.map(chat => <li key={chat.id} className="flex flex-wrap items-center gap-3 p-4">
             <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { setSelected(chat); readConversation(); setChildrenOffset(0); setChildren([]); setMoreChildren(false); }}>

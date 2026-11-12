@@ -2,7 +2,7 @@ import { defaultsFromSettings, WORKER_EFFORTS } from "./chatDefaults";
 import { useResolvedChatDraft } from "./useChatDefaults";
 import { ChatOptionsControl } from "./components/ChatOptionsControl";
 import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings } from "./protocol/generated/protocol";
-import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, type SignInRetry } from "./providerLogin";
+import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
@@ -12,21 +12,22 @@ import { appendFileMention, applyFileMention as insertFileMention, fileMentionQu
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { needsYouCount, workflowNotification } from "./components/workflows/notify";
-import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
+import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
-import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
+import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
-import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, restoreFailedTurnAttachments, restoreFailedTurnText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
+import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -51,8 +52,8 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
-import { GitplaceScreen } from "./components/GitplaceScreen";
-import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
+import { PullsScreen } from "./components/PullsScreen";
+import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -61,8 +62,14 @@ import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { useAttentionSettings } from "./attentionSettings";
+import { playAttentionSound } from "./attentionSound";
+import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
+import { useAttentionFeed } from "./useAttentionFeed";
+import { useBannerOwner } from "./useBannerOwner";
+import { useUnreadSummary } from "./useUnreadSummary";
+import { useWindowFocused } from "./useWindowFocused";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
-import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
@@ -94,7 +101,7 @@ import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { ForkDialog } from "./components/ForkDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
-import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
+import { MemoryDialog } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { ProviderSignInDialog } from "./components/ProviderSignInDialog";
@@ -103,12 +110,13 @@ import { ContextRing } from "./components/ContextRing";
 import { ContextLensDialog } from "./components/ContextLensDialog";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
+import { accountChoices, type AccountChoice } from "./providerAccounts";
 import { useComposerSuggestion } from "./useComposerSuggestion";
 import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
 import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
-import { projectSessionConversation, reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
-import { resolveProfileOption } from "./modelProfiles";
+import { reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
+import { projectSessionConversationCached } from "./transcript/projectionCache";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
@@ -117,15 +125,18 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
-import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { readLastDraftModel, writeLastDraftModel, type LastDraftModel } from "./lastDraftModel";
+import { resolveDraftHarnessModel as resolveNewChatModel } from "./newChatModel";
+import { readStorageChatHistory, rememberStorageChat, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE } from "./storageChat";
+import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
+import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
-import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
-import { readWireKind } from "./transcript/wire";
-import { isMacPlatform } from "./lib/platform";
+import { WEB_NOTIFICATION_OPEN } from "./webNotify";
+import { ACTION_EVENT, parseNotificationAction } from "./nativeNotify";
 import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -149,6 +160,8 @@ import { useBridgeServerState } from "./serverState";
 const WorkflowsScreen = lazy(() => import("./components/WorkflowsScreen").then(module => ({ default: module.WorkflowsScreen })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
+const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
+import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -265,6 +278,13 @@ function AppContent() {
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
+  // Bumped by `toggle-notes-list` while Notes is open.
+  const [notesListToggle, setNotesListToggle] = useState(0);
+  // Bumped by `capture-note`: Notes opens with its capture box focused.
+  const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
+  const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
+  const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
@@ -295,6 +315,9 @@ function AppContent() {
   const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
   const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
+  const [agentShortcutTargets, setAgentShortcutTargets] = useState<AgentDefinition[]>([]);
+  // Extra Claude Code and Codex sign-ins, offered as their own picker groups.
+  const [providerAccounts, setProviderAccounts] = useState<AccountChoice[]>([]);
   const [busy, setBusy] = useState(false);
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [pinnedAgents, togglePinnedAgent] = usePinnedAgents();
@@ -456,8 +479,12 @@ function AppContent() {
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
-  const [storageChatId, setStorageChatId] = useState(readStorageChatId);
+  // The rail opens blank; earlier storage chats stay one click away in Recent.
+  const [storageChatId, setStorageChatId] = useState<string | null>(null);
+  const [storageChatHistory, setStorageChatHistory] = useState(readStorageChatHistory);
   const [storageChatStarting, setStorageChatStarting] = useState(false);
+  const [notesChatId, setNotesChatId] = useState(readNotesChatId);
+  const [notesChatStarting, setNotesChatStarting] = useState(false);
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -619,8 +646,10 @@ function AppContent() {
     // publishes StateChanged precisely so the badge repaints, and another window
     // flipping the switch has to reach this one too.
     setPermissionPolicy(config.permissionPolicy);
+    setAgentShortcutTargets(config.agents);
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
+    setProviderAccounts(accountChoices(config.harnesses));
   }), []);
   // The first reload can fail because a browser tab's daemon was not up yet.
   // When it attaches, load again and drop an error that only said so.
@@ -731,20 +760,19 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
-  // On Linux a waiting session's notification can answer its approval in
-  // place; find which approval, if any, before posting.
-  const notifyWithActions = useCallback(async (kind: string, sessionId: string, headline: string, detail: string) => {
-    let approvalEventId: number | null = null;
-    if (kind === "needs-you" && !isMacPlatform()) {
-      approvalEventId = await bridgeApi.replaySessionEvents(sessionId, 0, 200, true)
-        .then(events => pendingApprovalEventId(events.map(event => ({ sequence: event.sequence, kind: readWireKind(event.kind), data: event.data }))))
-        .catch(() => null);
-    }
-    await notifyAttention(headline, detail, { sessionId, approvalEventId });
+  // A browser notification clicked (web client): open the chat it was about.
+  useEffect(() => {
+    const open = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: unknown }>).detail?.sessionId;
+      if (typeof sessionId === "string" && sessionId) openSessionRef.current(sessionId);
+    };
+    window.addEventListener(WEB_NOTIFICATION_OPEN, open);
+    return () => window.removeEventListener(WEB_NOTIFICATION_OPEN, open);
   }, []);
   // A notification button clicked: resolve through the in-app card's path.
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
+    // Linux (notify-rust) and macOS (Notification Center) both report clicks.
+    if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void import("@tauri-apps/api/event").then(({ listen }) => listen(ACTION_EVENT, async event => {
@@ -764,36 +792,68 @@ function AppContent() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [reload]);
-  // Attention notifications: diff every `state.sessions` refresh for status
-  // transitions across visible sessions (hidden kinds filtered inside
-  // `diffAttentionEvents`), not just the open one, so a background chat that
-  // starts waiting on the human still surfaces a notification.
-  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
-  // banner on Bridge not being focused.
+  // Attention notifications come from the core ledger: core decides what a
+  // person should know about (a worker finishing is its orchestrator's
+  // business; a worker asking for approval is the person's), and the feed
+  // hands over each new row once. `decide` turns it into a toast, an OS
+  // banner, or nothing: nothing for the chat on screen in a focused window,
+  // and a banner only while Bridge is in the background. On Linux the row's
+  // approval id lets the banner answer it in place.
   const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
-  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  const attentionSessionsRef = useRef<Session[]>(state.sessions);
+  attentionSessionsRef.current = state.sessions;
+  const presenceRef = useRef<Presence>({ focused: false, onScreen: new Set() });
+  const attentionSettings = useAttentionSettings();
+  const attentionSettingsRef = useRef(attentionSettings);
+  attentionSettingsRef.current = attentionSettings;
+  const showAttention = useCallback((item: AttentionItem) => {
+    const sessionId = item.sessionId;
+    const decision = decide(item, presenceRef.current, attentionSettingsRef.current);
+    if (!sessionId || !decision) return;
+    const copy = attentionCopy(item, attentionSessionsRef.current.find(session => session.id === sessionId));
+    const toast: AttentionToast = {
+      key: attentionToastKey(item),
+      sessionId,
+      copy,
+      firedAt: Date.now(),
+      durationMs: decision.durationMs,
+      ...(item.kind === "escalation" ? { actionLabel: "Deliver now" } : {}),
+    };
+    // Newest per chat wins, like the ledger itself.
+    if (decision.toast) setAttentionToasts(current => [...current.filter(existing => existing.sessionId !== sessionId), toast].slice(-TOAST_QUEUE_MAX));
+    if (decision.banner) void notifyAttention(copy.headline, copy.detail, { sessionId, approvalEventId: item.approvalEventId ?? null });
+    if (decision.sound) playAttentionSound(item.kind, item.severity);
+  }, []);
+  useAttentionFeed(showAttention);
+  // Opening a chat is seeing it, on every client. Keyed on the view too: the
+  // selection survives a trip to Memory or Settings, and coming back to the
+  // chat is seeing what landed meanwhile. `openSession` also stamps directly,
+  // for an open that changes neither.
   useEffect(() => {
-    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
-    previousAttentionSessionsRef.current = state.sessions;
-    if (!events.length) return;
-    const nextToasts: AttentionToast[] = [];
-    for (const event of events) {
-      const copy = attentionCopy(event);
-      const key = attentionToastKey(event);
-      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
-      void notifyWithActions(event.kind, event.session.id, copy.headline, copy.detail);
-    }
-    setAttentionToasts(current => {
-      // A chat can revisit the same key (waiting → working → waiting) before
-      // its first card's TTL elapses. Replace rather than skip so the card
-      // reflects the latest event and restarts its countdown.
-      let merged = current;
-      for (const toast of nextToasts) {
-        merged = [...merged.filter(item => item.key !== toast.key), toast];
-      }
-      return merged.slice(-3);
-    });
-  }, [state.sessions]);
+    if (selectedSessionId && view === "workspace") void bridgeApi.markAttentionSeen(selectedSessionId).catch(() => undefined);
+  }, [selectedSessionId, view]);
+  // What is still unread: the sidebar dots and the dock badge. Keyed on the
+  // session ids too, because archiving a chat changes the count without
+  // moving the ledger.
+  const sessionIdsKey = useMemo(() => state.sessions.map(item => item.id).sort().join(","), [state.sessions]);
+  const unread = useUnreadSummary(sessionIdsKey);
+  // Keyed on needsYou too: the native menu bar wakes on this event and words
+  // its row from it, so a finished chat that starts waiting at the same total
+  // must still be sent. The Dock just sets the same count again.
+  useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
+  // The chat on screen in a focused window never stays unread: a turn that
+  // ends while you watch, or one that ended while Bridge was in the
+  // background, is seen once you are looking at it.
+  const windowFocused = useWindowFocused();
+  const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
+  const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  // Core names one client to post OS banners, so a second client on the same
+  // daemon does not raise a second banner for the same event.
+  const bannerOwner = useBannerOwner(windowFocused);
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []), bannerOwner };
+  useEffect(() => {
+    if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
+  }, [onScreenUnread, onScreenSessionId, unread]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -804,6 +864,16 @@ function AppContent() {
   }, [selectedSessionId, view, paradigm]);
   useEffect(() => {
     if (view !== "memory") setMemoryDraft(null);
+  }, [view]);
+  // Read each time Notes opens, so a default changed in Settings is the one
+  // the pickers start from.
+  useEffect(() => {
+    if (view !== "notes") return;
+    let current = true;
+    bridgeApi.getChatDefaults()
+      .then(defaults => { if (current) setNotesChatDefault(defaults.application.defaults.model?.harness ?? null); })
+      .catch(() => { if (current) setNotesChatDefault(null); });
+    return () => { current = false; };
   }, [view]);
 
   // Re-applies the remembered zoom level and answers pinch gestures. The chords
@@ -1103,10 +1173,18 @@ function AppContent() {
     openGithubPane(choice.link.view);
   }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
 
-  useEffect(() => {
-    setInternalLinkRouter(routeGithubLink);
-    return () => setInternalLinkRouter(undefined);
+  const routeInternalLink = useCallback((url: string): boolean | Promise<boolean> => {
+    const noteId = parseNoteLink(url);
+    if (!noteId) return routeGithubLink(url);
+    setView("notes");
+    setNoteOpenRequest(current => ({ id: noteId, nonce: (current?.nonce ?? 0) + 1 }));
+    return true;
   }, [routeGithubLink]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeInternalLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeInternalLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -1204,13 +1282,13 @@ function AppContent() {
   /** Jump-to-diff from a review comment: open the editor at the commented
    * file/line. When the PR head branch is not what this workspace has checked
    * out, the file still opens (read it, don't edit it) with a hint saying so. */
-  /** Gitplace has no chat of its own: open the newest chat in the comment's
+  /** Pulls has no chat of its own: open the newest chat in the comment's
    * workspace and jump there, or start one when the workspace has none. */
-  function jumpFromGitplace(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
+  function jumpFromPulls(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
     const chat = topSessions
       .filter(candidate => candidate.workspaceId === workspaceId)
       .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
-    setPendingGitplaceJump({ workspaceId, path, line, headBranch });
+    setPendingPullsJump({ workspaceId, path, line, headBranch });
     if (chat) {
       openSession(chat.id);
       return;
@@ -1251,12 +1329,14 @@ function AppContent() {
   );
   const storageSession = useMemo(() => storageChatId ? state.sessions.find(candidate => candidate.id === storageChatId) : undefined, [storageChatId, state.sessions]);
   const storagePending = useMemo(() => pending.filter(item => item.sessionId === storageChatId), [pending, storageChatId]);
+  const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
+  const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
     if (pendingForSession.length > 0) return true;
-    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    const durable = forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
     return durable.some(item => item.type === "message" && item.role === "user");
   }, [forest, pendingForSession.length, session]);
   // Three signals, oldest to newest: the provider acknowledged a turn, Bridge
@@ -1275,10 +1355,54 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  // The harness/model the last new chat was confirmed on. Read once at mount and
+  // updated through `rememberDraftChoice`, so a new chat paints the real model
+  // before provider catalogs finish discovering instead of a fallback guess.
+  const [lastDraftChoice, setLastDraftChoice] = useState<LastDraftModel | null>(() => readLastDraftModel());
+  const lastDraftChoiceRef = useRef(lastDraftChoice);
+  lastDraftChoiceRef.current = lastDraftChoice;
+  const rememberDraftChoice = useCallback((harness: Harness, model: string | null, label?: string | null) => {
+    const previous = lastDraftChoiceRef.current;
+    const next: LastDraftModel = {
+      harness,
+      model,
+      // Keep the remembered label while the model is unchanged: a catalog that
+      // has not loaded yet must not erase the name the pill is showing.
+      label: label ?? (previous?.harness === harness && previous?.model === model ? previous.label ?? null : null),
+    };
+    if (previous && previous.harness === next.harness && previous.model === next.model && previous.label === next.label) return;
+    writeLastDraftModel(next);
+    lastDraftChoiceRef.current = next;
+    setLastDraftChoice(next);
+  }, []);
+  const catalogLabelFor = useCallback((harness: Harness, model: string | null): string | null =>
+    model ? adapters.find(adapter => adapter.id === harness)?.models.find(option => option.id === model)?.label ?? null : null,
+  [adapters]);
   const resolvedWelcomeWorkspaceId = newChatDraft
     ? newChatDraft.workspaceId
     : resolveNewChatWorkspaceId({ activeWorkspaceId: welcomeWorkspaceId, lastWorkspaceId: readLastWorkspaceId(), workspaces: state.workspaces });
   const draftSettings = useResolvedChatDraft(resolvedWelcomeWorkspaceId, newChatDraft?.overrides ?? {}, adaptersReady && !session && view === "workspace");
+  // Every settled resolution is what the next new chat should start on, and it
+  // carries the catalog label the pill can show before discovery lands.
+  const resolvedDraftHarness = draftSettings.settings?.model.harness as Harness | undefined;
+  const resolvedDraftModel = draftSettings.settings?.model.model ?? null;
+  useEffect(() => {
+    if (!resolvedDraftHarness) return;
+    // A draft carrying an explicit pick is a one-off override, not a default:
+    // remembering it would make the next chat promise a model the host will not
+    // create. Only the host's own answer predicts the next answer.
+    if (newChatDraft?.overrides?.model) return;
+    rememberDraftChoice(resolvedDraftHarness, resolvedDraftModel, catalogLabelFor(resolvedDraftHarness, resolvedDraftModel));
+  }, [resolvedDraftHarness, resolvedDraftModel, catalogLabelFor, rememberDraftChoice, newChatDraft?.overrides?.model]);
+  // What the Welcome pill paints before the host answers: the last confirmed
+  // choice, with the label it was confirmed under. When there is nothing
+  // confirmed yet the pill says it is loading instead of naming a guess.
+  const draftFallback = resolveDraftHarnessModel();
+  const welcomeHarness = resolvedDraftHarness ?? draftFallback.harness;
+  const welcomeModel = resolvedDraftHarness ? resolvedDraftModel : draftFallback.model;
+  const welcomeKnownLabel = lastDraftChoice && lastDraftChoice.harness === welcomeHarness && lastDraftChoice.model === welcomeModel
+    ? lastDraftChoice.label ?? null
+    : null;
   const [chatConfiguration, setChatConfiguration] = useState<{sessionId:string; value:ChatSessionSettings}>();
   const currentChatConfiguration = chatConfiguration?.sessionId === session?.id ? chatConfiguration?.value : undefined;
   useEffect(() => {
@@ -1292,18 +1416,18 @@ function AppContent() {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
   }
 
-  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // A review-comment jump from Pulls: the file lives in a worktree, so the
   // jump waits until a chat in that workspace is the one on screen, through a
   // draft's first message if it has to. Declared after the workspace-change
   // reset of the code reveal, so it runs after it.
-  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<GitplaceJump>();
+  const [pendingPullsJump, setPendingPullsJump] = useState<PullsJump>();
   useEffect(() => {
-    if (!pendingGitplaceJump) return;
-    const step = gitplaceJumpStep(pendingGitplaceJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
+    if (!pendingPullsJump) return;
+    const step = pullsJumpStep(pendingPullsJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
     if (step === "wait") return;
-    if (step === "jump") jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
-    setPendingGitplaceJump(undefined);
-  }, [pendingGitplaceJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
+    if (step === "jump") jumpToReviewComment(pendingPullsJump.path, pendingPullsJump.line, pendingPullsJump.headBranch);
+    setPendingPullsJump(undefined);
+  }, [pendingPullsJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -1627,7 +1751,7 @@ function AppContent() {
   useEffect(() => {
     setPending(current => {
       if (!current.length) return current;
-      const durableRows = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+      const durableRows = forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
       return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableRows });
     });
   }, [agentEvents, forest, session?.id]);
@@ -1664,6 +1788,7 @@ function AppContent() {
   // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
+    void bridgeApi.markAttentionSeen(id).catch(() => undefined);
     setView("workspace");
     setParadigm("single");
     setNewChatDraft(null);
@@ -1882,22 +2007,17 @@ function AppContent() {
     }
   }, [refetchWorkBoard]);
   // Preserve the current direct chat's harness/model so switching to OpenCode also
-  // changes the next-chat default; otherwise fall back to the configured standard
-  // profile. Snapshotted at draft-open time, while the session being left is still
-  // selected, so the carry-over survives deselecting it.
+  // changes the next-chat default; otherwise the last confirmed choice, then the
+  // configured standard profile. Snapshotted at draft-open time, while the session
+  // being left is still selected, so the carry-over survives deselecting it.
   function resolveDraftHarnessModel(harnessOverride?: import("./types").AdapterDescriptor): { harness: Harness; model: string | null } {
-    const currentAdapter = session?.kind === "direct"
-      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
-      : undefined;
-    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-    const harness = (preferred?.id as Harness) ?? "codex";
-    const model = harnessOverride
-      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
-      : currentAdapter
-      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
-      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
-    return { harness, model };
+    return resolveNewChatModel({
+      adapters,
+      setup: modelSetup,
+      session,
+      harnessOverride,
+      stored: lastDraftChoiceRef.current,
+    });
   }
 
   // The single create-on-submit path (#350). Turns a draft into a real session —
@@ -1926,7 +2046,8 @@ function AppContent() {
         const reviewed = draftSettings.settings?.workspaceId === draft.workspaceId ? draftSettings.settings : undefined;
         const settings = await bridgeApi.resolveChatSettings({workspaceId:draft.workspaceId,overrides,expectedRevision:reviewed?.revision});
         const agent = settings.target.kind === "agent" ? settings.target : undefined;
-        if ((agent || parseAgentMention(text)) && (initialAttachments.length > 0 || !text)) {
+        const mention = configuredAgentMention(text, agentShortcutTargets);
+        if ((agent || mention) && (initialAttachments.length > 0 || !text)) {
           throw new Error("Agents need a text objective and workspace file references. Remove image attachments before sending to an agent.");
         }
         const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null});
@@ -1934,7 +2055,7 @@ function AppContent() {
         const created = next.sessions.find(item => item.id === result.sessionId);
         if (!created) throw new Error("The host did not return the created chat");
         setChatConfiguration({sessionId:result.sessionId,value:result.configuration});
-        const firstMessage = agent && !parseAgentMention(text) ? `#${agent.agentId} ${text}` : text;
+        const firstMessage = agent && !mention ? `#${agent.agentId} ${text}` : text;
         // Carry before selecting: the welcome-message effect fires on session-id
         // change, and the brief must be in the forest before the first cold start
         // compiles its prompt.
@@ -1981,6 +2102,24 @@ function AppContent() {
     return undefined;
   }
 
+  // Start a task (or any page) from Notes: a direct chat with no project, or a
+  // chat in the chosen project, on the chosen harness, with the brief as its
+  // first message. Notes stays open; the row then offers Open chat.
+  async function startChatFromNote({ message, workspaceId, harness }: NoteChatRequest): Promise<string | undefined> {
+    const adapter = adapters.find(candidate => candidate.id === harness);
+    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
+    const draft: NewChatDraft = workspaceId
+      ? { workspaceId, overrides: { model } }
+      // A direct chat has no repository to branch, whatever the saved defaults
+      // say about worktrees.
+      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false } };
+    return submitNewChatDraft(draft, message);
+  }
+  // The harness every Notes picker preselects: the saved application chat
+  // default (Settings, Chat defaults), the same one the core's note passes
+  // fall back to. With none saved, each picker starts on its first choice.
+  const notesDefaultHarness = adapters.some(adapter => adapter.available && adapter.id === notesChatDefault) ? notesChatDefault : null;
+
   // The Storage page's standing chat: reuse it while it lives, else start a
   // direct chat (no project, a private scratch dir) and remember it.
   async function askStorage(prompt: string): Promise<void> {
@@ -1996,7 +2135,7 @@ function AppContent() {
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the storage chat but did not return its session");
       setState(next);
-      writeStorageChatId(created.id);
+      setStorageChatHistory(rememberStorageChat(created.id));
       setStorageChatId(created.id);
       await deliverPrompt(created, prompt);
     } finally {
@@ -2004,30 +2143,50 @@ function AppContent() {
       setStorageChatStarting(false);
     }
   }
+  const storageRecent = storageChatHistory
+    .map(id => state.sessions.find(candidate => candidate.id === id))
+    .filter((candidate): candidate is Session => !!candidate && candidate.id !== storageChatId)
+    .slice(0, 5)
+    .map(candidate => ({ id: candidate.id, title: candidate.title || candidate.label, at: candidate.startedAt ?? "" }));
+  const storageWorking = !!storageSession && (!!storageSession.activeTurnId || storageSession.status === "working");
   const storageCopilot: StorageCopilotHost = {
     ask: prompt => void askStorage(prompt).catch(e => setError(errorMessage(e))),
+    // A visit starts on a blank rail, unless a reply is still coming in.
+    onVisit: () => { if (!storageWorking) setStorageChatId(null); },
     render: (brief, selectedCount) => <StorageCopilot
       selectedCount={selectedCount}
       starting={storageChatStarting}
+      recent={storageRecent}
+      onOpenRecent={setStorageChatId}
       onAsk={question => void askStorage(brief(question)).catch(e => setError(errorMessage(e)))}
       chat={storageSession && <AsideChat
         docked
         tag="storage"
+        placeholder="Ask about your storage…"
+        headerActions={<button
+          type="button"
+          onClick={() => setStorageChatId(null)}
+          disabled={storageWorking}
+          title="New chat"
+          aria-label="New storage chat"
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+        ><SquarePen size={14} aria-hidden="true" /></button>}
         session={storageSession}
         adapters={adapters}
+        accounts={providerAccounts}
         events={agentEvents}
         pendingMessages={storagePending}
         queuedFollowUpCount={queuedFollowUps(storageSession.id, state.events).length}
-        working={!!storageSession.activeTurnId || storageSession.status === "working"}
+        working={storageWorking}
         suggestionSettings={suggestionSettings}
         modelSwitch={modelSwitch?.sessionId === storageSession.id ? modelSwitch : null}
         onSend={(text, attachments) => deliverPrompt(storageSession, brief(text), attachments)}
         onChangeEffort={async effort => {
           setState(await bridgeApi.updateChatModel(storageSession.id, storageSession.harness, storageSession.model ?? null, effort));
         }}
-        onChangeModel={async (harness, model) => {
+        onChangeModel={async (harness, model, account) => {
           setModelSwitch({ sessionId: storageSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
-          try { setState(await bridgeApi.updateChatModel(storageSession.id, harness, model)); }
+          try { setState(await bridgeApi.updateChatModel(storageSession.id, harness, model, undefined, account ?? harness)); }
           finally { setModelSwitch(null); }
         }}
         onResolve={async (eventId, decision, optionId) => {
@@ -2043,6 +2202,75 @@ function AppContent() {
         onRetryCompaction={() => retryCompaction(storageSession.id)}
         onPromote={() => openSession(storageSession.id)}
       />}
+    />,
+  };
+
+  // The Notes page's standing chat, the same way: reuse it while it lives,
+  // else start a direct `notes` purpose chat and remember it.
+  // Resolves to whether the prompt reached the chat, so the panel knows the
+  // page it carried has been seen.
+  async function askNotes(prompt: string): Promise<boolean> {
+    if (notesSession) { await deliverPrompt(notesSession, prompt); return true; }
+    if (newChatPendingRef.current) return false;
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return false; }
+    newChatPendingRef.current = true;
+    setNotesChatStarting(true);
+    setError(undefined);
+    try {
+      const { harness, model } = resolveDraftHarnessModel();
+      const next = await bridgeApi.createChat(harness, model, NOTES_CHAT_TITLE, NOTES_CHAT_PURPOSE);
+      const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
+      if (!created) throw new Error("Bridge created the notes chat but did not return its session");
+      setState(next);
+      writeNotesChatId(created.id);
+      setNotesChatId(created.id);
+      await deliverPrompt(created, prompt);
+      return true;
+    } finally {
+      newChatPendingRef.current = false;
+      setNotesChatStarting(false);
+    }
+  }
+  const notesCopilot: NotesCopilotHost = {
+    render: (page, onClose) => <NotesCopilot
+      page={page}
+      onClose={onClose}
+      projectName={page?.note.workspaceId ? state.workspaces.find(workspace => workspace.id === page.note.workspaceId)?.title : null}
+      starting={notesChatStarting}
+      onAsk={message => askNotes(message).catch(e => { setError(errorMessage(e)); return false; })}
+      renderChat={notesSession && (send => <AsideChat
+        docked
+        tag="notes"
+        session={notesSession}
+        adapters={adapters}
+        events={agentEvents}
+        pendingMessages={notesPending}
+        queuedFollowUpCount={queuedFollowUps(notesSession.id, state.events).length}
+        working={!!notesSession.activeTurnId || notesSession.status === "working"}
+        suggestionSettings={suggestionSettings}
+        modelSwitch={modelSwitch?.sessionId === notesSession.id ? modelSwitch : null}
+        onSend={(text, attachments) => send(text, message => deliverPrompt(notesSession, message, attachments))}
+        onChangeEffort={async effort => {
+          setState(await bridgeApi.updateChatModel(notesSession.id, notesSession.harness, notesSession.model ?? null, effort));
+        }}
+        onChangeModel={async (harness, model) => {
+          setModelSwitch({ sessionId: notesSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
+          try { setState(await bridgeApi.updateChatModel(notesSession.id, harness, model)); }
+          finally { setModelSwitch(null); }
+        }}
+        onResolve={async (eventId, decision, optionId) => {
+          const result = await bridgeApi.resolveApproval(notesSession.id, eventId, decision, optionId);
+          await reload();
+          return result;
+        }}
+        onAnswerQuestion={async (eventId, action, answers) => {
+          const result = await bridgeApi.resolveQuestion(notesSession.id, eventId, action, answers);
+          await reload();
+          return result;
+        }}
+        onRetryCompaction={() => retryCompaction(notesSession.id)}
+        onPromote={() => openSession(notesSession.id)}
+      />)}
     />,
   };
 
@@ -2355,7 +2583,7 @@ function AppContent() {
       if (!alreadyLocked) newChatPendingRef.current = false;
     }
   }
-  async function changeChatModel(harness: Harness, model: string | null) {
+  async function changeChatModel(harness: Harness, model: string | null, account: string | null) {
     if (!session) return;
     setBusy(true); setError(undefined);
     // The switch can take seconds (the outgoing provider may be asked for a
@@ -2364,7 +2592,8 @@ function AppContent() {
     // A null model means the adapter's default; "Switching to Automatic…"
     // names nothing, so the harness carries the label instead.
     setModelSwitch({ sessionId: session.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
-    try { setState(await bridgeApi.updateChatModel(session.id, harness, model)); }
+    // Explicit either way: the harness id is the user's own login.
+    try { setState(await bridgeApi.updateChatModel(session.id, harness, model, undefined, account ?? harness)); }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); setModelSwitch(null); }
   }
@@ -2436,9 +2665,8 @@ function AppContent() {
   // prefix skips this session entirely — see `openHarnessShortcut`.
   // The composer's paste policy: clipboard images become removable preview
   // attachments (and the paste is intercepted before text insertion); every
-  // other paste — text, file-less markup — falls through untouched. Sized
-  // before decode: a silent multi-second paste for a huge screenshot reads as
-  // broken, so the user hears why instead.
+  // other paste — text, file-less markup — falls through untouched. Images
+  // too large for a provider are resized on the way in, never refused.
   const handleComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = event.clipboardData?.items;
     if (!items) return;
@@ -2448,14 +2676,9 @@ function AppContent() {
     attachComposerFiles(files);
   };
   const attachComposerFiles = (files: Array<{ type: string; size?: number }>) => {
-    if (files.some(isPasteTooLarge)) {
-      setError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
-      return;
-    }
     void Promise.all(files.map(async file => ({
       id: crypto.randomUUID(),
-      mediaType: mediaTypeOf(file),
-      dataUri: await readAsDataUri(file),
+      ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setError(errorMessage(error)));
@@ -2469,7 +2692,7 @@ function AppContent() {
   function sendWatermark(sessionId: string, text: string): number | undefined {
     const live = reduceConversation(agentEvents.filter(event => event.sessionId === sessionId));
     const durable: ConversationItem[] = forest?.sessionId === sessionId && forest.entries?.length
-      ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+      ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
     return userTurnWatermark(text, live, durable);
   }
   /// The delivery core both composers share: prepare, cold-start if needed,
@@ -2530,7 +2753,8 @@ function AppContent() {
     const origin = draftOwnerRef.current;
     const selectedBrowserContexts = forcedText === undefined && session
       ? browserSelections.filter(context => context.sessionId === session.id) : [];
-    if (selectedBrowserContexts.length && /^(?:\/|\$[a-z]|#[a-z])/i.test(submittedText)) {
+    const agentMention = submittedText ? configuredAgentMention(submittedText, agentShortcutTargets) : null;
+    if (selectedBrowserContexts.length && (/^(?:\/|\$[a-z])/i.test(submittedText) || agentMention)) {
       setError("Remove the browser selection before using a command or shortcut. Browser edits are sent to the current task.");
       return;
     }
@@ -2594,7 +2818,6 @@ function AppContent() {
       }
     }
     if (!session) return;
-    const agentMention = submittedText ? parseAgentMention(submittedText) : null;
     if (agentMention) {
       if (sentAttachments.length > 0) {
         setError("Agent shortcuts do not accept image attachments. Put the file in the workspace and reference it with @ instead.");
@@ -2735,9 +2958,25 @@ function AppContent() {
   const retryPayload = useMemo(() => signInRetryPayload(
     loginRetry,
     session?.id,
-    loginRetry && !loginRetry.payload && forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [],
+    loginRetry && !loginRetry.payload && forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [],
   ), [forest, loginRetry, session?.id]);
   const retryAfterSignIn = retryPayload ? () => { void sendPrompt(retryPayload.text, retryPayload.attachments); } : undefined;
+  // A failed turn's two ways back, offered on its error card. Retry is an
+  // ordinary send of the same words and images; Edit hands them back to the
+  // composer, ahead of anything typed since, and sends nothing. Both stay
+  // stable so the one row that carries them is not redrawn on every render.
+  const sendPromptRef = useRef(sendPrompt);
+  sendPromptRef.current = sendPrompt;
+  const retryFailedTurn = useCallback((prompt: ConversationItem) => {
+    const { text, attachments } = userPromptPayload(prompt);
+    return sendPromptRef.current(text, attachments);
+  }, []);
+  const editFailedTurn = useCallback((prompt: ConversationItem) => {
+    const failed = userPromptPayload(prompt);
+    setComposer(current => restoreFailedTurnText(current, failed.text));
+    setAttachments(current => restoreFailedTurnAttachments(current, failed.attachments));
+    composerRef.current?.focus();
+  }, [setComposer]);
   // Rethrow without also raising the global corner alert: the approval/question
   // card renders the failure itself.
   const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
@@ -2771,13 +3010,33 @@ function AppContent() {
     return () => { active = false; off?.(); };
   }, [session?.id]);
 
-  // "Remember this" on an assistant message. Over the cap the dialog opens with
-  // the full text for the user to trim — never a clip, never a truncated save.
-  const rememberMessage = useCallback(async (text: string) => {
-    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); setView("memory"); return; }
-    try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
-    catch (e) { setError(errorMessage(e)); }
-  }, [session?.id]);
+  // Proposals waiting for review, for the sidebar badge. Re-read on every
+  // memory-changed hint; a failed read leaves the last count rather than a toast.
+  const [memoryPending, setMemoryPending] = useState(0);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    const load = () => {
+      bridgeApi.listMemoryRecords("account:local", "proposed")
+        .then(result => { if (active) setMemoryPending(result.records.length); })
+        .catch(() => undefined);
+    };
+    load();
+    void bridgeApi.onMemoryChanged(load).then(fn => {
+      if (!active) { fn(); return; }
+      off = fn;
+    }).catch(() => undefined);
+    return () => { active = false; off?.(); };
+  }, []);
+
+  // "Remember this" on an assistant message opens Memory with the reply as a
+  // draft to cut down to the one thing worth keeping. It never saves the reply:
+  // a one-click verbatim save is how status updates ended up in every chat's
+  // memory, ahead of the rules that were meant to be there.
+  const rememberMessage = useCallback((text: string) => {
+    setMemoryDraft(text);
+    setView("memory");
+  }, []);
 
   /// Send guidance into a running worker.
   ///
@@ -2972,6 +3231,16 @@ function AppContent() {
       case "open-projects":
         setView("projects");
         return;
+      case "open-notes":
+        setView("notes");
+        return;
+      case "capture-note":
+        setView("notes");
+        setNoteCaptureRequest(value => value + 1);
+        return;
+      case "toggle-notes-list":
+        if (view === "notes") setNotesListToggle(value => value + 1);
+        return;
       case "open-settings":
         setView("settings");
         return;
@@ -3114,7 +3383,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3162,13 +3431,16 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      unread={unread.byChat}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       memoryActive={view === "memory"}
+      memoryPending={memoryPending}
+      notesActive={view === "notes"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
-      gitplaceActive={view === "gitplace"}
+      pullsActive={view === "pulls"}
       agentFleetActive={view === "agent-fleet"}
       missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
@@ -3187,8 +3459,9 @@ function AppContent() {
       onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
+      onOpenNotes={() => setView("notes")}
       onOpenUsage={() => setView("usage")}
-      onOpenGitplace={() => setView("gitplace")}
+      onOpenPulls={() => setView("pulls")}
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
@@ -3246,7 +3519,19 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "memory" ? <MemoryDialog
+      /> : view === "notes" ? <Suspense fallback={<PanelLoading label="Opening notes…"/>}><NotesScreen
+        adapters={adapters}
+        workspaces={state.workspaces}
+        sessions={visibleSessions}
+        defaultHarness={notesDefaultHarness}
+        captureRequest={noteCaptureRequest}
+        openRequest={noteOpenRequest}
+        listToggleRequest={notesListToggle}
+        onStartChat={startChatFromNote}
+        onOpenChat={openSession}
+        onError={setError}
+        copilot={notesCopilot}
+      /></Suspense> : view === "memory" ? <MemoryDialog
         open
         initialBody={memoryDraft}
         adapters={adapters}
@@ -3256,10 +3541,10 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
-        onJumpToFile={jumpFromGitplace}
+        onJumpToFile={jumpFromPulls}
         onAddProject={() => setNewProjectOpen(true)}
       /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
@@ -3329,6 +3614,7 @@ function AppContent() {
           {asideSession && asideSession.id !== session.id && <AsideChat
             session={asideSession}
             adapters={adapters}
+            accounts={providerAccounts}
             events={agentEvents}
             pendingMessages={asidePending}
             queuedFollowUpCount={queuedFollowUps(asideSession.id, state.events).length}
@@ -3352,7 +3638,7 @@ function AppContent() {
             onChangeEffort={async effort => {
               setState(await bridgeApi.updateChatModel(asideSession.id, asideSession.harness, asideSession.model ?? null, effort));
             }}
-            onChangeModel={async (harness, model) => {
+            onChangeModel={async (harness, model, account) => {
               // Same path the main chat's control uses, bound to the aside
               // session so the switch never touches the chat underneath —
               // and narrated the same way, inside the aside's conversation.
@@ -3360,7 +3646,9 @@ function AppContent() {
               setAsideLifecycle(current => current && { ...current, phase: "switching", error: undefined });
               setModelSwitch({ sessionId: asideSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
               try {
-                setState(await bridgeApi.updateChatModel(asideSession.id, harness, model));
+                // Explicit either way, as in the main composer: the harness id
+                // is the user's own login.
+                setState(await bridgeApi.updateChatModel(asideSession.id, harness, model, undefined, account ?? harness));
                 setAsideLifecycle(current => current && { ...current, phase: "ready", error: undefined });
               } catch (e) {
                 setAsideLifecycle(current => current && { ...current, phase: "failed", error: errorMessage(e) });
@@ -3405,6 +3693,7 @@ function AppContent() {
                   onOpenSession={openSession}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
+                  activeProcessEntries={forest?.activeProcessEntries}
                   entryWindow={forest?.entryWindow}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
@@ -3425,6 +3714,8 @@ function AppContent() {
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
                    onFollowUp={followUpToComposer}
+                   onRetryTurn={retryFailedTurn}
+                   onEditTurn={editFailedTurn}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as
@@ -3599,7 +3890,7 @@ function AppContent() {
                     inputRef={composerRef}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
+                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
                     footer={<ComposerContextStrip
@@ -3698,11 +3989,15 @@ function AppContent() {
         accessControl={accessControl}
         onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
-        harness={draftSettings.settings?.model.harness ?? resolveDraftHarnessModel().harness}
-        model={draftSettings.settings?.model.model ?? null}
+        harness={welcomeHarness}
+        model={welcomeModel}
+        knownLabel={welcomeKnownLabel}
+        loading={draftSettings.loading}
+        accounts={providerAccounts}
+        account={draftSettings.settings?.model.account ?? null}
         effort={draftSettings.settings?.effort ?? undefined}
         onSelectEffort={effort => patchDraft({effort:{value:effort}})}
-        onSelectModel={(harness, model) => patchDraft({model:{harness,model},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model).filter(value => draftSettings.settings?.target.kind !== "agent" || WORKER_EFFORTS.includes(value)),draftSettings.settings?.effort) ?? null}})}
+        onSelectModel={(harness, model, account) => patchDraft({model:{harness,model,...(account ? {account} : {})},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model).filter(value => draftSettings.settings?.target.kind !== "agent" || WORKER_EFFORTS.includes(value)),draftSettings.settings?.effort) ?? null}})}
         slashCommands={slashCommands}
         suggestionSettings={suggestionSettings}
         canStartChat={adaptersReady}
@@ -3722,7 +4017,12 @@ function AppContent() {
         onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
         agents={configuredAgents}
         selectedAgent={configuredAgents.find(agent => draftSettings.settings?.target.kind === "agent" && agent.id === draftSettings.settings.target.agentId) ?? null}
-        onSelectAgent={agent => patchDraft({target:agent?.id ? {kind:"agent",agentId:agent.id} : {kind:"orchestrator"}})}
+        onSelectAgent={agent => {
+          // A specialist runs as a worker on the user's own login, so an
+          // account picked earlier in this draft goes with the switch.
+          const model = newChatDraft?.overrides?.model;
+          patchDraft({target:agent?.id ? {kind:"agent",agentId:agent.id} : {kind:"orchestrator"}, ...(agent?.id && model?.account ? {model:{harness:model.harness,model:model.model}} : {})});
+        }}
         defaultsNotice={draftSettings.error ?? (draftSettings.loading ? "Loading project defaults…" : undefined)}
         onToggleWorktree={() => patchDraft({createWorktree:!(draftSettings.settings?.createWorktree ?? false)})}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
@@ -3773,6 +4073,14 @@ function AppContent() {
         openSession(toast.sessionId);
       }}
       onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+      onAction={toast => {
+        // The only remedy so far: deliver input stranded behind a stopped agent.
+        // Any answer means the queue is handled; a failure rejects, and the
+        // card stays so the person can try again.
+        void bridgeApi.deliverQueuedInput(toast.sessionId)
+          .then(() => setAttentionToasts(current => current.filter(item => item.key !== toast.key)))
+          .catch(error => setError(errorMessage(error)));
+      }}
     />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     {INBOX_PANE_ENABLED && <ConnectorToasts
@@ -3789,7 +4097,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
-    </div>
+    {/* Last: an update can wait behind anything happening now. */}
     {availableUpdate && (
       <UpdateToast
         key={`${availableUpdate.channel}:${availableUpdate.version}`}
@@ -3798,6 +4106,7 @@ function AppContent() {
         onDismiss={() => setAvailableUpdate(undefined)}
       />
     )}
+    </div>
 
     <ProviderSignInDialog
       provider={loginProvider}
@@ -3865,7 +4174,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -3877,9 +4186,15 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
+  /** A remembered label for `model`, shown until the catalog has the entry. */
+  knownLabel?: string | null;
+  /** The host is still resolving this draft's defaults. */
+  loading?: boolean;
   effort?: string;
   onSelectEffort: (effort: string) => void;
-  onSelectModel: (harness: Harness, model: string | null) => void;
+  onSelectModel: (harness: Harness, model: string | null, account: string | null) => void;
+  accounts: readonly AccountChoice[];
+  account: string | null;
   busy: boolean;
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
@@ -3986,15 +4301,10 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
     attachFiles(files);
   };
   const attachFiles = (files: Array<{ type: string; size?: number }>) => {
-    if (files.some(isPasteTooLarge)) {
-      setComposerError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
-      return;
-    }
     setComposerError(undefined);
     void Promise.all(files.map(async file => ({
       id: crypto.randomUUID(),
-      mediaType: mediaTypeOf(file),
-      dataUri: await readAsDataUri(file),
+      ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(errorMessage(error)));
@@ -4066,7 +4376,7 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip

@@ -1,6 +1,9 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
+import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
+import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
+import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -12,14 +15,21 @@ import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
+import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from "./types";
+import { guessKeyKind } from "./apiKeys";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
+import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
+import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
+import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
+import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
+import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
@@ -35,6 +45,7 @@ import type {
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
+import { accountsOf, normalizeAccount, supportsAccounts } from "./providerAccounts";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
@@ -482,6 +493,12 @@ let mockBrowserClone: BrowserCloneSnapshot = {
 };
 let mockCloneSettings: CloneSettings = defaultCloneSettings();
 
+const mockApiKeys: { saved: SavedApiKey[]; chat: ChatApiKey[] } = {
+  saved: [{ name: "OPENAI_API_KEY", kind: "openai", hosts: ["api.openai.com"], needsValue: false }],
+  chat: [{ reference: "sec_3f9c2a71d4b84e0f9a1c6b2d7e5f8a90", kind: "github", hosts: ["api.github.com", "uploads.github.com"], sessionId: "mock-session", sessionLabel: "Triage open issues" }],
+};
+const mockApiKeysSnapshot = (): ApiKeysSnapshot => ({ canSave: true, proxyRunning: true, saved: mockApiKeys.saved.map(key => ({ ...key })), chat: mockApiKeys.chat.map(key => ({ ...key })) });
+
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
   workspaces: [
@@ -601,7 +618,12 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-15b", "session-1", 19, "user.message", { text: "Chart what this week cost, by harness. Where did the spike come from?", itemId: "user-visual" }, "entry-14b"),
   forestEntry("entry-16b", "session-1", 20, "tool.completed", { status: "completed", title: "mcp__bridge__visualize", data: { type: "tool_use", name: "mcp__bridge__visualize", input: MOCK_VISUAL, aggregatedOutput: "Shown to the user inline: \"Daily spend by harness\" (stacked-bar, 21 rows). Do not restate its values in prose; say what matters and why." } }, "entry-15b"),
   forestEntry("entry-17b", "session-1", 21, "assistant.message", { text: "The spike is Sep 30, at roughly three times the daily average, and most of it is Claude: one long refactor that compacted twice." }, "entry-16b"),
-  forestEntry("entry-raw", "session-1", 22, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-17b")
+  // A message drafted by Bridge's own `outgoing_draft` tool, so `bun run dev`
+  // shows the Outgoing card the way a Claude chat delivers it.
+  forestEntry("entry-18b", "session-1", 22, "user.message", { text: "Tell #dev in the deploy thread that staging is done and I'll watch errors before promoting.", itemId: "user-outgoing" }, "entry-17b"),
+  forestEntry("entry-19b", "session-1", 23, "tool.completed", { status: "completed", title: "mcp__bridge__outgoing_draft", data: { type: "tool_use", name: "mcp__bridge__outgoing_draft", input: { to: { slack: { channel: "#dev", thread: "https://acme.slack.com/archives/C01/p1730000000" } }, body: "Deploy to staging is done \u2014 all checks green.", reason: "tell #dev the staging deploy finished" }, aggregatedOutput: JSON.stringify({ id: MOCK_OUTGOING_ID, state: "draft", destination: "Slack \u00b7 #dev \u00b7 thread" }) } }, "entry-18b"),
+  forestEntry("entry-20b", "session-1", 24, "assistant.message", { text: "Drafted a reply for the #dev deploy thread. Edit or copy it from the card." }, "entry-19b"),
+  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -630,6 +652,7 @@ const mockMemoryRecords: MemoryRecord[] = [
   memRecord("mem_c1f3", "Uses bun (not npm) for this repo's install, dev, test, and build scripts.", "fact", "active", "model_proposal", { confidenceBps: 7400, rationale: "observed across 6 sessions" }),
   memRecord("mem_p1a8", "Read-only workers need an injected GH_TOKEN — the sandbox blocks the keychain.", "fact", "proposed", "model_proposal", { confidenceBps: 7100, rationale: "run 8821 · seen in 3 sessions" }),
   memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
+  memRecord("mem_p3c7", "Check the upstream tracker before deep-diving a security-hunt candidate.", "constraint", "proposed", "agent_proposal", { rationale: "The person said to keep this for every future hunt." }),
   memRecord("mem_d1c9", "Sprint-scoped: land the onboarding picker before Friday.", "constraint", "deleted", "model_proposal", { confidenceBps: 3000, createdAt: "2026-08-05T09:00:00Z", validTo: "2026-08-18T09:00:00Z" }),
 ];
 
@@ -656,6 +679,7 @@ const mockActivityLog: MemoryActivityEntry[] = [
 ];
 let mockMemoryInsights: MemoryInsightsResult = { status: "empty" };
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
+const mockMemoryMaxRecords = 200;
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
@@ -1651,7 +1675,7 @@ export const bridgeApi = {
     if (hasBackend()) return call("sessions/create_configured_chat", params);
     const settings = mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params);
     const id=crypto.randomUUID();
-    mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
+    mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,account:normalizeAccount(settings.model.harness,settings.model.account),effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
     const configuration={revision:1,settings};mockSessionSettings.set(id,configuration);emitState();return {sessionId:id,state:snapshot(),configuration};
   },
   chatSettings: async (sessionId: string): Promise<ChatSessionSettings> => {
@@ -1659,7 +1683,7 @@ export const bridgeApi = {
     const session=mockState.sessions.find(s=>s.id===sessionId);if(!session) throw new Error("Chat no longer exists");
     const stored=mockSessionSettings.get(sessionId);
     const settings=stored?.settings ?? { workspaceId:session.workspaceId,projectId:mockState.workspaces.find(w=>w.id===session.workspaceId)?.projectId,revision:{application:0,project:0},target:{kind:session.kind === "direct" ? "direct" as const : "orchestrator" as const},model:{harness:session.harness,model:session.model},effort:session.effort,access:mockConfigState.permissionPolicy.autoApproveProviderPermissions ? "full" as const : "ask" as const,createWorktree:false,activeTurnInput:"steer" as const,sources:{} };
-    return structuredClone({revision:stored?.revision ?? 0,settings:{...settings,model:{harness:session.harness,model:session.model},effort:session.effort}});
+    return structuredClone({revision:stored?.revision ?? 0,settings:{...settings,model:{harness:session.harness,model:session.model,account:session.account ?? null},effort:session.effort}});
   },
   updateChatOptions: async (params: UpdateChatOptionsParams): Promise<ChatSessionSettings> => {
     if(hasBackend()) return call("sessions/update_chat_options",params);
@@ -1791,6 +1815,21 @@ export const bridgeApi = {
    * server caches — a reopened chat or a manual retry. */
   githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
     hasBackend() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
+  /** A chat's drafted messages, oldest first, discarded ones included. */
+  listOutgoing: (sessionId: string): Promise<ListOutgoingResult> =>
+    hasBackend() ? call("outgoing/list_outgoing", { sessionId }) : Promise.resolve(mockListOutgoing(sessionId)),
+  /** Edit a draft and/or apply its fixable style rules, against the revision
+   * the editor saw. A stale revision is refused. */
+  updateOutgoing: (id: string, revision: number, body?: string, applyFixes = false, attachments?: string[]): Promise<UpdateOutgoingResult> =>
+    hasBackend() ? call("outgoing/update_outgoing", { id, revision, body, applyFixes, attachments }) : mockUpdateOutgoing(id, revision, body, applyFixes, attachments),
+  /** One image a draft carries, read and checked again by the core. */
+  readOutgoingAttachment: (id: string, index: number): Promise<ReadOutgoingAttachmentResult> =>
+    hasBackend() ? call("outgoing/read_outgoing_attachment", { id, index }) : mockReadOutgoingAttachment(id, index),
+  /** The rendered text to put on the clipboard; marks the draft copied. */
+  copyOutgoing: (id: string, revision: number): Promise<CopyOutgoingResult> =>
+    hasBackend() ? call("outgoing/copy_outgoing", { id, revision }) : mockCopyOutgoing(id, revision),
+  discardOutgoing: (id: string): Promise<DiscardOutgoingResult> =>
+    hasBackend() ? call("outgoing/discard_outgoing", { id }) : mockDiscardOutgoing(id),
   /** Attach a chat to a PR by URL or number; verified server-side against the
    * chat's workspace repository. */
   githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
@@ -1883,6 +1922,25 @@ export const bridgeApi = {
     if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
   },
   cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => hasBackend() ? call("clones/clone_requests") : [],
+  // API keys the agent uses through Bridge without reading them. Nothing here
+  // ever returns a value; the mock keeps names and sites only.
+  listApiKeys: async (): Promise<ApiKeysSnapshot> => hasBackend() ? call("keys/list_api_keys") : mockApiKeysSnapshot(),
+  saveApiKey: async (params: SaveApiKeyParams): Promise<ApiKeysSnapshot> => {
+    if (hasBackend()) return call("keys/save_api_key", params);
+    const existing = mockApiKeys.saved.find(key => key.name === params.name);
+    const fromChat = params.fromReference ? mockApiKeys.chat.find(key => key.reference === params.fromReference) : undefined;
+    if (!params.value && !fromChat && !existing) throw new Error(`There is no saved key named ${params.name}. Paste its value to add it.`);
+    const kind = fromChat?.kind ?? (params.value ? guessKeyKind(params.value) : existing?.kind) ?? "custom";
+    mockApiKeys.saved = [...mockApiKeys.saved.filter(key => key.name !== params.name), { name: params.name, kind, hosts: params.hosts, needsValue: params.value ? false : existing?.needsValue ?? false }].sort((a, b) => a.name.localeCompare(b.name));
+    if (fromChat) fromChat.savedAs = params.name;
+    return mockApiKeysSnapshot();
+  },
+  forgetApiKey: async (reference: string): Promise<ApiKeysSnapshot> => {
+    if (hasBackend()) return call("keys/forget_api_key", { reference });
+    mockApiKeys.saved = mockApiKeys.saved.filter(key => key.name !== reference);
+    mockApiKeys.chat = mockApiKeys.chat.filter(key => key.reference !== reference).map(key => key.savedAs === reference ? { ...key, savedAs: undefined } : key);
+    return mockApiKeysSnapshot();
+  },
   readCloneSettings: async (): Promise<CloneSettingsSnapshot> => hasBackend() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
   writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
     if (hasBackend()) return call("clones/write_clone_settings", { settings });
@@ -2273,22 +2331,38 @@ export const bridgeApi = {
   saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
     if (hasBackend()) return call("config/save_harness_config", { config });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === config.id ? { ...structuredClone(config), isOverride: true } : item);
+    // Like the host: every model picker lists Claude and Codex accounts.
+    if (supportsAccounts(config.id)) emitState();
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetHarnessConfig: (id: HarnessConfig["id"]): Promise<ConfigState> => {
     if (hasBackend()) return call("config/reset_harness_config", { id });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
+    if (supportsAccounts(id)) emitState();
     return Promise.resolve(structuredClone(mockConfigState));
   },
   refreshOpenCodeCatalog: (directory?: string): Promise<OpenCodeCatalog> => {
     if (hasBackend()) return call("config/refresh_opencode_catalog", { directory: directory || null }) as Promise<OpenCodeCatalog>;
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
-  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null }) as Promise<OpenCodeCatalog>;
+  /** `account` connects the key inside that extra OpenCode account's own
+   *  folder and returns its catalog; the user's own catalog is untouched. */
+  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string, account?: string): Promise<OpenCodeCatalog> => {
+    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null, ...(account ? { account } : {}) }) as Promise<OpenCodeCatalog>;
     void apiKey;
+    if (account) return Promise.resolve(structuredClone(mockOpenCodeCatalog));
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  /** Save an extra account's API key (Cursor). The host keeps it in the macOS
+   *  Keychain; it never enters the settings record. */
+  setAccountApiKey: (harness: string, account: string, apiKey: string): Promise<ConfigState> => {
+    if (hasBackend()) return call("config/set_account_api_key", { harness, account, apiKey });
+    const config = mockConfigState.harnesses.find(item => item.id === harness);
+    const known = accountsOf(config).some(item => item.id === account);
+    if (!known) return Promise.reject(new Error(`The account "${account}" is no longer in Settings.`));
+    if (!apiKey.trim()) return Promise.reject(new Error("The API key cannot be empty"));
+    return Promise.resolve(structuredClone(mockConfigState));
   },
   removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
     if (hasBackend()) return call("config/remove_opencode_provider_auth", { providerId, directory: directory || null }) as Promise<OpenCodeCatalog>;
@@ -2648,6 +2722,108 @@ export const bridgeApi = {
     mockTrashEmpty = true;
     return { emptied: mockTrashEmpty, detail: null };
   },
+  // Bridge Notes. Every write goes through the core's one write path; the
+  // mock keeps the same shapes and merge rule in memory.
+  listNotes: async (params: ListNotesParams = {}): Promise<NotesList> => {
+    if (hasBackend()) return call("notes/list_notes", params);
+    return mockListNotes(params);
+  },
+  readNotePage: async (id: string): Promise<NotePage> => {
+    if (hasBackend()) return call("notes/read_page", { id });
+    return mockReadPage(id);
+  },
+  captureNote: async (body: string): Promise<Note> => {
+    if (hasBackend()) return call("notes/capture_note", { body });
+    return mockCaptureNote(body);
+  },
+  createNotePage: async (params: CreatePageParams): Promise<Note> => {
+    if (hasBackend()) return call("notes/create_page", params);
+    return mockCreatePage(params);
+  },
+  editNotePage: async (params: EditPageParams): Promise<NoteEditResult> => {
+    if (hasBackend()) return call("notes/edit_page", params);
+    return mockEditPage(params);
+  },
+  updateNote: async (params: UpdateNoteParams): Promise<Note> => {
+    if (hasBackend()) return call("notes/update_note", params);
+    return mockUpdateNote(params);
+  },
+  createDatabase: async (params: CreateDatabaseParams): Promise<NotePage> => {
+    if (hasBackend()) return call("notes/create_database", params);
+    return mockCreateDatabase(params);
+  },
+  updateDatabaseSchema: async (params: UpdateSchemaParams): Promise<NoteDatabase> => {
+    if (hasBackend()) return call("notes/update_schema", params);
+    return mockUpdateSchema(params);
+  },
+  saveDatabaseView: async (params: SaveViewParams): Promise<NoteDatabaseView> => {
+    if (hasBackend()) return call("notes/save_view", params);
+    return mockSaveView(params);
+  },
+  deleteDatabaseView: async (params: DeleteViewParams): Promise<void> => {
+    if (hasBackend()) { await call("notes/delete_view", params); return; }
+    mockDeleteView(params);
+  },
+  queryDatabase: async (params: QueryDatabaseParams): Promise<DatabaseQueryResult> => {
+    if (hasBackend()) return call("notes/query_database", params);
+    return mockQueryDatabase(params);
+  },
+  deleteNote: async (id: string): Promise<void> => {
+    if (hasBackend()) { await call("notes/delete_note", { id }); return; }
+    mockDeleteNote(id);
+  },
+  structureNote: async (id: string, harness?: string): Promise<NoteJobQueued> => {
+    if (hasBackend()) return call("notes/structure_note", { id, harness: harness ?? null });
+    return mockStructureNote({ id, harness });
+  },
+  extractNoteTasks: async (id: string, harness?: string): Promise<NoteJobQueued> => {
+    if (hasBackend()) return call("notes/extract_tasks", { id, harness: harness ?? null });
+    return mockExtractTasks({ id, harness });
+  },
+  splitNoteItem: async (id: string, itemIndex: number): Promise<Note> => {
+    if (hasBackend()) return call("notes/split_item", { id, itemIndex });
+    return mockSplitItem({ id, itemIndex });
+  },
+  notePageHistory: async (id: string): Promise<NoteHistory> => {
+    if (hasBackend()) return call("notes/page_history", { id });
+    return mockPageHistory(id);
+  },
+  readNoteVersion: async (id: string, seq: number): Promise<NoteVersionPage> => {
+    if (hasBackend()) return call("notes/read_version", { id, seq });
+    return mockReadVersion(id, seq);
+  },
+  restoreNoteVersion: async (id: string, seq: number): Promise<NoteEditResult> => {
+    if (hasBackend()) return call("notes/restore_version", { id, seq });
+    return mockRestoreVersion(id, seq);
+  },
+  putNoteAssetPart: async (params: { uploadId: string | null; data: string }): Promise<NoteAssetPart> => {
+    if (hasBackend()) return call("notes/put_asset_part", params);
+    return mockPutAssetPart(params);
+  },
+  finishNoteAsset: async (params: { uploadId: string; mime: string }): Promise<NoteAsset> => {
+    if (hasBackend()) return call("notes/finish_asset", params);
+    return mockFinishAsset(params);
+  },
+  readNoteAsset: async (path: string): Promise<NoteAssetData> => {
+    if (hasBackend()) return call("notes/read_asset", { path });
+    return mockReadAsset(path);
+  },
+  notesSettings: async (): Promise<NotesSettings> => {
+    if (hasBackend()) return call("notes/get_notes_settings");
+    return mockNotesSettings();
+  },
+  saveNotesSettings: async (params: SaveNotesSettingsParams): Promise<NotesSettings> => {
+    if (hasBackend()) return call("notes/save_notes_settings", params);
+    return mockSaveNotesSettings(params);
+  },
+  onNotesPageChanged: async (handler: (payload: NotePageChangedPayload) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<NotePageChangedPayload>("notes/page_changed", handler);
+    return onMockNotesPageChanged(handler);
+  },
+  onNotesPassProgress: async (handler: (payload: NotePassProgressPayload) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<NotePassProgressPayload>("notes/pass_progress", handler);
+    return onMockNotesPassProgress(handler);
+  },
   listWorktrees: async (): Promise<WorktreeInventoryEntry[]> => {
     if (hasBackend()) return call("worktrees/list_worktrees");
     return structuredClone(mockWorktrees);
@@ -2980,6 +3156,11 @@ export const bridgeApi = {
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
+  getConsolidationSettings: async (): Promise<MemoryConsolidationSettings> => {
+    if (hasBackend()) return call("memory/get_consolidation_settings");
+    const heldRecords = mockMemoryRecords.filter(item => item.status === "active" || item.status === "proposed").length;
+    return { scopeKey: "account:local", mode: "off", maxRecords: mockMemoryMaxRecords, heldRecords, allowRemoval: false, debounceSeconds: 600 };
+  },
   getExtractionSettings: async (): Promise<MemoryExtractionSettings> => {
     if (hasBackend()) return call("memory/get_extraction_settings");
     return structuredClone(mockExtractionSettings);
@@ -3096,7 +3277,7 @@ export const bridgeApi = {
     mockState.workspaces.push({ id, projectId: null, city: null, title, branch: null, path: null, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
     emitState(); return snapshot();
   },
-  createChat: async (harness: Harness, model: string | null, title: string | null, purpose?: "storage"): Promise<BridgeState> => {
+  createChat: async (harness: Harness, model: string | null, title: string | null, purpose?: "storage" | "notes"): Promise<BridgeState> => {
     if (hasBackend()) return call("sessions/create_chat", purpose ? { harness, model, title, purpose } : { harness, model, title });
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title, kind: "direct", cwd: null }); emitState(); return snapshot();
@@ -3144,11 +3325,16 @@ export const bridgeApi = {
     const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
     mockState.sessions.push({ id, workspaceId, harness: kind === "direct" ? harness ?? "codex" : "codex", label: kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: kind === "direct" ? model ?? null : null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind, cwd }); emitState(); return snapshot();
   },
-  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null): Promise<BridgeState> => {
-    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort });
+  /** `account` is an extra sign-in's id, or the harness id for the user's own
+   *  login; omitted keeps the chat's account on the same harness. */
+  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null, account?: string): Promise<BridgeState> => {
+    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort, ...(account === undefined ? {} : { account }) });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
-    if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
+    if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) {
+      const nextAccount = account === undefined ? (session.harness === harness ? session.account ?? null : null) : normalizeAccount(harness, account);
+      session.harness = harness; session.model = model; session.account = nextAccount; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh";
+    }
     emitState(); return snapshot();
   },
   carrySessionHandoff: async (targetSessionId: string, sourceSessionId: string): Promise<boolean> => {
@@ -3216,6 +3402,8 @@ export const bridgeApi = {
     appendAgent(sessionId, "message.delta", { itemId: assistantItemId, role: "assistant", status: "streaming", text: "I’ll handle that through the normalized adapter layer. " });
     appendAgent(sessionId, "message.completed", { itemId: assistantItemId, role: "assistant", status: "completed", text: "I’ll handle that through the normalized adapter layer. The GUI remains provider-neutral, and no agent TUI is rendered." });
     session.status = "ready"; session.activeTurnId = null; emitState();
+    // Core writes this row when a top-level chat's turn completes.
+    if (!session.parentSessionId) pushMockAttention({ kind: "finished", sessionId, title: "Turn completed", body: `${session.title || session.label} · ${harnessLabel(session.harness)} finished its turn` });
   },
   // The active-turn input contract. Unlike sendTurn this is safe to call while
   // the agent is working: the preference chooses native steering or queueing,
@@ -3479,6 +3667,56 @@ export const bridgeApi = {
     if (hasBackend()) return subscribe("learning-job-changed", handler);
     return () => undefined;
   },
+  /** The person's attention rows after a cursor, oldest first. */
+  listAttention: async (params: ListAttentionParams = {}): Promise<ListAttentionResult> => {
+    // The desktop shell's command takes `unseenOnly` as a plain bool.
+    if (hasBackend()) return call("attention/list_attention", { ...params, unseenOnly: params.unseenOnly ?? false });
+    return mockListAttention(params);
+  },
+  /** Seen is a server fact: every client hears about it through `attention/changed`. */
+  markAttentionSeen: async (sessionId: string): Promise<MarkAttentionSeenResult> => {
+    if (hasBackend()) return call("attention/mark_attention_seen", { sessionId });
+    return mockMarkAttentionSeen(sessionId);
+  },
+  /** What is still unread, rolled up to the chats in the sidebar. */
+  unreadSummary: async (): Promise<UnreadSummary> => {
+    if (hasBackend()) return call("attention/unread_summary");
+    return mockUnreadSummary(id => {
+      const session = mockState.sessions.find(item => item.id === id);
+      return session ? session.parentSessionId ?? null : undefined;
+    });
+  },
+  /** Renew this client's presence lease; the answer says whether it posts OS banners. */
+  reportPresence: async (clientId: string, presence: { focused: boolean; gone?: boolean; canPostBanners?: boolean }): Promise<ReportPresenceResult> => {
+    if (hasBackend()) {
+      return call("attention/report_presence", {
+        clientId,
+        clientKind: isTauri() ? "desktop" : "web",
+        focused: presence.focused,
+        gone: presence.gone ?? false,
+        ...(presence.canPostBanners === undefined ? {} : { canPostBanners: presence.canPostBanners }),
+      });
+    }
+    // One client, no daemon: it owns its banners.
+    return { bannerOwner: true };
+  },
+  /** The dock badge. The shell owns the window, so this is an event the shell
+   *  listens for, like `revealMainWindow`; zero clears it. */
+  setUnreadBadge: async (count: number): Promise<void> => {
+    if (!isTauri()) return;
+    await shellEmit("bridge-unread-badge", count);
+  },
+  /** Deliver a chat's stranded input now, resuming its agent if it stopped. */
+  deliverQueuedInput: async (sessionId: string): Promise<DeliverQueuedInputResult> => {
+    if (hasBackend()) return call("sessions/deliver_queued_input", { sessionId });
+    // The mock has no adapters to strand input behind.
+    return { disposition: "nothingQueued" };
+  },
+  /** Refetch hint: reread `listAttention` from your cursor. Carries no rows. */
+  onAttentionChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe("attention/changed", () => handler());
+    return onMockAttentionChanged(handler);
+  },
   onMemoryChanged: async (handler: (payload: MemoryChangedPayload) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<MemoryChangedPayload>("memory-changed", handler);
     memoryListeners.add(handler);
@@ -3514,6 +3752,10 @@ export const bridgeApi = {
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
+  },
+  onOutgoingChanged: async (handler: (payload: { sessionId: string; id: string }) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<{ sessionId: string; id: string }>("outgoing/changed", handler);
+    return onMockOutgoingChanged(handler);
   },
   onGithubSessionPrsChanged: async (handler: (payload: { sessionId: string }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
@@ -3845,7 +4087,7 @@ const mockManagedAgents: ManagedAgentList = {
       executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
       // Deliberately behind the pin: mock mode is where the Update action is
       // developed and reviewed, so one runtime has to have an update waiting.
-      version: "0.3.209", pinnedVersion: "0.3.284", updateAvailable: true, consecutiveFailures: 0,
+      version: "0.3.209", pinnedVersion: "0.3.322", updateAvailable: true, consecutiveFailures: 0,
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,

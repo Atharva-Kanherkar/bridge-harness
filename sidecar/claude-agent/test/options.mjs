@@ -25,7 +25,7 @@ test("resumed queries use resume without requesting a new session id", () => {
 
 test("query options load explicit Claude plugins and credential-free connectors", () => {
   const mcpServers = { "claude.ai Notion": { type: "http", url: "https://mcp.example/notion" } };
-  const options = buildOptions({ ...base, writeMode: "Shared", resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers });
+  const options = buildOptions({ ...base, writeMode: "Shared", resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers, projectTrusted: true });
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.equal(options.skills, "all");
   assert.equal(options.strictMcpConfig, false);
@@ -41,6 +41,16 @@ test("query options load explicit Claude plugins and credential-free connectors"
   assert.equal(options.allowedTools, undefined);
   assert.equal(options.tools, undefined);
   assert.equal(options.disallowedTools, undefined);
+});
+
+test("a folder's own settings load only when the folder is trusted", () => {
+  for (const writeMode of ["Shared", "Isolated", "Full", undefined]) {
+    assert.deepEqual(buildOptions({ ...base, writeMode }).settingSources, ["user"], `${writeMode} defaults to untrusted`);
+    assert.deepEqual(buildOptions({ ...base, writeMode, projectTrusted: false }).settingSources, ["user"]);
+    assert.deepEqual(buildOptions({ ...base, writeMode, projectTrusted: true }).settingSources, ["user", "project", "local"]);
+  }
+  // A read-only worker never loads them, trusted or not.
+  assert.deepEqual(buildOptions({ ...base, writeMode: "ReadOnly", projectTrusted: true }).settingSources, ["user"]);
 });
 
 test("Claude receives the compiled stable prefix before variable context", () => {
@@ -103,6 +113,22 @@ test("shared and isolated modes accept edits without bypassing permissions", () 
     const options = permissionOptions(mode);
     assert.deepEqual(options, { permissionMode: "acceptEdits" });
   }
+});
+
+test("ask mode runs Bridge's read-only tools without a prompt Claude cannot show", () => {
+  // Bridge renders no Claude permission prompt, so a tool that needs one is
+  // refused outright. Bridge's own read-only tools change nothing and run, a
+  // memory proposal waits for the person's review in Bridge, a drafted message
+  // only becomes a card the person sends themselves, and notes writes stay
+  // refused in Ask mode.
+  const bridge = { bridge: { type: "stdio", command: "/bin/bridged", args: ["--bridge-mcp-visualize"] } };
+  for (const mode of ["Shared", "Isolated"]) {
+    const options = permissionOptions(mode, false, bridge);
+    assert.equal(options.permissionMode, "acceptEdits");
+    assert.deepEqual(options.allowedTools, ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft"]);
+    assert.ok(!options.allowedTools.some(name => /create|edit|append|set/.test(name)));
+  }
+  assert.equal(permissionOptions("Shared", false, {}).allowedTools, undefined, "no bridge server, nothing to allow");
 });
 
 test("full and default modes intentionally enable permission bypass", () => {

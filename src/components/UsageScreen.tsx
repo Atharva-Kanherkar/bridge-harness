@@ -13,6 +13,7 @@ import { UsageFlow } from "./UsageFlow";
 import { UsageMosaic } from "./UsageMosaic";
 import { UsageCalendar } from "./UsageCalendar";
 import type { UsageLayoutProps } from "./UsageLayoutParts";
+import { UsageLoadingState } from "./UsageLayoutParts";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import {
@@ -35,6 +36,26 @@ const NUM = "text-right tabular-nums";
 /// fire an open-ended series of IPC round trips on a huge history; hitting
 /// the cap surfaces as a partial total and Scan history resumes the cursors.
 const MAX_SCAN_PASSES = 25;
+
+/// A clean automatic scan this recent is reused when Usage reopens. Each scan
+/// stats every transcript and rewrites the source cursors, so rescanning on
+/// every visit is the slow part. Refresh and Scan history always scan.
+const AUTO_SCAN_FRESH_MS = 5 * 60_000;
+
+// Kept across visits so reopening Usage draws the last figures at once and
+// the refetch updates them in place.
+const summaryCache = new Map<string, UsageSummaryResult>();
+let cachedSources: UsageHistorySource[] = [];
+let lastAutoScanAt = 0;
+
+const autoScanDue = () => Date.now() - lastAutoScanAt >= AUTO_SCAN_FRESH_MS;
+const summaryKey = (preferences: UsagePreferences) => `${preferences.windowDays}:${preferences.includeImported}`;
+
+export function clearUsageCacheForTests(): void {
+  summaryCache.clear();
+  cachedSources = [];
+  lastAutoScanAt = 0;
+}
 
 type Breakdown = "model" | "time";
 type UsageTab = "usage" | "insights";
@@ -93,13 +114,21 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const [summaryTick, setSummaryTick] = useState(0);
   const window_ = useMemo(() => makeUsageWindow(preferences.windowDays), [preferences.windowDays, refreshTick]);
   const periods = useMemo(() => enumeratePeriods(window_), [window_]);
-  const [summary, setSummary] = useState<UsageSummaryResult | null>(null);
+  const key = summaryKey(preferences);
+  // The figures on screen and the window they were fetched for. A cached
+  // window draws at once; another window keeps its figures dimmed until its
+  // own summary lands.
+  const [shown, setShown] = useState<{ key: string; summary: UsageSummaryResult } | null>(() => {
+    const cached = summaryCache.get(key);
+    return cached ? { key, summary: cached } : null;
+  });
+  const summary = shown?.summary ?? null;
   const [loading, setLoading] = useState(true);
-  const [sources, setSources] = useState<UsageHistorySource[]>([]);
+  const [sources, setSources] = useState<UsageHistorySource[]>(cachedSources);
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
   const [tab, setTab] = useState<UsageTab>("usage");
   const [tableOpen, setTableOpen] = useState(false);
-  const [scanning, setScanning] = useState(preferences.includeImported);
+  const [scanning, setScanning] = useState(() => preferences.includeImported && autoScanDue());
   const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
@@ -117,17 +146,24 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    const cached = summaryCache.get(key);
+    if (cached) setShown(current => current?.summary === cached ? current : { key, summary: cached });
     bridgeApi.usageSummary(summaryParams(window_, preferences.includeImported))
-      .then(result => { if (!cancelled) setSummary(result); })
+      .then(result => {
+        if (cancelled) return;
+        summaryCache.set(key, result);
+        setShown({ key, summary: result });
+      })
       .catch(error => {
         if (!cancelled) {
-          setSummary(null);
+          summaryCache.delete(key);
+          setShown(null);
           onError(error instanceof Error ? error.message : String(error));
         }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [window_, preferences.includeImported, summaryTick, onError]);
+  }, [window_, key, preferences.includeImported, summaryTick, onError]);
 
   useEffect(() => {
     bridgeApi.listUsagePriceOverrides().then(setOverrides).catch(() => undefined);
@@ -135,15 +171,17 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
 
   useEffect(() => {
     let cancelled = false;
-    setScanning(preferences.includeImported);
+    const scanNow = preferences.includeImported && (refreshTick > 0 || autoScanDue());
+    setScanning(scanNow);
     setScanFailed(false);
     setScanNote(null);
     const scan = async () => {
       try {
         const discovered = await bridgeApi.listUsageHistorySources();
         if (cancelled) return;
+        cachedSources = discovered;
         setSources(discovered);
-        if (!preferences.includeImported) return;
+        if (!scanNow) return;
 
         let sourceIds: string[] | undefined;
         let imported = 0;
@@ -182,11 +220,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             }
           }
           setScanFailed(warnings.size > 0);
-          setScanNote(`Loading history. Imported ${formatCount(imported)} records so far.`);
+          setScanNote(`Scanning history. Imported ${formatCount(imported)} records so far.`);
           const updated = await bridgeApi.listUsageHistorySources();
           if (cancelled) return;
+          cachedSources = updated;
           setSources(updated);
         } while (sourceIds.length > 0);
+        if (warnings.size === 0) lastAutoScanAt = Date.now();
         setScanNote(warnings.size > 0
           ? `Imported ${formatCount(imported)} records. ${[...warnings].join(" ")} Totals are incomplete.`
           : `Imported ${formatCount(imported)} records in ${(durationMs / 1000).toFixed(1)} s.`);
@@ -200,7 +240,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       } finally {
         if (!cancelled) {
           setScanning(false);
-          if (preferences.includeImported) {
+          if (scanNow) {
             setLoading(true);
             setSummaryTick(tick => tick + 1);
           }
@@ -246,10 +286,14 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
     ? sources.filter(source => source.origin !== "dashboard" && source.coverageState !== "complete" && source.coverageState !== "empty")
     : [];
   const dashboardSources = preferences.includeImported ? summary?.sources.filter(source => source.origin === "dashboard") ?? [] : [];
-  const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported")
+  // The stored figures stay on screen while a scan or refetch runs: they are
+  // what the last finished scan imported, and the refetch replaces them in
+  // place. Only a source that is actually incomplete marks the total partial,
+  // not the scan being in flight.
+  const historyIncomplete = preferences.includeImported && (scanFailed || incompleteSources.some(source => source.capability === "supported")
     || dashboardSources.some(source => source.coverageState !== "complete" && source.coverageState !== "empty"));
-  const partialTotal = loading || historyIncomplete;
-  const partialLabel = scanning ? "Loading history" : loading ? "Updating usage" : "History incomplete";
+  const partialLabel = historyIncomplete ? "History incomplete" : null;
+  const otherWindow = shown !== null && shown.key !== key;
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
@@ -275,7 +319,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </select>
       </div>
 
-      {report && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
+      {report && !otherWindow && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
         {incompleteSources.map(source => <li key={source.id}>{source.coverageState === "unsupported"
           ? `${harnessLabel(source.agent)}: ${source.coverageReason ?? "History is unavailable."}`
           : source.coverageState === "stale" || source.coverageState === "unreadable" ? `${harnessLabel(source.agent)} history needs a refresh.`
@@ -285,8 +329,9 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate or complete pricing inputs; their cost is unknown, not free. Their tokens are included.</li>}
       </ul>}
 
-      {loading && !summary ? <div role="status" className="grid h-56 place-items-center text-caption text-muted-foreground"><LoaderCircle size={16} className="animate-spin" aria-hidden="true" /><span className="sr-only">Loading usage</span></div> : report && <>
-          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} partial={partialTotal ? partialLabel : null} />
+      {loading && !summary ? <UsageLoadingState /> : report && <>
+        <div aria-busy={loading || scanning} className={cn("transition-opacity", otherWindow && "opacity-50")}>
+          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} partial={partialLabel} />
           <section className={cn(CARD, "mt-6 py-3")} aria-label="Breakdown table">
             <button type="button" aria-expanded={tableOpen} aria-controls="usage-breakdown-table" onClick={() => setTableOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
               <h2 className="text-ui font-medium text-foreground">Breakdown table</h2>
@@ -295,6 +340,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             </button>
             {tableOpen && <div id="usage-breakdown-table" className="mt-3"><BreakdownTables report={report} window={window_} /></div>}
           </section>
+        </div>
 
         <section className={cn(CARD, "mt-4")} aria-label="History sources">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

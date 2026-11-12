@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { LoaderCircle as CircleNotch } from "lucide-react";
+import { Skeleton, SkeletonRegion, SkeletonRows } from "@/components/ui/skeleton";
 import { bridgeApi } from "../api";
 import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
@@ -15,6 +15,7 @@ import { SettingsRail } from "./settings/SettingsRail";
 import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
+import { NotificationsPage } from "./settings/NotificationsPage";
 import type { UpdateInfo } from "../updater";
 import { PermissionsSection } from "./settings/PermissionsPage";
 import { ComposerPage } from "./settings/ComposerPage";
@@ -26,6 +27,7 @@ import type { StorageCopilotHost } from "./settings/StorageCopilot";
 import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
 import { ClonesPage } from "./settings/ClonesPage";
+import { KeysPage } from "./settings/KeysPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { primarySection, SECTION_LABELS, type Section } from "./settings/sections";
 import { ChatDefaultsPage } from "./settings/ChatDefaultsPage";
@@ -253,6 +255,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const generalLinks = <SettingsGroup label="Preferences">
     <SettingsRow label="Voice" description="Private, on-device dictation and local speech model setup." onOpen={() => navigate("voice")} />
     <SettingsRow label="Typing & search" description="Text suggestions while you type, and how Bridge searches chat history." onOpen={() => navigate("composer")} />
+    <SettingsRow label="Notifications" description="Toasts, banners and sounds for each kind of notice, and quiet hours." onOpen={() => navigate("notifications")} />
     <SettingsRow label="Menu bar" description="Show account usage and spend in the macOS menu bar." onOpen={() => navigate("menuBar")} />
     <SettingsRow label="Updates" description={availableUpdate ? `Bridge ${availableUpdate.version} is available.` : "Check for new versions of Bridge."} onOpen={() => navigate("updates")} />
   </SettingsGroup>;
@@ -274,7 +277,10 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     />}
     <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
 
-      {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
+      {busy && !config ? <SkeletonRegion label="Loading settings" className="mx-auto w-full max-w-page space-y-6 px-5 pb-12 pt-6 sm:px-8">
+        <div className="space-y-2"><Skeleton className="h-6 w-48" /><Skeleton index={1} className="w-72 max-w-full" /></div>
+        <SkeletonRows rows={4} trailing />
+      </SkeletonRegion> : null}
 
       {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
       {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} onOpenAgents={() => navigate("agents")} />}
@@ -283,6 +289,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "appearance" && <AppearancePage />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}
       {section === "menuBar" && <MenuBarSettingsPage />}
+      {section === "notifications" && <NotificationsPage />}
 
       {section === "permissions" && config && <PermissionsSection
         policy={config.permissionPolicy}
@@ -290,7 +297,10 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         busy={busy}
         saved={saved}
         onChange={policy => void savePolicy(policy)}
-        extra={<SettingsGroup label="Browser access"><SettingsRow label="Browser copies" description="How agents use a separate browser for work that needs sign-in." onOpen={() => navigate("clones")} /></SettingsGroup>}
+        extra={<>
+          <SettingsGroup label="Browser access"><SettingsRow label="Browser copies" description="How agents use a separate browser for work that needs sign-in." onOpen={() => navigate("clones")} /></SettingsGroup>
+          <SettingsGroup label="Keys"><SettingsRow label="API keys" description="Keys agents can use on the sites you allow, without ever seeing them." onOpen={() => navigate("keys")} /></SettingsGroup>
+        </>}
       />}
 
       {section === "composer" && <ComposerPage adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError} />}
@@ -302,6 +312,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "archives" && <ArchivedChatsPage />}
       {section === "workers" && <WorkersPage adapters={adapters} />}
       {section === "clones" && <ClonesPage onError={onError} />}
+      {section === "keys" && <KeysPage onError={onError} />}
       {section === "work" && <WorkSettingsSection onError={onError} onOpenBoard={onOpenWorkBoard} />}
 
       {section === "agents" && config && <PresetsPage

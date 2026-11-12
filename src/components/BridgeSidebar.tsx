@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
-import type { Session, SessionStatus, Workspace } from "../types";
+import { FittedTitle } from "./FittedTitle";
+import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
@@ -45,11 +46,20 @@ function readWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
 }
 
+function toggleKey(keys: Set<string>, key: string): Set<string> {
+  const next = new Set(keys);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
 // Working, waiting, and failure states pair a status dot with readable text.
-function rowStatus(status: SessionStatus, liveAgents = 0): { label: string; dot: string } | null {
+// An unread request anywhere in the chat's tree reads as waiting too: workers
+// never get a row, so their approvals surface on the chat that started them.
+function rowStatus(status: SessionStatus, liveAgents = 0, unread?: AttentionKind): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
+  if (bucket === "waiting" || unread === "needsYou") return { label: "needs you", dot: "bg-warning" };
   if (bucket === "active") return { label: "working", dot: "bg-success" };
-  if (bucket === "waiting") return { label: "needs you", dot: "bg-warning" };
   if (bucket === "failed") return { label: "failed", dot: "bg-destructive" };
   // The orchestrator's turn is over but the agents it started are not. A
   // different dot, because the chat is busy without being the one working.
@@ -70,6 +80,7 @@ function ChatRow({
   forkLabel,
   onJumpToParent,
   liveAgents,
+  unread,
 }: {
   chat: Session;
   active: boolean;
@@ -84,10 +95,14 @@ function ChatRow({
   onJumpToParent?: () => void;
   /** Live agents under this chat, counted by the host from every session. */
   liveAgents?: number;
+  /** The strongest unread kind in this chat's tree, from the attention ledger. */
+  unread?: AttentionKind;
 }) {
   const name = chatName(chat);
-  const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
-  const status = rowStatus(chat.status, liveAgents);
+  // The hover names the chat in full: the ladder's longest rung, whatever width shows.
+  const full = chat.titleLadder?.at(-1) ?? name;
+  const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
+  const status = rowStatus(chat.status, liveAgents, unread);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -110,7 +125,15 @@ function ChatRow({
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-        <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        {unread && <span className="sr-only">Unread: </span>}
+        <span className="flex min-w-0 items-center gap-1.5">
+          {unread && <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />}
+          <FittedTitle
+            title={name}
+            ladder={chat.title ? chat.titleLadder : undefined}
+            className={cn("min-w-0 flex-1 truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", (active || unread) && "font-medium")}
+          />
+        </span>
         {/* The fork origin is extra context, not a replacement for the status
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}
@@ -373,15 +396,15 @@ function ActionRow({
   active = false,
   disabled = false,
   chord,
-  badge = 0,
+  badge,
 }: {
   icon: LucideIcon;
   label: string;
   onClick: () => void;
   active?: boolean;
   disabled?: boolean;
-  /** A count of things waiting on the person; nothing shows at zero. */
-  badge?: number;
+  /** A count of things waiting on the person, read after the label. */
+  badge?: { count: string; label: string };
   /** Advertise the row's binding in its tooltip, read from the keymap so the
    *  two cannot disagree. The accessible name stays the plain label. */
   chord?: CommandId;
@@ -392,7 +415,7 @@ function ActionRow({
       onClick={onClick}
       disabled={disabled}
       title={chord ? `${label}  ${chordLabel(chord)}` : label}
-      aria-label={label}
+      aria-label={badge ? `${label}, ${badge.label}` : label}
       aria-current={active ? "page" : undefined}
       className={cn(
         "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-[13px] tracking-[-0.008em] transition-colors",
@@ -402,10 +425,21 @@ function ActionRow({
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       {label}
-      {badge > 0 && <span className="ml-auto rounded-full bg-foreground px-1.5 text-[10px] font-semibold leading-4 text-background">{badge}</span>}
+      {badge && <span aria-hidden="true" className="ml-auto rounded-full bg-foreground/10 px-1.5 text-caption tabular-nums text-muted-foreground">{badge.count}</span>}
     </button>
   );
 }
+
+/** The list read is capped, so a full page reads as "50+" rather than a count
+ *  that stops at the cap and looks exact. */
+export function pendingBadge(pending: number): { count: string; label: string } | undefined {
+  if (pending <= 0) return undefined;
+  const count = pending >= MAX_MEMORY_LIST ? `${MAX_MEMORY_LIST}+` : String(pending);
+  return { count, label: `${count} ${pending === 1 ? "proposal" : "proposals"} to review` };
+}
+
+/** `MAX_MEMORY_LIST_LIMIT` in bridge-protocol: one list read returns at most this many. */
+const MAX_MEMORY_LIST = 50;
 
 export type BridgeSidebarProps = {
   /** Every top-level session. The rail derives both the project tree and the
@@ -415,15 +449,20 @@ export type BridgeSidebarProps = {
   /** Each chat's live descendant agents. Workers never reach `chats`, so the
    * host counts them from every session and hands the answer in. */
   liveAgents?: LiveAgents;
+  /** Top-level chat id to the strongest unread kind in its tree
+   * (`attention/unread_summary`'s `byChat`). */
+  unread?: Readonly<Record<string, AttentionKind>>;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
   activeSessionId?: string;
   projectsActive: boolean;
   memoryActive?: boolean;
+  /** Memory proposals waiting for review. Nothing shows at zero. */
+  memoryPending?: number;
   marketplaceActive: boolean;
   usageActive?: boolean;
-  gitplaceActive?: boolean;
+  pullsActive?: boolean;
   agentFleetActive: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
@@ -449,12 +488,15 @@ export type BridgeSidebarProps = {
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
+  /** Bridge Notes: capture, pages and tasks. Not workspace-gated either. */
+  onOpenNotes?: () => void;
+  notesActive?: boolean;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
-  /** Drawn at the end of the bottom rail, after Gitplace: the usage dot. */
+  /** Drawn at the end of the bottom rail, after Pulls: the usage dot. */
   railTrailing?: React.ReactNode;
   /** GitHub for any repository, with no chat open. */
-  onOpenGitplace?: () => void;
+  onOpenPulls?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   /** Open the search field on `query` and search deeper, as `/find` does.
@@ -484,13 +526,16 @@ export type BridgeSidebarProps = {
 export function BridgeSidebar({
   chats,
   liveAgents,
+  unread,
   workspaces,
   activeSessionId,
   projectsActive,
   memoryActive = false,
+  memoryPending = 0,
+  notesActive = false,
   marketplaceActive,
   usageActive = false,
-  gitplaceActive = false,
+  pullsActive = false,
   agentFleetActive,
   missionControlActive,
   settingsActive,
@@ -509,9 +554,10 @@ export function BridgeSidebar({
   onOpenAgentFleet,
   onOpenMissionControl,
   onOpenMemory,
+  onOpenNotes,
   onOpenUsage,
   railTrailing,
-  onOpenGitplace,
+  onOpenPulls,
   onOpenSettings,
   onOpenSession,
   searchRequest,
@@ -665,14 +711,8 @@ export function BridgeSidebar({
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
 
-  const toggleFold = useCallback((key: string) => {
-    setFoldedGroups(current => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
+  const toggleFold = useCallback((key: string) => setFoldedGroups(current => toggleKey(current, key)), []);
+  const toggleShownInFull = useCallback((key: string) => setShownInFull(current => toggleKey(current, key)), []);
 
   const agents = useMemo(() => agentOptions(chats), [chats]);
   const chatsById = useMemo(() => new Map(chats.map(chat => [chat.id, chat])), [chats]);
@@ -824,17 +864,18 @@ export function BridgeSidebar({
 
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" badge={workflowsBadge} onClick={onOpenWorkflows} active={workflowsActive} />}
+          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" badge={workflowsBadge > 0 ? { count: String(workflowsBadge), label: `${workflowsBadge} waiting for you` } : undefined} onClick={onOpenWorkflows} active={workflowsActive} />}
           {/* The work-board stays off the nav for now. Routing props remain on the
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          {onOpenNotes && <ActionRow icon={NotebookPen} label="Notes" chord="open-notes" onClick={onOpenNotes} active={notesActive} />}
           {/* A terminal for every stream of work: named for what it is. */}
           <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
-          <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+          <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} badge={pendingBadge(memoryPending)} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
-          {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
+          {onOpenPulls && <ActionRow icon={GitPullRequest} label="Pulls" onClick={onOpenPulls} active={pullsActive} />}
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
@@ -863,7 +904,8 @@ export function BridgeSidebar({
           {groups.map(group => {
             // Capped while searching too: a one-letter query matches nearly
             // every chat, and mounting all of them froze the field.
-            const capped = !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            const overCap = group.chats.length > GROUP_ROW_CAP;
+            const capped = overCap && !shownInFull.has(group.key);
             // Folding needs a header to unfold from.
             const folded = !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
@@ -914,19 +956,21 @@ export function BridgeSidebar({
                     forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                     liveAgents={liveAgents?.get(chat.id)?.length}
+                    unread={unread?.[chat.id]}
                   />
                 );
               })}
-                {capped && !folded && (
+                {overCap && !folded && (
                   <button
                     type="button"
-                    onClick={() => setShownInFull(current => new Set(current).add(group.key))}
+                    aria-expanded={!capped}
+                    onClick={() => toggleShownInFull(group.key)}
                     className={cn(
                       "flex h-6 w-full items-center rounded-md text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                       group.label ? "pl-7" : "px-2",
                     )}
                   >
-                    Show {group.chats.length - GROUP_ROW_CAP} more
+                    {capped ? `Show ${group.chats.length - GROUP_ROW_CAP} more` : "Show less"}
                   </button>
                 )}
               </div>
@@ -940,12 +984,12 @@ export function BridgeSidebar({
         </div>
 
         {/* A rail of achromatic icon buttons pinned to the bottom: settings
-            (the account's settings entry) and Gitplace. */}
+            (the account's settings entry) and Pulls. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
           <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
-          {/* Source control is Gitplace. The usage dot follows it: a quick
+          {/* Source control is Pulls. The usage dot follows it: a quick
               look at account quota, with the Usage row for the full screen. */}
-          {onOpenGitplace && <RailBottomButton label="Gitplace" active={gitplaceActive} onClick={onOpenGitplace}>
+          {onOpenPulls && <RailBottomButton label="Pulls" active={pullsActive} onClick={onOpenPulls}>
             <GitPullRequest size={16} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>}
           {railTrailing}

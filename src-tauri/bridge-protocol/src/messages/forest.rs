@@ -211,6 +211,9 @@ pub struct CompletionSummary {
 pub struct SessionForestSnapshot {
     pub session_id: String,
     pub entries: Vec<SessionEntry>,
+    /// Latest running process snapshots, independent of the history window.
+    #[serde(default)]
+    pub active_process_entries: Vec<SessionEntry>,
     pub head: Option<SessionHead>,
     pub leaves: Vec<SessionEntry>,
     pub worker_leases: Vec<WorkerLease>,
@@ -269,6 +272,7 @@ mod tests {
         let snapshot = SessionForestSnapshot {
             session_id: "s-1".into(),
             entries: vec![entry(1), entry(2)],
+            active_process_entries: vec![],
             head: Some(SessionHead {
                 session_id: "s-1".into(),
                 active_entry_id: Some("e-2".into()),

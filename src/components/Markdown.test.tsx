@@ -3,8 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
+import { withNotesContext } from "../notesBrief";
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -12,6 +13,24 @@ const mermaidMock = vi.hoisted(() => ({
   render: vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' }),
 }));
 vi.mock("mermaid", () => ({ default: mermaidMock }));
+
+describe("rich fences shared with the notes editor", () => {
+  it("names the rich fence kinds and nothing else", () => {
+    expect(richFenceKind("mermaid")).toBe("mermaid");
+    expect(richFenceKind(" Mermaid ")).toBe("mermaid");
+    expect(richFenceKind("diagram")).toBe("diagram");
+    expect(richFenceKind("HTML")).toBe("html");
+    for (const alias of ["math", "latex", "tex"]) expect(richFenceKind(alias)).toBe("math");
+    for (const plain of ["", "ts", "rust", "storage-plan", "mermaidx"]) expect(richFenceKind(plain), plain).toBeNull();
+  });
+
+  it("renders a rich fence with the chat's renderer", () => {
+    expect(renderToStaticMarkup(<RichFence lang="math" body="x^2" />)).toContain("katex");
+    expect(renderToStaticMarkup(<RichFence lang="html" body="<b>hi</b>" />)).toContain('sandbox=""');
+    expect(renderToStaticMarkup(<RichFence lang="mermaid" body="graph TD; A-->B" />)).toContain("Rendering diagram");
+    expect(renderToStaticMarkup(<RichFence lang="ts" body="let x" />)).toBe("");
+  });
+});
 
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
@@ -105,6 +124,24 @@ describe("DiagramBlock rendering", () => {
     expect(html).toContain("Could not render this diagram");
   });
 
+  it("offers a fullscreen affordance beside copy, without dropping either", () => {
+    const spec = JSON.stringify({
+      nodes: [{ id: "a", row: 0, col: 0, label: "start" }],
+      edges: [],
+      caption: "c",
+      ariaLabel: "a",
+    });
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\n" + spec + "\n```"} />);
+    expect(html).toContain("rich-block-actions");
+    expect(html).toContain('aria-label="Fullscreen"');
+    expect(html).toContain('aria-label="Copy"');
+  });
+
+  it("does not offer fullscreen for a diagram that failed to parse", () => {
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\nnot json\n```"} />);
+    expect(html).not.toContain('aria-label="Fullscreen"');
+  });
+
 });
 
 describe("Mermaid rendering", () => {
@@ -147,6 +184,20 @@ describe("Mermaid rendering", () => {
     await act(async () => { root.render(<Markdown text={"```mermaid\ninvalid\n```"} />); });
     expect(container.textContent).toContain("Could not render this Mermaid diagram");
     expect(container.querySelector(".code-block")?.textContent).toContain("invalid");
+  });
+
+  it("opens the same rendered diagram fullscreen and closes again", async () => {
+    await act(async () => { root.render(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />); });
+    const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+    await act(async () => { open.click(); });
+    // A wide flowchart is exactly the case the overlay exists for: labels that
+    // fit a chat column are unreadable, and the window is the only way out.
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="mermaid fullscreen"]') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(overlay.querySelector('[data-testid="mermaid-svg"]')).toBeTruthy();
+    await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[aria-label="mermaid fullscreen"]')).toBeNull();
   });
 
   it("re-renders when the active theme changes", async () => {
@@ -256,6 +307,37 @@ describe("copy affordances (interactive)", () => {
     expect(button.textContent).toContain("Copied");
   });
 
+  it("DiagramBlock opens fullscreen from the toolbar and zooms without clipping", async () => {
+    const spec = JSON.stringify({
+      nodes: [
+        { id: "a", row: 0, col: 0, label: "start" },
+        { id: "b", row: 1, col: 0 },
+      ],
+      edges: [{ from: "a", to: "b" }],
+      caption: "A leads to B.",
+      ariaLabel: "Diagram: A leads to B.",
+    });
+    await act(async () => { root.render(<Markdown text={`\`\`\`diagram\n${spec}\n\`\`\``} />); });
+    const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+
+    await act(async () => { open.click(); });
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="diagram fullscreen"]') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(container.contains(overlay)).toBe(false);
+    // The figure and its caption come along; the overlay is a wider look at
+    // the same drawing, not a different rendering.
+    expect(overlay.querySelector("svg")).toBeTruthy();
+    expect(overlay.textContent).toContain("A leads to B.");
+
+    await act(async () => { (overlay.querySelector('[aria-label="Zoom in"]') as HTMLButtonElement).click(); });
+    expect(overlay.textContent).toContain("125%");
+
+    await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
+    expect(document.body.querySelector('[aria-label="diagram fullscreen"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fullscreen"]')).toBeTruthy();
+  });
+
   it("HtmlBlock's fullscreen toggle opens and closes an overlay without weakening the sandbox", async () => {
     await act(async () => { root.render(<Markdown text={"```html\n<h1>hi</h1>\n```"} />); });
     const open = container.querySelector('[aria-label="Fullscreen"]') as HTMLButtonElement;
@@ -281,6 +363,24 @@ describe("copy affordances (interactive)", () => {
   });
 });
 
+class MockIntersectionObserver {
+  static instances: MockIntersectionObserver[] = [];
+  readonly callback: IntersectionObserverCallback;
+  readonly observed: Element[] = [];
+  disconnected = false;
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    MockIntersectionObserver.instances.push(this);
+  }
+  observe(element: Element) { this.observed.push(element); }
+  unobserve() { /* one-shot hook never unobserves */ }
+  disconnect() { this.disconnected = true; }
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+  trigger(isIntersecting: boolean) {
+    this.callback([{ isIntersecting, target: this.observed[0] } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+  }
+}
+
 describe("CodeBlock async colorization", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -289,6 +389,7 @@ describe("CodeBlock async colorization", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     pending = [];
+    MockIntersectionObserver.instances = [];
     vi.spyOn(highlight, "colorizeCode").mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -299,6 +400,7 @@ describe("CodeBlock async colorization", () => {
     act(() => { root.unmount(); });
     container.remove();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -358,6 +460,35 @@ describe("CodeBlock async colorization", () => {
     expect(code.textContent).toBe(body);
     expect(code.querySelector("script, .stx-keyword")).toBeNull();
   });
+
+  it("does not colorize a block that has never been in the viewport", () => {
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    startColorization();
+    expect(highlight.colorizeCode).not.toHaveBeenCalled();
+    expect((container.querySelector("code.stx") as HTMLElement).innerHTML).toBe("const x = 1;");
+  });
+
+  it("colorizes once the block reaches the viewport and keeps it after it leaves", async () => {
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    const observer = MockIntersectionObserver.instances[0];
+    startColorization();
+    expect(highlight.colorizeCode).not.toHaveBeenCalled();
+
+    act(() => observer.trigger(true));
+    startColorization();
+    expect(highlight.colorizeCode).toHaveBeenCalledTimes(1);
+    expect(highlight.colorizeCode).toHaveBeenCalledWith("const x = 1;", "ts");
+    await act(async () => { pending[0](colored("x")); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toBe(colored("x"));
+
+    act(() => observer.trigger(false));
+    startColorization();
+    expect(highlight.colorizeCode).toHaveBeenCalledTimes(1);
+    expect(code.innerHTML).toBe(colored("x"));
+  });
 });
 
 describe("link scheme allowlist", () => {
@@ -375,6 +506,20 @@ describe("link scheme allowlist", () => {
     const safe = renderToStaticMarkup(<Markdown text={"[docs](https://example.test/x) and [mail](mailto:me@example.test)"} />);
     expect(safe).toContain('href="https://example.test/x"');
     expect(safe).toContain('href="mailto:me@example.test"');
+  });
+
+  it("renders a note link as an anchor", () => {
+    const html = renderToStaticMarkup(<Markdown text={"Saved as [Reading list](bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c)."} />);
+    expect(html).toContain('<a href="bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c" data-note-link="">Reading list</a>');
+    expect(html).not.toContain("target=");
+  });
+
+  it("keeps a bridge link that is not a page as text", () => {
+    for (const url of ["bridge://p/a.b", "bridge://x/01a1bc34-8f0f-7013-a72c-51e46d404d3c", "bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c/x"]) {
+      const html = renderToStaticMarkup(<Markdown text={`[page](${url})`} />);
+      expect(html, url).not.toContain("<a ");
+      expect(html).toContain("page");
+    }
   });
 });
 
@@ -525,5 +670,27 @@ describe("storage agent blocks", () => {
     expect(html).toContain("Storage page snapshot");
     expect(html).toContain("<details");
     expect(html).not.toContain("```");
+  });
+
+  it("shows a key Bridge kept out of the chat as a chip, not a raw placeholder", () => {
+    const html = renderToStaticMarkup(<MentionText text={"list my repos with [secret:sec_3f9c2a71d4b84e0f] and [secret:OPENAI_API_KEY] please"} />);
+    expect(html.startsWith("list my repos with ")).toBe(true);
+    expect(html).toContain('aria-label="API key, kept by Bridge"');
+    expect(html).toContain('aria-label="OPENAI_API_KEY, kept by Bridge"');
+    expect(html).toContain(" please");
+    expect(html.replace(/title="[^"]*"/g, "")).not.toContain("[secret:");
+  });
+
+  it("leaves bracketed text that is not a placeholder alone", () => {
+    const html = renderToStaticMarkup(<MentionText text={"see [secret: notes] and [secret:a b]"} />);
+    expect(html).toBe("see [secret: notes] and [secret:a b]");
+  });
+
+  it("folds the Notes page a message carries into a chip", () => {
+    const html = renderToStaticMarkup(<MentionText text={withNotesContext("tidy this", "Open page: Launch (id n1, seq 3)\n---\n```js\nx\n```")} />);
+    expect(html.startsWith("tidy this")).toBe(true);
+    expect(html).toContain("Notes page");
+    expect(html).toContain('aria-label="notes-context"');
+    expect(html).not.toContain("````");
   });
 });

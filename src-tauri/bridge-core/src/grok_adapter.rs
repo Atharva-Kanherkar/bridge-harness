@@ -1486,6 +1486,7 @@ mod tests {
 
         let worktree = tempfile::tempdir().unwrap();
         let started = adapter.start(StartRequest {
+            session_id: None,
             cwd: worktree.path().to_str().unwrap(),
             model: Some("grok-code"),
             effort: None,
@@ -1494,6 +1495,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         });
         std::env::remove_var("BRIDGE_GROK_BIN");

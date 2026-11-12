@@ -1,13 +1,26 @@
 import { briefingOptions, isBriefing } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
+/** The `bridge` server's tools that only read or display. */
+export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search"];
+/** The `bridge` server's tools whose only effect waits for the person's review:
+ *  a memory proposal changes nothing until they approve it in Bridge, and a
+ *  drafted message is a card the person edits and sends themselves. */
+export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft"];
+
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
     case "ReadOnly":
       return readOnlyOptions({ networkAllowed, mcpServers });
     case "Shared":
     case "Isolated":
-      return { permissionMode: "acceptEdits" };
+      // Bridge renders no Claude permission prompt, so anything that needs one
+      // is refused outright. Bridge's own read-only tools change nothing and
+      // run, and so does a memory proposal, which Bridge itself puts in front
+      // of the person; notes writes stay refused until Bridge asks for them.
+      return mcpServers.bridge
+        ? { permissionMode: "acceptEdits", allowedTools: [...BRIDGE_READ_TOOLS, ...BRIDGE_REVIEWED_TOOLS] }
+        : { permissionMode: "acceptEdits" };
     case "Full":
     default:
       return {
@@ -27,7 +40,7 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null }, ask = null) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -37,7 +50,9 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
         // User settings are required for user skills, commands, agents, and native
         // connector sign-in. Bridge's PreToolUse hook remains authoritative for
         // read-only workers even when user permissions contain broader allows.
-        settingSources: ["user", "project", "local"],
+        // A folder's own settings can run commands and widen permissions, so
+        // they load only for a folder Claude Code trusts (see trust.mjs).
+        settingSources: projectTrusted ? ["user", "project", "local"] : ["user"],
         skills: "all",
         strictMcpConfig: false,
         mcpServers,
@@ -62,6 +77,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(cwd ? { cwd } : {}),
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
     includePartialMessages: true,
+    forwardSubagentText: true,
+    perTaskStopAffordance: true,
     ...(instructions
       ? { systemPrompt: toolless ? instructions : { type: "preset", preset: "claude_code", append: instructions } }
       : {}),

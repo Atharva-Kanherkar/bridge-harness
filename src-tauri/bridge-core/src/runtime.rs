@@ -14,7 +14,7 @@ use crate::{
 use portable_pty::{Child, MasterPty};
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
@@ -116,6 +116,8 @@ pub struct BridgeCore {
     pub github_surface: crate::github_surface::GithubSurface,
     pub github_poller: crate::github_poll::GithubPoller,
     pub connector_poller: crate::connector_runs_live::ConnectorPoller,
+    /// Short presence leases that name the one client posting OS banners.
+    pub attention_presence: crate::attention_presence::PresenceRegistry,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
@@ -144,6 +146,8 @@ pub struct BridgeCore {
     /// The notify-only live event channel; durable history stays in SQLite.
     /// See `events.rs` for the publish-after-commit rules.
     pub events: EventBus,
+    /// Bridge Notes: its own `notes.db`, one write path for people and agents.
+    pub notes: Arc<crate::notes::service::NotesService>,
     /// Sessions with an exclusive lifecycle operation in flight (adapter
     /// start, model switch), mapped to the operation name for error messages.
     /// Lifecycle flows span host-run blocking steps, so this claim — not the
@@ -242,6 +246,10 @@ pub struct DelegationState {
     /// A stop is queued like a steer, but it is a decision rather than
     /// guidance: it settles the worker whether or not the worker cooperates.
     pub pending_worker_stops: HashMap<String, Vec<delegation::StopRequest>>,
+    /// A `bridge-wait` arms at the turn boundary, after the turn's own
+    /// delegations have launched, so `"all"` covers the workers it just started.
+    /// One per orchestrator: the last block of the turn wins.
+    pub pending_worker_waits: HashMap<String, delegation::WaitRequest>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
@@ -354,7 +362,7 @@ impl BridgeCore {
             snapshot_dir: scratch.join("history-snapshots"),
             skill_store: scratch.join("skills"),
             skill_consents: Arc::new(Mutex::new(HashMap::new())),
-            credential_broker: Arc::new(credential_broker::CredentialBroker::openai().unwrap()),
+            credential_broker: Arc::new(credential_broker::CredentialBroker::new().unwrap()),
             browser_bridge: browser_bridge::BrowserBridgeSupervisor::dormant(
                 scratch.join("no-extension"),
                 scratch.join("browser-site-metrics.json"),
@@ -366,6 +374,7 @@ impl BridgeCore {
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
+            attention_presence: crate::attention_presence::PresenceRegistry::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             chat_activity: Mutex::new(HashMap::new()),
@@ -373,6 +382,7 @@ impl BridgeCore {
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             steer_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
+            notes: Arc::new(crate::notes::service::NotesService::open(scratch, Arc::new(|_: &str| false)).unwrap()),
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
@@ -441,7 +451,9 @@ impl BridgeCore {
                 Some(config.data_dir.join("model-catalogs/opencode.json")),
             )?,
         );
-        let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()?);
+        let credential_broker = Arc::new(credential_broker::CredentialBroker::new()?);
+        // Names and sites only; values stay in the Keychain until a call.
+        credential_broker.load_saved(&connection)?;
 
         // The catalog, and what it contributes to resolution. `load` never
         // fails for a bad cache — a corrupt or withdrawn snapshot loses to the
@@ -473,6 +485,22 @@ impl BridgeCore {
         #[cfg(target_os = "macos")]
         let browser_clone_orchestrator =
             build_clone_orchestrator(Arc::clone(&browser_clones))?;
+        let notes = Arc::new(crate::notes::service::NotesService::open(
+            &config.data_dir,
+            crate::notes::live::project_check(db_path.clone()),
+        )?);
+        {
+            let events = events.clone();
+            notes.set_listener(Arc::new(move |change: &bridge_protocol::messages::NotePageChanged| {
+                events.publish(crate::events::CoreEvent::NotesPageChanged(change.clone()));
+            }));
+        }
+        {
+            let events = events.clone();
+            notes.set_progress_listener(Arc::new(move |progress: &bridge_protocol::messages::NotePassProgress| {
+                events.publish(crate::events::CoreEvent::NotesPassProgress(progress.clone()));
+            }));
+        }
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
@@ -509,6 +537,7 @@ impl BridgeCore {
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
+            attention_presence: crate::attention_presence::PresenceRegistry::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             chat_activity: Mutex::new(HashMap::new()),
@@ -516,6 +545,7 @@ impl BridgeCore {
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             steer_requested: Mutex::new(std::collections::HashSet::new()),
             events,
+            notes,
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
@@ -953,10 +983,12 @@ pub fn start_health_server(
     adapters: Vec<AdapterDescriptor>,
     credential_broker: Arc<credential_broker::CredentialBroker>,
 ) {
+    // Bound before the thread starts, so the broker knows its port before
+    // the first session is told where to call.
+    let Some(server) = credential_broker::bind(&credential_broker) else {
+        return;
+    };
     thread::spawn(move || {
-        let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
-            return;
-        };
         for request in server.incoming_requests() {
             if request.url() == "/health" {
                 let body = serde_json::json!({
@@ -982,74 +1014,7 @@ pub fn start_health_server(
                 let _ = request.respond(response);
                 continue;
             }
-            if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
-                // Handle each proxy call on its own thread so a slow (or
-                // deliberately slow-drip) upstream request cannot block /health
-                // liveness or serialize other agents behind the single accept loop.
-                let route = route.to_owned();
-                let method = request.method().as_str().to_owned();
-                let token = request
-                    .headers()
-                    .iter()
-                    .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
-                    .map(|header| header.value.as_str().to_owned())
-                    .unwrap_or_default();
-                let headers: Vec<(String, String)> = request
-                    .headers()
-                    .iter()
-                    .map(|header| (header.field.to_string(), header.value.as_str().to_owned()))
-                    .collect();
-                let broker = credential_broker.clone();
-                thread::spawn(move || {
-                    let mut request = request;
-                    let mut parts = route.splitn(3, '/');
-                    let session_id = parts.next().unwrap_or_default().to_owned();
-                    let reference = parts.next().unwrap_or_default().to_owned();
-                    let path_and_query = format!("/{}", parts.next().unwrap_or_default());
-                    let mut body = Vec::new();
-                    let result = request
-                        .as_reader()
-                        .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
-                        .read_to_end(&mut body)
-                        .map_err(BridgeError::Io)
-                        .and_then(|_| {
-                            broker.proxy(credential_broker::ProxyRequest {
-                                session_id,
-                                reference,
-                                method,
-                                path_and_query,
-                                headers,
-                                token,
-                                body,
-                            })
-                        });
-                    let response = match result {
-                        Ok(proxied) => {
-                            let mut response = tiny_http::Response::from_data(proxied.body)
-                                .with_status_code(proxied.status);
-                            if let Some(header) = proxied.content_type.and_then(|value| {
-                                tiny_http::Header::from_bytes("Content-Type", value).ok()
-                            }) {
-                                response.add_header(header);
-                            }
-                            response
-                        }
-                        Err(error) => {
-                            let body = serde_json::json!({"ok": false, "error": error.to_string()})
-                                .to_string();
-                            tiny_http::Response::from_string(body).with_status_code(400)
-                        }
-                    };
-                    let _ = request.respond(response);
-                });
-                continue;
-            }
-            let body = serde_json::json!({"ok": false, "error": "not found"}).to_string();
-            let mut response = tiny_http::Response::from_string(body).with_status_code(404);
-            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
-                response.add_header(header);
-            }
-            let _ = request.respond(response);
+            credential_broker::handle(request, &credential_broker);
         }
     });
 }

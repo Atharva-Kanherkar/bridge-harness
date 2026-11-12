@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Skeleton, SkeletonRegion, SkeletonText } from "@/components/ui/skeleton";
 import { LoaderCircle, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
@@ -41,8 +42,16 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
   </button>;
 
   if (loading && !report) {
-    return <div role="status" aria-live="polite" className="flex items-center gap-2 py-6 text-caption text-muted-foreground">
-      <LoaderCircle size={13} className="animate-spin" aria-hidden="true" />{LOADING_STEPS[Math.min(step, LOADING_STEPS.length - 1)]}…
+    return <div className="space-y-4">
+      <p role="status" aria-live="polite" className="text-caption text-muted-foreground">{LOADING_STEPS[Math.min(step, LOADING_STEPS.length - 1)]}…</p>
+      <SkeletonRegion label="Loading insights" className="space-y-3">
+        <div className={cn(CARD, "flex flex-col gap-3")}>
+          <Skeleton className="h-5 w-2/5" />
+          <SkeletonText lines={2} />
+          <div className="mt-1 grid grid-cols-3 gap-3">{[0, 1, 2].map(cell => <Skeleton key={cell} index={1} className="h-8" />)}</div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">{[0, 1, 2].map(card => <Skeleton key={card} index={card + 2} className="h-24 rounded-xl" />)}</div>
+      </SkeletonRegion>
     </div>;
   }
 

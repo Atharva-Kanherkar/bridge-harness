@@ -6,6 +6,8 @@
 //! that state; hosts (the Tauri shell today, a headless daemon later) wrap it
 //! in their own transport.
 
+pub mod account_secrets;
+pub mod api_keys;
 pub mod acp_events;
 pub mod acp_registry;
 pub mod acp_session;
@@ -17,11 +19,15 @@ pub mod agent_config;
 pub mod agent_integration;
 pub mod agent_lifecycle;
 pub mod analytics;
+pub mod attention;
+pub mod attention_presence;
+pub mod attention_wait;
 pub mod api;
 pub mod attribution_settings;
 pub mod delegation_notify;
 pub mod automations;
 pub mod backend_binding;
+mod background_activity;
 pub mod binary;
 pub mod briefing_conformance;
 pub mod briefing_policy;
@@ -45,6 +51,8 @@ pub mod browser_clone_signin;
 pub mod clone_browser_tool;
 #[cfg(all(test, target_os = "macos"))]
 mod clone_browser_eval;
+#[cfg(test)]
+mod orchestrator_wait_eval;
 /// Composes the clone process, guard, sign-in, and agent tool into the
 /// actual flow: approve, spawn, sign in, arm, drive, and destroy.
 #[cfg(target_os = "macos")]
@@ -93,6 +101,9 @@ pub mod managed_payload;
 pub mod managed_runtime;
 pub mod marketplace;
 pub mod mcp_apps;
+pub mod notes;
+pub mod outgoing;
+pub mod outgoing_tools;
 pub mod memory_activity;
 pub mod memory_consolidation;
 pub mod memory_consolidation_live;
@@ -101,6 +112,12 @@ pub mod memory_extraction_live;
 pub mod memory_ledger;
 pub mod memory_insights;
 pub mod memory_packet;
+pub mod memory_similarity;
+pub mod memory_tools;
+#[cfg(test)]
+mod memory_evals;
+#[cfg(test)]
+mod memory_properties;
 pub mod meter;
 pub mod meter_sources;
 pub mod menu_bar;
@@ -112,9 +129,11 @@ pub mod opencode_adapter;
 mod opencode_v2;
 pub mod pi_adapter;
 pub mod orchestrator;
+pub mod orchestrator_wait;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
+pub mod provider_accounts;
 pub mod provider_limit;
 pub mod policy_replay;
 pub mod project_onboarding;
@@ -136,6 +155,7 @@ pub mod routing_evaluation_live;
 pub mod routing_policy;
 mod runtime;
 pub mod secret_interception;
+pub mod harness_subagents;
 pub mod session_context;
 pub mod session_forest;
 pub mod session_input;
@@ -143,6 +163,8 @@ pub mod session_prs;
 pub mod session_recall;
 pub mod session_reference;
 pub mod session_titles;
+pub mod title_jobs;
+pub mod title_jobs_live;
 pub mod session_supervisor;
 pub mod sessions;
 pub mod skill_marketplace;

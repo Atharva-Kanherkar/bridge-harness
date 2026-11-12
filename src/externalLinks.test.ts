@@ -85,6 +85,24 @@ describe("installExternalLinkHandler", () => {
 });
 
 describe("the internal link router", () => {
+  it("routes a note link inside the app and never opens a browser", async () => {
+    installExternalLinkHandler();
+    const url = "bridge://p/01a1bc34-8f0f-7013-a72c-51e46d404d3c";
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+    const router = vi.fn().mockReturnValue(true);
+    setInternalLinkRouter(router);
+    expect(clickAnchor(url)).toBe(true);
+    expect(router).toHaveBeenCalledWith(url);
+
+    // With nothing to take it, the click still goes nowhere.
+    setInternalLinkRouter(undefined);
+    expect(clickAnchor(url)).toBe(true);
+    await Promise.resolve();
+    expect(open).not.toHaveBeenCalled();
+    expect(windowOpen).not.toHaveBeenCalled();
+    expect(router).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a URL it takes inside the app", async () => {
     const router = vi.fn().mockReturnValue(true);
     setInternalLinkRouter(router);

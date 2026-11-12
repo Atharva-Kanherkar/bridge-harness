@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { Skeleton, SkeletonRegion } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
 import type { UsageSummaryResult } from "../types";
@@ -49,6 +50,18 @@ export function PartialBadge({ label, className }: { label: string | null; class
   return <span role="status" className={cn("inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground", className)}>
     <span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />Partial total · {label}
   </span>;
+}
+
+/** First load only: the hero and chart shapes until the first summary lands. Later loads keep the last figures on screen. */
+export function UsageLoadingState() {
+  return <SkeletonRegion label="Loading usage" className="space-y-6 py-1">
+    <div className="space-y-3">
+      <Skeleton className="w-24" />
+      <Skeleton index={1} className="h-12 w-56 max-w-full sm:w-64" />
+      <Skeleton index={2} className="h-4 w-full max-w-md" />
+    </div>
+    <Skeleton index={3} className="h-36 w-full rounded-xl" />
+  </SkeletonRegion>;
 }
 
 /** `~` after a cost whose window holds unpriced records: the figure is a floor, not a total. */

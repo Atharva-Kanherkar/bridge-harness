@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { ArrowLeft, ArrowRight, Bot, CheckCircle2, LoaderCircle, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { AdapterDescriptor, ModelSetupState } from "../types";
@@ -151,7 +152,7 @@ export function ModelSetupWizard({ adapters, onComplete, onHealthChange = NOOP, 
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{stage === "choose" ? "Choose one or more. We'll help you install what's missing and sign in." : "Each selected agent needs an installation and sign-in before you enter Bridge."}</p>
         {stage === "choose" && <div className="mt-5 rounded-xl border border-border bg-muted/30 p-4 text-xs leading-relaxed text-muted-foreground"><p><strong className="text-foreground">Already on your computer:</strong> Bridge uses the copy you installed. You manage its updates.</p><p className="mt-2"><strong className="text-foreground">Installed by Bridge:</strong> a separate copy Bridge can update and remove. You still sign in with your agent account.</p></div>}
         {managed.listError && <div className="mt-4 space-y-2"><p role="alert" className="text-sm text-destructive">Could not check installation sources: {managed.listError}</p><p className="text-xs text-muted-foreground">You can retry, or use agents found by the sign-in and availability check. Bridge cannot manage those installations until detection recovers.</p>{!useDetectedAgents && <button type="button" onClick={() => setUseDetectedAgents(true)} className="min-h-9 rounded-lg border border-border px-3 text-xs">Use detected agents</button>}</div>}
-        {!managed.agents && !managed.listError ? <p role="status" className="mt-6 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle size={14} className="animate-spin" />Checking this computer…</p>
+        {!managed.agents && !managed.listError ? <SkeletonRows label="Checking this computer" rows={3} lead="icon" className="mt-5" rowClassName="p-4" />
           : stage === "choose" ? <fieldset className="mt-5 space-y-2"><legend className="sr-only">Coding agents to use</legend>{choices.map(agent => <label key={agent.agentId} className="u-glass-soft flex cursor-pointer items-center gap-3 rounded-xl border border-border-card p-4">
             <input type="checkbox" checked={selected.includes(agent.agentId)} onChange={event => { setError(undefined); setSelected(ids => event.target.checked ? [...ids, agent.agentId] : ids.filter(id => id !== agent.agentId)); }} className="size-4 accent-primary" />
             <HarnessMark harness={agent.agentId} size={18} /><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{agent.label}</span><span className="mt-1 block text-xs text-muted-foreground">{installationLabel(agent)}</span></span>

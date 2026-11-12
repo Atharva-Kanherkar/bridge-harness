@@ -27,6 +27,10 @@ pub enum ChatAccess {
 pub struct ChatModelChoice {
     pub harness: String,
     pub model: Option<String>,
+    /// The extra Claude or Codex account the chat signs in with, by its id in
+    /// the harness's `advanced.accounts`. Absent is the user's own login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Absent inherits; an explicit object containing null uses provider defaults.

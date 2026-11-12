@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { MemoryChangedPayload, MemoryExtractionSettings, MemoryRecord } from "../types";
-import { bodyLength, MemoryDialog, rememberAction } from "./MemoryDialog";
+import { bodyLength, MemoryDialog } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
   id,
@@ -27,6 +27,7 @@ let root: Root;
 let store: MemoryRecord[];
 let extractionSettings: MemoryExtractionSettings;
 let memoryHandler: ((payload: MemoryChangedPayload) => void) | undefined;
+let maxRecords: number;
 
 const flush = async () => { await act(async () => {}); };
 
@@ -85,6 +86,15 @@ beforeEach(() => {
     records: store.filter(item => item.status === (status ?? "active")),
   }));
   vi.spyOn(bridgeApi, "getExtractionSettings").mockImplementation(async () => structuredClone(extractionSettings));
+  maxRecords = 200;
+  vi.spyOn(bridgeApi, "getConsolidationSettings").mockImplementation(async () => ({
+    scopeKey: "account:local",
+    mode: "off",
+    maxRecords,
+    heldRecords: store.filter(item => item.status === "active" || item.status === "proposed").length,
+    allowRemoval: false,
+    debounceSeconds: 600,
+  }));
   vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async (mode, harness, model) => {
     if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
@@ -603,14 +613,50 @@ describe("bodyLength", () => {
     // an emoji scored two and trailing whitespace scored at all.
     expect(bodyLength("😀".repeat(2001))).toBe(2001);
     expect(bodyLength(`${"x".repeat(4000)}   \n`)).toBe(4000);
-    expect(rememberAction("😀".repeat(2001))).toBe("save");
-    expect(rememberAction(`${"x".repeat(4000)}\n\n`)).toBe("save");
   });
 });
 
-describe("rememberAction", () => {
-  it("saves at the cap and opens the dialog one character over it", () => {
-    expect(rememberAction("z".repeat(4000))).toBe("save");
-    expect(rememberAction("z".repeat(4001))).toBe("open-dialog");
+describe("memory hardening", () => {
+  it("says the scope is full, with the numbers, and points at the review queue", async () => {
+    maxRecords = 3;
+    mount();
+    await flush();
+    const banner = container.querySelector('[role="status"]');
+    expect(banner?.textContent).toContain("Memory is full.");
+    expect(banner?.textContent).toContain("3 of 3");
+    expect(banner?.textContent).toContain("no extraction runs");
+    click(buttonByText("Review 1"));
+    expect(container.textContent).toContain("Waiting for review");
+  });
+
+  it("shows no banner while the scope has room", async () => {
+    mount();
+    await flush();
+    expect(container.textContent).not.toContain("Memory is full.");
+  });
+
+  it("opens a reply as a draft to cut down and never saves it on its own", async () => {
+    mount({ initialBody: "Here's what I did. CI is green. Also, never push to main." });
+    await flush();
+    expect(textarea().value).toContain("Here's what I did.");
+    expect(container.textContent).toContain("Cut it down to the one rule or fact worth keeping");
+    expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
+    setBody("Never push to main.");
+    click(buttonNamed("Save")!);
+    await flush();
+    expect(bridgeApi.saveMemoryRecord).toHaveBeenCalledWith("Never push to main.", "preference", undefined);
+  });
+
+  it("labels what an agent proposed, in the queue and once accepted", async () => {
+    store.push(
+      { ...record("r-agent-prop", "Check upstream trackers before a hunt", "constraint"), status: "proposed", provenance: "agent_proposal", rationale: "the person said so" },
+      { ...record("r-agent", "Keeps the main checkout on main", "fact"), provenance: "agent_proposal" },
+    );
+    mount();
+    await flush();
+    expect(container.textContent).toContain("from an agent");
+    click(tab("Review"));
+    expect(container.textContent).toContain("proposed by an agent");
+    expect(container.textContent).toContain("expire");
   });
 });

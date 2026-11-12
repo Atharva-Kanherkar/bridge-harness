@@ -36,7 +36,7 @@ Architecture and agent-specific conventions live in [`AGENTS.md`](AGENTS.md) (Ta
 
 1. **Branch** from `main` with a focused change set — no unrelated refactors bundled in.
 2. **Title** — [Conventional Commits](https://www.conventionalcommits.org/) form: `feat:`, `fix:`, `docs:`, `chore:`, etc. CI may enforce this on the PR title.
-3. **Description** — use the [pull request template](.github/PULL_REQUEST_TEMPLATE.md): summary, linked issue when there is one, and the checklist.
+3. **Description** — use the [pull request template](.github/PULL_REQUEST_TEMPLATE.md): link the plan note and issue, then fill **What I did**, **Codebase affected**, **Users affected**, **Tests I ran** (output pasted unedited) and **Tradeoffs and risks**. The `PR notes` check fails until all five are there; see [`docs/pr-format.md`](docs/pr-format.md).
 4. **Tests** — add or update colocated `*.test.ts(x)` for frontend logic; Rust tests next to code or under `src-tauri/*/tests/` as appropriate.
 5. **Docs** — update user-facing or contributor docs when behavior or setup changes.
 

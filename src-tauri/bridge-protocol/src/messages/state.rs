@@ -127,6 +127,15 @@ pub struct Session {
     /// are what distinguishes a fork from a delegated worker.
     pub fork_parent_session_id: Option<String>,
     pub fork_parent_entry_id: Option<String>,
+    /// The extra Claude or Codex account this chat signs in with, by its id in
+    /// the harness's `advanced.accounts`. Null is the user's own login.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// `title` at several lengths, shortest first, all naming the same task, so
+    /// a list can show the longest one that fits. Empty when the chat has none,
+    /// or its title changed since they were written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_ladder: Vec<String>,
 }
 
 /// Mirrors `bridge_core::model::BridgeEvent` — the audit/event feed rows.
@@ -445,6 +454,8 @@ mod tests {
                 cwd: Some("/repos/demo".into()),
                 fork_parent_session_id: None,
                 fork_parent_entry_id: None,
+                account: None,
+                title_ladder: Vec::new(),
             }],
             events: vec![BridgeEvent {
                 id: JsSafeI64::new(9).unwrap(),

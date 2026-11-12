@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
-const VALID_HARNESSES: [&str; 7] = ["bridge", "codex", "claude", "cursor", "grok", "opencode", "pi"];
+const VALID_HARNESSES: [&str; 7] = VALID_HARNESS_IDS;
+/// Every harness id Bridge knows.
+pub const VALID_HARNESS_IDS: [&str; 7] = ["bridge", "codex", "claude", "cursor", "grok", "opencode", "pi"];
 const VALID_ROLES: [&str; 6] = [
     "orchestrator",
     "research",
@@ -206,6 +208,7 @@ fn validate_harness(config: &HarnessConfig) -> Result<(), BridgeError> {
             "advanced harness configuration must be a JSON object".into(),
         ));
     }
+    crate::provider_accounts::accounts(&config.id, &config.advanced)?;
     if config.id == "opencode" {
         opencode_settings(Some(config))?;
     }
@@ -216,8 +219,14 @@ pub fn opencode_settings(config: Option<&HarnessConfig>) -> Result<OpenCodeSetti
     let Some(config) = config else {
         return Ok(OpenCodeSettings::default());
     };
+    // Accounts sit beside OpenCode's own settings and are validated by
+    // `provider_accounts`; they are not OpenCode settings.
+    let mut advanced = config.advanced.clone();
+    if let Some(fields) = advanced.as_object_mut() {
+        fields.remove("accounts");
+    }
     let mut settings: OpenCodeSettings =
-        serde_json::from_value(config.advanced.clone()).map_err(|error| {
+        serde_json::from_value(advanced).map_err(|error| {
             BridgeError::Invalid(format!("invalid OpenCode advanced configuration: {error}"))
         })?;
     settings.executable_path = settings
@@ -485,6 +494,23 @@ pub fn harness_config(db: &Connection, harness: &str) -> Option<HarnessConfig> {
         .filter(|item| item.enabled)
 }
 
+/// One of a harness's extra accounts, or a message naming the missing one.
+/// Read from the stored record whether or not the harness is enabled; the
+/// enabled check belongs to the caller choosing the harness.
+pub fn account(
+    db: &Connection,
+    harness: &str,
+    id: &str,
+) -> Result<crate::provider_accounts::ProviderAccount, BridgeError> {
+    let advanced = state(db)?
+        .harnesses
+        .into_iter()
+        .find(|item| item.id == harness)
+        .map(|item| item.advanced)
+        .unwrap_or_else(empty_object);
+    crate::provider_accounts::find(harness, &advanced, id)
+}
+
 pub fn is_harness_enabled(db: &Connection, harness: &str) -> bool {
     state(db)
         .ok()
@@ -675,6 +701,31 @@ mod tests {
         assert_eq!(permission_policy(&db).unwrap(), PermissionPolicy::default());
         assert!(!permission_policy(&db).unwrap().auto_approve_provider_permissions);
         assert!(!state(&db).unwrap().permission_policy.auto_approve_provider_permissions);
+    }
+
+    #[test]
+    fn save_harness_validates_accounts() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut claude = state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "claude").unwrap();
+        claude.advanced = json!({"accounts": [{"id": "personal", "label": "Personal", "homePath": "~/.claude_personal"}]});
+        let saved = save_harness(&db, claude.clone()).unwrap();
+        let stored = saved.harnesses.iter().find(|item| item.id == "claude").unwrap();
+        assert_eq!(stored.advanced["accounts"][0]["id"], "personal");
+
+        claude.advanced = json!({"accounts": [{"id": "claude", "label": "Mine", "homePath": "~/.claude"}]});
+        assert!(save_harness(&db, claude).unwrap_err().to_string().contains("reserved"));
+
+        let mut grok = state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "grok").unwrap();
+        grok.advanced = json!({"accounts": [{"id": "a", "label": "A", "homePath": "~/.o"}]});
+        assert!(save_harness(&db, grok).unwrap_err().to_string().contains("does not support extra accounts"));
+
+        // OpenCode takes a folder; Cursor takes a key, never a folder.
+        let mut opencode = state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "opencode").unwrap();
+        opencode.advanced = json!({"accounts": [{"id": "go", "label": "Go", "homePath": "~/.opencode_go"}]});
+        save_harness(&db, opencode).unwrap();
+        let mut cursor = state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "cursor").unwrap();
+        cursor.advanced = json!({"accounts": [{"id": "work", "label": "Work", "homePath": "~/.cursor_work"}]});
+        assert!(save_harness(&db, cursor).unwrap_err().to_string().contains("API key"));
     }
 
     fn custom_agent(id: &str, name: &str, role: &str) -> AgentDefinition {

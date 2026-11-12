@@ -10,6 +10,7 @@ use std::io::{BufRead, Write};
 use serde_json::{json, Value};
 
 use super::guard::RepeatGuard;
+use super::notes_tools::{self, NotesLink};
 use super::{lint, spec, tool};
 
 /// Protocol revisions this server speaks. It answers with the client's
@@ -20,9 +21,11 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26
 /// `src/mcp-apps/visual/` and checked in, so the daemon binary carries it.
 pub const VIEW_HTML: &str = include_str!("../../../../src/mcp-apps/visual/generated/visual.html");
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct VisualServer {
     guard: RepeatGuard,
+    /// The chat's notes, when the server was launched for one.
+    notes: Option<NotesLink>,
 }
 
 fn reply(id: &Value, result: Value) -> Value {
@@ -84,6 +87,10 @@ fn refusal(errors: &[spec::SpecError]) -> Value {
 }
 
 impl VisualServer {
+    pub fn with_notes(notes: Option<NotesLink>) -> Self {
+        Self { guard: RepeatGuard::default(), notes }
+    }
+
     /// Run one `visualize` call: validate, lint, guard, then summarise.
     pub fn visualize(&mut self, arguments: &Value) -> Value {
         let errors = spec::validate(arguments);
@@ -143,15 +150,32 @@ impl VisualServer {
                             "extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": [tool::VIEW_MIME]}}
                         },
                         "serverInfo": {"name": tool::SERVER_NAME, "title": "Bridge", "version": env!("CARGO_PKG_VERSION")},
-                        "instructions": "Use visualize to draw a chart, diagram or sourced findings inline when a visual carries the answer better than prose. Most turns need none."
+                        "instructions": if self.notes.is_some() {
+                            format!("Use visualize to draw a chart, diagram or sourced findings inline when a visual carries the answer better than prose. Most turns need none. {}", notes_tools::INSTRUCTIONS)
+                        } else {
+                            "Use visualize to draw a chart, diagram or sourced findings inline when a visual carries the answer better than prose. Most turns need none.".to_owned()
+                        }
                     }),
                 )
             }
             "ping" => reply(id, json!({})),
-            "tools/list" => reply(id, json!({"tools": [tool::definition()]})),
+            "tools/list" => {
+                let mut tools = vec![tool::definition()];
+                if let Some(notes) = &self.notes {
+                    tools.extend(notes.definitions());
+                }
+                reply(id, json!({"tools": tools}))
+            }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
-                if name != tool::TOOL_NAME {
+                let chat_tool = name.starts_with("notes_")
+                    || name.starts_with("memory_")
+                    || name.starts_with("outgoing_")
+                    || name == crate::notes::tool::NOTIFY_USER;
+                if let (Some(notes), true) = (&self.notes, chat_tool) {
+                    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                    reply(id, notes.call(name, &arguments))
+                } else if name != tool::TOOL_NAME {
                     failure(id, -32602, &format!("unknown tool \"{name}\""))
                 } else {
                     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -230,6 +254,158 @@ mod tests {
 
     fn three() -> Value {
         json!([{"k": "a", "v": 1}, {"k": "b", "v": 2}, {"k": "c", "v": 3}])
+    }
+
+    struct FakeCore {
+        access: Option<&'static str>,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl notes_tools::NotesTransport for FakeCore {
+        fn get(&self, path: &str) -> Result<Value, (u16, String)> {
+            assert_eq!(path, "tools");
+            match self.access {
+                Some("write") => Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_set", "notes_draw"]})),
+                Some(_) => Ok(json!({"access": "read", "tools": ["notes_search", "notes_read"]})),
+                None => Err((0, "Bridge is not reachable".into())),
+            }
+        }
+        fn post(&self, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+            self.calls.lock().unwrap().push((path.to_owned(), body.clone()));
+            if self.access == Some("read") && path != "notes_search" && path != "notes_read" {
+                return Err((403, "this chat can read notes but not change them".into()));
+            }
+            Ok(json!({"created": {"id": "p1", "title": body["title"]}}))
+        }
+    }
+
+    fn with_core(access: Option<&'static str>) -> (VisualServer, std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>) {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let link = NotesLink::new(Box::new(FakeCore { access, calls: calls.clone() }));
+        (VisualServer::with_notes(Some(link)), calls)
+    }
+
+    fn tool_names(server: &mut VisualServer) -> Vec<String> {
+        let response = server.handle(&request(1, "tools/list", json!({}))).unwrap();
+        response["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap().to_owned()).collect()
+    }
+
+    struct MemoryCore {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl notes_tools::NotesTransport for MemoryCore {
+        fn get(&self, _path: &str) -> Result<Value, (u16, String)> {
+            Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "memory_search", "memory_propose"]}))
+        }
+        fn post(&self, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+            self.calls.lock().unwrap().push((path.to_owned(), body.clone()));
+            Ok(json!({"written": true, "proposed": {"id": "m1", "status": "proposed"}}))
+        }
+    }
+
+    struct DraftCore {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl notes_tools::NotesTransport for DraftCore {
+        fn get(&self, _path: &str) -> Result<Value, (u16, String)> {
+            Ok(json!({"access": "write", "tools": ["notes_search", "notes_read", "outgoing_draft"]}))
+        }
+        fn post(&self, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+            self.calls.lock().unwrap().push((path.to_owned(), body.clone()));
+            Ok(json!({"id": "o1", "state": "draft", "rendered": body["body"]}))
+        }
+    }
+
+    #[test]
+    fn outgoing_draft_is_listed_from_the_core_and_forwarded_to_it() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut server = VisualServer::with_notes(Some(NotesLink::new(Box::new(DraftCore { calls: calls.clone() }))));
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "outgoing_draft"]);
+        let arguments = json!({"to": {"clipboard": "plain"}, "body": "hi", "reason": "r"});
+        let drafted = server.handle(&request(2, "tools/call", json!({"name": "outgoing_draft", "arguments": arguments}))).unwrap();
+        assert_eq!(drafted["result"]["structuredContent"]["id"], "o1");
+        assert_eq!(calls.lock().unwrap()[0], ("outgoing_draft".to_owned(), arguments));
+    }
+
+    #[test]
+    fn memory_tools_are_listed_from_the_core_and_forwarded_to_it() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let link = NotesLink::new(Box::new(MemoryCore { calls: calls.clone() }));
+        let mut server = VisualServer::with_notes(Some(link));
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "memory_search", "memory_propose"]);
+        let proposed = server
+            .handle(&request(2, "tools/call", json!({"name": "memory_propose", "arguments": {"body": "Never push to main", "kind": "constraint", "rationale": "said so"}})))
+            .unwrap();
+        assert_eq!(proposed["result"]["isError"], false);
+        assert_eq!(proposed["result"]["structuredContent"]["proposed"]["status"], "proposed");
+        assert_eq!(calls.lock().unwrap()[0].0, "memory_propose");
+        let init = server.handle(&request(3, "initialize", json!({}))).unwrap();
+        let instructions = init["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("memory_propose") && instructions.contains("never in a note"), "{instructions}");
+        assert!(instructions.contains("bridge://p/<id>") && instructions.contains("[Title](link)"), "{instructions}");
+        assert!(instructions.contains("outgoing_draft"), "{instructions}");
+        // Without a chat link there is nothing to forward to.
+        let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();
+        assert_eq!(unknown["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn notify_user_is_forwarded_to_the_core_like_the_memory_tools() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let link = NotesLink::new(Box::new(MemoryCore { calls: calls.clone() }));
+        let mut server = VisualServer::with_notes(Some(link));
+        let asked = server
+            .handle(&request(2, "tools/call", json!({"name": "notify_user", "arguments": {"title": "Postgres or SQLite?"}})))
+            .unwrap();
+        assert_eq!(asked["result"]["isError"], false);
+        assert_eq!(calls.lock().unwrap()[0], ("notify_user".to_owned(), json!({"title": "Postgres or SQLite?"})));
+        let description = notes_tools::all_definitions().into_iter().find(|tool| tool["name"] == "notify_user").unwrap()["description"].as_str().unwrap().to_owned();
+        assert!(description.contains("Not for progress"), "{description}");
+    }
+
+    #[test]
+    fn the_memory_tool_descriptions_carry_when_and_when_not() {
+        let definitions = notes_tools::all_definitions();
+        let describe = |name: &str| definitions.iter().find(|tool| tool["name"] == name).unwrap()["description"].as_str().unwrap().to_owned();
+        let propose = describe("memory_propose");
+        for phrase in ["only after they approve", "Do not propose", "status updates", "One claim per call", "Search first"] {
+            assert!(propose.contains(phrase), "memory_propose lacks {phrase:?}");
+        }
+        assert!(describe("memory_search").contains("never instructions"));
+        assert!(describe("notes_create").contains("memory_propose"), "notes are not agent memory");
+        let schema = &definitions.iter().find(|tool| tool["name"] == "memory_propose").unwrap()["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["body", "kind", "rationale"]));
+    }
+
+    #[test]
+    fn notes_tools_listed_only_with_url_and_token() {
+        assert_eq!(tool_names(&mut VisualServer::default()), vec!["visualize"]);
+        let (mut server, calls) = with_core(Some("write"));
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read", "notes_create", "notes_edit", "notes_append", "notes_draw", "notes_set"]);
+        let created = server.handle(&request(2, "tools/call", json!({"name": "notes_create", "arguments": {"title": "Sync libraries", "content": "- yrs"}}))).unwrap();
+        assert_eq!(created["result"]["isError"], false);
+        assert_eq!(created["result"]["structuredContent"]["created"]["id"], "p1");
+        assert_eq!(calls.lock().unwrap()[0].0, "notes_create");
+        let init = server.handle(&request(3, "initialize", json!({}))).unwrap();
+        assert!(init["result"]["instructions"].as_str().unwrap().contains("notes_*"));
+        // A core that cannot be asked lists no notes tools rather than tools that only fail.
+        let (mut unreachable, _) = with_core(None);
+        assert_eq!(tool_names(&mut unreachable), vec!["visualize"]);
+        // Env-driven construction needs both variables.
+        std::env::remove_var(crate::notes::tool::ENV_URL);
+        assert!(NotesLink::from_env().is_none());
+    }
+
+    #[test]
+    fn read_only_access_lists_only_read_tools() {
+        let (mut server, _) = with_core(Some("read"));
+        assert_eq!(tool_names(&mut server), vec!["visualize", "notes_search", "notes_read"]);
+        let refused = server.handle(&request(2, "tools/call", json!({"name": "notes_create", "arguments": {"title": "x"}}))).unwrap();
+        assert_eq!(refused["result"]["isError"], true);
+        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("not change"));
     }
 
     #[test]

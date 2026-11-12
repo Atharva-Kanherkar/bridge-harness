@@ -1,6 +1,6 @@
 import { asWireKind } from "./transcript/wire";
 import { describe, expect, it } from "vitest";
-import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload } from "./providerLogin";
+import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload } from "./providerLogin";
 import type { ConversationItem } from "./conversation";
 
 describe("provider login recovery", () => {
@@ -45,6 +45,12 @@ describe("sign-in retry payload", () => {
     const payload = signInRetryPayload({ sessionId: "s1" }, "s1", [userTurn("first"), userTurn("look at this", [{ mediaType: "image/png", dataUri: image }])]);
     expect(payload?.text).toBe("look at this");
     expect(payload?.attachments).toEqual([expect.objectContaining({ mediaType: "image/png", dataUri: image })]);
+  });
+
+  it("turns one user message back into its text and images", () => {
+    const payload = userPromptPayload(userTurn("  look again \n", [{ mediaType: "image/png", dataUri: image }, { dataUri: "https://example.com/x.png" }]));
+    expect(payload.text).toBe("look again");
+    expect(payload.attachments).toEqual([expect.objectContaining({ mediaType: "image/png", dataUri: image })]);
   });
 
   it("offers nothing in another chat or when there is nothing to resend", () => {

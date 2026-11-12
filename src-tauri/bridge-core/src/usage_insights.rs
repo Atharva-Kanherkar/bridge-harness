@@ -607,6 +607,7 @@ pub(crate) fn run_headless_turn(
     let started = core.adapter_registry.start(
         harness,
         StartRequest {
+            session_id: None,
             cwd: &cwd,
             model: Some(model),
             effort,
@@ -615,6 +616,7 @@ pub(crate) fn run_headless_turn(
             read_only_sandbox: None,
             briefing: Some(&policy),
             interactive: false,
+            account: None,
             on_progress: None,
         },
     );

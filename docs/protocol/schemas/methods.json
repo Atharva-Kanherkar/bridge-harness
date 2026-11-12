@@ -835,6 +835,55 @@
       "resultSchema": "interaction-resolution-result.json"
     },
     {
+      "command": "list_attention",
+      "domain": "attention",
+      "method": "attention/list_attention",
+      "paramsSchema": "list-attention-params.json",
+      "resultSchema": "list-attention-result.json"
+    },
+    {
+      "command": "mark_attention_seen",
+      "domain": "attention",
+      "method": "attention/mark_attention_seen",
+      "paramsSchema": "mark-attention-seen-params.json",
+      "resultSchema": "mark-attention-seen-result.json"
+    },
+    {
+      "command": "unread_summary",
+      "domain": "attention",
+      "method": "attention/unread_summary",
+      "paramsSchema": null,
+      "resultSchema": "unread-summary.json"
+    },
+    {
+      "command": "report_presence",
+      "domain": "attention",
+      "method": "attention/report_presence",
+      "paramsSchema": "report-presence-params.json",
+      "resultSchema": "report-presence-result.json"
+    },
+    {
+      "command": "post",
+      "domain": "attention",
+      "method": "attention/post",
+      "paramsSchema": "post-params.json",
+      "resultSchema": "post-result.json"
+    },
+    {
+      "command": "wait",
+      "domain": "sessions",
+      "method": "sessions/wait",
+      "paramsSchema": "wait-params.json",
+      "resultSchema": "wait-result.json"
+    },
+    {
+      "command": "deliver_queued_input",
+      "domain": "sessions",
+      "method": "sessions/deliver_queued_input",
+      "paramsSchema": "deliver-queued-input-params.json",
+      "resultSchema": "deliver-queued-input-result.json"
+    },
+    {
       "command": "start_provider_login",
       "domain": "auth",
       "method": "auth/start_provider_login",
@@ -1057,6 +1106,202 @@
       "method": "storage/empty_trash",
       "paramsSchema": null,
       "resultSchema": "empty-trash-result.json"
+    },
+    {
+      "command": "list_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/list_outgoing",
+      "paramsSchema": "list-outgoing-params.json",
+      "resultSchema": "list-outgoing-result.json"
+    },
+    {
+      "command": "update_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/update_outgoing",
+      "paramsSchema": "update-outgoing-params.json",
+      "resultSchema": "update-outgoing-result.json"
+    },
+    {
+      "command": "copy_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/copy_outgoing",
+      "paramsSchema": "copy-outgoing-params.json",
+      "resultSchema": "copy-outgoing-result.json"
+    },
+    {
+      "command": "discard_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/discard_outgoing",
+      "paramsSchema": "discard-outgoing-params.json",
+      "resultSchema": "discard-outgoing-result.json"
+    },
+    {
+      "command": "read_outgoing_attachment",
+      "domain": "outgoing",
+      "method": "outgoing/read_outgoing_attachment",
+      "paramsSchema": "read-outgoing-attachment-params.json",
+      "resultSchema": "read-outgoing-attachment-result.json"
+    },
+    {
+      "command": "list_notes",
+      "domain": "notes",
+      "method": "notes/list_notes",
+      "paramsSchema": "list-notes-params.json",
+      "resultSchema": "notes-list.json"
+    },
+    {
+      "command": "read_page",
+      "domain": "notes",
+      "method": "notes/read_page",
+      "paramsSchema": "read-page-params.json",
+      "resultSchema": "note-page.json"
+    },
+    {
+      "command": "capture_note",
+      "domain": "notes",
+      "method": "notes/capture_note",
+      "paramsSchema": "capture-note-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "create_page",
+      "domain": "notes",
+      "method": "notes/create_page",
+      "paramsSchema": "create-page-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "edit_page",
+      "domain": "notes",
+      "method": "notes/edit_page",
+      "paramsSchema": "edit-page-params.json",
+      "resultSchema": "note-edit-result.json"
+    },
+    {
+      "command": "update_note",
+      "domain": "notes",
+      "method": "notes/update_note",
+      "paramsSchema": "update-note-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "delete_note",
+      "domain": "notes",
+      "method": "notes/delete_note",
+      "paramsSchema": "delete-note-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "structure_note",
+      "domain": "notes",
+      "method": "notes/structure_note",
+      "paramsSchema": "structure-note-params.json",
+      "resultSchema": "note-job-queued.json"
+    },
+    {
+      "command": "extract_tasks",
+      "domain": "notes",
+      "method": "notes/extract_tasks",
+      "paramsSchema": "extract-tasks-params.json",
+      "resultSchema": "note-job-queued.json"
+    },
+    {
+      "command": "split_item",
+      "domain": "notes",
+      "method": "notes/split_item",
+      "paramsSchema": "split-item-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "page_history",
+      "domain": "notes",
+      "method": "notes/page_history",
+      "paramsSchema": "page-history-params.json",
+      "resultSchema": "note-history.json"
+    },
+    {
+      "command": "read_version",
+      "domain": "notes",
+      "method": "notes/read_version",
+      "paramsSchema": "read-version-params.json",
+      "resultSchema": "note-version-page.json"
+    },
+    {
+      "command": "restore_version",
+      "domain": "notes",
+      "method": "notes/restore_version",
+      "paramsSchema": "restore-version-params.json",
+      "resultSchema": "note-edit-result.json"
+    },
+    {
+      "command": "put_asset_part",
+      "domain": "notes",
+      "method": "notes/put_asset_part",
+      "paramsSchema": "put-asset-part-params.json",
+      "resultSchema": "note-asset-part.json"
+    },
+    {
+      "command": "finish_asset",
+      "domain": "notes",
+      "method": "notes/finish_asset",
+      "paramsSchema": "finish-asset-params.json",
+      "resultSchema": "note-asset.json"
+    },
+    {
+      "command": "read_asset",
+      "domain": "notes",
+      "method": "notes/read_asset",
+      "paramsSchema": "read-asset-params.json",
+      "resultSchema": "note-asset-data.json"
+    },
+    {
+      "command": "get_notes_settings",
+      "domain": "notes",
+      "method": "notes/get_notes_settings",
+      "paramsSchema": null,
+      "resultSchema": "notes-settings.json"
+    },
+    {
+      "command": "save_notes_settings",
+      "domain": "notes",
+      "method": "notes/save_notes_settings",
+      "paramsSchema": "save-notes-settings-params.json",
+      "resultSchema": "notes-settings.json"
+    },
+    {
+      "command": "create_database",
+      "domain": "notes",
+      "method": "notes/create_database",
+      "paramsSchema": "create-database-params.json",
+      "resultSchema": "note-page.json"
+    },
+    {
+      "command": "update_schema",
+      "domain": "notes",
+      "method": "notes/update_schema",
+      "paramsSchema": "update-schema-params.json",
+      "resultSchema": "note-database.json"
+    },
+    {
+      "command": "save_view",
+      "domain": "notes",
+      "method": "notes/save_view",
+      "paramsSchema": "save-view-params.json",
+      "resultSchema": "note-database-view.json"
+    },
+    {
+      "command": "delete_view",
+      "domain": "notes",
+      "method": "notes/delete_view",
+      "paramsSchema": "delete-view-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "query_database",
+      "domain": "notes",
+      "method": "notes/query_database",
+      "paramsSchema": "query-database-params.json",
+      "resultSchema": "database-query-result.json"
     },
     {
       "command": "summary",
@@ -1323,6 +1568,13 @@
       "method": "config/remove_opencode_provider_auth",
       "paramsSchema": "remove-opencode-provider-auth-params.json",
       "resultDeferred": "bridge_core::opencode_adapter::OpenCodeCatalog"
+    },
+    {
+      "command": "set_account_api_key",
+      "domain": "config",
+      "method": "config/set_account_api_key",
+      "paramsSchema": "set-account-api-key-params.json",
+      "resultSchema": "config-state.json"
     },
     {
       "command": "save_agent_config",
@@ -1603,6 +1855,27 @@
       "method": "clones/clone_requests",
       "paramsSchema": null,
       "resultSchema": "clone-requests-result.json"
+    },
+    {
+      "command": "list_api_keys",
+      "domain": "keys",
+      "method": "keys/list_api_keys",
+      "paramsSchema": null,
+      "resultSchema": "api-keys-snapshot.json"
+    },
+    {
+      "command": "save_api_key",
+      "domain": "keys",
+      "method": "keys/save_api_key",
+      "paramsSchema": "save-api-key-params.json",
+      "resultSchema": "api-keys-snapshot.json"
+    },
+    {
+      "command": "forget_api_key",
+      "domain": "keys",
+      "method": "keys/forget_api_key",
+      "paramsSchema": "forget-api-key-params.json",
+      "resultSchema": "api-keys-snapshot.json"
     },
     {
       "command": "list_managed_agents",
@@ -1894,7 +2167,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 23
+    "minor": 31
   },
   "reserved": {
     "cancel": "$/cancel",

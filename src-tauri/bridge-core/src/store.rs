@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 67;
+const LATEST_SCHEMA_VERSION: i64 = 74;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,11 +66,16 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // lives here rather than behind a schema version (which would also copy
     // the whole store as a migration backup).
     connection.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);",
+        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
     )?;
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
     let _ = crate::session_titles::backfill_from_messages(&connection);
+    // Then queue whatever still has nothing better than a heading, so the title
+    // job names it: the harness's own title where there is one, else a generated one.
+    let _ = crate::title_jobs::enqueue_backfill(&connection, Utc::now());
+    crate::harness_subagents::interrupt_orphans(&connection)?;
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
@@ -116,6 +121,7 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting')",
         [],
     )?;
+    crate::background_activity::interrupt(&connection, None)?;
     Ok(connection)
 }
 
@@ -737,8 +743,32 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // What a direct chat was created for (`storage`), which picks
             // an extra stable system-prompt section at launch.
             66 => add_column_if_missing(&transaction, "sessions", "purpose", "TEXT")?,
+            // The title job's queue: one row per chat that needs a better name,
+            // with its attempts, outcome and spend.
+            67 => crate::title_jobs::install_store(&transaction)?,
+            // The extra Claude or Codex account a chat signs in with; null is
+            // the user's own login. See `provider_accounts`.
+            68 => add_column_if_missing(&transaction, "sessions", "account", "TEXT")?,
+            // A chat's title at several lengths, and the title they were
+            // written for: a rename leaves them behind rather than wrong.
+            69 => {
+                add_column_if_missing(&transaction, "sessions", "title_ladder", "TEXT")?;
+                add_column_if_missing(&transaction, "sessions", "title_ladder_for", "TEXT")?;
+            }
+            // What a person should know about: chats that finished, failed or
+            // need them. See `attention`.
+            70 => crate::attention::install_store(&transaction)?,
+            // One usage-history cursor row per transcript instead of one
+            // document covering every transcript. See `usage_import::scan`.
+            71 => crate::usage_import::scan::install_file_cursors(&transaction)?,
+            // An orchestrator's armed bridge-wait and the worker results it
+            // holds. See `orchestrator_wait`.
+            72 => crate::orchestrator_wait::install_store(&transaction)?,
+            // Messages a chat drafted for a person or a place: the text, where
+            // it is addressed, its style findings and its revision.
+            73 => crate::outgoing::install_store(&transaction)?,
             // Workflows: definitions, immutable revisions, runs and effects.
-            67 => crate::workflows::install_store(&transaction)?,
+            74 => crate::workflows::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -2970,9 +3000,9 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
     let sessions = query(db, "WITH RECURSIVE archived(id) AS (
              SELECT id FROM sessions WHERE archived_at IS NOT NULL
              UNION SELECT s.id FROM sessions s JOIN archived a ON s.parent_session_id=a.id
-         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id,s.account,CASE WHEN s.title_ladder_for IS s.title THEN s.title_ladder END FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
          WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id)
-         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)? }))?;
+         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)?, title_ladder:crate::title_jobs::read_ladder(r.get::<_,Option<String>>(25)?.as_deref()) }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -3030,6 +3060,7 @@ pub fn status(value: &str) -> SessionStatus {
         "restored" => SessionStatus::Restored,
         "completed" => SessionStatus::Completed,
         "cancelled" => SessionStatus::Cancelled,
+        "interrupted" => SessionStatus::Stopped, // Preserve the existing wire status vocabulary.
         _ => SessionStatus::Idle,
     }
 }
@@ -3163,6 +3194,20 @@ pub(crate) fn append_session_entry_tx(
          ON CONFLICT(session_id) DO UPDATE SET active_entry_id=excluded.active_entry_id,updated_at=excluded.updated_at",
         params![entry.session_id, entry.id, entry.created_at],
     )?;
+    // Every forest entry passes here, adapter events and typed entries alike,
+    // so the attention row commits or rolls back with the entry that caused it.
+    // Best-effort on purpose: a notification bug must never cost a forest
+    // entry. The savepoint undoes a half-written attention change on its own.
+    if crate::attention::is_trigger(kind, payload.get("status").and_then(serde_json::Value::as_str)) {
+        transaction.execute_batch("SAVEPOINT attention")?;
+        match crate::attention::record_in_transaction(transaction, session_id, kind, payload, entry.sequence) {
+            Ok(_) => transaction.execute_batch("RELEASE attention")?,
+            Err(error) => {
+                transaction.execute_batch("ROLLBACK TO attention; RELEASE attention")?;
+                eprintln!("attention: could not record {kind} for {session_id}: {error}");
+            }
+        }
+    }
     Ok(entry)
 }
 
@@ -4158,11 +4203,13 @@ fn parse_json_column(row: &rusqlite::Row<'_>, index: usize) -> serde_json::Value
 /// [`HIDDEN_VISIBILITY`]: the context projector admits only `eligible` entries
 /// and the recall trigger indexes only `eligible`/`visible`, so recording them
 /// widens the record without widening either the prompt or search.
-const HIDDEN_CONTROL_KINDS: [&str; 4] = [
+const HIDDEN_CONTROL_KINDS: [&str; 6] = [
     "turn.started",
     "turn.completed",
     "usage.updated",
     "plan.updated",
+    "subagent.started",
+    "subagent.completed",
 ];
 
 /// Written, replayed and exported — never projected into model context and
@@ -4200,6 +4247,10 @@ pub(crate) fn session_event_in_transaction(
     provider_meta: &serde_json::Value,
 ) -> Result<AgentEvent, BridgeError> {
     event.validate().map_err(BridgeError::Invalid)?;
+    // An agent that printed its environment must not leave the key proxy's
+    // pass in history, an export, or the live stream.
+    let scrubbed = crate::credential_broker::scrub_event(event);
+    let event = scrubbed.as_ref().unwrap_or(event);
     let parent_entry_id: Option<String> = transaction
         .query_row(
             "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
@@ -4336,6 +4387,73 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn schema_68_records_the_account_a_chat_signs_in_with() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('sessions')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "account"));
+        let version: i64 = db.query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
+    }
+
+    fn attention_kinds(db: &Connection) -> Vec<(String, String)> {
+        db.prepare("SELECT session_id, kind FROM attention_events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn forest_write_and_attention_row_commit_together() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('s','codex','Chat','ready','direct')", []).unwrap();
+        let mut ended = crate::agent::NormalizedEvent::new("turn.completed");
+        ended.status = Some("completed".into());
+
+        let transaction = db.unchecked_transaction().unwrap();
+        session_event_in_transaction(&transaction, "s", &ended, &serde_json::json!({})).unwrap();
+        drop(transaction);
+        assert!(attention_kinds(&db).is_empty(), "a rolled-back forest write leaves no attention row");
+
+        session_event(&db, "s", &ended, &serde_json::json!({})).unwrap();
+        assert_eq!(attention_kinds(&db), vec![("s".to_owned(), "finished".to_owned())]);
+    }
+
+    #[test]
+    fn a_failing_attention_write_never_costs_the_forest_entry() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('s','codex','Chat','ready','direct')", []).unwrap();
+        db.execute_batch("DROP TABLE attention_events").unwrap();
+        let mut ended = crate::agent::NormalizedEvent::new("turn.completed");
+        ended.status = Some("completed".into());
+        let stored = session_event(&db, "s", &ended, &serde_json::json!({})).unwrap();
+        let kept: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='s' AND sequence=?1", [stored.sequence], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, 1);
+    }
+
+    #[test]
+    fn typed_forest_approval_opens_needs_you() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('parent','codex','Orchestrator','waiting','orchestrator')", []).unwrap();
+        let entry = crate::session_forest::SessionForest::new(&db)
+            .append("parent", crate::session_forest::EntryKind::ApprovalRequested, serde_json::json!({"approvalId": "delegation:1"}))
+            .unwrap();
+        let approval: Option<i64> = db
+            .query_row("SELECT approval_event_id FROM attention_events WHERE kind='needs_you'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(approval, Some(entry.sequence));
+    }
 
     fn observability_db() -> Connection {
         let db = open(Path::new(":memory:")).unwrap();
@@ -4870,6 +4988,21 @@ mod tests {
             None,
             "an unknown session has no repository at all"
         );
+    }
+
+    #[test]
+    fn a_title_ladder_is_served_only_while_it_belongs_to_the_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        db.execute("UPDATE sessions SET title='Rail grouping', title_source='generated' WHERE id='s'", []).unwrap();
+        let ladder = vec!["Rail".to_string(), "Rail grouping".into(), "Sidebar rail grouping".into()];
+        assert!(crate::title_jobs::store_ladder(&db, "s", "Rail grouping", &ladder).unwrap());
+        let served = |db: &Connection| state(db).unwrap().sessions.into_iter().find(|session| session.id == "s").unwrap().title_ladder;
+        assert_eq!(served(&db), ladder);
+        // any rename, by hand or by the harness, leaves the old ladder unserved.
+        db.execute("UPDATE sessions SET title='Mine', title_source=NULL WHERE id='s'", []).unwrap();
+        assert!(served(&db).is_empty());
     }
 
     #[test]
@@ -6641,6 +6774,21 @@ mod tests {
             params![id],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_73_adds_the_outgoing_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('outgoing_messages')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
+        assert_eq!(current_schema_version(&db).unwrap(), 73);
     }
 
     #[test]

@@ -50,8 +50,9 @@ pub use remote::{RemoteConfig, RemoteListener};
 pub use server::{serve, serve_with_remote};
 
 /// Hard cap on a single request frame (one line). A frame beyond this is
-/// answered with `invalid_request` and the connection is closed.
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// answered with `invalid_request` and the connection is closed. Sized for a
+/// turn carrying several pasted images inline as base64.
+pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 
 /// Concurrent connection cap. Connections beyond it receive one `overloaded`
 /// error frame and are closed without a handshake.
@@ -263,6 +264,14 @@ impl Daemon {
             start_health_listener(addr, state.clone())?;
         }
 
+        // The daemon owns the sessions, so it serves the key proxy they call.
+        // Started before any session can launch, so the first one is told a
+        // port that answers. A taken port falls back to an ephemeral one;
+        // with neither, sessions are told keys are unavailable.
+        if bridge_core::credential_broker::start(core.credential_broker.clone()).is_none() {
+            eprintln!("bridged: the API key proxy could not bind a loopback port");
+        }
+
         // Maintenance loops are part of ownership, not of any client.
         bridge_core::live_turn::start_worker_maintenance(core.clone());
         bridge_core::live_turn::start_completion_check_maintenance(core.clone());
@@ -275,6 +284,8 @@ impl Daemon {
         bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
         bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
         bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
+        bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+        bridge_core::notes::live::start_note_maintenance(core.clone());
         bridge_core::live_turn::start_queued_input_maintenance(core.clone());
         bridge_core::live_turn::start_worktree_maintenance(core.clone());
         bridge_core::live_turn::start_history_snapshot_maintenance(core.clone());

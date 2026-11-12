@@ -1066,6 +1066,8 @@ fn populated_session() -> model::Session {
         cwd: Some("/repos/demo".into()),
         fork_parent_session_id: Some("s-0".into()),
         fork_parent_entry_id: Some("e-9".into()),
+        account: Some("personal".into()),
+        title_ladder: vec!["Tests".into(), "Fix tests".into(), "Fix the flaky auth tests".into()],
     }
 }
 
@@ -1123,6 +1125,7 @@ fn the_session_forest_snapshot_mirrors_core() {
     assert_mirrors::<wire::SessionForestSnapshot>(&model::SessionForestSnapshot {
         session_id: "s-1".into(),
         entries: vec![entry.clone()],
+        active_process_entries: vec![],
         head: Some(model::SessionHead {
             session_id: "s-1".into(),
             active_entry_id: Some("e-1".into()),
@@ -1534,4 +1537,44 @@ fn prompt_studio_payloads_mirror_core() {
             detail: Some("the Claude Agent SDK compiles the preset internally".into()),
         }],
     });
+}
+
+/// A database's records are core defs keyed by id; on the wire they carry the
+/// id. Every field of each def has to reach its mirror unchanged.
+#[test]
+fn notes_database_records_mirror_their_wire_shapes() {
+    use crate::notes::doc::{GroupByDef, OptionDef, PropertyDef, PropertyType, RelationDef, SortDef, ViewDef, ViewPropertyDef, ViewType};
+    fn with_id(value: &impl Serialize, id: &str) -> serde_json::Value {
+        let mut value = serde_json::to_value(value).unwrap();
+        value["id"] = serde_json::json!(id);
+        value
+    }
+    let property = PropertyDef {
+        name: "Status".into(),
+        kind: PropertyType::Status,
+        order: 3,
+        options: vec![OptionDef { id: "o1".into(), name: "Doing".into(), color: Some("gray".into()), group: Some("inProgress".into()) }],
+        relation: Some(RelationDef { database_id: "db".into() }),
+        date_format: Some("datetime".into()),
+    };
+    assert_eq!(serde_json::to_value(crate::notes::wire::property("p1", &property)).unwrap(), with_id(&property, "p1"));
+    let view = ViewDef {
+        name: "Board".into(),
+        kind: ViewType::Board,
+        order: 2,
+        filter: Some(serde_json::json!({"property": "p1", "op": "is", "value": "o1"})),
+        sorts: vec![SortDef { property: "title".into(), direction: "asc".into() }],
+        group_by: Some(GroupByDef { property: "p1".into(), date_bucket: Some("week".into()) }),
+        date_property: Some("created".into()),
+        properties: vec![ViewPropertyDef { id: "p1".into(), visible: false, width: Some(120) }],
+    };
+    assert_eq!(serde_json::to_value(crate::notes::wire::view("v1", &view)).unwrap(), with_id(&view, "v1"));
+    // And back: a wire view input becomes the same def.
+    let input: wire::NoteViewInput = serde_json::from_value({
+        let mut value = with_id(&view, "v1");
+        value.as_object_mut().unwrap().remove("id");
+        value
+    })
+    .unwrap();
+    assert_eq!(crate::notes::wire::view_input(&input, None).unwrap().1, view);
 }

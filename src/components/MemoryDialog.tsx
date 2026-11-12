@@ -1,4 +1,5 @@
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -41,15 +42,6 @@ export function bodyLength(text: string): number {
 }
 
 /**
- * What "Remember this" does with a message: at or under the cap it saves
- * directly; over it the dialog opens pre-filled for the user to trim. Never a
- * clip, never a truncated write.
- */
-export function rememberAction(text: string): "save" | "open-dialog" {
-  return bodyLength(text) > MAX_MEMORY_BODY_CHARS ? "open-dialog" : "save";
-}
-
-/**
  * Account memory on this machine (`account:local`) — the one and only memory
  * surface. Deliberately not this chat's history and not the helper picker —
  * the header says so, because the one-dialog-three-products confusion is the
@@ -65,7 +57,7 @@ export function MemoryDialog({
   onError,
 }: {
   open: boolean;
-  /** Pre-filled composer text (a too-long "Remember this"); never auto-saved. */
+  /** A draft from "Remember this" on a reply, to cut down; never auto-saved. */
   initialBody?: string | null;
   adapters?: AdapterDescriptor[];
   onClose: () => void;
@@ -75,6 +67,7 @@ export function MemoryDialog({
   const [records, setRecords] = useState<MemoryRecord[]>();
   const [proposed, setProposed] = useState<MemoryRecord[]>();
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
+  const [budget, setBudget] = useState<{ held: number; max: number }>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [injection, setInjection] = useState<boolean>();
   const [stats, setStats] = useState<MemoryRecallStats>();
@@ -103,6 +96,7 @@ export function MemoryDialog({
     setRecords(undefined);
     setProposed(undefined);
     setSettings(undefined);
+    setBudget(undefined);
     setCapabilities(undefined);
     setInjection(undefined);
     setStats(undefined);
@@ -133,9 +127,11 @@ export function MemoryDialog({
         bridgeApi.getMemoryInjection(),
         bridgeApi.memoryRecallStats("account:local"),
         bridgeApi.memoryActivityLog("account:local"),
-      ]).then(([activeList, proposedList, extraction, injectionSettings, recallStats, activity]) => {
+        bridgeApi.getConsolidationSettings(),
+      ]).then(([activeList, proposedList, extraction, injectionSettings, recallStats, activity, consolidation]) => {
         if (!active || generation !== readGeneration.current) return;
         setRecords(activeList.records);
+        setBudget({ held: consolidation.heldRecords, max: consolidation.maxRecords });
         setProposed(proposedList.records);
         setSettings(extraction);
         setInjection(injectionSettings.enabled);
@@ -175,6 +171,8 @@ export function MemoryDialog({
   const overLimit = bodyChars > MAX_MEMORY_BODY_CHARS;
   const visible = searchRecords(records ?? [], query).filter(record => !filter || record.kind === filter);
   const queueCount = proposed?.length ?? 0;
+  const full = budget !== undefined && budget.held >= budget.max;
+  const fromReply = Boolean(initialBody) && editingId === null && body.length > 0;
   const statById = new Map((stats?.perRecord ?? []).map(stat => [stat.id, stat]));
   const injections = stats?.injectionsPerDay ?? [];
   const peakInjections = injections.length ? Math.max(...injections) : 0;
@@ -259,6 +257,17 @@ export function MemoryDialog({
         <button type="button" aria-pressed={tab === "activity"} data-active={tab === "activity"} className="u-segmented-item" onClick={() => setTab("activity")}>Activity</button>
         <button type="button" aria-pressed={tab === "insights"} data-active={tab === "insights"} className="u-segmented-item" onClick={() => setTab("insights")}>Insights</button>
       </div>
+      {full && budget && <div role="status" className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
+        <p className="min-w-0 flex-1 basis-64 text-caption text-muted-foreground">
+          <span className="font-medium text-foreground">Memory is full.</span>{" "}
+          It holds <span className="tabular-nums">{budget.held}</span> of <span className="tabular-nums">{budget.max}</span> records, counting proposals, so nothing new is saved or proposed and no extraction runs. Review proposals or forget memories you no longer need.
+        </p>
+        {queueCount > 0 && tab !== "queue" && <button
+          type="button"
+          className="h-7 shrink-0 rounded-lg px-2.5 text-caption font-medium text-foreground transition-colors hover:bg-accent"
+          onClick={() => setTab("queue")}
+        >Review {queueCount}</button>}
+      </div>}
       {tab === "pins" && <div>
         <section aria-label="Memory editor" className="overflow-hidden rounded-xl border border-border-card bg-card transition-colors focus-within:border-ring/60">
           {editingId && <p className="px-4 pt-3 text-caption text-muted-foreground">Editing memory</p>}
@@ -297,6 +306,7 @@ export function MemoryDialog({
             >{editingId ? "Update" : "Save"}</button>
           </div>}
         </section>
+        {fromReply && <p className="mt-2 px-0.5 text-caption text-muted-foreground">This is the whole reply. Cut it down to the one rule or fact worth keeping, then pick a kind.</p>}
         {overLimit && <p className="mt-2 px-0.5 text-caption text-destructive">Memories are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text; nothing is clipped for you.</p>}
 
         <div className="mb-3 mt-8 flex flex-wrap items-center gap-2">
@@ -326,14 +336,7 @@ export function MemoryDialog({
           </div>
         </div>
         {records === undefined
-          ? <div role="status" aria-label="Loading memories" data-testid="memory-loading" className="space-y-4 rounded-xl border border-border-card bg-card px-4 py-4 motion-safe:animate-pulse">
-            {[0, 1, 2].map(row => (
-              <div key={row} className="space-y-2">
-                <div className="h-3.5 w-3/4 rounded bg-muted" />
-                <div className="h-3 w-1/3 rounded bg-muted" />
-              </div>
-            ))}
-          </div>
+          ? <div data-testid="memory-loading"><SkeletonRows label="Loading memories" rows={3} rowClassName="px-4 py-3" /></div>
           : visible.length === 0
           ? <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-caption text-muted-foreground">
             {query.trim() ? "No memories match your search." : filter ? `No ${KIND_PLURAL[filter as Kind].toLowerCase()} yet.` : "Nothing remembered yet. Add a memory above, or use /pin in any chat."}
@@ -347,6 +350,7 @@ export function MemoryDialog({
                   <p className="mt-1 text-caption text-faint">
                     {KIND_LABEL[record.kind as Kind] ?? record.kind} · {new Date(record.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     {record.provenance === "model_proposal" && <> · extracted</>}
+                    {record.provenance === "agent_proposal" && <> · from an agent</>}
                     {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
                     {record.supersedes && <> · replaced an earlier memory</>}
                     {(stat?.recalls ?? 0) > 0 && (
@@ -433,34 +437,38 @@ export function MemoryDialog({
             ? <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-caption text-muted-foreground">
               Nothing to review. Candidates that need your approval land here.
             </p>
-            : <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
-              {(proposed ?? []).map(record => (
-                <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
-                  <div className="min-w-0 flex-1 basis-64">
-                    <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">{record.body}</p>
-                    <p className="mt-1 text-caption text-faint">
-                      {KIND_LABEL[record.kind as Kind] ?? record.kind}
-                      {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
-                      {record.rationale && <> · {record.rationale}</>}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      className="h-7 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
-                      disabled={busy}
-                      onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}
-                    >Reject</button>
-                    <button
-                      type="button"
-                      className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
-                      disabled={busy}
-                      onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}
-                    ><Check size={12} aria-hidden="true" />Approve</button>
-                  </div>
-                </li>
-              ))}
-            </ul>}
+            : <>
+              {proposed !== undefined && <p className="mb-2 px-0.5 text-caption text-faint">Proposals you don't review within 30 days expire, which frees their space.</p>}
+              <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+                {(proposed ?? []).map(record => (
+                  <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+                    <div className="min-w-0 flex-1 basis-64">
+                      <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">{record.body}</p>
+                      <p className="mt-1 text-caption text-faint">
+                        {KIND_LABEL[record.kind as Kind] ?? record.kind}
+                        {record.provenance === "agent_proposal" && <> · proposed by an agent</>}
+                        {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
+                        {record.rationale && <> · {record.rationale}</>}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        className="h-7 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+                        disabled={busy}
+                        onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}
+                      >Reject</button>
+                      <button
+                        type="button"
+                        className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+                        disabled={busy}
+                        onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}
+                      ><Check size={12} aria-hidden="true" />Approve</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>}
         </section>
       </div>}
       {tab === "activity" && <div className="space-y-3">

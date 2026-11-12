@@ -3,7 +3,10 @@
 //! JSONL sources are walked file by file. Each file's cursor is the byte offset
 //! just past the last newline-terminated line consumed, a small hash of the
 //! bytes immediately before that offset, and the size and mtime seen at the
-//! time. An unchanged file is skipped on the stat alone; an appended file
+//! time. Cursors are rows in `agent_usage_file_cursors`, one per transcript,
+//! so a pass reads and writes only the files that changed rather than one
+//! document covering every transcript. An unchanged file is skipped on the
+//! stat alone; an appended file
 //! resumes from its offset when the guard still matches; anything else —
 //! truncation, rotation, an in-place rewrite — fails the guard and the file is
 //! read from the start, where `INSERT OR IGNORE` on `(source_id,
@@ -25,7 +28,7 @@ use crate::analytics::{
 use crate::BridgeError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -54,23 +57,103 @@ pub struct FileCursor {
     pub codex: Option<codex::CodexScanState>,
 }
 
-/// The JSON stored in `agent_usage_sources.scan_cursor` for JSONL sources,
-/// keyed by path relative to the source root.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonlCursor {
-    pub files: BTreeMap<String, FileCursor>,
+/// One `.jsonl` file under a source root: path relative to the root, absolute
+/// path, size and mtime.
+pub(crate) type ListedFile = (String, PathBuf, u64, i64);
+
+/// The per-file cursor table. Size, mtime and completeness are columns so a
+/// pass can skip unchanged files without parsing any cursor; `cursor` holds
+/// the full [`FileCursor`] for the files that did change. Existing JSONL
+/// sources move their single cursor document into rows here, so upgrading
+/// keeps every file's position instead of rescanning history.
+pub(crate) fn install_file_cursors(tx: &Transaction<'_>) -> Result<(), BridgeError> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_usage_file_cursors (
+            source_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            mtime_ms INTEGER NOT NULL,
+            complete INTEGER NOT NULL,
+            byte_offset INTEGER NOT NULL,
+            cursor TEXT NOT NULL,
+            PRIMARY KEY (source_id, relative_path)
+        ) WITHOUT ROWID;
+        INSERT OR REPLACE INTO agent_usage_file_cursors(source_id,relative_path,size,mtime_ms,complete,byte_offset,cursor)
+            SELECT s.id, f.key,
+                   COALESCE(json_extract(f.value,'$.size'),0),
+                   COALESCE(json_extract(f.value,'$.mtimeMs'),0),
+                   COALESCE(json_extract(f.value,'$.complete'),0),
+                   COALESCE(json_extract(f.value,'$.offset'),0),
+                   f.value
+            FROM agent_usage_sources s, json_each(s.scan_cursor,'$.files') f
+            WHERE s.agent IN ('claude','codex') AND json_valid(s.scan_cursor);
+        UPDATE agent_usage_sources SET scan_cursor=NULL WHERE agent IN ('claude','codex');",
+    )?;
+    Ok(())
 }
 
-impl JsonlCursor {
-    pub fn parse(text: Option<&str>) -> Self {
-        text.and_then(|value| serde_json::from_str(value).ok())
-            .unwrap_or_default()
-    }
+struct StoredFile {
+    size: u64,
+    mtime_ms: i64,
+    complete: bool,
+}
 
-    pub fn to_json(&self) -> Result<String, BridgeError> {
-        serde_json::to_string(self).map_err(|error| BridgeError::Invalid(error.to_string()))
-    }
+fn stored_files(tx: &Transaction<'_>, source_id: &str) -> Result<HashMap<String, StoredFile>, BridgeError> {
+    let mut statement = tx.prepare(
+        "SELECT relative_path, size, mtime_ms, complete FROM agent_usage_file_cursors WHERE source_id=?1",
+    )?;
+    let rows = statement.query_map(params![source_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            StoredFile {
+                size: row.get::<_, i64>(1)?.max(0) as u64,
+                mtime_ms: row.get(2)?,
+                complete: row.get(3)?,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+fn stored_cursor(tx: &Transaction<'_>, source_id: &str, relative: &str) -> Result<Option<FileCursor>, BridgeError> {
+    let text: Option<String> = tx
+        .query_row(
+            "SELECT cursor FROM agent_usage_file_cursors WHERE source_id=?1 AND relative_path=?2",
+            params![source_id, relative],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(text.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
+fn save_cursor(tx: &Transaction<'_>, source_id: &str, relative: &str, cursor: &FileCursor) -> Result<(), BridgeError> {
+    let text = serde_json::to_string(cursor).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    tx.execute(
+        "INSERT OR REPLACE INTO agent_usage_file_cursors(source_id,relative_path,size,mtime_ms,complete,byte_offset,cursor)
+         VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            source_id,
+            relative,
+            i64::try_from(cursor.size).unwrap_or(i64::MAX),
+            cursor.mtime_ms,
+            cursor.complete,
+            i64::try_from(cursor.offset).unwrap_or(i64::MAX),
+            text,
+        ],
+    )?;
+    Ok(())
+}
+
+/// A short token that changes whenever any file's position moves. Callers
+/// compare it across batches to tell progress from a stuck scan; it does not
+/// carry the positions themselves.
+fn progress_token(tx: &Transaction<'_>, source_id: &str) -> Result<String, BridgeError> {
+    let (files, bytes): (i64, i64) = tx.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(byte_offset),0) FROM agent_usage_file_cursors WHERE source_id=?1",
+        params![source_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(format!("files:{files};bytes:{bytes}"))
 }
 
 pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -117,11 +200,9 @@ pub(crate) enum JsonlKind {
     Codex,
 }
 
-/// Lists `.jsonl` files beneath `root` with their relative path, size and
-/// mtime, sorted by relative path so batches are deterministic. Entries that
-/// vanish mid-walk are skipped; a partial listing beats a failed scan.
-pub(crate) fn list_jsonl_files(root: &Path) -> Vec<(String, PathBuf, u64, i64)> {
-    let mut found = Vec::new();
+/// Whether any `.jsonl` file exists beneath `root`. Stops at the first one, so
+/// discovery stays cheap on a history of tens of thousands of transcripts.
+pub(crate) fn has_jsonl_file(root: &Path) -> bool {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -129,33 +210,94 @@ pub(crate) fn list_jsonl_files(root: &Path) -> Vec<(String, PathBuf, u64, i64)> 
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                stack.push(path);
-                continue;
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(_) if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") => return true,
+                _ => {}
             }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            let mtime_ms = meta
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-                .unwrap_or(0);
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            found.push((relative, path, meta.len(), mtime_ms));
         }
     }
+    false
+}
+
+/// Lists `.jsonl` files beneath `root` with their relative path, size and
+/// mtime, sorted by relative path so batches are deterministic. Entries that
+/// vanish mid-walk are skipped; a partial listing beats a failed scan.
+///
+/// A warm scan is almost all filesystem calls: Claude Code keeps one
+/// directory per working directory, and a machine can hold tens of
+/// thousands of them. Each level of the tree is read, and every file
+/// stat'd, across several threads.
+pub(crate) fn list_jsonl_files(root: &Path) -> Vec<ListedFile> {
+    let mut paths = Vec::new();
+    let mut level = vec![root.to_path_buf()];
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for (dirs, files) in parallel_map(&level, |dir| read_level(dir)) {
+            next.extend(dirs);
+            paths.extend(files);
+        }
+        level = next;
+    }
+    let mut found: Vec<ListedFile> = parallel_map(&paths, |path| stat_listed(root, path))
+        .into_iter()
+        .flatten()
+        .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
+}
+
+/// Subdirectories and `.jsonl` files directly inside `dir`.
+fn read_level(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (dirs, files);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            dirs.push(path);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+    (dirs, files)
+}
+
+/// `items.iter().map(f)` split across up to eight scoped threads, in order.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
+    if items.len() < 64 || workers == 1 {
+        return items.iter().map(f).collect();
+    }
+    let chunk = items.len().div_ceil(workers);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .map(|chunk| scope.spawn(move || chunk.iter().map(f).collect::<Vec<_>>()))
+            .collect();
+        handles.into_iter().flat_map(|handle| handle.join().unwrap_or_default()).collect()
+    })
+}
+
+fn stat_listed(root: &Path, path: &Path) -> Option<ListedFile> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    Some((relative, path.to_path_buf(), meta.len(), mtime_ms))
 }
 
 struct FileScan {
@@ -261,10 +403,22 @@ fn scan_jsonl_file(
 }
 
 /// Dispatches one bounded batch for whatever source the request names.
+#[cfg(test)]
 pub(crate) fn run(
     db: &Connection,
     request: &AnalyticsScanRequest,
     env: &SourceEnv,
+) -> Result<AnalyticsScanResult, BridgeError> {
+    run_listed(db, request, env, None)
+}
+
+/// [`run`] with a JSONL listing taken beforehand, so a caller can walk the
+/// transcript tree before it takes the database lock. `None` lists here.
+pub(crate) fn run_listed(
+    db: &Connection,
+    request: &AnalyticsScanRequest,
+    env: &SourceEnv,
+    listing: Option<Vec<ListedFile>>,
 ) -> Result<AnalyticsScanResult, BridgeError> {
     let source = &request.source;
     let source_id = source_id_for(source);
@@ -301,7 +455,7 @@ pub(crate) fn run(
             &source_id,
             source,
             JsonlKind::Claude,
-            cursor_text.as_deref(),
+            listing,
             request.max_records,
         ),
         "codex" => scan_jsonl_source(
@@ -309,7 +463,7 @@ pub(crate) fn run(
             &source_id,
             source,
             JsonlKind::Codex,
-            cursor_text.as_deref(),
+            listing,
             request.max_records,
         ),
         "opencode" => opencode::scan(
@@ -351,25 +505,27 @@ fn scan_jsonl_source(
     source_id: &str,
     source: &DiscoveredAnalyticsSource,
     kind: JsonlKind,
-    cursor_text: Option<&str>,
+    listing: Option<Vec<ListedFile>>,
     max_records: usize,
 ) -> Result<AnalyticsScanResult, BridgeError> {
-    let root = &source.location;
-    let mut cursor = JsonlCursor::parse(cursor_text);
-    let files = list_jsonl_files(root);
+    let files = listing.unwrap_or_else(|| list_jsonl_files(&source.location));
+    let stored = stored_files(tx, source_id)?;
     let present: HashSet<&str> = files.iter().map(|f| f.0.as_str()).collect();
-    cursor
-        .files
-        .retain(|relative, _| present.contains(relative.as_str()));
+    let mut dropped: Vec<String> = stored
+        .keys()
+        .filter(|relative| !present.contains(relative.as_str()))
+        .cloned()
+        .collect();
 
     let mut records: Vec<(ParsedUsage, String)> = Vec::new();
+    let mut advanced: Vec<(String, FileCursor)> = Vec::new();
     let mut skipped = 0_usize;
     let mut truncated = false;
     let mut seen_ids: HashSet<String> = HashSet::new();
     for (relative, path, size, mtime_ms) in &files {
-        let previous = cursor.files.get(relative);
-        if let Some(previous) = previous {
-            if previous.complete && previous.size == *size && previous.mtime_ms == *mtime_ms {
+        let known = stored.get(relative);
+        if let Some(known) = known {
+            if known.complete && known.size == *size && known.mtime_ms == *mtime_ms {
                 continue;
             }
         }
@@ -378,11 +534,15 @@ fn scan_jsonl_source(
             truncated = true;
             break;
         }
+        let previous = match known {
+            Some(_) => stored_cursor(tx, source_id, relative)?,
+            None => None,
+        };
         let file_fingerprint = sha256_hex(relative);
         let scan = match scan_jsonl_file(
             path,
             kind,
-            previous,
+            previous.as_ref(),
             *size,
             *mtime_ms,
             &file_fingerprint,
@@ -390,9 +550,11 @@ fn scan_jsonl_source(
         ) {
             Ok(scan) => scan,
             // A file that vanished or cannot be opened is left for the next
-            // pass; its cursor entry is dropped so it is read fresh then.
+            // pass; its cursor is dropped so it is read fresh then.
             Err(_) => {
-                cursor.files.remove(relative);
+                if known.is_some() {
+                    dropped.push(relative.clone());
+                }
                 continue;
             }
         };
@@ -404,15 +566,25 @@ fn scan_jsonl_source(
             }
             records.push((record, file_fingerprint.clone()));
         }
-        cursor.files.insert(relative.clone(), scan.cursor);
+        advanced.push((relative.clone(), scan.cursor));
         if scan.truncated {
             truncated = true;
             break;
         }
     }
 
+    // Records first: a cursor must never move past rows that were not saved.
     let persisted = persist_records(tx, source_id, &source.agent, records, false)?;
     skipped += persisted.ignored;
+    for relative in &dropped {
+        tx.execute(
+            "DELETE FROM agent_usage_file_cursors WHERE source_id=?1 AND relative_path=?2",
+            params![source_id, relative],
+        )?;
+    }
+    for (relative, cursor) in &advanced {
+        save_cursor(tx, source_id, relative, cursor)?;
+    }
     let coverage = if truncated {
         CoverageState::Partial
     } else if persisted.observations.is_empty() && files.is_empty() {
@@ -420,11 +592,11 @@ fn scan_jsonl_source(
     } else {
         CoverageState::Complete
     };
-    let cursor_json = cursor.to_json()?;
+    let token = progress_token(tx, source_id)?;
     finish_source(
         tx,
         source_id,
-        Some(&cursor_json),
+        Some(&token),
         coverage,
         None,
         Some((persisted.observations.len(), skipped)),
@@ -433,7 +605,7 @@ fn scan_jsonl_source(
         records_imported: persisted.observations.len(),
         observations: persisted.observations,
         attributions: vec![],
-        next_cursor: Some(cursor_json),
+        next_cursor: Some(token),
         records_skipped: skipped,
         coverage,
         warning: None,
@@ -497,6 +669,10 @@ pub(crate) fn ensure_source_row(
         )?;
         tx.execute(
             "DELETE FROM agent_usage_observations WHERE source_id=?1",
+            params![source_id],
+        )?;
+        tx.execute(
+            "DELETE FROM agent_usage_file_cursors WHERE source_id=?1",
             params![source_id],
         )?;
         tx.execute(
@@ -904,24 +1080,58 @@ mod tests {
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
     }
 
+    /// Enough directories and files to take the threaded path: every
+    /// transcript is found once, nothing else is, and the order is stable.
     #[test]
-    fn cursor_round_trips_and_tolerates_garbage() {
-        let mut cursor = JsonlCursor::default();
-        cursor.files.insert(
-            "a/b.jsonl".into(),
-            FileCursor {
-                offset: 10,
-                line_no: 2,
-                guard_hash: "abc".into(),
-                size: 10,
-                mtime_ms: 5,
-                complete: true,
-                codex: None,
-            },
-        );
-        let json = cursor.to_json().unwrap();
-        assert_eq!(JsonlCursor::parse(Some(&json)), cursor);
-        assert_eq!(JsonlCursor::parse(Some("not json")), JsonlCursor::default());
-        assert_eq!(JsonlCursor::parse(None), JsonlCursor::default());
+    fn listing_a_wide_tree_finds_every_transcript_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for project in 0..120 {
+            let nested = root.join(format!("p{project:03}/subagents"));
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(root.join(format!("p{project:03}/s.jsonl")), b"{}\n").unwrap();
+            std::fs::write(nested.join("a.jsonl"), b"{}\n").unwrap();
+            std::fs::write(root.join(format!("p{project:03}/notes.txt")), b"x").unwrap();
+        }
+        assert!(has_jsonl_file(root));
+        let files = list_jsonl_files(root);
+        assert_eq!(files.len(), 240);
+        assert!(files.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(files[0].0, "p000/s.jsonl");
+        assert_eq!(files[1].0, "p000/subagents/a.jsonl");
+        assert!(files.iter().all(|file| file.2 == 3));
+        assert!(!has_jsonl_file(&root.join("p000/missing")));
+    }
+
+    /// Upgrading moves a JSONL source's single cursor document into rows,
+    /// keeping every position, and leaves the database source's cursor alone.
+    #[test]
+    fn install_moves_a_cursor_document_into_file_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE agent_usage_sources(id TEXT PRIMARY KEY, agent TEXT NOT NULL, scan_cursor TEXT);
+             INSERT INTO agent_usage_sources VALUES
+                ('claude-1','claude','{\"files\":{\"p/a.jsonl\":{\"offset\":10,\"lineNo\":2,\"guardHash\":\"abc\",\"size\":10,\"mtimeMs\":5,\"complete\":true}}}'),
+                ('codex-1','codex','not json'),
+                ('opencode-1','opencode','{\"updatedAt\":7}');",
+        )
+        .unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        install_file_cursors(&tx).unwrap();
+        let stored = stored_files(&tx, "claude-1").unwrap();
+        let file = stored.get("p/a.jsonl").unwrap();
+        assert_eq!((file.size, file.mtime_ms, file.complete), (10, 5, true));
+        let cursor = stored_cursor(&tx, "claude-1", "p/a.jsonl").unwrap().unwrap();
+        assert_eq!((cursor.offset, cursor.line_no, cursor.guard_hash.as_str()), (10, 2, "abc"));
+        assert_eq!(progress_token(&tx, "claude-1").unwrap(), "files:1;bytes:10");
+        assert!(stored_files(&tx, "codex-1").unwrap().is_empty());
+        let cursors: Vec<Option<String>> = tx
+            .prepare("SELECT scan_cursor FROM agent_usage_sources ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(cursors, vec![None, None, Some("{\"updatedAt\":7}".into())]);
     }
 }

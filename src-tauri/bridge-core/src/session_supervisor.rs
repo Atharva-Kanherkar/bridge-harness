@@ -46,7 +46,8 @@ impl SessionSupervisor {
                 "provider process {pid} has no verifiable OS identity"
             ))
         })?;
-        let updated = db.execute(
+        let transaction = db.unchecked_transaction()?;
+        let updated = transaction.execute(
             "UPDATE sessions SET adapter_pid=?2,adapter_process_identity=?3 WHERE id=?1",
             params![session_id, i64::from(pid), identity],
         )?;
@@ -55,10 +56,23 @@ impl SessionSupervisor {
                 "session {session_id} not found while tracking provider process"
             )));
         }
+        crate::background_activity::interrupt_in_transaction(&transaction, Some(session_id))?;
+        transaction.commit()?;
         Ok(identity)
     }
 
     pub fn clear_adapter_process(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
+        let transaction = db.unchecked_transaction()?;
+        Self::clear_adapter_process_in_transaction(&transaction, session_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_adapter_process_in_transaction(
+        db: &Transaction<'_>,
+        session_id: &str,
+    ) -> Result<(), BridgeError> {
+        crate::background_activity::interrupt_in_transaction(db, Some(session_id))?;
         db.execute(
             "UPDATE sessions SET adapter_pid=NULL,adapter_process_identity=NULL WHERE id=?1",
             params![session_id],
@@ -67,6 +81,7 @@ impl SessionSupervisor {
     }
 
     pub fn recover_tracked_adapter_processes(db: &Connection) -> Result<usize, BridgeError> {
+        crate::harness_subagents::interrupt_orphans(db)?;
         let claims = {
             let mut statement = db.prepare(
                 "SELECT id,status,adapter_pid,adapter_process_identity,active_turn_id IS NOT NULL

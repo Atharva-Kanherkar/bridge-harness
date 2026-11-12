@@ -23,11 +23,13 @@
 
 mod agents;
 mod approvals;
+mod attention;
 mod auth;
 mod automations;
 mod workflows;
 mod browser;
 mod clones;
+mod keys;
 mod common;
 mod completion;
 mod config;
@@ -43,6 +45,8 @@ mod meter;
 mod usage_overview;
 mod voice;
 mod models;
+mod notes;
+mod outgoing;
 mod projects;
 mod routing;
 mod sessions;
@@ -58,11 +62,13 @@ mod worktrees;
 
 pub use agents::*;
 pub use approvals::*;
+pub use attention::*;
 pub use auth::*;
 pub use automations::*;
 pub use workflows::*;
 pub use browser::*;
 pub use clones::*;
+pub use keys::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
@@ -78,6 +84,8 @@ pub use meter::*;
 pub use usage_overview::*;
 pub use voice::*;
 pub use models::*;
+pub use notes::*;
+pub use outgoing::*;
 pub use projects::*;
 pub use routing::*;
 pub use sessions::*;
@@ -288,6 +296,14 @@ typed_methods![
     // approvals
     (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),
+    // attention
+    (ListAttention, ListAttentionParams, ListAttentionResult),
+    (MarkAttentionSeen, MarkAttentionSeenParams, MarkAttentionSeenResult),
+    (UnreadSummary, _, UnreadSummary),
+    (ReportPresence, ReportPresenceParams, ReportPresenceResult),
+    (Post, PostParams, PostResult),
+    (Wait, WaitParams, WaitResult),
+    (DeliverQueuedInput, DeliverQueuedInputParams, DeliverQueuedInputResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
     (CancelProviderLogin, CancelProviderLoginParams, UnitResult),
@@ -328,6 +344,36 @@ typed_methods![
     (ScanDirectory, ScanDirectoryParams, DiskListing),
     (DeletePaths, DeletePathsParams, DiskDeleteResult),
     (EmptyTrash, _, EmptyTrashResult),
+    // notes
+    // outgoing: drafted messages for a person or a place
+    (ListOutgoing, ListOutgoingParams, ListOutgoingResult),
+    (UpdateOutgoing, UpdateOutgoingParams, UpdateOutgoingResult),
+    (CopyOutgoing, CopyOutgoingParams, CopyOutgoingResult),
+    (DiscardOutgoing, DiscardOutgoingParams, DiscardOutgoingResult),
+    (ReadOutgoingAttachment, ReadOutgoingAttachmentParams, ReadOutgoingAttachmentResult),
+    (ListNotes, ListNotesParams, NotesList),
+    (ReadPage, ReadPageParams, NotePage),
+    (CaptureNote, CaptureNoteParams, Note),
+    (CreatePage, CreatePageParams, Note),
+    (EditPage, EditPageParams, NoteEditResult),
+    (UpdateNote, UpdateNoteParams, Note),
+    (DeleteNote, DeleteNoteParams, UnitResult),
+    (StructureNote, StructureNoteParams, NoteJobQueued),
+    (ExtractTasks, ExtractTasksParams, NoteJobQueued),
+    (SplitItem, SplitItemParams, Note),
+    (PageHistory, PageHistoryParams, NoteHistory),
+    (ReadVersion, ReadVersionParams, NoteVersionPage),
+    (RestoreVersion, RestoreVersionParams, NoteEditResult),
+    (PutAssetPart, PutAssetPartParams, NoteAssetPart),
+    (FinishAsset, FinishAssetParams, NoteAsset),
+    (ReadAsset, ReadAssetParams, NoteAssetData),
+    (GetNotesSettings, _, NotesSettings),
+    (SaveNotesSettings, SaveNotesSettingsParams, NotesSettings),
+    (CreateDatabase, CreateDatabaseParams, NotePage),
+    (UpdateSchema, UpdateSchemaParams, NoteDatabase),
+    (SaveView, SaveViewParams, NoteDatabaseView),
+    (DeleteView, DeleteViewParams, UnitResult),
+    (QueryDatabase, QueryDatabaseParams, DatabaseQueryResult),
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
@@ -390,6 +436,7 @@ typed_methods![
     (RefreshOpencodeCatalog, RefreshOpencodeCatalogParams, _),
     (SetOpencodeProviderApiKey, SetOpencodeProviderApiKeyParams, _),
     (RemoveOpencodeProviderAuth, RemoveOpencodeProviderAuthParams, _),
+    (SetAccountApiKey, SetAccountApiKeyParams, ConfigState),
     (SaveAgentConfig, SaveAgentConfigParams, ConfigState),
     (DeleteAgentConfig, DeleteAgentConfigParams, ConfigState),
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
@@ -433,6 +480,10 @@ typed_methods![
     (ReadCloneSettings, _, CloneSettingsSnapshot),
     (WriteCloneSettings, WriteCloneSettingsParams, CloneSettingsSnapshot),
     (CloneRequests, _, CloneRequestsResult),
+    // API keys
+    (ListApiKeys, _, ApiKeysSnapshot),
+    (SaveApiKey, SaveApiKeyParams, ApiKeysSnapshot),
+    (ForgetApiKey, ForgetApiKeyParams, ApiKeysSnapshot),
     // marketplace
     // agents — whether an agent's runtime is installed at all
     (ListManagedAgents, _, ManagedAgentList),
@@ -532,6 +583,27 @@ impl TypedMethod {
             Self::params_schema_fields(method)?
                 .into_iter()
                 .map(|(name, _)| name)
+                .collect(),
+        )
+    }
+
+    /// The params fields a request must send: the schema's `required` list.
+    /// Every other field may be omitted, so a transport that takes flat
+    /// arguments must accept it as optional.
+    pub fn params_required_fields(method: MethodName) -> Option<Vec<String>> {
+        let name = TypedMethod::for_method(method).params?;
+        let (_, schema) = payload_schemas()
+            .into_iter()
+            .find(|(candidate, _)| *candidate == name)
+            .unwrap_or_else(|| panic!("{name} has no schema"));
+        Some(
+            schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
                 .collect(),
         )
     }

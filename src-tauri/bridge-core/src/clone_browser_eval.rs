@@ -168,6 +168,7 @@ fn selected(id: &str) -> bool {
 
 fn start(provider: &str, cwd: &str) -> (Box<dyn AdapterRuntime>, BufReader<ChildStdout>) {
     let request = StartRequest {
+        session_id: None,
         cwd,
         model: None,
         effort: None,
@@ -176,6 +177,7 @@ fn start(provider: &str, cwd: &str) -> (Box<dyn AdapterRuntime>, BufReader<Child
         read_only_sandbox: None,
         briefing: None,
         interactive: false,
+        account: None,
         on_progress: None,
     };
     match provider {

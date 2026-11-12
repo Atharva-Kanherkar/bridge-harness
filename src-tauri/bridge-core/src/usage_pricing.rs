@@ -830,6 +830,10 @@ mod tests {
         let usage = tokens(1_000_000, 0, 0, 0);
         assert_eq!(pricing.price(Some("claude-opus-5-5"), &usage, None).cost_microusd, Some(4_000_000));
         assert_eq!(pricing.lookup_rate("claude-sonnet-5-5[1m]").unwrap().output, 10_000_000);
+        let fable = pricing.lookup_rate("claude-fable-5-2[1m]").unwrap();
+        assert_eq!((fable.input, fable.output, fable.cache_read), (8_000_000, 40_000_000, 200_000));
+        assert_eq!(pricing.price(Some("claude-fable-5-2"), &usage, None).cost_microusd, Some(8_000_000));
+        assert_eq!(pricing.lookup_rate("claude-haiku-5-5").unwrap().output, 500_000);
 
         let empty = refresh_rates_from_document(&db, &json!({}));
         assert!(empty.is_err(), "an empty table never replaces a working one");

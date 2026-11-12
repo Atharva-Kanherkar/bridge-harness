@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ComposerDrafts, EMPTY_DRAFT, isEmptyDraft, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, isEmptyDraft, mergeFailedAttachments, mergeFailedSend, mergeFailedText, restoreFailedTurn, withoutSent, withoutSentAttachments, withoutSentText } from "./composerDrafts";
 import type { ComposerAttachment } from "./pasteAttachments";
 
 const image = (id: string): ComposerAttachment => ({ id, mediaType: "image/png", dataUri: `data:image/png;base64,${id}` });
@@ -83,6 +83,27 @@ describe("withoutSent", () => {
     const left = withoutSent({ text: "$claude review this", attachments: [image("late")] }, { text: "$claude review this", attachments: [] });
     expect(left.text).toBe("");
     expect(left.attachments.map(item => item.id)).toEqual(["late"]);
+  });
+});
+
+describe("restoreFailedTurn", () => {
+  const failed = { text: "/rimo-bug-hunt pls use it now.", attachments: [image("shot")] };
+
+  it("fills an empty composer with the failed message and its images", () => {
+    expect(restoreFailedTurn(EMPTY_DRAFT, failed)).toEqual(failed);
+  });
+
+  it("puts the failed message ahead of what is already typed", () => {
+    const next = restoreFailedTurn({ text: "and check staging too", attachments: [image("late")] }, failed);
+    expect(next.text).toBe("/rimo-bug-hunt pls use it now.\n\nand check staging too");
+    expect(next.attachments.map(item => item.id)).toEqual(["shot", "late"]);
+  });
+
+  it("does not paste the message twice when asked twice", () => {
+    const once = restoreFailedTurn({ text: "more", attachments: [] }, failed);
+    // A second read of the same turn: same words, same image, a fresh id.
+    const twice = restoreFailedTurn(once, { ...failed, attachments: [{ ...image("shot"), id: "fresh" }] });
+    expect(twice).toEqual(once);
   });
 });
 

@@ -89,9 +89,37 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `method_not_found`; a 1.21 client still pairs with a 1.22 daemon.
 /// **1.23 adds personal project defaults and enforced session-scoped access.**
 /// Older clients cannot display that authority, so both directions require 1.23.
+/// **1.24 adds `attention/list_attention`, `attention/mark_attention_seen` and
+/// the `attention/changed` hint.** A new client must not pair with an older
+/// daemon, whose ledger reads would fail with `method_not_found`; a 1.23
+/// client still pairs with a 1.24 daemon.
+/// **1.25 adds `sessions/deliver_queued_input` and the `escalation` attention
+/// kind.** A 1.24 client still pairs with a 1.25 daemon: its `AttentionKind`
+/// already carries the `other` fallback, so it decodes `escalation` as
+/// `other` and shows nothing for it rather than failing the read.
+/// **1.26 adds `attention/unread_summary`.** A new client must not pair with
+/// an older daemon, whose unread dots and badge would fail with
+/// `method_not_found`; a 1.25 client still pairs with a 1.26 daemon.
+/// **1.27 adds `attention/report_presence`.** A new client must not pair with
+/// an older daemon, whose presence reports would fail with `method_not_found`;
+/// a 1.26 client still pairs with a 1.27 daemon, never reports, and keeps
+/// posting its own banners.
+/// **1.28 adds `canPostBanners` to `attention/report_presence`**, so a browser
+/// tab can own banners. A 1.27 daemon refuses the field, so a new client
+/// needs 1.28; a 1.27 client still pairs with a 1.28 daemon.
+/// **1.29 adds `attention/post` and the `posted` attention kind.** A 1.28
+/// client decodes `posted` as `other` and shows nothing for it, so it still
+/// pairs; a new client needs 1.29 for the method.
+/// **1.30 adds `sessions/wait`.** A new client must not pair with an older
+/// daemon, whose waits would fail with `method_not_found`; a 1.29 client
+/// still pairs with a 1.30 daemon.
+/// **1.31 adds the `outgoing` domain and its `outgoing/changed` hint.** A new
+/// client must not pair with an older daemon, whose draft cards would fail
+/// with `method_not_found`; a 1.30 client still pairs with a 1.31 daemon and
+/// simply never shows a draft card.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 23,
+    minor: 31,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -331,6 +359,57 @@ mod tests {
             "context windows are additive: a 1.19 client still pairs with a 1.20 daemon"
         );
         assert!(ProtocolVersion { major: 1, minor: 20 }.accepts(before));
+    }
+
+    #[test]
+    fn unread_summary_client_rejects_a_daemon_without_the_method() {
+        // A 1.26 client reads `attention/unread_summary` for its dots and
+        // badge, which a 1.25 daemon answers with `method_not_found`. The
+        // method is additive, so a 1.25 client still pairs with a newer daemon.
+        let before_unread = ProtocolVersion { major: 1, minor: 25 };
+        let unread = ProtocolVersion { major: 1, minor: 26 };
+        assert!(!before_unread.accepts(unread));
+        assert!(unread.accepts(before_unread), "a 1.25 client still pairs with a 1.26 daemon");
+        assert!(
+            PROTOCOL_VERSION.accepts(before_unread),
+            "a later minimum-client gate that drops 1.25 must change this test on purpose"
+        );
+    }
+
+    #[test]
+    fn presence_client_rejects_a_daemon_without_the_lease() {
+        let before = ProtocolVersion { major: 1, minor: 26 };
+        let presence = ProtocolVersion { major: 1, minor: 27 };
+        assert!(!before.accepts(presence));
+        assert!(presence.accepts(before), "a 1.26 client still pairs with a 1.27 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn web_banner_client_rejects_a_daemon_without_the_capability() {
+        let before = ProtocolVersion { major: 1, minor: 27 };
+        let web_banners = ProtocolVersion { major: 1, minor: 28 };
+        assert!(!before.accepts(web_banners));
+        assert!(web_banners.accepts(before), "a 1.27 client still pairs with a 1.28 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn post_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 28 };
+        let post = ProtocolVersion { major: 1, minor: 29 };
+        assert!(!before.accepts(post));
+        assert!(post.accepts(before), "a 1.28 client still pairs with a 1.29 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+    }
+
+    #[test]
+    fn wait_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 29 };
+        let wait = ProtocolVersion { major: 1, minor: 30 };
+        assert!(!before.accepts(wait));
+        assert!(wait.accepts(before), "a 1.29 client still pairs with a 1.30 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

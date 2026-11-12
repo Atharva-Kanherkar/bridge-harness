@@ -47,6 +47,50 @@ describe("AgentConversation", () => {
       listen.mockRestore();
     }
   });
+  it("offers retry and edit on the error a failed turn ended on, and nowhere else", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const chat: Session = { ...session, kind: "chat", status: "idle" };
+    const sentAt = "2026-11-11T05:00:00.000Z";
+    const ask = event(1, "message.completed", { itemId: "u1", role: "user", status: "completed", text: "/rimo-bug-hunt pls use it now.", createdAt: sentAt });
+    const failure = event(2, "error", { itemId: "e1", status: "failed", text: "Insufficient credits. Add more at https://example.test/billing" });
+    const onRetryTurn = vi.fn();
+    const onEditTurn = vi.fn();
+    const buttons = () => [...host.querySelectorAll("button")].map(button => button.getAttribute("aria-label"));
+    const render = (props: Partial<React.ComponentProps<typeof AgentConversation>> = {}) => act(async () => root.render(
+      <AgentConversation session={chat} events={[ask, failure]} onResolve={() => undefined} onRetryTurn={onRetryTurn} onEditTurn={onEditTurn} {...props} />,
+    ));
+    try {
+      await render();
+      expect(buttons()).toEqual(expect.arrayContaining(["Retry the same message", "Edit in composer"]));
+      const button = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+      await act(async () => button("Retry the same message").click());
+      expect(onRetryTurn).toHaveBeenCalledWith(expect.objectContaining({ role: "user", text: "/rimo-bug-hunt pls use it now." }));
+      await act(async () => button("Edit in composer").click());
+      expect(onEditTurn).toHaveBeenCalledWith(expect.objectContaining({ role: "user", text: "/rimo-bug-hunt pls use it now." }));
+
+      // The chat moved past the failure: an answer, or a newer message.
+      const answer = event(3, "message.completed", { itemId: "a1", role: "assistant", status: "completed", text: "Recovered." });
+      await render({ events: [ask, failure, answer] });
+      expect(buttons()).not.toContain("Retry the same message");
+      await render({ events: [ask, failure, event(3, "message.completed", { itemId: "u2", role: "user", status: "completed", text: "again" })] });
+      expect(buttons()).not.toContain("Retry the same message");
+
+      // Still running, a resend already on its way, or a history nobody can send to.
+      await render({ working: true });
+      expect(buttons()).not.toContain("Retry the same message");
+      await render({ pendingMessages: [{ text: "/rimo-bug-hunt pls use it now.", after: Date.parse(sentAt) }] });
+      expect(buttons()).not.toContain("Retry the same message");
+      await render({ readOnly: true });
+      expect(buttons()).not.toContain("Retry the same message");
+      expect(buttons()).not.toContain("Edit in composer");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
   it("does not reproject an unchanged durable branch on live-only updates", async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const project = vi.spyOn(conversation, "projectSessionConversation");
@@ -368,6 +412,17 @@ describe("AgentConversation", () => {
       expect(render([compacting, event(1, "turn.started")])).toContain("Compacting context…");
     });
 
+    it("keeps compaction visible while a background process is still running", () => {
+      const background = event(1, "tool.started", {
+        itemId: "tests", status: "inProgress", title: "Rust tests",
+        data: { background: true, command: "cargo test" },
+      });
+      const html = render([background, compacting]);
+      expect(html).toContain("Compacting context…");
+      expect(html).toContain("cargo test");
+      expect(html.slice(html.indexOf("data-current-activity"))).not.toContain(">Working<");
+    });
+
     it("stops saying so once the boundary lands", () => {
       const html = render([compacting, event(2, "context.compacted", { status: "completed", data: { harness: "claude" } })]);
       expect(html).not.toContain("Compacting context…");
@@ -396,11 +451,24 @@ describe("AgentConversation", () => {
   it("shows a skeleton while an existing chat's history loads, not the new-chat greeting", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} />);
     expect(html).toContain('aria-label="Loading conversation"');
-    expect(html).toContain("Loading conversation");
-    expect(html).toContain("Opening conversation");
+    expect(html).toContain('<span class="sr-only">Loading conversation</span>');
+    expect(html).toContain('data-skeleton-row="user"');
+    expect(html).toContain('data-skeleton-row="prose"');
+    expect(html).toContain('data-skeleton-row="tool"');
+    expect(html).toContain("skeleton-shimmer");
+    expect(html).toContain("max-w-conversation");
+    expect(html).not.toContain("Opening conversation");
+    expect(html).not.toContain("animate-spin");
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain('style="');
     expect(html).not.toContain("What should we");
+  });
+
+  it("lays the skeleton out with the compact transcript padding in a tile", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} density="compact" />);
+    expect(html).toContain('aria-label="Loading conversation"');
+    expect(html).toContain("px-3 pb-6 pt-3");
+    expect(html).not.toContain("sm:px-8");
   });
 
   it("keeps the greeting for a loaded-but-empty chat", () => {

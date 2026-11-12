@@ -8,6 +8,7 @@ import { useActiveTurnInput } from "../activeTurnSettings";
 import { activeTurnAction } from "../sessionInput";
 import { ComposerPill } from "./ComposerPill";
 import { ChatModelControl } from "./ChatModelControl";
+import type { AccountChoice } from "../providerAccounts";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
@@ -17,7 +18,7 @@ import { useComposerSuggestion } from "../useComposerSuggestion";
 import { ComposerSuggestionStatus } from "./ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "../composerSlash";
 import { SIDE_CHAT_COMMANDS } from "../sideChat";
-import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
+import { type ComposerAttachment, imageFilesFromClipboard, prepareImage } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
@@ -30,10 +31,13 @@ import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSna
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading }: {
+export function AsideChat({ session, adapters, accounts, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading, placeholder, headerActions }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
+  /** Extra Claude Code and Codex sign-ins the picker offers, as in the main
+   *  composer. The aside's own account is `session.account`. */
+  accounts?: readonly AccountChoice[];
   /** The global live stream; the panel filters to its own session. */
   events: AgentEvent[];
   pendingMessages: readonly PendingMessage[];
@@ -55,7 +59,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
    *  May reject — the panel wears the failure itself, because the main error
    *  banner sits behind the scrim where nobody is looking. */
   onChangeEffort?: (effort: string) => void | Promise<void>;
-  onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
+  /** `account` is the extra sign-in picked, or null for the user's own login. */
+  onChangeModel: (harness: Harness, model: string | null, account: string | null) => void | Promise<void>;
   onResolve: (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
   onAnswerQuestion?: (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
   onRetryCompaction?: () => Promise<void>;
@@ -69,6 +74,10 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   tag?: string;
   /** Drawn above the first message, inside the scroll. */
   leading?: ReactNode;
+  /** The composer's hint, in place of the generic one. */
+  placeholder?: string;
+  /** Extra header buttons, before Open as chat. */
+  headerActions?: ReactNode;
 }) {
   const activeTurnInput = useActiveTurnInput();
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
@@ -198,8 +207,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
 
   // Mirrors the main composer's `handleComposerPaste`: clipboard images become
   // removable preview chips instead of inserted text; every other paste falls
-  // through untouched. Sized before decode, same reasoning as the main chat —
-  // a silent multi-second paste for a huge screenshot reads as broken.
+  // through untouched. Oversized images are resized, as in the main chat.
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = event.clipboardData?.items;
     if (!items) return;
@@ -209,15 +217,10 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     attachFiles(files);
   };
   const attachFiles = (files: Array<{ type: string; size?: number }>) => {
-    if (files.some(isPasteTooLarge)) {
-      setComposerError("That image is too large to paste (over 8 MB).");
-      return;
-    }
     setComposerError(undefined);
     void Promise.all(files.map(async file => ({
       id: crypto.randomUUID(),
-      mediaType: mediaTypeOf(file),
-      dataUri: await readAsDataUri(file),
+      ...(await prepareImage(file)),
     })))
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
@@ -260,20 +263,23 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }
 
   const panel = <>
-        <header className="flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border px-4 py-1.5">
-          <HarnessMark harness={session.harness} live={working} size={15}/>
+        <header className={cn("flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border py-1.5", docked ? "pl-3.5 pr-2" : "px-4")}>
+          {/* Docked, the model picker below already wears the harness mark. */}
+          {!docked && <HarnessMark harness={session.harness} live={working} size={15}/>}
           <div className="min-w-0 flex-1">
             <h2 className="m-0 truncate font-display text-[13px] font-semibold leading-tight text-foreground">{session.title || session.label}</h2>
             <div className="-ml-1 flex min-w-0 items-center gap-1">
               <ChatModelControl
                 adapters={adapters}
+                accounts={accounts}
+                account={session.account ?? null}
                 harness={session.harness}
                 model={session.model ?? null}
                 disabled={working || !!modelSwitch || changingEffort}
                 disabledReason={working ? "Wait for the current response before switching models" : undefined}
-                onChange={(harness, model) => {
+                onChange={(harness, model, account) => {
                   setComposerError(undefined);
-                  void Promise.resolve(onChangeModel(harness, model))
+                  void Promise.resolve(onChangeModel(harness, model, account))
                     .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
                 }}
                 effort={session.effort}
@@ -292,6 +298,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               {!docked && <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>{tag}</span>}
             </div>
           </div>
+          {headerActions}
           <button
             type="button"
             onClick={onPromote}
@@ -317,6 +324,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             session={session}
             events={ownEvents}
             forestEntries={forest?.entries}
+            activeProcessEntries={forest?.activeProcessEntries}
             activeLeafId={forest?.head?.activeEntryId ?? null}
             working={working}
             pendingMessages={pendingMessages}
@@ -326,6 +334,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             onAnswerQuestion={onAnswerQuestion}
             onRetryCompaction={onRetryCompaction}
             leading={leading}
+            density={docked ? "compact" : "comfortable"}
           />
         </div>
 
@@ -398,7 +407,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
                 setDraft(current => `${current}${draftSuggestion.suggestion}`);
                 completion.clear();
               }}
-              placeholder={`Ask ${harnessLabel(session.harness)}… / skills & commands · @ files`}
+              placeholder={placeholder ?? `Ask ${harnessLabel(session.harness)}… / skills & commands · @ files`}
               working={working}
               activeAction={activeAction}
               activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
@@ -409,7 +418,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   </>;
 
   if (docked) {
-    return <section aria-label={`${tag.charAt(0).toUpperCase() + tag.slice(1)} with ${harnessLabel(session.harness)}`} className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background">
+    return <section aria-label={`${tag.charAt(0).toUpperCase() + tag.slice(1)} with ${harnessLabel(session.harness)}`} className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
       {panel}
     </section>;
   }

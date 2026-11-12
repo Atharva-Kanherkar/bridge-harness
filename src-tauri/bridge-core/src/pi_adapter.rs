@@ -354,6 +354,7 @@ impl PiAdapter {
             executable,
             directory.path(),
             StartRequest {
+                session_id: None,
                 cwd: &cwd,
                 model: None,
                 effort: None,
@@ -362,6 +363,7 @@ impl PiAdapter {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
             None,
@@ -537,6 +539,7 @@ impl HarnessAdapter for PiAdapter {
         }
         self.launch(
             StartRequest {
+                session_id: None,
                 cwd: request.cwd,
                 model: request.model,
                 effort: request.effort,
@@ -545,6 +548,7 @@ impl HarnessAdapter for PiAdapter {
                 read_only_sandbox: request.read_only_sandbox,
                 briefing: request.briefing,
                 interactive: request.interactive,
+                account: None,
                 on_progress: request.on_progress,
             },
             Some(request.provider_session_id),

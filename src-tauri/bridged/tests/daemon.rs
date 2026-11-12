@@ -159,6 +159,37 @@ fn browser_frame_polling_uses_the_typed_daemon_contract() {
 }
 
 #[test]
+fn the_daemon_serves_the_api_key_proxy_its_sessions_are_told_about() {
+    // The daemon is the default host and owns every session, so it has to
+    // answer on the port the agents' instructions name.
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let endpoint = running
+        .daemon
+        .core
+        .credential_broker
+        .endpoint()
+        .expect("the daemon bound the key proxy");
+    let mut stream = std::net::TcpStream::connect(endpoint).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream
+        .write_all(b"GET /credential-proxy/s/api.github.com/user HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut stream, &mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 403"), "a call without the pass is refused: {reply}");
+    assert!(reply.contains("BRIDGE_PROXY_PASS"));
+
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (keys, _) = client.call(1, "keys/list_api_keys", None);
+    assert_eq!(keys["result"]["proxyRunning"], true);
+    let (refused, _) = client.call(2, "keys/save_api_key", Some(json!({"name": "lower_case", "hosts": []})));
+    assert!(refused.get("error").is_some(), "names are checked by the daemon: {refused}");
+    running.stop();
+}
+
+#[test]
 fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());
@@ -1039,16 +1070,25 @@ fn sigkill_of_a_live_daemon_frees_the_directory_and_preserves_state() {
     seed_data_dir(data_dir);
 
     // A real daemon process, killed for real: no in-process shortcuts.
+    // A file captures diagnostics without blocking startup on an unread pipe.
+    let stderr_path = data_dir.join("daemon-test.stderr");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_bridged"))
         .args(["--data-dir", data_dir.to_str().unwrap(), "--health-addr", "none"])
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::fs::File::create(&stderr_path).unwrap())
         .spawn()
         .unwrap();
     let socket_path = data_dir.join(bridged::SOCKET_FILE_NAME);
     let token_path = data_dir.join(TOKEN_FILE_NAME);
     let deadline = Instant::now() + Duration::from_secs(60);
     while !socket_path.exists() || !token_path.exists() {
-        assert!(Instant::now() < deadline, "the daemon process never came up");
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("daemon exited before startup ({status}): {}", std::fs::read_to_string(&stderr_path).unwrap_or_default());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the daemon process never came up: {}", std::fs::read_to_string(&stderr_path).unwrap_or_default());
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     let token = std::fs::read_to_string(&token_path).unwrap().trim().to_owned();

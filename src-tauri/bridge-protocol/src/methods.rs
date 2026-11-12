@@ -171,6 +171,16 @@ methods![
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     (ResolveQuestion, "approvals", "resolve_question"),
+    // attention — what a person should know about, decided in core
+    (ListAttention, "attention", "list_attention"),
+    (MarkAttentionSeen, "attention", "mark_attention_seen"),
+    (UnreadSummary, "attention", "unread_summary"),
+    (ReportPresence, "attention", "report_presence"),
+    (Post, "attention", "post"),
+    (Wait, "sessions", "wait"),
+    // Delivering a chat's queued input on request is a session operation the
+    // attention escalation offers; it lives beside its caller for reading.
+    (DeliverQueuedInput, "sessions", "deliver_queued_input"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
     (CancelProviderLogin, "auth", "cancel_provider_login"),
@@ -210,6 +220,36 @@ methods![
     (ScanDirectory, "storage", "scan_directory"),
     (DeletePaths, "storage", "delete_paths"),
     (EmptyTrash, "storage", "empty_trash"),
+    // outgoing: messages a chat drafts for a person or a place
+    (ListOutgoing, "outgoing", "list_outgoing"),
+    (UpdateOutgoing, "outgoing", "update_outgoing"),
+    (CopyOutgoing, "outgoing", "copy_outgoing"),
+    (DiscardOutgoing, "outgoing", "discard_outgoing"),
+    (ReadOutgoingAttachment, "outgoing", "read_outgoing_attachment"),
+    // notes: local pages people and agents both write; model passes on request
+    (ListNotes, "notes", "list_notes"),
+    (ReadPage, "notes", "read_page"),
+    (CaptureNote, "notes", "capture_note"),
+    (CreatePage, "notes", "create_page"),
+    (EditPage, "notes", "edit_page"),
+    (UpdateNote, "notes", "update_note"),
+    (DeleteNote, "notes", "delete_note"),
+    (StructureNote, "notes", "structure_note"),
+    (ExtractTasks, "notes", "extract_tasks"),
+    (SplitItem, "notes", "split_item"),
+    (PageHistory, "notes", "page_history"),
+    (ReadVersion, "notes", "read_version"),
+    (RestoreVersion, "notes", "restore_version"),
+    (PutAssetPart, "notes", "put_asset_part"),
+    (FinishAsset, "notes", "finish_asset"),
+    (ReadAsset, "notes", "read_asset"),
+    (GetNotesSettings, "notes", "get_notes_settings"),
+    (SaveNotesSettings, "notes", "save_notes_settings"),
+    (CreateDatabase, "notes", "create_database"),
+    (UpdateSchema, "notes", "update_schema"),
+    (SaveView, "notes", "save_view"),
+    (DeleteView, "notes", "delete_view"),
+    (QueryDatabase, "notes", "query_database"),
     // token and cost usage
     (UsageSummary, "usage", "summary"),
     (ListUsagePriceOverrides, "usage", "list_price_overrides"),
@@ -257,6 +297,7 @@ methods![
     (RefreshOpencodeCatalog, "config", "refresh_opencode_catalog"),
     (SetOpencodeProviderApiKey, "config", "set_opencode_provider_api_key"),
     (RemoveOpencodeProviderAuth, "config", "remove_opencode_provider_auth"),
+    (SetAccountApiKey, "config", "set_account_api_key"),
     (SaveAgentConfig, "config", "save_agent_config"),
     (DeleteAgentConfig, "config", "delete_agent_config"),
     (SetDefaultAgent, "config", "set_default_agent"),
@@ -300,6 +341,10 @@ methods![
     (ReadCloneSettings, "clones", "read_clone_settings"),
     (WriteCloneSettings, "clones", "write_clone_settings"),
     (CloneRequests, "clones", "clone_requests"),
+    // API keys — keys an agent uses through Bridge without reading them
+    (ListApiKeys, "keys", "list_api_keys"),
+    (SaveApiKey, "keys", "save_api_key"),
+    (ForgetApiKey, "keys", "forget_api_key"),
     // agents — the runtime lifecycle for the built-in integrations. Distinct
     // from `marketplace`, which is about plugins running inside an agent.
     (ListManagedAgents, "agents", "list_managed_agents"),

@@ -9,6 +9,13 @@
     }
   },
   "properties": {
+    "account": {
+      "description": "The extra Claude or Codex account to sign in with, by its id in the harness's `advanced.accounts`; the harness id is the user's own login. Omitted keeps the chat's account on the same harness and uses the user's own login on another.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "effort": {
       "description": "Provider-specific thinking level, validated against the selected model. Omitted preserves the current value when the target model supports it.",
       "type": [

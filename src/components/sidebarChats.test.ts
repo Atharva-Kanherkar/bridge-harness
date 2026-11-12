@@ -200,6 +200,14 @@ describe("filterChats", () => {
     expect(filterChats([...chats, inProject], { query: "agentclash" })).toEqual([]);
   });
 
+  it("matches the detail only a longer rung of the title ladder carries", () => {
+    const laddered = chat("l", {
+      title: "SQLite WAL growth",
+      titleLadder: ["WAL", "SQLite WAL growth", "Why the SQLite WAL keeps growing in bridged"],
+    });
+    expect(filterChats([...chats, laddered], { query: "bridged" }).map(item => item.id)).toEqual(["l"]);
+  });
+
   it("treats a blank query as no query", () => {
     expect(filterChats(chats, { query: "   " })).toHaveLength(3);
     expect(filterChats(chats)).toHaveLength(3);
@@ -341,7 +349,7 @@ describe("live agents under an idle chat", () => {
 
 describe("chatName", () => {
   it("names an untitled chat still wearing a placeholder label New chat", () => {
-    for (const label of ["Orchestrator", "Bridge orchestrator", "New chat"]) expect(chatName({ title: null, label })).toBe("New chat");
+    for (const label of ["Orchestrator", "Bridge orchestrator", "New chat", "Chat"]) expect(chatName({ title: null, label })).toBe("New chat");
   });
 
   it("keeps a real title, and a real label", () => {

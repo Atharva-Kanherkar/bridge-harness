@@ -8,6 +8,7 @@ const ROLE_ALIASES: Record<string, readonly string[]> = {
   verification: ["verifier", "reviewer", "verification"],
   planning: ["planner", "planning"],
   documentation: ["documenter", "documentation", "docs"],
+  orchestrator: ["orchestrator"],
 };
 
 export type AgentMention = { token: string; objective: string };
@@ -35,9 +36,18 @@ export function parseAgentMention(text: string): AgentMention | null {
   return { token: normalizeAgentToken(match[1]), objective: (match[2] ?? "").trim() };
 }
 
+/** Only configured targets reserve a leading hash; the host still validates dispatch. */
+export function configuredAgentMention(text: string, agents: AgentDefinition[]): AgentMention | null {
+  const mention = parseAgentMention(text);
+  if (!mention?.token) return null;
+  return agents.some(agent => [agent.id ?? "", agent.name, agent.role, ...aliasesFor(agent)]
+    .some(value => normalizeAgentToken(value) === mention.token)) ? mention : null;
+}
+
 /** The leading `#token` currently being typed, before the objective begins. */
 export function agentMentionQuery(text: string): string | undefined {
-  return /^#([^\s]*)$/.exec(text)?.[1];
+  const query = /^#([^\s]*)$/.exec(text)?.[1];
+  return query && /^\d+$/.test(query) ? undefined : query;
 }
 
 function aliasesFor(agent: AgentDefinition): string[] {

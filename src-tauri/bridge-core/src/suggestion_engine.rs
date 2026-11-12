@@ -342,6 +342,7 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
     let started = core.adapter_registry.start_completion(
         provider,
         StartRequest {
+            session_id: None,
             cwd: &cwd,
             model: Some(model),
             effort: None,
@@ -351,6 +352,7 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         },
     );

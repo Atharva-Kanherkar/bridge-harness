@@ -185,18 +185,53 @@ Three rules over that table:
   a streaming thought's. A tool call left `inProgress` when a turn ends stays
   `inProgress`: that is a true statement about a call that never reported back,
   and overwriting it with `completed` would be a lie the reader cannot detect.
-- **Liveness, unlike status, is scoped to the turn.** The item keeps what the
+- **Ordinary tool liveness, unlike status, is scoped to its own turn.** The item keeps what the
   wire said; the row stops claiming live work once the turn is over. A call
   whose completion never arrived settles to the past tense with no spinner, and
   a check it never finished reads `pending` rather than `running` — the state
   that claims nothing. Without this a provider that drops one completion frame
   left "Working · editing files" pulsing under a reply that finished an hour
-  ago. The turn is the outer bound of "still happening" for every row.
+  ago. Starting another turn does not revive those abandoned calls. Explicitly
+  tracked processes are the exception below.
 - **`streaming` and `inProgress` are not synonyms.** `streaming` means text is
   accumulating into this item. `inProgress` means an operation is running.
   A reader sees the shimmer for the first and a pulse for the second.
 - **A status is never inferred from text.** An item is `failed` because a frame
   said so, not because its body contains the word "error".
+
+## Current activity and tracked processes
+
+A compact current-activity panel stays visible beside the latest reply, including
+when the originating command is above the viewport. It lists running background
+processes (`data.background: true`) with their command or task title, latest
+progress, and expandable output, under the heading `Background processes`. It
+appears only while at least one such process runs. The turn's own calls and the
+model's status (startup narration, `Thinking`, `Stopping…`) stay transcript rows,
+so an ordinary turn draws no panel. Explicit Monitor watches say `Watching` and
+do not claim that the model is working. Read-only history has no live panel.
+
+The forest snapshot carries a bounded `activeProcessEntries` projection separately
+from its history window. Its latest process snapshots keep silent work visible
+when the start is no longer in the loaded transcript. Output previews are capped
+at 8 KiB per field; the complete record stays in history.
+
+The adapter marks a tracked process with canonical `data.backgroundTask: true`.
+`data.background: true` means its running status has an independent lifecycle,
+so it stays visible after the assistant turn. `data.passive: true` identifies a
+user-started watcher; `data.progress` is the latest reported update. These fields
+are read into `ToolCallDisplay` once, without a harness branch in the renderer.
+Claude task ids and Codex native execution process ids provide this evidence.
+ACP runtimes continue to expose their reported tool lifecycles without inventing
+process identities the protocol did not supply.
+
+A launcher acknowledgement with status `backgrounded` reads `Started in background`,
+never `Passed`. Only a real task completion or failure supplies its outcome.
+A missing membership entry, stopped runtime, or app restart clears liveness with
+an `unknown` outcome. An explicit task stop remains `stopped`. Neither is success.
+The final snapshot is durable, so reloading does not restore an obsolete spinner.
+A process started behind the runtime's back with a detached shell launcher has no
+reliable lifecycle to render. Shared prompt guidance requests tracked execution
+and observable output for those cases.
 
 ## Identity
 

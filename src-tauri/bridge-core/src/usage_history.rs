@@ -120,9 +120,10 @@ pub fn list_history_sources(
 }
 
 /// One bounded pass over the chosen sources (all of them when `source_ids`
-/// is `None`). Discovery runs without the database lock; the lock is held
-/// only for each source's own scan so other callers are not stalled behind
-/// a large transcript directory.
+/// is `None`). Discovery and the transcript walk run without the database
+/// lock; the lock is held only while each source's changed files are read
+/// and saved, so other callers are not stalled behind a large transcript
+/// directory.
 pub fn scan_history(
     core: &BridgeCore,
     env: &SourceEnv,
@@ -182,9 +183,10 @@ pub fn scan_history(
                 cursor: None,
                 max_records,
             };
+            let listing = usage_import::list_source_files(&source);
             let result = {
                 let db = core.db.lock().unwrap();
-                usage_import::scan(&db, &request, env)
+                usage_import::scan_listed(&db, &request, env, listing)
             };
             match result {
                 Ok(result) => {

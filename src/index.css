@@ -642,6 +642,26 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: home-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* A chat title rewording itself to fit the rail (`FittedTitle`). Only the words
+   the new rung adds come in; the ones it shares with the old rung stay put, so
+   the title reads as growing or shrinking in place. Inline-block, because a
+   transform does not apply to an inline box. Reduced motion shows them at once,
+   delay included. */
+@keyframes title-word-in {
+  from { opacity: 0; filter: blur(3px); transform: translateY(0.2em); }
+  to { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+.title-word-in {
+  display: inline-block;
+  animation: title-word-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--title-word-delay, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .title-word-in { animation: none; }
+}
+
 /* Soft breathing dot used instead of loading spinners. */
 @keyframes thinking-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.72); }
@@ -760,6 +780,47 @@ html[data-native-fullscreen] .u-traffic-inset {
 
 .animate-page-enter {
   animation: page-enter 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Skeletons ──────────────────────────────────────────────────────────────
+   Every first-load placeholder in the app, drawn through the kit in
+   `src/components/ui/skeleton.tsx` (only that file names these classes; the
+   design-system test enforces it). The whole block waits a beat before fading
+   in, so a fast load never flashes placeholders. Each bar carries one soft
+   highlight that travels left to right; rows stagger their delay so the sweep
+   reads top to bottom. Under reduced motion the global rule below leaves
+   static bars. */
+@keyframes skeleton-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-skeleton-in {
+  animation: skeleton-in 0.24s ease-out 0.12s both;
+}
+
+@keyframes skeleton-sweep {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
+.skeleton-shimmer {
+  background-color: color-mix(in srgb, var(--color-muted-foreground) 10%, transparent);
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, var(--color-foreground) 7%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  /* Longhands, not the shorthand: this rule is unlayered, so a shorthand would
+     reset the per-row `[animation-delay:…]` utility the stagger relies on. */
+  animation-name: skeleton-sweep;
+  animation-duration: 1.6s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-fill-mode: both;
 }
 
 /* ── GitHub pane ────────────────────────────────────────────────────────────
@@ -977,6 +1038,143 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 .md th { background: var(--color-muted); font-weight: 600; }
 
+/* Notes renders Your words as a page: a reading scale, and the line breaks a
+   person typed are kept, since a capture is often one thought per line. */
+.note-md .md {
+  font-size: 16px;
+  line-height: 1.75;
+}
+.note-md .md p { margin: 0.5em 0; white-space: pre-line; }
+.note-md .md h1 { font-size: 1.6em; margin-top: 1.3em; }
+.note-md .md h2 { font-size: 1.3em; margin-top: 1.2em; }
+.note-md .md h3 { font-size: 1.1em; }
+
+/* The Notes page editor: a Notion-like page over Markdown. ProseMirror owns
+   this DOM, so it is styled here rather than with utilities. */
+.note-editor {
+  min-height: 12rem;
+  padding-bottom: 6rem;
+  outline: none;
+  font-size: 16px;
+  line-height: 1.75;
+  letter-spacing: -0.006em;
+  color: var(--color-foreground);
+  caret-color: var(--color-foreground);
+}
+.note-editor > * + * { margin-top: 0.25em; }
+.note-editor p { margin: 0; }
+.note-editor h1, .note-editor h2, .note-editor h3 {
+  margin: 1.1em 0 0.15em;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.018em;
+}
+.note-editor h1 { font-size: 1.875em; }
+.note-editor h2 { font-size: 1.45em; }
+.note-editor h3 { font-size: 1.2em; }
+.note-editor > :first-child { margin-top: 0; }
+.note-editor ul, .note-editor ol { margin: 0.1em 0; padding-left: 1.55em; }
+.note-editor ul { list-style: disc; }
+.note-editor ol { list-style: decimal; }
+.note-editor li > p { margin: 0; }
+.note-editor li::marker { color: var(--color-muted-foreground); }
+.note-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.1em; }
+.note-editor ul[data-type="taskList"] > li { display: flex; align-items: flex-start; gap: 0.55em; }
+.note-editor ul[data-type="taskList"] > li > label { flex-shrink: 0; margin-top: 0.36em; user-select: none; }
+.note-editor ul[data-type="taskList"] > li > label > input {
+  width: 1em;
+  height: 1em;
+  cursor: pointer;
+  accent-color: var(--color-foreground);
+}
+.note-editor ul[data-type="taskList"] > li > div { flex: 1; min-width: 0; }
+.note-editor ul[data-type="taskList"] > li[data-checked="true"] > div { color: var(--color-muted-foreground); text-decoration: line-through; text-decoration-color: var(--color-border); }
+.note-editor blockquote {
+  margin: 0.4em 0;
+  padding-left: 0.9em;
+  border-left: 3px solid var(--color-foreground);
+}
+.note-editor hr { margin: 1.1em 0; border: 0; border-top: 1px solid var(--color-border); }
+.note-editor hr.ProseMirror-selectednode { border-top-color: var(--color-ring); }
+.note-editor a { color: var(--color-foreground); text-decoration: underline; text-decoration-color: var(--color-border); text-underline-offset: 3px; }
+.note-editor a:hover { text-decoration-color: var(--color-foreground); }
+.note-editor strong { font-weight: 650; }
+.note-editor :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.12em 0.38em;
+  border-radius: 0.35rem;
+  background: var(--color-code-highlight);
+  color: var(--color-foreground);
+}
+.note-editor pre {
+  margin: 0.6em 0;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: var(--color-code);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.note-editor pre code { background: none; padding: 0; }
+.note-editor table { width: 100%; margin: 0.6em 0; border-collapse: collapse; table-layout: fixed; font-size: 0.94em; }
+.note-editor th, .note-editor td { border: 1px solid var(--color-border); padding: 0.35em 0.6em; vertical-align: top; text-align: left; }
+.note-editor th { background: var(--color-muted); font-weight: 600; }
+.note-editor .selectedCell { background: color-mix(in srgb, var(--color-ring) 14%, transparent); }
+.note-editor .tableWrapper { overflow-x: auto; }
+.note-editor [data-callout] { margin: 0.5em 0; }
+.note-editor .note-callout-body > * + * { margin-top: 0.25em; }
+.note-editor .note-toggle { display: flex; gap: 0.25em; margin: 0.15em 0; }
+.note-editor .note-toggle > button {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.5em;
+  height: 1.75em;
+  border-radius: 0.3rem;
+  color: var(--color-muted-foreground);
+}
+.note-editor .note-toggle > button:hover { background: var(--color-accent); }
+.note-editor .note-toggle > button::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-top: 0.3em solid transparent;
+  border-bottom: 0.3em solid transparent;
+  border-left: 0.42em solid currentColor;
+  transition: transform 0.15s ease;
+}
+.note-editor .note-toggle.is-open > button::before { transform: rotate(90deg); }
+.note-editor .note-toggle > div { flex: 1; min-width: 0; }
+.note-editor .note-toggle summary { display: block; list-style: none; font-weight: 500; }
+.note-editor .note-toggle summary::-webkit-details-marker { display: none; }
+.note-editor [data-type="detailsContent"] > * + * { margin-top: 0.25em; }
+.note-editor [data-raw-block] {
+  margin: 0.4em 0;
+  padding: 0.6em 0.8em;
+  white-space: pre-wrap;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+.note-editor [data-type="inline-math"] { padding: 0 0.1em; border-radius: 0.25rem; cursor: pointer; }
+.note-editor [data-type="inline-math"]:hover { background: var(--color-accent); }
+.note-editor [data-type="block-math"] { margin: 0.5em 0; padding: 0.4em 0; overflow-x: auto; border-radius: var(--radius-md); cursor: pointer; text-align: center; }
+.note-editor [data-type="block-math"]:hover { background: var(--color-accent); }
+.note-editor .ProseMirror-selectednode:not(figure):not(li) { outline: 2px solid var(--color-ring); outline-offset: 2px; border-radius: 0.35rem; }
+.note-editor .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--color-faint);
+}
+.note-editor .ProseMirror-gapcursor::after { border-top-color: var(--color-foreground); }
+.note-dropcursor { background: var(--color-ring) !important; }
+
 /* ── Code ───────────────────────────────────────────────────────────────── */
 
 .code-block {
@@ -1079,6 +1277,56 @@ html[data-native-fullscreen] .u-traffic-inset {
 .rich-block-copy:hover {
   color: var(--color-foreground);
   background: var(--color-accent);
+}
+
+/* Two or more hover actions share one anchored row instead of stacking on the
+   same top-right pixel. The buttons stay individual `.rich-block-copy`s so the
+   hover reveal and the look are identical to a single action. The row carries
+   its own surface: these buttons sit on top of a drawing, and the translucent
+   highlight a code block can afford to use would leave the labels illegible
+   over a node. */
+.rich-block-actions {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.1rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 12%, transparent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.rich-block:hover .rich-block-actions,
+.rich-block-actions:focus-within {
+  opacity: 1;
+}
+
+.rich-block-actions .rich-block-copy {
+  position: static;
+  opacity: 1;
+  border: 0;
+  background: transparent;
+}
+
+/* ── Fullscreen visual ──────────────────────────────────────────────────────
+   The overlay's width is the 100% zoom baseline, expressed as the canvas
+   width. Turning that width into an SVG width is what actually makes the
+   labels legible. `max-width: none` has to win over the inline `max-width`
+   Mermaid writes onto its own <svg>, hence the one `!important` here. */
+.visual-fullscreen-canvas svg {
+  width: 100%;
+  height: auto;
+  max-width: none !important;
+}
+
+.visual-fullscreen-canvas figcaption {
+  max-width: 72ch;
 }
 
 /* ── HTML block ─────────────────────────────────────────────────────────── */
@@ -1416,8 +1664,4 @@ html[data-native-fullscreen] .u-traffic-inset {
 @keyframes insight-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
-}
-@keyframes insight-shimmer {
-  from { background-position: 200% 0; }
-  to { background-position: -200% 0; }
 }

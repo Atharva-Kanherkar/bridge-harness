@@ -174,7 +174,7 @@ export function chatBucket(chat: Session, liveAgents?: LiveAgents): StatusBucket
  *  Until the backend titles a chat from its first message, these say nothing
  *  about it, and three rows reading "Orchestrator" tell the user less than one
  *  reading "New chat". */
-const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat"]);
+export const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat", "chat"]);
 
 export function chatName(chat: Pick<Session, "title" | "label">): string {
   if (chat.title) return chat.title;
@@ -258,7 +258,9 @@ export function filterChats(
     if (agent !== "all" && chat.harness !== agent) return false;
     if (!needle) return true;
     const project = workspaceTitle?.(chat.workspaceId) ?? "";
-    const haystack = `${chatName(chat)} ${chat.label} ${harnessLabel(chat.harness)} ${chat.model ?? ""} ${project}`.toLowerCase();
+    // The ladder's longer rungs carry detail the title drops, so they are searched too.
+    const ladder = chat.titleLadder?.join(" ") ?? "";
+    const haystack = `${chatName(chat)} ${ladder} ${chat.label} ${harnessLabel(chat.harness)} ${chat.model ?? ""} ${project}`.toLowerCase();
     return haystack.includes(needle);
   });
 }

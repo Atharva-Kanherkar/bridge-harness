@@ -93,6 +93,7 @@ for line in sys.stdin.buffer:
 }
 fn request(cwd: &str) -> StartRequest<'_> {
     StartRequest {
+        session_id: None,
         cwd,
         model: None,
         effort: None,
@@ -101,6 +102,7 @@ fn request(cwd: &str) -> StartRequest<'_> {
         read_only_sandbox: None,
         briefing: None,
         interactive: false,
+        account: None,
         on_progress: None,
     }
 }

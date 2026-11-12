@@ -778,6 +778,7 @@ mod tests {
         let codex_sandbox =
             ReadOnlySandbox::create("live-codex", workspace.path(), &networked_request).unwrap();
         let codex = codex_adapter::start(crate::adapters::StartRequest {
+            session_id: None,
             cwd,
             model: None,
             effort: Some("low"),
@@ -786,6 +787,7 @@ mod tests {
             read_only_sandbox: Some(&codex_sandbox),
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -838,6 +840,7 @@ mod tests {
         let claude_sandbox =
             ReadOnlySandbox::create("live-claude", workspace.path(), &networked_request).unwrap();
         let claude = claude_adapter::start(crate::adapters::StartRequest {
+            session_id: None,
             cwd,
             model: Some("haiku"),
             effort: Some("low"),
@@ -846,6 +849,7 @@ mod tests {
             read_only_sandbox: Some(&claude_sandbox),
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();

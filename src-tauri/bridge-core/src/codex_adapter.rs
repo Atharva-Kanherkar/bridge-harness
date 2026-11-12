@@ -85,17 +85,7 @@ pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
     launch(
-        StartRequest {
-            cwd: request.cwd,
-            model: request.model,
-            effort: request.effort,
-            instructions: request.instructions,
-            write_mode: request.write_mode,
-            read_only_sandbox: request.read_only_sandbox,
-            briefing: request.briefing,
-            interactive: request.interactive,
-            on_progress: request.on_progress,
-        },
+        request.as_start(),
         Some(request.provider_session_id),
         request.fork,
     )
@@ -170,6 +160,7 @@ fn launch(
     fork: bool,
 ) -> Result<StartedCodex, BridgeError> {
     let StartRequest {
+        session_id: bridge_session_id,
         cwd,
         model,
         effort,
@@ -178,6 +169,7 @@ fn launch(
         read_only_sandbox,
         briefing,
         interactive,
+        account,
         on_progress,
     } = request;
     // Codex cannot express one connector tool's exact identity, so a briefing
@@ -206,7 +198,7 @@ fn launch(
     // Root-level overrides, ahead of the subcommand: an interactive chat gets
     // Bridge's `visualize` server alongside the user's own servers.
     let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
-        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .then(|| crate::mcp_apps::ServerLaunch::for_session(bridge_session_id.filter(|_| interactive)))
         .flatten();
     for value in chat_config_overrides(visualize.as_ref()) {
         command.args(["-c", &value]);
@@ -219,6 +211,9 @@ fn launch(
         // Piped and tail-captured: a worker that dies before its typed result
         // reports the provider's own error, not a generic exit.
         .stderr(Stdio::piped());
+    // An extra account signs in from its own Codex home. A read-only sandbox
+    // below replaces it with its own isolated one.
+    crate::provider_accounts::apply_account(&mut command, account);
     if let Some(sandbox) = read_only_sandbox {
         let codex_home = prepare_isolated_codex_home(sandbox)?;
         command
@@ -242,6 +237,7 @@ fn launch(
     if read_only_sandbox.is_none() {
         crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
     }
+    crate::credential_broker::apply_proxy_pass(&mut command);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -743,6 +739,10 @@ impl AdapterRuntime for CodexRuntime {
     fn voice_stop(&self) -> Result<(), BridgeError> { self.stop_voice_dictation() }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
+    }
+    fn stop_subagent(&self, provider_id: &str, turn_id: Option<&str>) -> Result<(), BridgeError> {
+        let turn_id = turn_id.ok_or_else(|| BridgeError::Invalid("Subagent has no live turn to interrupt".into()))?;
+        self.request("turn/interrupt", json!({"threadId":provider_id,"turnId":turn_id}))
     }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let turn_id = self.current_turn.lock().unwrap().clone()?;
@@ -1543,6 +1543,7 @@ mod tests {
         use std::{sync::mpsc, thread, time::Duration};
         let cwd = std::env::current_dir().unwrap();
         let started = start(StartRequest {
+            session_id: None,
             cwd: cwd.to_str().unwrap(),
             model: None,
             effort: None,
@@ -1551,6 +1552,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1620,6 +1622,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let cwd = cwd.to_str().unwrap();
         let mut started = start(StartRequest {
+            session_id: None,
             cwd,
             model: None,
             effort: None,
@@ -1628,6 +1631,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1636,6 +1640,7 @@ mod tests {
         started.runtime.stop(ShutdownReason::AppShutdown);
 
         let mut resumed = resume(ResumeRequest {
+            session_id: None,
             fork: false,
             cwd,
             model: None,
@@ -1646,6 +1651,7 @@ mod tests {
             briefing: None,
             provider_session_id: &thread_id,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1762,6 +1768,7 @@ mod tests {
         let launch = crate::mcp_apps::ServerLaunch {
             command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
             args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         };
         let overrides = chat_config_overrides(Some(&launch));
         assert_eq!(

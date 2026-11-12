@@ -257,7 +257,10 @@ impl PromptCompiler {
 pub fn compiler_for_resolved_stack(
     stack: &crate::prompt_sections::ResolvedPromptStack,
 ) -> Result<PromptCompiler, BridgeError> {
-    let mut compiler = PromptCompiler::new(stack.target.compiler_role());
+    // Shared execution policy belongs to the host capability layer, alongside
+    // the resolved role sections. The live launch and preview compile it alike.
+    let mut compiler = PromptCompiler::new(stack.target.compiler_role())
+        .stable_section("activity_visibility", crate::prompts::ACTIVITY_VISIBILITY_GUIDANCE);
     for section in &stack.sections {
         compiler = compiler.stable_section(&section.id, &section.text);
     }

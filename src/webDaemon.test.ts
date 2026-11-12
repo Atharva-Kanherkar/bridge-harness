@@ -227,7 +227,7 @@ describe("WebDaemonClient", () => {
     // Multi-byte text, so a character count would pass where the byte count fails.
     const image = "é".repeat(MAX_FRAME_BYTES / 2);
     const error = await web.call("sessions/send_turn", { sessionId: "s", text: image }).catch((cause: unknown) => cause);
-    expect(error).toMatch(/^request frame exceeds 1048576 bytes \(sessions\/send_turn is \d+\)$/);
+    expect(error).toMatch(new RegExp(`^request frame exceeds ${MAX_FRAME_BYTES} bytes \\(sessions/send_turn is \\d+\\)$`));
     expect(daemon.sockets.flatMap(socket => socket.sent).some(frame => frame.method === "sessions/send_turn")).toBe(false);
     expect(daemon.live()).toHaveLength(7);
     held[0].socket.reply(held[0].id, "still here");

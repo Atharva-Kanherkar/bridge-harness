@@ -30,6 +30,8 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "general", label: "Active-turn behavior", description: "Steer or Queue messages sent while an agent is working" },
   { section: "menuBar", label: "Menu Bar icon", description: "Show the icon, quota used or remaining, and today's spend" },
   { section: "menuBar", label: "Providers & accounts", description: "Codex account, plan, token and model breakdown, refresh interval" },
+  { section: "notifications", label: "Notices", description: "Toast, banner and sound for needs you, a waiting result, failed and completed turns" },
+  { section: "notifications", label: "Quiet hours", description: "No banners or sounds between two times" },
   { section: "updates", label: "Beta nightly builds", description: "Opt in to signed nightly updates" },
   { section: "updates", label: "Check for updates", description: "Check the selected channel now" },
   { section: "workers", label: "Background task limits", description: "Preferred coding agent, tasks running at once, retries, usage limits and wait time" },
@@ -68,6 +70,10 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
 
   { section: "clones", label: "Default sign-in path", description: "Import cookies from your browser, or sign in inside a new browser clone" },
   { section: "clones", label: "Time to live", description: "How long a browser clone lives before it destroys itself" },
+
+  { section: "keys", label: "Saved keys", description: "API keys agents can use on the sites you allow, without seeing them" },
+  { section: "keys", label: "Add a key", description: "Save an API key or token in the Keychain for every chat" },
+  { section: "keys", label: "Pasted in chats", description: "Keys you pasted into a chat, and where each may be sent" },
 
   { section: "work", label: "Daily briefing", description: "Slack, GitHub, and other integration activity from the past 24 hours" },
   { section: "work", label: "What it reads", description: "Which connected tools the briefing may read" },

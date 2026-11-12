@@ -147,17 +147,7 @@ pub fn start(request: StartRequest<'_>) -> Result<StartedClaude, BridgeError> {
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> {
     launch(
-        StartRequest {
-            cwd: request.cwd,
-            model: request.model,
-            effort: request.effort,
-            instructions: request.instructions,
-            write_mode: request.write_mode,
-            read_only_sandbox: request.read_only_sandbox,
-            briefing: request.briefing,
-            interactive: request.interactive,
-            on_progress: request.on_progress,
-        },
+        request.as_start(),
         Some(request.provider_session_id),
     )
 }
@@ -181,6 +171,7 @@ fn launch(
     resume_session_id: Option<&str>,
 ) -> Result<StartedClaude, BridgeError> {
     let StartRequest {
+        session_id: bridge_session_id,
         cwd,
         model,
         effort,
@@ -189,6 +180,7 @@ fn launch(
         read_only_sandbox,
         briefing,
         interactive,
+        account,
         on_progress,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
@@ -198,7 +190,13 @@ fn launch(
     // the sidecar remains isolated from unrelated global hooks and permissions.
     // A restrictive credential policy is checked against the environment the
     // sidecar will inherit, before anything spawns.
-    crate::credential_policy::admit_claude_launch()?;
+    // An account launch signs in from its folder alone (see
+    // `provider_accounts::apply_account`), so the policy judges the
+    // environment after the overrides it removes are gone.
+    crate::credential_policy::admit_claude_environment(
+        crate::credential_policy::active().credential_policy,
+        |key| crate::provider_accounts::launch_variable("claude", account.is_some(), key, |key| std::env::var(key).ok()),
+    )?;
     let node = binary::resolve("node").ok_or_else(|| {
         BridgeError::Invalid(
             "Node.js is required to run Claude (expected `node` on PATH). Install Node 18+ to use Claude models."
@@ -276,7 +274,7 @@ fn launch(
     // local stdio process with no sign-in, so it carries none of the
     // connector handshake cost described on `sidecar_mcp_servers`.
     let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
-        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .then(|| crate::mcp_apps::ServerLaunch::for_session(bridge_session_id.filter(|_| interactive)))
         .flatten();
     let launch_mcp_servers = sidecar_mcp_servers(
         briefing_config.is_some() || (read_only_sandbox.is_some() && network_allowed),
@@ -347,6 +345,9 @@ fn launch(
         // policy was satisfied by.
         command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
     }
+    // An extra account signs in from its own config directory. A read-only
+    // sandbox below replaces it with its own isolated one.
+    crate::provider_accounts::apply_account(&mut command, account);
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -378,6 +379,7 @@ fn launch(
     if read_only_sandbox.is_none() {
         crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
     }
+    crate::credential_broker::apply_proxy_pass(&mut command);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -922,6 +924,9 @@ impl AdapterRuntime for ClaudeRuntime {
     fn interrupt(&self) -> Result<(), BridgeError> {
         ClaudeRuntime::interrupt(self)
     }
+    fn stop_subagent(&self, provider_id: &str, _turn_id: Option<&str>) -> Result<(), BridgeError> {
+        write_value(&self.writer, &json!({"type":"stop_task","task_id":provider_id}))
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let writer = self.writer.clone();
         let request = json!({"type":"control_request","request_id":format!("irq-{}", self.request_id.fetch_add(1, Ordering::Relaxed)),"request":{"subtype":"interrupt"}});
@@ -1189,6 +1194,7 @@ mod tests {
         crate::mcp_apps::ServerLaunch {
             command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
             args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         }
     }
 
@@ -1423,6 +1429,7 @@ mod tests {
         use std::{io::BufRead, sync::mpsc, thread, time::Duration};
         let cwd = std::env::temp_dir();
         let started = start(StartRequest {
+            session_id: None,
             cwd: cwd.to_str().unwrap(),
             model: None,
             effort: None,
@@ -1431,6 +1438,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1500,6 +1508,7 @@ mod tests {
         let cwd = std::env::temp_dir();
         let cwd = cwd.to_str().unwrap();
         let mut started = start(StartRequest {
+            session_id: None,
             cwd,
             model: None,
             effort: None,
@@ -1508,6 +1517,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1516,6 +1526,7 @@ mod tests {
         started.runtime.stop(ShutdownReason::AppShutdown);
 
         let mut resumed = resume(ResumeRequest {
+            session_id: None,
             fork: false,
             cwd,
             model: None,
@@ -1526,6 +1537,7 @@ mod tests {
             briefing: None,
             provider_session_id: &session_id,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1688,6 +1700,27 @@ mod catalogue_tests {
         assert_ne!(models[0].id, models[2].id);
         assert_eq!(models[0].supported_effort_levels.clone().unwrap(), ["high", "max"]);
         assert!(models[3].supported_effort_levels.as_ref().unwrap().is_empty());
+    }
+    #[test]
+    fn the_fable_5_2_catalog_resolves_aliases_to_new_releases() {
+        // Rows as the 0.3.322 SDK reports them, trimmed to the fields Bridge reads.
+        let models = parse_discovered_models(&serde_json::from_str::<Value>(r#"{"models":[
+            {"value":"default","resolvedModel":"claude-opus-5-5","displayName":"Default (recommended)","description":"Opus 5.5 · Best for everyday, complex tasks","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+            {"value":"fable","resolvedModel":"claude-fable-5-2","displayName":"Fable 5.2","description":"For your toughest challenges","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+            {"value":"haiku","resolvedModel":"claude-haiku-5-5","displayName":"Haiku 5.5","description":"Fastest for quick answers","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},
+            {"value":"claude-fable-5-1","resolvedModel":"claude-fable-5-1","displayName":"Fable 5.1","description":"Most capable for your hardest and longest-running tasks","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]}
+        ]}"#).unwrap().to_string()).unwrap();
+        let ids: Vec<_> = models.iter().map(|model| (model.id.as_str(), model.label.as_str())).collect();
+        assert_eq!(ids, [
+            ("claude-opus-5-5", "Opus 5.5"),
+            ("claude-fable-5-2", "Fable 5.2"),
+            ("claude-haiku-5-5", "Haiku 5.5"),
+            ("claude-fable-5-1", "Fable 5.1"),
+        ]);
+        for model in &models[1..] {
+            assert!(!model.is_default);
+            assert_eq!(model.supported_effort_levels.clone().unwrap(), ["low", "medium", "high", "xhigh", "max"]);
+        }
     }
     #[test]
     fn ignores_malformed_rows_and_unresolved_default() {
