@@ -120,6 +120,12 @@ pub enum CoreEvent {
     /// by callers for forest changes: [`EventBus::publish`] derives it from
     /// the durable agent event that moved the ledger. See `attention`.
     AttentionChanged,
+    /// Refetch hint: one workflow was saved, approved, enabled, disabled or
+    /// deleted.
+    WorkflowsChanged { workflow_id: String },
+    /// A workflow run changed status. Carries the wire run, serialized by
+    /// its own type so the payload cannot drift from the contract.
+    WorkflowRunChanged { run: bridge_protocol::messages::WorkflowRun },
 }
 
 impl CoreEvent {
@@ -151,6 +157,8 @@ impl CoreEvent {
             CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
             CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
             CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
+            CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
+            CoreEvent::WorkflowRunChanged { .. } => NotificationName::WorkflowRunChanged,
         }
     }
 
@@ -221,6 +229,8 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
             CoreEvent::NotesPageChanged(change) => serde_json::to_value(change).expect("page change serializes"),
             CoreEvent::NotesPassProgress(progress) => serde_json::to_value(progress).expect("pass progress serializes"),
+            CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
+            CoreEvent::WorkflowRunChanged { run } => serde_json::json!({ "run": run }),
         }
     }
 
@@ -248,6 +258,11 @@ struct ReconciliationState {
     /// as the agent set above, for the same reason: the hint names its scope.
     memory_scopes_changed: std::collections::BTreeSet<String>,
     attention_changed: bool,
+    /// Which workflows changed while a subscriber was lagging. Same shape, for
+    /// the same reason: the hint names its workflow.
+    workflows_changed: std::collections::BTreeSet<String>,
+    /// The latest state of each run that changed while a subscriber lagged.
+    workflow_runs_changed: std::collections::BTreeMap<String, bridge_protocol::messages::WorkflowRun>,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -295,6 +310,14 @@ impl EventReceiver {
             events.push(CoreEvent::MemoryChanged {
                 scope_key: scope_key.clone(),
             });
+        }
+        for workflow_id in &state.workflows_changed {
+            events.push(CoreEvent::WorkflowsChanged {
+                workflow_id: workflow_id.clone(),
+            });
+        }
+        for run in state.workflow_runs_changed.values() {
+            events.push(CoreEvent::WorkflowRunChanged { run: run.clone() });
         }
         if state.attention_changed {
             events.push(CoreEvent::AttentionChanged);
@@ -382,6 +405,12 @@ impl EventBus {
                     state.memory_scopes_changed.insert(scope_key.clone());
                 }
                 CoreEvent::AttentionChanged => state.attention_changed = true,
+                CoreEvent::WorkflowsChanged { workflow_id } => {
+                    state.workflows_changed.insert(workflow_id.clone());
+                }
+                CoreEvent::WorkflowRunChanged { run } => {
+                    state.workflow_runs_changed.insert(run.id.clone(), run.clone());
+                }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::TerminalFrame(_)
@@ -413,6 +442,40 @@ impl EventBus {
 
 #[cfg(test)]
 mod tests {
+
+    fn run_fixture() -> bridge_protocol::messages::WorkflowRun {
+        use bridge_protocol::messages as wire;
+        wire::WorkflowRun {
+            id: "run-1".into(),
+            workflow_id: "w1".into(),
+            revision_id: "r1".into(),
+            trigger_kind: wire::WorkflowTriggerKind::CatchUp,
+            missed_slots: 2,
+            dry_run: false,
+            status: wire::WorkflowRunStatus::WaitingApproval,
+            failure_code: None,
+            summary: None,
+            session_id: Some("s1".into()),
+            quota_unknown: false,
+            cost_microusd: None,
+            tokens: None,
+            unread: true,
+            scheduled_for: Some("2026-10-29T09:00:00.000Z".into()),
+            started_at: None,
+            finished_at: None,
+            created_at: "2026-10-29T09:00:01.000Z".into(),
+        }
+    }
+
+    #[test]
+    fn run_changed_payload_is_the_wire_run() {
+        let payload = CoreEvent::WorkflowRunChanged { run: run_fixture() }.payload();
+        assert_eq!(payload["run"]["workflowId"], "w1");
+        assert_eq!(payload["run"]["status"], "waiting_approval");
+        assert_eq!(payload["run"]["triggerKind"], "catch_up");
+        let back: bridge_protocol::messages::WorkflowRun = serde_json::from_value(payload["run"].clone()).unwrap();
+        assert_eq!(back, run_fixture());
+    }
     use super::*;
     use bridge_protocol::notifications::DeliveryClass;
 
@@ -545,6 +608,8 @@ mod tests {
             CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
             CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
             CoreEvent::AttentionChanged,
+            CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },
+            CoreEvent::WorkflowRunChanged { run: run_fixture() },
         ];
         for event in &events {
             assert_eq!(

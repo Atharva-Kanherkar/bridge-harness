@@ -384,6 +384,23 @@ methods![
     (AutomationCatalog, "automations", "automation_catalog"),
     (SaveAutomation, "automations", "save_automation"),
     (ExecuteAutomationAction, "automations", "execute_automation_action"),
+    // workflows: repeatable jobs Bridge runs on the user's own harness
+    (ListWorkflows, "workflows", "list_workflows"),
+    (GetWorkflow, "workflows", "get_workflow"),
+    (SaveWorkflow, "workflows", "save_workflow"),
+    (ApproveWorkflow, "workflows", "approve_workflow"),
+    (DeleteWorkflow, "workflows", "delete_workflow"),
+    (SetWorkflowEnabled, "workflows", "set_workflow_enabled"),
+    (WorkflowOptions, "workflows", "workflow_options"),
+    (RunWorkflow, "workflows", "run_workflow"),
+    (CancelWorkflowRun, "workflows", "cancel_workflow_run"),
+    (ListWorkflowRuns, "workflows", "list_workflow_runs"),
+    (ReadWorkflowSettings, "workflows", "read_workflow_settings"),
+    (WriteWorkflowSettings, "workflows", "write_workflow_settings"),
+    (AlwaysAllowTool, "workflows", "always_allow_tool"),
+    (DraftWorkflowFromText, "workflows", "draft_workflow_from_text"),
+    (DraftWorkflowFromSession, "workflows", "draft_workflow_from_session"),
+    (MarkWorkflowRunsRead, "workflows", "mark_workflow_runs_read"),
 ];
 
 impl MethodName {

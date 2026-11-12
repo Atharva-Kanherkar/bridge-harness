@@ -2853,6 +2853,30 @@ pub(crate) fn auto_resolve_provider_permission(
     )
 }
 
+/// Answer a workflow run's ask that Bridge decided itself, through the same
+/// single-owner resolver a click uses. A failure is recorded, never silent.
+pub(crate) fn resolve_workflow_permission(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    decision: &crate::workflow_run::PermissionDecision,
+) {
+    let (answer, reason) = match decision {
+        crate::workflow_run::PermissionDecision::Accept(reason) => ("accept", reason.as_str()),
+        crate::workflow_run::PermissionDecision::Decline(reason) => ("decline", reason.as_str()),
+    };
+    if let Err(error) = resolve_provider_permission(core, session_id, event_id, Some(answer), None, "workflow", Some(reason)) {
+        let db = core.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "permission",
+            "approval.workflow_resolve_failed",
+            session_id,
+            &format!("Bridge could not answer permission {event_id} for this workflow run: {error}"),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_provider_permission(
     core: &Arc<BridgeCore>,
@@ -2866,6 +2890,10 @@ fn resolve_provider_permission(
     let db = core.db.lock().unwrap();
     if actor == "policy" && crate::chat_defaults::effective_access(&db,session_id)? != wire::ChatAccess::Full {
         return Err(BridgeError::Invalid("Automatic permission grant is no longer authorized".into()));
+    }
+    let workflow_session = crate::workflow_run::is_workflow_session(&db, session_id);
+    if actor == "workflow" && !workflow_session {
+        return Err(BridgeError::Invalid("Only a workflow run's own decisions use the workflow resolver".into()));
     }
     let (payload, adapter_id, is_worker) =
         interaction_payload(&db, session_id, event_id, "permission.requested")?;
@@ -2881,6 +2909,9 @@ fn resolve_provider_permission(
         .cloned()
         .ok_or_else(|| BridgeError::Invalid("Permission has no provider request id".into()))?;
     let item_id = payload.get("itemId").and_then(Value::as_str).map(str::to_owned);
+    if workflow_session && actor != "workflow" {
+        crate::workflow_run::refuse_approval_after_the_run_ended(&db, session_id, &decision)?;
+    }
     let claim = claim_interaction(
         &db,
         session_id,
@@ -2895,6 +2926,11 @@ fn resolve_provider_permission(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    // A person's answer on a workflow run is an effect, so a repeat of an
+    // approved call is recognised and the run's record shows who decided.
+    if workflow_session && actor != "workflow" {
+        crate::workflow_run::record_human_decision(&db, session_id, &details, &decision, actor)?;
+    }
     let adapter_owner = crate::harness_subagents::adapter_owner(&db, session_id)?;
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
@@ -6069,6 +6105,303 @@ pub fn execute_skill_change(
     )?;
     core.events.publish(CoreEvent::StateChanged);
     Ok(results)
+}
+
+// --- workflows -----------------------------------------------------------------
+
+/// The data directory a workflow's private folder lives under.
+fn workflow_data_dir(core: &Arc<BridgeCore>) -> std::path::PathBuf {
+    core.database_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+fn publish_workflows_changed(core: &Arc<BridgeCore>, ids: impl IntoIterator<Item = String>) {
+    for workflow_id in ids {
+        core.events.publish(crate::events::CoreEvent::WorkflowsChanged { workflow_id });
+    }
+}
+
+/// Facts validation needs from the registry and, only when a definition grants
+/// connectors, from Claude's own configuration (a subprocess, so never asked
+/// for when nothing would read it).
+fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> crate::workflows::ValidationContext {
+    crate::workflows::ValidationContext {
+        adapters: core
+            .adapter_registry
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| crate::workflows::AdapterFacts {
+                models: descriptor.models.iter().map(|model| model.id.clone()).collect(),
+                id: descriptor.id,
+            })
+            .collect(),
+        servers: if with_servers {
+            crate::marketplace::claude_sdk_configuration().mcp_servers.into_keys().collect()
+        } else {
+            Default::default()
+        },
+    }
+}
+
+/// Every workflow. Disables, and announces, any whose project is gone first.
+pub fn list_workflows(core: &Arc<BridgeCore>) -> Result<wire::WorkflowList, BridgeError> {
+    let (changed, workflows) = {
+        let db = core.db.lock().unwrap();
+        let changed = crate::workflows::reconcile_projects(&db)?;
+        (changed, crate::workflows::list(&db)?)
+    };
+    publish_workflows_changed(core, changed);
+    Ok(wire::WorkflowList { workflows })
+}
+
+pub fn get_workflow(core: &Arc<BridgeCore>, params: &wire::GetWorkflowParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
+    let (changed, workflow) = {
+        let db = core.db.lock().unwrap();
+        let changed = crate::workflows::reconcile_projects(&db)?;
+        (changed, crate::workflows::require(&db, &params.workflow_id)?)
+    };
+    publish_workflows_changed(core, changed);
+    Ok(wire::WorkflowSnapshot { workflow })
+}
+
+/// Validate in Rust, then store a new workflow or a new revision.
+pub fn save_workflow(core: &Arc<BridgeCore>, params: &wire::SaveWorkflowParams) -> Result<wire::SaveWorkflowResult, BridgeError> {
+    let context = workflow_validation_context(core, !params.definition.grants.is_empty());
+    crate::workflows::validate(&params.definition, &context).map_err(BridgeError::Invalid)?;
+    let result = crate::workflows::save(
+        &core.db.lock().unwrap(),
+        &workflow_data_dir(core),
+        params.workflow_id.as_deref(),
+        &params.definition,
+        crate::workflows::CreatedBy::User,
+    )?;
+    publish_workflows_changed(core, [result.workflow.id.clone()]);
+    Ok(result)
+}
+
+pub fn approve_workflow(core: &Arc<BridgeCore>, params: &wire::ApproveWorkflowParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
+    let workflow = crate::workflows::approve(&core.db.lock().unwrap(), &params.workflow_id, &params.revision_id)?;
+    publish_workflows_changed(core, [workflow.id.clone()]);
+    Ok(wire::WorkflowSnapshot { workflow })
+}
+
+pub fn delete_workflow(core: &Arc<BridgeCore>, params: &wire::DeleteWorkflowParams) -> Result<wire::UnitResult, BridgeError> {
+    crate::workflows::delete(&core.db.lock().unwrap(), &workflow_data_dir(core), &params.workflow_id)?;
+    publish_workflows_changed(core, [params.workflow_id.clone()]);
+    Ok(wire::UnitResult(()))
+}
+
+pub fn set_workflow_enabled(core: &Arc<BridgeCore>, params: &wire::SetWorkflowEnabledParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
+    let workflow = crate::workflows::set_enabled(&core.db.lock().unwrap(), &params.workflow_id, params.enabled)?;
+    publish_workflows_changed(core, [workflow.id.clone()]);
+    Ok(wire::WorkflowSnapshot { workflow })
+}
+
+/// What each harness may run as a workflow, and the connector servers Claude's
+/// configuration holds. Discovery, not authority: a run's scope is still
+/// checked against the live configuration when it starts.
+pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
+    let descriptors = core.adapter_registry.descriptors();
+    let harnesses: Vec<wire::WorkflowHarnessOption> = descriptors
+        .into_iter()
+        .map(|descriptor| {
+            let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
+            let default_model = core
+                .adapter_registry
+                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
+                .ok()
+                .map(|resolution| resolution.actual_model);
+            wire::WorkflowHarnessOption {
+                connectors_allowed: gate.is_ok(),
+                connectors_reason: gate.err().map(|refusal| refusal.reason()),
+                worktree_allowed: true,
+                default_model,
+                models: descriptor
+                    .models
+                    .iter()
+                    .map(|model| wire::WorkBriefingModel {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        tier: model.tier.as_str().to_owned(),
+                        default_for_briefing: model.tier == CapabilityTier::Fast && model.default_for_tier,
+                    })
+                    .collect(),
+                id: descriptor.id,
+                label: descriptor.label,
+                available: descriptor.available,
+            }
+        })
+        .collect();
+    let claude_may_hold_connectors = harnesses
+        .iter()
+        .any(|harness| harness.id == "claude" && harness.connectors_allowed);
+    let servers = if claude_may_hold_connectors {
+        let configuration = crate::marketplace::claude_sdk_configuration();
+        configuration
+            .mcp_servers
+            .keys()
+            .map(|server| wire::WorkflowServerOption {
+                id: server.clone(),
+                family: crate::work_briefing_live::family_for_server(server)
+                    .map(|family| family.as_str().to_owned())
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                connected: configuration.connector_health.get(server).copied().flatten(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    wire::WorkflowOptions { harnesses, servers }
+}
+
+/// Run now. The request id makes a double click one run.
+pub fn run_workflow(core: &Arc<BridgeCore>, params: &wire::RunWorkflowParams) -> Result<wire::RunWorkflowResult, BridgeError> {
+    use crate::workflow_trigger::{self, ClaimOutcome, Occasion};
+    let occasion = Occasion::manual(&params.workflow_id, &params.request_id);
+    let outcome = workflow_trigger::claim(
+        &core.db.lock().unwrap(),
+        &params.workflow_id,
+        &occasion,
+        params.dry_run,
+        chrono::Utc::now(),
+    )?;
+    match outcome {
+        ClaimOutcome::Claimed(claimed) => {
+            let run = claimed.run.clone();
+            workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
+            workflow_trigger::dispatch(core.clone(), claimed);
+            Ok(wire::RunWorkflowResult { run, created: true })
+        }
+        ClaimOutcome::Existing(run) | ClaimOutcome::Overlap { active: run, .. } => {
+            Ok(wire::RunWorkflowResult { run, created: false })
+        }
+        ClaimOutcome::Refused(reason) => Err(BridgeError::Invalid(reason)),
+    }
+}
+
+pub fn cancel_workflow_run(core: &Arc<BridgeCore>, params: &wire::CancelWorkflowRunParams) -> Result<wire::WorkflowRunSnapshot, BridgeError> {
+    let run = crate::workflow_trigger::cancel(&core.db.lock().unwrap(), &params.run_id, chrono::Utc::now())?;
+    // Stop means now. The runner would only notice at its next heartbeat, and
+    // an always-allowed write could still go out in between.
+    if let Some(session_id) = run.session_id.as_deref() {
+        crate::workflow_run::stop(core, session_id);
+    }
+    crate::workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
+    Ok(wire::WorkflowRunSnapshot { run })
+}
+
+pub fn list_workflow_runs(core: &Arc<BridgeCore>, params: &wire::ListWorkflowRunsParams) -> Result<wire::WorkflowRunList, BridgeError> {
+    let runs = crate::workflow_trigger::list_runs(
+        &core.db.lock().unwrap(),
+        params.workflow_id.as_deref(),
+        params.unread_only,
+        params.limit,
+    )?;
+    Ok(wire::WorkflowRunList { runs })
+}
+
+/// "Always allow for this workflow" (C9). The card is answered first, through
+/// the same resolver a click uses; only once the provider has its answer is
+/// the tool recorded in a new revision, approved by construction. A card that
+/// was already answered records nothing.
+pub fn always_allow_tool(core: &Arc<BridgeCore>, params: &wire::AlwaysAllowToolParams) -> Result<wire::AlwaysAllowToolResult, BridgeError> {
+    let (definition, workflow_id) = {
+        let db = core.db.lock().unwrap();
+        let Some((run, _)) = crate::workflow_run::run_for_session(&db, &params.session_id)? else {
+            return Err(BridgeError::Invalid("that session is not a workflow run".into()));
+        };
+        if run.workflow_id != params.workflow_id {
+            return Err(BridgeError::Invalid("that run belongs to another workflow".into()));
+        }
+        let (payload, _, _) = interaction_payload(&db, &params.session_id, params.event_id, "permission.requested")?;
+        let asked = payload.pointer("/data/tool_name").and_then(Value::as_str).unwrap_or_default();
+        if asked != params.tool_identity {
+            return Err(BridgeError::Invalid(format!("the card asks about `{asked}`, not `{}`", params.tool_identity)));
+        }
+        let workflow = crate::workflows::require(&db, &params.workflow_id)?;
+        let mut definition = workflow.definition;
+        let Some((server, _)) = crate::workflows::split_identity(&params.tool_identity) else {
+            return Err(BridgeError::Invalid(format!("`{}` is not an exact tool identity", params.tool_identity)));
+        };
+        let writable = definition.grants.iter().any(|grant| {
+            crate::workflows::wire_server_name(&grant.server) == server && grant.write == wire::WorkflowWriteAccess::Ask
+        });
+        if !writable {
+            return Err(BridgeError::Invalid(format!("`{server}` is not granted writes in this workflow")));
+        }
+        if !definition.always_allow.contains(&params.tool_identity) {
+            definition.always_allow.push(params.tool_identity.clone());
+        }
+        (definition, params.workflow_id.clone())
+    };
+    let resolution = resolve_provider_permission(
+        core,
+        &params.session_id,
+        params.event_id,
+        Some("accept"),
+        None,
+        "user",
+        Some("Always allowed for this workflow"),
+    )?;
+    if resolution.disposition != wire::InteractionResolutionDisposition::Resolved {
+        return Err(BridgeError::Invalid("that card was already answered".into()));
+    }
+    let saved = crate::workflows::save(
+        &core.db.lock().unwrap(),
+        &workflow_data_dir(core),
+        Some(&workflow_id),
+        &definition,
+        crate::workflows::CreatedBy::AlwaysAllow,
+    )?;
+    publish_workflows_changed(core, [workflow_id]);
+    Ok(wire::AlwaysAllowToolResult { workflow: saved.workflow, resolution })
+}
+
+/// What drafting may know: Claude's connector servers, the person's
+/// timezone, and Claude's fast default model.
+fn workflow_draft_context(core: &Arc<BridgeCore>, servers: Vec<wire::WorkflowServerOption>) -> crate::workflow_draft::DraftContext {
+    crate::workflow_draft::DraftContext {
+        servers,
+        timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+        harness: "claude".into(),
+        model: core
+            .adapter_registry
+            .resolve_model("claude", CapabilityTier::Fast, None)
+            .map(|resolution| resolution.actual_model)
+            .unwrap_or_else(|_| "haiku".into()),
+    }
+}
+
+/// Draft from a sentence: one tool-less turn, then Rust's rules. Never saved.
+pub fn draft_workflow_from_text(core: &Arc<BridgeCore>, params: &wire::DraftWorkflowFromTextParams) -> Result<wire::WorkflowDraftResult, BridgeError> {
+    let context = workflow_draft_context(core, workflow_options(core).servers);
+    let mut model = crate::workflow_draft::ClaudeDraftModel::new(core, &context.model);
+    let draft = crate::workflow_draft::draft_from_text(&params.text, params.project_id.clone(), &context, &mut model)?;
+    Ok(wire::WorkflowDraftResult { draft })
+}
+
+/// Draft from a chat: no model call. Never saved.
+pub fn draft_workflow_from_session(core: &Arc<BridgeCore>, params: &wire::DraftWorkflowFromSessionParams) -> Result<wire::WorkflowDraftResult, BridgeError> {
+    let configured: Vec<String> = crate::marketplace::claude_sdk_configuration().mcp_servers.into_keys().collect();
+    let context = workflow_draft_context(core, Vec::new());
+    let draft = crate::workflow_draft::draft_from_session(&core.db.lock().unwrap(), &params.session_id, &configured, &context)?;
+    Ok(wire::WorkflowDraftResult { draft })
+}
+
+pub fn mark_workflow_runs_read(core: &Arc<BridgeCore>, params: &wire::MarkWorkflowRunsReadParams) -> Result<wire::UnitResult, BridgeError> {
+    let changed = crate::workflow_trigger::mark_read(&core.db.lock().unwrap(), &params.run_ids)?;
+    crate::workflow_trigger::publish_runs(core, &changed);
+    Ok(wire::UnitResult(()))
+}
+
+pub fn read_workflow_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
+    crate::workflow_trigger::read_settings(&core.db.lock().unwrap())
+}
+
+pub fn write_workflow_settings(core: &Arc<BridgeCore>, params: &wire::WriteWorkflowSettingsParams) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
+    crate::workflow_trigger::write_settings(&core.db.lock().unwrap(), params.settings, chrono::Utc::now())
 }
 
 // --- automations ---------------------------------------------------------------
