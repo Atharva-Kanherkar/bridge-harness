@@ -160,6 +160,7 @@ const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
+import { NotesScreenSkeleton } from "./components/notes/NotesSkeleton";
 import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
@@ -283,6 +284,8 @@ function AppContent() {
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
   // A `bridge://p/<id>` link clicked anywhere: Notes opens on that page.
   const [noteOpenRequest, setNoteOpenRequest] = useState<{ id: string; nonce: number } | undefined>();
+  // Notes acts on a link's request once; a later visit to Notes must not replay it.
+  const consumeNoteOpenRequest = useCallback(() => setNoteOpenRequest(undefined), []);
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
@@ -3459,13 +3462,14 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "notes" ? <Suspense fallback={<PanelLoading label="Opening notes…"/>}><NotesScreen
+      /> : view === "notes" ? <Suspense fallback={<NotesScreenSkeleton />}><NotesScreen
         adapters={adapters}
         workspaces={state.workspaces}
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
         openRequest={noteOpenRequest}
+        onOpenRequestHandled={consumeNoteOpenRequest}
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
