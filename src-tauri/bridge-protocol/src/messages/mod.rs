@@ -22,6 +22,7 @@
 //! tables fails the coverage test below.
 
 mod agents;
+mod app_preferences;
 mod approvals;
 mod attention;
 mod auth;
@@ -61,6 +62,7 @@ mod workspaces;
 mod worktrees;
 
 pub use agents::*;
+pub use app_preferences::*;
 pub use approvals::*;
 pub use attention::*;
 pub use auth::*;
@@ -379,6 +381,8 @@ typed_methods![
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
     (GetChatDefaults, GetChatDefaultsParams, ChatDefaultsView),
     (SaveChatDefaults, SaveChatDefaultsParams, ChatDefaultsView),
+    (GetAppPreferences, _, AppPreferences),
+    (SaveAppPreferences, SaveAppPreferencesParams, AppPreferences),
     (ResolveChatSettings, ResolveChatSettingsParams, ResolvedChatSettings),
     (CreateConfiguredChat, CreateConfiguredChatParams, ConfiguredChatResult),
     (GetChatSettings, GetChatSettingsParams, ChatSessionSettings),

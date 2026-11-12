@@ -29,6 +29,26 @@ Background task limits, internal role instructions, and specialized display cont
 
 Agents are also beside New Chat. Archived chats and scheduled tasks open from the sidebar. Daily briefing settings open from the Work board.
 
+## Changing settings from a chat
+
+Any top-level chat can change some settings when you ask: "make the theme light", "hide thinking in chats", "make Sonnet my default model". The chat uses two tools on Bridge's own `bridge` tool server, `settings_read` and `settings_change`, on Claude and Codex. OpenCode 2.x does not load the `bridge` server yet (it ignores `OPENCODE_CONFIG_CONTENT`), so OpenCode chats have none of Bridge's tools until that is fixed.
+
+| Key | Values | Applies to |
+| --- | --- | --- |
+| `appearance.theme` | system, light, dark | every open window, at once |
+| `appearance.skin` | graphite, vibrancy, omarchy | every open window, at once |
+| `appearance.effortSelector` | slider, sentence, list | every open window, at once |
+| `transcript.showThinking` | true, false | every open window, at once |
+| `transcript.autoExpandEdits` | true, false | every open window, at once |
+| `newChat.model` | a harness and model, or default | new chats |
+| `newChat.effort` | a level the default model supports, or default | new chats |
+| `newChat.createWorktree` | true, false, or default | new chats |
+| `newChat.activeTurnInput` | steer, queue, or default | new chats |
+
+The list is closed on purpose. A chat cannot change default access, permissions, API keys, accounts, budgets, worker limits or approvals: an agent must never widen what it may do. Workers get neither tool. New-chat changes go through the same checks as [New chat defaults](chat-defaults.md), and only the application-wide defaults change; a project with its own value keeps it, and the chat says so.
+
+Appearance and transcript choices are stored by the core (`config/get_app_preferences`, `config/save_app_preferences`) and announced with `config/app_preferences_changed`, so a change from a chat, Settings or another window reaches every window. Each window keeps a copy in localStorage only to paint its first frame. The live eval is `settings_tools_eval` in bridge-core; the test contract is [feat-bridge-control-mcp](../testing/feat-bridge-control-mcp.md).
+
 ## Marketplace
 
 **Apps** connect services and tools to supported coding agents. **Skills** add reusable instructions and workflows. Coding-agent installation lives in Settings, under Coding agents. Scheduled tasks have their own sidebar destination.

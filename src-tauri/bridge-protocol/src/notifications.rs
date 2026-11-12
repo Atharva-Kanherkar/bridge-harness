@@ -128,6 +128,10 @@ notifications![
     // Refetch hint: one drafted message in a chat changed. Transient: a client
     // that missed it sees the same item on its next `outgoing/list_outgoing`.
     (OutgoingChanged, "outgoing/changed", Transient),
+    // Refetch hint: the app preferences record moved (theme, skin, transcript
+    // display), whether a person or a chat changed it. Transient: a client that
+    // missed it rereads `config/get_app_preferences`, whose revision is the truth.
+    (AppPreferencesChanged, "config/app_preferences_changed", Transient),
     // Refetch hint: one workflow was saved, approved, enabled, disabled or
     // deleted. Payload `{"workflowId": "<id>"}`.
     (WorkflowsChanged, "workflows/changed", Transient),

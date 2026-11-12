@@ -1,5 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
+import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
 import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
@@ -223,6 +224,9 @@ const unit = (result: Promise<null>): Promise<void> => result.then(() => undefin
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
+// Mock app preferences: the core's record, held in memory for browser mode.
+let mockAppPreferences: AppPreferences = { revision: 0, values: {} };
+const appPreferenceListeners = new Set<() => void>();
 export type VoiceTranscriptPayload = VoiceTranscriptEvent;
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
@@ -1665,6 +1669,24 @@ export const mockWorkflowApi = {
 };
 
 export const bridgeApi = {
+  /** The app preferences record (theme, skin, transcript display). The core
+   *  keeps it so a chat or another window can change it; see `appPreferences.ts`. */
+  getAppPreferences: async (): Promise<AppPreferences> => hasBackend() ? call("config/get_app_preferences") : { ...mockAppPreferences, values: { ...mockAppPreferences.values } },
+  saveAppPreferences: async (values: AppPreferenceValues): Promise<AppPreferences> => {
+    if (hasBackend()) return call("config/save_app_preferences", { values });
+    const merged = { ...mockAppPreferences.values, ...values };
+    if (JSON.stringify(merged) !== JSON.stringify(mockAppPreferences.values)) {
+      mockAppPreferences = { revision: mockAppPreferences.revision + 1, values: merged };
+      appPreferenceListeners.forEach(listener => listener());
+    }
+    return mockAppPreferences;
+  },
+  /** Refetch hint: the record moved, whoever moved it. Carries no values. */
+  onAppPreferencesChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe("config/app_preferences_changed", () => handler());
+    appPreferenceListeners.add(handler);
+    return () => { appPreferenceListeners.delete(handler); };
+  },
   getChatDefaults: async (projectId?: string | null): Promise<ChatDefaultsView> => hasBackend() ? call("config/get_chat_defaults", { projectId: projectId ?? null }) : Promise.resolve(mockDefaultsView(mockState, projectId)),
   saveChatDefaults: async (params: SaveChatDefaultsParams): Promise<ChatDefaultsView> => {
     if (hasBackend()) return call("config/save_chat_defaults", params);

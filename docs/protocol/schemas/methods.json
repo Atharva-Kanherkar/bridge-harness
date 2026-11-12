@@ -597,6 +597,20 @@
       "resultSchema": "chat-defaults-view.json"
     },
     {
+      "command": "get_app_preferences",
+      "domain": "config",
+      "method": "config/get_app_preferences",
+      "paramsSchema": null,
+      "resultSchema": "app-preferences.json"
+    },
+    {
+      "command": "save_app_preferences",
+      "domain": "config",
+      "method": "config/save_app_preferences",
+      "paramsSchema": "save-app-preferences-params.json",
+      "resultSchema": "app-preferences.json"
+    },
+    {
       "command": "resolve_chat_settings",
       "domain": "sessions",
       "method": "sessions/resolve_chat_settings",

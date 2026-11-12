@@ -728,6 +728,8 @@ pub fn dispatch(
         }
         MethodName::GetChatDefaults => { let p:wire::GetChatDefaultsParams=decode(method,params)?; reply(api::get_chat_defaults(core,p.project_id.as_deref())) },
         MethodName::SaveChatDefaults => { let p:wire::SaveChatDefaultsParams=decode(method,params)?; reply(api::save_chat_defaults(core,&p)) },
+        MethodName::GetAppPreferences => reply(api::get_app_preferences(core)),
+        MethodName::SaveAppPreferences => { let p:wire::SaveAppPreferencesParams=decode(method,params)?; reply(api::save_app_preferences(core,&p)) },
         MethodName::ResolveChatSettings => { let p:wire::ResolveChatSettingsParams=decode(method,params)?; reply(api::resolve_chat_settings(core,&p)) },
         MethodName::CreateConfiguredChat => { let p:wire::CreateConfiguredChatParams=decode(method,params)?; reply(api::create_configured_chat(core,&p)) },
         MethodName::GetChatSettings => { let p:wire::GetChatSettingsParams=decode(method,params)?; reply(api::get_chat_settings(core,&p.session_id)) },

@@ -212,6 +212,24 @@ pub fn save(
     Ok(result)
 }
 
+/// Names of the projects whose own defaults set `field` (a wire name such as
+/// `model`), so a change to the application default does not reach them.
+pub fn projects_overriding(db: &Connection, field: &str) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT p.name, c.payload FROM configuration_entries c JOIN projects p ON c.id = 'project:' || p.id WHERE c.kind=?1 ORDER BY p.name",
+    )?;
+    let rows = statement.query_map([DEFAULTS_KIND], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut names = Vec::new();
+    for row in rows {
+        let (name, payload) = row?;
+        let record: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+        if record.pointer(&format!("/defaults/{field}")).is_some_and(|value| !value.is_null()) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
 /// Layer fields without treating false or an explicit provider default as absent.
 fn overlay(
     base: &mut ChatDefaults,

@@ -141,6 +141,7 @@ impl Access {
                 .chain(crate::memory_tools::WRITE_TOOLS.iter())
                 .chain(crate::outgoing_tools::WRITE_TOOLS.iter())
                 .chain(std::iter::once(&NOTIFY_USER))
+                .chain(crate::settings_tools::TOOLS.iter())
                 .copied()
                 .collect(),
             Access::ReadOnly => READ_TOOLS.iter().chain(memory).copied().collect(),
@@ -505,6 +506,12 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
                 }
                 reply(200, outcome.result)
             }
+            Err(error) => reply(error.status, json!({"error": error.message})),
+        };
+    }
+    if tool.starts_with("settings_") {
+        return match crate::settings_tools::run(&core, access == Access::Write, tool, &args) {
+            Ok(result) => reply(200, result),
             Err(error) => reply(error.status, json!({"error": error.message})),
         };
     }

@@ -7605,6 +7605,16 @@ pub fn save_chat_defaults(core: &Arc<BridgeCore>, params: &wire::SaveChatDefault
     core.events.publish(CoreEvent::StateChanged);
     Ok(result)
 }
+pub fn get_app_preferences(core: &Arc<BridgeCore>) -> Result<wire::AppPreferences, BridgeError> {
+    crate::app_preferences::read(&core.db.lock().unwrap())
+}
+pub fn save_app_preferences(core: &Arc<BridgeCore>, params: &wire::SaveAppPreferencesParams) -> Result<wire::AppPreferences, BridgeError> {
+    let (record, changed) = crate::app_preferences::save(&core.db.lock().unwrap(), &params.values)?;
+    if changed {
+        core.events.publish(CoreEvent::AppPreferencesChanged);
+    }
+    Ok(record)
+}
 pub fn resolve_chat_settings(core: &Arc<BridgeCore>, params: &wire::ResolveChatSettingsParams) -> Result<wire::ResolvedChatSettings, BridgeError> {
     crate::chat_defaults::resolve(&core.db.lock().unwrap(), &core.adapter_registry, params)
 }

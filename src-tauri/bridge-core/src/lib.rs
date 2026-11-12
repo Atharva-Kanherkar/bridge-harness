@@ -23,6 +23,7 @@ pub mod attention;
 pub mod attention_presence;
 pub mod attention_wait;
 pub mod api;
+pub mod app_preferences;
 pub mod attribution_settings;
 pub mod delegation_notify;
 pub mod automations;
@@ -53,6 +54,8 @@ pub mod clone_browser_tool;
 mod clone_browser_eval;
 #[cfg(test)]
 mod orchestrator_wait_eval;
+#[cfg(test)]
+mod settings_tools_eval;
 /// Composes the clone process, guard, sign-in, and agent tool into the
 /// actual flow: approve, spawn, sign in, arm, drive, and destroy.
 #[cfg(target_os = "macos")]
@@ -167,6 +170,7 @@ pub mod title_jobs;
 pub mod title_jobs_live;
 pub mod session_supervisor;
 pub mod sessions;
+pub mod settings_tools;
 pub mod skill_marketplace;
 pub mod slash;
 pub mod store;

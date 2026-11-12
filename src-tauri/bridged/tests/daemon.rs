@@ -1140,6 +1140,41 @@ fn shutdown_drains_open_connections_before_completing() {
 }
 
 #[test]
+fn app_preferences_merge_announce_and_survive_daemon_restart() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("result").is_some());
+    let (read, _) = client.call(1, "config/get_app_preferences", None);
+    assert_eq!(read["result"], json!({"revision": 0, "values": {}}));
+    let (saved, mut heard) = client.call(2, "config/save_app_preferences", Some(json!({"values": {"theme": "light"}})));
+    assert_eq!(saved["result"], json!({"revision": 1, "values": {"theme": "light"}}));
+    let (merged, more) = client.call(3, "config/save_app_preferences", Some(json!({"values": {"showThinking": false}})));
+    heard.extend(more);
+    assert_eq!(merged["result"]["values"], json!({"theme": "light", "showThinking": false}), "a save merges");
+    let (bad, _) = client.call(4, "config/save_app_preferences", Some(json!({"values": {"theme": "purple"}})));
+    assert_eq!(bad["error"]["code"], -32602);
+    // The hint is fanned out after the reply; poll a few reads for it.
+    let mut id = 5;
+    while !heard.iter().any(|frame| frame["method"] == json!("config/app_preferences_changed")) {
+        assert!(id < 50, "no config/app_preferences_changed hint arrived");
+        std::thread::sleep(Duration::from_millis(20));
+        let (_, more) = client.call(id, "config/get_app_preferences", None);
+        heard.extend(more);
+        id += 1;
+    }
+    drop(client);
+    running.stop();
+    let reopened = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&reopened.socket_path);
+    assert!(client.handshake(&reopened.token).get("result").is_some());
+    let (read, _) = client.call(1, "config/get_app_preferences", None);
+    assert_eq!(read["result"], json!({"revision": 2, "values": {"theme": "light", "showThinking": false}}));
+    drop(client);
+    reopened.stop();
+}
+
+#[test]
 fn personal_chat_defaults_are_authenticated_revisioned_and_survive_daemon_restart() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

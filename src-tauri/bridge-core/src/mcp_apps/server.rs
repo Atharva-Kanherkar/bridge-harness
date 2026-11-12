@@ -171,6 +171,7 @@ impl VisualServer {
                 let chat_tool = name.starts_with("notes_")
                     || name.starts_with("memory_")
                     || name.starts_with("outgoing_")
+                    || name.starts_with("settings_")
                     || name == crate::notes::tool::NOTIFY_USER;
                 if let (Some(notes), true) = (&self.notes, chat_tool) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));

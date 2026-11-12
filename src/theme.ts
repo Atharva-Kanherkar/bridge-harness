@@ -5,8 +5,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { omarchyTokens } from "./lib/omarchyTheme";
 import { clearOmarchyTheme, currentOmarchyTheme, onOmarchyTheme, paintOmarchyTheme, type OmarchyThemePayload } from "./omarchy";
+import type { EffortSelectorStyle, ThemePreference, ThemeSkin } from "./protocol/generated/protocol";
 
-export type ThemePreference = "system" | "light" | "dark";
+export type { ThemePreference } from "./protocol/generated/protocol";
 export type ResolvedTheme = "light" | "dark";
 
 /**
@@ -19,14 +20,14 @@ export type ResolvedTheme = "light" | "dark";
  * the `data-skin` attribute on <html> changes at runtime, plus, for `omarchy`,
  * the custom properties the payload maps to.
  */
-export type ThemeSkin = "graphite" | "vibrancy" | "omarchy";
+export type { ThemeSkin } from "./protocol/generated/protocol";
 
 /**
  * How the model picker draws the thinking-effort control. Every style renders
  * the same wire levels from the same capability data; only the footer's form
  * changes. `slider` is the default: one rail, one thumb, one label at a time.
  */
-export type EffortSelectorStyle = "slider" | "sentence" | "list";
+export type { EffortSelectorStyle } from "./protocol/generated/protocol";
 
 export const THEME_STORAGE_KEY = "bridge.theme";
 export const SKIN_STORAGE_KEY = "bridge.skin";
@@ -201,7 +202,7 @@ export function watchSystemTheme(onChange: (prefersDark: boolean) => void): () =
 }
 
 /** Broadcast so every mounted consumer stays in sync with a single source. */
-const THEME_EVENT = "bridge:theme";
+export const THEME_EVENT = "bridge:theme";
 
 /** Appearance keys, so a second webview can tell a theme write from any other
  *  `storage` event. localStorage changes broadcast to every other same-origin

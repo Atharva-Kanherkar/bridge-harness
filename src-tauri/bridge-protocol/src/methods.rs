@@ -130,6 +130,8 @@ methods![
     (SaveWorkerSettings, "config", "save_worker_settings"),
     (GetChatDefaults, "config", "get_chat_defaults"),
     (SaveChatDefaults, "config", "save_chat_defaults"),
+    (GetAppPreferences, "config", "get_app_preferences"),
+    (SaveAppPreferences, "config", "save_app_preferences"),
     (ResolveChatSettings, "sessions", "resolve_chat_settings"),
     (CreateConfiguredChat, "sessions", "create_configured_chat"),
     (GetChatSettings, "sessions", "get_chat_settings"),

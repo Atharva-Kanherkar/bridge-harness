@@ -251,12 +251,12 @@ describe("WebDaemonClient", () => {
     const statuses: string[] = [];
     const web = client(daemon).start();
     web.onStatus(status => statuses.push(status.state));
-    for (const name of ["state-changed", "adapters-changed", "stream-lagged"]) web.subscribe(name, () => order.push(name));
+    for (const name of ["state-changed", "adapters-changed", "config/app_preferences_changed", "stream-lagged"]) web.subscribe(name, () => order.push(name));
     await web.call("health/health");
     expect(order).toEqual([]);
     daemon.dropAll();
-    await until(() => order.length === 3);
-    expect(order).toEqual(["state-changed", "adapters-changed", "stream-lagged"]);
+    await until(() => order.length === 4);
+    expect(order).toEqual(["state-changed", "adapters-changed", "config/app_preferences_changed", "stream-lagged"]);
     expect(daemon.live()).toHaveLength(7);
     expect(statuses).toContain("reconnecting");
     expect(statuses.at(-1)).toBe("attached");

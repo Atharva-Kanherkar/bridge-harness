@@ -1,0 +1,213 @@
+// App preferences follow the core. Theme, skin, the effort picker's style and
+// transcript display are drawn by this app, but the core keeps their record so
+// a chat (through `settings_change`), another window or the web client can
+// change them. localStorage stays the first-paint cache: every value the core
+// sends is written there with the same writers Settings uses, and the same
+// in-window events fire, so every mounted consumer repaints without a reload.
+
+import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
+import {
+  EFFORT_SELECTOR_STORAGE_KEY, isEffortSelectorStyle, isThemePreference, isThemeSkin, SKIN_STORAGE_KEY, THEME_EVENT,
+  THEME_STORAGE_KEY, writeEffortSelectorStyle, writeThemePreference, writeThemeSkin,
+} from "./theme";
+import {
+  AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY, SHOW_THINKING_EVENT, SHOW_THINKING_STORAGE_KEY, writeAutoExpandEditActivity, writeShowThinking,
+} from "./transcriptSettings";
+
+type Key = keyof AppPreferenceValues;
+const THEME_KEYS: Key[] = ["theme", "skin", "effortSelector"];
+const TRANSCRIPT_KEYS: Key[] = ["showThinking", "autoExpandEdits"];
+const KEYS: Key[] = [...THEME_KEYS, ...TRANSCRIPT_KEYS];
+
+export type AppPreferencesApi = {
+  getAppPreferences: () => Promise<AppPreferences>;
+  saveAppPreferences: (values: AppPreferenceValues) => Promise<AppPreferences>;
+  onAppPreferencesChanged: (handler: () => void) => Promise<() => void>;
+};
+
+type Store = Pick<Storage, "getItem" | "setItem">;
+
+function raw(storage: Pick<Storage, "getItem">, key: string): string | null {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function flag(text: string | null): boolean | undefined {
+  return text === "true" ? true : text === "false" ? false : undefined;
+}
+
+/** The values this window has explicitly stored. A key the person never set is
+ *  absent, so a built-in default is never promoted into a choice. */
+export function readLocalPreferences(storage: Pick<Storage, "getItem"> = localStorage): AppPreferenceValues {
+  const values: AppPreferenceValues = {};
+  const theme = raw(storage, THEME_STORAGE_KEY);
+  if (isThemePreference(theme)) values.theme = theme;
+  const skin = raw(storage, SKIN_STORAGE_KEY);
+  if (isThemeSkin(skin)) values.skin = skin;
+  const effortSelector = raw(storage, EFFORT_SELECTOR_STORAGE_KEY);
+  if (isEffortSelectorStyle(effortSelector)) values.effortSelector = effortSelector;
+  const showThinking = flag(raw(storage, SHOW_THINKING_STORAGE_KEY));
+  if (showThinking !== undefined) values.showThinking = showThinking;
+  const autoExpandEdits = flag(raw(storage, AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY));
+  if (autoExpandEdits !== undefined) values.autoExpandEdits = autoExpandEdits;
+  return values;
+}
+
+/** The keys `next` sets to something other than what `base` has. */
+export function changedKeys(next: AppPreferenceValues, base: AppPreferenceValues): AppPreferenceValues {
+  const out: Record<string, unknown> = {};
+  for (const key of KEYS) {
+    if (next[key] !== undefined && next[key] !== null && next[key] !== base[key]) out[key] = next[key];
+  }
+  return out as AppPreferenceValues;
+}
+
+const isEmpty = (values: AppPreferenceValues) => Object.keys(values).length === 0;
+
+/** Write `values` to the cache and tell this window's consumers. */
+export function applyLocalPreferences(values: AppPreferenceValues, storage: Store = localStorage, target: Pick<Window, "dispatchEvent"> = window): void {
+  if (values.theme) writeThemePreference(values.theme, storage);
+  if (values.skin) writeThemeSkin(values.skin, storage);
+  if (values.effortSelector) writeEffortSelectorStyle(values.effortSelector, storage);
+  if (typeof values.showThinking === "boolean") writeShowThinking(values.showThinking, storage);
+  if (typeof values.autoExpandEdits === "boolean") writeAutoExpandEditActivity(values.autoExpandEdits, storage);
+  if (THEME_KEYS.some(key => values[key] != null)) target.dispatchEvent(new Event(THEME_EVENT));
+  if (TRANSCRIPT_KEYS.some(key => values[key] != null)) target.dispatchEvent(new Event(SHOW_THINKING_EVENT));
+}
+
+/**
+ * Keep this window and the core in step. On the first read that succeeds the
+ * core's values win and a key only this window has is seeded into the core.
+ * After that a change made here is saved (and kept until the core takes it),
+ * and a change made anywhere else arrives as a hint and is applied. Returns a
+ * stop function.
+ */
+export function startAppPreferenceSync(api: AppPreferencesApi, storage: Store = localStorage, target: Pick<Window, "addEventListener" | "removeEventListener" | "dispatchEvent"> = window): () => void {
+  let stopped = false;
+  /** What this window's consumers show. Not the shared cache: another window
+   *  on the same origin may already have written the value this one has yet
+   *  to paint, and only this window's own events repaint it. */
+  let rendered: AppPreferenceValues = readLocalPreferences(storage);
+  /** Choices made here that the core has not acknowledged. They stay this
+   *  window's values, a read never paints over them, and they are sent again
+   *  after a failed save until one succeeds. */
+  let dirty: AppPreferenceValues = {};
+  let saving = false;
+  /** The newest core revision this window has seen, from a read or a save's
+   *  reply. Replies can arrive out of order (the web client reads on several
+   *  lanes), so an older snapshot is dropped rather than painted. */
+  let revision = -1;
+  const accept = (record: AppPreferences): boolean => {
+    if (record.revision < revision) return false;
+    revision = record.revision;
+    return true;
+  };
+  /** A read skipped a key because this window had not yet saved its own value.
+   *  That read may have been newer than the save, so read again once the save
+   *  lands rather than keep this window's value forever. */
+  let skipped = false;
+  /** Seeding waits for the first read that succeeds, whenever that is. */
+  let hydrated = false;
+  /** One pending retry for a failed read or save. A first read can fail before
+   *  the web client attaches, and attaching sends no hint, so without this the
+   *  window would never hydrate. Backs off from one second to thirty. */
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let failures = 0;
+  const retryLater = () => {
+    if (stopped || retryTimer) return;
+    const delay = Math.min(30_000, 1_000 * 2 ** failures);
+    failures += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      void pull();
+    }, delay);
+  };
+
+  /** Send every unacknowledged choice, one save at a time so replies cannot
+   *  cross. A failure keeps them dirty for the next read, hint or retry. */
+  const flush = () => {
+    if (stopped || saving || isEmpty(dirty)) return;
+    const sending = { ...dirty };
+    saving = true;
+    let saved = false;
+    void api.saveAppPreferences(sending)
+      .then(record => {
+        saved = true;
+        for (const key of Object.keys(sending) as Key[]) {
+          if (dirty[key] === sending[key]) delete (dirty as Record<string, unknown>)[key];
+        }
+        accept(record);
+      })
+      .catch(retryLater)
+      .finally(() => {
+        saving = false;
+        if (stopped || !saved) return;
+        if (!isEmpty(dirty)) flush();
+        else if (skipped) {
+          skipped = false;
+          void pull();
+        }
+      });
+  };
+
+  const save = (values: AppPreferenceValues) => {
+    rendered = { ...rendered, ...values };
+    dirty = { ...dirty, ...values };
+    flush();
+  };
+
+  const pull = async () => {
+    let record: AppPreferences;
+    try {
+      record = await api.getAppPreferences();
+    } catch {
+      retryLater();
+      return;
+    }
+    failures = 0;
+    if (stopped || !accept(record)) return;
+    const seed = !hydrated;
+    hydrated = true;
+    const core = record.values;
+    const incoming = changedKeys(core, rendered);
+    for (const key of Object.keys(dirty) as Key[]) {
+      if (key in incoming) skipped = true;
+      delete (incoming as Record<string, unknown>)[key];
+    }
+    const missing: Record<string, unknown> = {};
+    if (seed) for (const key of KEYS) if (core[key] == null && rendered[key] != null) missing[key] = rendered[key];
+    // Record what is about to be painted first, so the events `apply` fires
+    // are not mistaken for local edits and saved back.
+    rendered = { ...rendered, ...incoming };
+    if (!isEmpty(incoming)) applyLocalPreferences(incoming, storage, target);
+    if (!isEmpty(missing)) save(missing as AppPreferenceValues);
+    // A read means the core answers again: retry anything still unsaved.
+    flush();
+  };
+
+  const onLocalChange = () => {
+    if (stopped) return;
+    const outgoing = changedKeys(readLocalPreferences(storage), rendered);
+    if (!isEmpty(outgoing)) save(outgoing);
+  };
+
+  target.addEventListener(THEME_EVENT, onLocalChange);
+  target.addEventListener(SHOW_THINKING_EVENT, onLocalChange);
+  let unlisten: (() => void) | undefined;
+  void api.onAppPreferencesChanged(() => { void pull(); }).then(off => {
+    if (stopped) off();
+    else unlisten = off;
+  }, () => undefined);
+  void pull();
+
+  return () => {
+    stopped = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    target.removeEventListener(THEME_EVENT, onLocalChange);
+    target.removeEventListener(SHOW_THINKING_EVENT, onLocalChange);
+    unlisten?.();
+  };
+}
