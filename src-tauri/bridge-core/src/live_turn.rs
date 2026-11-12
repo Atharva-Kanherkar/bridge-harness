@@ -11544,6 +11544,7 @@ pub fn send_turn(
 ) -> Result<(), BridgeError> {
     // The legacy entry point: always deliver now. Clients that want Bridge to
     // decide between starting, steering, and queueing call `submit_input`.
+    refuse_user_turn_to_workflow(core, &session_id)?;
     submit_input_internal(core, session_id, text, true, Vec::new(), None).map(|_| ())
 }
 
@@ -14837,6 +14838,9 @@ mod submit_input_tests {
         assert_eq!(decisions, vec!["always_allowed".to_owned(), "approved".to_owned()]);
 
         let error = submit_input(&core, "chat".into(), "and also do this".into()).unwrap_err();
+        assert!(error.to_string().contains("read-only"), "{error}");
+        // The legacy "deliver now" entry point is the same refusal.
+        let error = send_turn(&core, "chat".into(), "and also do this".into()).unwrap_err();
         assert!(error.to_string().contains("read-only"), "{error}");
 
         // Chat Full access never reaches a workflow session.
