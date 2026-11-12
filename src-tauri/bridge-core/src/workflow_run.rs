@@ -156,6 +156,15 @@ pub fn quota_verdict(windows: &[wire::UsageQuotaWindow], reserve: i64) -> QuotaV
     }
 }
 
+pub(crate) fn quota_for_provider(overviews: Option<&wire::ProviderUsageOverviews>, harness: &str, reserve: i64) -> QuotaVerdict {
+    let windows = overviews.into_iter()
+        .flat_map(|overviews| &overviews.providers)
+        .filter(|snapshot| snapshot.provider == harness)
+        .flat_map(|snapshot| snapshot.windows.iter().cloned())
+        .collect::<Vec<_>>();
+    quota_verdict(&windows, reserve)
+}
+
 // --- the run's session ---------------------------------------------------------------
 
 /// The run bound to a session, with the definition of the revision it runs.
@@ -416,27 +425,23 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
 }
 
 fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
-    let ClaimedRun { run, lease_owner } = claimed;
+    let ClaimedRun { run, lease_owner, quota_verdict: quota } = claimed;
     let definition = revision_definition(&core.db.lock().unwrap(), &run.revision_id)?;
     let step = definition.steps.first().cloned().ok_or_else(|| BridgeError::Invalid("the revision has no step".into()))?;
 
     // C11: your plan comes first.
-    let reserve = workflow_trigger::read_settings(&core.db.lock().unwrap())?.settings.quota_reserve_percent;
-    let verdict = match crate::usage_overview::provider_snapshots(core) {
-        Ok(overviews) => {
-            let windows: Vec<wire::UsageQuotaWindow> = overviews
-                .providers
-                .into_iter()
-                .filter(|snapshot| snapshot.provider == step.harness.as_str())
-                .flat_map(|snapshot| snapshot.windows)
-                .collect();
-            quota_verdict(&windows, reserve)
+    let verdict = match quota {
+        Some(verdict) => verdict,
+        None => {
+            let reserve = workflow_trigger::read_settings(&core.db.lock().unwrap())?.settings.quota_reserve_percent;
+            let overviews = crate::usage_overview::provider_snapshots(core).ok();
+            quota_for_provider(overviews.as_ref(), step.harness.as_str(), reserve)
         }
-        Err(_) => QuotaVerdict::Proceed { unknown: true },
     };
     let quota_unknown = match verdict {
         QuotaVerdict::Wait => {
-            if workflow_trigger::park(&core.db.lock().unwrap(), &run.id, &lease_owner)? {
+            if workflow_trigger::park(&core.db.lock().unwrap(), &run.id, &lease_owner)?
+                && run.status != wire::WorkflowRunStatus::WaitingQuota {
                 workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
             }
             return Ok(());

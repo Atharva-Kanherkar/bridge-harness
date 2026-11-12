@@ -248,6 +248,9 @@ pub struct ClaimedRun {
     pub run: wire::WorkflowRun,
     /// The token every later write must present.
     pub lease_owner: String,
+    /// The maintenance batch's shared quota snapshot, when claimed by a tick.
+    /// A direct manual claim checks quota in the runner instead.
+    pub(crate) quota_verdict: Option<crate::workflow_run::QuotaVerdict>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,7 +359,7 @@ fn claim_in(
             stamp(now),
         ],
     )?;
-    Ok(ClaimOutcome::Claimed(ClaimedRun { run: require_run(db, &id)?, lease_owner }))
+    Ok(ClaimOutcome::Claimed(ClaimedRun { run: require_run(db, &id)?, lease_owner, quota_verdict: None }))
 }
 
 // --- lease ------------------------------------------------------------------------
@@ -495,22 +498,27 @@ pub fn park(db: &Connection, run_id: &str, lease_owner: &str) -> Result<bool, Br
     Ok(changed == 1)
 }
 
-/// Take every parked run back with a fresh lease, for the runner to re-check.
+/// Lease parked runs for a quota recheck without changing their visible status.
 pub fn unpark_waiting(db: &Connection, now: DateTime<Utc>) -> Result<Vec<ClaimedRun>, BridgeError> {
+    if paused(db)? {
+        return Ok(Vec::new());
+    }
     let ids: Vec<String> = db
-        .prepare("SELECT id FROM workflow_runs WHERE status='waiting_quota' AND lease_owner IS NULL ORDER BY created_at")?
+        .prepare("SELECT r.id FROM workflow_runs r JOIN workflows w ON w.id=r.workflow_id
+                  WHERE r.status='waiting_quota' AND r.lease_owner IS NULL
+                    AND w.enabled=1 AND w.disabled_reason IS NULL ORDER BY r.created_at")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
     let mut claimed = Vec::new();
     for id in ids {
         let lease_owner = Uuid::new_v4().to_string();
         let changed = db.execute(
-            "UPDATE workflow_runs SET status='queued', lease_owner=?2, lease_expires_at=?3
+            "UPDATE workflow_runs SET lease_owner=?2, lease_expires_at=?3
              WHERE id=?1 AND status='waiting_quota' AND lease_owner IS NULL",
             params![id, lease_owner, stamp(now + Duration::minutes(LEASE_MINUTES))],
         )?;
         if changed == 1 {
-            claimed.push(ClaimedRun { run: require_run(db, &id)?, lease_owner });
+            claimed.push(ClaimedRun { run: require_run(db, &id)?, lease_owner, quota_verdict: None });
         }
     }
     Ok(claimed)
@@ -633,14 +641,22 @@ pub fn publish_runs(core: &Arc<BridgeCore>, run_ids: &[String]) {
 /// One maintenance pass: reclaim, reconcile, claim what is due. Returns the
 /// runs it claimed for the caller to dispatch.
 pub fn tick(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> Result<Vec<ClaimedRun>, BridgeError> {
+    tick_with_provider_snapshots(core, now, || crate::usage_overview::provider_snapshots(core))
+}
+
+fn tick_with_provider_snapshots(
+    core: &Arc<BridgeCore>,
+    now: DateTime<Utc>,
+    snapshots: impl FnOnce() -> Result<wire::ProviderUsageOverviews, BridgeError>,
+) -> Result<Vec<ClaimedRun>, BridgeError> {
     let mut changed_runs = Vec::new();
     let mut claimed = Vec::new();
     let changed_workflows = {
         let db = core.db.lock().unwrap();
         changed_runs.extend(reclaim_expired(&db, now)?);
         let changed_workflows = workflows::reconcile_projects(&db)?;
-        // Parked runs go back to the runner, which re-checks the quota and
-        // parks them again if their provider still has no room.
+        // A quota recheck owns a lease, but remains visibly waiting until
+        // the runner actually starts a session.
         claimed.extend(unpark_waiting(&db, now)?);
         for (workflow_id, occasion) in due_occasions(&db, now)? {
             match claim(&db, &workflow_id, &occasion, false, now)? {
@@ -657,6 +673,21 @@ pub fn tick(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> Result<Vec<ClaimedRun
         }
         changed_workflows
     };
+    if !claimed.is_empty() {
+        // Provider snapshots aggregate the ledger and cached provider data.
+        // Read once for this pass, outside the DB lock, rather than per run.
+        let overviews = snapshots().ok();
+        let db = core.db.lock().unwrap();
+        let reserve = read_settings(&db)?.settings.quota_reserve_percent;
+        for claimed in &mut claimed {
+            let harness: String = db.query_row(
+                "SELECT json_extract(definition,'$.steps[0].harness') FROM workflow_revisions WHERE id=?1",
+                params![claimed.run.revision_id],
+                |row| row.get(0),
+            )?;
+            claimed.quota_verdict = Some(crate::workflow_run::quota_for_provider(overviews.as_ref(), &harness, reserve));
+        }
+    }
     for workflow_id in changed_workflows {
         core.events.publish(CoreEvent::WorkflowsChanged { workflow_id });
     }
@@ -1028,7 +1059,112 @@ mod tests {
         assert!(reclaim_expired(&db, at("2026-10-30T09:00:00Z")).unwrap().is_empty(), "a parked run holds no lease to expire");
         let back = unpark_waiting(&db, at("2026-10-29T09:01:00Z")).unwrap();
         assert_eq!(back.len(), 1);
-        assert_eq!(back[0].run.status, wire::WorkflowRunStatus::Queued);
+        assert_eq!(back[0].run.status, wire::WorkflowRunStatus::WaitingQuota);
         assert!(heartbeat(&db, &back[0].run.id, &back[0].lease_owner, at("2026-10-29T09:02:00Z")).unwrap());
+    }
+
+    fn quota_snapshots(core: &BridgeCore, used: f64) -> wire::ProviderUsageOverviews {
+        let mut snapshots = crate::usage_overview::provider_snapshots(core).unwrap();
+        let claude = snapshots.providers.iter_mut().find(|provider| provider.provider == "claude").unwrap();
+        claude.windows = vec![serde_json::from_value(serde_json::json!({
+            "id":"session", "label":"Session", "resetsAt":null, "windowMinutes":null,
+            "usedPercent":{"value":used,"source":null,"status":"current"}
+        })).unwrap()];
+        snapshots
+    }
+
+    fn manual_run(core: &Arc<BridgeCore>, dir: &std::path::Path, name: &str, now: DateTime<Utc>) -> ClaimedRun {
+        let mut definition = test_support::definition();
+        definition.name = name.into();
+        definition.trigger = wire::WorkflowTrigger::Manual;
+        let db = core.db.lock().unwrap();
+        let workflow = test_support::save_approved(&db, dir, &definition);
+        claimed(claim(&db, &workflow.id, &Occasion::manual(&workflow.id, "test"), false, now).unwrap())
+    }
+
+    #[test]
+    fn three_blocked_quota_ticks_publish_only_real_status_changes() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let mut first = manual_run(&core, dir.path(), "waiting", now);
+        let run_id = first.run.id.clone();
+        let mut events = core.events.subscribe();
+        first.quota_verdict = Some(crate::workflow_run::QuotaVerdict::Wait);
+        crate::workflow_run::execute(&core, first);
+        let high = quota_snapshots(&core, 90.0);
+        let reads = std::cell::Cell::new(0);
+        for tick_number in 1..=3 {
+            let runs = tick_with_provider_snapshots(&core, now + Duration::seconds(tick_number * 30), || {
+                reads.set(reads.get() + 1);
+                Ok(high.clone())
+            }).unwrap();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].run.status, wire::WorkflowRunStatus::WaitingQuota);
+            assert_eq!(runs[0].quota_verdict, Some(crate::workflow_run::QuotaVerdict::Wait));
+            for run in runs {
+                crate::workflow_run::execute(&core, run);
+            }
+            let db = core.db.lock().unwrap();
+            let lease: Option<String> = db.query_row("SELECT lease_owner FROM workflow_runs WHERE id=?1", params![run_id], |row| row.get(0)).unwrap();
+            assert!(lease.is_none(), "a blocked recheck releases its lease");
+        }
+        assert_eq!(reads.get(), 3);
+        let low = quota_snapshots(&core, 20.0);
+        let mut runs = tick_with_provider_snapshots(&core, now + Duration::seconds(120), || Ok(low)).unwrap();
+        assert_eq!(runs.len(), 1);
+        let ready = runs.pop().unwrap();
+        assert_eq!(ready.quota_verdict, Some(crate::workflow_run::QuotaVerdict::Proceed { unknown: false }));
+        assert!(transition(&core.db.lock().unwrap(), &run_id, &ready.lease_owner, wire::WorkflowRunStatus::Running, None, now + Duration::seconds(120)).unwrap());
+        publish_runs(&core, std::slice::from_ref(&run_id));
+        let mut statuses = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::WorkflowRunChanged { run } = event {
+                assert_eq!(run.id, run_id);
+                statuses.push(run.status);
+            }
+        }
+        assert_eq!(statuses, vec![wire::WorkflowRunStatus::WaitingQuota, wire::WorkflowRunStatus::Running]);
+    }
+
+    #[test]
+    fn one_provider_snapshot_serves_a_batch_and_idle_ticks_do_not_read_it() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        for name in ["one", "two"] {
+            let mut run = manual_run(&core, dir.path(), name, now);
+            run.quota_verdict = Some(crate::workflow_run::QuotaVerdict::Wait);
+            crate::workflow_run::execute(&core, run);
+        }
+        let high = quota_snapshots(&core, 90.0);
+        let reads = std::cell::Cell::new(0);
+        let runs = tick_with_provider_snapshots(&core, now, || {
+            reads.set(reads.get() + 1);
+            Ok(high)
+        }).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(reads.get(), 1);
+        assert!(runs.iter().all(|run| run.quota_verdict == Some(crate::workflow_run::QuotaVerdict::Wait)));
+        assert!(tick_with_provider_snapshots(&core, now, || panic!("held runs are not another batch")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn paused_disabled_and_crashed_quota_waits_keep_lease_safety() {
+        let (dir, core) = test_support::core();
+        let now = Utc::now();
+        let initial = manual_run(&core, dir.path(), "wait", now);
+        let db = core.db.lock().unwrap();
+        assert!(park(&db, &initial.run.id, &initial.lease_owner).unwrap());
+        write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25 }, now).unwrap();
+        assert!(unpark_waiting(&db, now).unwrap().is_empty());
+        write_settings(&db, default_settings(), now).unwrap();
+        db.execute("UPDATE workflows SET enabled=0 WHERE id=?1", params![initial.run.workflow_id]).unwrap();
+        assert!(unpark_waiting(&db, now).unwrap().is_empty());
+        db.execute("UPDATE workflows SET enabled=1 WHERE id=?1", params![initial.run.workflow_id]).unwrap();
+        let runs = unpark_waiting(&db, now).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run.status, wire::WorkflowRunStatus::WaitingQuota);
+        assert!(!park(&db, &initial.run.id, &initial.lease_owner).unwrap(), "the old owner cannot clear a new lease");
+        assert_eq!(reclaim_expired(&db, now + Duration::minutes(LEASE_MINUTES + 1)).unwrap(), vec![initial.run.id.clone()]);
+        assert!(!finish(&db, &initial.run.id, &runs[0].lease_owner, wire::WorkflowRunStatus::Succeeded, &Outcome::default(), now + Duration::minutes(LEASE_MINUTES + 1)).unwrap());
     }
 }
