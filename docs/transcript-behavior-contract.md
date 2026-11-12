@@ -201,14 +201,22 @@ Three rules over that table:
 
 ## Current activity and tracked processes
 
-A compact current-activity panel stays visible beside the latest reply, including
-when the originating command is above the viewport. It lists running background
-processes (`data.background: true`) with their command or task title, latest
-progress, and expandable output, under the heading `Background processes`. It
-appears only while at least one such process runs. The turn's own calls and the
-model's status (startup narration, `Thinking`, `Stopping…`) stay transcript rows,
-so an ordinary turn draws no panel. Explicit Monitor watches say `Watching` and
-do not claim that the model is working. Read-only history has no live panel.
+Background work gets a small island at the foot of the chat, sticky above the
+composer, so it stays visible when the originating command is above the viewport.
+It appears only while at least one background process (`data.background: true`)
+runs. Collapsed, it reads `Working in background` (or `Watching in background`
+when every task is a passive watcher) beside the live harness mark, one dot per
+task (a breathing dot runs, a still ring watches) and the oldest task's elapsed
+time. It opens into a list that names each task by its description, never by its
+shell, with elapsed time and one line of news: reported progress, the newest
+output line, or the log file the command redirects into. A row opens its last
+lines of output. When a task leaves the list with a reported outcome (`Done`,
+`Failed`, `Stopped`), the island names it for four seconds; an unknown outcome,
+a launcher acknowledgement or a chat switch announces nothing. The session is
+not `working` while only background work runs, so the composer stays ready. The
+turn's own calls and the model's status (startup narration, `Thinking`,
+`Stopping…`) stay transcript rows, so an ordinary turn draws no island. Read-only
+history has none.
 
 The forest snapshot carries a bounded `activeProcessEntries` projection separately
 from its history window. Its latest process snapshots keep silent work visible
