@@ -155,3 +155,29 @@ test("a chat carries Bridge's stdio visualize server through to the SDK", () => 
   assert.equal(options.strictMcpConfig, false);
   assert.equal(options.permissionMode, "bypassPermissions");
 });
+
+test("a subagent cannot reach Bridge's top-level-only settings tools", async () => {
+  // A Claude-native subagent inherits the parent's MCP tools and the root
+  // chat's token, so the core cannot tell it apart. The PreToolUse hook runs
+  // before the Ask-mode allowlist and before bypass mode, and only it sees
+  // agent_id, which is present only on a subagent's calls.
+  const bridge = { bridge: { type: "stdio", command: "/bin/bridged", args: ["--bridge-mcp-visualize"] } };
+  for (const writeMode of ["Shared", "Isolated", "Full"]) {
+    const options = buildOptions({ writeMode, mcpServers: bridge });
+    const hooks = (options.hooks?.PreToolUse ?? []).flatMap(entry => entry.hooks);
+    assert.ok(hooks.length > 0, `${writeMode} has a PreToolUse guard`);
+    const decide = async input => {
+      for (const hook of hooks) {
+        const result = await hook(input, undefined, { signal: new AbortController().signal });
+        if (result?.hookSpecificOutput?.permissionDecision) return result.hookSpecificOutput.permissionDecision;
+      }
+      return "none";
+    };
+    for (const tool of ["mcp__bridge__settings_read", "mcp__bridge__settings_change"]) {
+      assert.equal(await decide({ tool_name: tool, agent_id: "agent-1", agent_type: "general-purpose" }), "deny", `${writeMode} ${tool} from a subagent`);
+      assert.equal(await decide({ tool_name: tool }), "none", `${writeMode} ${tool} from the chat itself is left to the allowlist`);
+    }
+    assert.equal(await decide({ tool_name: "mcp__bridge__notes_read", agent_id: "agent-1" }), "none", "other tools are untouched");
+  }
+  assert.equal(buildOptions({ writeMode: "Shared", mcpServers: {} }).hooks, undefined, "no bridge server, no guard");
+});

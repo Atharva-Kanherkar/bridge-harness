@@ -14,6 +14,28 @@ export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose", "mcp__bridg
  *  would only turn "make the theme light" into a refusal. */
 export const BRIDGE_PREFERENCE_TOOLS = ["mcp__bridge__settings_change"];
 
+/** Bridge tools only the chat itself may call. A Claude-native subagent
+ *  inherits the parent's MCP tools and the root chat's token, so the core
+ *  cannot tell its calls apart; the sidecar can, by the hook input's agent_id. */
+export const BRIDGE_TOP_LEVEL_TOOLS = ["mcp__bridge__settings_read", "mcp__bridge__settings_change"];
+
+/** PreToolUse runs before the allowlist and before bypass mode, so this holds
+ *  in every write mode. agent_id is present only on a subagent's calls. */
+export function makeTopLevelOnlyHook() {
+  const guarded = new Set(BRIDGE_TOP_LEVEL_TOOLS);
+  return async function topLevelOnlyPreToolUse(input = {}) {
+    if (!input.agent_id || !guarded.has(input.tool_name)) return { continue: true };
+    return {
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "Only the chat itself changes Bridge's settings; report back to it instead.",
+      },
+    };
+  };
+}
+
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
     case "ReadOnly":
@@ -70,6 +92,10 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
           : { type: "local", ...plugin }),
         ...permissionOptions(writeMode, networkAllowed, mcpServers),
       };
+  if (!isBriefing({ briefing }) && mcpServers.bridge) {
+    const existing = authority.hooks ?? {};
+    authority.hooks = { ...existing, PreToolUse: [...(existing.PreToolUse ?? []), { hooks: [makeTopLevelOnlyHook()] }] };
+  }
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.
   const resolvedEffort = sdkEffort(effort);
