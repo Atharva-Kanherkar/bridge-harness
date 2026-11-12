@@ -28,6 +28,9 @@ export interface StorageCopilotHost {
   render: (brief: (question: string) => string, selectedCount: number) => ReactNode;
   /** The page opened: the host may clear the rail back to a blank chat. */
   onVisit?: () => void;
+  /** The storage chat is taking a turn. When one ends the page measures
+   *  again, since the agent may have cleaned something up itself. */
+  working?: boolean;
 }
 
 /** An earlier storage chat the rail can reopen. */

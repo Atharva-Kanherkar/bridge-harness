@@ -2157,6 +2157,7 @@ function AppContent() {
     .map(candidate => ({ id: candidate.id, title: candidate.title || candidate.label, at: candidate.startedAt ?? "" }));
   const storageWorking = !!storageSession && (!!storageSession.activeTurnId || storageSession.status === "working");
   const storageCopilot: StorageCopilotHost = {
+    working: storageWorking,
     ask: prompt => void askStorage(prompt).catch(e => setError(errorMessage(e))),
     // A visit starts on a blank rail, unless a reply is still coming in.
     onVisit: () => { if (!storageWorking) setStorageChatId(null); },

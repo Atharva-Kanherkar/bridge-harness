@@ -938,13 +938,18 @@ const mockSuggestionSizes: Array<[string, string, string, string, string, string
   ["app-caches", "App caches", "caches", "Library/Caches", "review", "Every app's cache. Apps rebuild them, though a few sign you out."],
   ["downloads", "Downloads", "files", "Downloads", "review", "Installers and files you downloaded."],
 ];
+/** Folders the guard lets go only one item at a time. */
+const MOCK_WHOLE_FOLDER_ONLY: Record<string, string> = { downloads: STANDARD, "app-caches": "macOS and apps expect this folder to exist. Delete what is inside it instead." };
+const mockTrashedSuggestions = new Set<string>();
 const MOCK_SUGGESTION_BYTES: Record<string, number> = { "xcode-derived-data": 23.5 * GB, simulators: 14.2 * GB, docker: 31 * GB, npm: 3.3 * GB, "xdg-cache": 9.2 * GB, "app-caches": 12.8 * GB, downloads: 18.4 * GB };
 function mockDiskOverview(): DiskOverview {
   return {
     volume: { mountPoint: "/", totalBytes: 494 * GB, freeBytes: 19.4 * GB, usedBytes: 474.6 * GB },
     home: MOCK_HOME,
     measuring: false,
-    suggestions: mockSuggestionSizes.map(([id, label, group, relative, safety, description]) => ({ id, label, group, path: `${MOCK_HOME}/${relative}`, safety, description, sizeBytes: MOCK_SUGGESTION_BYTES[id] ?? 0, measuring: false })),
+    suggestions: mockSuggestionSizes
+      .filter(([id]) => !mockTrashedSuggestions.has(id))
+      .map(([id, label, group, relative, safety, description]) => ({ id, label, group, path: `${MOCK_HOME}/${relative}`, safety, description, sizeBytes: MOCK_SUGGESTION_BYTES[id] ?? 0, measuring: false, protectedReason: MOCK_WHOLE_FOLDER_ONLY[id] ?? null })),
   };
 }
 const mockWorktreeUsage: WorktreeUsage = {
@@ -2731,6 +2736,13 @@ export const bridgeApi = {
     for (const path of paths) {
       const parent = path.slice(0, path.lastIndexOf("/"));
       const entry = mockDiskTree[parent]?.find(item => item.path === path);
+      const suggestion = mockSuggestionSizes.find(([id, , , relative]) => `${MOCK_HOME}/${relative}` === path && !mockTrashedSuggestions.has(id));
+      if (!entry && suggestion && !MOCK_WHOLE_FOLDER_ONLY[suggestion[0]]) {
+        mockTrashedSuggestions.add(suggestion[0]);
+        result.deleted.push(path);
+        result.bytesFreed += MOCK_SUGGESTION_BYTES[suggestion[0]] ?? 0;
+        continue;
+      }
       if (!entry) { result.failed.push({ path, reason: "It no longer exists." }); continue; }
       if (entry.protectedReason) { result.failed.push({ path, reason: entry.protectedReason }); continue; }
       mockDiskTree = { ...mockDiskTree, [parent]: mockDiskTree[parent].filter(item => item.path !== path) };
