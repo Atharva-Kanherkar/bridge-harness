@@ -18,6 +18,9 @@ settings through two tools on the `bridge` MCP server.
 - C4. `settings_change` with an unknown key, a wrong type, or a value outside
   the allowed set changes nothing and returns `isError: true` naming the valid
   keys or values.
+- C4a. `settings_change` without a `value` property changes nothing and
+  says a value is required; only an explicit null, `default` or `reset`
+  resets a setting.
 - C5. `settings_change` on a key outside the catalog that names a sensitive
   setting (`newChat.access`, anything under permissions or keys) is refused with
   "change it in Settings", and nothing is written.
@@ -39,6 +42,20 @@ settings through two tools on the `bridge` MCP server.
   and `settings_read` reports it.
 - C11. Applying the core's values does not echo a save back.
 
+Review additions (PR review 5872411584):
+
+- C11a. A window repaints when the core moves away from what that window
+  renders, even when another window already wrote the shared localStorage.
+- C11b. A snapshot older than the newest revision the window accepted (a read
+  or a save reply) is ignored, whatever order replies arrive in.
+- C11c. A key skipped because this window's own save was still in flight is
+  reconciled once the save settles, so a newer change made elsewhere lands.
+- C11d. A local choice the core has not acknowledged stays the window's value
+  and is retried, after a failed save, on the next read, hint or timer; a
+  reconciliation never replaces it with the core's older value.
+- C11e. The first read is retried until it succeeds, and seeding of
+  local-only keys waits for that first successful read.
+
 ## New-chat defaults
 
 - C12. `newChat.model` accepts `{harness, model}`, a bare model id when exactly
@@ -59,6 +76,10 @@ settings through two tools on the `bridge` MCP server.
   Claude (sidecar allowlist) and OpenCode (catch-all allow), because Bridge
   shows no prompt for them and the catalog cannot widen authority. A
   read-only session is denied both on OpenCode and never gets the server.
+- C17a. A Claude-native subagent inherits the parent's MCP tools and the
+  root chat's token, so the core cannot tell it apart. The sidecar's
+  PreToolUse hook, which runs before the allowlist and bypass mode, denies
+  `settings_*` to any call carrying an `agent_id`.
 
 ## Model behavior (live eval, `settings_tools_eval::live`)
 
