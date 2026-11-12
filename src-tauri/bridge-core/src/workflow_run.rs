@@ -608,7 +608,7 @@ fn wait_for_turn_within(
     budget: &wire::WorkBriefLimits,
     approval_wait: StdDuration,
 ) -> Result<TurnEnd, BridgeError> {
-    let mut deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(0) as u64);
+    let mut deadline = Instant::now() + StdDuration::from_secs(budget.max_wall_seconds.max(1) as u64);
     let mut last_heartbeat = Instant::now();
     let mut waiting = false;
     let mut waiting_since: Option<Instant> = None;
@@ -994,11 +994,34 @@ mod tests {
         ).unwrap();
     }
 
+    struct BudgetRuntime(Arc<std::sync::atomic::AtomicBool>);
+
+    impl crate::adapters::AdapterRuntime for BudgetRuntime {
+        fn process_id(&self) -> u32 { 42 }
+        fn provider_session_id(&self) -> &str { "budget-test" }
+        fn current_turn(&self) -> Arc<std::sync::Mutex<Option<String>>> {
+            Arc::new(std::sync::Mutex::new(Some("workflow-turn".into())))
+        }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> { panic!("budget exhaustion must never start a turn") }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _: crate::adapters::ShutdownReason) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn budget_runtime(core: &Arc<BridgeCore>) -> Arc<std::sync::atomic::AtomicBool> {
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        core.adapters.lock().unwrap().insert("run-session".into(), Box::new(BudgetRuntime(stopped.clone())));
+        stopped
+    }
+
     #[test]
     fn each_numeric_ceiling_stops_even_a_completed_turn_at_equality() {
         for ceiling in ["turns", "tools", "output", "cost"] {
             let (dir, core) = test_support::core();
             let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            let stopped = budget_runtime(&core);
             let mut budget = test_support::definition().budget;
             match ceiling {
                 "turns" => budget.max_turns = 1,
@@ -1016,6 +1039,8 @@ mod tests {
             }
             let end = wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap();
             assert_eq!(end, TurnEnd::Budget("budget_exhausted"), "{ceiling}");
+            assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "{ceiling}: the provider is stopped");
+            assert!(!core.adapters.lock().unwrap().contains_key("run-session"));
             settle(&core, &run.run, &run.lease_owner, "run-session", wire::WorkflowRunStatus::Failed,
                 Outcome { failure_code: Some("budget_exhausted".into()), ..Outcome::default() }).unwrap();
             let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
@@ -1079,13 +1104,12 @@ mod tests {
     fn wall_time_is_a_separate_budget_ceiling() {
         let (dir, core) = test_support::core();
         let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let stopped = budget_runtime(&core);
         let mut budget = test_support::definition().budget;
-        // A zero remaining working budget is exhausted immediately. API
-        // validation already refuses saving a nonpositive configured limit.
-        budget.max_wall_seconds = 0;
-        agent_event(&core.db.lock().unwrap(), 1, "turn.completed", Some("completed"), None);
+        budget.max_wall_seconds = 1;
         let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
         assert_eq!(end, TurnEnd::Budget("budget_exhausted"));
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
