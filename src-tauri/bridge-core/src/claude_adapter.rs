@@ -156,7 +156,7 @@ fn sdk_configuration_for_launch(
     briefing: Option<&crate::briefing_policy::BriefingRuntimePolicy>,
     discover: impl FnOnce() -> crate::marketplace::ClaudeSdkConfiguration,
 ) -> crate::marketplace::ClaudeSdkConfiguration {
-    if briefing.is_some_and(|policy| policy.toolless()) {
+    if briefing.is_some_and(|policy| policy.toolless() || policy.workflow_worktree()) {
         // There can be no plugin or connector in this run. Discovery invokes
         // CLI commands and connection probes; skip it rather than discarding
         // its output after paying for it on every search.
@@ -219,7 +219,7 @@ fn launch(
         Some(policy) => {
             crate::briefing_policy::adapter_may_brief("claude")
                 .map_err(|error| BridgeError::Invalid(error.reason()))?;
-            crate::briefing_policy::BriefingRuntimePolicy::check_write_mode(write_mode)
+            policy.check_launch_write_mode(write_mode)
                 .map_err(|error| BridgeError::Invalid(error.reason()))?;
             Some(json!({
                 "allowedTools": policy.allowed_wire_names(),
@@ -245,7 +245,9 @@ fn launch(
                 "toolless": policy.toolless(),
                 // A workflow run: the sidecar asks Bridge before any call that
                 // is not a read on a read-granted server. Absent otherwise.
-                "workflow": policy.workflow_servers().map(|servers| json!({ "servers": servers })),
+                "workflow": policy.workflow_servers().map(|servers| json!({
+                    "servers": servers, "worktree": policy.workflow_worktree(),
+                })),
             }))
         }
         None => None,
@@ -1649,6 +1651,12 @@ mod briefing_boundary_tests {
         }).unwrap();
         let empty = super::sdk_configuration_for_launch(Some(&toolless), || {
             panic!("tool-free search must not run plugin or connector discovery")
+        });
+        assert!(empty.plugins.is_empty());
+        assert!(empty.mcp_servers.is_empty());
+        let worktree = BriefingRuntimePolicy::compile_worktree_workflow(*ordinary.limits()).unwrap();
+        let empty = super::sdk_configuration_for_launch(Some(&worktree), || {
+            panic!("a worktree workflow must not discover the person's connectors")
         });
         assert!(empty.plugins.is_empty());
         assert!(empty.mcp_servers.is_empty());

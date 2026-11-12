@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeWorkflowGate, briefingOptions } from "../briefing.mjs";
 import { createAskRelay } from "../ask.mjs";
+import { buildOptions } from "../options.mjs";
+import { withChildPermissions, childPermissions } from "../subagents.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const servers = [
   { key: "claude.ai Slack", wire: "claude_ai_Slack", read: true, write: "ask" },
@@ -52,6 +57,46 @@ test("workflow options never pre-approve, stay strict, and reach only granted se
   assert.deepEqual(options.disallowedTools, ["Bash", "Write"]);
   assert.deepEqual(options.settingSources, []);
   assert.equal(typeof options.canUseTool, "function");
+});
+
+test("worktree workflows exclude settings allows and deny every MCP call before permission checks", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-worktree-"));
+  try {
+    mkdirSync(join(cwd, ".claude"));
+    const tool = "mcp__claude_ai_Slack__slack_send_message";
+    const settings = join(cwd, ".claude", "settings.json");
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: [tool, "mcp__*"] } }));
+    assert.ok(JSON.parse(readFileSync(settings, "utf8")).permissions.allow.includes(tool));
+    const options = buildOptions({
+      cwd, projectTrusted: true, writeMode: "Isolated",
+      plugins: ["plugin-with-connectors"],
+      mcpServers: { "claude.ai Slack": { type: "http" }, bridge: { type: "stdio" } },
+      briefing: { workflow: { servers: [], worktree: true } },
+    });
+    assert.equal(options.permissionMode, "acceptEdits");
+    assert.equal(options.allowedTools, undefined);
+    assert.deepEqual(options.settingSources, []);
+    assert.deepEqual(options.plugins, []);
+    assert.deepEqual(options.mcpServers, {});
+    assert.equal(options.strictMcpConfig, true);
+    assert.deepEqual(options.disallowedTools, ["mcp__*"]);
+
+    // Exercise the options after the sidecar adds its child-permission wrapper.
+    withChildPermissions(options, childPermissions(async () => {}, "root"));
+    const hooks = options.hooks.PreToolUse.flatMap((entry) => entry.hooks);
+    for (const agent_id of [undefined, "native-child"]) {
+      for (const tool_name of [tool, "mcp__bridge__settings_change", "mcp__unknown__read"]) {
+        const results = await Promise.all(hooks.map((hook) => hook({ tool_name, agent_id })));
+        assert.ok(results.some((result) => result.hookSpecificOutput?.permissionDecision === "deny"), `${agent_id}: ${tool_name}`);
+      }
+    }
+    for (const tool_name of ["Read", "Write", "Edit", "Bash"]) {
+      const results = await Promise.all(hooks.map((hook) => hook({ tool_name })));
+      assert.ok(results.every((result) => result.hookSpecificOutput?.permissionDecision !== "deny"), tool_name);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("the ask relay matches answers by id and denies what is pending when the session ends", async () => {

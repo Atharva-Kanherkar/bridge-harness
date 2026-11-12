@@ -69,11 +69,36 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
+/** PreToolUse runs before user allow rules, including on native subagents.
+ * File and shell tools keep Isolated permissions; MCP is always refused. */
+function worktreeWorkflowOptions() {
+  return {
+    ...permissionOptions("Isolated"),
+    settingSources: [],
+    plugins: [],
+    mcpServers: {},
+    strictMcpConfig: true,
+    disallowedTools: ["mcp__*"],
+    hooks: {
+      PreToolUse: [{ hooks: [async (input = {}) => input.tool_name?.startsWith("mcp__") ? {
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "Worktree workflows have no connector grants.",
+        },
+      } : { continue: true }] }],
+    },
+  };
+}
+
 export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
-  const authority = isBriefing({ briefing })
+  const authority = briefing?.workflow?.worktree === true
+    ? worktreeWorkflowOptions()
+    : isBriefing({ briefing })
     ? briefingOptions(briefing, mcpServers, ask)
     : {
         // User settings are required for user skills, commands, agents, and native

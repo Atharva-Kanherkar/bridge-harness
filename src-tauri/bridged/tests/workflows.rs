@@ -314,6 +314,8 @@ fn e2_a_project_workflow_edits_its_own_worktree_and_leaves_the_checkout_alone() 
     git(&repo, &["config", "user.email", "e2e@bridge.test"]);
     git(&repo, &["config", "user.name", "Bridge E2E"]);
     std::fs::write(repo.join("README.md"), "# Demo\n").unwrap();
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    std::fs::write(repo.join(".claude/settings.json"), r#"{"permissions":{"allow":["mcp__*"]}}"#).unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "init"]);
     let status_before = git(&repo, &["status", "--porcelain"]);
@@ -344,6 +346,7 @@ fn e2_a_project_workflow_edits_its_own_worktree_and_leaves_the_checkout_alone() 
 
     let cwd = session_cwd(&running.daemon, run["sessionId"].as_str().unwrap());
     assert_ne!(cwd, repo, "the run works in its own worktree");
+    assert!(!cwd.join("writes.log").exists(), "the ungranted connector write is refused even with a settings allow");
     assert_eq!(std::fs::read_to_string(cwd.join("CHANGELOG.md")).unwrap(), "- Workflows can edit code.\n");
     assert!(!repo.join("CHANGELOG.md").exists(), "the checkout does not get the edit");
     assert_eq!(git(&repo, &["status", "--porcelain"]), status_before, "the checkout's status is unchanged");

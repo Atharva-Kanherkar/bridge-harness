@@ -44,8 +44,15 @@ export function query({ prompt, options = {} }) {
     yield assistant([{ type: "tool_use", id, name, input }]);
     // As in the SDK, `canUseTool` is asked only when a call would prompt.
     // Under `acceptEdits` a file edit does not, so it runs without asking.
+    const hookResults = [];
+    for (const matcher of options.hooks?.PreToolUse ?? []) {
+      for (const hook of matcher.hooks ?? []) hookResults.push(await hook({ tool_name: name, tool_input: input }));
+    }
+    const hookDenial = hookResults.find((result) => result.hookSpecificOutput?.permissionDecision === "deny");
     const prompts = !(options.permissionMode === "acceptEdits" && FILE_EDIT_TOOLS.has(name));
-    const verdict = prompts && options.canUseTool
+    const verdict = hookDenial
+      ? { behavior: "deny", message: hookDenial.hookSpecificOutput.permissionDecisionReason }
+      : prompts && options.canUseTool
       ? await options.canUseTool(name, input, { toolUseID: id, signal: new AbortController().signal })
       : { behavior: "allow" };
     const allowed = verdict?.behavior === "allow";
@@ -85,6 +92,9 @@ export function query({ prompt, options = {} }) {
       return;
     }
     if (brief.includes("E2E:edit")) {
+      // A code workflow attempts a connector call even though it has no grants.
+      // The real sidecar's pre-tool hook must refuse it before any effect.
+      yield* tool("mcp__claude_ai_Slack__slack_send_message", { text: "ungranted" }, () => appendFileSync(writes, "ungranted connector write\n"));
       const file = join(cwd, "CHANGELOG.md");
       const edited = yield* tool("Write", { file_path: file, content: "- Workflows can edit code.\n" }, () => writeFileSync(file, "- Workflows can edit code.\n"));
       const summary = edited ? "Added CHANGELOG.md." : "Could not write CHANGELOG.md.";

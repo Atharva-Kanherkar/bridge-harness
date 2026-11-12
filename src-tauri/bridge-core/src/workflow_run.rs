@@ -192,11 +192,17 @@ fn revision_definition(db: &Connection, revision_id: &str) -> Result<wire::Workf
     serde_json::from_str(&json).map_err(|error| BridgeError::Invalid(format!("stored revision {revision_id} is unreadable: {error}")))
 }
 
-/// The policy a run with no built-in tools starts under; `None` for a
-/// worktree run, which uses the Isolated write mode instead.
+/// Connector authority for a run. Claude worktree runs also carry a policy:
+/// Isolated file access must not inherit MCP authority from user settings.
 pub fn policy_for_definition(definition: &wire::WorkflowDefinition) -> Result<Option<BriefingRuntimePolicy>, BridgeError> {
     if definition.files == wire::WorkflowFiles::Worktree {
-        return Ok(None);
+        return if definition.steps.first().is_some_and(|step| step.harness.as_str() == "claude") {
+            BriefingRuntimePolicy::compile_worktree_workflow(definition.budget)
+                .map(Some)
+                .map_err(|refusal| BridgeError::Invalid(refusal.reason()))
+        } else {
+            Ok(None)
+        };
     }
     let servers = definition
         .grants
@@ -1015,6 +1021,18 @@ mod tests {
         assert_eq!(servers[0].wire, "claude_ai_Slack");
         assert_eq!(servers[0].write, "ask");
         definition.files = wire::WorkflowFiles::Worktree;
-        assert!(policy_for_definition(&definition).unwrap().is_none());
+        definition.grants.clear();
+        let policy = policy_for_definition(&definition).unwrap().unwrap();
+        assert!(policy.workflow_worktree());
+        assert!(policy.workflow_servers().unwrap().is_empty());
+        use crate::delegation::WriteMode;
+        assert!(policy.check_launch_write_mode(Some(WriteMode::Isolated)).is_ok());
+        for mode in [None, Some(WriteMode::ReadOnly), Some(WriteMode::Shared), Some(WriteMode::Full)] {
+            assert!(policy.check_launch_write_mode(mode).is_err());
+        }
+        for harness in ["codex", "opencode"] {
+            definition.steps[0].harness = wire::HarnessId::parse(harness).unwrap();
+            assert!(policy_for_definition(&definition).unwrap().is_none());
+        }
     }
 }
