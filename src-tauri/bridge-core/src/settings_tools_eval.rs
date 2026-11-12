@@ -141,10 +141,25 @@ fn live() {
         runtime.send_turn(case.ask).unwrap();
         let mut tools: Vec<String> = Vec::new();
         let mut said = String::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
-        let mut lines = started.reader.lines();
-        while std::time::Instant::now() < deadline {
-            let Some(Ok(line)) = lines.next() else { break };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        // Read on a thread so the deadline holds even when the chat goes
+        // quiet, for example while it waits on an approval nobody answers.
+        let (sender, receiver) = std::sync::mpsc::channel::<String>();
+        let reader = started.reader;
+        std::thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut waited_on: Option<String> = None;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(line) = receiver.recv_timeout(left) else {
+                println!("       timed out{}", waited_on.as_deref().map(|what| format!(" waiting on {what}")).unwrap_or_default());
+                break;
+            };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
             if std::env::var_os("BRIDGE_SETTINGS_TOOLS_EVAL_DEBUG").is_some() && line.contains("mcp_servers") {
                 println!("       init: {}", crate::notes::guards::clip(&value.pointer("/event/mcp_servers").or_else(|| value.pointer("/mcp_servers")).map(|servers| servers.to_string()).unwrap_or_else(|| line.clone()), 600));
@@ -153,6 +168,9 @@ fn live() {
             for event in registry.normalize(&harness(), &value) {
                 if event.kind == "tool.started" {
                     tools.push(event.title.clone().unwrap_or_default());
+                }
+                if event.kind.ends_with(".requested") {
+                    waited_on = Some(format!("{} {}", event.kind, event.title.clone().unwrap_or_default()));
                 }
                 if event.kind == "message.completed" && event.role.as_deref() == Some("assistant") {
                     said = event.text.clone().unwrap_or_default();
