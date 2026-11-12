@@ -31,7 +31,7 @@ Agents are also beside New Chat. Archived chats and scheduled tasks open from th
 
 ## Changing settings from a chat
 
-Any top-level chat can change some settings when you ask: "make the theme light", "hide thinking in chats", "make Sonnet my default model". The chat uses two tools on Bridge's own `bridge` tool server, `settings_read` and `settings_change`, on Claude, Codex and OpenCode alike.
+Any top-level chat can change some settings when you ask: "make the theme light", "hide thinking in chats", "make Sonnet my default model". The chat uses two tools on Bridge's own `bridge` tool server, `settings_read` and `settings_change`, on Claude and Codex. OpenCode 2.x does not load the `bridge` server yet (it ignores `OPENCODE_CONFIG_CONTENT`), so OpenCode chats have none of Bridge's tools until that is fixed.
 
 | Key | Values | Applies to |
 | --- | --- | --- |

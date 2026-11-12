@@ -74,4 +74,6 @@ settings through two tools on the `bridge` MCP server.
 ## Reachability
 
 - C19. A fresh install reaches it with no setup: every new top-level chat on
-  Claude, Codex or OpenCode gets the tools through the existing `bridge` server.
+  Claude or Codex gets the tools through the existing `bridge` server.
+  OpenCode 2.x loads no `bridge` server at all (it ignores
+  `OPENCODE_CONFIG_CONTENT`); that predates this branch and is a follow-up.
