@@ -350,6 +350,7 @@ fn e2_a_project_workflow_edits_its_own_worktree_and_leaves_the_checkout_alone() 
     assert_eq!(run["costMicrousd"], json!(0), "a reported zero cost stays known");
     assert!(!cwd.join("writes.log").exists(), "the ungranted connector write is refused even with a settings allow");
     assert_eq!(std::fs::read_to_string(cwd.join("CHANGELOG.md")).unwrap(), "- Workflows can edit code.\n");
+    assert_eq!(std::fs::read_to_string(cwd.join("tests-ran.txt")).unwrap(), "passed", "user Bash allows still run a test command");
     assert!(!repo.join("CHANGELOG.md").exists(), "the checkout does not get the edit");
     assert_eq!(git(&repo, &["status", "--porcelain"]), status_before, "the checkout's status is unchanged");
 

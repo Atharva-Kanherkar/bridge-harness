@@ -74,18 +74,19 @@ export function sdkEffort(effort) {
 function worktreeWorkflowOptions() {
   return {
     ...permissionOptions("Isolated"),
-    settingSources: [],
+    settingSources: ["user"],
+    skills: "all",
     plugins: [],
     mcpServers: {},
     strictMcpConfig: true,
-    disallowedTools: ["mcp__*"],
+    disallowedTools: ["mcp__*", "Task", "Agent"],
     hooks: {
-      PreToolUse: [{ hooks: [async (input = {}) => input.tool_name?.startsWith("mcp__") ? {
+      PreToolUse: [{ hooks: [async (input = {}) => (input.tool_name?.startsWith("mcp__") || ["Task", "Agent"].includes(input.tool_name)) ? {
         continue: true,
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: "Worktree workflows have no connector grants.",
+          permissionDecisionReason: "Worktree workflows cannot use connectors or delegate to native agents.",
         },
       } : { continue: true }] }],
     },

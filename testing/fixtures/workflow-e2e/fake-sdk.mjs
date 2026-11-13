@@ -7,6 +7,8 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { execFileSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const drafts = JSON.parse(readFileSync(join(here, "../workflow-drafts/cases.json"), "utf8")).cases;
@@ -18,6 +20,37 @@ function textOf(message) {
 }
 
 const FILE_EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+function matchesRule(rule, name, input) {
+  if (rule === name || rule === "*" || (rule.endsWith("*") && name.startsWith(rule.slice(0, -1)))) return true;
+  const bash = rule.match(/^Bash\((.*):\*\)$/);
+  return name === "Bash" && bash && (input.command === bash[1] || input.command?.startsWith(`${bash[1]} `));
+}
+
+// Exercise the same authority boundary as the SDK: hooks precede settings
+// allows, and an allowed call never asks canUseTool. Never read real settings
+// in e2e: its sidecar wrapper supplies a disposable CLAUDE_CONFIG_DIR.
+export async function permissionDecision(options, name, input = {}, context = {}) {
+  for (const matcher of options.hooks?.PreToolUse ?? []) {
+    for (const hook of matcher.hooks ?? []) {
+      const result = await hook({ tool_name: name, tool_input: input, agent_id: context.agentID });
+      if (result.hookSpecificOutput?.permissionDecision === "deny") {
+        return { behavior: "deny", message: result.hookSpecificOutput.permissionDecisionReason };
+      }
+    }
+  }
+  if (options.disallowedTools?.some((rule) => matchesRule(rule, name, input))) return { behavior: "deny" };
+  const cwd = options.cwd ?? process.cwd();
+  const config = options.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const settings = { user: join(config, "settings.json"), project: join(cwd, ".claude/settings.json"), local: join(cwd, ".claude/settings.local.json") };
+  const allow = [...(options.allowedTools ?? [])];
+  for (const source of options.settingSources ?? []) {
+    try { allow.push(...(JSON.parse(readFileSync(settings[source], "utf8")).permissions?.allow ?? [])); } catch {}
+  }
+  if (allow.some((rule) => matchesRule(rule, name, input))) return { behavior: "allow" };
+  if (options.permissionMode === "bypassPermissions" || (options.permissionMode === "acceptEdits" && FILE_EDIT_TOOLS.has(name))) return { behavior: "allow" };
+  return options.canUseTool ? options.canUseTool(name, input, context) : { behavior: "deny" };
+}
 
 const resultBlock = (status, summary) => `\n\`\`\`workflow-result\n${JSON.stringify({ status, summary })}\n\`\`\``;
 
@@ -44,17 +77,7 @@ export function query({ prompt, options = {} }) {
     yield assistant([{ type: "tool_use", id, name, input }]);
     // As in the SDK, `canUseTool` is asked only when a call would prompt.
     // Under `acceptEdits` a file edit does not, so it runs without asking.
-    const hookResults = [];
-    for (const matcher of options.hooks?.PreToolUse ?? []) {
-      for (const hook of matcher.hooks ?? []) hookResults.push(await hook({ tool_name: name, tool_input: input }));
-    }
-    const hookDenial = hookResults.find((result) => result.hookSpecificOutput?.permissionDecision === "deny");
-    const prompts = !(options.permissionMode === "acceptEdits" && FILE_EDIT_TOOLS.has(name));
-    const verdict = hookDenial
-      ? { behavior: "deny", message: hookDenial.hookSpecificOutput.permissionDecisionReason }
-      : prompts && options.canUseTool
-      ? await options.canUseTool(name, input, { toolUseID: id, signal: new AbortController().signal })
-      : { behavior: "allow" };
+    const verdict = await permissionDecision(options, name, input, { toolUseID: id, signal: new AbortController().signal });
     const allowed = verdict?.behavior === "allow";
     if (allowed) effect?.();
     yield {
@@ -97,6 +120,9 @@ export function query({ prompt, options = {} }) {
       yield* tool("mcp__claude_ai_Slack__slack_send_message", { text: "ungranted" }, () => appendFileSync(writes, "ungranted connector write\n"));
       const file = join(cwd, "CHANGELOG.md");
       const edited = yield* tool("Write", { file_path: file, content: "- Workflows can edit code.\n" }, () => writeFileSync(file, "- Workflows can edit code.\n"));
+      yield* tool("Bash", { command: "node -e \"require('node:fs').writeFileSync('tests-ran.txt', 'passed')\"" }, () => {
+        execFileSync(process.execPath, ["-e", "require('node:fs').writeFileSync('tests-ran.txt', 'passed')"], { cwd });
+      });
       const summary = edited ? "Added CHANGELOG.md." : "Could not write CHANGELOG.md.";
       yield* finish(summary + resultBlock(edited ? "done" : "not_done", summary));
       return;

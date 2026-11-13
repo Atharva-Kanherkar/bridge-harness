@@ -159,10 +159,9 @@ pub struct ValidationContext {
 }
 
 /// Does this definition need an adapter that enforces exact tool identities?
-/// True for any connector grant, and for a run with no built-in tools at all,
-/// because only such an adapter can deny the built-ins by name.
-pub fn needs_identity_enforcement(definition: &wire::WorkflowDefinition) -> bool {
-    !definition.grants.is_empty() || definition.files == wire::WorkflowFiles::None
+/// Every workflow must deny ungranted connectors, including worktree runs.
+pub fn needs_identity_enforcement(_definition: &wire::WorkflowDefinition) -> bool {
+    true
 }
 
 /// The authority. A client may pre-empt an obvious mistake; this decides.
@@ -1024,13 +1023,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_may_run_a_project_worktree_job_with_no_connectors() {
+    fn non_claude_worktree_jobs_are_refused_until_they_can_isolate_connectors() {
         let mut job = definition();
         job.project_id = Some("p".into());
         job.files = wire::WorkflowFiles::Worktree;
         job.grants.clear();
-        job.steps[0].harness = wire::HarnessId::parse("codex").unwrap();
-        job.steps[0].model = "gpt-5.5".into();
+        for harness in ["codex", "opencode"] {
+            job.steps[0].harness = wire::HarnessId::parse(harness).unwrap();
+            job.steps[0].model = "test-model".into();
+            assert!(validate(&job, &context()).unwrap_err().contains("cannot run this workflow"));
+            assert!(crate::workflow_run::policy_for_definition(&job).is_err(), "saved legacy definitions must fail closed too");
+        }
+        job.steps[0].harness = wire::HarnessId::parse("claude").unwrap();
+        job.steps[0].model = "haiku".into();
         assert_eq!(validate(&job, &context()), Ok(()));
     }
 

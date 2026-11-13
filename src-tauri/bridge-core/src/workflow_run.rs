@@ -205,13 +205,12 @@ fn revision_definition(db: &Connection, revision_id: &str) -> Result<wire::Workf
 /// Isolated file access must not inherit MCP authority from user settings.
 pub fn policy_for_definition(definition: &wire::WorkflowDefinition) -> Result<Option<BriefingRuntimePolicy>, BridgeError> {
     if definition.files == wire::WorkflowFiles::Worktree {
-        return if definition.steps.first().is_some_and(|step| step.harness.as_str() == "claude") {
-            BriefingRuntimePolicy::compile_worktree_workflow(definition.budget)
-                .map(Some)
-                .map_err(|refusal| BridgeError::Invalid(refusal.reason()))
-        } else {
-            Ok(None)
-        };
+        let harness = definition.steps.first().map(|step| step.harness.as_str()).unwrap_or("");
+        crate::briefing_policy::adapter_may_brief(harness)
+            .map_err(|refusal| BridgeError::Invalid(refusal.reason()))?;
+        return BriefingRuntimePolicy::compile_worktree_workflow(definition.budget)
+            .map(Some)
+            .map_err(|refusal| BridgeError::Invalid(refusal.reason()));
     }
     let servers = definition
         .grants
@@ -427,6 +426,8 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
 fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     let ClaimedRun { run, lease_owner, quota_verdict: quota } = claimed;
     let definition = revision_definition(&core.db.lock().unwrap(), &run.revision_id)?;
+    // Fail closed for definitions saved before every workflow required MCP isolation.
+    policy_for_definition(&definition)?;
     let step = definition.steps.first().cloned().ok_or_else(|| BridgeError::Invalid("the revision has no step".into()))?;
 
     // C11: your plan comes first.
@@ -1232,7 +1233,7 @@ mod tests {
         }
         for harness in ["codex", "opencode"] {
             definition.steps[0].harness = wire::HarnessId::parse(harness).unwrap();
-            assert!(policy_for_definition(&definition).unwrap().is_none());
+            assert!(policy_for_definition(&definition).is_err());
         }
     }
 }
