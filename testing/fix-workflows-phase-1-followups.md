@@ -11,25 +11,28 @@ contract, especially C7, F20, F22a and F23. Phase 2 is out of scope.
   native subagent calls. Native Task/Agent delegation is refused in worktree
   runs, so child work cannot evade accounting. Codex/OpenCode worktree
   workflows are refused until their adapters can isolate MCP authority,
-  including already saved definitions at launch. Ordinary chats and connector workflows keep their
-  existing permissions. No public protocol or database migration is needed.
+  including already saved definitions at launch. Ordinary chats and connector
+  workflows keep their existing permissions. No public protocol or database migration is needed.
 - Each of the five ceilings stops an active run as `failed` with
   `failureCode: budget_exhausted`: working wall time, assistant messages after
   the run baseline, tool calls after the baseline, ledger output tokens, and
   ledger cost in micro-USD. Message/tool ceilings allow exactly N and fail
   only above N; completion on N succeeds and the Nth approval is retained.
-  Token/cost ceilings stop at equality. Optional token
-  and cost ceilings that are absent do not stop the run. Input tokens do not
+  Token/cost ceilings stop at equality. Optional token and cost ceilings that are absent do not stop the run. Input tokens do not
   spend the output-token ceiling; another session's usage does not count.
-- A completed turn cannot bypass an already reached token, cost, message or
-  tool ceiling. Approval waiting still pauses working wall time, remains
-  bounded separately at the existing 24 hours, and cancellation still stops
-  the underlying session.
+- A completed turn cannot bypass a reached token/cost ceiling or an exceeded
+  message/tool limit. Claude message-start/delta and assistant usage reach the
+  ledger before a final result. Repeated or stale snapshots never double-count
+  or rewind usage. A final result replaces provisional rows once; empty crash
+  results preserve observed usage. Live costs use existing model pricing and
+  stay unknown without rates; the SDK also receives the native cost budget.
+  Budget monitoring uses the provider's usage reporting granularity.
+  Approval waiting pauses working wall time, remains bounded separately at
+  the existing 24 hours, and cancellation still stops the underlying session.
 - Terminal outcomes sum the run session's ledger input/output tokens and cost.
   Any missing cost keeps the total unknown (`null`); a reported zero remains
   zero. Known partial costs remain a lower bound for budget enforcement. All
-  settlement paths share one indexed aggregate. Failed
-  and cancelled runs retain whatever usage was recorded before settlement.
+  settlement paths share one indexed aggregate. Failed and cancelled runs retain whatever usage was recorded before settlement.
 - Rechecking quota leases a `waiting_quota` run without changing that status.
   Parking releases the lease, and repeated blocked checks publish nothing.
   There is one notification on entering quota wait and one on leaving it.
@@ -74,6 +77,8 @@ contract, especially C7, F20, F22a and F23. Phase 2 is out of scope.
 
 - Run the daemon `workflows` integration target: existing no-project connector
   journey, project worktree journey, and scheduled catch-up journey pass.
+  A live sidecar that never emits a result is stopped separately by output
+  tokens, estimated cost and cancellation, retaining its pre-result usage.
 - Bind session entries and ledger rows to a claimed run in the Rust tests;
   exercise the real wait/settlement path and inspect persisted run status,
   `failureCode`, `tokens` and `costMicrousd`.
