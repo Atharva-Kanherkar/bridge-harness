@@ -1,4 +1,4 @@
-# feat/mission-control-stage — Test Contract
+# feat/mission-control-stage: test contract
 
 Issue #977. Mission Control's split tree (fixed 420x360 minimums summed over the
 tree, an assumed 1.6 aspect, drags that re-split) is replaced by a measured
