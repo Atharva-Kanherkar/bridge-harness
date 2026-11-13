@@ -924,9 +924,10 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
             }
             let local: HashMap<usize, usize> = group.iter().enumerate().map(|(i, node)| (*node, i)).collect();
             let edges: Vec<(usize, usize, usize)> = inner.iter().filter(|(_, a, _)| local.contains_key(a)).map(|(k, a, b)| (*k, local[a], local[b])).collect();
-            let graph = layout::Graph { sizes: group.iter().map(|node| size_of(&free[*node])).collect(), edges: edges.iter().map(|(k, a, b)| (*a, *b, links[*k].label)).collect() };
+            let uniform = group.iter().map(|node| elements.iter().any(|e| str_of(e, "id") == Some(free[*node].as_str()) && str_of(e, "type") == Some("rectangle"))).collect();
+            let graph = layout::Graph { sizes: group.iter().map(|node| size_of(&free[*node])).collect(), edges: edges.iter().map(|(k, a, b)| (*a, *b, links[*k].label)).collect(), uniform };
             let arranged = layout::arrange(&graph, direction);
-            let block: Vec<Box2> = group.iter().enumerate().map(|(i, _)| Box2 { x: arranged.positions[i].0, y: arranged.positions[i].1, w: graph.sizes[i].0, h: graph.sizes[i].1 }).collect();
+            let block: Vec<Box2> = group.iter().enumerate().map(|(i, _)| Box2 { x: arranged.positions[i].0, y: arranged.positions[i].1, w: arranged.sizes[i].0, h: arranged.sizes[i].1 }).collect();
             // Links from this group to shapes that stay where they are.
             let anchors: Vec<(usize, Box2)> = links
                 .iter()
@@ -1002,6 +1003,11 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
                 let moved_now = num(element, "x") != b.x || num(element, "y") != b.y;
                 element["x"] = json!(b.x);
                 element["y"] = json!(b.y);
+                // A box widened to match its rank.
+                if str_of(element, "type") == Some("rectangle") && (b.w > num(element, "width") || b.h > num(element, "height")) {
+                    element["width"] = json!(b.w);
+                    element["height"] = json!(b.h);
+                }
                 if moved_now && !added_ids.contains(id.as_str()) {
                     moved.insert(id.clone());
                 }
@@ -1403,6 +1409,29 @@ pub(crate) mod tests {
                 std::fs::write(&path, &body).unwrap();
             }
             assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), body, "{name} is stale: rerun with BRIDGE_UPDATE_FIXTURES=1");
+        }
+    }
+
+    /// Re-places every agent shape in recorded bench scenes, to try layout
+    /// changes without new chats: `BRIDGE_RELAYOUT_IN=<bench dir>
+    /// BRIDGE_RELAYOUT_OUT=<dir>`, then score the output with score.mjs.
+    #[test]
+    #[ignore = "a development tool over recorded drawings"]
+    fn relayout_recorded_drawings() {
+        let (Some(input), Some(output)) = (std::env::var_os("BRIDGE_RELAYOUT_IN"), std::env::var_os("BRIDGE_RELAYOUT_OUT")) else { return };
+        std::fs::create_dir_all(&output).unwrap();
+        for entry in std::fs::read_dir(&input).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".json") || name == "scores.json" || name == "judge.json" {
+                continue;
+            }
+            let mut record: Value = serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+            if let Some(scene) = record.get_mut("scene").filter(|scene| scene.is_object()) {
+                if let Err(error) = apply(scene, &Ops::from_args(&json!({"layout": "auto"})).unwrap()) {
+                    println!("{name}: {error}");
+                }
+            }
+            std::fs::write(std::path::Path::new(&output).join(&name), serde_json::to_string_pretty(&record).unwrap()).unwrap();
         }
     }
 

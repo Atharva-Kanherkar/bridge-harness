@@ -37,12 +37,12 @@ pub const MIN_WIDTH: f64 = 100.0;
 pub const MIN_HEIGHT: f64 = 56.0;
 /// Between ranks when no arrow label needs more, and between neighbours in a rank.
 pub const RANK_GAP: f64 = 60.0;
-pub const NODE_GAP: f64 = 30.0;
+pub const NODE_GAP: f64 = 36.0;
 /// Clear space on each side of an arrow label.
 pub const LABEL_MARGIN: f64 = 16.0;
-/// Below this text size on the page (scale 0.6 of a 20 px label), a layout
+/// Below this text size on the page (11 px for a 20 px label), a layout
 /// that reads better in the other direction wins.
-const COMFORTABLE_SCALE: f64 = 0.6;
+const COMFORTABLE_SCALE: f64 = 0.55;
 
 fn is_wide(c: char) -> bool {
     matches!(c as u32, 0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1FAFF | 0x20000..=0x3FFFD)
@@ -161,13 +161,18 @@ impl Direction {
 pub struct Graph {
     pub sizes: Vec<(f64, f64)>,
     pub edges: Vec<(usize, usize, Option<(f64, f64)>)>,
+    /// Shapes that may widen to match the others in their rank (boxes;
+    /// a diamond or an ellipse keeps its own size).
+    pub uniform: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub direction: Direction,
-    /// Each shape's top-left corner.
+    /// Each shape's top-left corner, and its size: boxes in one rank share
+    /// the rank's widest box's size.
     pub positions: Vec<(f64, f64)>,
+    pub sizes: Vec<(f64, f64)>,
     /// Each arrow's bend points, from its start to its end.
     pub bends: Vec<Vec<(f64, f64)>>,
     pub width: f64,
@@ -191,11 +196,104 @@ pub fn arrange(graph: &Graph, direction: Option<Direction>) -> Layout {
         && (0..graph.sizes.len()).all(|node| graph.edges.iter().filter(|(_, to, _)| *to == node).count() <= 1);
     let (preferred, other) = if tree { (Direction::Down, Direction::Right) } else { (Direction::Right, Direction::Down) };
     let (first, second) = (best_of(graph, preferred), best_of(graph, other));
-    if first.scale() >= COMFORTABLE_SCALE || first.scale() >= 0.92 * second.scale() {
-        first
-    } else {
-        second
+    let chosen = if first.scale() >= COMFORTABLE_SCALE || first.scale() >= 0.92 * second.scale() { first } else { second };
+    // A wide tree, a mind map most often, branches out on both sides of its root.
+    match two_sided(graph) {
+        Some(both) if tree && both.scale() >= chosen.scale() * 0.95 => both,
+        _ => chosen,
     }
+}
+
+/// A tree whose root has four or more branches, laid out with half its
+/// branches to the right of the root and half mirrored to the left.
+fn two_sided(graph: &Graph) -> Option<Layout> {
+    let n = graph.sizes.len();
+    let roots: Vec<usize> = (0..n).filter(|node| !graph.edges.iter().any(|(_, to, _)| to == node)).collect();
+    let [root] = roots.as_slice() else { return None };
+    let children: Vec<usize> = graph.edges.iter().filter(|(from, _, _)| from == root).map(|(_, to, _)| *to).collect();
+    if children.len() < 4 {
+        return None;
+    }
+    let subtree = |start: usize| {
+        let mut nodes = vec![start];
+        let mut cursor = 0;
+        while cursor < nodes.len() {
+            let node = nodes[cursor];
+            cursor += 1;
+            for (from, to, _) in &graph.edges {
+                if *from == node && !nodes.contains(to) {
+                    nodes.push(*to);
+                }
+            }
+        }
+        nodes
+    };
+    let branches: Vec<Vec<usize>> = children.iter().map(|child| subtree(*child)).collect();
+    let total: usize = branches.iter().map(Vec::len).sum();
+    // Split the branches, in order, where the two sides come out most even.
+    let (mut best_split, mut best_gap, mut running) = (1, usize::MAX, 0);
+    for (index, branch) in branches.iter().enumerate().take(branches.len() - 1) {
+        running += branch.len();
+        let gap = running.abs_diff(total - running);
+        if gap < best_gap {
+            best_gap = gap;
+            best_split = index + 1;
+        }
+    }
+    let side = |range: std::ops::Range<usize>| -> (Vec<usize>, Layout) {
+        let mut nodes = vec![*root];
+        for branch in &branches[range] {
+            nodes.extend(branch);
+        }
+        let local: HashMap<usize, usize> = nodes.iter().enumerate().map(|(i, node)| (*node, i)).collect();
+        let sub = Graph {
+            sizes: nodes.iter().map(|node| graph.sizes[*node]).collect(),
+            edges: graph.edges.iter().filter_map(|(a, b, label)| Some((*local.get(a)?, *local.get(b)?, *label))).collect(),
+            uniform: nodes.iter().map(|node| graph.uniform.get(*node).copied().unwrap_or(false)).collect(),
+        };
+        (nodes, layered(&sub, Direction::Right))
+    };
+    let (right_nodes, right) = side(0..best_split);
+    let (left_nodes, left) = side(best_split..branches.len());
+    // The right side's root is the anchor; the left side is mirrored about it.
+    let (rx, ry) = right.positions[0];
+    let (lx, ly) = left.positions[0];
+    let root_w = right.sizes[0].0;
+    let mut positions = vec![(0.0, 0.0); n];
+    let mut sizes = graph.sizes.clone();
+    for (i, node) in right_nodes.iter().enumerate() {
+        positions[*node] = right.positions[i];
+        sizes[*node] = right.sizes[i];
+    }
+    let mirror = |(x, y): (f64, f64), w: f64| (rx + root_w - (x - lx) - w, y - ly + ry);
+    for (i, node) in left_nodes.iter().enumerate().skip(1) {
+        positions[*node] = mirror(left.positions[i], left.sizes[i].0);
+        sizes[*node] = left.sizes[i];
+    }
+    let mut bends = vec![Vec::new(); graph.edges.len()];
+    for (index, (a, b, _)) in graph.edges.iter().enumerate() {
+        let find = |nodes: &[usize]| nodes.iter().position(|node| node == a).zip(nodes.iter().position(|node| node == b));
+        if let Some((i, j)) = find(&right_nodes) {
+            if let Some(k) = right.bends.iter().zip(right_edges(&right_nodes, graph)).find(|(_, e)| *e == (i, j)).map(|(bend, _)| bend.clone()) {
+                bends[index] = k;
+            }
+        } else if let Some((i, j)) = find(&left_nodes) {
+            if let Some(k) = left.bends.iter().zip(right_edges(&left_nodes, graph)).find(|(_, e)| *e == (i, j)).map(|(bend, _)| bend.clone()) {
+                bends[index] = k.into_iter().map(|p| mirror(p, 0.0)).collect();
+            }
+        }
+    }
+    let laid = Graph { sizes: sizes.clone(), edges: graph.edges.clone(), uniform: graph.uniform.clone() };
+    let mut layout = finish(&laid, Direction::Right, positions, bends);
+    layout.sizes = sizes;
+    Some(layout)
+}
+
+/// The edges of a side's subgraph, in the order `two_sided` built them, by
+/// their indexes into that side's nodes.
+fn right_edges(nodes: &[usize], graph: &Graph) -> Vec<(usize, usize)> {
+    let local: HashMap<usize, usize> = nodes.iter().enumerate().map(|(i, node)| (*node, i)).collect();
+    graph.edges.iter().filter_map(|(a, b, _)| Some((*local.get(a)?, *local.get(b)?))).collect()
 }
 
 /// A layered layout in `direction`, or for a plain chain a winding one when
@@ -247,6 +345,10 @@ fn winding(graph: &Graph, order: &[usize], per_row: usize, direction: Direction)
     // Swap axes for `Down`: work in (along, across) and turn at the end.
     let along_size = |node: usize| if direction == Direction::Right { graph.sizes[node] } else { (graph.sizes[node].1, graph.sizes[node].0) };
     let rows: Vec<&[usize]> = order.chunks(per_row).collect();
+    // Boxes in a winding chain share one size.
+    let (max_w, max_h) = (0..graph.sizes.len()).filter(|node| graph.uniform.get(*node).copied().unwrap_or(false)).fold((0.0f64, 0.0f64), |(w, h), node| (w.max(graph.sizes[node].0), h.max(graph.sizes[node].1)));
+    let sized: Vec<(f64, f64)> = (0..graph.sizes.len()).map(|node| if graph.uniform.get(node).copied().unwrap_or(false) { (max_w, max_h) } else { graph.sizes[node] }).collect();
+    let graph = &Graph { sizes: sized, edges: graph.edges.clone(), uniform: graph.uniform.clone() };
     let cell = rows.iter().flat_map(|row| row.iter()).map(|node| along_size(*node).0).fold(0.0, f64::max);
     let mut gap_along = RANK_GAP;
     let mut row_gaps = Vec::new();
@@ -295,7 +397,7 @@ fn finish(graph: &Graph, direction: Direction, mut positions: Vec<(f64, f64)>, m
         y1 = y1.max(*y);
     }
     if !x0.is_finite() {
-        return Layout { direction, positions, bends, width: 0.0, height: 0.0 };
+        return Layout { direction, positions, bends, sizes: graph.sizes.clone(), width: 0.0, height: 0.0 };
     }
     for (x, y) in positions.iter_mut() {
         *x = (*x - x0).round();
@@ -305,7 +407,7 @@ fn finish(graph: &Graph, direction: Direction, mut positions: Vec<(f64, f64)>, m
         *x = (*x - x0).round();
         *y = (*y - y0).round();
     }
-    Layout { direction, positions, bends, width: (x1 - x0).round(), height: (y1 - y0).round() }
+    Layout { direction, positions, bends, sizes: graph.sizes.clone(), width: (x1 - x0).round(), height: (y1 - y0).round() }
 }
 
 /// One place in a rank: a shape, or a bend of an arrow that spans ranks.
@@ -401,6 +503,26 @@ pub fn layered(graph: &Graph, direction: Direction) -> Layout {
         }
     }
     let ranks = rank.iter().copied().max().map_or(0, |top| top + 1);
+    // Boxes in one rank line up, so a row or a column reads as one level.
+    let mut widest: HashMap<usize, (f64, f64)> = HashMap::new();
+    for node in (0..n).filter(|node| graph.uniform.get(*node).copied().unwrap_or(false)) {
+        let entry = widest.entry(rank[node]).or_insert((0.0, 0.0));
+        *entry = (entry.0.max(graph.sizes[node].0), entry.1.max(graph.sizes[node].1));
+    }
+    let even = Graph {
+        // A column shares a width; a row shares a height, keeping each box's
+        // own width so a long row does not grow wider.
+        sizes: (0..n)
+            .map(|node| match (graph.uniform.get(node).copied().unwrap_or(false), direction) {
+                (true, Direction::Right) => (widest[&rank[node]].0, graph.sizes[node].1),
+                (true, Direction::Down) => (graph.sizes[node].0, widest[&rank[node]].1),
+                _ => graph.sizes[node],
+            })
+            .collect(),
+        edges: graph.edges.clone(),
+        uniform: graph.uniform.clone(),
+    };
+    let graph = &even;
 
     // 3. Slots, with a bend slot wherever an arrow crosses a rank.
     let size_along = |(w, h): (f64, f64)| if direction == Direction::Right { w } else { h };
@@ -539,10 +661,13 @@ pub fn layered(graph: &Graph, direction: Direction) -> Layout {
             center[*slot] -= middle;
         }
     }
-    for pass in 0..16 {
-        let use_in = pass % 3 != 1;
-        let use_out = pass % 3 != 0;
-        let order: Vec<usize> = if pass % 2 == 0 { (0..layers.len()).collect() } else { (0..layers.len()).rev().collect() };
+    // Mixed passes settle everything; the last ones run from the leaves up
+    // and center each parent over its children.
+    for pass in 0..22 {
+        let settle = pass < 16;
+        let use_in = settle && pass % 3 != 1;
+        let use_out = !settle || pass % 3 != 0;
+        let order: Vec<usize> = if settle && pass % 2 == 0 { (0..layers.len()).collect() } else { (0..layers.len()).rev().collect() };
         for l in order {
             let layer = &layers[l];
             let desired: Vec<f64> = layer
@@ -701,7 +826,7 @@ mod tests {
         // login -> check -> (error | twofa) ; twofa -> (code | home) ; code -> home ; error -> login
         let sizes = vec![(140.0, 60.0), (170.0, 90.0), (120.0, 60.0), (150.0, 90.0), (120.0, 60.0), (130.0, 60.0)];
         let edges = vec![(0, 1, None), (1, 2, Some((40.0, 20.0))), (1, 3, Some((30.0, 20.0))), (3, 4, None), (3, 5, None), (4, 5, None), (2, 0, Some((60.0, 20.0)))];
-        let graph = Graph { sizes, edges };
+        let graph = Graph { sizes, edges, ..Default::default() };
         for direction in [Direction::Right, Direction::Down] {
             let layout = layered(&graph, direction);
             assert!(!boxes_overlap(&layout, &graph), "{direction:?}: {layout:?}");
@@ -715,7 +840,7 @@ mod tests {
 
     #[test]
     fn gaps_leave_room_for_arrow_labels() {
-        let graph = Graph { sizes: vec![(120.0, 60.0), (120.0, 60.0)], edges: vec![(0, 1, Some((150.0, 40.0)))] };
+        let graph = Graph { sizes: vec![(120.0, 60.0), (120.0, 60.0)], edges: vec![(0, 1, Some((150.0, 40.0)))], ..Default::default() };
         let layout = layered(&graph, Direction::Right);
         let gap = layout.positions[1].0 - (layout.positions[0].0 + 120.0);
         assert!(gap >= 150.0 + 2.0 * LABEL_MARGIN, "{gap}");
@@ -723,12 +848,12 @@ mod tests {
 
     #[test]
     fn a_tree_reads_down_and_a_long_chain_winds_to_fit_the_page() {
-        let tree = Graph { sizes: vec![(120.0, 60.0); 7], edges: vec![(0, 1, None), (0, 2, None), (1, 3, None), (1, 4, None), (2, 5, None), (2, 6, None)] };
+        let tree = Graph { sizes: vec![(120.0, 60.0); 7], edges: vec![(0, 1, None), (0, 2, None), (1, 3, None), (1, 4, None), (2, 5, None), (2, 6, None)], ..Default::default() };
         let layout = arrange(&tree, None);
         assert_eq!(layout.direction, Direction::Down);
         assert!(layout.positions[0].1 < layout.positions[1].1 && layout.positions[1].1 < layout.positions[3].1);
 
-        let chain = Graph { sizes: vec![(150.0, 60.0); 8], edges: (0..7).map(|i| (i, i + 1, None)).collect() };
+        let chain = Graph { sizes: vec![(150.0, 60.0); 8], edges: (0..7).map(|i| (i, i + 1, None)).collect(), ..Default::default() };
         let straight = layered(&chain, Direction::Right);
         let best = arrange(&chain, None);
         assert!(best.scale() > straight.scale() * 1.3, "{} vs {}", best.scale(), straight.scale());
@@ -738,11 +863,43 @@ mod tests {
 
     #[test]
     fn cycles_and_pairs_of_opposite_arrows_lay_out() {
-        let graph = Graph { sizes: vec![(120.0, 60.0); 3], edges: vec![(0, 1, None), (1, 0, None), (1, 2, None), (2, 0, None)] };
+        let graph = Graph { sizes: vec![(120.0, 60.0); 3], edges: vec![(0, 1, None), (1, 0, None), (1, 2, None), (2, 0, None)], ..Default::default() };
         let layout = arrange(&graph, None);
         assert!(!boxes_overlap(&layout, &graph));
         // The return arrow bows away from the forward one.
         assert_eq!(layout.bends[1].len(), 1);
+    }
+
+    #[test]
+    fn a_mind_map_branches_both_ways_with_each_parent_centered_on_its_children() {
+        // launch -> 4 branches -> 2 or 3 leaves each, as boxes of different widths.
+        let mut edges = vec![(0, 1, None), (0, 2, None), (0, 3, None), (0, 4, None)];
+        let mut sizes = vec![(140.0, 60.0), (130.0, 60.0), (110.0, 60.0), (100.0, 60.0), (120.0, 60.0)];
+        for (parent, leaves) in [(1, 3), (2, 2), (3, 2), (4, 2)] {
+            for leaf in 0..leaves {
+                sizes.push((100.0 + 20.0 * leaf as f64, 60.0));
+                edges.push((parent, sizes.len() - 1, None));
+            }
+        }
+        let n = sizes.len();
+        let graph = Graph { sizes, edges, uniform: vec![true; n] };
+        let layout = arrange(&graph, None);
+        assert!(!boxes_overlap(&Layout { ..layout.clone() }, &Graph { sizes: layout.sizes.clone(), ..graph.clone() }), "{layout:?}");
+        let center_x = |node: usize| layout.positions[node].0 + layout.sizes[node].0 / 2.0;
+        let center_y = |node: usize| layout.positions[node].1 + layout.sizes[node].1 / 2.0;
+        // Branches on both sides of the root.
+        assert!((1..5).any(|b| center_x(b) < center_x(0)) && (1..5).any(|b| center_x(b) > center_x(0)), "{layout:?}");
+        // Each branch sits level with the middle of its leaves.
+        let leaves_of = |parent: usize| graph.edges.iter().filter(|(a, _, _)| *a == parent).map(|(_, b, _)| *b).collect::<Vec<_>>();
+        for parent in 1..5 {
+            let leaves = leaves_of(parent);
+            let middle = leaves.iter().map(|leaf| center_y(*leaf)).sum::<f64>() / leaves.len() as f64;
+            assert!((center_y(parent) - middle).abs() < 2.0, "branch {parent}: {} vs {middle}", center_y(parent));
+        }
+        // Leaves in one column share a width.
+        let column: Vec<f64> = leaves_of(1).iter().map(|leaf| layout.sizes[*leaf].0).collect();
+        assert!(column.windows(2).all(|pair| pair[0] == pair[1]), "{column:?}");
+        assert!(layout.scale() > layered(&graph, Direction::Right).scale() * 1.15, "{} vs {}", layout.scale(), layered(&graph, Direction::Right).scale());
     }
 
     #[test]
