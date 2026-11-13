@@ -69,11 +69,37 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
+/** PreToolUse runs before user allow rules, including on native subagents.
+ * File and shell tools keep Isolated permissions; MCP is always refused. */
+function worktreeWorkflowOptions() {
+  return {
+    ...permissionOptions("Isolated"),
+    settingSources: ["user"],
+    skills: "all",
+    plugins: [],
+    mcpServers: {},
+    strictMcpConfig: true,
+    disallowedTools: ["mcp__*", "Task", "Agent"],
+    hooks: {
+      PreToolUse: [{ hooks: [async (input = {}) => (input.tool_name?.startsWith("mcp__") || ["Task", "Agent"].includes(input.tool_name)) ? {
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: "Worktree workflows cannot use connectors or delegate to native agents.",
+        },
+      } : { continue: true }] }],
+    },
+  };
+}
+
 export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
-  const authority = isBriefing({ briefing })
+  const authority = briefing?.workflow?.worktree === true
+    ? worktreeWorkflowOptions()
+    : isBriefing({ briefing })
     ? briefingOptions(briefing, mcpServers, ask)
     : {
         // User settings are required for user skills, commands, agents, and native
@@ -104,6 +130,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // on it. Rust only sets this for a policy with an empty scope, and the
   // briefing gate still stands behind it.
   const toolless = isBriefing({ briefing }) && briefing.toolless === true;
+  const budget = briefing?.workflow?.budget;
   return {
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(model ? { model } : {}),
@@ -116,6 +143,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
       ? { systemPrompt: toolless ? instructions : { type: "preset", preset: "claude_code", append: instructions } }
       : {}),
     ...authority,
+    ...(budget?.maxTurns != null ? { maxTurns: budget.maxTurns } : {}),
+    ...(budget?.costCeilingMicrousd != null ? { maxBudgetUsd: budget.costCeilingMicrousd / 1_000_000 } : {}),
     ...(toolless ? { tools: [] } : {}),
   };
 }

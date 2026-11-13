@@ -258,6 +258,10 @@ pub struct BriefingRuntimePolicy {
     /// the sidecar then asks Bridge before any call that is not a read on a
     /// read-granted server, so a write is decided in Rust, call by call.
     workflow_servers: Option<Vec<WorkflowServerScope>>,
+    /// A workflow with Isolated file access and no connector authority.
+    /// Only `compile_worktree_workflow` sets this; ordinary briefings still
+    /// refuse writable workspaces.
+    workflow_worktree: bool,
 }
 
 /// One connector server a workflow run may reach.
@@ -443,6 +447,7 @@ impl BriefingRuntimePolicy {
             read_scope_servers: Vec::new(),
             toolless: false,
             workflow_servers: None,
+            workflow_worktree: false,
         })
     }
 
@@ -482,6 +487,7 @@ impl BriefingRuntimePolicy {
             read_scope_servers: scope,
             toolless: false,
             workflow_servers: None,
+            workflow_worktree: false,
         })
     }
 
@@ -503,6 +509,30 @@ impl BriefingRuntimePolicy {
     /// The workflow scope the sidecar's gate enforces, when this is a workflow run.
     pub fn workflow_servers(&self) -> Option<&[WorkflowServerScope]> {
         self.workflow_servers.as_deref()
+    }
+
+    /// A code workflow keeps built-in tools under Isolated mode, but must
+    /// never inherit the person's connector configuration or allow rules.
+    pub fn compile_worktree_workflow(limits: wire::WorkBriefLimits) -> Result<Self, BriefingUnsupported> {
+        let mut policy = Self::compile_workflow(Vec::new(), limits)?;
+        policy.workflow_worktree = true;
+        Ok(policy)
+    }
+
+    pub fn workflow_worktree(&self) -> bool {
+        self.workflow_worktree
+    }
+
+    pub fn check_launch_write_mode(&self, write_mode: Option<WriteMode>) -> Result<(), BriefingUnsupported> {
+        if self.workflow_worktree {
+            if write_mode == Some(WriteMode::Isolated) {
+                return Ok(());
+            }
+            return Err(BriefingUnsupported::MalformedPolicy {
+                detail: "a worktree workflow requires Isolated write mode".into(),
+            });
+        }
+        Self::check_write_mode(write_mode)
     }
 
     /// Compile a policy for a run that needs no tools of any kind: an answer

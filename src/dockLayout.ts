@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 // persistence round-trip — so the split, the divider, and restart restore can
 // be asserted without mounting anything.
 
-export type DockPaneId = "changes" | "code" | "terminal" | "browser" | "transcript" | "tasks" | "github" | "inbox" | "context";
+export type DockPaneId = "changes" | "code" | "terminal" | "browser" | "transcript" | "tasks" | "github" | "inbox" | "context" | "work";
 
 export type DockState = {
   open: boolean;
@@ -27,7 +27,14 @@ export type DockAction =
   | { type: "toggle-expanded" };
 
 // The order is the ⌥⌘N chord order: new panes append, so no existing chord moves.
-export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "context"];
+// "work" is tenth, past the nine digit chords: the composer shelf is its way in.
+export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "context", "work"];
+
+/** The ⌥⌘ digit that opens a pane, or null past the ninth. */
+export function dockPaneChord(pane: DockPaneId): string | null {
+  const index = DOCK_PANES.indexOf(pane);
+  return index >= 0 && index < 9 ? String(index + 1) : null;
+}
 
 export const MIN_DOCK_WIDTH = 320;
 export const MAX_DOCK_WIDTH = 760;

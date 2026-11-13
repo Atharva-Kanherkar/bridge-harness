@@ -1,10 +1,10 @@
 {"type":"excalidraw","version":2,"source":"bridge","elements":[
-{"type":"rectangle","id":"form","x":0,"y":0,"width":180,"height":80,"label":{"text":"Login form"},"roundness":{"type":3}},
-{"type":"diamond","id":"check","x":310,"y":0,"width":180,"height":80,"label":{"text":"Valid?"}},
-{"type":"rectangle","id":"home","x":620,"y":0,"width":180,"height":80,"label":{"text":"Home"},"roundness":{"type":3},"fillStyle":"solid","backgroundColor":"#b2f2bb"},
-{"type":"ellipse","id":"retry","x":620,"y":140,"width":180,"height":80,"label":{"text":"Show error"},"roundness":{"type":3},"strokeColor":"#e03131"},
+{"type":"rectangle","id":"form","x":66,"y":5,"width":147,"height":59,"label":{"text":"Login form"},"roundness":{"type":3}},
+{"type":"diamond","id":"check","x":59,"y":124,"width":161,"height":86,"label":{"text":"Valid?"}},
+{"type":"rectangle","id":"home","x":0,"y":274,"width":100,"height":59,"label":{"text":"Home"},"roundness":{"type":3},"fillStyle":"solid","backgroundColor":"#b2f2bb"},
+{"type":"ellipse","id":"retry","x":136,"y":270,"width":186,"height":67,"label":{"text":"Show error"},"roundness":{"type":3},"strokeColor":"#e03131"},
 {"type":"text","id":"hint","x":0,"y":-80,"text":"rate limited after 5 tries","fontSize":20},
-{"type":"arrow","id":"e1","x":186,"y":40,"width":118,"height":0,"points":[[0,0],[118,0]],"start":{"id":"form"},"end":{"id":"check"},"endArrowhead":"arrow","label":{"text":"submit"}},
-{"type":"arrow","id":"e2","x":496,"y":40,"width":118,"height":0,"points":[[0,0],[118,0]],"start":{"id":"check"},"end":{"id":"home"},"endArrowhead":"arrow","label":{"text":"yes"}},
-{"type":"arrow","id":"e3","x":494,"y":82,"width":122,"height":55,"points":[[0,0],[122,55]],"start":{"id":"check"},"end":{"id":"retry"},"endArrowhead":"arrow","label":{"text":"no"},"strokeStyle":"dashed"}
+{"type":"arrow","id":"e1","x":140,"y":70,"width":0,"height":48,"points":[[0,0],[0,48]],"start":{"id":"form"},"end":{"id":"check"},"endArrowhead":"arrow","label":{"text":"submit","fontSize":16}},
+{"type":"arrow","id":"e2","x":115,"y":204,"width":43,"height":65,"points":[[0,0],[-43,65]],"start":{"id":"check"},"end":{"id":"home"},"endArrowhead":"arrow","label":{"text":"yes","fontSize":16}},
+{"type":"arrow","id":"e3","x":164,"y":204,"width":41,"height":62,"points":[[0,0],[41,62]],"start":{"id":"check"},"end":{"id":"retry"},"endArrowhead":"arrow","label":{"text":"no","fontSize":16},"strokeStyle":"dashed"}
 ],"appState":{"viewBackgroundColor":"#ffffff"},"files":{}}

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
-import { ChatPullRequestCards, ChatPullRequestStrip, useChatPullRequests } from "./ChatPullRequests";
+import { PullRequestGlyph, useChatPullRequests } from "./ChatPullRequests";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -26,54 +26,30 @@ afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks()
 
 const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-describe("ChatPullRequestCards", () => {
-  it("renders the status, branch, and expands the check list", () => {
-    act(() => root.render(<ChatPullRequestCards prs={[pr()]} refreshing={false} onRetry={() => undefined} onAttach={async () => undefined} />));
-    expect(host.textContent).toContain("#12");
-    expect(host.textContent).toContain("Checks running · 1 of 2 done");
-    expect(host.textContent).toContain("feat/x");
-    const toggle = [...host.querySelectorAll("button")].find(button => /Show 2 checks/.test(button.textContent ?? ""))!;
-    act(() => toggle.click());
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(host.querySelectorAll("li").length).toBeGreaterThanOrEqual(2);
+describe("PullRequestGlyph", () => {
+  const draw = (value: SessionPullRequest) => act(() => root.render(<PullRequestGlyph pr={value} />));
+
+  it("draws an open PR as a ring of its checks, the running arc breathing", () => {
+    draw(pr());
+    const svg = host.querySelector("svg[data-pr-glyph]")!;
+    expect(svg.getAttribute("data-pr-glyph")).toBe("running");
+    expect(svg.querySelectorAll("circle").length).toBe(3);
+    expect(svg.querySelector(".github-check-live")).not.toBeNull();
   });
 
-  it("labels a stale snapshot and offers retry, never a fresh green", () => {
-    const onRetry = vi.fn();
-    act(() => root.render(<ChatPullRequestCards prs={[pr({ stale: true, error: "gh: offline", checks: { total: 1, queued: 0, inProgress: 0, passed: 1, failed: 0, skipped: 0, cancelled: 0 } })]} refreshing={false} onRetry={onRetry} onAttach={async () => undefined} />));
-    expect(host.textContent).toContain("last known");
-    const retry = [...host.querySelectorAll("button")].find(button => button.textContent?.includes("Retry"))!;
-    act(() => retry.click());
-    expect(onRetry).toHaveBeenCalled();
+  it("draws a dashed track before any check reports", () => {
+    draw(pr({ checks: { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 }, checkDetails: [] }));
+    expect(host.querySelectorAll("circle").length).toBe(1);
+    expect(host.querySelector("circle")!.getAttribute("class")).toContain("stroke-dasharray");
   });
 
-  it("renders nothing without PRs", () => {
-    act(() => root.render(<ChatPullRequestCards prs={[]} refreshing={false} onRetry={() => undefined} onAttach={async () => undefined} />));
-    expect(host.innerHTML).toBe("");
-  });
-
-  it("announces transitions but not repeat polls", () => {
-    const render = (value: SessionPullRequest) => act(() => root.render(<ChatPullRequestCards prs={[value]} refreshing={false} onRetry={() => undefined} onAttach={async () => undefined} />));
-    render(pr());
-    const live = () => host.querySelector("[aria-live]")!.textContent;
-    expect(live()).toBe("");
-    render(pr({ fetchedAt: new Date().toISOString() }));
-    expect(live()).toBe("");
-    render(pr({ checks: { total: 2, queued: 0, inProgress: 0, passed: 1, failed: 1, skipped: 0, cancelled: 0 } }));
-    expect(live()).toBe("Pull request #12: 1 check failing.");
-  });
-});
-
-describe("ChatPullRequestStrip", () => {
-  it("jumps to the card and hides while the card is on screen", () => {
-    const onJump = vi.fn();
-    act(() => root.render(<ChatPullRequestStrip prs={[pr(), pr({ number: 9 })]} hidden={false} onJump={onJump} />));
-    const button = host.querySelector("button")!;
-    expect(button.textContent).toContain("+1");
-    act(() => button.click());
-    expect(onJump).toHaveBeenCalled();
-    act(() => root.render(<ChatPullRequestStrip prs={[pr()]} hidden onJump={onJump} />));
-    expect(host.querySelector("button")).toBeNull();
+  it("turns a failing PR into a red circle-x and settled PRs into their GitHub marks", () => {
+    draw(pr({ checks: { total: 2, queued: 0, inProgress: 0, passed: 1, failed: 1, skipped: 0, cancelled: 0 } }));
+    expect(host.querySelector(".lucide-circle-x")!.getAttribute("class")).toContain("text-destructive");
+    draw(pr({ state: "merged" }));
+    expect(host.querySelector(".lucide-git-merge")!.getAttribute("class")).toContain("text-info");
+    draw(pr({ state: "closed" }));
+    expect(host.querySelector(".lucide-git-pull-request-closed")).not.toBeNull();
   });
 });
 

@@ -870,3 +870,338 @@ fn live_drawings() {
     assert_eq!(started_chats, ran, "every request must reach a real chat; a broken harness or wiring is a failure, not a skip");
     assert!(passed + 1 >= ran, "{passed}/{ran} behaved as asked; the gate is all but one");
 }
+
+// ----- drawing quality benchmark -----
+//
+// BRIDGE_DRAW_BENCH=1 BRIDGE_VISUALIZE_MCP_BIN=<target>/debug/bridged \
+//   BRIDGE_DRAW_BENCH_OUT=/tmp/draw-bench/after \
+//   cargo test -p bridge-core --lib notes::evals::live_drawing_quality -- --ignored --nocapture
+// node scripts/drawing-bench/score.mjs /tmp/draw-bench/after
+//
+// Fourteen drawing requests, typed as a person would, each sent to a real chat
+// with the notes tools. The test keeps every resulting scene with what the
+// request expects; `scripts/drawing-bench/score.mjs` completes each scene with
+// the real Excalidraw, renders it as the page shows it, and scores it: are the
+// asked-for parts and connections there, and can a person read it (labels
+// inside their boxes, nothing on top of anything, arrows not cutting through
+// boxes, text large enough once the drawing fits the page). Cases marked
+// holdout were written before any result was seen and are never used to tune
+// the tool; report them on their own. `BRIDGE_DRAW_BENCH_ONLY=ci-pipeline,...`
+// runs a subset; `BRIDGE_DRAW_BENCH_RUNS=2` repeats every case.
+
+/// One request: the page it runs on, what to ask, and what the drawing must hold.
+struct QualityCase {
+    id: &'static str,
+    holdout: bool,
+    page: &'static str,
+    ask: &'static str,
+    /// `seed` fills the page before the request (see `seed_quality_page`).
+    seed: &'static str,
+    /// What the scorer checks, as JSON: `nodes` (each a list of words, any of
+    /// which a shape's label may hold), `edges` (pairs of node indexes an arrow
+    /// or line must join, either way; -1 is any shape), `labels` (words the
+    /// drawing's text must hold somewhere), `stack` (node groups that must run
+    /// top to bottom), `distinct` (nodes that must differ in color), `keep`
+    /// (element ids of the person's drawing that must survive) and `drop`
+    /// (labels that must be gone).
+    expect: Value,
+    /// Which drawing on the page is the answer: the first (an edit) or the last.
+    target: &'static str,
+}
+
+fn quality_cases() -> Vec<QualityCase> {
+    use serde_json::json;
+    vec![
+        QualityCase {
+            id: "ci-pipeline",
+            holdout: false,
+            page: "Release",
+            seed: "text:How we ship.",
+            ask: "On my Release notes page, draw our CI pipeline: push to main, build, unit tests, integration tests, deploy to staging, smoke test, deploy to production.",
+            expect: json!({"nodes": [["push"], ["build"], ["unit"], ["integration"], ["staging"], ["smoke"], ["production", "prod"]], "edges": [[0, 1], [4, 5], [5, 6]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "login-flow",
+            holdout: false,
+            page: "Login",
+            seed: "text:Sign-in, as it should work.",
+            ask: "On my Login notes page, draw a flowchart of password login: the user enters email and password, we check the credentials. If they're wrong, show an error and let them try again, and after 5 failed tries lock the account for 15 minutes. If they're right, check whether 2FA is on: if it is, ask for the code, then open the dashboard; if not, go straight to the dashboard.",
+            expect: json!({"nodes": [["enter", "email"], ["credential", "valid", "correct"], ["error"], ["lock"], ["2fa", "two-factor", "two factor"], ["code"], ["dashboard"]], "edges": [[0, 1], [1, 2], [1, 4], [4, 6]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "architecture",
+            holdout: false,
+            page: "System",
+            seed: "text:Our system, end to end.",
+            ask: "Sketch our system architecture on my System notes page: a React web app and an iOS app both call an API gateway. The gateway routes to an auth service, an orders service and a search service. Orders writes to Postgres and publishes events to Kafka. A worker consumes Kafka, sends emails through SendGrid, and indexes into Elasticsearch, which the search service reads from.",
+            expect: json!({"nodes": [["react", "web"], ["ios"], ["gateway"], ["auth"], ["order"], ["search service", "search api", "search svc"], ["postgres"], ["kafka"], ["worker"], ["sendgrid"], ["elastic"]],
+                "edges": [[0, 2], [1, 2], [2, 3], [2, 4], [2, 5], [4, 6], [4, 7], [7, 8], [8, 9], [8, 10], [5, 10]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "order-states",
+            holdout: false,
+            page: "Orders",
+            seed: "text:How an order moves.",
+            ask: "On my Orders notes page, draw the state machine of an order. States: created, paid, shipped, delivered, cancelled, refunded. Created can become paid or cancelled; paid can become shipped or refunded; shipped becomes delivered; delivered can be refunded within 30 days.",
+            expect: json!({"nodes": [["created"], ["paid"], ["shipped"], ["delivered"], ["cancel"], ["refund"]], "edges": [[0, 1], [0, 4], [1, 2], [1, 5], [2, 3], [3, 5]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "org-chart",
+            holdout: false,
+            page: "Team",
+            seed: "text:Who works with whom.",
+            ask: "Draw our org chart on my Team notes page: Maya is CEO. Reporting to her are Raj (CTO), Lena (Head of Design) and Tom (Head of Sales). Raj manages Ana and Ben on backend and Chen on mobile. Lena manages Dee. Tom manages Eli and Fay.",
+            expect: json!({"nodes": [["maya"], ["raj"], ["lena"], ["tom"], ["ana"], ["ben"], ["chen"], ["dee"], ["eli"], ["fay"]],
+                "edges": [[0, 1], [0, 2], [0, 3], [1, 4], [1, 5], [1, 6], [2, 7], [3, 8], [3, 9]], "stack": [[0], [1, 2, 3], [4, 5, 6, 7, 8, 9]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "launch-mindmap",
+            holdout: false,
+            page: "Launch",
+            seed: "text:Launch plan.",
+            ask: "Make a mind map of my launch plan on my Launch notes page: marketing (blog post, Product Hunt, newsletter), pricing (free tier, $20 plan), docs (quickstart, API reference) and support (Discord, email).",
+            expect: json!({"nodes": [["launch"], ["marketing"], ["blog"], ["product hunt"], ["newsletter"], ["pricing"], ["free"], ["$20", "20"], ["docs"], ["quickstart"], ["api ref", "reference"], ["support"], ["discord"], ["email"]],
+                "edges": [[0, 1], [0, 5], [0, 8], [0, 11], [1, 2], [1, 3], [1, 4], [5, 6], [5, 7], [8, 9], [8, 10], [11, 12], [11, 13]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "oauth",
+            holdout: false,
+            page: "Google sign-in",
+            seed: "text:How Google sign-in works.",
+            ask: "On my Google sign-in notes page, draw how Google sign-in works between the browser, our app server and Google: the browser clicks Sign in, our server redirects to Google, the user consents, Google redirects back with a code, our server exchanges the code for tokens, then sets a session cookie. Label each arrow with the step.",
+            expect: json!({"nodes": [["browser"], ["server", "app"], ["google"]], "edges": [[0, 1], [1, 2]], "labels": [["sign in", "sign-in"], ["redirect"], ["consent"], ["code"], ["token"], ["cookie"]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "app-layers",
+            holdout: false,
+            page: "Desktop app",
+            seed: "text:How the desktop app is built.",
+            ask: "On my Desktop app notes page, draw the layers of our app from top to bottom: React UI, Tauri shell, bridge-core runtime, then adapters for Codex, Claude and OpenCode side by side, and the SQLite store at the bottom.",
+            expect: json!({"nodes": [["react"], ["tauri"], ["bridge-core", "runtime", "core"], ["codex"], ["claude"], ["opencode"], ["sqlite"]], "stack": [[0], [1], [2], [3, 4, 5], [6]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "roadmap",
+            holdout: false,
+            page: "Roadmap",
+            seed: "text:Q1.",
+            ask: "On my Roadmap notes page, draw the Q1 roadmap: in January we ship the beta (done), in February we add billing (in progress), in March we launch publicly (not started). Color each by status and add a legend.",
+            expect: json!({"nodes": [["beta"], ["billing"], ["launch", "public"]], "labels": [["done"], ["in progress"], ["not started"]], "distinct": [0, 1, 2]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "edit-architecture",
+            holdout: false,
+            page: "Architecture",
+            seed: "human-architecture",
+            ask: "In the drawing on my Architecture notes page, add a Redis cache between the API server and Postgres, and a background worker that reads from Postgres.",
+            expect: json!({"nodes": [["api"], ["postgres"], ["redis", "cache"], ["worker"]], "edges": [[0, 2], [2, 1], [3, 1]], "keep": ["web", "api", "db", "legacy", "note", "circle"]}),
+            target: "first",
+        },
+        QualityCase {
+            id: "data-pipeline",
+            holdout: true,
+            page: "Data",
+            seed: "text:Where our numbers come from.",
+            ask: "On my Data notes page, draw our data pipeline: four sources (Stripe, Salesforce, product events, support tickets) land in an S3 raw bucket. A Spark job cleans them into a staging area. dbt builds three marts from staging: finance, sales and product. Each mart feeds its own Looker dashboard. A nightly Airflow DAG triggers the Spark job and dbt.",
+            expect: json!({"nodes": [["stripe"], ["salesforce"], ["event"], ["ticket"], ["s3", "raw"], ["spark"], ["staging"], ["dbt"], ["finance"], ["sales mart", "sales"], ["product mart", "product"], ["looker", "dashboard"], ["airflow"]],
+                "edges": [[0, 4], [1, 4], [2, 4], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 11], [12, 5], [12, 7]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "db-decision",
+            holdout: true,
+            page: "Databases",
+            seed: "text:Which database to pick.",
+            ask: "On my Databases notes page, draw a decision tree for picking a database. First question: do you need transactions? If yes: do you need to scale writes across regions? Yes means CockroachDB, no means Postgres. If no transactions: is the data mostly documents? Yes means MongoDB; no means it is key-value, so Redis or DynamoDB.",
+            expect: json!({"nodes": [["transaction"], ["region", "scale"], ["cockroach"], ["postgres"], ["document"], ["mongo"], ["redis", "dynamo"]], "edges": [[0, 1], [1, 2], [1, 3], [0, 4], [4, 5], [4, 6]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "incident",
+            holdout: true,
+            page: "On-call",
+            seed: "text:When something breaks.",
+            ask: "On my On-call notes page, draw our incident response flow: an alert fires in PagerDuty, the on-call engineer acknowledges within 5 minutes or it escalates to the secondary, then they assess severity. SEV1 opens a war room and posts to the status page; SEV2 or lower goes to a ticket. Every incident ends with a postmortem.",
+            expect: json!({"nodes": [["alert", "pagerduty"], ["acknowledge", "ack"], ["escalat", "secondary"], ["severity", "assess"], ["war room"], ["status page"], ["ticket"], ["postmortem", "post-mortem"]], "edges": [[0, 1], [3, 4], [3, 6], [-1, 7]]}),
+            target: "last",
+        },
+        QualityCase {
+            id: "apply-markup",
+            holdout: true,
+            page: "Auth",
+            seed: "marked-up-reset-flow",
+            ask: "Apply my markup to the reset flow drawing on my Auth notes page.",
+            expect: json!({"nodes": [["request"], ["magic"], ["set new", "password"]], "edges": [[0, 1]], "keep": ["magic", "request", "set"], "drop": ["email sent"]}),
+            target: "first",
+        },
+    ]
+}
+
+/// The page a quality case runs on, filled as `seed` says.
+fn seed_quality_page(notes: &Arc<super::service::NotesService>, case: &QualityCase) -> (String, Option<Value>) {
+    use super::service::CreatePage;
+    let create = |content: String| notes.create(CreatePage { title: Some(case.page.into()), content: Some(content), ..Default::default() }, "person").unwrap().id;
+    if let Some(text) = case.seed.strip_prefix("text:") {
+        return (create(format!("{text}\n")), None);
+    }
+    match case.seed {
+        "human-architecture" => {
+            let elements = super::drawing::tests::human_scene()["elements"].as_array().unwrap().clone();
+            let id = create(page_with_drawing("Current backend, sketched in the planning call.", elements));
+            let seed = scene_of(&notes.read(&id).unwrap().markdown, 0);
+            (id, seed)
+        }
+        "marked-up-reset-flow" => {
+            // The same page `seed_draw_world` makes: an agent's reset flow, struck through and redrawn by the person.
+            let world = seed_draw_world(notes);
+            for note in notes.list(&Default::default()).unwrap() {
+                if note.id != world.auth {
+                    let _ = notes.delete(&note.id, "person");
+                }
+            }
+            let seed = scene_of(&notes.read(&world.auth).unwrap().markdown, 0);
+            (world.auth, seed)
+        }
+        other => panic!("no seed {other}"),
+    }
+}
+
+/// One chat turn, start to finish: what the agent said and which tools it ran.
+struct ChatRun {
+    answer: String,
+    tools: Vec<String>,
+    timed_out: bool,
+}
+
+fn run_chat(registry: &crate::adapters::AdapterRegistry, core: &Arc<crate::runtime::BridgeCore>, session: &str, cwd: &std::path::Path, model: Option<&str>, ask: &str, timeout: std::time::Duration) -> Result<ChatRun, String> {
+    use crate::adapters::{ShutdownReason, StartRequest};
+    use std::io::BufRead;
+    core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES(?1,'w','claude','eval','ready')", [session]).map_err(|error| error.to_string())?;
+    let cwd_text = cwd.to_string_lossy().to_string();
+    let started = registry
+        .start(
+            &harness(),
+            StartRequest {
+                session_id: Some(session),
+                cwd: &cwd_text,
+                model,
+                effort: None,
+                instructions: None,
+                write_mode: Some(crate::delegation::WriteMode::Full),
+                read_only_sandbox: None,
+                briefing: None,
+                interactive: true,
+                account: None,
+                on_progress: None,
+            },
+        )
+        .map_err(|error| format!("could not start a chat: {error}"))?;
+    let mut runtime = started.runtime;
+    runtime.send_turn(ask).map_err(|error| error.to_string())?;
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    let reader = started.reader;
+    std::thread::spawn(move || {
+        for line in reader.lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let mut run = ChatRun { answer: String::new(), tools: Vec::new(), timed_out: true };
+    'turn: loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(line) = receiver.recv_timeout(left) else { break };
+        let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+        for event in registry.normalize(&harness(), &value) {
+            if event.kind == "tool.started" {
+                run.tools.push(event.title.clone().unwrap_or_default());
+            }
+            if event.kind == "message.completed" && event.role.as_deref() == Some("assistant") {
+                run.answer.push_str(&event.text.clone().unwrap_or_default());
+                run.answer.push('\n');
+            }
+            if event.kind == "turn.completed" {
+                run.timed_out = false;
+                break 'turn;
+            }
+        }
+    }
+    runtime.stop(ShutdownReason::Completed);
+    Ok(run)
+}
+
+#[test]
+#[ignore = "runs real chats with tools"]
+fn live_drawing_quality() {
+    assert!(std::env::var_os("BRIDGE_DRAW_BENCH").is_some(), "set BRIDGE_DRAW_BENCH=1");
+    let out = std::path::PathBuf::from(std::env::var("BRIDGE_DRAW_BENCH_OUT").unwrap_or_else(|_| std::env::temp_dir().join("bridge-draw-bench").to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&out).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+    core.db
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/notes-eval','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/notes-eval/w','ready','now');",
+        )
+        .unwrap();
+    super::tool::install(&core);
+    super::tool::serve_listener().expect("the notes-tool listener");
+    let registry = registry();
+    let cwd = dir.path().join("cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let notes = core.notes.clone();
+    let model = std::env::var("BRIDGE_DRAW_BENCH_MODEL").ok();
+    let runs: usize = std::env::var("BRIDGE_DRAW_BENCH_RUNS").ok().and_then(|value| value.parse().ok()).unwrap_or(1);
+    let only: Option<Vec<String>> = std::env::var("BRIDGE_DRAW_BENCH_ONLY").ok().map(|value| value.split(',').map(str::to_owned).collect());
+
+    let (mut ran, mut drawn) = (0, 0);
+    for run in 0..runs {
+        for case in quality_cases() {
+            if only.as_ref().is_some_and(|only| !only.iter().any(|id| id == case.id)) {
+                continue;
+            }
+            ran += 1;
+            for note in notes.list(&Default::default()).unwrap() {
+                let _ = notes.delete(&note.id, "person");
+            }
+            let (page, seed) = seed_quality_page(&notes, &case);
+            let started = std::time::Instant::now();
+            let session = format!("draw-bench-{}-{run}", case.id);
+            let chat = run_chat(&registry, &core, &session, &cwd, model.as_deref(), case.ask, std::time::Duration::from_secs(420));
+            let seconds = started.elapsed().as_secs();
+            let markdown = notes.read(&page).map(|page| page.markdown).unwrap_or_default();
+            let fences = super::drawing::find(&markdown);
+            let number = if case.target == "first" { 0 } else { fences.len().saturating_sub(1) };
+            let scene = if fences.is_empty() { None } else { scene_of(&markdown, number) };
+            drawn += usize::from(scene.is_some());
+            let (answer, tools, timed_out, error) = match chat {
+                Ok(chat) => (chat.answer, chat.tools, chat.timed_out, None),
+                Err(error) => (String::new(), Vec::new(), false, Some(error)),
+            };
+            // A turn the account's usage limit refused says nothing about drawing.
+            assert!(!(tools.is_empty() && answer.contains("hit your") && answer.contains("limit")), "the account is rate limited ({}); rerun the bench once it resets", answer.trim());
+            let draw_calls = tools.iter().filter(|tool| tool.contains("notes_draw") || tool.contains("Draw in a note")).count();
+            let record = serde_json::json!({
+                "id": case.id, "run": run, "holdout": case.holdout, "ask": case.ask, "expect": case.expect,
+                "seed": seed, "scene": scene, "drawings": fences.len(), "description": scene.as_ref().map(super::drawing::describe),
+                "answer": answer, "tools": tools, "drawCalls": draw_calls, "seconds": seconds, "timedOut": timed_out, "error": error,
+                "harness": harness(), "model": model,
+            });
+            std::fs::write(out.join(format!("{}-{run}.json", case.id)), serde_json::to_string_pretty(&record).unwrap()).unwrap();
+            println!("{} {:<18} run {run} draw calls {draw_calls} tools {} {seconds}s{}", if scene.is_some() { "drawn" } else { "NONE " }, case.id, tools.len(), if timed_out { " TIMED OUT" } else { "" });
+        }
+    }
+    println!("\ndrawing bench on {}: {drawn}/{ran} cases left a drawing; scenes in {}", harness(), out.display());
+    assert_eq!(drawn, ran, "every request must leave a drawing; score the scenes with scripts/drawing-bench/score.mjs");
+}

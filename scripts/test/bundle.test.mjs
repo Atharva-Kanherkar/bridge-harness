@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, cpSync, chmodSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, cpSync, chmodSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ function bundleFixture(t) {
   cpSync(join(root, "src-tauri/icons/icon.icns"), join(contents, "Resources/icon.icns"));
   const sidecar = join(contents, "Resources/sidecar/claude-agent");
   mkdirSync(sidecar, { recursive: true });
-  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs", "usage.mjs", "package.json", "package-lock.json"])
+  for (const name of [...readdirSync(join(root, "sidecar/claude-agent")).filter((name) => name.endsWith(".mjs")), "package.json", "package-lock.json"])
     cpSync(join(root, "sidecar/claude-agent", name), join(sidecar, name));
   const sdk = join(sidecar, "node_modules/@anthropic-ai/claude-agent-sdk");
   mkdirSync(sdk, { recursive: true });
@@ -138,4 +138,16 @@ test("native Claude SDK must be present, executable, locked, and signed with JIT
   assert.match(out.stderr, /missing real executable Claude SDK binary/);
   symlinkSync("/bin/sh", native);
   assert.notEqual(run().status, 0, "native executable must be a real file inside the bundle");
+});
+
+
+test("app release gate requires every workflow sidecar dependency", (t) => {
+  for (const name of ["ask.mjs", "trust.mjs", "subagents.mjs"]) {
+    const { run, sidecar } = bundleFixture(t);
+    assert.equal(run().status, 0);
+    rmSync(join(sidecar, name));
+    const out = run();
+    assert.notEqual(out.status, 0, name);
+    assert.ok(out.stderr.includes(name), out.stderr);
+  }
 });

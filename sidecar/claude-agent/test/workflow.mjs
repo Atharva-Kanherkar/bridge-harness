@@ -2,6 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeWorkflowGate, briefingOptions } from "../briefing.mjs";
 import { createAskRelay } from "../ask.mjs";
+import { buildOptions } from "../options.mjs";
+import { permissionDecision, query } from "../../../testing/fixtures/workflow-e2e/fake-sdk.mjs";
+import { withChildPermissions, childPermissions } from "../subagents.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const servers = [
   { key: "claude.ai Slack", wire: "claude_ai_Slack", read: true, write: "ask" },
@@ -54,6 +60,67 @@ test("workflow options never pre-approve, stay strict, and reach only granted se
   assert.equal(typeof options.canUseTool, "function");
 });
 
+test("worktree workflows retain user Bash allows and deny connectors and delegation before settings allows", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-worktree-"));
+  try {
+    mkdirSync(join(cwd, ".claude"));
+    const tool = "mcp__claude_ai_Slack__slack_send_message";
+    const settings = join(cwd, ".claude", "settings.json");
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: [tool, "mcp__*"] } }));
+    const user = join(cwd, "user-config");
+    mkdirSync(user);
+    writeFileSync(join(user, "settings.json"), JSON.stringify({ permissions: { allow: ["mcp__*", "Task", "Agent", "Bash(node:*)"] } }));
+    const options = buildOptions({
+      cwd, projectTrusted: true, writeMode: "Isolated",
+      plugins: ["plugin-with-connectors"],
+      mcpServers: { "claude.ai Slack": { type: "http" }, bridge: { type: "stdio" } },
+      briefing: { workflow: { servers: [], worktree: true } },
+    });
+    assert.equal(options.permissionMode, "acceptEdits");
+    assert.equal(options.allowedTools, undefined);
+    assert.deepEqual(options.settingSources, ["user"]);
+    assert.equal(options.skills, "all");
+    assert.deepEqual(options.plugins, []);
+    assert.deepEqual(options.mcpServers, {});
+    assert.equal(options.strictMcpConfig, true);
+    assert.deepEqual(options.disallowedTools, ["mcp__*", "Task", "Agent"]);
+    options.env = { CLAUDE_CONFIG_DIR: user };
+
+    // Exercise the options after the sidecar adds its child-permission wrapper.
+    withChildPermissions(options, childPermissions(async () => {}, "root"));
+    const hooks = options.hooks.PreToolUse.flatMap((entry) => entry.hooks);
+    for (const agent_id of [undefined, "native-child"]) {
+      for (const tool_name of [tool, "mcp__bridge__settings_change", "mcp__unknown__read", "Task", "Agent"]) {
+        const results = await Promise.all(hooks.map((hook) => hook({ tool_name, agent_id })));
+        assert.ok(results.some((result) => result.hookSpecificOutput?.permissionDecision === "deny"), `${agent_id}: ${tool_name}`);
+      }
+    }
+    for (const tool_name of ["Read", "Write", "Edit", "Bash"]) {
+      const results = await Promise.all(hooks.map((hook) => hook({ tool_name })));
+      assert.ok(results.every((result) => result.hookSpecificOutput?.permissionDecision !== "deny"), tool_name);
+    }
+
+    // This negative control executes the connector without the worktree guards:
+    // user settings bypass the root canUseTool denial, as they do in the SDK.
+    const unguarded = { ...options, hooks: {}, disallowedTools: [] };
+    assert.equal((await permissionDecision(unguarded, tool)).behavior, "allow");
+    const projectOnly = { ...unguarded, settingSources: ["project"] };
+    assert.equal((await permissionDecision(projectOnly, tool)).behavior, "allow");
+    assert.equal((await permissionDecision({ ...projectOnly, settingSources: [] }, tool)).behavior, "deny");
+    assert.equal((await permissionDecision({ ...options, disallowedTools: [] }, tool)).behavior, "deny", "hook beats an inherited allow even without disallowedTools");
+
+    async function* prompt() { yield { message: { content: "E2E:edit" } }; }
+    for await (const _ of query({ prompt: prompt(), options })) {}
+    assert.equal(readFileSync(join(cwd, "tests-ran.txt"), "utf8"), "passed", "Bash actually executes the test command");
+    assert.equal(readFileSync(join(cwd, "CHANGELOG.md"), "utf8"), "- Workflows can edit code.\n");
+    assert.throws(() => readFileSync(join(cwd, "writes.log")), /ENOENT/);
+    for await (const _ of query({ prompt: prompt(), options: unguarded })) {}
+    assert.match(readFileSync(join(cwd, "writes.log"), "utf8"), /ungranted connector write/, "the same fake writes when authority guards are removed");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("the ask relay matches answers by id and denies what is pending when the session ends", async () => {
   const frames = [];
   const relay = createAskRelay(async (frame) => { frames.push(frame); });
@@ -89,4 +156,18 @@ test("an interrupt denies what is waiting but later asks still go out", async ()
   assert.equal(relay.pendingCount, 1);
   relay.resolve({ type: "control_response", response: { request_id: frames.at(-1).request_id, response: { behavior: "allow" } } });
   assert.equal(await later, "allow");
+});
+
+
+test("workflow budgets reach the SDK and ordinary chats have no query ceilings", () => {
+  const base = { writeMode: "Isolated", briefing: { workflow: { servers: [], worktree: true, budget: { maxTurns: 24, costCeilingMicrousd: 12_345 } } } };
+  const options = buildOptions(base);
+  assert.equal(options.maxTurns, 24);
+  assert.equal(options.maxBudgetUsd, 0.012345);
+  const noCost = buildOptions({ ...base, briefing: { workflow: { ...base.briefing.workflow, budget: { maxTurns: 1, costCeilingMicrousd: null } } } });
+  assert.equal(noCost.maxTurns, 1);
+  assert.equal(noCost.maxBudgetUsd, undefined);
+  const ordinary = buildOptions({ writeMode: "Isolated" });
+  assert.equal(ordinary.maxBudgetUsd, undefined);
+  assert.equal(ordinary.maxTurns, undefined);
 });

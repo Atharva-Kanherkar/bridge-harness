@@ -417,7 +417,7 @@ fn draw(notes: &NotesService, actor: &str, args: &Value) -> Result<Value, ToolEr
         (number, scene, Some(fence.clone()))
     };
     if ops.is_empty() && !fresh {
-        return Err(bad("nothing to change: pass add, update or remove"));
+        return Err(bad("nothing to change: pass add, update, remove or layout"));
     }
     let applied = drawing::apply(&mut scene, &ops).map_err(bad)?;
     let body = drawing::serialize(&scene);
@@ -435,11 +435,16 @@ fn draw(notes: &NotesService, actor: &str, args: &Value) -> Result<Value, ToolEr
     let result = notes
         .edit(EditPage { id: id.clone(), base_seq: Some(page.note.seq), text: Some(text), ..Default::default() }, actor)
         .map_err(service_error)?;
+    // The agent's own check: what a person would see wrong, and how large
+    // the text shows on the page. It fixes these before it answers.
+    let report = drawing::check(&scene);
     Ok(json!({
         "page": summary(&result.note),
         "drawing": number,
         "added": applied.added, "updated": applied.updated, "removed": applied.removed,
         "description": drawing::describe(&scene),
+        "problems": report.problems,
+        "onThePage": report.text_px.map(|px| format!("{}×{} px; its smallest text shows at {px} px once the page fits it", report.width, report.height)),
         "warnings": result.warnings,
     }))
 }

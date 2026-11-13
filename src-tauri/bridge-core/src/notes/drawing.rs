@@ -21,15 +21,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{json, Map, Value};
 
+use super::drawing_check as check;
+use super::drawing_layout::{self as layout, Direction};
+
 pub const FENCE: &str = "excalidraw";
 /// Lines one drawing's description may take before it is clipped.
 const MAX_LINES: usize = 160;
 const LABEL_CHARS: usize = 160;
-const DEFAULT_WIDTH: f64 = 180.0;
-const DEFAULT_HEIGHT: f64 = 80.0;
-/// Room between laid-out shapes, and between a shape and an arrow's end.
-const COLUMN_GAP: f64 = 90.0;
-const ROW_GAP: f64 = 60.0;
+/// Room between a shape and an arrow's end.
 const ARROW_GAP: f64 = 6.0;
 /// The most elements one `notes_draw` call may add, change or remove.
 pub const MAX_OPS: usize = 80;
@@ -169,16 +168,24 @@ pub fn for_agent(markdown: &str) -> (String, Vec<Value>) {
 
 // ----- reading a scene -----
 
-fn num(value: &Value, key: &str) -> f64 {
+pub(super) fn num(value: &Value, key: &str) -> f64 {
     value.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+pub(super) fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
-fn is_full(element: &Value) -> bool {
+/// Whether the editor completed this element (a person drew it, or edited
+/// the drawing since): it carries a `version`. An agent's skeleton does not.
+pub(super) fn is_full(element: &Value) -> bool {
     element.get("version").is_some_and(Value::is_number)
+}
+
+pub use super::drawing_check::{check, Report};
+
+pub(super) fn live_elements(scene: &Value) -> Vec<&Value> {
+    live(scene)
 }
 
 fn live(scene: &Value) -> Vec<&Value> {
@@ -202,24 +209,24 @@ fn one_line(text: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Box2 {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Box2 {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 impl Box2 {
-    fn of(element: &Value) -> Self {
+    pub fn of(element: &Value) -> Self {
         let (x, y, w, h) = (num(element, "x"), num(element, "y"), num(element, "width"), num(element, "height"));
         // Excalidraw allows a negative width or height on some elements.
         Box2 { x: x.min(x + w), y: y.min(y + h), w: w.abs(), h: h.abs() }
     }
-    fn center(&self) -> (f64, f64) {
+    pub fn center(&self) -> (f64, f64) {
         (self.x + self.w / 2.0, self.y + self.h / 2.0)
     }
-    fn contains(&self, (px, py): (f64, f64), slack: f64) -> bool {
+    pub fn contains(&self, (px, py): (f64, f64), slack: f64) -> bool {
         px >= self.x - slack && px <= self.x + self.w + slack && py >= self.y - slack && py <= self.y + self.h + slack
     }
     fn area(&self) -> f64 {
@@ -228,7 +235,7 @@ impl Box2 {
 }
 
 /// A linear element's or a freehand stroke's points, in scene coordinates.
-fn absolute_points(element: &Value) -> Vec<(f64, f64)> {
+pub(super) fn absolute_points(element: &Value) -> Vec<(f64, f64)> {
     let (x, y) = (num(element, "x"), num(element, "y"));
     element["points"]
         .as_array()
@@ -534,6 +541,9 @@ pub struct Ops {
     pub add: Vec<Value>,
     pub update: Vec<Value>,
     pub remove: Vec<String>,
+    /// Place every shape an agent drew again: in a direction, or, inner
+    /// `None`, whichever reads best on the page.
+    pub layout: Option<Option<Direction>>,
 }
 
 impl Ops {
@@ -550,7 +560,14 @@ impl Ops {
             Some(Value::Array(items)) => items.iter().map(|item| item.as_str().map(str::to_owned).ok_or("remove must be a list of element ids")).collect::<Result<_, _>>()?,
             Some(_) => return Err("remove must be a list of element ids".into()),
         };
-        let ops = Ops { add: list("add")?, update: list("update")?, remove };
+        let layout = match args.get("layout") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(Direction::parse(value).ok_or("layout is auto, right or down")?),
+            Some(Value::Bool(true)) => Some(None),
+            Some(Value::Bool(false)) => None,
+            Some(_) => return Err("layout is auto, right or down".into()),
+        };
+        let ops = Ops { add: list("add")?, update: list("update")?, remove, layout };
         if ops.add.len() + ops.update.len() + ops.remove.len() > MAX_OPS {
             return Err(format!("one call changes at most {MAX_OPS} elements; split the drawing into several calls"));
         }
@@ -558,7 +575,7 @@ impl Ops {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.add.is_empty() && self.update.is_empty() && self.remove.is_empty()
+        self.add.is_empty() && self.update.is_empty() && self.remove.is_empty() && self.layout.is_none()
     }
 }
 
@@ -583,12 +600,6 @@ fn label_text(op: &Value) -> Option<String> {
     str_of(op, "label").or_else(|| str_of(op, "text")).map(str::to_owned)
 }
 
-/// A width that fits a label of this many characters at the default size.
-fn fitted_width(label: Option<&str>) -> f64 {
-    let longest = label.map(|text| text.lines().map(|line| line.chars().count()).max().unwrap_or(0)).unwrap_or(0) as f64;
-    DEFAULT_WIDTH.max((longest * 11.0 + 40.0).min(420.0))
-}
-
 /// Style an agent asked for, in Excalidraw's fields.
 fn apply_style(element: &mut Map<String, Value>, op: &Value) -> Result<(), String> {
     if let Some(color) = str_of(op, "color") {
@@ -611,38 +622,6 @@ fn palette_names() -> String {
 
 fn position(op: &Value) -> Option<(f64, f64)> {
     Some((op.get("x")?.as_f64()?, op.get("y")?.as_f64()?))
-}
-
-/// Where an arrow between two boxes runs: from the edge of one to the edge of
-/// the other, along the line between their centers, a little short of both.
-fn arrow_geometry(from: Box2, to: Box2) -> (f64, f64, f64, f64) {
-    let (a, b) = (from.center(), to.center());
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let exit = |boxed: Box2, sign: f64| -> f64 {
-        // How far along the center line the edge of `boxed` lies.
-        let tx = if dx.abs() > f64::EPSILON { (boxed.w / 2.0) / dx.abs() } else { f64::INFINITY };
-        let ty = if dy.abs() > f64::EPSILON { (boxed.h / 2.0) / dy.abs() } else { f64::INFINITY };
-        let t = tx.min(ty);
-        let length = (dx * dx + dy * dy).sqrt().max(1.0);
-        sign * (t + ARROW_GAP / length)
-    };
-    if dx.abs() < f64::EPSILON && dy.abs() < f64::EPSILON {
-        return (a.0, a.1, 0.0, 0.0);
-    }
-    let start_t = exit(from, 1.0).min(0.45);
-    let end_t = 1.0 + exit(to, -1.0).max(-0.45);
-    let (sx, sy) = (a.0 + dx * start_t, a.1 + dy * start_t);
-    let (ex, ey) = (a.0 + dx * end_t, a.1 + dy * end_t);
-    (sx, sy, ex - sx, ey - sy)
-}
-
-fn route(arrow: &mut Map<String, Value>, from: Box2, to: Box2) {
-    let (x, y, dx, dy) = arrow_geometry(from, to);
-    arrow.insert("x".into(), json!(x.round()));
-    arrow.insert("y".into(), json!(y.round()));
-    arrow.insert("width".into(), json!(dx.abs().round()));
-    arrow.insert("height".into(), json!(dy.abs().round()));
-    arrow.insert("points".into(), json!([[0, 0], [dx.round(), dy.round()]]));
 }
 
 /// The fields an element keeps when it goes back to being a skeleton: the
@@ -758,6 +737,20 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
                 }
             }
         }
+        // A new label the shape's box cannot hold grows the box, as the editor
+        // would, and its arrows follow.
+        // A size the agent gives is kept unless the label would not fit, as on add.
+        if relabel_fits_kind(&kind) && !is_full(&Value::Object(next.clone())) {
+            if let Some(text) = next.get("label").and_then(|label| str_of(label, "text")) {
+                let (fit_w, fit_h) = layout::fit_shape(&kind, Some(text));
+                let (w, h) = (next.get("width").and_then(Value::as_f64).unwrap_or(0.0), next.get("height").and_then(Value::as_f64).unwrap_or(0.0));
+                if fit_w > w || fit_h > h {
+                    next.insert("width".into(), json!(w.max(fit_w)));
+                    next.insert("height".into(), json!(h.max(fit_h)));
+                    moved.insert(id.clone());
+                }
+            }
+        }
         apply_style(&mut next, op)?;
         // A demoted container lost its bound text; drop the old one.
         if next.contains_key("label") && current.get("label").is_none() {
@@ -791,95 +784,260 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
         }
     }
 
-    // Lay out shapes that came without a position: a column per step along
-    // the new arrows, below everything already drawn.
-    let floor = elements.iter().filter(|e| !index.is_bound_text(e)).map(|e| {
-        let b = Box2::of(e);
-        b.y + b.h
-    }).fold(f64::NEG_INFINITY, f64::max);
-    let left = elements.iter().map(|e| Box2::of(e).x).fold(f64::INFINITY, f64::min);
-    let (origin_x, origin_y) = (if left.is_finite() { left } else { 0.0 }, if floor.is_finite() { floor + ROW_GAP * 1.5 } else { 0.0 });
-    let unplaced: Vec<&str> = added_shapes.iter().filter(|(_, op)| position(op).is_none()).map(|(id, _)| id.as_str()).collect();
-    let mut depth: HashMap<&str, usize> = unplaced.iter().map(|id| (*id, 0)).collect();
-    for _ in 0..unplaced.len() {
-        for link in &added_links {
-            if let (Some(from), Some(to)) = (str_of(link, "from"), str_of(link, "to")) {
-                if let (Some(&d), true) = (depth.get(from), depth.contains_key(to)) {
-                    if depth[to] < d + 1 && d + 1 < unplaced.len() {
-                        depth.insert(to, d + 1);
-                    }
-                }
-            }
-        }
-    }
-    let mut row_in_column: HashMap<usize, usize> = HashMap::new();
-    let mut boxes: HashMap<String, Box2> = elements.iter().filter_map(|e| Some((str_of(e, "id")?.to_owned(), Box2::of(e)))).collect();
-    let mut new_shapes: Vec<Value> = Vec::new();
+    // New shapes, each sized so its label fits the way the editor will wrap
+    // it; a size the agent gave is kept unless the label would not fit.
+    let mut placed_by_agent: HashSet<String> = HashSet::new();
     for (id, op) in &added_shapes {
         let kind = str_of(op, "type").unwrap_or("rectangle");
         let label = label_text(op);
         let mut element = Map::new();
         element.insert("type".into(), json!(kind));
         element.insert("id".into(), json!(id));
-        let (width, height) = if kind == "text" {
-            (op.get("width").and_then(Value::as_f64), op.get("height").and_then(Value::as_f64))
-        } else {
-            (Some(op.get("width").and_then(Value::as_f64).unwrap_or_else(|| fitted_width(label.as_deref()))), Some(op.get("height").and_then(Value::as_f64).unwrap_or(DEFAULT_HEIGHT)))
-        };
-        let (x, y) = position(op).unwrap_or_else(|| {
-            let column = depth.get(id.as_str()).copied().unwrap_or(0);
-            let row = row_in_column.entry(column).or_default();
-            let place = (origin_x + column as f64 * (DEFAULT_WIDTH + COLUMN_GAP + 40.0), origin_y + *row as f64 * (DEFAULT_HEIGHT + ROW_GAP));
-            *row += 1;
-            place
-        });
+        let (x, y) = position(op).unwrap_or((0.0, 0.0));
+        if position(op).is_some() {
+            placed_by_agent.insert(id.clone());
+        }
         element.insert("x".into(), json!(x));
         element.insert("y".into(), json!(y));
-        if let Some(width) = width {
-            element.insert("width".into(), json!(width));
-        }
-        if let Some(height) = height {
-            element.insert("height".into(), json!(height));
-        }
         if kind == "text" {
             let text = label.clone().ok_or_else(|| format!("text {id} needs its text"))?;
             element.insert("text".into(), json!(text));
-            element.insert("fontSize".into(), json!(op.get("fontSize").and_then(Value::as_f64).unwrap_or(20.0)));
-            // A rough box until the editor measures it, so layout and the
-            // description have something to go on.
-            let lines = text.lines().count().max(1) as f64;
-            let longest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
-            boxes.insert(id.clone(), Box2 { x, y, w: width.unwrap_or(longest * 10.0), h: height.unwrap_or(lines * 25.0) });
+            element.insert("fontSize".into(), json!(op.get("fontSize").and_then(Value::as_f64).unwrap_or(layout::LABEL_FONT)));
         } else {
+            let (fit_w, fit_h) = layout::fit_shape(kind, label.as_deref());
+            let width = op.get("width").and_then(Value::as_f64).map_or(fit_w, |w| w.max(fit_w));
+            let height = op.get("height").and_then(Value::as_f64).map_or(fit_h, |h| h.max(fit_h));
+            element.insert("width".into(), json!(width));
+            element.insert("height".into(), json!(height));
             if let Some(label) = &label {
                 element.insert("label".into(), json!({"text": label}));
             }
             if kind != "diamond" {
                 element.insert("roundness".into(), json!({"type": 3}));
             }
-            boxes.insert(id.clone(), Box2 { x, y, w: width.unwrap_or(DEFAULT_WIDTH), h: height.unwrap_or(DEFAULT_HEIGHT) });
         }
         apply_style(&mut element, op)?;
-        new_shapes.push(Value::Object(element));
+        elements.push(Value::Object(element));
         applied.added.push(id.clone());
     }
 
-    // Arrows, routed between their ends' boxes, and any old arrow on a shape
-    // that moved rerouted.
-    let mut new_links: Vec<Value> = Vec::new();
+    // Every link the drawing will hold, old and new, by the ids it joins.
+    struct Link {
+        id: String,
+        from: String,
+        to: String,
+        label: Option<(f64, f64)>,
+    }
+    let mut links: Vec<Link> = Vec::new();
+    for element in &elements {
+        if !is_linear(str_of(element, "type").unwrap_or("")) {
+            continue;
+        }
+        let ends = (link_end(element, "start"), link_end(element, "end"));
+        if let (Some(from), Some(to)) = ends {
+            let id = str_of(element, "id").unwrap_or_default().to_owned();
+            let label = index.bound_text.get(id.as_str()).map(|text| (*text, 20.0)).or_else(|| element.get("label").and_then(|l| Some((str_of(l, "text")?, l.get("fontSize").and_then(Value::as_f64).unwrap_or(20.0)))));
+            links.push(Link { id, from, to, label: label.map(|(text, size)| layout::arrow_label_size(text, 0.0, size)) });
+        }
+    }
     for op in &added_links {
         let kind = str_of(op, "type").unwrap_or("arrow");
         let id = str_of(op, "id").unwrap_or_default().to_owned();
-        let (from, to) = (str_of(op, "from"), str_of(op, "to"));
-        let (Some(from), Some(to)) = (from, to) else {
+        let (Some(from), Some(to)) = (str_of(op, "from"), str_of(op, "to")) else {
             return Err(format!("{kind} {id} needs from and to: the ids of the elements it joins"));
         };
-        let from_box = *boxes.get(from).ok_or_else(|| format!("{kind} {id} starts at {from}, which is not in this drawing"))?;
-        let to_box = *boxes.get(to).ok_or_else(|| format!("{kind} {id} ends at {to}, which is not in this drawing"))?;
+        let exists = |end: &str| elements.iter().any(|e| str_of(e, "id") == Some(end) && !is_linear(str_of(e, "type").unwrap_or("")) && !index.is_bound_text(e));
+        if !exists(from) {
+            return Err(format!("{kind} {id} starts at {from}, which is not in this drawing"));
+        }
+        if !exists(to) {
+            return Err(format!("{kind} {id} ends at {to}, which is not in this drawing"));
+        }
+        let label = label_text(op).map(|text| layout::arrow_label_size(&text, 0.0, layout::ARROW_LABEL_FONT));
+        links.push(Link { id, from: from.to_owned(), to: to.to_owned(), label });
+    }
+
+    // What the layout places: new shapes that came without a position and,
+    // when the call asks for layout, every shape an agent drew. What the
+    // person drew never moves.
+    let placeable = |e: &Value| matches!(str_of(e, "type"), Some("rectangle" | "ellipse" | "diamond" | "text")) && !is_full(e) && !index.is_bound_text(e) && str_of(e, "containerId").is_none();
+    let added_ids: HashSet<&str> = added_shapes.iter().map(|(id, _)| id.as_str()).collect();
+    let free: Vec<String> = elements
+        .iter()
+        .filter(|e| placeable(e))
+        .filter_map(|e| str_of(e, "id"))
+        .filter(|id| (added_ids.contains(id) && !placed_by_agent.contains(*id)) || ops.layout.is_some())
+        .map(str::to_owned)
+        .collect();
+    let mut bends: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
+    if !free.is_empty() {
+        let slot: HashMap<&str, usize> = free.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let size_of = |id: &str| elements.iter().find(|e| str_of(e, "id") == Some(id)).map(|e| {
+            let b = check::rendered_box(e);
+            (b.w, b.h)
+        }).unwrap_or((layout::MIN_WIDTH, layout::MIN_HEIGHT));
+        let inner: Vec<(usize, usize, usize)> = links.iter().enumerate().filter_map(|(k, link)| Some((k, *slot.get(link.from.as_str())?, *slot.get(link.to.as_str())?))).collect();
+        let linked: HashSet<usize> = links.iter().flat_map(|link| [slot.get(link.from.as_str()), slot.get(link.to.as_str())]).flatten().copied().collect();
+        // Fixed things the placed shapes must keep clear of.
+        let fixed_ids: HashSet<String> = elements.iter().filter_map(|e| str_of(e, "id")).filter(|id| !slot.contains_key(id)).map(str::to_owned).collect();
+        let mut obstacles: Vec<Box2> = Vec::new();
+        let mut walls: Vec<((f64, f64), (f64, f64))> = Vec::new();
+        for element in &elements {
+            let id = str_of(element, "id").unwrap_or("");
+            let kind = str_of(element, "type").unwrap_or("");
+            if slot.contains_key(id) {
+                continue;
+            }
+            if is_linear(kind) {
+                let ends = (link_end(element, "start"), link_end(element, "end"));
+                if [&ends.0, &ends.1].iter().any(|end| end.as_deref().is_some_and(|end| slot.contains_key(end))) {
+                    continue;
+                }
+                let points = absolute_points(element);
+                walls.extend(points.windows(2).map(|pair| (pair[0], pair[1])));
+                if let Some(text) = index.bound_text.get(id).and_then(|_| elements.iter().find(|e| str_of(e, "containerId") == Some(id))) {
+                    obstacles.push(Box2::of(text));
+                }
+            } else if kind == "freedraw" {
+                if let Some(b) = points_box(&absolute_points(element)) {
+                    obstacles.push(b);
+                }
+            } else if !index.is_bound_text(element) {
+                obstacles.push(check::rendered_box(element));
+            }
+        }
+        let content = |boxes: &[Box2]| -> Option<Box2> {
+            let mut iter = boxes.iter();
+            let first = *iter.next()?;
+            Some(iter.fold(first, |acc, b| {
+                let (x0, y0) = (acc.x.min(b.x), acc.y.min(b.y));
+                let (x1, y1) = ((acc.x + acc.w).max(b.x + b.w), (acc.y + acc.h).max(b.y + b.h));
+                Box2 { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+            }))
+        };
+        let mut placed: HashMap<usize, Box2> = HashMap::new();
+        let direction = ops.layout.flatten();
+        let pairs: Vec<(usize, usize)> = inner.iter().map(|(_, a, b)| (*a, *b)).collect();
+        for group in layout::components(free.len(), &pairs) {
+            if group.len() == 1 && !linked.contains(&group[0]) {
+                continue;
+            }
+            let local: HashMap<usize, usize> = group.iter().enumerate().map(|(i, node)| (*node, i)).collect();
+            let edges: Vec<(usize, usize, usize)> = inner.iter().filter(|(_, a, _)| local.contains_key(a)).map(|(k, a, b)| (*k, local[a], local[b])).collect();
+            let uniform = group.iter().map(|node| elements.iter().any(|e| str_of(e, "id") == Some(free[*node].as_str()) && str_of(e, "type") == Some("rectangle"))).collect();
+            let graph = layout::Graph { sizes: group.iter().map(|node| size_of(&free[*node])).collect(), edges: edges.iter().map(|(k, a, b)| (*a, *b, links[*k].label)).collect(), uniform };
+            let arranged = layout::arrange(&graph, direction);
+            let block: Vec<Box2> = group.iter().enumerate().map(|(i, _)| Box2 { x: arranged.positions[i].0, y: arranged.positions[i].1, w: arranged.sizes[i].0, h: arranged.sizes[i].1 }).collect();
+            // Links from this group to shapes that stay where they are.
+            let anchors: Vec<(usize, Box2)> = links
+                .iter()
+                .filter_map(|link| {
+                    let (inside, outside) = match (local.get(slot.get(link.from.as_str())?), local.get(slot.get(link.to.as_str()).unwrap_or(&usize::MAX))) {
+                        (Some(i), None) => (*i, &link.to),
+                        _ => return None,
+                    };
+                    Some((inside, outside))
+                })
+                .chain(links.iter().filter_map(|link| {
+                    let i = *local.get(slot.get(link.to.as_str())?)?;
+                    (!slot.get(link.from.as_str()).is_some_and(|from| local.contains_key(from))).then_some((i, &link.from))
+                }))
+                .filter(|(_, other)| fixed_ids.contains(other.as_str()))
+                .filter_map(|(i, other)| Some((i, check::rendered_box(elements.iter().find(|e| str_of(e, "id") == Some(other.as_str()))?))))
+                .collect();
+            let taken_now: Vec<Box2> = obstacles.iter().copied().chain(placed.values().copied()).collect();
+            let offset = match content(&taken_now) {
+                None => (0.0, 0.0),
+                Some(around) if anchors.is_empty() => (around.x, around.y + around.h + layout::RANK_GAP),
+                Some(around) => {
+                    let n = anchors.len() as f64;
+                    let (tx, ty) = anchors.iter().fold((0.0, 0.0), |(sx, sy), (i, fixed)| {
+                        let (fx, fy) = fixed.center();
+                        let (bx, by) = block[*i].center();
+                        (sx + (fx - bx) / n, sy + (fy - by) / n)
+                    });
+                    free_spot(&block, (tx, ty), &taken_now, &walls, &anchors).unwrap_or((around.x, around.y + around.h + layout::RANK_GAP))
+                }
+            };
+            for (i, node) in group.iter().enumerate() {
+                placed.insert(*node, Box2 { x: (block[i].x + offset.0).round(), y: (block[i].y + offset.1).round(), w: block[i].w, h: block[i].h });
+            }
+            for (j, (k, _, _)) in edges.iter().enumerate() {
+                if !arranged.bends[j].is_empty() {
+                    bends.insert(links[*k].id.clone(), arranged.bends[j].iter().map(|(x, y)| ((x + offset.0).round(), (y + offset.1).round())).collect());
+                }
+            }
+        }
+        // Shapes joined to nothing: a title above the drawing, the rest in a
+        // row beneath it.
+        let lone: Vec<usize> = (0..free.len()).filter(|node| !placed.contains_key(node) && !linked.contains(node)).collect();
+        let first_shape = added_shapes.iter().position(|(_, op)| str_of(op, "type") != Some("text")).unwrap_or(usize::MAX);
+        let is_title = |node: usize| {
+            let at = added_shapes.iter().position(|(id, _)| *id == free[node]);
+            elements.iter().any(|e| str_of(e, "id") == Some(free[node].as_str()) && str_of(e, "type") == Some("text")) && at.is_some_and(|at| at < first_shape)
+        };
+        let all_now: Vec<Box2> = obstacles.iter().copied().chain(placed.values().copied()).collect();
+        let around = content(&all_now);
+        let (left, mut top) = around.map_or((0.0, 0.0), |b| (b.x, b.y));
+        for node in lone.iter().copied().filter(|node| is_title(*node)).collect::<Vec<_>>().into_iter().rev() {
+            let (w, h) = size_of(&free[node]);
+            top -= h + 24.0;
+            placed.insert(node, Box2 { x: left, y: top, w, h });
+        }
+        let row_width = around.map_or(600.0, |b| b.w.max(600.0));
+        let (mut x, mut y, mut row_h) = (left, around.map_or(0.0, |b| b.y + b.h + layout::RANK_GAP), 0.0f64);
+        for node in lone.into_iter().filter(|node| !is_title(*node)) {
+            let (w, h) = size_of(&free[node]);
+            if x > left && x + w > left + row_width {
+                x = left;
+                y += row_h + layout::NODE_GAP;
+                row_h = 0.0;
+            }
+            placed.insert(node, Box2 { x, y, w, h });
+            x += w + layout::NODE_GAP;
+            row_h = row_h.max(h);
+        }
+        for (node, b) in placed {
+            let id = &free[node];
+            if let Some(element) = elements.iter_mut().find(|e| str_of(e, "id") == Some(id.as_str())) {
+                let moved_now = num(element, "x") != b.x || num(element, "y") != b.y;
+                element["x"] = json!(b.x);
+                element["y"] = json!(b.y);
+                // A box widened to match its rank.
+                if str_of(element, "type") == Some("rectangle") && (b.w > num(element, "width") || b.h > num(element, "height")) {
+                    element["width"] = json!(b.w);
+                    element["height"] = json!(b.h);
+                }
+                if moved_now && !added_ids.contains(id.as_str()) {
+                    moved.insert(id.clone());
+                }
+            }
+        }
+    }
+
+    // Boxes as the editor will draw them, for routing.
+    let boxes: HashMap<String, (Box2, String)> = elements
+        .iter()
+        .filter(|e| !is_linear(str_of(e, "type").unwrap_or("")) && !index.is_bound_text(e))
+        .filter_map(|e| Some((str_of(e, "id")?.to_owned(), (check::rendered_box(e), str_of(e, "type").unwrap_or("").to_owned()))))
+        .collect();
+    let route_between = |link_id: &str, from: &str, to: &str| -> Option<Vec<(f64, f64)>> {
+        let (from_box, from_kind) = boxes.get(from)?;
+        let (to_box, to_kind) = boxes.get(to)?;
+        let others: Vec<Box2> = boxes.iter().filter(|(id, _)| id.as_str() != from && id.as_str() != to).map(|(_, (b, _))| *b).collect();
+        Some(route(*from_box, from_kind, *to_box, to_kind, bends.get(link_id).map(Vec::as_slice).unwrap_or(&[]), &others))
+    };
+
+    // Arrows, routed between their ends, and any old arrow on a shape that
+    // moved rerouted.
+    for op in &added_links {
+        let kind = str_of(op, "type").unwrap_or("arrow");
+        let id = str_of(op, "id").unwrap_or_default().to_owned();
+        let (from, to) = (str_of(op, "from").unwrap_or_default(), str_of(op, "to").unwrap_or_default());
         let mut element = Map::new();
         element.insert("type".into(), json!(kind));
         element.insert("id".into(), json!(id));
-        route(&mut element, from_box, to_box);
+        set_points(&mut element, &route_between(&id, from, to).unwrap_or_default());
         element.insert("start".into(), json!({"id": from}));
         element.insert("end".into(), json!({"id": to}));
         if kind == "arrow" {
@@ -889,30 +1047,31 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
             }
         }
         if let Some(label) = label_text(op) {
-            element.insert("label".into(), json!({"text": label}));
+            element.insert("label".into(), json!({"text": label, "fontSize": layout::ARROW_LABEL_FONT}));
         }
         apply_style(&mut element, op)?;
-        new_links.push(Value::Object(element));
+        elements.push(Value::Object(element));
         applied.added.push(id);
     }
     if !moved.is_empty() {
+        let added_link_ids: HashSet<&str> = added_links.iter().filter_map(|op| str_of(op, "id")).collect();
         for element in elements.iter_mut() {
             let kind = str_of(element, "type").unwrap_or("").to_owned();
-            if !is_linear(&kind) {
+            let id = str_of(element, "id").unwrap_or("").to_owned();
+            if !is_linear(&kind) || added_link_ids.contains(id.as_str()) {
                 continue;
             }
-            let ends = (index.end_of(element, "start", None), index.end_of(element, "end", None));
-            let (Some(from), Some(to)) = ends else { continue };
+            let (Some(from), Some(to)) = (link_end(element, "start"), link_end(element, "end")) else { continue };
             if !moved.contains(&from) && !moved.contains(&to) {
                 continue;
             }
-            let (Some(from_box), Some(to_box)) = (boxes.get(&from).copied(), boxes.get(&to).copied()) else { continue };
+            let Some(points) = route_between(&id, &from, &to) else { continue };
             let mut next = demote(element, &index);
             // Keep the label the editor bound to it.
-            if let Some(text) = index.bound_text.get(str_of(element, "id").unwrap_or("")) {
+            if let Some(text) = index.bound_text.get(id.as_str()) {
                 next.insert("label".into(), json!({"text": text}));
             }
-            route(&mut next, from_box, to_box);
+            set_points(&mut next, &points);
             next.insert("start".into(), json!({"id": from}));
             next.insert("end".into(), json!({"id": to}));
             *element = Value::Object(next);
@@ -921,10 +1080,123 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
         let relabeled: HashSet<String> = elements.iter().filter(|e| e.get("label").is_some() && !is_full(e)).filter_map(|e| str_of(e, "id").map(str::to_owned)).collect();
         elements.retain(|e| !(str_of(e, "type") == Some("text") && str_of(e, "containerId").is_some_and(|c| relabeled.contains(c))));
     }
-    elements.extend(new_shapes);
-    elements.extend(new_links);
     scene["elements"] = Value::Array(elements);
     Ok(applied)
+}
+
+fn relabel_fits_kind(kind: &str) -> bool {
+    matches!(kind, "rectangle" | "ellipse" | "diamond")
+}
+
+/// The id a link's end is joined to: its binding, or a skeleton's `start`/`end`.
+fn link_end(element: &Value, which: &str) -> Option<String> {
+    let binding = if which == "start" { "startBinding" } else { "endBinding" };
+    element.get(binding).and_then(|b| str_of(b, "elementId")).or_else(|| element.get(which).and_then(|end| str_of(end, "id"))).map(str::to_owned)
+}
+
+/// The nearest offset from `target` at which `block` sits clear of everything
+/// already drawn, with room around it, and its links to `anchors` cross no
+/// shape. Searched outward in rings.
+fn free_spot(block: &[Box2], target: (f64, f64), taken: &[Box2], walls: &[((f64, f64), (f64, f64))], anchors: &[(usize, Box2)]) -> Option<(f64, f64)> {
+    const STEP: f64 = 20.0;
+    const RINGS: i32 = 60;
+    let clear = |dx: f64, dy: f64| {
+        let moved: Vec<Box2> = block.iter().map(|b| Box2 { x: b.x + dx, y: b.y + dy, w: b.w, h: b.h }).collect();
+        let room = |b: &Box2| Box2 { x: b.x - 24.0, y: b.y - 24.0, w: b.w + 48.0, h: b.h + 48.0 };
+        if moved.iter().any(|b| taken.iter().any(|t| check::overlaps(room(b), *t))) {
+            return false;
+        }
+        if moved.iter().any(|b| walls.iter().any(|(a, c)| check::segment_hits(*a, *c, room(b)))) {
+            return false;
+        }
+        anchors.iter().all(|(i, fixed)| {
+            let (a, c) = (moved[*i].center(), fixed.center());
+            taken.iter().filter(|t| !check::overlaps(**t, *fixed)).all(|t| !check::segment_hits(a, c, Box2 { x: t.x + 4.0, y: t.y + 4.0, w: (t.w - 8.0).max(0.0), h: (t.h - 8.0).max(0.0) }))
+        })
+    };
+    for ring in 0..=RINGS {
+        let mut candidates: Vec<(f64, f64)> = Vec::new();
+        if ring == 0 {
+            candidates.push((0.0, 0.0));
+        } else {
+            for i in -ring..=ring {
+                for (a, b) in [(i, -ring), (i, ring), (-ring, i), (ring, i)] {
+                    candidates.push((f64::from(a) * STEP, f64::from(b) * STEP));
+                }
+            }
+            candidates.sort_by(|a, b| (a.0.hypot(a.1)).total_cmp(&b.0.hypot(b.1)));
+            candidates.dedup();
+        }
+        for (dx, dy) in candidates {
+            if clear(target.0 + dx, target.1 + dy) {
+                return Some(((target.0 + dx).round(), (target.1 + dy).round()));
+            }
+        }
+    }
+    None
+}
+
+/// Where a link leaves a shape toward `toward`: on its outline (a diamond's
+/// and an ellipse's own, not their box's), a little outside it.
+fn exit(b: Box2, kind: &str, toward: (f64, f64)) -> (f64, f64) {
+    let (cx, cy) = b.center();
+    let (dx, dy) = (toward.0 - cx, toward.1 - cy);
+    let length = (dx * dx + dy * dy).sqrt();
+    if length < f64::EPSILON {
+        return (cx, cy);
+    }
+    let (hw, hh) = ((b.w / 2.0).max(1.0), (b.h / 2.0).max(1.0));
+    let t = match kind {
+        "diamond" => 1.0 / (dx.abs() / hw + dy.abs() / hh),
+        "ellipse" => 1.0 / ((dx / hw).powi(2) + (dy / hh).powi(2)).sqrt(),
+        _ => (hw / dx.abs().max(f64::EPSILON)).min(hh / dy.abs().max(f64::EPSILON)),
+    };
+    let t = (t + ARROW_GAP / length).min(0.49);
+    (cx + dx * t, cy + dy * t)
+}
+
+/// A link's points from one shape to another: through the layout's bends, or
+/// straight, or, when straight would cut through another shape, with one bend.
+fn route(from: Box2, from_kind: &str, to: Box2, to_kind: &str, bends: &[(f64, f64)], others: &[Box2]) -> Vec<(f64, f64)> {
+    if let (Some(first), Some(last)) = (bends.first(), bends.last()) {
+        let mut points = vec![exit(from, from_kind, *first)];
+        points.extend_from_slice(bends);
+        points.push(exit(to, to_kind, *last));
+        return points;
+    }
+    let straight = vec![exit(from, from_kind, to.center()), exit(to, to_kind, from.center())];
+    let blocked = |points: &[(f64, f64)]| {
+        others.iter().filter(|b| !b.contains(points[0], 0.0) && !b.contains(*points.last().unwrap(), 0.0)).any(|b| {
+            let inner = Box2 { x: b.x + 4.0, y: b.y + 4.0, w: (b.w - 8.0).max(0.0), h: (b.h - 8.0).max(0.0) };
+            points.windows(2).any(|pair| check::segment_hits(pair[0], pair[1], inner))
+        })
+    };
+    if !blocked(&straight) {
+        return straight;
+    }
+    for corner in [(to.center().0, from.center().1), (from.center().0, to.center().1)] {
+        if from.contains(corner, 0.0) || to.contains(corner, 0.0) {
+            continue;
+        }
+        let bent = vec![exit(from, from_kind, corner), corner, exit(to, to_kind, corner)];
+        if !blocked(&bent) {
+            return bent;
+        }
+    }
+    straight
+}
+
+/// A link's geometry from absolute points.
+fn set_points(arrow: &mut Map<String, Value>, points: &[(f64, f64)]) {
+    let Some(&(x, y)) = points.first() else { return };
+    let relative: Vec<Value> = points.iter().map(|(px, py)| json!([(px - x).round(), (py - y).round()])).collect();
+    let xs = points.iter().map(|p| p.0);
+    let ys = points.iter().map(|p| p.1);
+    arrow.insert("x".into(), json!(x.round()));
+    arrow.insert("y".into(), json!(y.round()));
+    arrow.insert("width".into(), json!((xs.clone().fold(f64::NEG_INFINITY, f64::max) - xs.fold(f64::INFINITY, f64::min)).round()));
+    arrow.insert("height".into(), json!((ys.clone().fold(f64::NEG_INFINITY, f64::max) - ys.fold(f64::INFINITY, f64::min)).round()));
+    arrow.insert("points".into(), Value::Array(relative));
 }
 
 #[cfg(test)]
@@ -1075,6 +1347,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_label_never_ends_up_in_a_box_too_small_for_it() {
+        let mut scene = empty_scene();
+        apply(&mut scene, &Ops::from_args(&json!({"add": [{"id": "sf", "label": "Salesforce", "width": 60, "height": 20}]})).unwrap()).unwrap();
+        apply(&mut scene, &Ops::from_args(&json!({"update": [{"id": "sf", "width": 70, "height": 30}]})).unwrap()).unwrap();
+        let sf = &scene["elements"][0];
+        assert!(num(sf, "width") - 10.0 >= layout::text_width("Salesforce", 20.0), "{sf}");
+        assert!(num(sf, "height") >= layout::MIN_HEIGHT, "{sf}");
+        // A layout call alone is a change: it places again what agents drew.
+        assert!(!Ops::from_args(&json!({"layout": "down"})).unwrap().is_empty());
+        assert!(Ops::from_args(&json!({"layout": "sideways"})).is_err());
+    }
+
+    #[test]
     fn bad_requests_name_what_is_wrong() {
         let mut scene = human_scene();
         let err = |args: Value| apply(&mut scene.clone(), &Ops::from_args(&args).unwrap()).unwrap_err();
@@ -1124,6 +1409,29 @@ pub(crate) mod tests {
                 std::fs::write(&path, &body).unwrap();
             }
             assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), body, "{name} is stale: rerun with BRIDGE_UPDATE_FIXTURES=1");
+        }
+    }
+
+    /// Re-places every agent shape in recorded bench scenes, to try layout
+    /// changes without new chats: `BRIDGE_RELAYOUT_IN=<bench dir>
+    /// BRIDGE_RELAYOUT_OUT=<dir>`, then score the output with score.mjs.
+    #[test]
+    #[ignore = "a development tool over recorded drawings"]
+    fn relayout_recorded_drawings() {
+        let (Some(input), Some(output)) = (std::env::var_os("BRIDGE_RELAYOUT_IN"), std::env::var_os("BRIDGE_RELAYOUT_OUT")) else { return };
+        std::fs::create_dir_all(&output).unwrap();
+        for entry in std::fs::read_dir(&input).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".json") || name == "scores.json" || name == "judge.json" {
+                continue;
+            }
+            let mut record: Value = serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+            if let Some(scene) = record.get_mut("scene").filter(|scene| scene.is_object()) {
+                if let Err(error) = apply(scene, &Ops::from_args(&json!({"layout": "auto"})).unwrap()) {
+                    println!("{name}: {error}");
+                }
+            }
+            std::fs::write(std::path::Path::new(&output).join(&name), serde_json::to_string_pretty(&record).unwrap()).unwrap();
         }
     }
 
