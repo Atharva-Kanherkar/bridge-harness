@@ -141,6 +141,41 @@ pub fn segment_hits(a: (f64, f64), b: (f64, f64), r: Box2) -> bool {
     (0..4).any(|i| segments_cross(a, b, corners[i], corners[(i + 1) % 4]))
 }
 
+/// A shape's outline, shrunk by `inset`: a diamond's and an ellipse's own,
+/// so text beside a diamond's corner is not on the diamond.
+fn outline(kind: &str, b: Box2, inset: f64) -> Vec<(f64, f64)> {
+    let (cx, cy) = b.center();
+    let (hw, hh) = ((b.w / 2.0 - inset).max(0.0), (b.h / 2.0 - inset).max(0.0));
+    match kind {
+        "diamond" => vec![(cx, cy - hh), (cx + hw, cy), (cx, cy + hh), (cx - hw, cy)],
+        "ellipse" => (0..24).map(|i| f64::from(i) * std::f64::consts::PI / 12.0).map(|t| (cx + hw * t.cos(), cy + hh * t.sin())).collect(),
+        _ => vec![(cx - hw, cy - hh), (cx + hw, cy - hh), (cx + hw, cy + hh), (cx - hw, cy + hh)],
+    }
+}
+
+fn corners(b: Box2) -> Vec<(f64, f64)> {
+    vec![(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)]
+}
+
+/// Whether two convex polygons overlap (separating axis test).
+fn polygons_overlap(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
+    for poly in [a, b] {
+        for i in 0..poly.len() {
+            let ((x1, y1), (x2, y2)) = (poly[i], poly[(i + 1) % poly.len()]);
+            let axis = (y1 - y2, x2 - x1);
+            if axis.0 == 0.0 && axis.1 == 0.0 {
+                continue;
+            }
+            let project = |p: &[(f64, f64)]| p.iter().map(|(x, y)| x * axis.0 + y * axis.1).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)));
+            let ((a0, a1), (b0, b1)) = (project(a), project(b));
+            if a1 <= b0 || b1 <= a0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn path_length(points: &[(f64, f64)]) -> f64 {
     points.windows(2).map(|pair| ((pair[1].0 - pair[0].0).powi(2) + (pair[1].1 - pair[0].1).powi(2)).sqrt()).sum()
 }
@@ -186,7 +221,7 @@ pub fn check(scene: &Value) -> Report {
     let mut problems: Vec<String> = Vec::new();
     for (i, (a, ab)) in shapes.iter().enumerate() {
         for (b, bb) in shapes.iter().skip(i + 1) {
-            if (agent(a) || agent(b)) && overlaps(inflate(*ab, -2.0), inflate(*bb, -2.0)) && !inside(*ab, *bb) && !inside(*bb, *ab) {
+            if (agent(a) || agent(b)) && polygons_overlap(&outline(str_of(a, "type").unwrap_or(""), *ab, 2.0), &outline(str_of(b, "type").unwrap_or(""), *bb, 2.0)) && !inside(*ab, *bb) && !inside(*bb, *ab) {
                 problems.push(format!("{} and {} overlap: move one, or leave out x and y and pass layout so the layout places them.", label_of(a), label_of(b)));
             }
         }
@@ -197,7 +232,7 @@ pub fn check(scene: &Value) -> Report {
         let Some((label_box, text)) = arrow_label_box(link, bound.get(id).copied()) else { continue };
         let ends = (end_id(link, "start"), end_id(link, "end"));
         for (shape, b) in &shapes {
-            if !(agent(link) || agent(shape)) || !overlaps(inflate(label_box, -1.0), inflate(*b, -2.0)) {
+            if !(agent(link) || agent(shape)) || !polygons_overlap(&corners(inflate(label_box, -1.0)), &outline(str_of(shape, "type").unwrap_or(""), *b, 2.0)) {
                 continue;
             }
             let joined = [&ends.0, &ends.1].iter().any(|end| end.as_deref() == str_of(shape, "id"));
@@ -208,7 +243,7 @@ pub fn check(scene: &Value) -> Report {
     }
     for (text, tb) in &texts {
         for (shape, b) in &shapes {
-            if (agent(text) || agent(shape)) && overlaps(inflate(*tb, -1.0), inflate(*b, -2.0)) && !inside(*tb, *b) {
+            if (agent(text) || agent(shape)) && polygons_overlap(&corners(inflate(*tb, -1.0)), &outline(str_of(shape, "type").unwrap_or(""), *b, 2.0)) && !inside(*tb, *b) {
                 problems.push(format!("the text {} lies across the edge of {}: move it inside or clear of it.", label_of(text), label_of(shape)));
             }
         }
@@ -241,8 +276,8 @@ pub fn check(scene: &Value) -> Report {
             if b.contains(points[0], 0.0) || b.contains(*points.last().unwrap(), 0.0) {
                 continue;
             }
-            let inner = inflate(*b, -4.0);
-            if points.windows(2).any(|pair| segment_hits(pair[0], pair[1], inner)) {
+            let inner = outline(str_of(shape, "type").unwrap_or(""), *b, 4.0);
+            if points.windows(2).any(|pair| polygons_overlap(&[pair[0], pair[1]], &inner)) {
                 problems.push(format!("{} {} cuts through {}, which it does not join: move {} or pass layout.", str_of(link, "type").unwrap_or("arrow"), id_ref(id), label_of(shape), id_ref(shape_id.unwrap_or(""))));
             }
         }
@@ -318,4 +353,63 @@ pub fn check(scene: &Value) -> Report {
 
 fn id_ref(id: &str) -> String {
     format!("[{id}]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scene(elements: Value) -> Value {
+        json!({"type": "excalidraw", "elements": elements})
+    }
+
+    #[test]
+    fn an_agent_drawing_with_room_has_no_problems() {
+        let report = check(&scene(json!([
+            {"id": "a", "type": "rectangle", "x": 0, "y": 0, "width": 140, "height": 60, "label": {"text": "Login form"}},
+            {"id": "b", "type": "diamond", "x": 260, "y": -15, "width": 180, "height": 90, "label": {"text": "Valid?"}},
+            {"id": "e", "type": "arrow", "x": 146, "y": 30, "width": 108, "height": 0, "points": [[0, 0], [108, 0]], "start": {"id": "a"}, "end": {"id": "b"}, "label": {"text": "submit", "fontSize": 16}},
+        ])));
+        assert_eq!(report.problems, Vec::<String>::new());
+        assert!(report.text_px.unwrap() >= 10.0, "{report:?}");
+    }
+
+    #[test]
+    fn what_a_person_would_see_wrong_is_named_with_the_fix() {
+        let report = check(&scene(json!([
+            {"id": "a", "type": "rectangle", "x": 0, "y": 0, "width": 140, "height": 60, "label": {"text": "Orders service"}},
+            {"id": "b", "type": "rectangle", "x": 200, "y": 0, "width": 140, "height": 60, "label": {"text": "Kafka"}},
+            {"id": "c", "type": "rectangle", "x": 120, "y": 30, "width": 140, "height": 60, "label": {"text": "Overlapping"}},
+            {"id": "far", "type": "rectangle", "x": 700, "y": 0, "width": 140, "height": 60, "label": {"text": "Far"}},
+            {"id": "e", "type": "arrow", "x": 146, "y": 10, "width": 48, "height": 0, "points": [[0, 0], [48, 0]], "start": {"id": "a"}, "end": {"id": "b"}, "label": {"text": "publishes events to the topic"}},
+            {"id": "f", "type": "arrow", "x": 0, "y": 120, "width": 840, "height": 0, "points": [[0, 0], [10, -100], [840, -90]], "start": {"id": "a"}, "end": {"id": "far"}},
+        ])));
+        let all = report.problems.join("\n");
+        assert!(all.contains("\"Orders service\" [a] and \"Overlapping\" [c] overlap"), "{all}");
+        assert!(all.contains("the label \"publishes events to the topic\" on [e] covers \"Orders service\" [a]"), "{all}");
+        assert!(all.contains("[f] cuts through"), "{all}");
+    }
+
+    #[test]
+    fn a_label_beside_a_diamond_corner_is_not_on_it_and_a_person_drawing_is_left_alone() {
+        let beside = check(&scene(json!([
+            {"id": "q", "type": "diamond", "x": 0, "y": 0, "width": 200, "height": 100, "label": {"text": "Ok?"}},
+            {"id": "t", "type": "text", "x": 4, "y": 4, "text": "yes", "fontSize": 16},
+        ])));
+        assert_eq!(beside.problems, Vec::<String>::new());
+        let person = check(&scene(json!([
+            {"id": "a", "type": "rectangle", "x": 0, "y": 0, "width": 140, "height": 60, "version": 3},
+            {"id": "b", "type": "rectangle", "x": 50, "y": 20, "width": 140, "height": 60, "version": 3},
+        ])));
+        assert_eq!(person.problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_drawing_too_large_for_the_page_says_so() {
+        let wide: Vec<Value> = (0..12).map(|i| json!({"id": format!("n{i}"), "type": "rectangle", "x": i * 260, "y": 0, "width": 200, "height": 60, "label": {"text": "Step"}})).collect();
+        let report = check(&scene(Value::Array(wide)));
+        assert!(report.text_px.unwrap() < MIN_TEXT_PX);
+        assert!(report.problems.iter().any(|p| p.contains("too small to read")), "{:?}", report.problems);
+    }
 }

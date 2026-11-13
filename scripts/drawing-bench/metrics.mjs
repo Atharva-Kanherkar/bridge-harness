@@ -12,7 +12,7 @@
 /** The note column a drawing preview fills, and the preview's height cap
  *  (`DrawingPreview`: `w-full max-h-[28rem]` inside a 44rem article with px-8). */
 export const PREVIEW = { width: 640, height: 448, padding: 16 };
-export const SEVERE = ["label_overflow", "overlap", "text_overlap", "arrow_through", "short_arrow", "tiny_text"];
+export const SEVERE = ["label_overflow", "broken_word", "overlap", "text_overlap", "arrow_through", "short_arrow", "tiny_text"];
 const SHAPES = new Set(["rectangle", "ellipse", "diamond", "image", "embeddable", "iframe"]);
 const LINEAR = new Set(["arrow", "line"]);
 /** Below this many pixels on screen, text is not readable. */
@@ -49,6 +49,32 @@ function segmentHitsBox([a, b], r) {
   return corners.some((corner, i) => segmentsCross([a, b], [corner, corners[(i + 1) % 4]]));
 }
 
+// Shapes as their outlines, not their boxes: a label beside a diamond's
+// corner is not on the diamond. Convex polygons, shrunk by `inset` px.
+export function outline(e, inset = 0) {
+  const b = box(e);
+  const [cx, cy] = center(b);
+  const hw = Math.max(0, b.w / 2 - inset), hh = Math.max(0, b.h / 2 - inset);
+  if (e.type === "diamond") return [[cx, cy - hh], [cx + hw, cy], [cx, cy + hh], [cx - hw, cy]];
+  if (e.type === "ellipse") return Array.from({ length: 24 }, (_, i) => [cx + hw * Math.cos((i * Math.PI) / 12), cy + hh * Math.sin((i * Math.PI) / 12)]);
+  return [[cx - hw, cy - hh], [cx + hw, cy - hh], [cx + hw, cy + hh], [cx - hw, cy + hh]];
+}
+const rectPoly = b => [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]];
+/** Separating-axis test for two convex polygons. */
+export function polysOverlap(a, b) {
+  for (const poly of [a, b]) {
+    for (let i = 0; i < poly.length; i++) {
+      const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+      const axis = [y1 - y2, x2 - x1];
+      if (!axis[0] && !axis[1]) continue;
+      const project = p => p.map(([x, y]) => x * axis[0] + y * axis[1]);
+      const pa = project(a), pb = project(b);
+      if (Math.max(...pa) <= Math.min(...pb) || Math.max(...pb) <= Math.min(...pa)) return false;
+    }
+  }
+  return true;
+}
+const segmentHitsPoly = (seg, poly) => polysOverlap([seg[0], seg[1], seg[0]], poly);
 const segments = pts => pts.slice(1).map((p, i) => [pts[i], p]);
 const length = pts => segments(pts).reduce((sum, [a, b]) => sum + Math.hypot(b[0] - a[0], b[1] - a[1]), 0);
 const norm = text => String(text ?? "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -97,10 +123,26 @@ export function defects(elements) {
     }
   }
 
+  // Excalidraw breaks a word too long for its line between letters.
+  for (const t of texts) {
+    const original = String(t.originalText ?? t.text ?? "");
+    const wrapped = String(t.text ?? "");
+    if (wrapped === original) continue;
+    let o = 0;
+    for (let k = 0; k < wrapped.length && o < original.length; k++) {
+      if (wrapped[k] === original[o]) { o++; continue; }
+      if (wrapped[k] === "\n" && /\s/.test(original[o])) { o++; continue; }
+      if (wrapped[k] === "\n" && o > 0 && /\S/.test(original[o - 1]) && /\S/.test(original[o] ?? " ")) {
+        add("broken_word", [t.containerId ?? t.id], `"${norm(original).slice(0, 40)}" is broken mid-word`);
+        break;
+      }
+    }
+  }
+
   for (let i = 0; i < shapes.length; i++) {
     for (let j = i + 1; j < shapes.length; j++) {
       const [a, b] = [box(shapes[i]), box(shapes[j])];
-      const shared = intersection(inflate(a, -2), inflate(b, -2));
+      const shared = polysOverlap(outline(shapes[i], 2), outline(shapes[j], 2)) ? 1 : 0;
       // One box wholly inside another is a group, not a collision.
       if (shared > 0 && !inside(a, b) && !inside(b, a)) add("overlap", [shapes[i].id, shapes[j].id], `"${scene.label(shapes[i]).slice(0, 30)}" and "${scene.label(shapes[j]).slice(0, 30)}" overlap`);
     }
@@ -115,7 +157,7 @@ export function defects(elements) {
     for (const s of shapes) {
       if (own && own.id === s.id) continue;
       const sb = box(s);
-      if (intersection(tb, inflate(sb, -2)) <= 0) continue;
+      if (!polysOverlap(rectPoly(tb), outline(s, 2))) continue;
       // Free text written inside a box (a legend, a note in a frame) is fine;
       // a label of another box or of an arrow sitting on this box is not.
       if (!own && inside(box(t), sb)) continue;
@@ -141,7 +183,7 @@ export function defects(elements) {
       const sb = box(s);
       // An arrow drawn inside a grouping box does not cut through it.
       if (containsPoint(sb, pts[0]) || containsPoint(sb, pts[pts.length - 1])) continue;
-      if (segments(pts).some(seg => segmentHitsBox(seg, inflate(sb, -4)))) add("arrow_through", [link.id, s.id], `${link.type} ${link.id} cuts through "${scene.label(s).slice(0, 30)}"`);
+      if (segments(pts).some(seg => segmentHitsPoly(seg, outline(s, 4)))) add("arrow_through", [link.id, s.id], `${link.type} ${link.id} cuts through "${scene.label(s).slice(0, 30)}"`);
     }
   }
   for (let i = 0; i < links.length; i++) {

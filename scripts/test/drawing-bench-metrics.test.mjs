@@ -65,3 +65,21 @@ test("defects already in the person's drawing are not charged to the agent", () 
   assert.equal(score(after, {}, seed).severe, 0);
   assert.equal(score(after, {}).severe, 1);
 });
+
+test("shapes are judged by their outlines, and words broken mid-word are caught", () => {
+  const diamond = { id: "d", type: "diamond", x: 0, y: 0, width: 200, height: 100 };
+  // A label in the diamond's empty corner is not on it.
+  const corner = { id: "t", type: "text", x: 2, y: 2, width: 30, height: 20, text: "Yes", originalText: "Yes", fontSize: 16 };
+  assert.deepEqual(defects([diamond, corner]).filter(d => d.kind === "text_overlap"), []);
+  const link = arrow("a", null, null, [[300, 300], [400, 300]]);
+  const onArrow = { ...corner, containerId: "a" };
+  assert.deepEqual(defects([diamond, link, onArrow]).filter(d => d.kind === "text_overlap"), []);
+  const middle = { ...onArrow, x: 85, y: 40 };
+  assert.equal(defects([diamond, link, middle]).filter(d => d.kind === "text_overlap").length, 1);
+  const broken = [rect("e", 0, 0, 120, 80), { id: "e~label", type: "text", x: 5, y: 5, width: 110, height: 50, text: "Elasticsear\nch", originalText: "Elasticsearch", fontSize: 20, containerId: "e" }];
+  assert.deepEqual(defects(broken).map(d => d.kind), ["broken_word"]);
+  const wrapped = [rect("e", 0, 0, 120, 80), { id: "e~label", type: "text", x: 5, y: 5, width: 110, height: 50, text: "Search\nservice", originalText: "Search service", fontSize: 20, containerId: "e" }];
+  assert.deepEqual(defects(wrapped), []);
+  const diamondLabel = [rect("q", 0, 0, 200, 120), { id: "q~label", type: "text", x: 50, y: 20, width: 100, height: 75, text: "Need\ntransactio\nns?", originalText: "Need transactions?", fontSize: 20, containerId: "q" }];
+  assert.deepEqual(defects(diamondLabel).map(d => d.kind), ["broken_word"]);
+});

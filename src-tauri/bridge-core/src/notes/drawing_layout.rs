@@ -104,11 +104,13 @@ pub fn fit_shape(kind: &str, label: Option<&str>) -> (f64, f64) {
         return (MIN_WIDTH, MIN_HEIGHT);
     };
     let (wrap_at, pad_x, pad_y) = match kind {
-        "ellipse" => (170.0, 8.0, 6.0),
+        "ellipse" => (170.0f64, 8.0, 6.0),
         "diamond" => (150.0, 8.0, 4.0),
         _ => (240.0, 18.0, 12.0),
     };
-    let (text_w, text_h) = measure(label, wrap_at, LABEL_FONT);
+    // Never so narrow that a word breaks between letters.
+    let longest_word = label.split_whitespace().map(|word| text_width(word, LABEL_FONT)).fold(0.0, f64::max);
+    let (text_w, text_h) = measure(label, wrap_at.max(longest_word), LABEL_FONT);
     let inner_w = text_w + 2.0 * (BOUND_PADDING + pad_x);
     let inner_h = text_h + 2.0 * (BOUND_PADDING + pad_y);
     let (w, h) = match kind {
@@ -678,6 +680,12 @@ mod tests {
         assert_eq!(wrap("one\ntwo", 500.0, 20.0), vec!["one", "two"]);
         // A word longer than a line breaks between characters.
         assert!(wrap("Supercalifragilistic", 80.0, 20.0).len() > 1);
+        // ...but a shape is never sized so narrow that one does.
+        for kind in ["rectangle", "ellipse", "diamond"] {
+            let (w, _) = fit_shape(kind, Some("Need transactions? Elasticsearch"));
+            let inner = match kind { "diamond" => w / 2.0, "ellipse" => w / std::f64::consts::SQRT_2, _ => w } - 10.0;
+            assert!(inner >= text_width("transactions?", 20.0) && inner >= text_width("Elasticsearch", 20.0), "{kind} {w}");
+        }
         let (w, h) = fit_shape("rectangle", Some("Login form"));
         assert!(w >= 100.8 + 10.0 && h >= 25.0 + 10.0, "{w}x{h}");
         // A long label wraps rather than making a very wide box.
