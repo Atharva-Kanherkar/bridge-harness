@@ -61,6 +61,14 @@ export async function openRenderer() {
   if (!fontsLoaded) console.warn("warning: Excalifont did not load; label sizes may be off");
   return {
     evaluate,
+    /** A screenshot of `html` laid out at `width` px, for side-by-side sheets. */
+    async shoot(html, width, png) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+      const height = await evaluate(`(async () => { document.body.innerHTML = ${JSON.stringify(html)}; await Promise.all([...document.images].map(i => i.decode().catch(() => {}))); return document.body.scrollHeight; })()`);
+      const { result } = await send("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width, height, scale: 1 }, captureBeyondViewport: true });
+      fs.writeFileSync(png, Buffer.from(result.data, "base64"));
+      await send("Emulation.setDeviceMetricsOverride", { width: 800, height: 1000, deviceScaleFactor: 2, mobile: false });
+    },
     async render(scene, png) {
       const out = await evaluate(`window.benchRender(${JSON.stringify(scene)})`);
       if (png) {

@@ -335,10 +335,12 @@ pub fn check(scene: &Value) -> Report {
             let px = (smallest * scale * 10.0).round() / 10.0;
             report.text_px = Some(px);
             if px < MIN_TEXT_PX && elements.iter().any(|e| agent(e)) {
-                problems.push(format!(
-                    "the drawing is {}×{} px, so once the page fits it its smallest text shows at {px} px, too small to read: shorten labels, pass layout so it winds to fit the page, or split it into two drawings.",
-                    report.width, report.height
-                ));
+                let fix = if shapes.len() > 15 {
+                    "pass layout: auto and shorten labels; with this many shapes, splitting it into two drawings also helps"
+                } else {
+                    "pass layout: auto, which sizes and places the shapes to fit the page, and shorten long labels; keep it one drawing"
+                };
+                problems.push(format!("the drawing is {}×{} px, so once the page fits it its smallest text shows at {px} px, too small to read: {fix}.", report.width, report.height));
             }
         }
     }

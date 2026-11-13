@@ -739,7 +739,8 @@ pub fn apply(scene: &mut Value, ops: &Ops) -> Result<Applied, String> {
         }
         // A new label the shape's box cannot hold grows the box, as the editor
         // would, and its arrows follow.
-        if relabel_fits_kind(&kind) && op.get("width").is_none() && op.get("height").is_none() {
+        // A size the agent gives is kept unless the label would not fit, as on add.
+        if relabel_fits_kind(&kind) && !is_full(&Value::Object(next.clone())) {
             if let Some(text) = next.get("label").and_then(|label| str_of(label, "text")) {
                 let (fit_w, fit_h) = layout::fit_shape(&kind, Some(text));
                 let (w, h) = (next.get("width").and_then(Value::as_f64).unwrap_or(0.0), next.get("height").and_then(Value::as_f64).unwrap_or(0.0));
@@ -1337,6 +1338,19 @@ pub(crate) mod tests {
         assert!(num(a1, "x") + a1["points"][1][0].as_f64().unwrap() > 800.0, "{a1}");
         assert!(!elements.iter().any(|e| e["containerId"] == "a1"));
         assert!(describe(&scene).contains("[a1] arrow \"SQL\" from \"API server\" [api] to \"Postgres\" [db]"));
+    }
+
+    #[test]
+    fn a_label_never_ends_up_in_a_box_too_small_for_it() {
+        let mut scene = empty_scene();
+        apply(&mut scene, &Ops::from_args(&json!({"add": [{"id": "sf", "label": "Salesforce", "width": 60, "height": 20}]})).unwrap()).unwrap();
+        apply(&mut scene, &Ops::from_args(&json!({"update": [{"id": "sf", "width": 70, "height": 30}]})).unwrap()).unwrap();
+        let sf = &scene["elements"][0];
+        assert!(num(sf, "width") - 10.0 >= layout::text_width("Salesforce", 20.0), "{sf}");
+        assert!(num(sf, "height") >= layout::MIN_HEIGHT, "{sf}");
+        // A layout call alone is a change: it places again what agents drew.
+        assert!(!Ops::from_args(&json!({"layout": "down"})).unwrap().is_empty());
+        assert!(Ops::from_args(&json!({"layout": "sideways"})).is_err());
     }
 
     #[test]
