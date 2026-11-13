@@ -1000,7 +1000,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     const call = toolCallDisplay(item);
     return `${item.identity}:${item.eventId}:${item.text.length}:${call.status}:${call.progress ?? ""}:${call.durationMs ?? ""}:${(call.output ?? "").length}`;
   }).join("|");
-  const backgroundScope = readOnly ? undefined : session?.id;
+  const backgroundScope = readOnly || preview ? undefined : session?.id;
   const reportBackgroundWork = useRef(onBackgroundWork);
   reportBackgroundWork.current = onBackgroundWork;
   useEffect(() => {
