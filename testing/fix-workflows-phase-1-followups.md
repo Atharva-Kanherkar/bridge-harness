@@ -88,6 +88,12 @@ contract, especially C7, F20, F22a and F23. Phase 2 is out of scope.
 
 ## Smoke Tests
 
+- The staged and bundled Claude sidecar includes every local `.mjs` module,
+  including the workflow ask relay and trust reader. Both fresh staging and
+  reuse after missing modules are tested by launching the real staged sidecar
+  in catalog mode against a local SDK stub, without an account or model call.
+  The release gate rejects any missing local module.
+
 - Build a macOS release package and run the packaged-app smoke harness when
   its prerequisites are available. Record exact outcome and build commit.
 - N/A — no deployed service or HTTP health endpoint is changed by this PR.
