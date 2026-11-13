@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, Session, SessionForestSnapshot, Workspace } from "../types";
 import { isActiveSession, MissionControl } from "./MissionControl";
-import { minimumSize, MISSION_LAYOUT_KEY, parseLayout } from "./missionControl/layout";
+import { MISSION_LAYOUT_KEY, parseLayout } from "./missionControl/layout";
 import { SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
-import { leafIds, type PaneNode } from "../terminal/layout";
+import type { PaneNode } from "../terminal/layout";
 import { SHOW_WORKER_CHATS_STORAGE_KEY } from "../missionControlSettings";
 
 vi.mock("../api", () => ({
@@ -71,6 +71,8 @@ async function dragEvent(target: Element, type: string, dataTransfer: ReturnType
 }
 
 const savedLayout = () => parseLayout(localStorage.getItem(MISSION_LAYOUT_KEY));
+const queued = () => [...host.querySelectorAll<HTMLElement>("[data-queue-id]")].map(el => el.dataset.queueId);
+const toolbarButton = (text: string) => [...host.querySelectorAll<HTMLButtonElement>("[aria-label='Tiles on the stage'] button")].find(button => button.textContent === text);
 
 it("shows only active sessions even with hundreds of idle chats", async () => {
   const sessions = [session("a", "working"), session("c", "waiting"), ...Array.from({ length: 501 }, (_, i) => session(`idle-${i}`, "completed"))];
@@ -99,19 +101,15 @@ it("recognizes active turns and lifecycle transitions across harnesses", () => {
   expect(isActiveSession(session("w", "completed", { parentSessionId: "a" }))).toBe(false);
 });
 
-it("removes completed workers despite a cached working runtime", async () => {
+it("lets a new chat take a finished worker's slot despite a cached working runtime", async () => {
   localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
   vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), workerRuntimes: [{ sessionId: "w", lifecycleState: "working", resultStatus: "pending" }] } as SessionForestSnapshot));
   await render({ sessions: [session("w", "working", { parentSessionId: "a" })] });
   expect(tiles()).toEqual(["w"]);
   await render({ sessions: [session("w", "completed", { parentSessionId: "a" })] });
-  expect(tiles()).toEqual([]);
-});
-
-it("preserves minimum transcript dimensions in nested and resized splits", () => {
-  const leaf = (leafId: string): PaneNode => ({ type: "leaf", leafId });
-  expect(minimumSize(leaf("a"))).toEqual({ width: 420, height: 360 });
-  expect(minimumSize({ type: "split", direction: "horizontal", ratio: 0.1, first: leaf("a"), second: { type: "split", direction: "vertical", ratio: 0.9, first: leaf("b"), second: leaf("c") } })).toEqual({ width: 846, height: 726 });
+  expect(tiles()).toEqual(["w"]);
+  await render({ sessions: [session("w", "completed", { parentSessionId: "a" }), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
 });
 
 it("renders the real conversation and a composer per tile", async () => {
@@ -142,32 +140,30 @@ it("resolves approvals against the tile's session, not the selected one", async 
   expect(host.querySelector("[data-session-id='b']")?.className).not.toContain("ring-1");
 });
 
-it("auto-inserts a new active session and drops one that stopped", async () => {
+it("keeps a finished chat in place and lets the next new chat take its slot", async () => {
   await render({ sessions: [session("a", "working")] });
   expect(tiles()).toEqual(["a"]);
   await render({ sessions: [session("a", "working"), session("b", "working")] });
-  expect(tiles().sort()).toEqual(["a", "b"]);
-  expect(host.querySelector("[role='separator']")).not.toBeNull();
-  await render({ sessions: [session("a", "completed"), session("b", "working")] });
-  expect(tiles()).toEqual(["b"]);
+  expect(tiles()).toEqual(["a", "b"]);
   expect(host.querySelector("[role='separator']")).toBeNull();
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["a", "b"]);
+  expect(host.querySelector("[data-session-id='a']")?.textContent).not.toContain("Working");
+  await render({ sessions: [session("a", "completed"), session("b", "working"), session("c", "working")] });
+  expect(tiles()).toEqual(["c", "b"]);
 });
 
-it("persists the layout and restores it, dropping stale leaves", async () => {
+it("persists a flat order and migrates a stored split tree in reading order", async () => {
   await render({ sessions: [session("a", "working"), session("b", "working")] });
-  const saved = JSON.parse(localStorage.getItem(MISSION_LAYOUT_KEY)!) as { version: number; root: PaneNode };
-  expect(saved.version).toBe(1);
-  expect(leafIds(saved.root).sort()).toEqual(["a", "b"]);
+  const saved = JSON.parse(localStorage.getItem(MISSION_LAYOUT_KEY)!) as { version: number; order: string[] };
+  expect(saved).toMatchObject({ version: 2, order: ["a", "b"] });
   act(() => root.unmount());
-  // a stale leaf nested beside a live one collapses away; the surviving split keeps its direction and ratio.
   const before: PaneNode = { type: "split", direction: "vertical", ratio: 0.3, first: { type: "leaf", leafId: "b" }, second: { type: "split", direction: "horizontal", ratio: 0.5, first: { type: "leaf", leafId: "a" }, second: { type: "leaf", leafId: "gone" } } };
   localStorage.setItem(MISSION_LAYOUT_KEY, JSON.stringify({ version: 1, root: before, expandedLeafId: null }));
   root = createRoot(host);
   await render({ sessions: [session("a", "working"), session("b", "working")] });
-  const restored = JSON.parse(localStorage.getItem(MISSION_LAYOUT_KEY)!) as { root: PaneNode };
-  expect(leafIds(restored.root)).toEqual(["b", "a"]);
-  expect(host.querySelector("[role='separator']")?.getAttribute("aria-orientation")).toBe("horizontal");
-  expect(host.querySelector("[role='separator']")?.getAttribute("aria-valuenow")).toBe("30");
+  expect(tiles()).toEqual(["b", "a"]);
+  expect(savedLayout()).toMatchObject({ version: 2, order: ["b", "a"] });
 });
 
 it("focuses a session from the tile header and maximizes a tile", async () => {
@@ -190,13 +186,16 @@ it("offers Stop only for workers and routes it to onStopWorker", async () => {
   expect(stop).toHaveBeenCalledWith("w");
 });
 
-it("clears maximization when work finishes and does not restore it on a later turn", async () => {
+it("keeps a maximized chat maximized after its turn ends and restores the grid when closed", async () => {
   await render({ sessions: [session("a", "working"), session("b", "working")] });
   await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Maximize tile']")!.click());
+  expect(tiles()).toEqual(["a"]);
+  expect(queued()).toEqual(["b"]);
   await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["a"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Close chat']")!.click());
   expect(tiles()).toEqual(["b"]);
-  await render({ sessions: [session("a", "working"), session("b", "working")] });
-  expect(tiles().sort()).toEqual(["a", "b"]);
+  expect(savedLayout().expandedId).toBeNull();
 });
 
 it("does not transfer a draft when another active chat replaces the only tile", async () => {
@@ -234,25 +233,22 @@ it("accepts an idle sidebar chat into an empty grid and persists it until remove
 });
 
 it.each([
-  ["left", 1, 180, "horizontal", ["idle", "a"]],
-  ["right", 419, 180, "horizontal", ["a", "idle"]],
-  ["top", 210, 1, "vertical", ["idle", "a"]],
-  ["bottom", 210, 359, "vertical", ["a", "idle"]],
-] as const)("inserts an idle sidebar chat at the %s edge without a duplicate from bubbling", async (edge, x, y, direction, order) => {
+  ["left half", 1, "before", ["idle", "a"]],
+  ["right half", 419, "after", ["a", "idle"]],
+] as const)("puts an idle sidebar chat into the slot on the %s of a tile and pins it", async (_half, x, place, order) => {
   await render({ sessions: [session("a", "working"), session("idle", "completed")] });
   const tile = host.querySelector("[data-session-id='a']")!;
   vi.spyOn(tile, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 420, height: 360 } as DOMRect);
   const data = transfer(SIDEBAR_CHAT_DRAG, "idle");
-  await dragEvent(tile, "dragover", data, x, y);
-  expect(tile.querySelector(`[data-drop-edge='${edge}']`)).not.toBeNull();
-  await dragEvent(tile, "drop", data, x, y);
-  const saved = savedLayout();
-  expect(leafIds(saved.root!)).toEqual(order);
-  expect(saved.root).toMatchObject({ type: "split", direction });
-  expect(saved.pinnedSessionIds).toEqual(["idle"]);
+  await dragEvent(tile, "dragover", data, x, 100);
+  expect(tile.querySelector(`[data-drop-place='${place}']`)).not.toBeNull();
+  await dragEvent(tile, "drop", data, x, 100);
+  expect(savedLayout().order).toEqual(order);
+  expect(savedLayout().pinnedSessionIds).toEqual(["idle"]);
+  expect(tiles()).toEqual(order);
 });
 
-it("rearranges existing tiles while preserving their drafts", async () => {
+it("reorders tiles by dragging a header while preserving their drafts", async () => {
   await render({ sessions: [session("a", "working"), session("b", "working")] });
   const textarea = host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!;
   await act(async () => {
@@ -263,8 +259,11 @@ it("rearranges existing tiles while preserving their drafts", async () => {
   await dragEvent(host.querySelector("[data-session-id='a'] header")!, "dragstart", data);
   expect(data.getData(TILE_DRAG)).toBe("a");
   expect(data.effectAllowed).toBe("move");
-  await dragEvent(host.querySelector("[data-session-id='b']")!, "drop", data);
-  expect(leafIds(savedLayout().root!)).toEqual(["b", "a"]);
+  const target = host.querySelector("[data-session-id='b']")!;
+  vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 420, height: 360 } as DOMRect);
+  await dragEvent(target, "drop", data, 400, 100);
+  expect(savedLayout().order).toEqual(["b", "a"]);
+  expect(tiles()).toEqual(["b", "a"]);
   expect(savedLayout().pinnedSessionIds).toEqual([]);
   expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!.value).toBe("keep this draft");
   expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='b'] textarea")!.value).toBe("");
@@ -306,6 +305,15 @@ it("treats old saved layouts as having nothing dismissed and dedupes stored dism
   expect(parseLayout(JSON.stringify({ version: 1, root, dismissedSessionIds: ["gone", "gone", 7, null] })).dismissedSessionIds).toEqual(["gone"]);
 });
 
+it("forgets a closed chat once it is no longer running, so the closed list stays bounded", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Close chat']")!.click());
+  expect(savedLayout().dismissedSessionIds).toEqual(["a"]);
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(savedLayout().dismissedSessionIds).toEqual([]);
+  expect(tiles()).toEqual(["b"]);
+});
+
 it("pins from the tile header and keeps the chat visible after completion and reopening", async () => {
   await render({ sessions: [session("a", "working")] });
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
@@ -319,7 +327,7 @@ it("pins from the tile header and keeps the chat visible after completion and re
   expect(tiles()).toEqual([]);
 });
 
-it("unpins an active chat without stopping it and removes it when work finishes", async () => {
+it("unpins an active chat without stopping it, and a new chat may then replace it once finished", async () => {
   await render({ sessions: [session("a", "working")] });
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Unpin chat']")!.click());
@@ -327,7 +335,9 @@ it("unpins an active chat without stopping it and removes it when work finishes"
   expect(savedLayout().pinnedSessionIds).toEqual([]);
   expect(bridgeApi.interruptTurn).not.toHaveBeenCalled();
   await render({ sessions: [session("a", "completed")] });
-  expect(tiles()).toEqual([]);
+  expect(tiles()).toEqual(["a"]);
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
 });
 
 it("closes an active, unpinned tile immediately and keeps it closed on rerender", async () => {
@@ -537,27 +547,103 @@ it("hides the legend when every tile belongs to one project", async () => {
   expect(host.querySelector("[aria-label='Projects on the board']")).toBeNull();
 });
 
-it("opens a new chat beside its own project's tile", async () => {
-  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
-  const a = session("a", "working", { workspaceId: "ws" }), b = session("b", "working", { workspaceId: "k" });
-  await render({ sessions: [a, b], workspaces: spaces });
-  await render({ sessions: [a, b, session("c", "working", { workspaceId: "ws" })], workspaces: spaces });
-  const saved = savedLayout().root!;
-  expect(saved.type).toBe("split");
-  // c is cut from a, the other Bridge tile, rather than from kairo's b.
-  if (saved.type === "split") expect(leafIds(saved.first).sort()).toEqual(["a", "c"]);
+it("adds a new active chat at the end without moving the others", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  await render({ sessions: [session("a", "working"), session("b", "working"), session("c", "working")] });
+  expect(savedLayout().order).toEqual(["a", "b", "c"]);
 });
 
-it("arranges the board into a grid grouped by project and persists it", async () => {
-  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
-  const layout: PaneNode = { type: "split", direction: "horizontal", ratio: 0.5, first: { type: "split", direction: "vertical", ratio: 0.5, first: { type: "leaf", leafId: "a" }, second: { type: "leaf", leafId: "b" } }, second: { type: "split", direction: "vertical", ratio: 0.5, first: { type: "leaf", leafId: "c" }, second: { type: "leaf", leafId: "d" } } };
-  localStorage.setItem(MISSION_LAYOUT_KEY, JSON.stringify({ version: 1, root: layout, expandedLeafId: "a" }));
-  await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "k" }), session("c", "working", { workspaceId: "ws" }), session("d", "working", { workspaceId: "k" })], workspaces: spaces });
-  await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Arrange")!.click());
-  const saved = savedLayout();
-  expect(saved.expandedLeafId).toBeNull();
-  expect(leafIds(saved.root!)).toEqual(["a", "c", "b", "d"]);
-  expect(saved.root?.type === "split" && saved.root.direction).toBe("vertical");
+it("caps the stage from the tiles control, queues the rest and persists the limit", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working"), session("c", "working")] });
+  expect([...host.querySelectorAll("button")].some(button => button.textContent === "Arrange")).toBe(false);
+  await act(async () => toolbarButton("2")!.click());
+  expect(toolbarButton("2")!.getAttribute("aria-pressed")).toBe("true");
+  expect(tiles()).toEqual(["a", "b"]);
+  expect(queued()).toEqual(["c"]);
+  expect(savedLayout().stageLimit).toBe(2);
+  await act(async () => toolbarButton("Auto")!.click());
+  expect(tiles()).toEqual(["a", "b", "c"]);
+  expect(savedLayout().stageLimit).toBeNull();
+});
+
+it("moves a tile earlier or later from its header", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working"), session("c", "working")] });
+  expect(host.querySelector("[data-session-id='a'] button[aria-label='Move earlier']")).toBeNull();
+  expect(host.querySelector("[data-session-id='c'] button[aria-label='Move later']")).toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='c'] button[aria-label='Move earlier']")!.click());
+  expect(tiles()).toEqual(["a", "c", "b"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Move later']")!.click());
+  expect(tiles()).toEqual(["c", "a", "b"]);
+});
+
+describe("measured board", () => {
+  let observers: ResizeObserverCallback[] = [];
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal("ResizeObserver", class { constructor(private callback: ResizeObserverCallback) {} observe() { observers.push(this.callback); } unobserve() {} disconnect() {} });
+  });
+  const resize = async (width: number, height: number) => {
+    await act(async () => { for (const callback of observers) callback([{ contentRect: { width, height } } as ResizeObserverEntry], {} as ResizeObserver); });
+  };
+  const seven = () => ["a", "b", "c", "d", "e", "f", "g"].map(id => session(id, "working"));
+  const stage = () => host.querySelector<HTMLElement>("[data-stage]")!;
+
+  it("fills the stage from the measured size and queues the rest", async () => {
+    await render({ sessions: seven() });
+    await resize(2296, 1274);
+    expect(tiles()).toEqual(["a", "b", "c", "d", "e", "f", "g"]);
+    expect(queued()).toEqual([]);
+    expect([stage().dataset.cols, stage().dataset.rows]).toEqual(["4", "2"]);
+    await resize(1116, 694);
+    expect(tiles()).toEqual(["a", "b", "c", "d"]);
+    expect(queued()).toEqual(["e", "f", "g"]);
+    expect(host.querySelector("[aria-label='More chats']")?.className).toContain("w-64");
+    await resize(760, 694);
+    expect(host.querySelector("[aria-label='More chats']")?.className).toContain("h-9");
+    await resize(500, 300);
+    expect(tiles()).toEqual(["a"]);
+    expect(stage().style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+    expect(stage().getAttribute("style")).not.toContain("min-width");
+    expect(savedLayout().order).toEqual(["a", "b", "c", "d", "e", "f", "g"]);
+  });
+
+  it("brings a queued chat to the front of the stage when clicked", async () => {
+    await render({ sessions: seven() });
+    await resize(1116, 694);
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-queue-id='f']")!.click());
+    expect(tiles()).toEqual(["f", "a", "b", "c"]);
+    expect(queued()).toEqual(["d", "e", "g"]);
+  });
+
+  it("drops a queued chat onto a tile's slot and pushes the last tile to the queue", async () => {
+    await render({ sessions: seven() });
+    await resize(1116, 694);
+    const data = transfer(TILE_DRAG, "");
+    await dragEvent(host.querySelector("[data-queue-id='g']")!, "dragstart", data);
+    expect(data.getData(TILE_DRAG)).toBe("g");
+    await dragEvent(host.querySelector("[data-session-id='b']")!, "drop", data, 0, 0);
+    expect(tiles()).toEqual(["a", "g", "b", "c"]);
+    expect(queued()).toEqual(["d", "e", "f"]);
+  });
+
+  it("keeps a chat that needs you on the stage even when it is last", async () => {
+    const sessions = seven();
+    await render({ sessions });
+    await resize(500, 300);
+    expect(tiles()).toEqual(["a"]);
+    await render({ sessions: [...sessions.slice(0, 6), session("g", "waiting")] });
+    expect(tiles()).toEqual(["g"]);
+    expect(host.querySelector("[data-queue-id='a']")).not.toBeNull();
+    expect(savedLayout().order.at(-1)).toBe("g");
+  });
+
+  it("does not move or resize other tiles when one chat finishes", async () => {
+    await render({ sessions: seven() });
+    await resize(1116, 694);
+    const before = [tiles(), queued(), stage().dataset.cols, stage().dataset.rows];
+    await render({ sessions: seven().map(item => item.id === "b" ? { ...item, status: "completed" as const } : item) });
+    expect([tiles(), queued(), stage().dataset.cols, stage().dataset.rows]).toEqual(before);
+  });
 });
 
 it("keeps the view title out of the board toolbar", async () => {
