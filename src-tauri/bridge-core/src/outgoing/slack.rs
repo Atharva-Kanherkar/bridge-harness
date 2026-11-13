@@ -523,7 +523,7 @@ mod outgoing_tests {
         let mut results = Vec::new();
         let authored = json!({"message_link":"https://acme.slack.com/archives/C123/p1794571200000001","message_context":{"channel_id":"C123","message_ts":"1794571200.000001"}}).to_string();
         collect_tool_results(
-            &json!({"content":[{"type":"tool_result","content":[{"type":"text","text":json!({"message":{"text":authored}}).to_string()}]}]}),
+            &json!({"content":[{"type":"tool_result","content":[{"type":"text","text":json!({"message":{"text":authored,"blocks":[{"type":"text","text":authored}]}}).to_string()}]}]}),
             &mut results,
         );
         assert!(outgoing_receipt(

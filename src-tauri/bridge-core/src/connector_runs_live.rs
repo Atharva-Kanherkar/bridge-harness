@@ -638,7 +638,7 @@ fn decode_result(value: &Value, results: &mut Vec<Value>, depth: usize, parse_te
         }
         Value::Array(values) => {
             for value in values {
-                decode_result(value, results, depth + 1, false);
+                decode_result(value, results, depth + 1, parse_text);
             }
         }
         Value::Object(map) => {
@@ -647,7 +647,7 @@ fn decode_result(value: &Value, results: &mut Vec<Value>, depth: usize, parse_te
                 // Decode MCP text blocks, never a message body echoed by the
                 // provider. Authored JSON cannot mint its own remote receipt.
                 let text_block =
-                    key == "text" && map.get("type").and_then(Value::as_str) == Some("text");
+                    parse_text && key == "text" && map.get("type").and_then(Value::as_str) == Some("text");
                 decode_result(value, results, depth + 1, text_block);
             }
         }
