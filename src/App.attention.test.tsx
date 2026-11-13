@@ -38,8 +38,9 @@ const toastRegion = (container: HTMLElement) => container.querySelector('[aria-l
 describe("App attention wiring", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let AppComponent: typeof import("./App")["App"];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const store = new Map<string, string>();
     Object.defineProperty(globalThis, "localStorage", {
@@ -67,7 +68,10 @@ describe("App attention wiring", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-  });
+    // Cold module transforms belong to setup, not the five-second assertion
+    // window; a timeout during an in-flight act poisons the following tests.
+    ({ App: AppComponent } = await import("./App"));
+  }, 30_000);
 
   afterEach(async () => {
     await act(async () => root.unmount());
@@ -76,8 +80,7 @@ describe("App attention wiring", () => {
   });
 
   async function mountApp() {
-    const { App } = await import("./App");
-    await act(async () => { root.render(<App />); });
+    await act(async () => { root.render(<AppComponent />); });
     await wait(40);
   }
 
