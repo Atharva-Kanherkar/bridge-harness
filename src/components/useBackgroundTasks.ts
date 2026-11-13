@@ -64,3 +64,11 @@ export function useBackgroundTasks(scope: string | undefined, store: BackgroundW
 
   return { tasks, notice } as { tasks: BackgroundTaskView[]; notice: BackgroundNotice | null };
 }
+
+/** Just the count, for a badge: re-renders its owner only when the count moves. */
+export function useBackgroundTaskCount(scope: string | undefined, store: BackgroundWorkStore = backgroundWork): number {
+  return useSyncExternalStore(store.subscribe, () => {
+    const work = store.read();
+    return work && scope && work.scope === scope ? work.items.length : 0;
+  });
+}

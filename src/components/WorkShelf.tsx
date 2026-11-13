@@ -7,7 +7,7 @@ import { orderPullRequests, prCounts, shelfLabel, shelfPhrase, taskSummary, type
 import { cn } from "@/lib/utils";
 import { PullRequestGlyph, useStatusAnnouncements } from "./ChatPullRequests";
 import { HarnessMark } from "./harnessMarks";
-import type { BackgroundNotice } from "./useBackgroundTasks";
+import { useBackgroundTasks, type BackgroundNotice } from "./useBackgroundTasks";
 
 // The glance: one line at the top of the composer that says how this chat's
 // pull requests and background work are doing. It is part of the composer
@@ -135,4 +135,11 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
     </button>}
     <p aria-live="polite" className="sr-only">{spoken}</p>
   </div>;
+}
+
+/** The shelf for the open chat: reads its background work itself, so the
+ * owner (App) does not re-render on every tick of a running task. */
+export function ChatWorkShelf({ sessionId, ...props }: Omit<Parameters<typeof WorkShelf>[0], "tasks" | "notice"> & { sessionId: string }) {
+  const { tasks, notice } = useBackgroundTasks(sessionId);
+  return <WorkShelf tasks={tasks} notice={notice} {...props} />;
 }

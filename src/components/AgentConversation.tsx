@@ -32,8 +32,7 @@ import { useAutoExpandEditActivity, useShowThinking } from "../transcriptSetting
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
 import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
-import { BackgroundActivity } from "./BackgroundActivity";
-import { backgroundOutcome } from "../backgroundTasks";
+import { backgroundOutcome, backgroundTaskKey, type BackgroundWork } from "../backgroundTasks";
 import { CHECK_LABEL } from "../transcript/checks";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
@@ -857,7 +856,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. Only the main chat passes this. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -989,7 +988,42 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     // live starts remain visible while the next forest poll is in flight.
     if (activeProcessEntries !== undefined && !processIds.has(item.identity) && item.sequence <= snapshotSequence) return false;
     return isToolLive(call, turnActive && item.turn === latestTurn, runtimeActive);
-  }).map(item => [toolCallDisplay(item).sourceCallId ?? item.identity ?? item.key, item])).values()];
+  }).map(item => [backgroundTaskKey(item), item])).values()];
+  const activitySignature = activeProcesses.map(item => `${item.identity}:${item.eventId}:${item.text.length}`).join(":");
+  // Background work leaves the transcript: it is reported, every render, to
+  // whoever draws it, and the store wakes them only when this signature moves.
+  // A heartbeat changes a task's progress line without new output, so the
+  // signature reads the fields the shelf and the pane draw, not just the text.
+  // A launcher shares its task's key but reports no outcome of its own
+  // ("Started in background"), so the first definite answer is the task's.
+  const backgroundSignature = activeProcesses.map(item => {
+    const call = toolCallDisplay(item);
+    return `${item.identity}:${item.eventId}:${item.text.length}:${call.status}:${call.progress ?? ""}:${call.durationMs ?? ""}:${(call.output ?? "").length}`;
+  }).join("|");
+  const backgroundScope = readOnly ? undefined : session?.id;
+  const reportBackgroundWork = useRef(onBackgroundWork);
+  reportBackgroundWork.current = onBackgroundWork;
+  useEffect(() => {
+    if (!backgroundScope || !onBackgroundWork) return;
+    onBackgroundWork({
+      scope: backgroundScope,
+      items: activeProcesses,
+      signature: backgroundSignature,
+      outcomeOf: key => {
+        for (const candidate of processCandidates) {
+          if (!isToolItem(candidate) || backgroundTaskKey(candidate) !== key) continue;
+          const outcome = backgroundOutcome(candidate);
+          if (outcome) return outcome;
+        }
+        return undefined;
+      },
+    });
+  });
+  // Leaving the chat takes its tasks with it, quietly: no outcome, no notice.
+  useEffect(() => {
+    if (!backgroundScope) return;
+    return () => reportBackgroundWork.current?.({ scope: backgroundScope, items: [], signature: "", outcomeOf: () => undefined });
+  }, [backgroundScope]);
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
@@ -1040,7 +1074,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const clock = now ?? Date.now();
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
-  const activitySignature = activeProcesses.map(item => `${item.identity}:${item.eventId}:${item.text.length}`).join(":");
   // Hydration is a layout change above the reader: when they are pinned to the
   // bottom it must re-place them there, and when they scrolled up it must not.
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}:${shownItems.length - windowStart}:${activitySignature}`;
@@ -1124,22 +1157,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       </AnimatePresence>
       {trailing}
       </div>
-      {/* Last, not first: ScrollFollow's growth observer watches this
-          container's firstElementChild, and the chip's always-mounted wrapper
-          span would otherwise be what it measures — an empty span never grows,
-          so late-growing rows (an image decoding, a code block highlighting)
-          would stop re-pinning the reader at the bottom. The chip itself is
-          position:fixed, so its DOM position is invisible. */}
-      {!readOnly && <BackgroundActivity items={activeProcesses} harness={session?.harness} scope={transcriptKey} outcomeOf={key => {
-        // A launcher shares its task's key but reports no outcome of its own
-        // ("Started in background"), so the first definite answer is the task's.
-        for (const candidate of processCandidates) {
-          if (!isToolItem(candidate) || (toolCallDisplay(candidate).sourceCallId ?? candidate.identity ?? candidate.key) !== key) continue;
-          const outcome = backgroundOutcome(candidate);
-          if (outcome) return outcome;
-        }
-        return undefined;
-      }}/>}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
   </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });

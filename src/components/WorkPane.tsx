@@ -9,6 +9,7 @@ import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { cn } from "@/lib/utils";
 import { AttachPullRequest, CHECK_ICON, PullRequestGlyph } from "./ChatPullRequests";
 import { SHELF_TONE, TaskKindGlyph } from "./WorkShelf";
+import { useBackgroundTasks } from "./useBackgroundTasks";
 
 // The detail behind the composer shelf: every pull request this chat opened
 // or had attached, and every task its agent left running. One row grammar for
@@ -58,9 +59,12 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
             <Icon size={13} className={cn("shrink-0", className)} aria-label={label} />
             <span className="min-w-0 flex-1 truncate text-body">{check.name}</span>
             <span className="shrink-0 truncate text-[11px] text-faint">{tone === "skipped" ? "skipped" : check.workflow}</span>
-            {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Logs for ${check.name}`} className={cn("inline-flex shrink-0 items-center gap-0.5 rounded px-1 text-[11px] transition-colors hover:bg-accent hover:text-foreground", tone === "failed" ? "text-destructive" : "text-muted-foreground opacity-0 group-hover/check:opacity-100 focus-visible:opacity-100")}>
+            {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Logs for ${check.name}`} className={cn("inline-flex w-[2.6rem] shrink-0 items-center justify-end gap-0.5 rounded px-1 text-[11px] transition-colors hover:bg-accent hover:text-foreground", tone === "failed" ? "text-destructive" : "text-muted-foreground opacity-0 group-hover/check:opacity-100 focus-visible:opacity-100")}>
               Logs <ArrowUpRight size={10} aria-hidden="true" />
             </a>}
+            {/* Every row keeps the Logs slot, so the workflow column lines up
+                whether or not a check has a log yet. */}
+            {!check.logUrl && <span className="w-[2.6rem] shrink-0" aria-hidden="true" />}
           </li>;
         })}
       </ul>
@@ -225,3 +229,9 @@ export function WorkPane({ prs, tasks, harness, refreshing, focus, onAttach, onR
   </div>;
 }
 
+
+/** The pane for the open chat, reading its background work itself. */
+export function ChatWorkPane({ sessionId, ...props }: Omit<Parameters<typeof WorkPane>[0], "tasks"> & { sessionId: string }) {
+  const { tasks } = useBackgroundTasks(sessionId);
+  return <WorkPane tasks={tasks} {...props} />;
+}
