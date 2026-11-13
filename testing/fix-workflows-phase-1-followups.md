@@ -88,6 +88,12 @@ contract, especially C7, F20, F22a and F23. Phase 2 is out of scope.
 
 ## Smoke Tests
 
+- Fresh Linux workspace checks and macOS package builds must work with
+  Cargo 1.100 as used in CI. The Tauri build helper must resolve both the
+  legacy and package/hash `OUT_DIR` layouts, without treating Cargo build
+  directories as external-binary files. Keep the dependency update limited
+  to the build helper and its required dependency graph.
+
 - The staged and bundled Claude sidecar includes every local `.mjs` module,
   including the workflow ask relay and trust reader. Both fresh staging and
   reuse after missing modules are tested by launching the real staged sidecar
