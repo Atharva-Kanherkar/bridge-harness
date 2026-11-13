@@ -545,7 +545,8 @@ pub fn approve(db: &Connection, workflow_id: &str, revision_id: &str) -> Result<
 
 /// Turn a workflow on or off. Turning on a workflow whose project is still
 /// missing is refused; if the project came back, its reason is cleared.
-pub fn set_enabled(db: &Connection, workflow_id: &str, enabled: bool) -> Result<wire::Workflow, BridgeError> {
+/// Returns the workflow and the quota-waiting run ids cancelled by disabling.
+pub fn set_enabled(db: &Connection, workflow_id: &str, enabled: bool) -> Result<(wire::Workflow, Vec<String>), BridgeError> {
     let workflow = require(db, workflow_id)?;
     if enabled {
         if let Some(project_id) = workflow.definition.project_id.as_deref() {
@@ -556,11 +557,15 @@ pub fn set_enabled(db: &Connection, workflow_id: &str, enabled: bool) -> Result<
             }
         }
     }
-    db.execute(
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
         "UPDATE workflows SET enabled=?2, disabled_reason=NULL, updated_at=?3 WHERE id=?1",
         params![workflow_id, enabled, now()],
     )?;
-    require(db, workflow_id)
+    let cancelled = crate::workflow_trigger::cancel_disabled_waiting(&transaction, Some(workflow_id), chrono::Utc::now())?;
+    let workflow = require(&transaction, workflow_id)?;
+    transaction.commit()?;
+    Ok((workflow, cancelled))
 }
 
 /// Delete a workflow, its revisions, runs and effects, and its folder.
@@ -592,9 +597,10 @@ fn project_present(db: &Connection, project_id: &str) -> Result<bool, BridgeErro
 }
 
 /// Disable every enabled, project-bound workflow whose project is gone, and
-/// return the ids it changed. Bridge has no project-removal path, so this runs
+/// return the changed workflow ids and cancelled quota-waiting run ids.
+/// Bridge has no project-removal path, so this runs
 /// whenever workflows are read or claimed.
-pub fn reconcile_projects(db: &Connection) -> Result<Vec<String>, BridgeError> {
+pub fn reconcile_projects(db: &Connection) -> Result<(Vec<String>, Vec<String>), BridgeError> {
     let mut statement = db.prepare(
         "SELECT id, project_id FROM workflows WHERE project_id IS NOT NULL AND enabled=1",
     )?;
@@ -611,7 +617,8 @@ pub fn reconcile_projects(db: &Connection) -> Result<Vec<String>, BridgeError> {
             changed.push(id);
         }
     }
-    Ok(changed)
+    let cancelled = crate::workflow_trigger::cancel_disabled_waiting(db, None, chrono::Utc::now())?;
+    Ok((changed, cancelled))
 }
 
 /// A test core with stub Claude and Codex adapters, shared by the workflow
@@ -956,14 +963,14 @@ mod tests {
         let mut bound = definition();
         bound.project_id = Some(project);
         let saved = save(&db, dir.path(), None, &bound, CreatedBy::User).unwrap().workflow;
-        assert!(reconcile_projects(&db).unwrap().is_empty());
+        assert!(reconcile_projects(&db).unwrap().0.is_empty());
 
         std::fs::remove_dir_all(dir.path().join("repo")).unwrap();
-        assert_eq!(reconcile_projects(&db).unwrap(), vec![saved.id.clone()]);
+        assert_eq!(reconcile_projects(&db).unwrap().0, vec![saved.id.clone()]);
         let disabled = require(&db, &saved.id).unwrap();
         assert!(!disabled.enabled);
         assert_eq!(disabled.disabled_reason.as_deref(), Some(DISABLED_PROJECT_REMOVED));
-        assert!(reconcile_projects(&db).unwrap().is_empty(), "already disabled is not changed again");
+        assert!(reconcile_projects(&db).unwrap().0.is_empty(), "already disabled is not changed again");
     }
 
     #[test]
@@ -978,7 +985,7 @@ mod tests {
         assert!(set_enabled(&db, &saved.id, true).unwrap_err().to_string().contains("project is gone"));
 
         std::fs::create_dir_all(dir.path().join("repo")).unwrap();
-        let enabled = set_enabled(&db, &saved.id, true).unwrap();
+        let (enabled, _) = set_enabled(&db, &saved.id, true).unwrap();
         assert!(enabled.enabled);
         assert_eq!(enabled.disabled_reason, None);
     }

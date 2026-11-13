@@ -544,6 +544,29 @@ pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire:
     Ok(run)
 }
 
+/// A quota occasion belongs to an enabled workflow. Once it is disabled,
+/// settle that occasion rather than replaying an old revision on re-enable.
+pub(crate) fn cancel_disabled_waiting(db: &Connection, workflow_id: Option<&str>, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
+    let waiting = db.prepare(
+        "SELECT r.id,w.disabled_reason FROM workflow_runs r JOIN workflows w ON w.id=r.workflow_id
+         WHERE r.status='waiting_quota' AND (w.enabled=0 OR w.disabled_reason IS NOT NULL)
+           AND (?1 IS NULL OR w.id=?1)"
+    )?.query_map(params![workflow_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut changed = Vec::new();
+    for (id, reason) in waiting {
+        cancel(db, &id, now)?;
+        let (code, summary) = if reason.as_deref() == Some(workflows::DISABLED_PROJECT_REMOVED) {
+            ("project_removed", "The workflow's project is gone, so its waiting run was cancelled.")
+        } else {
+            ("workflow_disabled", "The workflow was turned off, so its waiting run was cancelled.")
+        };
+        db.execute("UPDATE workflow_runs SET failure_code=?2,summary=?3,unread=1 WHERE id=?1", params![id, code, summary])?;
+        changed.push(id);
+    }
+    Ok(changed)
+}
+
 // --- schedule ---------------------------------------------------------------------
 
 /// The latest instant a schedule counts slots from (F13a).
@@ -655,7 +678,8 @@ fn tick_with_provider_snapshots(
     let changed_workflows = {
         let db = core.db.lock().unwrap();
         changed_runs.extend(reclaim_expired(&db, now)?);
-        let changed_workflows = workflows::reconcile_projects(&db)?;
+        let (changed_workflows, cancelled_waits) = workflows::reconcile_projects(&db)?;
+        changed_runs.extend(cancelled_waits);
         // A quota recheck owns a lease, but remains visibly waiting until
         // the runner actually starts a session.
         claimed.extend(unpark_waiting(&db, now)?);
@@ -679,14 +703,20 @@ fn tick_with_provider_snapshots(
         // Read once for this pass, outside the DB lock, rather than per run.
         let overviews = snapshots().ok();
         let db = core.db.lock().unwrap();
-        let reserve = read_settings(&db)?.settings.quota_reserve_percent;
+        let reserve = read_settings(&db).ok().map(|stored| stored.settings.quota_reserve_percent);
         for claimed in &mut claimed {
-            let harness: String = db.query_row(
+            let harness = db.query_row(
                 "SELECT json_extract(definition,'$.steps[0].harness') FROM workflow_revisions WHERE id=?1",
                 params![claimed.run.revision_id],
-                |row| row.get(0),
-            )?;
-            claimed.quota_verdict = Some(crate::workflow_run::quota_for_provider(overviews.as_ref(), &harness, reserve));
+                |row| row.get::<_, String>(0),
+            ).ok();
+            // Claims already committed. A corrupt revision/settings payload
+            // must not strand this batch until lease expiry; the runner can
+            // fail that revision independently and still dispatch the others.
+            claimed.quota_verdict = Some(match (reserve, harness) {
+                (Some(reserve), Some(harness)) => crate::workflow_run::quota_for_provider(overviews.as_ref(), &harness, reserve),
+                _ => crate::workflow_run::QuotaVerdict::Proceed { unknown: true },
+            });
         }
     }
     for workflow_id in changed_workflows {
@@ -1149,7 +1179,106 @@ mod tests {
     }
 
     #[test]
-    fn paused_disabled_and_crashed_quota_waits_keep_lease_safety() {
+    fn disabled_or_project_removed_workflows_cancel_parked_occasions_and_publish_once() {
+        for removed_project in [false, true] {
+            let (dir, core) = test_support::core();
+            let now = Utc::now();
+            let project = dir.path().join("project");
+            std::fs::create_dir(&project).unwrap();
+            let first = {
+                let db = core.db.lock().unwrap();
+                let mut definition = test_support::definition();
+                definition.trigger = wire::WorkflowTrigger::Manual;
+                if removed_project {
+                    db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','project',?1,'now')", params![project.to_string_lossy()]).unwrap();
+                    definition.project_id = Some("p".into());
+                }
+                let workflow = test_support::save_approved(&db, dir.path(), &definition);
+                let run = claimed(claim(&db, &workflow.id, &Occasion::manual(&workflow.id, "old"), false, now).unwrap());
+                park(&db, &run.run.id, &run.lease_owner).unwrap();
+                run
+            };
+            let mut events = core.events.subscribe();
+            if removed_project {
+                std::fs::remove_dir(&project).unwrap();
+                crate::api::list_workflows(&core).unwrap();
+            } else {
+                crate::api::set_workflow_enabled(&core, &wire::SetWorkflowEnabledParams { workflow_id: first.run.workflow_id.clone(), enabled: false }).unwrap();
+            }
+            {
+                let db = core.db.lock().unwrap();
+                let ended = require_run(&db, &first.run.id).unwrap();
+                assert_eq!(ended.status, wire::WorkflowRunStatus::Cancelled);
+                assert_eq!(ended.failure_code.as_deref(), Some(if removed_project { "project_removed" } else { "workflow_disabled" }));
+                assert!(ended.summary.is_some());
+                assert!(active_run(&db, &first.run.workflow_id).unwrap().is_none());
+                assert!(!park(&db, &first.run.id, &first.lease_owner).unwrap());
+            }
+            if removed_project { std::fs::create_dir(&project).unwrap(); }
+            crate::api::set_workflow_enabled(&core, &wire::SetWorkflowEnabledParams { workflow_id: first.run.workflow_id.clone(), enabled: true }).unwrap();
+            let db = core.db.lock().unwrap();
+            assert!(unpark_waiting(&db, now + Duration::days(30)).unwrap().is_empty(), "the old occasion never revives");
+            assert!(matches!(claim(&db, &first.run.workflow_id, &Occasion::manual(&first.run.workflow_id, "new"), false, now).unwrap(), ClaimOutcome::Claimed(_)), "a fresh occasion has a free slot");
+            let mut cancellations = 0;
+            while let Ok(event) = events.try_recv() {
+                if let CoreEvent::WorkflowRunChanged { run } = event {
+                    assert_eq!(run.status, wire::WorkflowRunStatus::Cancelled);
+                    cancellations += 1;
+                }
+            }
+            assert_eq!(cancellations, 1);
+        }
+    }
+
+    #[test]
+    fn quota_metadata_errors_after_claim_do_not_orphan_the_batch_or_hide_events() {
+        for failure in ["revision", "settings", "snapshot"] {
+            let (dir, core) = test_support::core();
+            let now = Utc::now();
+            let first = {
+                let db = core.db.lock().unwrap();
+                let first = approved(&db, dir.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
+                approved(&db, dir.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
+                write_settings(&db, default_settings(), now).unwrap();
+                first
+            };
+            let high = quota_snapshots(&core, 99.0);
+            let mut events = core.events.subscribe();
+            let runs = tick_with_provider_snapshots(&core, now, || {
+                let db = core.db.lock().unwrap();
+                match failure {
+                    "revision" => { db.execute("UPDATE workflow_revisions SET definition='{\"steps\":[{\"harness\":null}]}' WHERE id=?1", [&first.revision_id]).unwrap(); }
+                    "settings" => { db.execute("UPDATE configuration_entries SET payload='{}' WHERE kind='workflows' AND id='settings'", []).unwrap(); }
+                    "snapshot" => return Err(BridgeError::Invalid("unavailable snapshot".into())),
+                    _ => unreachable!(),
+                }
+                Ok(high)
+            }).unwrap();
+            assert_eq!(runs.len(), 2, "every committed claim reaches dispatch");
+            for run in &runs {
+                let expected = if failure == "revision" && run.run.revision_id != first.revision_id {
+                    crate::workflow_run::QuotaVerdict::Wait
+                } else { crate::workflow_run::QuotaVerdict::Proceed { unknown: true } };
+                assert_eq!(run.quota_verdict, Some(expected), "{failure}");
+            }
+            let mut published = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                if let CoreEvent::WorkflowRunChanged { run } = event { published.push(run.id); }
+            }
+            assert_eq!(published.len(), 2, "claim notifications are still published");
+            assert!(runs.iter().all(|run| published.contains(&run.run.id)));
+            if failure == "revision" {
+                for run in runs { crate::workflow_run::execute(&core, run); }
+                let db = core.db.lock().unwrap();
+                let all = list_runs(&db, None, false, 10).unwrap();
+                assert_eq!(all.iter().find(|run| run.workflow_id == first.id).unwrap().failure_code.as_deref(), Some("runner_error"));
+                assert_eq!(all.iter().filter(|run| run.status == wire::WorkflowRunStatus::WaitingQuota).count(), 1, "the healthy run still parks normally");
+            }
+        }
+    }
+
+    #[test]
+    fn paused_rechecks_and_crashed_quota_waits_keep_lease_safety() {
         let (dir, core) = test_support::core();
         let now = Utc::now();
         let initial = manual_run(&core, dir.path(), "wait", now);
@@ -1158,9 +1287,6 @@ mod tests {
         write_settings(&db, wire::WorkflowSettings { paused: true, quota_reserve_percent: 25 }, now).unwrap();
         assert!(unpark_waiting(&db, now).unwrap().is_empty());
         write_settings(&db, default_settings(), now).unwrap();
-        db.execute("UPDATE workflows SET enabled=0 WHERE id=?1", params![initial.run.workflow_id]).unwrap();
-        assert!(unpark_waiting(&db, now).unwrap().is_empty());
-        db.execute("UPDATE workflows SET enabled=1 WHERE id=?1", params![initial.run.workflow_id]).unwrap();
         let runs = unpark_waiting(&db, now).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run.status, wire::WorkflowRunStatus::WaitingQuota);
