@@ -32,7 +32,8 @@ import { useAutoExpandEditActivity, useShowThinking } from "../transcriptSetting
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
 import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
-import { BackgroundActivity, backgroundOutcome } from "./BackgroundActivity";
+import { BackgroundActivity } from "./BackgroundActivity";
+import { backgroundOutcome } from "../backgroundTasks";
 import { CHECK_LABEL } from "../transcript/checks";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";

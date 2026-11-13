@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Check, ChevronUp, Square, X } from "lucide-react";
-import { toolCallDisplay, type ConversationItem } from "../conversation";
+import type { ConversationItem } from "../conversation";
+import { describeBackgroundTask, formatElapsed, type BackgroundOutcome, type BackgroundTaskKind, type BackgroundTaskView } from "../backgroundTasks";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { HarnessMark } from "./harnessMarks";
@@ -11,68 +12,6 @@ import { HarnessMark } from "./harnessMarks";
 /// not the thinking row and the session is not `working`; it is a small island
 /// at the foot of the chat that says the agent still has work going, and opens
 /// into the list when asked.
-
-export type BackgroundTaskKind = "running" | "watching";
-
-export interface BackgroundTaskView {
-  key: string;
-  kind: BackgroundTaskKind;
-  /** What the agent said the task is for, before any shell. */
-  label: string;
-  command?: string;
-  elapsedMs?: number;
-  /** One faint line of news: progress, the newest output line, or where output goes. */
-  detail?: string;
-  outputTail: string[];
-  /** Files the command redirects its output into, by name. */
-  logFiles: string[];
-}
-
-/// A provider's tool name is not a description of the work.
-const GENERIC_TITLES = /^(bash|shell|monitor|task|command|terminal|local_bash|background update)$/i;
-const TAIL_LINES = 6;
-
-/** Files a shell command writes its output into, in the order it names them. */
-export function redirectTargets(command?: string): string[] {
-  if (!command) return [];
-  const files = new Set<string>();
-  for (const match of command.matchAll(/(?:^|[\s;(|])[0-9&]?>>?\s*([^\s;&|()<>]+)/g)) {
-    const path = match[1].replace(/^["']|["']$/g, "");
-    if (path && path !== "/dev/null") files.add(path);
-  }
-  return [...files];
-}
-
-const baseName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? path;
-
-export function formatElapsed(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
-}
-
-export function describeBackgroundTask(item: ConversationItem, now: number): BackgroundTaskView {
-  const call = toolCallDisplay(item);
-  const title = item.title?.trim();
-  const label = (title && !GENERIC_TITLES.test(title) ? title : undefined)
-    ?? call.intent ?? call.target ?? call.command ?? "Background task";
-  const started = item.createdAt ? Date.parse(item.createdAt) : Number.NaN;
-  const outputTail = (call.output ?? "").split("\n").map(line => line.trimEnd()).filter(line => line.trim()).slice(-TAIL_LINES);
-  const logFiles = redirectTargets(call.command).map(baseName);
-  const news = call.progress ?? outputTail.at(-1) ?? (logFiles.length ? `Writing to ${logFiles.at(-1)}` : undefined);
-  return {
-    key: call.sourceCallId ?? item.identity ?? item.key,
-    kind: call.passive ? "watching" : "running",
-    label,
-    command: call.command,
-    elapsedMs: Number.isFinite(started) ? Math.max(0, now - started) : call.durationMs,
-    detail: news && news !== label ? news : undefined,
-    outputTail,
-    logFiles,
-  };
-}
 
 /// The panel floats over the transcript, so the scroller is what clips it.
 function scrollParent(element: HTMLElement | null): HTMLElement | null {
@@ -158,19 +97,6 @@ function TaskRow({ task, open, onToggle }: { task: BackgroundTaskView; open: boo
       </motion.div>}
     </AnimatePresence>
   </li>;
-}
-
-/// How a task that left the list ended, when the runtime said so. A launch
-/// acknowledgement, a lost task or an unknown outcome announces nothing: the
-/// island never claims a result it was not given.
-export type BackgroundOutcome = "done" | "failed" | "stopped";
-
-export function backgroundOutcome(item: ConversationItem): BackgroundOutcome | undefined {
-  const call = toolCallDisplay(item);
-  if (call.status === "running") return undefined;
-  if (call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0)) return "failed";
-  if (item.status === "stopped") return "stopped";
-  return call.status === "completed" && !call.statusLabel ? "done" : undefined;
 }
 
 const OUTCOME_WORD: Record<BackgroundOutcome, string> = { done: "Done", failed: "Failed", stopped: "Stopped" };
