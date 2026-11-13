@@ -462,6 +462,7 @@ pub(crate) fn bounded_turn_output(
     }
     .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
 
+    let exact = exact_call.is_some();
     if let Some((tool, arguments)) = exact_call {
         policy = BriefingRuntimePolicy::compile_exact_action(server.to_owned(), tool, arguments, limits).map_err(|e| e.reason())?;
     }
@@ -565,8 +566,19 @@ pub(crate) fn bounded_turn_output(
         Err(detail) => {
             runtime.stop(ShutdownReason::Failed);
             settle_session(core, &session_id, "failed");
-            Err(detail)
+            // A tool may have posted before the model timed out or failed its
+            // final response. Preserve authoritative tool output for the
+            // provider's strict receipt parser; prose still proves nothing.
+            completed_output(Err(detail), exact, TurnOutput { text, results })
         }
+    }
+}
+
+pub(crate) fn completed_output(outcome: Result<(), String>, exact: bool, output: TurnOutput) -> Result<TurnOutput, String> {
+    match outcome {
+        Ok(()) => Ok(output),
+        Err(_) if exact && !output.results.is_empty() => Ok(output),
+        Err(detail) => Err(detail),
     }
 }
 

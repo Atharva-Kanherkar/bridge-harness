@@ -3,7 +3,7 @@
 #[cfg(test)]
 use crate::{
     briefing_policy::ActionIntent,
-    connector_runs_live::{action_succeeded, collect_tool_results},
+    connector_runs_live::{action_succeeded, collect_tool_results, completed_output},
 };
 use crate::{
     connector_runs::{self, AuthorizedAction, ConnectorAction, RunKind},
@@ -500,6 +500,24 @@ mod outgoing_tests {
         );
         assert!(results.is_empty());
     }
+    #[test]
+    fn a_model_failure_after_a_real_send_does_not_make_the_message_retryable() {
+        let output = receipt("C123", "1794571200.000001");
+        let output =
+            completed_output(Err("model exceeded its turn budget".into()), true, output).unwrap();
+        assert_eq!(
+            outgoing_receipt(&output, "C123", None).unwrap().remote_ref,
+            "1794571200.000001"
+        );
+        assert!(completed_output(Err("timeout".into()), true, TurnOutput::default()).is_err());
+        assert!(completed_output(
+            Err("timeout".into()),
+            false,
+            receipt("C123", "1794571200.000001")
+        )
+        .is_err());
+    }
+
     #[test]
     fn an_echoed_message_body_cannot_forge_a_remote_receipt() {
         let mut results = Vec::new();

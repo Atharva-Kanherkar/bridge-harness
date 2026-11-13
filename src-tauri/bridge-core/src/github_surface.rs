@@ -2377,7 +2377,7 @@ fn valid_comment_url(
             format!("/{}/{}/issues/{number}", repository.owner, repository.name),
             format!("/{}/{}/pull/{number}", repository.owner, repository.name),
         ]
-        .contains(&url.path().to_owned())
+        .iter().any(|path| path.eq_ignore_ascii_case(url.path()))
 }
 
 pub fn strategy_label(strategy: MergeStrategy) -> &'static str {
@@ -3741,6 +3741,8 @@ mod tests {
 
     #[test]
     fn outgoing_comments_require_policy_and_return_the_created_receipt() {
+        assert!(valid_comment_url("https://github.com/Explicit/Repository/issues/17#issuecomment-42", &expected("explicit", "repository"), 17, 42, false));
+
         let fake = fake_gh(true, None);
         let surface = GithubSurface::discover_on_path(fake.path());
         let action = GithubAction::Comment { target: GithubTarget::Issue, number: 17, body: "literal `body` with $(text)\nand a newline".into() };

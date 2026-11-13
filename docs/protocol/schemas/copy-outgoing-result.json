@@ -35,7 +35,7 @@
       "type": "object"
     },
     "OutgoingDestination": {
-      "description": "Where a draft is addressed. Names are kept as the agent wrote them (`#dev`, `@nina`); resolving them to ids belongs to the slice that sends.\n\n`rename_all` renames the variant tags only, so multi-word fields carry an explicit rename to stay camelCase on the wire.",
+      "description": "Where a draft is addressed. Names are kept as the agent wrote them (`#dev`, `@nina`); they are resolved to ids before offering send approval.\n\n`rename_all` renames the variant tags only, so multi-word fields carry an explicit rename to stay camelCase on the wire.",
       "oneOf": [
         {
           "properties": {
