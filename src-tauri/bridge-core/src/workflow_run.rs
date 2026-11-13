@@ -405,8 +405,9 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
         let bound = workflow_trigger::require_run(&core.db.lock().unwrap(), &run_id).ok();
         if let Some(bound) = bound {
             if let Some(session_id) = bound.session_id.as_deref() {
-                let _ = settle(core, &bound, &lease_owner, session_id, wire::WorkflowRunStatus::Failed, outcome);
-                return;
+                if settle(core, &bound, &lease_owner, session_id, wire::WorkflowRunStatus::Failed, outcome.clone()).is_ok() {
+                    return;
+                }
             }
         }
         let settled = workflow_trigger::finish(
@@ -702,19 +703,28 @@ fn last_message(db: &Connection, session_id: &str, baseline: i64) -> Result<Opti
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct RunUsage {
-    tokens: Option<i64>,
+pub(crate) struct RunUsage {
+    pub tokens: Option<i64>,
     output_tokens: i64,
-    cost_microusd: Option<i64>,
+    pub cost_microusd: Option<i64>,
+    known_cost_microusd: i64,
 }
 
-fn usage_used(db: &Connection, session_id: &str) -> Result<RunUsage, BridgeError> {
+// Workflow sessions have no workspace, so their ledger scope is the session
+// itself. Both predicates use idx_usage_ledger_scope instead of scanning all
+// chats on every budget poll. Unknown rows keep the outcome cost unknown;
+// known partial spend is still a lower bound for enforcing the budget.
+const USAGE_SQL: &str = "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),
+    COALESCE(SUM(output_tokens),0),
+    CASE WHEN COUNT(*)=COUNT(cost_microusd) THEN SUM(cost_microusd) END,
+    COALESCE(SUM(cost_microusd),0)
+    FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1";
+
+pub(crate) fn usage_used(db: &Connection, session_id: &str) -> Result<RunUsage, BridgeError> {
     Ok(db.query_row(
-        "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),
-                COALESCE(SUM(output_tokens),0), SUM(cost_microusd)
-         FROM usage_ledger WHERE session_id=?1",
+        USAGE_SQL,
         params![session_id],
-        |row| Ok(RunUsage { tokens: row.get(0)?, output_tokens: row.get(1)?, cost_microusd: row.get(2)? }),
+        |row| Ok(RunUsage { tokens: row.get(0)?, output_tokens: row.get(1)?, cost_microusd: row.get(2)?, known_cost_microusd: row.get(3)? }),
     )?)
 }
 
@@ -733,9 +743,9 @@ fn budget_reached(db: &Connection, session_id: &str, baseline: i64, budget: &wir
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let usage = usage_used(db, session_id)?;
-    Ok(turns >= budget.max_turns || tools >= budget.max_tool_calls
+    Ok(turns > budget.max_turns || tools > budget.max_tool_calls
         || budget.max_output_tokens.is_some_and(|limit| usage.output_tokens >= limit)
-        || budget.cost_ceiling_microusd.is_some_and(|limit| usage.cost_microusd.is_some_and(|cost| cost >= limit)))
+        || budget.cost_ceiling_microusd.is_some_and(|limit| usage.known_cost_microusd >= limit))
 }
 
 /// Stop a run's session if its provider is still up. Stopping ends the
@@ -954,7 +964,7 @@ mod tests {
         let db = core.db.lock().unwrap();
         for (input, output) in [(100, 20), (50, 5)] {
             db.execute(
-                "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,source,created_at) VALUES('',?1,?2,?3,'reported','now')",
+                "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,source,created_at) VALUES(?1,?1,?2,?3,'reported','now')",
                 params!["run-session", input, output],
             )
             .unwrap();
@@ -990,7 +1000,7 @@ mod tests {
     fn ledger(db: &Connection, session_id: &str, input: i64, output: i64, cost: Option<i64>) {
         db.execute(
             "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,cost_microusd,source,created_at)
-             VALUES('',?1,?2,?3,?4,'reported','now')",
+             VALUES(?1,?1,?2,?3,?4,'reported','now')",
             params![session_id, input, output, cost],
         ).unwrap();
     }
@@ -1018,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn each_numeric_ceiling_stops_even_a_completed_turn_at_equality() {
+    fn exceeded_counts_and_reached_usage_ceilings_stop_even_a_completed_turn() {
         for ceiling in ["turns", "tools", "output", "cost"] {
             let (dir, core) = test_support::core();
             let run = bound_run(&core, dir.path(), &test_support::definition(), false);
@@ -1036,7 +1046,9 @@ mod tests {
                 agent_event(&db, 1, "assistant.message", None, Some("done"));
                 agent_event(&db, 2, "tool.started", None, None);
                 ledger(&db, "run-session", 100, 8, Some(16));
-                agent_event(&db, 3, "turn.completed", Some("completed"), None);
+                agent_event(&db, 3, "assistant.message", None, Some("done again"));
+                agent_event(&db, 4, "tool.started", None, None);
+                agent_event(&db, 5, "turn.completed", Some("completed"), None);
             }
             let end = wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap();
             assert_eq!(end, TurnEnd::Budget("budget_exhausted"), "{ceiling}");
@@ -1058,8 +1070,8 @@ mod tests {
         bound_run(&core, dir.path(), &test_support::definition(), false);
         let db = core.db.lock().unwrap();
         let mut budget = test_support::definition().budget;
-        budget.max_turns = 2;
-        budget.max_tool_calls = 2;
+        budget.max_turns = 1;
+        budget.max_tool_calls = 1;
         budget.max_output_tokens = Some(10);
         budget.cost_ceiling_microusd = Some(20);
         agent_event(&db, 1, "assistant.message", None, Some("old"));
@@ -1094,11 +1106,13 @@ mod tests {
         budget.max_turns = 2;
         budget.max_tool_calls = 3;
         assert!(!budget_reached(&db, "run-session", 0, &budget).unwrap(), "one message, two calls despite repeated snapshots");
-        budget.max_tool_calls = 2;
+        budget.max_tool_calls = 1;
         assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "file and shell calls both count");
         budget.max_tool_calls = 3;
         budget.max_turns = 1;
-        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "a tool-only message spends a turn");
+        assert!(!budget_reached(&db, "run-session", 0, &budget).unwrap(), "a tool-only message is one allowed turn");
+        agent_event(&db, 10, "assistant.message", None, Some("second message"));
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "the second message exceeds one turn");
     }
 
     #[test]
@@ -1114,26 +1128,81 @@ mod tests {
     }
 
     #[test]
-    fn settlement_keeps_missing_zero_and_summed_ledger_costs() {
-        for status in [wire::WorkflowRunStatus::Succeeded, wire::WorkflowRunStatus::Failed] {
-            let (dir, core) = test_support::core();
-            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
-            {
-                let db = core.db.lock().unwrap();
-                assert_eq!(usage_used(&db, "run-session").unwrap(), RunUsage::default());
-                ledger(&db, "run-session", 100, 20, None);
-                assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, None);
-                ledger(&db, "run-session", 50, 5, Some(0));
-                assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, Some(0));
-                ledger(&db, "run-session", 0, 0, Some(12));
-                ledger(&db, "run-session", 0, 0, Some(7));
+    fn all_settlement_paths_share_strict_unknown_cost_semantics() {
+        for path in ["succeeded", "failed", "cancelled", "expired"] {
+            for costs in [vec![None], vec![Some(0)], vec![Some(12), Some(7)], vec![None, Some(0), Some(12), Some(7)]] {
+                let (dir, core) = test_support::core();
+                let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+                {
+                    let db = core.db.lock().unwrap();
+                    assert_eq!(usage_used(&db, "run-session").unwrap(), RunUsage::default());
+                    for cost in &costs { ledger(&db, "run-session", 100, 20, *cost); }
+                    // Another workspace cannot spend this workflow session's budget.
+                    db.execute("INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,cost_microusd,source,created_at) VALUES('other','run-session',1,999,999,'reported','now')", []).unwrap();
+                }
+                match path {
+                    "cancelled" => { workflow_trigger::cancel(&core.db.lock().unwrap(), &run.run.id, Utc::now()).unwrap(); }
+                    "expired" => { workflow_trigger::reclaim_expired(&core.db.lock().unwrap(), Utc::now() + chrono::Duration::minutes(20)).unwrap(); }
+                    _ => { settle(&core, &run.run, &run.lease_owner, "run-session",
+                        if path == "succeeded" { wire::WorkflowRunStatus::Succeeded } else { wire::WorkflowRunStatus::Failed }, Outcome::default()).unwrap(); }
+                }
+                let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+                let expected_cost = costs.iter().copied().collect::<Option<Vec<_>>>().map(|costs| costs.iter().sum());
+                assert!(!settled.status.is_active(), "{path}");
+                assert_eq!(settled.tokens, Some(costs.len() as i64 * 120), "{path}");
+                assert_eq!(settled.cost_microusd, expected_cost, "{path}: {costs:?}");
             }
-            settle(&core, &run.run, &run.lease_owner, "run-session", status, Outcome::default()).unwrap();
-            let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
-            assert_eq!(settled.status, status);
-            assert_eq!(settled.tokens, Some(175));
-            assert_eq!(settled.cost_microusd, Some(19));
         }
+    }
+
+    #[test]
+    fn usage_poll_uses_the_existing_scope_index_and_known_spend_remains_a_lower_bound() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        let plan: String = db.query_row(&format!("EXPLAIN QUERY PLAN {USAGE_SQL}"), ["run-session"], |row| row.get(3)).unwrap();
+        assert!(plan.contains("SEARCH usage_ledger USING INDEX idx_usage_ledger_scope"), "{plan}");
+        ledger(&db, "run-session", 1, 1, None);
+        ledger(&db, "run-session", 1, 1, Some(10));
+        let mut budget = test_support::definition().budget;
+        budget.cost_ceiling_microusd = Some(10);
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, None);
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap());
+    }
+
+    #[test]
+    fn a_runner_error_still_finishes_when_usage_cannot_be_read() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("UPDATE workflow_revisions SET definition='{}' WHERE id=?1", [&run.run.revision_id]).unwrap();
+            db.execute("ALTER TABLE usage_ledger RENAME TO unavailable_usage_ledger", []).unwrap();
+        }
+        let mut events = core.events.subscribe();
+        execute(&core, run.clone());
+        let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+        assert_eq!(settled.status, wire::WorkflowRunStatus::Failed);
+        assert_eq!(settled.failure_code.as_deref(), Some("runner_error"));
+        assert!(matches!(events.try_recv(), Ok(crate::events::CoreEvent::WorkflowRunChanged { .. })));
+    }
+
+    #[test]
+    fn count_ceilings_allow_the_nth_message_and_tool_to_complete() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let stopped = budget_runtime(&core);
+        let mut budget = test_support::definition().budget;
+        budget.max_turns = 1;
+        budget.max_tool_calls = 1;
+        {
+            let db = core.db.lock().unwrap();
+            agent_event(&db, 1, "assistant.message", None, Some("done"));
+            agent_event(&db, 2, "tool.started", None, None);
+            agent_event(&db, 3, "turn.completed", Some("completed"), None);
+        }
+        assert_eq!(wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap(), TurnEnd::Completed { failed: false });
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
@@ -1169,13 +1238,18 @@ mod tests {
         let run = bound_run(&core, dir.path(), &test_support::definition(), false);
         let mut budget = test_support::definition().budget;
         budget.max_wall_seconds = 1;
-        core.db.lock().unwrap().execute("UPDATE sessions SET status='waiting' WHERE id='run-session'", []).unwrap();
+        budget.max_tool_calls = 1;
+        {
+            let db = core.db.lock().unwrap();
+            agent_event(&db, 1, "tool.started", None, None);
+            db.execute("UPDATE sessions SET status='waiting' WHERE id='run-session'", []).unwrap();
+        }
         let answering = core.clone();
         let answer = std::thread::spawn(move || {
             // Longer than the whole time limit: the person takes their time.
             std::thread::sleep(StdDuration::from_millis(2500));
             let db = answering.db.lock().unwrap();
-            agent_event(&db, 1, "turn.completed", Some("completed"), None);
+            agent_event(&db, 2, "turn.completed", Some("completed"), None);
         });
         let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
         answer.join().unwrap();

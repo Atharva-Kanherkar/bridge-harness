@@ -448,23 +448,23 @@ pub fn finish(
 /// zero rows changed means its holder heartbeated first, and it is left alone.
 pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
     let mut statement = db.prepare(&format!(
-        "SELECT id, lease_expires_at FROM workflow_runs
+        "SELECT id, lease_expires_at, session_id FROM workflow_runs
          WHERE status IN {ACTIVE} AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?1"
     ))?;
     let expired = statement
-        .query_map(params![stamp(now)], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map(params![stamp(now)], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))?
         .collect::<Result<Vec<_>, _>>()?;
     let mut reclaimed = Vec::new();
-    for (id, expiry) in expired {
+    for (id, expiry, session_id) in expired {
+        let usage = session_id.as_deref().map(|id| crate::workflow_run::usage_used(db, id)).transpose()?.unwrap_or_default();
         let changed = db.execute(
             &format!(
                 "UPDATE workflow_runs SET status='failed', failure_code='lease_expired', lease_owner=NULL,
                     lease_expires_at=NULL, finished_at=?3, unread=1,
-                    tokens=(SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) FROM usage_ledger WHERE session_id=workflow_runs.session_id),
-                    cost_microusd=(SELECT SUM(cost_microusd) FROM usage_ledger WHERE session_id=workflow_runs.session_id)
+                    tokens=?4, cost_microusd=?5
                  WHERE id=?1 AND lease_expires_at=?2 AND status IN {ACTIVE}"
             ),
-            params![id, expiry, stamp(now)],
+            params![id, expiry, stamp(now), usage.tokens, usage.cost_microusd],
         )?;
         if changed == 1 {
             reclaimed.push(id);
@@ -527,14 +527,15 @@ pub fn unpark_waiting(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Claimed
 /// Cancel an active run. A queued or waiting run settles now; a running run's
 /// holder learns on its next heartbeat, which fails because the lease is gone.
 pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire::WorkflowRun, BridgeError> {
+    let run = require_run(db, run_id)?;
+    let usage = run.session_id.as_deref().map(|id| crate::workflow_run::usage_used(db, id)).transpose()?.unwrap_or_default();
     let changed = db.execute(
         &format!(
             "UPDATE workflow_runs SET status='cancelled', lease_owner=NULL, lease_expires_at=NULL, finished_at=?2,
-                tokens=(SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) FROM usage_ledger WHERE session_id=workflow_runs.session_id),
-                cost_microusd=(SELECT SUM(cost_microusd) FROM usage_ledger WHERE session_id=workflow_runs.session_id)
+                tokens=?3, cost_microusd=?4
              WHERE id=?1 AND status IN {ACTIVE}"
         ),
-        params![run_id, stamp(now)],
+        params![run_id, stamp(now), usage.tokens, usage.cost_microusd],
     )?;
     let run = require_run(db, run_id)?;
     if changed == 0 {
