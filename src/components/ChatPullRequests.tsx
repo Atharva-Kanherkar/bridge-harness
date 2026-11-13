@@ -166,7 +166,7 @@ const PHASE_ICON: Record<ChatPrPhase, typeof CircleCheck> = {
   none: CircleDashed,
 };
 
-const CHECK_ICON: Record<CheckTone, { icon: typeof CircleCheck; className: string; label: string }> = {
+export const CHECK_ICON: Record<CheckTone, { icon: typeof CircleCheck; className: string; label: string }> = {
   failed: { icon: CircleX, className: "text-destructive", label: "Failed" },
   running: { icon: CircleDot, className: "text-warning github-check-live", label: "Running" },
   queued: { icon: CircleDashed, className: "text-muted-foreground", label: "Queued" },
@@ -186,6 +186,52 @@ function prIcon(pr: SessionPullRequest) {
   if (pr.state === "merged") return GitMerge;
   if (pr.state === "closed") return GitPullRequestClosed;
   return pr.isDraft ? GitPullRequestDraft : GitPullRequest;
+}
+
+// ── the glyph ───────────────────────────────────────────────────────────────
+
+/**
+ * A PR at 16px, the same in the shelf, the Work pane and anywhere else a PR is
+ * one row: a failing PR is a red circle-x, merged and closed are their GitHub
+ * marks, and an open PR is a ring whose arcs are its checks (running breathes,
+ * passed is green, skipped is a faint grey). No checks yet is a dashed track.
+ */
+export function PullRequestGlyph({ pr, size = 16, className }: { pr: SessionPullRequest; size?: number; className?: string }) {
+  const status = chatPrStatus(pr);
+  if (pr.state === "merged") return <GitMerge size={size - 2} strokeWidth={2} className={cn("shrink-0 text-info", className)} aria-hidden="true" />;
+  if (pr.state === "closed") return <GitPullRequestClosed size={size - 2} strokeWidth={2} className={cn("shrink-0 text-muted-foreground", className)} aria-hidden="true" />;
+  if (status.phase === "failing") return <CircleX size={size} strokeWidth={2} className={cn("shrink-0 text-destructive", className)} aria-hidden="true" />;
+  const { checks } = pr;
+  const stroke = 2.25;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const arcs = checks.total === 0 ? [] : [
+    { value: checks.inProgress, className: "stroke-warning github-check-live" },
+    { value: checks.passed, className: "stroke-success" },
+    { value: checks.skipped + checks.cancelled, className: "stroke-foreground/25" },
+  ].filter(arc => arc.value > 0);
+  const gap = arcs.length > 1 ? 1.2 : 0;
+  let offset = 0;
+  return <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className={cn("shrink-0 -rotate-90", className)} aria-hidden="true" data-pr-glyph={status.phase}>
+    <circle cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={stroke} className={cn("stroke-foreground/[0.12]", checks.total === 0 && "[stroke-dasharray:2_2.5]")} />
+    {arcs.map((arc, index) => {
+      const length = Math.max(3, (arc.value / checks.total) * circumference - gap);
+      const element = <circle
+        key={index}
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={`${length} ${circumference}`}
+        strokeDashoffset={-offset}
+        className={cn(arc.className, "transition-[stroke-dasharray,stroke-dashoffset] duration-500")}
+      />;
+      offset += (arc.value / checks.total) * circumference;
+      return element;
+    })}
+  </svg>;
 }
 
 // ── the ring ────────────────────────────────────────────────────────────────
@@ -533,7 +579,7 @@ function useNow(interval: number | null) {
 
 /** The live region's text changes only on a phase transition, so a poll that
  * lands the same state stays silent. */
-function useStatusAnnouncements(prs: SessionPullRequest[]) {
+export function useStatusAnnouncements(prs: SessionPullRequest[]) {
   const phases = useRef(new Map<string, ChatPrPhase>());
   const [spoken, setSpoken] = useState("");
   useEffect(() => {
