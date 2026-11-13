@@ -78,6 +78,9 @@ export type ComposerPillProps = {
   /// input → controls row → footer. When present it gets a top hairline and the
   /// recessed `bg-background` surface, so the frame visually contains it.
   footer?: ReactNode;
+  /// A line attached to the top of the frame, above the input, behind a
+  /// hairline: the work shelf. Absent by default; it never reserves height.
+  header?: ReactNode;
   className?: string;
   /// `inline` puts Stop and Send on the textarea's row, for surfaces that hold
   /// several composers at once (Mission Control tiles).
@@ -141,6 +144,7 @@ export function ComposerPill({
   modelControl,
   accessControl,
   footer,
+  header,
   className,
   layout = "dock",
   autocomplete,
@@ -238,6 +242,7 @@ export function ComposerPill({
             }
           }}
         >
+          {header}
           {/* Keep workspace metadata outside the writing surface. */}
           <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : isInline ? "py-1 pl-2.5 pr-1" : "px-3 py-2")}>
           {references.length > 0 && (

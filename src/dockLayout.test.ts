@@ -7,6 +7,7 @@ import {
   MIN_CONVERSATION_WIDTH,
   MIN_DOCK_WIDTH,
   defaultDockState,
+  dockPaneChord,
   dockReducer,
   readDockState,
   writeDockState,
@@ -25,8 +26,14 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe("DOCK_PANES", () => {
-  it("appends Context last so no existing chord moves", () => {
-    expect(DOCK_PANES).toEqual(["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "context"]);
+  it("appends Work last so no existing chord moves", () => {
+    expect(DOCK_PANES).toEqual(["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "context", "work"]);
+  });
+
+  it("gives the first nine panes a digit chord and Work none", () => {
+    expect(dockPaneChord("changes")).toBe("1");
+    expect(dockPaneChord("context")).toBe("9");
+    expect(dockPaneChord("work")).toBeNull();
   });
 });
 
@@ -35,6 +42,12 @@ describe("readDockState", () => {
     const storage = memoryStorage();
     storage.setItem("bridge.dock.v1.ws-1", JSON.stringify({ open: true, expanded: false, width: 420, pane: "clone" }));
     expect(readDockState("ws-1", storage)).toMatchObject({ pane: "browser", visited: ["browser"] });
+  });
+
+  it("restores a dock left open on Work", () => {
+    const storage = memoryStorage();
+    storage.setItem("bridge.dock.v1.ws-1", JSON.stringify({ open: true, expanded: false, width: 420, pane: "work" }));
+    expect(readDockState("ws-1", storage)).toMatchObject({ pane: "work", visited: ["work"] });
   });
 });
 

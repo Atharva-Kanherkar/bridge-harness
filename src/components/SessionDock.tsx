@@ -8,6 +8,7 @@ import {
   MIN_DOCK_WIDTH,
   MAX_DOCK_WIDTH,
   clampDockWidth,
+  dockPaneChord,
   type DockAction,
   type DockPaneId,
   type DockState,
@@ -56,12 +57,12 @@ const RESIZE_STEP = 16;
  * Narrowest dock that still fits the active tab's inline label.
  *
  * Room arithmetic for the header row: each icon-only tab is a 13px icon plus
- * 2×6px of padding ≈ 25px, so seven of them with six 2px gaps and the
- * tablist's own 2×2px padding and 2×1px border come to ≈ 190px. Beside it the
+ * 2×6px of padding ≈ 25px, so eight of them with seven 2px gaps and the
+ * tablist's own 2×2px padding and 2×1px border come to ≈ 220px. Beside it the
  * header keeps two 28px buttons, the 8px gaps between them and 2×8px of
  * `px-2` ≈ 90px. The active label adds its 6px gap plus roughly 6px per
  * character of the longest label ("Transcript") ≈ 66px, which only clears at
- * ≈ 346px — so this sits above that with margin: at the 440px default width
+ * ≈ 376px — so this sits above that with margin: at the 440px default width
  * the label sits comfortably inside the strip, and at the 320px minimum the
  * strip stays icon-only rather than spilling past its own border.
  */
@@ -145,6 +146,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
               {panes.map((pane, index) => {
                 const active = pane.id === state.pane;
                 const Icon = pane.icon;
+                // The chord follows DOCK_PANES, not the strip order: a pane
+                // drawn first must not borrow the first pane's digit.
+                const chord = dockPaneChord(pane.id);
                 return (
                   <button
                     key={pane.id}
@@ -155,7 +159,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     tabIndex={active ? 0 : -1}
                     aria-selected={active}
                     aria-label={pane.label}
-                    title={`${pane.label}  ${formatShortcut({ meta: true, alt: true }, String(index + 1))}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
+                    title={`${pane.label}${chord ? `  ${formatShortcut({ meta: true, alt: true }, chord)}` : ""}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
                     onKeyDown={event => {
                       let next = index;

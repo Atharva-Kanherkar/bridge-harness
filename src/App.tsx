@@ -1,7 +1,7 @@
 import { defaultsFromSettings, WORKER_EFFORTS } from "./chatDefaults";
 import { useResolvedChatDraft } from "./useChatDefaults";
 import { ChatOptionsControl } from "./components/ChatOptionsControl";
-import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings } from "./protocol/generated/protocol";
+import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings, SessionPullRequest } from "./protocol/generated/protocol";
 import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
@@ -14,7 +14,7 @@ import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./proto
 import { needsYouCount, workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -51,7 +51,13 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
-import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
+import { useChatPullRequests } from "./components/ChatPullRequests";
+import { ChatWorkShelf } from "./components/WorkShelf";
+import { ChatWorkPane, type WorkFocus } from "./components/WorkPane";
+import { useBackgroundTaskCount } from "./components/useBackgroundTasks";
+import { backgroundWork } from "./backgroundTasks";
+import { chatPrStatus } from "./chatPullRequests";
+import { fixPrompt } from "./workSummary";
 import { PullsScreen } from "./components/PullsScreen";
 import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
@@ -1017,7 +1023,16 @@ function AppContent() {
     }
   }, [cloneFocus, selectedSessionId, dispatchDock]);
 
+  // The PRs this chat opened (or had attached), kept live after the turn ends.
+  // The shelf above the composer and the Work pane in the dock say how those
+  // PRs and the agent's background work are doing; neither draws in the
+  // transcript.
+  const chatPrs = useChatPullRequests(session?.id, workspace?.id);
+  const backgroundTaskCount = useBackgroundTaskCount(session?.id);
   const dockPanes: DockPaneDescriptor[] = [
+    // First in the strip, always available: a chat's PRs and background work
+    // need no repository of their own to be listed.
+    { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => chatPrStatus(pr).phase === "failing") || undefined },
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
@@ -1115,9 +1130,16 @@ function AppContent() {
     openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
 
-  // The PRs this chat opened (or had attached), kept live after the turn ends.
-  const chatPrs = useChatPullRequests(session?.id, workspace?.id);
-  const [chatPrAnchor, chatPrsInView] = useInView();
+  // A shelf click names the PR to open the Work pane on.
+  const [workFocus, setWorkFocus] = useState<WorkFocus>();
+  const workFocusNonce = useRef(0);
+  useEffect(() => setWorkFocus(undefined), [session?.id]);
+  const showWorkInDock = useCallback((number?: number) => {
+    workFocusNonce.current += 1;
+    setWorkFocus({ number, nonce: workFocusNonce.current });
+    dispatchDock({ type: "open-pane", pane: "work" });
+  }, [dispatchDock]);
+  const draftPullRequestFix = useCallback((pr: SessionPullRequest) => followUpToComposer(fixPrompt(pr)), [followUpToComposer]);
 
   // Which repository a workspace is on is read when the link is clicked and
   // again when the reader confirms the inline destination. The pane resolves
@@ -3750,18 +3772,10 @@ function AppContent() {
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
                   leading={<MemoryUsedChip audit={packetAudit} onOpenMemory={() => setView("memory")} />}
-                  trailing={<ChatPullRequestCards
-                    prs={chatPrs.prs}
-                    refreshing={chatPrs.refreshing}
-                    onRetry={() => void chatPrs.reload(true)}
-                    onAttach={chatPrs.attach}
-                    onOpenPane={hasRepo ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
-                    anchorRef={chatPrAnchor}
-                  />}
+                  onBackgroundWork={backgroundWork.publish}
                 />
               </div>
               <div className="relative z-10 flex-none safe-bottom">
-                <ChatPullRequestStrip prs={chatPrs.prs} hidden={chatPrsInView} onJump={jumpToChatPullRequests} />
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
@@ -3897,6 +3911,7 @@ function AppContent() {
                     onVoiceRetry={voice.retry}
                     onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
                     inputRef={composerRef}
+                    header={<ChatWorkShelf sessionId={session.id} harness={session.harness} prs={chatPrs.prs} onOpen={showWorkInDock} onFix={draftPullRequestFix} />}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
@@ -3935,6 +3950,19 @@ function AppContent() {
             onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
           >
             {pane => {
+              if (pane === "work") return <ChatWorkPane
+                key={session.id}
+                sessionId={session.id}
+                harness={session.harness}
+                prs={chatPrs.prs}
+                refreshing={chatPrs.refreshing}
+                focus={workFocus}
+                onAttach={chatPrs.attach}
+                onRetry={() => void chatPrs.reload(true)}
+                onFix={draftPullRequestFix}
+                onOpenGithub={hasRepo && workspace ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
+                onEscape={() => (document.querySelector<HTMLElement>("[data-work-shelf-open]") ?? composerRef.current)?.focus()}
+              />;
               if (pane === "tasks") return <TasksPane
                 key={session.id}
                 chatSessionId={session.id}

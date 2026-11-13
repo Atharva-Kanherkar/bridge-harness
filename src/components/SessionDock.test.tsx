@@ -267,6 +267,14 @@ describe("SessionDock", () => {
 
 
 describe("dock keyboard navigation", () => {
+  it("takes each tab's chord from DOCK_PANES, so a pane drawn first borrows no digit", () => {
+    mount({ panes: [{ id: "work", label: "Work", icon: Code2, available: true }, ...ALL_PANES] });
+    const title = (label: string) => tabs().find(tab => tab.getAttribute("aria-label") === label)!.title;
+    expect(title("Work")).toBe("Work");
+    expect(title("Changes")).toMatch(/^Changes\s+\S*1$/);
+    expect(title("GitHub")).toMatch(/^GitHub\s+\S*7$/);
+  });
+
   it("roves through tabs and connects the active tab to its panel", () => {
     const onAction = vi.fn();
     mount({ onAction });
