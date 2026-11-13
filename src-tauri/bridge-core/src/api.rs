@@ -6147,22 +6147,24 @@ fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> cr
 
 /// Every workflow. Disables, and announces, any whose project is gone first.
 pub fn list_workflows(core: &Arc<BridgeCore>) -> Result<wire::WorkflowList, BridgeError> {
-    let (changed, workflows) = {
+    let ((changed, cancelled), workflows) = {
         let db = core.db.lock().unwrap();
         let changed = crate::workflows::reconcile_projects(&db)?;
         (changed, crate::workflows::list(&db)?)
     };
     publish_workflows_changed(core, changed);
+    crate::workflow_trigger::publish_runs(core, &cancelled);
     Ok(wire::WorkflowList { workflows })
 }
 
 pub fn get_workflow(core: &Arc<BridgeCore>, params: &wire::GetWorkflowParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
-    let (changed, workflow) = {
+    let ((changed, cancelled), workflow) = {
         let db = core.db.lock().unwrap();
         let changed = crate::workflows::reconcile_projects(&db)?;
         (changed, crate::workflows::require(&db, &params.workflow_id)?)
     };
     publish_workflows_changed(core, changed);
+    crate::workflow_trigger::publish_runs(core, &cancelled);
     Ok(wire::WorkflowSnapshot { workflow })
 }
 
@@ -6194,8 +6196,9 @@ pub fn delete_workflow(core: &Arc<BridgeCore>, params: &wire::DeleteWorkflowPara
 }
 
 pub fn set_workflow_enabled(core: &Arc<BridgeCore>, params: &wire::SetWorkflowEnabledParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
-    let workflow = crate::workflows::set_enabled(&core.db.lock().unwrap(), &params.workflow_id, params.enabled)?;
+    let (workflow, cancelled) = crate::workflows::set_enabled(&core.db.lock().unwrap(), &params.workflow_id, params.enabled)?;
     publish_workflows_changed(core, [workflow.id.clone()]);
+    crate::workflow_trigger::publish_runs(core, &cancelled);
     Ok(wire::WorkflowSnapshot { workflow })
 }
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, cpSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, cpSync, chmodSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,8 +117,10 @@ test("sidecar staging invalidates changed locks and keeps the last complete tree
   cpSync(join(root, "scripts/prepare-claude-sidecar.sh"), script);
   const src = join(dir, "sidecar/claude-agent");
   mkdirSync(src, { recursive: true });
-  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "subagents.mjs", "options.mjs", "read-only.mjs", "usage.mjs"]) writeFileSync(join(src, name), "export {};\n");
-  writeFileSync(join(src, "options.mjs"), "import './read-only.mjs';\n");
+  for (const name of readdirSync(join(root, "sidecar/claude-agent")).filter((name) => name.endsWith(".mjs"))) cpSync(join(root, "sidecar/claude-agent", name), join(src, name));
+  const originalIndex = readFileSync(join(src, "index.mjs"), "utf8");
+  const fakeSdk = join(dir, "fake-sdk.mjs");
+  writeFileSync(fakeSdk, "export function query() { return { supportedModels: async () => [], close() {} }; }\n");
   writeFileSync(join(src, "package.json"), '{"dependencies":{"@anthropic-ai/claude-agent-sdk":"1.0.0"}}');
   writeFileSync(join(src, "package-lock.json"), '{"fixtureLock":1}');
   const calls = join(dir, "npm-calls");
@@ -138,20 +140,22 @@ if (args[0] === "ci") {
   let out = run();
   assert.equal(out.status, 0, out.stderr);
   assert.equal(ciCount(), 1);
-  const loadStagedOptions = () => {
-    const loaded = spawnSync(process.execPath, [join(dest, "options.mjs")], { encoding: "utf8" });
+  const loadStagedSidecar = () => {
+    const loaded = spawnSync(process.execPath, [join(dest, "index.mjs"), JSON.stringify({ catalog: true })], { env: { ...env, BRIDGE_CLAUDE_SDK_ENTRY: fakeSdk }, encoding: "utf8" });
     assert.equal(loaded.status, 0, loaded.stderr);
+    assert.deepEqual(JSON.parse(loaded.stdout), { type: "model_catalog", models: [] });
   };
-  loadStagedOptions();
+  loadStagedSidecar();
   // An existing staging tree from before this dependency was introduced must
   // gain it even when the package metadata and dependency lock still match.
-  rmSync(join(dest, "read-only.mjs"));
-  writeFileSync(join(src, "index.mjs"), "export const changed = true;\n");
+  for (const name of ["read-only.mjs", "ask.mjs", "trust.mjs", "subagents.mjs"]) rmSync(join(dest, name));
+  const changedIndex = originalIndex + "\nexport const changed = true;\n";
+  writeFileSync(join(src, "index.mjs"), changedIndex);
   out = run();
   assert.equal(out.status, 0, out.stderr);
   assert.equal(ciCount(), 1, "unchanged dependency lock should reuse the tree");
-  loadStagedOptions();
-  assert.equal(readFileSync(join(dest, "index.mjs"), "utf8"), "export const changed = true;\n");
+  loadStagedSidecar();
+  assert.equal(readFileSync(join(dest, "index.mjs"), "utf8"), changedIndex);
   writeFileSync(join(src, "package-lock.json"), '{"fixtureLock":2}');
   out = run({ FAIL_INSTALL: "1" });
   assert.notEqual(out.status, 0);

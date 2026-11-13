@@ -314,6 +314,8 @@ fn e2_a_project_workflow_edits_its_own_worktree_and_leaves_the_checkout_alone() 
     git(&repo, &["config", "user.email", "e2e@bridge.test"]);
     git(&repo, &["config", "user.name", "Bridge E2E"]);
     std::fs::write(repo.join("README.md"), "# Demo\n").unwrap();
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    std::fs::write(repo.join(".claude/settings.json"), r#"{"permissions":{"allow":["mcp__*"]}}"#).unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "init"]);
     let status_before = git(&repo, &["status", "--porcelain"]);
@@ -344,11 +346,68 @@ fn e2_a_project_workflow_edits_its_own_worktree_and_leaves_the_checkout_alone() 
 
     let cwd = session_cwd(&running.daemon, run["sessionId"].as_str().unwrap());
     assert_ne!(cwd, repo, "the run works in its own worktree");
+    assert!(run["tokens"].as_i64().unwrap_or(0) > 0, "the session's ledger tokens reach the run");
+    assert_eq!(run["costMicrousd"], json!(0), "a reported zero cost stays known");
+    assert!(!cwd.join("writes.log").exists(), "the ungranted connector write is refused even with a settings allow");
     assert_eq!(std::fs::read_to_string(cwd.join("CHANGELOG.md")).unwrap(), "- Workflows can edit code.\n");
+    assert_eq!(std::fs::read_to_string(cwd.join("tests-ran.txt")).unwrap(), "passed", "user Bash allows still run a test command");
     assert!(!repo.join("CHANGELOG.md").exists(), "the checkout does not get the edit");
     assert_eq!(git(&repo, &["status", "--porcelain"]), status_before, "the checkout's status is unchanged");
 
     running.stop();
+}
+
+#[test]
+fn e4_live_usage_stops_token_and_cost_budgets_and_survives_cancellation_without_a_result() {
+    fake_model();
+    for ceiling in ["output", "cost", "cancel"] {
+        let fixture = tempfile::tempdir().unwrap();
+        seed_data_dir(fixture.path());
+        let running = RunningDaemon::start(fixture.path());
+        let mut rpc = running.rpc();
+        let model = claude_model(&mut rpc);
+        bridge_core::usage_pricing::set_price_override(&running.daemon.core.db.lock().unwrap(), &model, 0, 1_000_000, None, None).unwrap();
+        let mut limits = budget();
+        if ceiling == "output" { limits["maxOutputTokens"] = json!(8); }
+        if ceiling == "cost" { limits["costCeilingMicrousd"] = json!(8); }
+        let saved = rpc.call("workflows/save_workflow", json!({ "definition": {
+            "name": "Live usage", "files": "none", "grants": [],
+            "steps": [{ "harness": "claude", "model": model, "instructions": "Keep working. E2E:live-budget" }],
+            "trigger": { "kind": "manual" }, "budget": limits,
+        }}));
+        let workflow_id = saved["workflow"]["id"].as_str().unwrap();
+        rpc.call("workflows/approve_workflow", json!({ "workflowId": workflow_id, "revisionId": saved["workflow"]["revisionId"] }));
+        let started = rpc.call("workflows/run_workflow", json!({ "workflowId": workflow_id, "requestId": "live" }));
+        let run_id = started["run"]["id"].as_str().unwrap();
+        if ceiling == "cancel" {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                let recorded: bool = running.daemon.core.db.lock().unwrap().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM usage_ledger l JOIN workflow_runs r ON r.session_id=l.session_id WHERE r.id=?1 AND l.output_tokens=8)",
+                    [run_id], |row| row.get(0),
+                ).unwrap();
+                if recorded { break; }
+                assert!(Instant::now() < deadline, "pre-result usage must reach the ledger");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            rpc.call("workflows/cancel_workflow_run", json!({ "runId": run_id }));
+        }
+        let run = rpc.wait_run(workflow_id, run_id, "the active run to be stopped", |run| ["failed", "cancelled"].iter().any(|status| run["status"] == json!(status)));
+        assert_eq!(run["status"], json!(if ceiling == "cancel" { "cancelled" } else { "failed" }), "{run}");
+        if ceiling != "cancel" { assert_eq!(run["failureCode"], json!("budget_exhausted"), "{run}"); }
+        assert_eq!(run["tokens"], json!(108), "{ceiling}: usage is recorded without a result frame");
+        assert_eq!(run["costMicrousd"], json!(8), "{ceiling}: observed usage retains its estimated cost");
+        {
+            let db = running.daemon.core.db.lock().unwrap();
+            let session_id = run["sessionId"].as_str().unwrap();
+            let completed: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='turn.completed'", [session_id], |row| row.get(0)).unwrap();
+            assert_eq!(completed, 0, "the provider never returned a result");
+            let status: String = db.query_row("SELECT status FROM sessions WHERE id=?1", [session_id], |row| row.get(0)).unwrap();
+            assert_eq!(status, "stopped");
+            assert!(!running.daemon.core.adapters.lock().unwrap().contains_key(session_id));
+        }
+        running.stop();
+    }
 }
 
 #[test]

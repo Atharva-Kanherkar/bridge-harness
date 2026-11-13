@@ -156,6 +156,15 @@ pub fn quota_verdict(windows: &[wire::UsageQuotaWindow], reserve: i64) -> QuotaV
     }
 }
 
+pub(crate) fn quota_for_provider(overviews: Option<&wire::ProviderUsageOverviews>, harness: &str, reserve: i64) -> QuotaVerdict {
+    let windows = overviews.into_iter()
+        .flat_map(|overviews| &overviews.providers)
+        .filter(|snapshot| snapshot.provider == harness)
+        .flat_map(|snapshot| snapshot.windows.iter().cloned())
+        .collect::<Vec<_>>();
+    quota_verdict(&windows, reserve)
+}
+
 // --- the run's session ---------------------------------------------------------------
 
 /// The run bound to a session, with the definition of the revision it runs.
@@ -192,11 +201,16 @@ fn revision_definition(db: &Connection, revision_id: &str) -> Result<wire::Workf
     serde_json::from_str(&json).map_err(|error| BridgeError::Invalid(format!("stored revision {revision_id} is unreadable: {error}")))
 }
 
-/// The policy a run with no built-in tools starts under; `None` for a
-/// worktree run, which uses the Isolated write mode instead.
+/// Connector authority for a run. Claude worktree runs also carry a policy:
+/// Isolated file access must not inherit MCP authority from user settings.
 pub fn policy_for_definition(definition: &wire::WorkflowDefinition) -> Result<Option<BriefingRuntimePolicy>, BridgeError> {
     if definition.files == wire::WorkflowFiles::Worktree {
-        return Ok(None);
+        let harness = definition.steps.first().map(|step| step.harness.as_str()).unwrap_or("");
+        crate::briefing_policy::adapter_may_brief(harness)
+            .map_err(|refusal| BridgeError::Invalid(refusal.reason()))?;
+        return BriefingRuntimePolicy::compile_worktree_workflow(definition.budget)
+            .map(Some)
+            .map_err(|refusal| BridgeError::Invalid(refusal.reason()));
     }
     let servers = definition
         .grants
@@ -388,6 +402,14 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
             summary: Some(error.to_string()),
             ..Outcome::default()
         };
+        let bound = workflow_trigger::require_run(&core.db.lock().unwrap(), &run_id).ok();
+        if let Some(bound) = bound {
+            if let Some(session_id) = bound.session_id.as_deref() {
+                if settle(core, &bound, &lease_owner, session_id, wire::WorkflowRunStatus::Failed, outcome.clone()).is_ok() {
+                    return;
+                }
+            }
+        }
         let settled = workflow_trigger::finish(
             &core.db.lock().unwrap(),
             &run_id,
@@ -403,27 +425,25 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
 }
 
 fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
-    let ClaimedRun { run, lease_owner } = claimed;
+    let ClaimedRun { run, lease_owner, quota_verdict: quota } = claimed;
     let definition = revision_definition(&core.db.lock().unwrap(), &run.revision_id)?;
+    // Fail closed for definitions saved before every workflow required MCP isolation.
+    policy_for_definition(&definition)?;
     let step = definition.steps.first().cloned().ok_or_else(|| BridgeError::Invalid("the revision has no step".into()))?;
 
     // C11: your plan comes first.
-    let reserve = workflow_trigger::read_settings(&core.db.lock().unwrap())?.settings.quota_reserve_percent;
-    let verdict = match crate::usage_overview::provider_snapshots(core) {
-        Ok(overviews) => {
-            let windows: Vec<wire::UsageQuotaWindow> = overviews
-                .providers
-                .into_iter()
-                .filter(|snapshot| snapshot.provider == step.harness.as_str())
-                .flat_map(|snapshot| snapshot.windows)
-                .collect();
-            quota_verdict(&windows, reserve)
+    let verdict = match quota {
+        Some(verdict) => verdict,
+        None => {
+            let reserve = workflow_trigger::read_settings(&core.db.lock().unwrap())?.settings.quota_reserve_percent;
+            let overviews = crate::usage_overview::provider_snapshots(core).ok();
+            quota_for_provider(overviews.as_ref(), step.harness.as_str(), reserve)
         }
-        Err(_) => QuotaVerdict::Proceed { unknown: true },
     };
     let quota_unknown = match verdict {
         QuotaVerdict::Wait => {
-            if workflow_trigger::park(&core.db.lock().unwrap(), &run.id, &lease_owner)? {
+            if workflow_trigger::park(&core.db.lock().unwrap(), &run.id, &lease_owner)?
+                && run.status != wire::WorkflowRunStatus::WaitingQuota {
                 workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
             }
             return Ok(());
@@ -466,7 +486,6 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     }
 
     let end = wait_for_turn(core, &run, &lease_owner, &session_id, baseline, &definition.budget)?;
-    let tokens = tokens_used(&core.db.lock().unwrap(), &session_id)?;
     let (status, outcome) = match end {
         TurnEnd::LeaseLost => {
             // Cancelled or reclaimed: someone else settled the run.
@@ -504,7 +523,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             }
         }
     };
-    settle(core, &run, &lease_owner, &session_id, status, Outcome { tokens, quota_unknown, ..outcome })
+    settle(core, &run, &lease_owner, &session_id, status, Outcome { quota_unknown, ..outcome })
 }
 
 /// Where the run works: the workflow home, a scratch folder for a
@@ -608,7 +627,7 @@ fn wait_for_turn_within(
             }
             None => {}
         }
-        let (completed, status, tool_calls) = {
+        let (completed, status, exhausted) = {
             let db = core.db.lock().unwrap();
             if last_heartbeat.elapsed() >= HEARTBEAT {
                 if !workflow_trigger::heartbeat(&db, &run.id, lease_owner, Utc::now())? {
@@ -628,19 +647,19 @@ fn wait_for_turn_within(
             let status: Option<String> = db
                 .query_row("SELECT status FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
                 .optional()?;
-            let tool_calls: i64 = db.query_row(
-                "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND sequence>?2 AND kind='tool.started'",
-                params![session_id, baseline],
-                |row| row.get(0),
-            )?;
-            (completed, status, tool_calls)
+            (completed, status, budget_reached(&db, session_id, baseline, budget)?)
         };
-        if let Some(status) = completed {
-            return Ok(TurnEnd::Completed { failed: matches!(status.as_deref(), Some("failed" | "error")) });
-        }
-        if tool_calls > budget.max_tool_calls {
+        // Usage often arrives in the same provider frame as completion.
+        // Check ceilings first so a final result cannot outrun its budget.
+        if exhausted {
             stop(core, session_id);
             return Ok(TurnEnd::Budget("budget_exhausted"));
+        }
+        if let Some(status) = completed {
+            if matches!(status.as_deref(), Some("error_max_budget_usd" | "error_max_turns")) {
+                return Ok(TurnEnd::Budget("budget_exhausted"));
+            }
+            return Ok(TurnEnd::Completed { failed: status.is_some_and(|status| status == "failed" || status.starts_with("error")) });
         }
         let now_waiting = status.as_deref() == Some("waiting");
         if now_waiting != waiting {
@@ -686,12 +705,105 @@ fn last_message(db: &Connection, session_id: &str, baseline: i64) -> Result<Opti
         .optional()?)
 }
 
-fn tokens_used(db: &Connection, session_id: &str) -> Result<Option<i64>, BridgeError> {
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RunUsage {
+    pub tokens: Option<i64>,
+    output_tokens: i64,
+    pub cost_microusd: Option<i64>,
+    known_cost_microusd: i64,
+}
+
+// Workflow sessions have no workspace, so their ledger scope is the session
+// itself. Both predicates use idx_usage_ledger_scope instead of scanning all
+// chats on every budget poll. Unknown rows keep the outcome cost unknown;
+// known partial spend is still a lower bound for enforcing the budget.
+const USAGE_SQL: &str = "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),
+    COALESCE(SUM(output_tokens),0),
+    CASE WHEN COUNT(*)=COUNT(cost_microusd) THEN SUM(cost_microusd) END,
+    COALESCE(SUM(cost_microusd),0)
+    FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1";
+
+pub(crate) fn usage_used(db: &Connection, session_id: &str) -> Result<RunUsage, BridgeError> {
     Ok(db.query_row(
-        "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) FROM usage_ledger WHERE session_id=?1",
+        USAGE_SQL,
         params![session_id],
-        |row| row.get(0),
+        |row| Ok(RunUsage { tokens: row.get(0)?, output_tokens: row.get(1)?, cost_microusd: row.get(2)?, known_cost_microusd: row.get(3)? }),
     )?)
+}
+
+const PROGRESS_SOURCE: &str = "provider.claude.progress";
+
+/// Record a workflow's live usage without summing repeated cumulative message
+/// snapshots. Final results replace the provisional rows for the turn, so
+/// ordinary chats keep their existing result-only accounting.
+pub(crate) fn record_claude_usage(
+    db: &Connection,
+    session_id: &str,
+    turn_id: Option<&str>,
+    data: &serde_json::Value,
+    progress: bool,
+) -> Result<bool, BridgeError> {
+    let source = if progress { PROGRESS_SOURCE } else { "provider.claude" };
+    let records = crate::usage::normalize(source, data);
+    if records.is_empty() {
+        return Ok(false);
+    }
+    let transaction = db.unchecked_transaction()?;
+    if progress {
+        let Some(message_id) = data.get("messageId").and_then(serde_json::Value::as_str) else { return Ok(false) };
+        let final_exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source='provider.claude')",
+            params![session_id, turn_id], |row| row.get(0),
+        )?;
+        if final_exists { return Ok(false); }
+        let previous_output: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(output_tokens),0) FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source=?3 AND provider_record_id=?4",
+            params![session_id, turn_id, PROGRESS_SOURCE, format!("{message_id}:workflow-progress")], |row| row.get(0),
+        )?;
+        if data.pointer("/usage/output_tokens").and_then(serde_json::Value::as_i64).is_some_and(|output| output < previous_output) {
+            return Ok(false); // A delayed assistant snapshot cannot rewind usage.
+        }
+        transaction.execute(
+            "DELETE FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source=?3 AND provider_record_id=?4",
+            params![session_id, turn_id, PROGRESS_SOURCE, format!("{message_id}:workflow-progress")],
+        )?;
+    } else {
+        // The SDK can report zeroed figures on a crash/startup error. Preserve
+        // observed usage instead of replacing it with that empty result.
+        if records.iter().all(|record| [record.tokens.output_tokens, record.tokens.uncached_input_tokens, record.tokens.cache_read_tokens, record.tokens.cache_write_tokens].iter().all(|count| count.unwrap_or(0) == 0))
+            && usage_used(&transaction, session_id)?.tokens.is_some_and(|tokens| tokens > 0) {
+            return Ok(false);
+        }
+        // Replaying the same final frame is idempotent too. Do not remove live
+        // usage for error results with no figures (handled above).
+        transaction.execute(
+            "DELETE FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source IN (?3,'provider.claude')",
+            params![session_id, turn_id, PROGRESS_SOURCE],
+        )?;
+    }
+    let recorded = crate::policy::record_provider_usage(&transaction, session_id, session_id, turn_id, source, data)?;
+    transaction.commit()?;
+    Ok(recorded)
+}
+
+fn budget_reached(db: &Connection, session_id: &str, baseline: i64, budget: &wire::WorkBriefLimits) -> Result<bool, BridgeError> {
+    let (turns, tools): (i64, i64) = db.query_row(
+        "SELECT COUNT(DISTINCT CASE
+            WHEN (kind IN ('assistant.message','message.completed')
+                  AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant')
+              OR (kind IN ('tool.started','command.started','file_change.started','reasoning.completed')
+                  AND json_extract(payload,'$.data.assistantMessageId') IS NOT NULL)
+            THEN COALESCE(json_extract(payload,'$.data.assistantMessageId'),json_extract(payload,'$.itemId'),id) END),
+          COUNT(DISTINCT CASE WHEN kind IN ('tool.started','command.started','file_change.started')
+            THEN COALESCE(json_extract(payload,'$.itemId'),id) END)
+         FROM session_entries WHERE session_id=?1 AND sequence>?2",
+        params![session_id, baseline],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let usage = usage_used(db, session_id)?;
+    Ok(turns > budget.max_turns || tools > budget.max_tool_calls
+        || budget.max_output_tokens.is_some_and(|limit| usage.output_tokens >= limit)
+        || budget.cost_ceiling_microusd.is_some_and(|limit| usage.known_cost_microusd >= limit))
 }
 
 /// Stop a run's session if its provider is still up. Stopping ends the
@@ -708,9 +820,12 @@ fn settle(
     lease_owner: &str,
     session_id: &str,
     status: wire::WorkflowRunStatus,
-    outcome: Outcome,
+    mut outcome: Outcome,
 ) -> Result<(), BridgeError> {
     stop(core, session_id);
+    let usage = usage_used(&core.db.lock().unwrap(), session_id)?;
+    outcome.tokens = usage.tokens;
+    outcome.cost_microusd = usage.cost_microusd;
     if workflow_trigger::finish(&core.db.lock().unwrap(), &run.id, lease_owner, status, &outcome, Utc::now())? {
         workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
     }
@@ -907,12 +1022,12 @@ mod tests {
         let db = core.db.lock().unwrap();
         for (input, output) in [(100, 20), (50, 5)] {
             db.execute(
-                "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,source,created_at) VALUES('',?1,?2,?3,'reported','now')",
+                "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,source,created_at) VALUES(?1,?1,?2,?3,'reported','now')",
                 params!["run-session", input, output],
             )
             .unwrap();
         }
-        assert_eq!(tokens_used(&db, "run-session").unwrap(), Some(175));
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(175));
     }
 
     fn agent_event(db: &Connection, sequence: i64, kind: &str, status: Option<&str>, text: Option<&str>) {
@@ -940,6 +1055,279 @@ mod tests {
         assert_eq!(end, TurnEnd::Budget("budget_exhausted"));
     }
 
+    fn ledger(db: &Connection, session_id: &str, input: i64, output: i64, cost: Option<i64>) {
+        db.execute(
+            "INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,cost_microusd,source,created_at)
+             VALUES(?1,?1,?2,?3,?4,'reported','now')",
+            params![session_id, input, output, cost],
+        ).unwrap();
+    }
+
+    struct BudgetRuntime(Arc<std::sync::atomic::AtomicBool>);
+
+    impl crate::adapters::AdapterRuntime for BudgetRuntime {
+        fn process_id(&self) -> u32 { 42 }
+        fn provider_session_id(&self) -> &str { "budget-test" }
+        fn current_turn(&self) -> Arc<std::sync::Mutex<Option<String>>> {
+            Arc::new(std::sync::Mutex::new(Some("workflow-turn".into())))
+        }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> { panic!("budget exhaustion must never start a turn") }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _: crate::adapters::ShutdownReason) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn budget_runtime(core: &Arc<BridgeCore>) -> Arc<std::sync::atomic::AtomicBool> {
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        core.adapters.lock().unwrap().insert("run-session".into(), Box::new(BudgetRuntime(stopped.clone())));
+        stopped
+    }
+
+    #[test]
+    fn exceeded_counts_and_reached_usage_ceilings_stop_even_a_completed_turn() {
+        for ceiling in ["turns", "tools", "output", "cost"] {
+            let (dir, core) = test_support::core();
+            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            let stopped = budget_runtime(&core);
+            let mut budget = test_support::definition().budget;
+            match ceiling {
+                "turns" => budget.max_turns = 1,
+                "tools" => budget.max_tool_calls = 1,
+                "output" => budget.max_output_tokens = Some(8),
+                "cost" => budget.cost_ceiling_microusd = Some(16),
+                _ => unreachable!(),
+            }
+            {
+                let db = core.db.lock().unwrap();
+                agent_event(&db, 1, "assistant.message", None, Some("done"));
+                agent_event(&db, 2, "tool.started", None, None);
+                ledger(&db, "run-session", 100, 8, Some(16));
+                agent_event(&db, 3, "assistant.message", None, Some("done again"));
+                agent_event(&db, 4, "tool.started", None, None);
+                agent_event(&db, 5, "turn.completed", Some("completed"), None);
+            }
+            let end = wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap();
+            assert_eq!(end, TurnEnd::Budget("budget_exhausted"), "{ceiling}");
+            assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "{ceiling}: the provider is stopped");
+            assert!(!core.adapters.lock().unwrap().contains_key("run-session"));
+            settle(&core, &run.run, &run.lease_owner, "run-session", wire::WorkflowRunStatus::Failed,
+                Outcome { failure_code: Some("budget_exhausted".into()), ..Outcome::default() }).unwrap();
+            let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+            assert_eq!(settled.status, wire::WorkflowRunStatus::Failed);
+            assert_eq!(settled.failure_code.as_deref(), Some("budget_exhausted"));
+            assert_eq!(settled.tokens, Some(108));
+            assert_eq!(settled.cost_microusd, Some(16));
+        }
+    }
+
+    #[test]
+    fn budget_counts_ignore_prior_entries_other_sessions_and_input_tokens() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        let mut budget = test_support::definition().budget;
+        budget.max_turns = 1;
+        budget.max_tool_calls = 1;
+        budget.max_output_tokens = Some(10);
+        budget.cost_ceiling_microusd = Some(20);
+        agent_event(&db, 1, "assistant.message", None, Some("old"));
+        agent_event(&db, 2, "tool.started", None, None);
+        agent_event(&db, 3, "assistant.message", None, Some("new"));
+        agent_event(&db, 4, "tool.started", None, None);
+        ledger(&db, "run-session", 10_000, 9, Some(19));
+        ledger(&db, "other-session", 1, 1_000_000, Some(1_000_000));
+        assert!(!budget_reached(&db, "run-session", 2, &budget).unwrap());
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap());
+        budget.max_output_tokens = None;
+        budget.cost_ceiling_microusd = None;
+        ledger(&db, "run-session", 0, 1_000_000, Some(1_000_000));
+        assert!(!budget_reached(&db, "run-session", 2, &budget).unwrap(), "optional ceilings are absent");
+    }
+
+    #[test]
+    fn budget_counts_tool_only_messages_and_deduplicates_snapshots() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        let frame = serde_json::json!({"type":"assistant","message":{"id":"m1","role":"assistant","content":[
+            {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}},
+            {"type":"tool_use","id":"t2","name":"Write","input":{"file_path":"x","content":"x"}}
+        ]}});
+        for _ in 0..2 {
+            for event in crate::agent::normalize_claude_message(&frame) {
+                crate::store::session_event(&db, "run-session", &event, &serde_json::json!({})).unwrap();
+            }
+        }
+        let mut budget = test_support::definition().budget;
+        budget.max_turns = 2;
+        budget.max_tool_calls = 3;
+        assert!(!budget_reached(&db, "run-session", 0, &budget).unwrap(), "one message, two calls despite repeated snapshots");
+        budget.max_tool_calls = 1;
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "file and shell calls both count");
+        budget.max_tool_calls = 3;
+        budget.max_turns = 1;
+        assert!(!budget_reached(&db, "run-session", 0, &budget).unwrap(), "a tool-only message is one allowed turn");
+        agent_event(&db, 10, "assistant.message", None, Some("second message"));
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap(), "the second message exceeds one turn");
+    }
+
+    #[test]
+    fn wall_time_is_a_separate_budget_ceiling() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let stopped = budget_runtime(&core);
+        let mut budget = test_support::definition().budget;
+        budget.max_wall_seconds = 1;
+        let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
+        assert_eq!(end, TurnEnd::Budget("budget_exhausted"));
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn all_settlement_paths_share_strict_unknown_cost_semantics() {
+        for path in ["succeeded", "failed", "cancelled", "expired"] {
+            for costs in [vec![None], vec![Some(0)], vec![Some(12), Some(7)], vec![None, Some(0), Some(12), Some(7)]] {
+                let (dir, core) = test_support::core();
+                let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+                {
+                    let db = core.db.lock().unwrap();
+                    assert_eq!(usage_used(&db, "run-session").unwrap(), RunUsage::default());
+                    for cost in &costs { ledger(&db, "run-session", 100, 20, *cost); }
+                    // Another workspace cannot spend this workflow session's budget.
+                    db.execute("INSERT INTO usage_ledger(workspace_id,session_id,input_tokens,output_tokens,cost_microusd,source,created_at) VALUES('other','run-session',1,999,999,'reported','now')", []).unwrap();
+                }
+                match path {
+                    "cancelled" => { workflow_trigger::cancel(&core.db.lock().unwrap(), &run.run.id, Utc::now()).unwrap(); }
+                    "expired" => { workflow_trigger::reclaim_expired(&core.db.lock().unwrap(), Utc::now() + chrono::Duration::minutes(20)).unwrap(); }
+                    _ => { settle(&core, &run.run, &run.lease_owner, "run-session",
+                        if path == "succeeded" { wire::WorkflowRunStatus::Succeeded } else { wire::WorkflowRunStatus::Failed }, Outcome::default()).unwrap(); }
+                }
+                let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+                let expected_cost = costs.iter().copied().collect::<Option<Vec<_>>>().map(|costs| costs.iter().sum());
+                assert!(!settled.status.is_active(), "{path}");
+                assert_eq!(settled.tokens, Some(costs.len() as i64 * 120), "{path}");
+                assert_eq!(settled.cost_microusd, expected_cost, "{path}: {costs:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn usage_poll_uses_the_existing_scope_index_and_known_spend_remains_a_lower_bound() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        let plan: String = db.query_row(&format!("EXPLAIN QUERY PLAN {USAGE_SQL}"), ["run-session"], |row| row.get(3)).unwrap();
+        assert!(plan.contains("SEARCH usage_ledger USING INDEX idx_usage_ledger_scope"), "{plan}");
+        ledger(&db, "run-session", 1, 1, None);
+        ledger(&db, "run-session", 1, 1, Some(10));
+        let mut budget = test_support::definition().budget;
+        budget.cost_ceiling_microusd = Some(10);
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, None);
+        assert!(budget_reached(&db, "run-session", 0, &budget).unwrap());
+    }
+
+    #[test]
+    fn a_runner_error_still_finishes_when_usage_cannot_be_read() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("UPDATE workflow_revisions SET definition='{}' WHERE id=?1", [&run.run.revision_id]).unwrap();
+            db.execute("ALTER TABLE usage_ledger RENAME TO unavailable_usage_ledger", []).unwrap();
+        }
+        let mut events = core.events.subscribe();
+        execute(&core, run.clone());
+        let settled = workflow_trigger::require_run(&core.db.lock().unwrap(), &run.run.id).unwrap();
+        assert_eq!(settled.status, wire::WorkflowRunStatus::Failed);
+        assert_eq!(settled.failure_code.as_deref(), Some("runner_error"));
+        assert!(matches!(events.try_recv(), Ok(crate::events::CoreEvent::WorkflowRunChanged { .. })));
+    }
+
+    #[test]
+    fn count_ceilings_allow_the_nth_message_and_tool_to_complete() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let stopped = budget_runtime(&core);
+        let mut budget = test_support::definition().budget;
+        budget.max_turns = 1;
+        budget.max_tool_calls = 1;
+        {
+            let db = core.db.lock().unwrap();
+            agent_event(&db, 1, "assistant.message", None, Some("done"));
+            agent_event(&db, 2, "tool.started", None, None);
+            agent_event(&db, 3, "turn.completed", Some("completed"), None);
+        }
+        assert_eq!(wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &budget).unwrap(), TurnEnd::Completed { failed: false });
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cancellation_preserves_recorded_usage() {
+        let (dir, core) = test_support::core();
+        let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        ledger(&db, "run-session", 100, 20, Some(12));
+        let cancelled = workflow_trigger::cancel(&db, &run.run.id, Utc::now()).unwrap();
+        assert_eq!(cancelled.tokens, Some(120));
+        assert_eq!(cancelled.cost_microusd, Some(12));
+    }
+
+    #[test]
+    fn streaming_usage_is_replaced_by_message_and_reconciled_once_on_result() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        crate::usage_pricing::set_price_override(&db, "live-model", 0, 1_000_000, None, None).unwrap();
+        let mut state = crate::agent::ClaudeStreamState::default();
+        let frames = [
+            serde_json::json!({"type":"stream_event", "event":{"type":"message_start", "message":{"id":"m1", "model":"live-model", "usage":{"input_tokens":100,"output_tokens":0}}}}),
+            serde_json::json!({"type":"stream_event", "event":{"type":"message_delta", "usage":{"output_tokens":8}}}),
+            serde_json::json!({"type":"assistant", "message":{"id":"m1", "model":"live-model", "content":[], "usage":{"input_tokens":100,"output_tokens":8}}}),
+        ];
+        let mut last = serde_json::Value::Null;
+        for mut frame in frames {
+            assert!(crate::agent::normalize_claude_message(&frame).iter().all(|event| event.kind != "usage.progress"), "ordinary chats stay result-only");
+            frame["_bridgeWorkflow"] = true.into();
+            let events = crate::agent::normalize_claude_message_with_state(&frame, &mut state);
+            last = events.iter().find(|event| event.kind == "usage.progress").unwrap().data.clone();
+            record_claude_usage(&db, "run-session", Some("t1"), &last, true).unwrap();
+        }
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(108));
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, Some(8));
+        let count = || db.query_row("SELECT COUNT(*) FROM usage_ledger WHERE workspace_id='run-session'", [], |row| row.get::<_, i64>(0)).unwrap();
+        assert_eq!(count(), 1, "stream delta and assistant snapshot replace the same message");
+        let mut stale = last.clone();
+        stale["usage"]["output_tokens"] = 0.into();
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &stale, true).unwrap());
+        let unknown = serde_json::json!({"messageId":"m2","requestId":"workflow-progress","model":"unknown-preview-model","usage":{"input_tokens":5,"output_tokens":2}});
+        record_claude_usage(&db, "run-session", Some("t1"), &unknown, true).unwrap();
+        assert_eq!(count(), 2, "distinct message usage adds together");
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(115));
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, None, "partly unpriced live usage stays unknown");
+        // An error without usage must not erase observed partial usage.
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &serde_json::json!({}), false).unwrap());
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &serde_json::json!({"usage":{"input_tokens":0,"output_tokens":0},"totalCostUsd":0}), false).unwrap());
+        assert_eq!(count(), 2);
+        let final_usage = serde_json::json!({"usage":{"input_tokens":105,"output_tokens":10},"totalCostUsd":0.000010,"model":"live-model"});
+        for _ in 0..2 { record_claude_usage(&db, "run-session", Some("t1"), &final_usage, false).unwrap(); }
+        assert_eq!(count(), 1, "replayed final frames never double-bill");
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(115));
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, Some(10));
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &last, true).unwrap(), "late progress cannot replace the result");
+    }
+
+    #[test]
+    fn native_sdk_budget_results_are_budget_exhaustion_even_without_priced_usage() {
+        for status in ["error_max_budget_usd", "error_max_turns"] {
+            let (dir, core) = test_support::core();
+            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            agent_event(&core.db.lock().unwrap(), 1, "turn.completed", Some(status), None);
+            assert_eq!(wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &test_support::definition().budget).unwrap(), TurnEnd::Budget("budget_exhausted"));
+        }
+    }
+
     #[test]
     fn a_run_that_has_ended_writes_nothing_more() {
         let (dir, core) = test_support::core();
@@ -962,13 +1350,18 @@ mod tests {
         let run = bound_run(&core, dir.path(), &test_support::definition(), false);
         let mut budget = test_support::definition().budget;
         budget.max_wall_seconds = 1;
-        core.db.lock().unwrap().execute("UPDATE sessions SET status='waiting' WHERE id='run-session'", []).unwrap();
+        budget.max_tool_calls = 1;
+        {
+            let db = core.db.lock().unwrap();
+            agent_event(&db, 1, "tool.started", None, None);
+            db.execute("UPDATE sessions SET status='waiting' WHERE id='run-session'", []).unwrap();
+        }
         let answering = core.clone();
         let answer = std::thread::spawn(move || {
             // Longer than the whole time limit: the person takes their time.
             std::thread::sleep(StdDuration::from_millis(2500));
             let db = answering.db.lock().unwrap();
-            agent_event(&db, 1, "turn.completed", Some("completed"), None);
+            agent_event(&db, 2, "turn.completed", Some("completed"), None);
         });
         let end = wait_for_turn_within(&core, &run.run, &run.lease_owner, "run-session", 0, &budget, StdDuration::from_secs(60)).unwrap();
         answer.join().unwrap();
@@ -1015,6 +1408,18 @@ mod tests {
         assert_eq!(servers[0].wire, "claude_ai_Slack");
         assert_eq!(servers[0].write, "ask");
         definition.files = wire::WorkflowFiles::Worktree;
-        assert!(policy_for_definition(&definition).unwrap().is_none());
+        definition.grants.clear();
+        let policy = policy_for_definition(&definition).unwrap().unwrap();
+        assert!(policy.workflow_worktree());
+        assert!(policy.workflow_servers().unwrap().is_empty());
+        use crate::delegation::WriteMode;
+        assert!(policy.check_launch_write_mode(Some(WriteMode::Isolated)).is_ok());
+        for mode in [None, Some(WriteMode::ReadOnly), Some(WriteMode::Shared), Some(WriteMode::Full)] {
+            assert!(policy.check_launch_write_mode(mode).is_err());
+        }
+        for harness in ["codex", "opencode"] {
+            definition.steps[0].harness = wire::HarnessId::parse(harness).unwrap();
+            assert!(policy_for_definition(&definition).is_err());
+        }
     }
 }

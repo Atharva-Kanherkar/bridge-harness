@@ -17,9 +17,9 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-for file in index.mjs briefing.mjs input.mjs subagents.mjs options.mjs read-only.mjs usage.mjs package.json package-lock.json; do
-  if [ ! -f "$src/$file" ]; then
-    echo "prepare-claude-sidecar: missing $src/$file" >&2
+for file in "$src"/*.mjs "$src/package.json" "$src/package-lock.json"; do
+  if [ ! -f "$file" ]; then
+    echo "prepare-claude-sidecar: missing $file" >&2
     exit 1
   fi
 done
@@ -34,9 +34,7 @@ if [ -f "$sdk_dir/package.json" ] && [ ! -L "$sdk_dir" ] \
   && cmp -s "$src/package-lock.json" "$dest/package-lock.json" \
   && [ "$(cat "$dest/.bridge-stage-platform" 2>/dev/null || true)" = "$platform" ] \
   && npm ls --prefix "$dest" --omit=dev --all >/dev/null 2>&1; then
-  for file in index.mjs briefing.mjs input.mjs subagents.mjs options.mjs read-only.mjs usage.mjs; do
-    cp "$src/$file" "$dest/$file"
-  done
+  cp "$src"/*.mjs "$src/package.json" "$src/package-lock.json" "$dest/"
   echo "Prepared Claude sidecar at $dest (reused matching locked dependencies)"
   exit 0
 fi
@@ -44,9 +42,7 @@ fi
 mkdir -p "$(dirname -- "$dest")"
 stage=$(mktemp -d "$(dirname -- "$dest")/.claude-agent.XXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
-for file in index.mjs briefing.mjs input.mjs subagents.mjs options.mjs read-only.mjs usage.mjs package.json package-lock.json; do
-  cp "$src/$file" "$stage/$file"
-done
+cp "$src"/*.mjs "$src/package.json" "$src/package-lock.json" "$stage/"
 npm ci --prefix "$stage" --ignore-scripts --omit=dev
 npm ls --prefix "$stage" --omit=dev --all >/dev/null
 staged_sdk="$stage/node_modules/@anthropic-ai/claude-agent-sdk"

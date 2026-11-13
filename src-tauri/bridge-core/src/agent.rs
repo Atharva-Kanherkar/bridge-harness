@@ -1353,6 +1353,9 @@ pub struct ClaudeStreamState {
     tasks: HashMap<String, Value>,
     ignored_tasks: std::collections::HashSet<String>,
     pub active_message_id: Option<String>,
+    /// The current workflow message's cumulative streaming usage. Ordinary
+    /// chats continue recording only their result frame.
+    workflow_message_usage: Value,
     pub active_reasoning_id: Option<String>,
     thinking_blocks: std::collections::BTreeMap<String, ClaudeThinkingBlock>,
     activity: claude_activity::ActivityState,
@@ -1952,7 +1955,7 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .map(|session| format!("claude-live-{session}"))
         })
         .unwrap_or_else(|| "claude-live".into());
-    match event_type {
+    let mut normalized = match event_type {
         "message_start" => {
             if let Some(id) = event
                 .pointer("/message/id")
@@ -1962,7 +1965,17 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 state.active_message_id = Some(id.clone());
                 state.active_reasoning_id = Some(format!("reasoning-{id}"));
             }
-            vec![]
+            state.workflow_message_usage = event.get("message").cloned().unwrap_or(Value::Null);
+            claude_workflow_usage(message, &state.workflow_message_usage).into_iter().collect()
+        }
+        "message_delta" => {
+            if let (Some(current), Some(update)) = (
+                state.workflow_message_usage.get_mut("usage").and_then(Value::as_object_mut),
+                event.get("usage").and_then(Value::as_object),
+            ) {
+                current.extend(update.clone());
+            }
+            claude_workflow_usage(message, &state.workflow_message_usage).into_iter().collect()
         }
         "content_block_delta" => {
             let delta = event.get("delta").cloned().unwrap_or_else(|| json!({}));
@@ -1974,7 +1987,7 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                         return vec![];
                     }
                     let mut normalized = NormalizedEvent::new("message.delta");
-                    normalized.item_id = Some(message_id);
+                    normalized.item_id = Some(message_id.clone());
                     normalized.role = Some("assistant".into());
                     normalized.status = Some("streaming".into());
                     normalized.text = Some(text.to_owned());
@@ -2063,7 +2076,11 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .collect()
         }
         _ => vec![],
+    };
+    for event in &mut normalized {
+        event.data["assistantMessageId"] = json!(message_id);
     }
+    normalized
 }
 
 fn normalize_claude_assistant(
@@ -2138,7 +2155,28 @@ fn normalize_claude_assistant(
             _ => {}
         }
     }
+    // Tool-only and thinking-only messages spend the same model-turn budget
+    // as prose. Keep their shared identity so streamed/snapshot blocks count
+    // once, even when one assistant message contains several tool calls.
+    for event in &mut events {
+        event.data["assistantMessageId"] = json!(message_id);
+    }
+    events.extend(claude_workflow_usage(message, &payload));
     events
+}
+
+/// Workflow-only, cumulative per-message counters. The ledger replaces these
+/// snapshots by message identity and replaces the whole turn on a final result.
+fn claude_workflow_usage(frame: &Value, message: &Value) -> Option<NormalizedEvent> {
+    if frame.get("_bridgeWorkflow").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let id = message.get("id")?.as_str()?;
+    let usage = message.get("usage")?.as_object()?;
+    Some(with_data("usage.progress", frame, json!({
+        "messageId": id, "requestId": "workflow-progress",
+        "model": message.get("model"), "usage": usage,
+    })))
 }
 
 fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
