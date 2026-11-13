@@ -1189,6 +1189,8 @@ fn live_drawing_quality() {
                 Ok(chat) => (chat.answer, chat.tools, chat.timed_out, None),
                 Err(error) => (String::new(), Vec::new(), false, Some(error)),
             };
+            // A turn the account's usage limit refused says nothing about drawing.
+            assert!(!(tools.is_empty() && answer.contains("hit your") && answer.contains("limit")), "the account is rate limited ({}); rerun the bench once it resets", answer.trim());
             let draw_calls = tools.iter().filter(|tool| tool.contains("notes_draw") || tool.contains("Draw in a note")).count();
             let record = serde_json::json!({
                 "id": case.id, "run": run, "holdout": case.holdout, "ask": case.ask, "expect": case.expect,
