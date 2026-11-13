@@ -89,12 +89,17 @@ export function WorkflowInbox({ runs, names, onOpenRun, onChanged }: {
 }
 
 /** Mission Control's strip of active workflow runs. */
-export function WorkflowRunsStrip({ runs, names, onOpenRun }: { runs: WorkflowRun[]; names: Map<string, string>; onOpenRun: (run: WorkflowRun) => void }) {
-  const active = runs.filter(run => ["queued", "running", "waiting_approval", "waiting_quota"].includes(run.status));
+export const activeWorkflowRuns = (runs: WorkflowRun[]) => runs.filter(run => ["queued", "running", "waiting_approval", "waiting_quota"].includes(run.status));
+
+/** `chips` sits inline in a toolbar; `card` is its own bordered row. */
+export function WorkflowRunsStrip({ runs, names, onOpenRun, variant = "card" }: { runs: WorkflowRun[]; names: Map<string, string>; onOpenRun: (run: WorkflowRun) => void; variant?: "card" | "chips" }) {
+  const active = activeWorkflowRuns(runs);
   if (active.length === 0) return null;
-  return <div aria-label="Workflows running" className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-2">
-    <span className="text-caption font-medium uppercase tracking-[0.06em] text-muted-foreground">Workflows</span>
-    {active.map(run => <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-caption text-foreground hover:bg-accent">
+  return <div role="group" aria-label="Workflows running" className={variant === "chips"
+    ? "flex min-w-0 items-center gap-1.5 overflow-hidden"
+    : "mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-2"}>
+    <span className={variant === "chips" ? "sr-only" : "text-caption font-medium uppercase tracking-[0.06em] text-muted-foreground"}>Workflows</span>
+    {active.map(run => <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="inline-flex max-w-48 shrink-0 items-center gap-1.5 truncate rounded-full border border-border bg-muted px-2 py-0.5 text-caption text-foreground hover:bg-accent">
       <Dot tone={runTone(run.status)}/>{names.get(run.workflowId) ?? "Workflow"} · {RUN_STATUS_LABEL[run.status]}
     </button>)}
   </div>;

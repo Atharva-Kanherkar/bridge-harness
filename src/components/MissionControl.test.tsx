@@ -671,3 +671,18 @@ it("asks which project a new chat is for when there are several", async () => {
   await act(async () => kairo.click());
   expect(onNewChat).toHaveBeenCalledWith("k");
 });
+
+it("shows running workflows as chips inside the board toolbar, not a separate card", async () => {
+  const runs = [{ id: "r1", workflowId: "wf", status: "running" }, { id: "r2", workflowId: "wf", status: "succeeded" }] as never[];
+  const open = vi.fn();
+  await render({ sessions: [session("a", "working")], workflowRuns: runs, workflowNames: new Map([["wf", "Morning brief"]]), onOpenWorkflowRun: open });
+  const chips = host.querySelector("[role='toolbar'] [aria-label='Workflows running']")!;
+  expect(chips).not.toBeNull();
+  expect(chips.className).not.toContain("rounded-xl");
+  expect(host.querySelectorAll("[aria-label='Workflows running']")).toHaveLength(1);
+  await act(async () => chips.querySelector("button")!.click());
+  expect(open).toHaveBeenCalledWith(runs[0]);
+  await render({ sessions: [], workflowRuns: runs, workflowNames: new Map(), onOpenWorkflowRun: open });
+  expect(host.querySelector("[role='toolbar'] [aria-label='Workflows running']")).not.toBeNull();
+  expect(host.querySelector("[aria-label='Tiles on the stage']")).toBeNull();
+});

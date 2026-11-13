@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, ArrowRight, ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, MessageSquarePlus, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { WorkflowRun } from "../protocol/generated/protocol";
-import { WorkflowRunsStrip } from "./workflows/WorkflowInbox";
+import { activeWorkflowRuns, WorkflowRunsStrip } from "./workflows/WorkflowInbox";
 import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
 import { cn } from "@/lib/utils";
 import { MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
@@ -463,6 +463,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   const promote = (id: string) => update(prev => ({ order: moveToFront(prev.order, id), expandedId: null }));
   const setLimit = (limit: StageLimit | null) => update(() => ({ stageLimit: limit, expandedId: null }));
   const hasBoard = order.length > 0;
+  const showRuns = !!onOpenWorkflowRun && activeWorkflowRuns(workflowRuns).length > 0;
   const toolButton = "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 
   const queue = queueIds.length > 0 && <div role="list" aria-label="More chats"
@@ -484,9 +485,8 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar", dropOnCanvas && !hasBoard && "ring-2 ring-inset ring-ring")}>
     {/* the window title already reads "Mission Control"; this bar is the board's state. */}
     <h1 className="sr-only">Mission Control</h1>
-    {onOpenWorkflowRun && <div className="shrink-0 px-3 pt-3 empty:hidden"><WorkflowRunsStrip runs={workflowRuns} names={workflowNames ?? new Map()} onOpenRun={onOpenWorkflowRun}/></div>}
-    {hasBoard && <div role="toolbar" aria-label="Board" className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3 text-xs">
-      <div className="relative flex shrink-0 items-center gap-3">
+    {(hasBoard || showRuns) && <div role="toolbar" aria-label="Board" className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3 text-xs">
+      {hasBoard && <div className="relative flex shrink-0 items-center gap-3">
         {/* announces only what needs you; the working count changes too often to speak. */}
         <span aria-live="polite" className="sr-only">{waitingIds.length > 0 ? `${waitingIds.length} needs you` : ""}</span>
         {waitingIds.length > 0 && <button type="button" onClick={jumpToAttention} title="Go to the next chat waiting for you"
@@ -495,7 +495,8 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
         </button>}
         <span className="inline-flex items-center gap-1.5 text-muted-foreground"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />{workingCount} working</span>
         {pinnedSessionIds.length > 0 && <span className="inline-flex items-center gap-1 text-muted-foreground"><Pin size={11} aria-hidden="true" />{pinnedSessionIds.length} pinned</span>}
-      </div>
+      </div>}
+      {showRuns && <div className={cn("flex min-w-0 items-center", hasBoard && "border-l border-border pl-3")}><WorkflowRunsStrip variant="chips" runs={workflowRuns} names={workflowNames ?? new Map()} onOpenRun={onOpenWorkflowRun!}/></div>}
       {legend.length > 1 && <div role="group" aria-label="Projects on the board" className="flex min-w-0 items-center gap-1 overflow-hidden border-l border-border pl-3" onMouseLeave={() => setHoveredProject(null)}>
         {legend.map(([name, count]) => <button key={name} type="button" aria-pressed={heldProject === name}
           onMouseEnter={() => setHoveredProject(name)} onFocus={() => setHoveredProject(name)} onBlur={() => setHoveredProject(null)}
@@ -505,18 +506,18 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
           <span className="truncate font-medium">{name}</span><span className="font-mono text-[10px] text-muted-foreground">{count}</span>
         </button>)}
       </div>}
-      <div role="group" aria-label="Tiles on the stage" className="ml-auto flex shrink-0 items-center rounded-md bg-muted p-0.5">
+      {hasBoard && <div role="group" aria-label="Tiles on the stage" className="ml-auto flex shrink-0 items-center rounded-md bg-muted p-0.5">
         {([null, ...STAGE_LIMITS] as const).map(limit => <button key={limit ?? "auto"} type="button" aria-pressed={stored.stageLimit === limit}
           title={limit == null ? "Fit as many tiles as the board holds" : `Show at most ${limit} ${limit === 1 ? "tile" : "tiles"}`}
           onClick={() => setLimit(limit)}
           className={cn("h-6 min-w-6 rounded px-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring", stored.stageLimit === limit && "bg-background text-foreground shadow-xs")}>
           {limit ?? "Auto"}
         </button>)}
-      </div>
+      </div>}
       {onNewChat && workspaces.length > 0 && <>
         <button ref={newChatMenu.triggerRef} type="button" aria-haspopup="menu" aria-expanded={newChatMenu.open}
           onClick={() => workspaces.length === 1 ? onNewChat(workspaces[0].id) : newChatMenu.toggle()} title="Start a new chat"
-          className={toolButton}>
+          className={cn(toolButton, !hasBoard && "ml-auto")}>
           <MessageSquarePlus size={13} aria-hidden="true" />New chat
         </button>
         <MenuPanel controller={newChatMenu} label="Choose a project">
