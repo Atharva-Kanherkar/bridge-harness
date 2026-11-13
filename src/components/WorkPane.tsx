@@ -1,11 +1,9 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { ArrowUpRight, CloudOff, PanelRight, RotateCw } from "lucide-react";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
 import { formatElapsed, type BackgroundTaskView } from "../backgroundTasks";
 import { chatPrKey, chatPrStatus, checkTone, freshness, orderChecks } from "../chatPullRequests";
 import { orderPullRequests, shelfPhrase } from "../workSummary";
-import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { cn } from "@/lib/utils";
 import { AttachPullRequest, CHECK_ICON, PullRequestGlyph } from "./ChatPullRequests";
 import { SHELF_TONE, TaskKindGlyph } from "./WorkShelf";
@@ -119,7 +117,6 @@ function PullRequestRow({ pr, open, onToggle, rowRef, ...detail }: {
 }
 
 function TaskRow({ task, harness, open, onToggle }: { task: BackgroundTaskView; harness?: string | null; open: boolean; onToggle: () => void }) {
-  const reveal = useMotionTransition(MOTION_DURATION.reveal);
   return <li data-work-task className="min-w-0">
     <button
       type="button"
@@ -135,18 +132,15 @@ function TaskRow({ task, harness, open, onToggle }: { task: BackgroundTaskView; 
         {task.kind === "watching" ? "Watching" : "Running"}{task.detail ? <span className="font-mono"> · {task.detail}</span> : null}
       </span>
     </button>
-    <AnimatePresence initial={false}>
-      {open && <motion.div key="output" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={reveal} className="overflow-hidden">
-        <div data-work-task-output className="mb-2 ml-[1.15rem] rounded-md border border-border bg-code px-3 py-2 font-mono text-[11px] leading-relaxed">
-          {task.outputTail.length > 0
-            ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">{task.outputTail.join("\n")}</pre>
-            : <p className="text-muted-foreground">{task.logFiles.length
-              ? <>Output goes to {task.logFiles.map((file, index) => <span key={file} className="whitespace-nowrap text-foreground/80">{file}{index < task.logFiles.length - 1 ? ", " : ""}</span>)}</>
-              : "No output yet"}</p>}
-          {task.command && <p className="mt-1.5 truncate border-t border-border pt-1.5 text-faint" title={task.command}><span aria-hidden="true">$ </span>{task.command}</p>}
-        </div>
-      </motion.div>}
-    </AnimatePresence>
+    {/* Opens in place, like a PR's detail: the pane is for reading, not motion. */}
+    {open && <div data-work-task-output className="mb-2 ml-[1.15rem] rounded-md border border-border bg-code px-3 py-2 font-mono text-[11px] leading-relaxed">
+      {task.outputTail.length > 0
+        ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">{task.outputTail.join("\n")}</pre>
+        : <p className="text-muted-foreground">{task.logFiles.length
+          ? <>Output goes to {task.logFiles.map((file, index) => <span key={file} className="whitespace-nowrap text-foreground/80">{file}{index < task.logFiles.length - 1 ? ", " : ""}</span>)}</>
+          : "No output yet"}</p>}
+      {task.command && <p className="mt-1.5 truncate border-t border-border pt-1.5 text-faint" title={task.command}><span aria-hidden="true">$ </span>{task.command}</p>}
+    </div>}
   </li>;
 }
 
