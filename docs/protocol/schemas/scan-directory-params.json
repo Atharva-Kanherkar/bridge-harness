@@ -13,7 +13,7 @@
     },
     "refresh": {
       "default": false,
-      "description": "Drop cached sizes under this path and measure again.",
+      "description": "Measure everything under this path again. The last sizes keep showing, flagged `measuring`, until the new ones land.",
       "type": "boolean"
     }
   },

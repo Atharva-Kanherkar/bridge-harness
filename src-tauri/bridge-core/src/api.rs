@@ -4795,8 +4795,8 @@ fn storage_guard(core: &Arc<BridgeCore>) -> Result<crate::disk_space::Guard, Bri
 
 /// How full the disk is and the usual places it fills up. Sizes still being
 /// measured come back as `null` with `measuring` set; ask again for them.
-pub fn storage_overview(_core: &Arc<BridgeCore>) -> Result<wire::DiskOverview, BridgeError> {
-    Ok(crate::disk_space::overview(&crate::disk_space::Scanner::global(), &storage_home()?))
+pub fn storage_overview(core: &Arc<BridgeCore>) -> Result<wire::DiskOverview, BridgeError> {
+    Ok(crate::disk_space::overview(&crate::disk_space::Scanner::global(), &storage_guard(core)?))
 }
 
 /// One folder's children with the sizes known so far. Never waits on a walk.

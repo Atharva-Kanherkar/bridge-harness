@@ -24,6 +24,14 @@
         "path": {
           "type": "string"
         },
+        "protectedReason": {
+          "default": null,
+          "description": "Set when Bridge will not delete the folder as a whole (Downloads, `~/Library/Caches`): the person chooses what inside it goes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "safety": {
           "description": "`safe` when the owning tool rebuilds it on demand; `review` when it may hold something a person wants to keep.",
           "type": "string"
@@ -52,7 +60,7 @@
       "description": "The volume the home folder lives on.",
       "properties": {
         "freeBytes": {
-          "description": "What a new file could use right now.",
+          "description": "What macOS says is available: free space plus what it can purge on demand, the figure Finder and System Settings show.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
