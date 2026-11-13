@@ -1396,32 +1396,8 @@ impl GithubSurface {
                 self.run_gh(workspace, "pr review", &args, false)?;
                 Ok(format!("Submitted {} on PR #{number}.", review_label(*event)))
             }
-            GithubAction::Reply {
-                number,
-                comment_id,
-                body,
-            } => {
-                let mut args = vec!["api".into()];
-                if !repository.host.eq_ignore_ascii_case("github.com") {
-                    args.push("--hostname".into());
-                    args.push(repository.host.clone());
-                }
-                args.extend([
-                    "--method".into(),
-                    "POST".into(),
-                    format!(
-                        "repos/{}/{}/pulls/{number}/comments/{comment_id}/replies",
-                        repository.owner, repository.name
-                    ),
-                    "-f".into(),
-                    format!("body={body}"),
-                ]);
-                self.run_gh(
-                    workspace,
-                    "review reply",
-                    &args,
-                    false,
-                )?;
+            GithubAction::Reply { number, .. } => {
+                self.write_comment(workspace, &repository, action)?;
                 Ok(format!("Replied on PR #{number}."))
             }
             GithubAction::Rerun { number } => self.rerun_failed(workspace, &selector, *number),
@@ -1462,25 +1438,8 @@ impl GithubSurface {
                     }
                 ))
             }
-            GithubAction::Comment {
-                target,
-                number,
-                body,
-            } => {
-                self.run_gh(
-                    workspace,
-                    "post comment",
-                    &[
-                        target.noun().to_string(),
-                        "comment".into(),
-                        number.to_string(),
-                        "--repo".into(),
-                        selector.clone(),
-                        "--body".into(),
-                        body.clone(),
-                    ],
-                    false,
-                )?;
+            GithubAction::Comment { target, number, .. } => {
+                self.write_comment(workspace, &repository, action)?;
                 Ok(format!("Commented on {} #{number}.", target.label()))
             }
             GithubAction::SetState {
@@ -1593,6 +1552,120 @@ impl GithubSurface {
             if count == 1 { "run" } else { "runs" }
         ))
     }
+
+/// Outgoing names an explicit repository, independent of the chat's cwd.
+/// The same request builder handles comments from the GitHub pane.
+pub fn post_outgoing(
+    &self,
+    repo: &str,
+    action: &GithubAction,
+    confirmed: bool,
+) -> Result<crate::outgoing::send::Receipt, GithubSurfaceError> {
+    if !crate::github_policy::authorize(confirmed).is_approved() {
+        return Err(GithubSurfaceError::CommandFailed {
+            operation: "post comment",
+            stderr: "the action was denied".into(),
+        });
+    }
+    let (owner, name) = repo
+        .split_once('/')
+        .filter(|(owner, name)| {
+            !owner.is_empty()
+                && !name.is_empty()
+                && !name.contains('/')
+                && [*owner, *name].iter().all(|p| {
+                    *p != "."
+                        && *p != ".."
+                        && p.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                })
+        })
+        .ok_or_else(|| GithubSurfaceError::MalformedResponse {
+            resource: "outgoing repository",
+            detail: "expected owner/name".into(),
+        })?;
+    let repository = GithubRepository {
+        host: "github.com".into(),
+        owner: owner.into(),
+        name: name.into(),
+    };
+    let bytes = self.write_comment(&std::env::temp_dir(), &repository, action)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| GithubSurfaceError::MalformedResponse {
+            resource: "created comment",
+            detail: e.to_string(),
+        })?;
+    let id = value
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|id| *id > 0);
+    let url = value.get("html_url").and_then(serde_json::Value::as_str);
+    match (id, url) {
+        (Some(id), Some(url))
+            if valid_comment_url(
+                url,
+                &repository,
+                action.number(),
+                id,
+                matches!(action, GithubAction::Reply { .. }),
+            ) =>
+        {
+            Ok(crate::outgoing::send::Receipt {
+                remote_ref: id.to_string(),
+                permalink: url.into(),
+            })
+        }
+        _ => Err(GithubSurfaceError::MalformedResponse {
+            resource: "created comment",
+            detail: "no matching comment id and permalink; check GitHub before retrying".into(),
+        }),
+    }
+}
+
+fn write_comment(
+    &self,
+    workspace: &Path,
+    repository: &GithubRepository,
+    action: &GithubAction,
+) -> Result<Vec<u8>, GithubSurfaceError> {
+    let (endpoint, body) = match action {
+        GithubAction::Comment { number, body, .. } => (
+            format!(
+                "repos/{}/{}/issues/{number}/comments",
+                repository.owner, repository.name
+            ),
+            body,
+        ),
+        GithubAction::Reply {
+            number,
+            comment_id,
+            body,
+        } => (
+            format!(
+                "repos/{}/{}/pulls/{number}/comments/{comment_id}/replies",
+                repository.owner, repository.name
+            ),
+            body,
+        ),
+        _ => {
+            return Err(GithubSurfaceError::MalformedResponse {
+                resource: "outgoing action",
+                detail: "only comments and review replies are supported".into(),
+            })
+        }
+    };
+    let args = vec![
+        "api".into(),
+        "--hostname".into(),
+        repository.host.clone(),
+        "--method".into(),
+        "POST".into(),
+        endpoint,
+        "-f".into(),
+        format!("body={body}"),
+    ];
+    self.run_gh(workspace, "post comment", &args, false)
+}
 
     fn run_gh(
         &self,
@@ -2274,6 +2347,39 @@ fn malformed(resource: &'static str, detail: impl Into<String>) -> GithubSurface
 }
 
 /// The lowercase word for a merge strategy, used in confirmation statements.
+fn valid_comment_url(
+    url: &str,
+    repository: &GithubRepository,
+    number: u64,
+    id: u64,
+    reply: bool,
+) -> bool {
+    let Ok(url) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let expected_fragment = format!(
+        "{}{}",
+        if reply {
+            "discussion_r"
+        } else {
+            "issuecomment-"
+        },
+        id
+    );
+    url.scheme() == "https"
+        && url.host_str() == Some(repository.host.as_str())
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.query().is_none()
+        && url.fragment() == Some(expected_fragment.as_str())
+        && [
+            format!("/{}/{}/issues/{number}", repository.owner, repository.name),
+            format!("/{}/{}/pull/{number}", repository.owner, repository.name),
+        ]
+        .contains(&url.path().to_owned())
+}
+
 pub fn strategy_label(strategy: MergeStrategy) -> &'static str {
     match strategy {
         MergeStrategy::Merge => "merge",
@@ -3634,6 +3740,29 @@ mod tests {
     }
 
     #[test]
+    fn outgoing_comments_require_policy_and_return_the_created_receipt() {
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let action = GithubAction::Comment { target: GithubTarget::Issue, number: 17, body: "literal `body` with $(text)\nand a newline".into() };
+        let before = invocations(&fake);
+        assert!(surface.post_outgoing("explicit/repository", &action, false).is_err());
+        assert_eq!(before, invocations(&fake), "denial performs no subprocess");
+        fs::write(fake.path().join("comment-response.json"), r#"{"id":42,"html_url":"https://github.com/explicit/repository/issues/17#issuecomment-42"}"#).unwrap();
+        let receipt = surface.post_outgoing("explicit/repository", &action, true).unwrap();
+        assert_eq!(receipt.remote_ref, "42");
+        assert!(invocations(&fake).contains("api --hostname github.com --method POST repos/explicit/repository/issues/17/comments -f body=literal `body` with $(text)"));
+        fs::write(fake.path().join("comment-response.json"), r#"{"id":42,"html_url":"https://github.com/other/repository/issues/17#issuecomment-42"}"#).unwrap();
+        assert!(surface.post_outgoing("explicit/repository", &action, true).is_err());
+        fs::write(fake.path().join("comment-response.json"), "{}").unwrap();
+        assert!(surface.post_outgoing("explicit/repository", &action, true).is_err());
+        assert!(surface.post_outgoing("../repository", &action, true).is_err());
+        let reply = GithubAction::Reply { number: 17, comment_id: 8, body: "reply".into() };
+        fs::write(fake.path().join("comment-response.json"), r#"{"id":43,"html_url":"https://github.com/explicit/repository/pull/17#discussion_r43"}"#).unwrap();
+        assert_eq!(surface.post_outgoing("explicit/repository", &reply, true).unwrap().remote_ref, "43");
+        assert!(invocations(&fake).contains("repos/explicit/repository/pulls/17/comments/8/replies -f body=reply"));
+    }
+
+    #[test]
     fn conversation_and_state_actions_build_the_gh_argv_for_each_target() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
@@ -3645,7 +3774,7 @@ mod tests {
                     number: 103,
                     body: "looks good".into(),
                 },
-                "pr comment 103 --repo fixture/project --body looks good",
+                "api --hostname github.com --method POST repos/fixture/project/issues/103/comments -f body=looks good",
             ),
             (
                 GithubAction::Comment {
@@ -3653,7 +3782,7 @@ mod tests {
                     number: 17,
                     body: "on it".into(),
                 },
-                "issue comment 17 --repo fixture/project --body on it",
+                "api --hostname github.com --method POST repos/fixture/project/issues/17/comments -f body=on it",
             ),
             (
                 GithubAction::SetState {
@@ -3763,7 +3892,7 @@ mod tests {
             .unwrap();
         let log = invocations(&fake);
         assert!(log.contains(
-            "api --method POST repos/fixture/project/pulls/103/comments/55/replies -f body=thanks"
+            "api --hostname github.com --method POST repos/fixture/project/pulls/103/comments/55/replies -f body=thanks"
         ));
     }
 

@@ -591,6 +591,14 @@ pub fn update_outgoing(
     Ok(wire::UpdateOutgoingResult { item })
 }
 
+/// First call describes the exact effect; the UI returns its one-use token
+/// only after the person approves. Full access never bypasses this gate.
+pub fn send_outgoing(core: &Arc<BridgeCore>, id: &str, revision: u32, approved: Option<bool>, approval_token: Option<&str>) -> Result<wire::SendOutgoingResult, BridgeError> {
+    crate::outgoing::send::run(core, id, revision, approved, approval_token,
+        |item| crate::outgoing::send::resolve_target(core, item),
+        |item, target| crate::outgoing::send::execute_target(core, item, target))
+}
+
 /// The text to put on the clipboard; the client writes it there.
 pub fn copy_outgoing(core: &Arc<BridgeCore>, id: &str, revision: u32) -> Result<wire::CopyOutgoingResult, BridgeError> {
     let (text, item) = {

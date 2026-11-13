@@ -226,6 +226,7 @@ pub fn render_prompt(item: &InboxItem) -> String {
 /// to this exact place, so it states the effect rather than asking for a decision.
 pub fn action_prompt(action: &ConnectorAction) -> String {
     match action {
+        ConnectorAction::Post { target, .. } => target.post_prompt(),
         ConnectorAction::Reply { item, text } => format!(
             "{Verb} exactly this reply in {family}, then stop.\n\
              \n\
@@ -327,14 +328,16 @@ pub fn card_or_fallback(message: &str, item: &InboxItem) -> (ConnectorCard, Opti
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ConnectorAction {
+    Post { family: ConnectorFamily, target: crate::outgoing::send::Target, text: String },
     Reply { item: InboxItem, text: String },
     React { item: InboxItem, emoji: String },
 }
 
 impl ConnectorAction {
-    pub fn item(&self) -> &InboxItem {
+    pub fn item(&self) -> Option<&InboxItem> {
         match self {
-            Self::Reply { item, .. } | Self::React { item, .. } => item,
+            Self::Reply { item, .. } | Self::React { item, .. } => Some(item),
+            Self::Post { .. } => None,
         }
     }
 
@@ -355,6 +358,7 @@ impl ConnectorAction {
             }
         };
         match self {
+            Self::Post { target, text, .. } => target.post_effect(text),
             Self::Reply { item, text } => format!("Send to {}:\n{text}", destination(item)),
             Self::React { item, emoji } => {
                 format!("React :{emoji}: to {}’s message", destination(item))
@@ -427,6 +431,11 @@ pub fn authorize(
 
 fn validate_payload(action: &ConnectorAction) -> Result<(), ActionRefusal> {
     match action {
+        ConnectorAction::Post { family, target, text } => {
+            if !crate::outgoing::send::valid_post(*family, target, text) {
+                return Err(ActionRefusal::InvalidPayload { detail: "invalid Slack post".into() });
+            }
+        }
         ConnectorAction::Reply { text, .. } => {
             if text.trim().is_empty() {
                 return Err(ActionRefusal::InvalidPayload { detail: "the reply is empty".into() });
@@ -812,5 +821,58 @@ mod tests {
             assert!(limits.cost_ceiling_microusd.is_some_and(|ceiling| ceiling > 0));
             assert!(limits.max_output_tokens.is_some_and(|budget| budget > 0));
         }
+    }
+}
+
+#[cfg(test)]
+mod post_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn post_effect_and_tool_arguments_are_the_same_exact_payload() {
+        let target = crate::outgoing::send::Target::Slack {
+            channel: "C123".into(),
+            thread: Some("1794571200.000001".into()),
+            label: "#dev".into(),
+            server: "slack".into(),
+            harness: "claude".into(),
+            uploads: false,
+            send_arguments: json!({"channel_id":"C123","message":"literal text","thread_ts":"1794571200.000001"}),
+            upload_arguments: None,
+            complete_arguments: None,
+        };
+        let action = ConnectorAction::Post {
+            family: ConnectorFamily::Slack,
+            target,
+            text: "literal text".into(),
+        };
+        assert!(action.item().is_none());
+        assert!(action.effect().contains("#dev (C123)"));
+        assert!(action.effect().contains("literal text"));
+        assert!(matches!(
+            authorize(action.clone(), None, false, Ok(())),
+            Err(ActionRefusal::ApprovalRequired { .. })
+        ));
+        assert!(authorize(
+            action.clone(),
+            Some(ApprovalDecision::Approved),
+            false,
+            Ok(())
+        )
+        .is_ok());
+        let ConnectorAction::Post { target, .. } = action else {
+            unreachable!()
+        };
+        assert!(authorize(
+            ConnectorAction::Post {
+                family: ConnectorFamily::Slack,
+                target,
+                text: "different text".into()
+            },
+            Some(ApprovalDecision::Approved),
+            false,
+            Ok(())
+        )
+        .is_err());
     }
 }

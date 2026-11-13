@@ -358,3 +358,27 @@ test("toolless is ignored outside a briefing", () => {
   assert.equal(options.tools, undefined);
   assert.equal(options.systemPrompt.preset, "claude_code");
 });
+
+test("outgoing allows one exact call and refuses changed text, destination, extra arguments and replay", async () => {
+  const tool = "mcp__slack__slack_send_message";
+  const args = { channel_id: "C123", message: "approved verbatim", thread_ts: "1794571200.000001" };
+  const gate = makeBriefingGate({ exactAction: { tool, arguments: args } });
+  for (const [name, input] of [
+    [tool, { ...args, message: "changed" }],
+    [tool, { ...args, channel_id: "C456" }],
+    [tool, { ...args, thread_ts: "1794571200.000002" }],
+    [tool, { ...args, reply_broadcast: true }],
+    ["mcp__other__slack_send_message", args],
+    ["mcp__slack__slack_read_thread", {}],
+  ]) assert.equal((await gate(name, input)).behavior, "deny");
+  assert.equal((await gate(tool, { ...args })).behavior, "allow");
+  assert.equal((await gate(tool, args)).behavior, "deny");
+});
+
+test("outgoing exact action is forwarded from the adapter options", async () => {
+  const tool = "mcp__slack__slack_send_message";
+  const args = { channel_id: "C123", message: "approved" };
+  const options = buildOptions({ ...base, briefing: { ...briefing, exactAction: { tool, arguments: args } } });
+  assert.equal((await options.canUseTool(tool, { ...args, message: "other" })).behavior, "deny");
+  assert.equal((await options.canUseTool(tool, args)).behavior, "allow");
+});

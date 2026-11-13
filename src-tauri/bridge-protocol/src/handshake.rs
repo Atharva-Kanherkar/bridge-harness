@@ -117,9 +117,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// client must not pair with an older daemon, whose draft cards would fail
 /// with `method_not_found`; a 1.30 client still pairs with a 1.31 daemon and
 /// simply never shows a draft card.
+/// **1.32 adds revision-bound outgoing sends and remote receipts.** New clients
+/// require this method before offering Send on a draft card.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 31,
+    minor: 32,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
