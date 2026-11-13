@@ -485,7 +485,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar", dropOnCanvas && !hasBoard && "ring-2 ring-inset ring-ring")}>
     {/* the window title already reads "Mission Control"; this bar is the board's state. */}
     <h1 className="sr-only">Mission Control</h1>
-    {(hasBoard || showRuns) && <div role="toolbar" aria-label="Board" className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3 text-xs">
+    {(hasBoard || showRuns) && <div role="toolbar" aria-label="Board" className="@container flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3 text-xs">
       {hasBoard && <div className="relative flex shrink-0 items-center gap-3">
         {/* announces only what needs you; the working count changes too often to speak. */}
         <span aria-live="polite" className="sr-only">{waitingIds.length > 0 ? `${waitingIds.length} needs you` : ""}</span>
@@ -506,7 +506,8 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
           <span className="truncate font-medium">{name}</span><span className="font-mono text-[10px] text-muted-foreground">{count}</span>
         </button>)}
       </div>}
-      {hasBoard && <div role="group" aria-label="Tiles on the stage" className="ml-auto flex shrink-0 items-center rounded-md bg-muted p-0.5">
+      {/* below 600px only one tile fits anyway, so the control would only crowd the bar. */}
+      {hasBoard && <div role="group" aria-label="Tiles on the stage" className="ml-auto flex shrink-0 items-center rounded-md bg-muted p-0.5 @max-[600px]:hidden">
         {([null, ...STAGE_LIMITS] as const).map(limit => <button key={limit ?? "auto"} type="button" aria-pressed={stored.stageLimit === limit}
           title={limit == null ? "Fit as many tiles as the board holds" : `Show at most ${limit} ${limit === 1 ? "tile" : "tiles"}`}
           onClick={() => setLimit(limit)}
@@ -517,8 +518,8 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
       {onNewChat && workspaces.length > 0 && <>
         <button ref={newChatMenu.triggerRef} type="button" aria-haspopup="menu" aria-expanded={newChatMenu.open}
           onClick={() => workspaces.length === 1 ? onNewChat(workspaces[0].id) : newChatMenu.toggle()} title="Start a new chat"
-          className={cn(toolButton, !hasBoard && "ml-auto")}>
-          <MessageSquarePlus size={13} aria-hidden="true" />New chat
+          className={cn(toolButton, "@max-[600px]:ml-auto", !hasBoard && "ml-auto")}>
+          <MessageSquarePlus size={13} aria-hidden="true" /><span className="@max-[480px]:sr-only">New chat</span>
         </button>
         <MenuPanel controller={newChatMenu} label="Choose a project">
           <p className="px-2 py-1 text-[11px] font-medium text-muted-foreground">New chat in…</p>
