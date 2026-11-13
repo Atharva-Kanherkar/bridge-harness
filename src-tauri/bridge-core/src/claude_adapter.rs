@@ -246,7 +246,7 @@ fn launch(
                 // A workflow run: the sidecar asks Bridge before any call that
                 // is not a read on a read-granted server. Absent otherwise.
                 "workflow": policy.workflow_servers().map(|servers| json!({
-                    "servers": servers, "worktree": policy.workflow_worktree(),
+                    "servers": servers, "worktree": policy.workflow_worktree(), "budget": policy.limits(),
                 })),
             }))
         }

@@ -2945,6 +2945,9 @@ fn handle_agent_value_timed(
             let root: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id=?1", params![session_id], |r| r.get(0)).ok().flatten();
             if let Some(root) = root { frame.to_mut()["_bridgeRootThreadId"] = serde_json::json!(root); }
         }
+        if adapter_id == "claude" && session_kind == crate::workflow_run::WORKFLOW_SESSION_KIND {
+            frame.to_mut()["_bridgeWorkflow"] = serde_json::json!(true);
+        }
         let normalized = state
             .adapter_registry
             .normalize(&adapter_id, &frame)
@@ -2957,6 +2960,12 @@ fn handle_agent_value_timed(
         // never interpreted as a Bridge delegation or prompt mutation.
         let mut root_events = Vec::new();
         for event in normalized {
+            if event.kind == "usage.progress" && adapter_id == "claude" && session_kind == crate::workflow_run::WORKFLOW_SESSION_KIND {
+                if let Err(error) = crate::workflow_run::record_claude_usage(&db, session_id, observed_turn_id.as_deref(), &event.data, true) {
+                    eprintln!("[bridge] workflow {session_id} usage progress failed: {error}");
+                }
+                continue;
+            }
             if event.data.get("subagent").is_some() {
                 // Codex and OpenCode report a child's requests only on the
                 // child, so bill them to the chat that owns its process. The
@@ -3204,14 +3213,20 @@ fn handle_agent_value_timed(
                 }
                 "usage.updated" => {
                     let scope = workspace_id.as_deref().unwrap_or(session_id);
-                    let _ = policy::record_provider_usage(
-                        &db,
-                        scope,
-                        session_id,
-                        observed_turn_id.as_deref(),
-                        &format!("provider.{adapter_id}"),
-                        &event.data,
-                    );
+                    if adapter_id == "claude" && session_kind == crate::workflow_run::WORKFLOW_SESSION_KIND {
+                        if let Err(error) = crate::workflow_run::record_claude_usage(&db, session_id, observed_turn_id.as_deref(), &event.data, false) {
+                            eprintln!("[bridge] workflow {session_id} final usage failed: {error}");
+                        }
+                    } else {
+                        let _ = policy::record_provider_usage(
+                            &db,
+                            scope,
+                            session_id,
+                            observed_turn_id.as_deref(),
+                            &format!("provider.{adapter_id}"),
+                            &event.data,
+                        );
+                    }
                     if let Some(reading) =
                         context_windows::reading_from_usage_event(&adapter_id, &event.data)
                     {
@@ -13517,7 +13532,7 @@ pub fn stop_session(
         let _ = runtime.child.wait();
     }
     let db = state.db.lock().unwrap();
-    let workspace_id: String = db.query_row(
+    let workspace_id: Option<String> = db.query_row(
         "SELECT workspace_id FROM sessions WHERE id=?1",
         params![session_id],
         |r| r.get(0),
@@ -13526,7 +13541,9 @@ pub fn stop_session(
         "UPDATE sessions SET status='stopped',ended_at=?2 WHERE id=?1",
         params![session_id, Utc::now().to_rfc3339()],
     )?;
-    db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace_id])?;
+    if let Some(workspace_id) = workspace_id {
+        db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace_id])?;
+    }
     store::event(
         &db,
         "supervisor",

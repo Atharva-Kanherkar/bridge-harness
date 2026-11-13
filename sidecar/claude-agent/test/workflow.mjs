@@ -157,3 +157,17 @@ test("an interrupt denies what is waiting but later asks still go out", async ()
   relay.resolve({ type: "control_response", response: { request_id: frames.at(-1).request_id, response: { behavior: "allow" } } });
   assert.equal(await later, "allow");
 });
+
+
+test("workflow budgets reach the SDK and ordinary chats have no query ceilings", () => {
+  const base = { writeMode: "Isolated", briefing: { workflow: { servers: [], worktree: true, budget: { maxTurns: 24, costCeilingMicrousd: 12_345 } } } };
+  const options = buildOptions(base);
+  assert.equal(options.maxTurns, 24);
+  assert.equal(options.maxBudgetUsd, 0.012345);
+  const noCost = buildOptions({ ...base, briefing: { workflow: { ...base.briefing.workflow, budget: { maxTurns: 1, costCeilingMicrousd: null } } } });
+  assert.equal(noCost.maxTurns, 1);
+  assert.equal(noCost.maxBudgetUsd, undefined);
+  const ordinary = buildOptions({ writeMode: "Isolated" });
+  assert.equal(ordinary.maxBudgetUsd, undefined);
+  assert.equal(ordinary.maxTurns, undefined);
+});

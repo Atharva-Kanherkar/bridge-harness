@@ -55,6 +55,7 @@ export async function permissionDecision(options, name, input = {}, context = {}
 const resultBlock = (status, summary) => `\n\`\`\`workflow-result\n${JSON.stringify({ status, summary })}\n\`\`\``;
 
 export function query({ prompt, options = {} }) {
+  let releaseHeldTurn = null;
   const sessionId = options.resume ?? options.sessionId ?? randomUUID();
   const cwd = options.cwd ?? process.cwd();
   const writes = join(cwd, "writes.log");
@@ -98,6 +99,15 @@ export function query({ prompt, options = {} }) {
       yield* finish(known?.reply ?? "{}");
       return;
     }
+    if (brief.includes("E2E:live-budget")) {
+      // A real sidecar emits pre-result usage, then stays active until Bridge
+      // interrupts it. No result frame can supply usage for these runs.
+      const message = { id: "live-budget-message", model: options.model, usage: { input_tokens: 100, output_tokens: 0 } };
+      yield { type: "stream_event", session_id: sessionId, event: { type: "message_start", message } };
+      yield { type: "stream_event", session_id: sessionId, event: { type: "message_delta", usage: { output_tokens: 8 } } };
+      await new Promise((resolve) => { releaseHeldTurn = resolve; });
+      return;
+    }
     // A marker, or what a drafted "post … on Slack" job asks for (manual QA).
     if (brief.includes("E2E:post") || (/\bpost\b/i.test(brief) && /slack/i.test(brief))) {
       yield* tool("mcp__claude_ai_Linear__list_issues", { updatedSince: "yesterday" });
@@ -135,7 +145,7 @@ export function query({ prompt, options = {} }) {
     for await (const message of prompt) yield* turn(textOf(message));
   })();
   return Object.assign(stream, {
-    interrupt: async () => {},
+    interrupt: async () => { releaseHeldTurn?.(); releaseHeldTurn = null; },
     close: () => {},
     supportedModels: async () => [],
   });

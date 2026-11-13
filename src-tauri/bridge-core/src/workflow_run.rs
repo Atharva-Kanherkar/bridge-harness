@@ -656,7 +656,10 @@ fn wait_for_turn_within(
             return Ok(TurnEnd::Budget("budget_exhausted"));
         }
         if let Some(status) = completed {
-            return Ok(TurnEnd::Completed { failed: matches!(status.as_deref(), Some("failed" | "error")) });
+            if matches!(status.as_deref(), Some("error_max_budget_usd" | "error_max_turns")) {
+                return Ok(TurnEnd::Budget("budget_exhausted"));
+            }
+            return Ok(TurnEnd::Completed { failed: status.is_some_and(|status| status == "failed" || status.starts_with("error")) });
         }
         let now_waiting = status.as_deref() == Some("waiting");
         if now_waiting != waiting {
@@ -726,6 +729,61 @@ pub(crate) fn usage_used(db: &Connection, session_id: &str) -> Result<RunUsage, 
         params![session_id],
         |row| Ok(RunUsage { tokens: row.get(0)?, output_tokens: row.get(1)?, cost_microusd: row.get(2)?, known_cost_microusd: row.get(3)? }),
     )?)
+}
+
+const PROGRESS_SOURCE: &str = "provider.claude.progress";
+
+/// Record a workflow's live usage without summing repeated cumulative message
+/// snapshots. Final results replace the provisional rows for the turn, so
+/// ordinary chats keep their existing result-only accounting.
+pub(crate) fn record_claude_usage(
+    db: &Connection,
+    session_id: &str,
+    turn_id: Option<&str>,
+    data: &serde_json::Value,
+    progress: bool,
+) -> Result<bool, BridgeError> {
+    let source = if progress { PROGRESS_SOURCE } else { "provider.claude" };
+    let records = crate::usage::normalize(source, data);
+    if records.is_empty() {
+        return Ok(false);
+    }
+    let transaction = db.unchecked_transaction()?;
+    if progress {
+        let Some(message_id) = data.get("messageId").and_then(serde_json::Value::as_str) else { return Ok(false) };
+        let final_exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source='provider.claude')",
+            params![session_id, turn_id], |row| row.get(0),
+        )?;
+        if final_exists { return Ok(false); }
+        let previous_output: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(output_tokens),0) FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source=?3 AND provider_record_id=?4",
+            params![session_id, turn_id, PROGRESS_SOURCE, format!("{message_id}:workflow-progress")], |row| row.get(0),
+        )?;
+        if data.pointer("/usage/output_tokens").and_then(serde_json::Value::as_i64).is_some_and(|output| output < previous_output) {
+            return Ok(false); // A delayed assistant snapshot cannot rewind usage.
+        }
+        transaction.execute(
+            "DELETE FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source=?3 AND provider_record_id=?4",
+            params![session_id, turn_id, PROGRESS_SOURCE, format!("{message_id}:workflow-progress")],
+        )?;
+    } else {
+        // The SDK can report zeroed figures on a crash/startup error. Preserve
+        // observed usage instead of replacing it with that empty result.
+        if records.iter().all(|record| [record.tokens.output_tokens, record.tokens.uncached_input_tokens, record.tokens.cache_read_tokens, record.tokens.cache_write_tokens].iter().all(|count| count.unwrap_or(0) == 0))
+            && usage_used(&transaction, session_id)?.tokens.is_some_and(|tokens| tokens > 0) {
+            return Ok(false);
+        }
+        // Replaying the same final frame is idempotent too. Do not remove live
+        // usage for error results with no figures (handled above).
+        transaction.execute(
+            "DELETE FROM usage_ledger WHERE workspace_id=?1 AND session_id=?1 AND turn_id IS ?2 AND source IN (?3,'provider.claude')",
+            params![session_id, turn_id, PROGRESS_SOURCE],
+        )?;
+    }
+    let recorded = crate::policy::record_provider_usage(&transaction, session_id, session_id, turn_id, source, data)?;
+    transaction.commit()?;
+    Ok(recorded)
 }
 
 fn budget_reached(db: &Connection, session_id: &str, baseline: i64, budget: &wire::WorkBriefLimits) -> Result<bool, BridgeError> {
@@ -1214,6 +1272,60 @@ mod tests {
         let cancelled = workflow_trigger::cancel(&db, &run.run.id, Utc::now()).unwrap();
         assert_eq!(cancelled.tokens, Some(120));
         assert_eq!(cancelled.cost_microusd, Some(12));
+    }
+
+    #[test]
+    fn streaming_usage_is_replaced_by_message_and_reconciled_once_on_result() {
+        let (dir, core) = test_support::core();
+        bound_run(&core, dir.path(), &test_support::definition(), false);
+        let db = core.db.lock().unwrap();
+        crate::usage_pricing::set_price_override(&db, "live-model", 0, 1_000_000, None, None).unwrap();
+        let mut state = crate::agent::ClaudeStreamState::default();
+        let frames = [
+            serde_json::json!({"type":"stream_event", "event":{"type":"message_start", "message":{"id":"m1", "model":"live-model", "usage":{"input_tokens":100,"output_tokens":0}}}}),
+            serde_json::json!({"type":"stream_event", "event":{"type":"message_delta", "usage":{"output_tokens":8}}}),
+            serde_json::json!({"type":"assistant", "message":{"id":"m1", "model":"live-model", "content":[], "usage":{"input_tokens":100,"output_tokens":8}}}),
+        ];
+        let mut last = serde_json::Value::Null;
+        for mut frame in frames {
+            assert!(crate::agent::normalize_claude_message(&frame).iter().all(|event| event.kind != "usage.progress"), "ordinary chats stay result-only");
+            frame["_bridgeWorkflow"] = true.into();
+            let events = crate::agent::normalize_claude_message_with_state(&frame, &mut state);
+            last = events.iter().find(|event| event.kind == "usage.progress").unwrap().data.clone();
+            record_claude_usage(&db, "run-session", Some("t1"), &last, true).unwrap();
+        }
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(108));
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, Some(8));
+        let count = || db.query_row("SELECT COUNT(*) FROM usage_ledger WHERE workspace_id='run-session'", [], |row| row.get::<_, i64>(0)).unwrap();
+        assert_eq!(count(), 1, "stream delta and assistant snapshot replace the same message");
+        let mut stale = last.clone();
+        stale["usage"]["output_tokens"] = 0.into();
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &stale, true).unwrap());
+        let unknown = serde_json::json!({"messageId":"m2","requestId":"workflow-progress","model":"unknown-preview-model","usage":{"input_tokens":5,"output_tokens":2}});
+        record_claude_usage(&db, "run-session", Some("t1"), &unknown, true).unwrap();
+        assert_eq!(count(), 2, "distinct message usage adds together");
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(115));
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, None, "partly unpriced live usage stays unknown");
+        // An error without usage must not erase observed partial usage.
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &serde_json::json!({}), false).unwrap());
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &serde_json::json!({"usage":{"input_tokens":0,"output_tokens":0},"totalCostUsd":0}), false).unwrap());
+        assert_eq!(count(), 2);
+        let final_usage = serde_json::json!({"usage":{"input_tokens":105,"output_tokens":10},"totalCostUsd":0.000010,"model":"live-model"});
+        for _ in 0..2 { record_claude_usage(&db, "run-session", Some("t1"), &final_usage, false).unwrap(); }
+        assert_eq!(count(), 1, "replayed final frames never double-bill");
+        assert_eq!(usage_used(&db, "run-session").unwrap().tokens, Some(115));
+        assert_eq!(usage_used(&db, "run-session").unwrap().cost_microusd, Some(10));
+        assert!(!record_claude_usage(&db, "run-session", Some("t1"), &last, true).unwrap(), "late progress cannot replace the result");
+    }
+
+    #[test]
+    fn native_sdk_budget_results_are_budget_exhaustion_even_without_priced_usage() {
+        for status in ["error_max_budget_usd", "error_max_turns"] {
+            let (dir, core) = test_support::core();
+            let run = bound_run(&core, dir.path(), &test_support::definition(), false);
+            agent_event(&core.db.lock().unwrap(), 1, "turn.completed", Some(status), None);
+            assert_eq!(wait_for_turn(&core, &run.run, &run.lease_owner, "run-session", 0, &test_support::definition().budget).unwrap(), TurnEnd::Budget("budget_exhausted"));
+        }
     }
 
     #[test]

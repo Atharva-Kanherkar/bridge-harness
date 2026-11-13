@@ -130,6 +130,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // on it. Rust only sets this for a policy with an empty scope, and the
   // briefing gate still stands behind it.
   const toolless = isBriefing({ briefing }) && briefing.toolless === true;
+  const budget = briefing?.workflow?.budget;
   return {
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(model ? { model } : {}),
@@ -142,6 +143,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
       ? { systemPrompt: toolless ? instructions : { type: "preset", preset: "claude_code", append: instructions } }
       : {}),
     ...authority,
+    ...(budget?.maxTurns != null ? { maxTurns: budget.maxTurns } : {}),
+    ...(budget?.costCeilingMicrousd != null ? { maxBudgetUsd: budget.costCeilingMicrousd / 1_000_000 } : {}),
     ...(toolless ? { tools: [] } : {}),
   };
 }

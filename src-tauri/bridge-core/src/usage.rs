@@ -32,7 +32,7 @@ impl UsageProvider {
     pub fn from_source(source: &str) -> Self {
         match source.strip_prefix("provider.").unwrap_or(source) {
             "codex" => Self::Codex,
-            "claude" => Self::Claude,
+            "claude" | "claude.progress" => Self::Claude,
             "opencode" => Self::OpenCode,
             "pi" => Self::Pi,
             "cursor" | "grok" => Self::Acp,
@@ -233,7 +233,7 @@ fn normalize_claude(data: &Value) -> Vec<UsageRecord> {
             return Vec::new();
         }
         return vec![UsageRecord {
-            model: None,
+            model: string(data, &["model"]),
             serving_model: None,
             tokens,
             context_window_tokens: None,
