@@ -110,13 +110,16 @@ pub(crate) fn seeded(dir: &std::path::Path) -> (Arc<BridgeCore>, Vec<String>) {
     (core, trails)
 }
 
-/// Median and 90th percentile of `runs` warm calls, after three warm-ups.
-fn time(runs: usize, mut call: impl FnMut()) -> (Duration, Duration) {
+/// Median and 90th percentile of `runs` calls after three warm-ups, with
+/// `before` run untimed ahead of each call.
+fn time(runs: usize, mut before: impl FnMut(), mut call: impl FnMut()) -> (Duration, Duration) {
     for _ in 0..3 {
+        before();
         call();
     }
     let mut samples: Vec<Duration> = (0..runs)
         .map(|_| {
+            before();
             let start = Instant::now();
             call();
             start.elapsed()
@@ -126,6 +129,9 @@ fn time(runs: usize, mut call: impl FnMut()) -> (Duration, Duration) {
     (samples[runs / 2], samples[runs * 9 / 10])
 }
 
+/// The calls the app makes, warm (nothing written since the last call) and
+/// cold (a turn appended to one of the trail's chats first, as when a chat
+/// on it is streaming). Only public calls, so any two builds compare.
 #[test]
 #[ignore = "timings, not a gate"]
 fn reads() {
@@ -139,46 +145,31 @@ fn reads() {
         started.elapsed()
     );
     let middle = trails[TRAILS / 2].clone();
-    let runs = 20;
-    let rows: Vec<(&str, (Duration, Duration))> = vec![
-        ("list_trails", time(runs, || drop(crate::api::list_trails(&core, false).unwrap()))),
-        ("read_trail", time(runs, || drop(crate::api::read_trail(&core, &middle, false).unwrap()))),
-        ("preview_trail_brief", time(runs, || drop(crate::api::preview_trail_brief(&core, &middle).unwrap()))),
-        ("sweep", time(runs, || drop(crate::trails::live::sweep_and_publish(&core, false)))),
-        (
-            "loop batch (sweep, GitHub reads, arm)",
-            time(runs, || {
-                crate::trails::live::sweep_and_publish(&core, true);
-                crate::trails::live::read_github(&core);
-                crate::trails::live::arm_trail_pulls(&core);
-            }),
-        ),
-    ];
-    // Where the time goes, part by part.
-    let (sessions, ids) = {
+    let chat = format!("t{}-c1", TRAILS / 2);
+    let runs: usize = std::env::var("BRIDGE_TRAILS_BENCH_RUNS").ok().and_then(|runs| runs.parse().ok()).unwrap_or(30);
+    let mut turn = 0;
+    let mut write = || {
+        turn += 1;
         let db = core.db.lock().unwrap();
-        (crate::trails::timeline::open_trail_sessions(&db).unwrap(), crate::trails::timeline::member_note_ids(&db, None).unwrap())
+        SessionForest::new(&db).append(&chat, EntryKind::AssistantMessage, serde_json::json!({ "text": paragraph(turn) })).unwrap();
     };
-    let notes = crate::trails::timeline::NoteSnapshot::linked(core.notes.as_ref(), &sessions);
-    let row = crate::trails::store::require(&core.db.lock().unwrap(), &middle).unwrap();
-    let mut rows = rows;
-    rows.extend([
-        ("  part: NoteSnapshot::linked (sweep)", time(runs, || drop(crate::trails::timeline::NoteSnapshot::linked(core.notes.as_ref(), &sessions)))),
-        ("  part: NoteSnapshot::members (list)", time(runs, || drop(crate::trails::timeline::NoteSnapshot::members(core.notes.as_ref(), &ids, false)))),
-        ("  part: auto::sweep (notes in hand)", time(runs, || drop(crate::trails::auto::sweep(&core.db.lock().unwrap(), &notes, "t").unwrap()))),
-        ("  part: timeline::detail, one trail", time(runs, || drop(crate::trails::timeline::detail(&core.db.lock().unwrap(), &notes, &row).unwrap()))),
-        (
-            "  part: all summaries",
-            time(runs, || {
-                let db = core.db.lock().unwrap();
-                for trail in crate::trails::store::list(&db, false).unwrap() {
-                    drop(crate::trails::timeline::summary(&db, &notes, &trail).unwrap());
-                }
-            }),
-        ),
-        ("  part: brief::preview (notes in hand)", time(runs, || drop(crate::trails::brief::preview(&core.db.lock().unwrap(), &notes, &row).unwrap()))),
-        ("  part: arm_trail_pulls", time(runs, || { crate::trails::live::arm_trail_pulls(&core); })),
-    ]);
+    let list = || drop(crate::api::list_trails(&core, false).unwrap());
+    let read = || drop(crate::api::read_trail(&core, &middle, false).unwrap());
+    let preview = || drop(crate::api::preview_trail_brief(&core, &middle).unwrap());
+    let batch = || {
+        crate::trails::live::sweep_and_publish(&core, true);
+        crate::trails::live::read_github(&core);
+        crate::trails::live::arm_trail_pulls(&core);
+    };
+    let rows: Vec<(&str, (Duration, Duration))> = vec![
+        ("list_trails, warm", time(runs, || {}, list)),
+        ("list_trails, cold", time(runs, &mut write, list)),
+        ("read_trail, warm", time(runs, || {}, read)),
+        ("read_trail, cold", time(runs, &mut write, read)),
+        ("preview_trail_brief, warm", time(runs, || {}, preview)),
+        ("preview_trail_brief, cold", time(runs, &mut write, preview)),
+        ("loop batch (sweep, GitHub reads, arm)", time(runs, || {}, batch)),
+    ];
     println!("\n{:<40} {:>12} {:>12}", "call", "median", "p90");
     for (name, (median, p90)) in rows {
         println!("{name:<40} {:>12.2?} {:>12.2?}", median, p90);
