@@ -30,6 +30,11 @@ pub enum Relevance {
 pub fn relevance(event: &CoreEvent) -> Relevance {
     match event {
         CoreEvent::StateChanged => Relevance::Links,
+        // A person changed a trail (added an issue, created one from a chat):
+        // its new members may need reading from GitHub and watching. The
+        // loop's own announcements carry additions or no trail, so it never
+        // wakes itself.
+        CoreEvent::TrailsChanged(changed) if changed.trail_id.is_some() && changed.added.is_empty() => Relevance::Links,
         CoreEvent::GithubSessionPrsChanged { .. }
         | CoreEvent::GithubChecksChanged { .. }
         | CoreEvent::GithubCiFinished { .. }
@@ -166,6 +171,15 @@ mod tests {
     #[test]
     fn trails_changed_is_not_relevant_to_itself() {
         assert_eq!(relevance(&CoreEvent::TrailsChanged(TrailsChanged { trail_id: None, added: Vec::new() })), Relevance::None);
+        let announced = TrailMemberAdded {
+            trail_id: "t".into(),
+            trail_title: "T".into(),
+            member: TrailMemberRef { kind: TrailMemberKind::Issue, reference: "https://github.com/o/r/issues/1".into() },
+            label: "Issue #1".into(),
+        };
+        assert_eq!(relevance(&CoreEvent::TrailsChanged(TrailsChanged { trail_id: Some("t".into()), added: vec![announced] })), Relevance::None);
+        // A person's edit wakes the loop, so a new issue or PR is read and watched.
+        assert_eq!(relevance(&CoreEvent::TrailsChanged(TrailsChanged { trail_id: Some("t".into()), added: Vec::new() })), Relevance::Links);
         assert_eq!(relevance(&CoreEvent::StateChanged), Relevance::Links);
         assert_eq!(relevance(&CoreEvent::OutgoingChanged { session_id: "s".into(), id: "o".into() }), Relevance::State);
     }
