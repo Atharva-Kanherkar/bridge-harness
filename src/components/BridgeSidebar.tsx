@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Route, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
@@ -491,6 +491,11 @@ export type BridgeSidebarProps = {
   /** Bridge Notes: capture, pages and tasks. Not workspace-gated either. */
   onOpenNotes?: () => void;
   notesActive?: boolean;
+  /** Trails: one page per piece of work. Not workspace-gated either. */
+  onOpenTrails?: () => void;
+  trailsActive?: boolean;
+  /** Trails waiting on the person; the row's badge hides at zero. */
+  trailsNeedYou?: number;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
   /** Drawn at the end of the bottom rail, after Pulls: the usage dot. */
@@ -533,6 +538,9 @@ export function BridgeSidebar({
   memoryActive = false,
   memoryPending = 0,
   notesActive = false,
+  onOpenTrails,
+  trailsActive = false,
+  trailsNeedYou = 0,
   marketplaceActive,
   usageActive = false,
   pullsActive = false,
@@ -869,6 +877,7 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          {onOpenTrails && <ActionRow icon={Route} label="Trails" badge={trailsNeedYou > 0 ? { count: String(trailsNeedYou), label: `${trailsNeedYou} need${trailsNeedYou === 1 ? "s" : ""} you` } : undefined} onClick={onOpenTrails} active={trailsActive} />}
           {onOpenNotes && <ActionRow icon={NotebookPen} label="Notes" chord="open-notes" onClick={onOpenNotes} active={notesActive} />}
           {/* A terminal for every stream of work: named for what it is. */}
           <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
