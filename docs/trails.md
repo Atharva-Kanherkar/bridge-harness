@@ -42,8 +42,14 @@ start projects them into labelled restoration context for whichever harness
 runs the chat.
 
 Restoration clips one entry to a sixth of its budget and stops once the
-budget is spent, so a carry splits a long item into parts that each fit and
-refuses a selection over 90% of the target chat's budget. A carry never
+budget is spent, so a carry splits a long item into parts that each fit, and
+budgets what restoration actually charges per entry (the text, the
+`handoff.brief: ` prefix, part labels and a newline). It refuses a selection
+over 90% of the target chat's budget; an admitted selection restores whole.
+Every refusal happens before anything is written, and the entries, the
+membership and the audit row commit in one transaction. In the app, Continue
+re-reads the brief before creating the chat; if the carry still fails, the
+empty chat is archived and the first message is not sent. A carry never
 changes the chat's harness, model, access, worktree or scope.
 
 ## Protocol
