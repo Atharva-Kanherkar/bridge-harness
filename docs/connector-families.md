@@ -13,6 +13,8 @@ names a family, in either the enum or the string form. If you find yourself
 wanting `if family == Gmail` somewhere, that is the test telling you the
 behaviour belongs in the registry instead.
 
+Outgoing sends have a separate provider adapter in `outgoing/slack.rs`: it resolves recipients, validates remote receipts and stages image uploads. Provider dispatch stays in `outgoing/send.rs`; every Slack tool call still uses the shared connector run layer and its exact-argument SDK gate. Keep provider-specific behavior out of the generic Inbox modules when adding another Outgoing destination.
+
 ## The short version
 
 Five edits, two files. Every one of them is demanded by the compiler or by a

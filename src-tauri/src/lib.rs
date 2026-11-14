@@ -242,6 +242,12 @@ async fn update_outgoing(id: String, revision: u32, body: Option<String>, apply_
 }
 
 #[tauri::command]
+async fn send_outgoing(id: String, revision: u32, approved: Option<bool>, approval_token: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::SendOutgoingResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("send drafted message", move || api::send_outgoing(&core, &id, revision, approved, approval_token.as_deref())).await
+}
+
+#[tauri::command]
 async fn copy_outgoing(id: String, revision: u32, state: State<'_, Arc<BridgeCore>>) -> Result<wire::CopyOutgoingResult, BridgeError> {
     let core = state.inner().clone();
     blocking("copy drafted message", move || api::copy_outgoing(&core, &id, revision)).await
@@ -3388,6 +3394,7 @@ pub fn run() -> i32 {
             list_outgoing,
             update_outgoing,
             copy_outgoing,
+            send_outgoing,
             discard_outgoing,
             read_outgoing_attachment,
             browser_bridge_state,

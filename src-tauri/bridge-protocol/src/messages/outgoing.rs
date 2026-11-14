@@ -1,9 +1,9 @@
 //! Outgoing: messages a chat drafts for a person or a place.
 //!
 //! An agent drafts one through the `outgoing_draft` tool on Bridge's own MCP
-//! server; the person edits, fixes, copies or discards it from a card in the
-//! transcript. Nothing here sends anything: a later slice adds Send behind an
-//! exact-text approval.
+//! server; the person edits, fixes, copies, discards or sends it from a card in the
+//! transcript. Send requires a one-use approval bound to the exact revision,
+//! destination, rendered text and image digests.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub enum OutgoingFormat {
 }
 
 /// Where a draft is addressed. Names are kept as the agent wrote them
-/// (`#dev`, `@nina`); resolving them to ids belongs to the slice that sends.
+/// (`#dev`, `@nina`); they are resolved to ids before offering send approval.
 ///
 /// `rename_all` renames the variant tags only, so multi-word fields carry an
 /// explicit rename to stay camelCase on the wire.
@@ -57,6 +57,9 @@ pub enum OutgoingState {
     Draft,
     Copied,
     Discarded,
+    Sending,
+    Sent,
+    Failed,
 }
 
 /// One style-rule finding. `fixed` means Bridge already changed the text;
@@ -119,6 +122,14 @@ pub struct OutgoingMessage {
     pub reason: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permalink: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -220,5 +231,42 @@ mod tests {
         assert!(error.is_err());
         let ok: UpdateOutgoingParams = serde_json::from_value(serde_json::json!({"id": "a", "revision": 1})).unwrap();
         assert!(!ok.apply_fixes && ok.body.is_none());
+    }
+}
+
+/// Sending is a two-call operation. Only the UI returns the one-use token
+/// after the person approves the exact effect. An agent cannot invoke this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendOutgoingParams {
+    pub id: String,
+    pub revision: u32,
+    pub approved: Option<bool>,
+    pub approval_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SendOutgoingResult {
+    ApprovalRequired {
+        effect: String,
+        rendered: String,
+        #[serde(rename = "approvalToken")]
+        approval_token: String,
+        item: OutgoingMessage,
+    },
+    Refused { detail: String },
+    Sent { item: OutgoingMessage },
+    Failed { item: OutgoingMessage },
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+    #[test]
+    fn send_params_reject_unknown_fields_and_approval_token_is_optional_only_for_preview() {
+        assert!(serde_json::from_value::<SendOutgoingParams>(serde_json::json!({"id":"a","revision":1,"state":"sent"})).is_err());
+        let preview: SendOutgoingParams = serde_json::from_value(serde_json::json!({"id":"a","revision":1})).unwrap();
+        assert!(preview.approved.is_none() && preview.approval_token.is_none());
     }
 }

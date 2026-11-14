@@ -262,6 +262,7 @@ pub struct BriefingRuntimePolicy {
     /// Only `compile_worktree_workflow` sets this; ordinary briefings still
     /// refuse writable workspaces.
     workflow_worktree: bool,
+    exact_action: Option<(String, serde_json::Value)>,
 }
 
 /// One connector server a workflow run may reach.
@@ -285,6 +286,8 @@ pub struct WorkflowServerScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionIntent {
+    Post,
+    Upload,
     Reply,
     React,
 }
@@ -294,7 +297,8 @@ impl ActionIntent {
     /// `Reply` cannot react and `React` cannot send.
     pub fn permitted_words(self) -> &'static [&'static str] {
         match self {
-            Self::Reply => &["send", "post", "reply"],
+            Self::Post | Self::Reply => &["send", "post", "reply"],
+            Self::Upload => &["upload"],
             Self::React => &["add", "react"],
         }
     }
@@ -448,6 +452,7 @@ impl BriefingRuntimePolicy {
             toolless: false,
             workflow_servers: None,
             workflow_worktree: false,
+            exact_action: None,
         })
     }
 
@@ -488,6 +493,7 @@ impl BriefingRuntimePolicy {
             toolless: false,
             workflow_servers: None,
             workflow_worktree: false,
+            exact_action: None,
         })
     }
 
@@ -572,6 +578,24 @@ impl BriefingRuntimePolicy {
         Ok(policy)
     }
 
+    /// One approved call, including every argument. The SDK independently
+    /// checks deep equality and consumes this grant before starting the call.
+    pub fn compile_exact_action(server: String, tool: &str, arguments: serde_json::Value, limits: wire::WorkBriefLimits) -> Result<Self, BriefingUnsupported> {
+        if !["slack_send_message", "slack_get_file_upload_url", "slack_complete_file_upload"].contains(&tool) || !arguments.is_object() {
+            return Err(BriefingUnsupported::MalformedPolicy { detail: "unsupported outgoing connector call".into() });
+        }
+        let mut policy = Self::compile_action(server.clone(), if tool == "slack_send_message" { ActionIntent::Post } else { ActionIntent::Upload }, limits)?;
+        policy.exact_action = Some((format!("mcp__{server}__{tool}"), arguments));
+        // No ancillary reads or writes are reachable from a sending turn.
+        policy.read_scope_servers.clear();
+        policy.max_argument_bytes = 64 * 1024;
+        Ok(policy)
+    }
+
+    pub fn exact_action_config(&self) -> Option<serde_json::Value> {
+        self.exact_action.as_ref().map(|(tool, arguments)| serde_json::json!({"tool": tool, "arguments": arguments}))
+    }
+
     /// Refuse a briefing run that also asked for a writable tree.
     pub fn check_write_mode(write_mode: Option<WriteMode>) -> Result<(), BriefingUnsupported> {
         match write_mode {
@@ -599,6 +623,10 @@ impl BriefingRuntimePolicy {
 
     /// The one question this type exists to answer.
     pub fn decide(&self, tool: &str, argument_bytes: usize) -> ToolDecision {
+        if let Some((expected, _)) = &self.exact_action {
+            return if tool == expected && argument_bytes <= self.max_argument_bytes { ToolDecision::Allow } else { ToolDecision::Deny(BriefingDenial::NotReviewed { tool: tool.into() }) };
+        }
+
         // Reviewed first, so the allowlist is the only thing that can say yes.
         if self.allowed.iter().any(|identity| identity.wire_name() == tool) {
             if argument_bytes > self.max_argument_bytes {
@@ -657,6 +685,8 @@ impl BriefingRuntimePolicy {
             (
                 scope.server.clone(),
                 match scope.intent {
+                    ActionIntent::Post => "post",
+                    ActionIntent::Upload => "upload",
                     ActionIntent::Reply => "reply",
                     ActionIntent::React => "react",
                 },

@@ -29,8 +29,8 @@ import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, Not
 import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
-import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
-import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
+import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockSendOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
+import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
@@ -1852,6 +1852,9 @@ export const bridgeApi = {
   /** One image a draft carries, read and checked again by the core. */
   readOutgoingAttachment: (id: string, index: number): Promise<ReadOutgoingAttachmentResult> =>
     hasBackend() ? call("outgoing/read_outgoing_attachment", { id, index }) : mockReadOutgoingAttachment(id, index),
+  /** Review the exact send, then approve it once with the returned token. */
+  sendOutgoing: (id: string, revision: number, approved?: boolean, approvalToken?: string): Promise<SendOutgoingResult> =>
+    hasBackend() ? call("outgoing/send_outgoing", { id, revision, approved, approvalToken }) : mockSendOutgoing(id, revision, approved, approvalToken),
   /** The rendered text to put on the clipboard; marks the draft copied. */
   copyOutgoing: (id: string, revision: number): Promise<CopyOutgoingResult> =>
     hasBackend() ? call("outgoing/copy_outgoing", { id, revision }) : mockCopyOutgoing(id, revision),
