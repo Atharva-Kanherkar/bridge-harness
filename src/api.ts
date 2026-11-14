@@ -2,8 +2,8 @@ import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSet
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
-import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
-import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
+import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
+import { mockListAttention, mockMarkAttentionSeen, mockMarkAttentionUnread, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
 import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
@@ -3746,6 +3746,11 @@ export const bridgeApi = {
   markAttentionSeen: async (sessionId: string): Promise<MarkAttentionSeenResult> => {
     if (hasBackend()) return call("attention/mark_attention_seen", { sessionId });
     return mockMarkAttentionSeen(sessionId);
+  },
+  /** Mark as unread: the session's newest unanswered row reads as unread again, on every client. */
+  markAttentionUnread: async (sessionId: string): Promise<MarkAttentionUnreadResult> => {
+    if (hasBackend()) return call("attention/mark_attention_unread", { sessionId });
+    return mockMarkAttentionUnread(sessionId);
   },
   /** What is still unread, rolled up to the chats in the sidebar. */
   unreadSummary: async (): Promise<UnreadSummary> => {

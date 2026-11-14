@@ -609,6 +609,20 @@ describe("measured board", () => {
   const seven = () => ["a", "b", "c", "d", "e", "f", "g"].map(id => session(id, "working"));
   const stage = () => host.querySelector<HTMLElement>("[data-stage]")!;
 
+  it("tells the host which chats are on the stage, and none once it closes", async () => {
+    const onStageChange = vi.fn();
+    await render({ sessions: seven(), onStageChange });
+    await resize(1116, 694);
+    expect(onStageChange).toHaveBeenLastCalledWith(["a", "b", "c", "d"]);
+    const calls = onStageChange.mock.calls.length;
+    await resize(1116, 694);
+    expect(onStageChange.mock.calls.length, "the same stage is not reported twice").toBe(calls);
+    await resize(500, 300);
+    expect(onStageChange).toHaveBeenLastCalledWith(["a"]);
+    await act(async () => root.render(<div />));
+    expect(onStageChange).toHaveBeenLastCalledWith([]);
+  });
+
   it("fills the stage from the measured size and queues the rest", async () => {
     await render({ sessions: seven() });
     await resize(2296, 1274);

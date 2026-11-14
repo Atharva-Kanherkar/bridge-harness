@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Route, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
+ Copy, AtSign, CheckCheck, CircleDot, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Route, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
@@ -104,6 +104,8 @@ function ChatRow({
   liveAgents,
   unread,
   onPrefetch,
+  onMarkRead,
+  onMarkUnread,
 }: {
   chat: Session;
   active: boolean;
@@ -113,6 +115,8 @@ function ChatRow({
   /** Warm this chat's history before the click lands. */
   onPrefetch?: () => void;
   onArchive?: () => void;
+  onMarkRead?: () => void;
+  onMarkUnread?: () => void;
   onMention?: () => void;
   onFork?: () => void;
   onSaveAsWorkflow?: () => void;
@@ -192,6 +196,8 @@ function ChatRow({
       onArchive={onArchive}
       forkLabel={forkLabel}
       onJumpToParent={onJumpToParent}
+      onMarkRead={unread ? onMarkRead : undefined}
+      onMarkUnread={unread ? undefined : onMarkUnread}
     />
     <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
@@ -210,6 +216,8 @@ function ChatRowMenu({
   onArchive,
   forkLabel,
   onJumpToParent,
+  onMarkRead,
+  onMarkUnread,
 }: {
   chat: Session;
   name: string;
@@ -219,6 +227,10 @@ function ChatRowMenu({
   onArchive?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
+  /** Offered while the chat is unread; clears its dot. */
+  onMarkRead?: () => void;
+  /** Offered while it is not; brings the dot back until you open it. */
+  onMarkUnread?: () => void;
 }) {
   const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
   const alias = toPublicAlias(chat.id);
@@ -242,6 +254,19 @@ function ChatRowMenu({
         <MoreHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
       </button>
       <MenuPanel controller={menu} label={`Chat actions for ${name}`}>
+        {onMarkRead && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMarkRead)}>
+            <CheckCheck size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mark as read</span>
+          </button>
+        )}
+        {onMarkUnread && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMarkUnread)}>
+            <CircleDot size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mark as unread</span>
+          </button>
+        )}
+        {(onMarkRead || onMarkUnread) && <MenuSeparator />}
         <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
           <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
@@ -540,6 +565,10 @@ export type BridgeSidebarProps = {
   searchRequest?: { query: string; nonce: number };
   /** Absent when the host cannot archive — the row then shows no action. */
   onArchiveChat?: (chat: Session) => void;
+  /** Clear a chat's unread dot by hand, workers' rows included. */
+  onMarkChatRead?: (chatId: string) => void;
+  /** Bring a chat's unread dot back by hand. */
+  onMarkChatUnread?: (chatId: string) => void;
   /** Drop `@session:<alias>` for this chat into the open chat's draft. */
   onMentionChat?: (chat: Session) => void;
   /** Open the fork dialog at this chat's head. */
@@ -602,6 +631,8 @@ export function BridgeSidebar({
   onPrefetchSession,
   searchRequest,
   onArchiveChat,
+  onMarkChatRead,
+  onMarkChatUnread,
   onMentionChat,
   onForkChat,
   onSaveChatAsWorkflow,
@@ -999,6 +1030,8 @@ export function BridgeSidebar({
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                     liveAgents={liveAgents?.get(chat.id)?.length}
                     unread={unread?.[chat.id]}
+                    onMarkRead={onMarkChatRead && (() => onMarkChatRead(chat.id))}
+                    onMarkUnread={onMarkChatUnread && (() => onMarkChatUnread(chat.id))}
                   />
                 );
               })}

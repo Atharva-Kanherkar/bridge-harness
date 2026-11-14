@@ -37,6 +37,9 @@ export type MissionControlProps = {
   workflowRuns?: WorkflowRun[];
   workflowNames?: Map<string, string>;
   onOpenWorkflowRun?: (run: WorkflowRun) => void;
+  /** The chats whose conversation is on the stage right now, so the host can
+   * count them as on screen; called with none when the board unmounts. */
+  onStageChange?: (sessionIds: string[]) => void;
 };
 
 const ACTIVE_STATUSES = new Set<Session["status"]>(["working", "waiting", "starting", "resuming", "checkpointing"]);
@@ -343,7 +346,7 @@ function QueueCard({ id, actions, strip, onPromote }: QueueCardProps) {
   </button>;
 }
 
-export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat, onOpenWork, workflowRuns = [], workflowNames, onOpenWorkflowRun }: MissionControlProps) {
+export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat, onOpenWork, workflowRuns = [], workflowNames, onOpenWorkflowRun, onStageChange }: MissionControlProps) {
   const [forests, setForests] = useState<Record<string, SessionForestSnapshot>>({});
   const [stored, setStored] = useState(() => readLayout());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -421,6 +424,13 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   const plan = planBoard(size.width, size.height, arranged.length, expandedId ? 1 : stored.stageLimit);
   const stageIds = arranged.slice(0, plan.shown);
   const queueIds = arranged.slice(plan.shown);
+  // a tile on the stage shows its conversation, so reading it there is reading
+  // the chat: the host stamps it seen like the chat open in the single view.
+  const stageKey = stageIds.join("\u0000");
+  const onStageChangeRef = useRef(onStageChange);
+  onStageChangeRef.current = onStageChange;
+  useEffect(() => { onStageChangeRef.current?.(stageKey ? stageKey.split("\u0000") : []); }, [stageKey]);
+  useEffect(() => () => onStageChangeRef.current?.([]), []);
 
   const update = (change: (prev: MissionLayout) => Partial<MissionLayout>) => setStored(prev => ({ ...prev, order, pinnedSessionIds, dismissedSessionIds, expandedId, ...change({ ...prev, order, pinnedSessionIds, dismissedSessionIds, expandedId }) }));
 

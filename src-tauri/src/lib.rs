@@ -1210,6 +1210,11 @@ async fn mark_attention_seen(session_id: String, state: State<'_, Arc<BridgeCore
 }
 
 #[tauri::command]
+async fn mark_attention_unread(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::MarkAttentionUnreadResult, BridgeError> {
+    api::mark_attention_unread(state.inner(), &bridge_protocol::messages::MarkAttentionUnreadParams { session_id })
+}
+
+#[tauri::command]
 async fn get_delegation_notify_settings(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DelegationNotifySettingsView, BridgeError> {
     api::get_delegation_notify_settings(state.inner(), &bridge_protocol::messages::GetDelegationNotifySettingsParams { session_id })
 }
@@ -3555,6 +3560,7 @@ pub fn run() -> i32 {
             save_delegation_notify_settings,
             list_attention,
             mark_attention_seen,
+            mark_attention_unread,
             unread_summary,
             report_presence,
             post,
