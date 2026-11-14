@@ -273,6 +273,14 @@ describe("Outgoing send approval", () => {
     await mount(); expect(container.querySelector('[role="alert"]')?.textContent).toBe("Slack unavailable");
     await click("Retry"); expect(container.querySelector('[role="dialog"]')).toBeTruthy();
   });
+  it("clears the old failure alert when the draft is copied", async () => {
+    resetMockOutgoing([draft({ state: "failed", lastError: "Slack unavailable" })]);
+    await mount();
+    await click("Copy");
+    expect(container.querySelector('[data-outgoing-state="copied"]')).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Send")).toBeTruthy();
+  });
   it("explains unavailable image uploads and preserves Copy image", async () => {
     resetMockOutgoing([draft({ attachments: [{ path: "/tmp/a.png", name: "a.png", mime: "image/png", bytes: 68 }] })]);
     vi.spyOn(bridgeApi, "sendOutgoing").mockResolvedValue({ kind: "refused", detail: "This Slack connection cannot upload images. Use Copy image." });

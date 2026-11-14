@@ -1852,9 +1852,10 @@ export const bridgeApi = {
   /** One image a draft carries, read and checked again by the core. */
   readOutgoingAttachment: (id: string, index: number): Promise<ReadOutgoingAttachmentResult> =>
     hasBackend() ? call("outgoing/read_outgoing_attachment", { id, index }) : mockReadOutgoingAttachment(id, index),
-  /** The rendered text to put on the clipboard; marks the draft copied. */
+  /** Review the exact send, then approve it once with the returned token. */
   sendOutgoing: (id: string, revision: number, approved?: boolean, approvalToken?: string): Promise<SendOutgoingResult> =>
     hasBackend() ? call("outgoing/send_outgoing", { id, revision, approved, approvalToken }) : mockSendOutgoing(id, revision, approved, approvalToken),
+  /** The rendered text to put on the clipboard; marks the draft copied. */
   copyOutgoing: (id: string, revision: number): Promise<CopyOutgoingResult> =>
     hasBackend() ? call("outgoing/copy_outgoing", { id, revision }) : mockCopyOutgoing(id, revision),
   discardOutgoing: (id: string): Promise<DiscardOutgoingResult> =>

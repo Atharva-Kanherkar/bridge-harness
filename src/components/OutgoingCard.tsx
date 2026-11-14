@@ -227,7 +227,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
       aria-label={`Drafted message for ${draft.label}`}
       className="relative overflow-hidden rounded-2xl border border-border-card bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_12px_32px_-16px_rgb(0_0_0/0.18)]"
     >
-      <div className="px-4 pb-3.5 pt-3.5 sm:px-5">
+      <div hidden={!!currentApproval && !readOnly} className="px-4 pb-3.5 pt-3.5 sm:px-5">
         <p className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
           <span>{draft.state === "sent" ? "Message sent" : draft.state === "sending" ? "Sending message…" : draft.state === "failed" ? "Message failed" : "Draft message"}</span>
           {draft.state === "copied" && <>
@@ -324,7 +324,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           </div>
         )}
       </div>
-      {currentApproval && !readOnly && <ConnectorApprovalSheet effect={currentApproval.effect} busy={busy} onApprove={() => void send(true)} onDeny={() => void send(false)} />}
+      {currentApproval && !readOnly && <ConnectorApprovalSheet inFlow effect={currentApproval.effect} busy={busy} onApprove={() => void send(true)} onDeny={() => void send(false)} />}
     </section>
   );
 }

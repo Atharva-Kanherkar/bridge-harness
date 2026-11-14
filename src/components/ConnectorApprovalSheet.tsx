@@ -10,8 +10,9 @@ import { Button } from "./ui/button";
  * than one assembled here is what keeps the dialog honest about what the second
  * call will actually do.
  */
-export function ConnectorApprovalSheet({ effect, busy, onApprove, onDeny }: {
+export function ConnectorApprovalSheet({ effect, busy, onApprove, onDeny, inFlow = false }: {
   effect: string;
+  inFlow?: boolean;
   busy: boolean;
   onApprove: () => void;
   onDeny: () => void;
@@ -24,7 +25,7 @@ export function ConnectorApprovalSheet({ effect, busy, onApprove, onDeny }: {
   useEffect(() => {
     if (!busy && !dialog.current?.contains(document.activeElement)) dialog.current?.querySelector<HTMLButtonElement>("button")?.focus();
   }, [busy]);
-  return <div className="absolute inset-0 z-20 grid place-items-end bg-background/70 backdrop-blur-sm">
+  return <div className={inFlow ? "grid bg-background/70" : "absolute inset-0 z-20 grid place-items-end bg-background/70 backdrop-blur-sm"}>
     <div ref={dialog} role="dialog" aria-modal="true" aria-label="Confirm connector action" onKeyDown={event => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busy) onDeny(); }
       if (event.key === "Tab") {

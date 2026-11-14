@@ -93,6 +93,7 @@ export async function mockUpdateOutgoing(id: string, revision: number, body?: st
 export async function mockCopyOutgoing(id: string, revision: number): Promise<CopyOutgoingResult> {
   const item = find(id, revision);
   item.state = "copied";
+  delete item.lastError;
   changed(item);
   return { text: item.rendered, item: structuredClone(item) };
 }
