@@ -31,3 +31,13 @@
 ## Manual / cURL Tests
 - In a connected desktop chat, draft to a real Slack thread, edit, press Send, verify exact effect and attachment listing, cancel once, then approve; inspect receipt. Repeat for GitHub comment. Requires a user-chosen real destination and remains a documented manual check.
 - Unconnected Slack or unavailable upload tools: show a clear reason and preserve Copy/Copy image.
+
+## Review Regression Expectations
+- Forking an in-flight send creates an editable, discardable draft without altering the parent's claim; sent fork copies retain their immutable receipts.
+- Persist send outcomes before optional forest logging. Audit failures cannot erase a successful receipt. Recover interrupted sends once their executor is gone, with an explicit instruction to check the destination and a fresh approval before any retry.
+- Resolve the GitHub host from the chat workspace before approval; display and bind that host. A successful POST with a positive comment id remains sent after repository redirects or an absent/invalid URL, using a safe comment link and warning where needed. Ambiguous provider failures warn the person to check before retrying.
+- Slack receipt channel, timestamp and thread metadata come from the permalink envelope or its message_context, never arbitrary rich-text descendants such as channel mentions.
+- Copying a failed draft clears its old send error in the core and frontend mock.
+- A short draft's complete approval heading, destination and controls remain visible at narrow and desktop widths; focus and cancellation still work.
+- Remove duplicated repository checks, redundant Slack upload flags/forwarders and unused Post prompt paths; doc comments describe the right functions.
+- Add focused unit/integration regressions for these cases; verify approval layout in a fresh browser, run production build and the full test command, and retain their actual output.
