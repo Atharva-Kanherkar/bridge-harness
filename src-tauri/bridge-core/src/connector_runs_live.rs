@@ -383,16 +383,13 @@ pub(crate) fn run_authorized(
     connection: &ConnectorAvailability,
     authorized: &AuthorizedAction,
 ) -> Result<Option<crate::outgoing::send::Receipt>, String> {
-    if matches!(authorized.action(), ConnectorAction::Post { .. }) {
-        return crate::outgoing::send::run_post(core, connection, authorized).map(Some);
-    }
     let intent = match authorized.action() {
-        ConnectorAction::Post { .. } => ActionIntent::Post,
+        ConnectorAction::Post { .. } => return crate::outgoing::slack::run_post(core, connection, authorized).map(Some),
         ConnectorAction::Reply { .. } => ActionIntent::Reply,
         ConnectorAction::React { .. } => ActionIntent::React,
     };
-    let text =
-        one_bounded_turn(core, connection, RunKind::Action, &authorized.prompt(), Some(intent))?;
+    let prompt = authorized.prompt().ok_or("this action requires exact tool arguments")?;
+    let text = one_bounded_turn(core, connection, RunKind::Action, &prompt, Some(intent))?;
     // The turn completing is not the send succeeding.
     action_succeeded(&text, intent).map(|_| None)
 }

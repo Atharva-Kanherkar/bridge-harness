@@ -168,26 +168,46 @@ fn outgoing_receipt(
     expected_channel: &str,
     expected_thread: Option<&str>,
 ) -> Result<crate::outgoing::send::Receipt, String> {
-    let permalink = field(
-        &output.results,
-        &["message_link", "permalink", "message_permalink"],
-    )
-    .ok_or("the send returned no permalink; check Slack before retrying")?;
+    // Stay within the response envelope that owns the permalink. Flattened
+    // rich-text descendants can contain arbitrary channel mentions and JSON.
+    let (envelope, permalink) = output
+        .results
+        .iter()
+        .find_map(|value| {
+            ["message_link", "permalink", "message_permalink"]
+                .into_iter()
+                .find_map(|key| {
+                    value
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .map(|link| (value, link))
+                })
+        })
+        .ok_or("the send returned no permalink; check Slack before retrying")?;
     let (channel, ts) =
         slack_link(permalink).ok_or("the send returned an invalid Slack permalink")?;
-    let actual_channel = field(&output.results, &["channel_id", "channel"])
+    let metadata = envelope.get("message_context").unwrap_or(envelope);
+    let actual_channel = ["channel_id", "channel"]
+        .into_iter()
+        .find_map(|key| metadata.get(key).and_then(Value::as_str))
         .ok_or("the send returned no channel id")?;
-    // Sending to a user id resolves to a D channel. The exact SDK argument gate
-    // ensures that user was the approved recipient; Slack reports the DM id.
+    let actual_ts = ["message_ts", "ts"]
+        .into_iter()
+        .find_map(|key| metadata.get(key).and_then(Value::as_str));
+    // User recipients resolve to D channels; the SDK pins the approved user.
     if actual_channel != channel
         || (!matches!(expected_channel.as_bytes().first(), Some(b'U' | b'W'))
             && expected_channel != channel)
-        || !observed(&output.results, &ts)
+        || actual_ts != Some(ts.as_str())
     {
         return Err("the receipt does not match the approved Slack destination".into());
     }
     if let Some(thread) = expected_thread {
-        if field(&output.results, &["thread_ts"]).is_some_and(|actual| actual != thread) {
+        if metadata
+            .get("thread_ts")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| actual != thread)
+        {
             return Err("the receipt names another Slack thread".into());
         }
     }
@@ -308,7 +328,6 @@ pub fn resolve_outgoing(
         label: resolved.label,
         server: connection.server.ok_or("Slack has no server")?,
         harness: connection.harness.ok_or("Slack has no harness")?,
-        uploads: resolved.uploads,
         send_arguments: args,
         upload_arguments: resolved.upload_arguments,
         complete_arguments: resolved.complete_arguments,
@@ -501,6 +520,34 @@ mod outgoing_tests {
         assert!(results.is_empty());
     }
     #[test]
+    fn channel_mentions_and_nested_threads_cannot_override_receipt_metadata() {
+        let mut results = Vec::new();
+        let response = json!({
+            "message_link":"https://acme.slack.com/archives/C123/p1794571200000001",
+            "message_context":{"channel_id":"C123","message_ts":"1794571200.000001","thread_ts":"1794571100.000001"},
+            "message":{"blocks":[{"type":"rich_text","elements":[
+                {"type":"channel","channel_id":"C999","thread_ts":"1794571000.000009"}
+            ]}]}
+        });
+        collect_tool_results(
+            &json!({"content":[{"type":"tool_result","content":[{"type":"text","text":response.to_string()}]}]}),
+            &mut results,
+        );
+        let output = TurnOutput {
+            text: "sent".into(),
+            results,
+        };
+        assert_eq!(
+            outgoing_receipt(&output, "C123", Some("1794571100.000001"))
+                .unwrap()
+                .remote_ref,
+            "1794571200.000001"
+        );
+        assert!(outgoing_receipt(&output, "C999", None).is_err());
+        assert!(outgoing_receipt(&output, "C123", Some("1794571000.000009")).is_err());
+    }
+
+    #[test]
     fn a_model_failure_after_a_real_send_does_not_make_the_message_retryable() {
         let output = receipt("C123", "1794571200.000001");
         let output =
@@ -550,7 +597,9 @@ mod outgoing_tests {
         let mut output = receipt("C123", "1794571200.000001");
         output
             .results
-            .push(json!({"thread_ts":"1794571200.000002"}));
+            .iter_mut()
+            .filter_map(|v| v.get_mut("message_context"))
+            .for_each(|context| context["thread_ts"] = json!("1794571200.000002"));
         assert!(outgoing_receipt(&output, "C123", Some("1794571200.000003")).is_err());
     }
     #[test]

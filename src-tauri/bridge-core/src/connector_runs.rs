@@ -224,9 +224,10 @@ pub fn render_prompt(item: &InboxItem) -> String {
 
 /// The action prompt. Reached only after a human approved this exact text going
 /// to this exact place, so it states the effect rather than asking for a decision.
-pub fn action_prompt(action: &ConnectorAction) -> String {
-    match action {
-        ConnectorAction::Post { target, .. } => target.post_prompt(),
+pub fn action_prompt(action: &ConnectorAction) -> Option<String> {
+    Some(match action {
+        // Outgoing builds exact SDK arguments; it has no free-form action prompt.
+        ConnectorAction::Post { .. } => return None,
         ConnectorAction::Reply { item, text } => format!(
             "{Verb} exactly this reply in {family}, then stop.\n\
              \n\
@@ -262,7 +263,7 @@ pub fn action_prompt(action: &ConnectorAction) -> String {
             channel_id = item.channel_id,
             ts = item.message_ts,
         ),
-    }
+    })
 }
 
 // ── Reading a card back ──────────────────────────────────────────────────────
@@ -432,7 +433,7 @@ pub fn authorize(
 fn validate_payload(action: &ConnectorAction) -> Result<(), ActionRefusal> {
     match action {
         ConnectorAction::Post { family, target, text } => {
-            if !crate::outgoing::send::valid_post(*family, target, text) {
+            if !crate::outgoing::slack::valid_post(*family, target, text) {
                 return Err(ActionRefusal::InvalidPayload { detail: "invalid Slack post".into() });
             }
         }
@@ -470,7 +471,7 @@ impl AuthorizedAction {
         &self.0
     }
 
-    pub fn prompt(&self) -> String {
+    pub fn prompt(&self) -> Option<String> {
         action_prompt(&self.0)
     }
 }
@@ -579,11 +580,11 @@ mod tests {
         assert!(render.contains(inbox.container_noun), "render ignores container_noun");
         assert!(render.contains(inbox.direct_label), "render ignores the item's kind label");
 
-        let reply = action_prompt(&ConnectorAction::Reply { item: item(), text: "ok".into() });
+        let reply = action_prompt(&ConnectorAction::Reply { item: item(), text: "ok".into() }).unwrap();
         assert!(reply.contains(inbox.reply_verb), "the action prompt ignores reply_verb");
         assert!(reply.contains(inbox.container_noun));
 
-        let react = action_prompt(&ConnectorAction::React { item: item(), emoji: "eyes".into() });
+        let react = action_prompt(&ConnectorAction::React { item: item(), emoji: "eyes".into() }).unwrap();
         assert!(react.contains(inbox.reaction.unwrap().noun), "the react prompt ignores the reaction noun");
     }
 
@@ -596,7 +597,7 @@ mod tests {
         let sources = [
             ingress_prompt(ConnectorFamily::Slack, false),
             render_prompt(&item()),
-            action_prompt(&ConnectorAction::Reply { item: item(), text: "ok".into() }),
+            action_prompt(&ConnectorAction::Reply { item: item(), text: "ok".into() }).unwrap(),
         ];
         for prompt in &sources {
             // Present only because Slack's row says so — swap the row and these
@@ -728,7 +729,7 @@ mod tests {
     fn an_approved_reply_authorizes_and_only_then_has_a_prompt() {
         let action = ConnectorAction::Reply { item: item(), text: "On it.".into() };
         let authorized = authorize(action, Some(ApprovalDecision::Approved), false, Ok(())).unwrap();
-        let prompt = authorized.prompt();
+        let prompt = authorized.prompt().unwrap();
         assert!(prompt.contains("D0BV4LADFGB"));
         assert!(prompt.contains("On it."));
         assert!(prompt.contains("Do not compose anything else"));
@@ -836,7 +837,6 @@ mod post_tests {
             label: "#dev".into(),
             server: "slack".into(),
             harness: "claude".into(),
-            uploads: false,
             send_arguments: json!({"channel_id":"C123","message":"literal text","thread_ts":"1794571200.000001"}),
             upload_arguments: None,
             complete_arguments: None,
