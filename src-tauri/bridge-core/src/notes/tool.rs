@@ -480,12 +480,33 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
     let Some(core) = installed().get().and_then(Weak::upgrade) else {
         return reply(503, json!({"error": "notes are not available in this host"}));
     };
-    let Some((access, actor)) = session_access(&core, session_id) else {
+    serve_for(&core, session_id, tool, body)
+}
+
+/// One request for a chat whose token already checked out, against `core`.
+fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) -> (u16, String) {
+    let reply = |status: u16, value: Value| (status, value.to_string());
+    let Some((access, actor)) = session_access(core, session_id) else {
         return reply(404, json!({"error": "unknown chat"}));
     };
     if tool == "tools" {
         let label = if access == Access::Write { "write" } else { "read" };
-        return reply(200, json!({"access": label, "tools": access.tools()}));
+        let tools = match crate::apps::filter_tools(&core.db.lock().unwrap(), access.tools()) {
+            Ok(tools) => tools,
+            Err(error) => return reply(500, json!({"error": error.to_string()})),
+        };
+        return reply(200, json!({"access": label, "tools": tools}));
+    }
+    // An app that is off refuses its tools at once, even in a chat that
+    // listed them before the switch: the list is read when a chat launches.
+    if let Some(app) = crate::apps::tool_owner(tool) {
+        match crate::apps::registry::is_enabled(&core.db.lock().unwrap(), &app.manifest.id) {
+            Ok(true) => {}
+            Ok(false) => {
+                return reply(403, json!({"error": format!("{} is turned off in Bridge. The person can turn it on in the Store.", app.manifest.name)}));
+            }
+            Err(error) => return reply(500, json!({"error": error.to_string()})),
+        }
     }
     let args: Value = if body.is_empty() { json!({}) } else {
         match serde_json::from_slice(body) {
@@ -770,6 +791,41 @@ mod tests {
     }
 
     #[test]
+    fn an_off_app_leaves_the_tool_list_and_its_calls_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+        core.db
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat','claude','Chat','ready','direct','Apps')", [])
+            .unwrap();
+        let listed = |core: &Arc<crate::runtime::BridgeCore>| -> Vec<String> {
+            let (status, body) = serve_for(core, "chat", "tools", b"");
+            assert_eq!(status, 200, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["tools"].as_array().unwrap().iter().map(|tool| tool.as_str().unwrap().to_owned()).collect()
+        };
+        let all = listed(&core);
+        assert!(all.iter().any(|tool| tool == "notes_create"));
+        assert!(all.iter().any(|tool| tool == "notify_user"));
+
+        crate::apps::registry::set_enabled(&core.db.lock().unwrap(), "notes", false, "t").unwrap();
+        let without = listed(&core);
+        assert!(without.iter().all(|tool| !tool.starts_with("notes_")), "{without:?}");
+        for core_tool in ["notify_user", "settings_read", "settings_change", "memory_search", "outgoing_draft"] {
+            assert!(without.iter().any(|tool| tool == core_tool), "{core_tool} stays");
+        }
+        let (status, body) = serve_for(&core, "chat", "notes_create", br#"{"title":"x"}"#);
+        assert_eq!(status, 403);
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["error"], "Notes is turned off in Bridge. The person can turn it on in the Store.");
+        assert!(core.notes.list(&Default::default()).map(|list| list.is_empty()).unwrap_or(true), "nothing was written");
+
+        crate::apps::registry::set_enabled(&core.db.lock().unwrap(), "notes", true, "t").unwrap();
+        assert_eq!(listed(&core), all);
+        let (status, body) = serve_for(&core, "chat", "notes_create", br#"{"title":"Back on"}"#);
+        assert_eq!(status, 200, "{body}");
+    }
+
+    #[test]
     fn the_loopback_route_checks_tokens_and_access_over_http() {
         let dir = tempfile::tempdir().unwrap();
         let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
@@ -829,6 +885,7 @@ mod tests {
         assert_eq!(status, 200, "{proposed}");
         assert_eq!(proposed["proposed"]["provenance"], "agent_proposal");
         assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::MemoryChanged { .. }));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         let (status, again) = call("chat-1", &chat, "memory_propose", rule);
         assert_eq!((status, again["written"].as_bool()), (200, Some(false)), "a repeat writes nothing");
         assert!(events.try_recv().is_err(), "and tells nobody");

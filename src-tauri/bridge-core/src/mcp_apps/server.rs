@@ -117,6 +117,16 @@ impl VisualServer {
         json!({"content": [{"type": "text", "text": text}], "isError": false})
     }
 
+    /// What the model reads about this server: visualize, then a paragraph
+    /// for each group of chat tools the core lists for this chat.
+    fn instructions(&self) -> String {
+        let visualize = "Use visualize to draw a chart, diagram or sourced findings inline when a visual carries the answer better than prose. Most turns need none.";
+        match self.notes.as_ref().map(NotesLink::instructions).filter(|text| !text.is_empty()) {
+            Some(chat_tools) => format!("{visualize} {chat_tools}"),
+            None => visualize.to_owned(),
+        }
+    }
+
     /// Handle one JSON-RPC message. `None` for notifications.
     pub fn handle(&mut self, message: &Value) -> Option<Value> {
         let Some(object) = message.as_object() else {
@@ -150,11 +160,7 @@ impl VisualServer {
                             "extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": [tool::VIEW_MIME]}}
                         },
                         "serverInfo": {"name": tool::SERVER_NAME, "title": "Bridge", "version": env!("CARGO_PKG_VERSION")},
-                        "instructions": if self.notes.is_some() {
-                            format!("Use visualize to draw a chart, diagram or sourced findings inline when a visual carries the answer better than prose. Most turns need none. {}", notes_tools::INSTRUCTIONS)
-                        } else {
-                            "Use visualize to draw a chart, diagram or sourced findings inline when a visual carries the answer better than prose. Most turns need none.".to_owned()
-                        }
+                        "instructions": self.instructions()
                     }),
                 )
             }
@@ -346,7 +352,7 @@ mod tests {
         let instructions = init["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("memory_propose") && instructions.contains("never in a note"), "{instructions}");
         assert!(instructions.contains("bridge://p/<id>") && instructions.contains("[Title](link)"), "{instructions}");
-        assert!(instructions.contains("outgoing_draft"), "{instructions}");
+        assert!(!instructions.contains("outgoing_draft"), "this chat lists no outgoing_draft, so it is not told about it: {instructions}");
         // Without a chat link there is nothing to forward to.
         let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();
         assert_eq!(unknown["error"]["code"], -32602);

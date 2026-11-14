@@ -7385,11 +7385,13 @@ mod tests {
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         super::delete_memory_record(&core, &record.id).expect("forget tombstones");
         assert!(matches!(
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         // A refused save changes nothing, so it owes no hint.
         assert!(super::save_memory_record(&core, "   ", None, None).is_err());
         assert!(events.try_recv().is_err());
@@ -7402,11 +7404,13 @@ mod tests {
         let mut events = core.events.subscribe();
         let saved = super::save_memory_record(&core, "Prefers tabs", None, None).unwrap();
         events.try_recv().unwrap();
+        events.try_recv().unwrap();
         super::supersede_memory_record(&core, &saved.id, "Prefers spaces", None).unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         {
             let db = core.db.lock().unwrap();
             db.execute(
@@ -7423,6 +7427,7 @@ mod tests {
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { .. }
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged));
         super::reject_memory_record(&core, "p2").unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),

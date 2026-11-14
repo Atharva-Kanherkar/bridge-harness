@@ -56,7 +56,13 @@ pub fn has_memory_search(db: &Connection, session_id: &str) -> bool {
     };
     let top_level = crate::chat_defaults::is_top_level_chat(db, session_id).unwrap_or(false);
     let served = crate::notes::tool::listener_url().is_some() && crate::mcp_apps::helper_binary().is_some();
-    guidance_applies(&harness, top_level, served)
+    memory_tools_reach(db, &harness, top_level, served)
+}
+
+/// [`guidance_applies`], and the Memory app is on: with it off the chat gets
+/// no memory tools, so it must not be told about them either.
+fn memory_tools_reach(db: &Connection, harness: &str, top_level_chat: bool, tools_served: bool) -> bool {
+    guidance_applies(harness, top_level_chat, tools_served) && crate::apps::registry::is_enabled(db, "memory").unwrap_or(true)
 }
 
 /// [`SESSION_GUIDANCE`] for `session_id` when it applies.
@@ -395,6 +401,16 @@ mod tests {
         assert!(SESSION_GUIDANCE.contains("memory_search") && SESSION_GUIDANCE.contains("memory_propose"));
         let (_dir, db) = tools_db();
         assert_eq!(session_guidance(&db, "ghost"), None, "an unknown session gets nothing");
+    }
+
+    #[test]
+    fn no_guidance_when_memory_is_off() {
+        let (_dir, db) = tools_db();
+        assert!(memory_tools_reach(&db, "claude", true, true));
+        crate::apps::registry::set_enabled(&db, "memory", false, "t").unwrap();
+        assert!(!memory_tools_reach(&db, "claude", true, true));
+        crate::apps::registry::set_enabled(&db, "memory", true, "t").unwrap();
+        assert!(memory_tools_reach(&db, "claude", true, true));
     }
 
     #[test]
