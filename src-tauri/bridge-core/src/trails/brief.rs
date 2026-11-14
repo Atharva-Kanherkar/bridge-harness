@@ -22,7 +22,7 @@ use super::store::{self, TrailRow};
 use super::timeline::{harness_name, pull_facts, session_facts, NoteSource};
 use crate::github_surface::{CheckConclusion, CheckStatus, PullRequestState};
 use crate::restoration;
-use crate::session_forest::{EntryKind, SessionForest};
+use crate::session_forest::{append_in_transaction, EntryKind};
 use crate::BridgeError;
 
 /// The most of one note a brief carries.
@@ -217,8 +217,15 @@ pub fn carry(
             budget / 4
         )));
     }
+    let member = TrailMemberRef { kind: TrailMemberKind::Session, reference: session_id.to_owned() };
+    if let Some(owner) = store::trail_of(db, &member)?.filter(|owner| owner != &trail.id) {
+        let title = store::get(db, &owner)?.map(|other| other.title).unwrap_or_default();
+        return Err(BridgeError::Invalid(format!("This is already on the trail “{title}”. Remove it there first.")));
+    }
     let allowance = restoration::restoration_entry_bytes(restoration::restoration_budget_bytes(window));
-    let forest = SessionForest::new(db);
+    // Every refusal above wrote nothing; from here the entries, the
+    // membership and the audit row land together or not at all.
+    let transaction = db.unchecked_transaction()?;
     let mut written = 0u32;
     for part in selected {
         // Restoration prefixes each entry's kind; keep that room inside the allowance.
@@ -226,15 +233,14 @@ pub fn carry(
         let count = pieces.len();
         for (index, piece) in pieces.into_iter().enumerate() {
             let text = if count > 1 { format!("(part {} of {count}) {piece}", index + 1) } else { piece };
-            forest
-                .append(session_id, EntryKind::HandoffBrief, json!({ "text": text, "trailId": trail.id, "briefItem": part.item.id }))
+            append_in_transaction(&transaction, session_id, EntryKind::HandoffBrief, json!({ "text": text, "trailId": trail.id, "briefItem": part.item.id }))
                 .map_err(|error| BridgeError::Invalid(error.to_string()))?;
             written += 1;
         }
     }
-    let member = TrailMemberRef { kind: TrailMemberKind::Session, reference: session_id.to_owned() };
-    store::add_member(db, &trail.id, &member, TrailAddedBy::Person, now)?;
-    crate::store::event(db, "chat", "trail.brief_carried", session_id, &format!("Started on trail {} with {written} brief entries", trail.id))?;
+    store::add_member(&transaction, &trail.id, &member, TrailAddedBy::Person, now)?;
+    crate::store::event(&transaction, "chat", "trail.brief_carried", session_id, &format!("Started on trail {} with {written} brief entries", trail.id))?;
+    transaction.commit()?;
     Ok(written)
 }
 
@@ -244,6 +250,7 @@ mod tests {
     use crate::trails::store::tests::{database, session};
     use crate::trails::timeline::tests::{add_session, attach_pr, view, FakeNotes};
     use bridge_protocol::messages::OutgoingDestination;
+    use crate::session_forest::SessionForest;
 
     const URL: &str = "https://github.com/o/r/pull/12";
 
@@ -325,6 +332,36 @@ mod tests {
         assert!(carry(&db, &notes, "no-trail", "new", &[], "t2").is_err());
         let entries: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='new'", [], |row| row.get(0)).unwrap();
         assert_eq!(entries, 0, "a refused carry writes nothing");
+    }
+
+    #[test]
+    fn a_carry_refused_for_another_trail_writes_nothing() {
+        let (db, notes, trail) = fixture();
+        add_session(&db, "new", "claude", "New", None);
+        let other = store::create(&db, "Other", None, "t0").unwrap();
+        store::add_member(&db, &other.id, &session("new"), TrailAddedBy::Person, "t0").unwrap();
+        let items: Vec<String> = parts(&db, &notes, &trail, Some("new")).unwrap().into_iter().map(|part| part.item.id).collect();
+        assert!(!items.is_empty());
+        let refused = carry(&db, &notes, &trail.id, "new", &items, "t2").unwrap_err().to_string();
+        assert!(refused.contains("“Other”"), "{refused}");
+        let entries: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='new'", [], |row| row.get(0)).unwrap();
+        assert_eq!(entries, 0, "a refused carry leaves the chat's history unchanged");
+        assert!(restoration::checkpoint_context(&db, "new").unwrap().is_none());
+        let audits: i64 = db.query_row("SELECT COUNT(*) FROM events WHERE kind='trail.brief_carried'", [], |row| row.get(0)).unwrap();
+        assert_eq!(audits, 0);
+    }
+
+    #[test]
+    fn a_carry_that_fails_after_writing_rolls_everything_back() {
+        let (db, notes, trail) = fixture();
+        add_session(&db, "new", "claude", "New", None);
+        let items: Vec<String> = parts(&db, &notes, &trail, Some("new")).unwrap().into_iter().map(|part| part.item.id).collect();
+        // The audit row is the last write; make it fail.
+        db.execute_batch("ALTER TABLE events RENAME TO events_gone;").unwrap();
+        assert!(carry(&db, &notes, &trail.id, "new", &items, "t2").is_err());
+        let entries: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='new'", [], |row| row.get(0)).unwrap();
+        assert_eq!(entries, 0, "the entries roll back with the failed audit");
+        assert!(store::trail_of(&db, &session("new")).unwrap().is_none(), "so does the membership");
     }
 
     #[test]
