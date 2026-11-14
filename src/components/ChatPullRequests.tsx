@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { CircleCheck, CircleDashed, CircleDot, CircleMinus, CircleX, GitMerge, GitPullRequestClosed, Link2, Plus } from "lucide-react";
+import { CircleCheck, CircleDashed, CircleDot, CircleMinus, CircleX, GitMerge, GitPullRequestArrow, GitPullRequestClosed, Link2, Plus } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
@@ -104,6 +104,77 @@ export function useChatPullRequests(sessionId: string | undefined, workspaceId: 
   return { ...state, reload: load, attach };
 }
 
+/** Pull requests linked to chats, keyed by session id. */
+export type SidebarPullRequests = Readonly<Record<string, SessionPullRequest[]>>;
+
+const SIDEBAR_FOCUS_THROTTLE_MS = 60_000;
+const SIDEBAR_OPEN_INTERVAL_MS = 120_000;
+
+/**
+ * Every chat's linked PRs for the chat list. The first read is snapshot-only
+ * (no `gh`), so rows paint at once; a refresh then re-reads only open PRs.
+ * Poller events and focus refresh again, and an interval keeps open PRs moving
+ * while any remain. Merged and closed PRs are never re-read.
+ */
+export function useSidebarPullRequests(): SidebarPullRequests {
+  const [byChat, setByChat] = useState<SidebarPullRequests>({});
+  const numbers = useRef(new Set<number>());
+  const inflight = useRef(false);
+  const queued = useRef<boolean | null>(null);
+  const lastRefresh = useRef(0);
+
+  const load = useCallback(async (refresh: boolean) => {
+    if (inflight.current) { queued.current = (queued.current ?? false) || refresh; return; }
+    inflight.current = true;
+    if (refresh) lastRefresh.current = Date.now();
+    try {
+      const result = await bridgeApi.githubSidebarPrs(refresh);
+      const next: Record<string, SessionPullRequest[]> = {};
+      numbers.current = new Set();
+      for (const chat of result.chats) {
+        next[chat.sessionId] = chat.pullRequests;
+        for (const pr of chat.pullRequests) numbers.current.add(pr.number);
+      }
+      setByChat(next);
+    } catch {
+      // Keep the last known chips: the list is a hint, never a blocker.
+    } finally {
+      inflight.current = false;
+      if (queued.current !== null) { const refreshNext = queued.current; queued.current = null; void load(refreshNext); }
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(false).then(() => load(true));
+    const touches = (payload: { number: number }) => { if (numbers.current.has(payload.number)) void load(true); };
+    const unlisten: Array<Promise<() => void>> = [
+      bridgeApi.onGithubSessionPrsChanged(() => { void load(false); }),
+      bridgeApi.onGithubChecksChanged(touches),
+      bridgeApi.onGithubCiFinished(touches),
+    ];
+    const onFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastRefresh.current >= SIDEBAR_FOCUS_THROTTLE_MS) void load(true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      for (const pending of unlisten) void pending.then(stop => stop());
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [load]);
+
+  const anyOpen = Object.values(byChat).some(prs => prs.some(pr => pr.state === "open"));
+  useEffect(() => {
+    if (!anyOpen) return;
+    const timer = window.setInterval(() => { if (document.visibilityState !== "hidden") void load(true); }, SIDEBAR_OPEN_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [anyOpen, load]);
+
+  return byChat;
+}
+
 // ── check vocabulary ────────────────────────────────────────────────────────
 
 export const CHECK_ICON: Record<CheckTone, { icon: typeof CircleCheck; className: string; label: string }> = {
@@ -126,6 +197,7 @@ export function PullRequestGlyph({ pr, size = 16, className }: { pr: SessionPull
   const status = chatPrStatus(pr);
   if (pr.state === "merged") return <GitMerge size={size - 2} strokeWidth={2} className={cn("shrink-0 text-info", className)} aria-hidden="true" />;
   if (pr.state === "closed") return <GitPullRequestClosed size={size - 2} strokeWidth={2} className={cn("shrink-0 text-muted-foreground", className)} aria-hidden="true" />;
+  if (status.phase === "conflicts") return <GitPullRequestArrow size={size - 2} strokeWidth={2} className={cn("shrink-0 text-destructive", className)} aria-hidden="true" data-pr-glyph="conflicts" />;
   if (status.phase === "failing") return <CircleX size={size} strokeWidth={2} className={cn("shrink-0 text-destructive", className)} aria-hidden="true" />;
   const { checks } = pr;
   const stroke = 2.25;

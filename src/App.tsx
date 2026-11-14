@@ -51,7 +51,7 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
-import { useChatPullRequests } from "./components/ChatPullRequests";
+import { useChatPullRequests, useSidebarPullRequests } from "./components/ChatPullRequests";
 import { ChatWorkShelf } from "./components/WorkShelf";
 import { ChatWorkPane, type WorkFocus } from "./components/WorkPane";
 import { useBackgroundTaskCount } from "./components/useBackgroundTasks";
@@ -1028,11 +1028,18 @@ function AppContent() {
   // PRs and the agent's background work are doing; neither draws in the
   // transcript.
   const chatPrs = useChatPullRequests(session?.id, workspace?.id);
+  // Every chat's PRs for the chat list. The open chat's own read is fresher
+  // (it refreshes on open and polls), so it wins for that one row.
+  const listPrs = useSidebarPullRequests();
+  const sidebarPrs = useMemo(
+    () => (session?.id && chatPrs.loaded ? { ...listPrs, [session.id]: chatPrs.prs } : listPrs),
+    [listPrs, session?.id, chatPrs.loaded, chatPrs.prs],
+  );
   const backgroundTaskCount = useBackgroundTaskCount(session?.id);
   const dockPanes: DockPaneDescriptor[] = [
     // First in the strip, always available: a chat's PRs and background work
     // need no repository of their own to be listed.
-    { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => chatPrStatus(pr).phase === "failing") || undefined },
+    { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => ["failing", "conflicts"].includes(chatPrStatus(pr).phase)) || undefined },
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
@@ -3462,6 +3469,7 @@ function AppContent() {
       chats={topSessions}
       liveAgents={liveAgents}
       unread={unread.byChat}
+      pullRequests={sidebarPrs}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}

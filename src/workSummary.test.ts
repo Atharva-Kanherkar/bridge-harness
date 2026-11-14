@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PullRequestCheck, SessionPullRequest } from "./protocol/generated/protocol";
 import type { BackgroundTaskView } from "./backgroundTasks";
-import { fixPrompt, orderPullRequests, prCounts, shelfLabel, shelfPhrase, taskSummary } from "./workSummary";
+import { fixPrompt, orderPullRequests, prCounts, shelfLabel, shelfPhrase, sidebarPrChip, taskSummary } from "./workSummary";
 
 const check = (name: string, tone: "passed" | "failed" | "running" | "queued" | "skipped", logUrl = ""): PullRequestCheck => ({
   name, workflow: "CI", logUrl,
@@ -33,6 +33,40 @@ const unchecked = pr(407, []);
 
 const task = (key: string, kind: "running" | "watching", elapsedMs?: number): BackgroundTaskView =>
   ({ key, kind, label: `task ${key}`, elapsedMs, outputTail: [], logFiles: [] });
+
+describe("sidebarPrChip", () => {
+  it("is absent for a chat with no linked pull request", () => {
+    expect(sidebarPrChip(undefined)).toBeNull();
+    expect(sidebarPrChip([])).toBeNull();
+  });
+
+  it("names each state in a word or two", () => {
+    const word = (p: SessionPullRequest) => { const chip = sidebarPrChip([p])!; return [chip.text, chip.tone]; };
+    expect(word(merged)).toEqual(["merged", "info"]);
+    expect(word(closed)).toEqual(["closed", "faint"]);
+    expect(word(failing)).toEqual(["1 failing", "danger"]);
+    expect(word(running)).toEqual(["CI running", "neutral"]);
+    expect(word(passing)).toEqual(["passing", "success"]);
+    expect(word(unchecked)).toEqual(["open", "faint"]);
+    expect(word({ ...passing, isDraft: true })).toEqual(["draft", "faint"]);
+    expect(word({ ...passing, mergeability: "conflicting" })).toEqual(["conflicts", "danger"]);
+  });
+
+  it("shows the most urgent PR, counts the rest, and lists all of them on hover", () => {
+    const chip = sidebarPrChip([merged, { ...passing, mergeability: "conflicting" }, failing])!;
+    expect(chip.pr.number).toBe(414);
+    expect(chip.more).toBe(2);
+    expect(chip.title.split("\n")).toEqual([
+      "PR #414 · Merge conflicts",
+      "PR #413 · 1 check failing",
+      "PR #409 · Merged",
+    ]);
+  });
+
+  it("marks a last-known snapshot in the hover", () => {
+    expect(sidebarPrChip([{ ...merged, stale: true }])!.title).toBe("PR #409 · Merged (last known)");
+  });
+});
 
 describe("orderPullRequests", () => {
   it("leads with what needs the person and keeps arrival order within a phase", () => {

@@ -5,7 +5,7 @@ import type { GithubCheckConclusion, PullRequestCheck, SessionPullRequest } from
 // out of the component so every state the issue names is assertable without a
 // DOM — and so the card and the strip above the composer can never disagree.
 
-export type ChatPrPhase = "merged" | "closed" | "failing" | "running" | "passing" | "none";
+export type ChatPrPhase = "merged" | "closed" | "conflicts" | "failing" | "running" | "passing" | "none";
 export type ChatPrTone = "merged" | "closed" | "danger" | "warning" | "success" | "muted";
 
 export type ChatPrStatus = {
@@ -23,7 +23,7 @@ export type ChatPrStatus = {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-export function chatPrStatus(pr: Pick<SessionPullRequest, "state" | "isDraft" | "checks">): ChatPrStatus {
+export function chatPrStatus(pr: Pick<SessionPullRequest, "state" | "isDraft" | "checks"> & Partial<Pick<SessionPullRequest, "mergeability">>): ChatPrStatus {
   const { checks } = pr;
   const moving = checks.queued + checks.inProgress;
   if (pr.state === "merged") {
@@ -33,6 +33,12 @@ export function chatPrStatus(pr: Pick<SessionPullRequest, "state" | "isDraft" | 
     return { phase: "closed", tone: "closed", headline: "Closed without merging", summary: "Closed", live: false, terminal: true };
   }
   const draft = pr.isDraft ? "Draft · " : "";
+  // A conflict blocks the merge whatever CI says, so it leads. `unknown` is
+  // GitHub still computing, never a conflict.
+  if (pr.mergeability === "conflicting") {
+    const tail = checks.failed > 0 ? ` · ${plural(checks.failed, "check")} failing` : "";
+    return { phase: "conflicts", tone: "danger", headline: `Merge conflicts${tail}`, summary: `${draft}Merge conflicts`, live: moving > 0, terminal: false };
+  }
   if (checks.failed > 0) {
     const headline = moving > 0
       ? `${plural(checks.failed, "check")} failing · ${moving} still running`

@@ -108,6 +108,25 @@ describe("BridgeSidebar responsive rail", () => {
     expect(html).toContain("bg-success");
   });
 
+  it("shows a linked pull request's state on the chat's row, and nothing for chats without one", () => {
+    const at = "2026-11-14T00:00:00Z";
+    const merged = {
+      number: 985, title: "PR", url: "https://github.com/o/r/pull/985", state: "merged" as const, isDraft: false,
+      headBranch: "feat/x", headSha: "abc", checks: { total: 1, queued: 0, inProgress: 0, passed: 1, failed: 0, skipped: 0, cancelled: 0 },
+      checkDetails: [], attribution: "toolCompletion", attachedAt: at, fetchedAt: at, stale: false, error: null,
+    };
+    const html = render({
+      chats: [session("landed", { status: "ready", title: "Landed" }), session("plain", { status: "ready", title: "Plain" })],
+      pullRequests: { landed: [merged, { ...merged, number: 990, state: "open", mergeability: "conflicting" }] },
+    });
+    expect(html).toContain('data-sidebar-pr="990"');
+    expect(html).toContain("Pull request #990");
+    expect(html).toContain("conflicts");
+    expect(html).toContain("+1");
+    expect(html).toContain("PR #990 · Merge conflicts\nPR #985 · Merged");
+    expect(html.match(/data-sidebar-pr=/g)).toHaveLength(1);
+  });
+
   it("says agent, not agents, for one", () => {
     const html = render({ chats: [session("solo", { status: "ready" })], liveAgents: new Map([["solo", ["w1"]]]) });
     expect(html).toContain("1 agent working");

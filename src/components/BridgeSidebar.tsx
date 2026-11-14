@@ -6,6 +6,10 @@ import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
 import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
+import type { SessionPullRequest } from "../protocol/generated/protocol";
+import { PullRequestGlyph, type SidebarPullRequests } from "./ChatPullRequests";
+import { SHELF_TONE } from "./WorkShelf";
+import { sidebarPrChip } from "../workSummary";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
@@ -81,6 +85,7 @@ function ChatRow({
   onJumpToParent,
   liveAgents,
   unread,
+  pullRequests,
 }: {
   chat: Session;
   active: boolean;
@@ -97,12 +102,15 @@ function ChatRow({
   liveAgents?: number;
   /** The strongest unread kind in this chat's tree, from the attention ledger. */
   unread?: AttentionKind;
+  /** PRs linked to this chat; the row shows the most urgent one. */
+  pullRequests?: SessionPullRequest[];
 }) {
   const name = chatName(chat);
   // The hover names the chat in full: the ladder's longest rung, whatever width shows.
   const full = chat.titleLadder?.at(-1) ?? name;
   const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
   const status = rowStatus(chat.status, liveAgents, unread);
+  const pr = sidebarPrChip(pullRequests);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -138,10 +146,27 @@ function ChatRow({
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}
         <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
-          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
-          {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span></>}
+          {/* The PR comes before the time: on a narrow rail the time is what
+              truncates, never the word saying whether the PR landed. The
+              number lives in the hover and the screen-reader text. */}
+          {pr && <>
+            {status && <span aria-hidden="true">·</span>}
+            <span data-sidebar-pr={pr.pr.number} title={pr.title} className="flex shrink-0 items-center gap-1">
+              <PullRequestGlyph pr={pr.pr} size={11} />
+              <span className="sr-only">Pull request #{pr.pr.number} </span>
+              <span className={pr.tone === "danger" ? SHELF_TONE.danger : undefined}>{pr.text}</span>
+              {pr.more > 0 && <span className="text-faint" aria-label={`and ${pr.more} more`}>+{pr.more}</span>}
+            </span>
+          </>}
+          {/* Working plus a PR already fills the line, and a working chat is
+              current anyway, so the time steps aside rather than clip. */}
+          {time && !(status && pr) && <>
+            {(status || pr) && <span aria-hidden="true">·</span>}
+            <span className="shrink-0 tabular-nums text-faint">{time}</span>
+          </>}
           {forkLabel && <>
-            {(status || time) && <span aria-hidden="true">·</span>}
+            {(status || time || pr) && <span aria-hidden="true">·</span>}
             <GitFork size={9} strokeWidth={1.6} className="shrink-0 text-faint" aria-hidden="true" />
             <span className="truncate">forked from {forkLabel}</span>
           </>}
@@ -452,6 +477,8 @@ export type BridgeSidebarProps = {
   /** Top-level chat id to the strongest unread kind in its tree
    * (`attention/unread_summary`'s `byChat`). */
   unread?: Readonly<Record<string, AttentionKind>>;
+  /** Session id to the pull requests linked to that chat. */
+  pullRequests?: SidebarPullRequests;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
@@ -527,6 +554,7 @@ export function BridgeSidebar({
   chats,
   liveAgents,
   unread,
+  pullRequests,
   workspaces,
   activeSessionId,
   projectsActive,
@@ -957,6 +985,7 @@ export function BridgeSidebar({
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                     liveAgents={liveAgents?.get(chat.id)?.length}
                     unread={unread?.[chat.id]}
+                    pullRequests={pullRequests?.[chat.id]}
                   />
                 );
               })}
