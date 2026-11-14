@@ -566,6 +566,7 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
 
 /// A chat's drafted messages, oldest first.
 pub fn list_outgoing(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ListOutgoingResult, BridgeError> {
+    crate::outgoing::send::recover_interrupted(core, session_id)?;
     let db = core.db.lock().unwrap();
     Ok(wire::ListOutgoingResult { items: crate::outgoing::list(&db, session_id)? })
 }

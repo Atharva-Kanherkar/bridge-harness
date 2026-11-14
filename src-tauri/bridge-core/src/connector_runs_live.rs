@@ -132,6 +132,10 @@ impl ConnectorPoller {
         self.sending.lock().unwrap().insert(item_key.to_owned())
     }
 
+    pub(crate) fn action_in_progress(&self, item_key: &str) -> bool {
+        self.sending.lock().unwrap().contains(item_key)
+    }
+
     pub(crate) fn finish_action(&self, item_key: &str) {
         self.sending.lock().unwrap().remove(item_key);
     }

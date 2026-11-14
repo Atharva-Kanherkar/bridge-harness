@@ -88,7 +88,10 @@ impl Target {
                 )
             })
             .collect::<String>();
-        format!("Send to {destination}:\n\n{}{images}", item.rendered)
+        let caution = item.last_error.as_ref()
+            .map(|error| format!("\n\nPrevious attempt: {error}\nCheck the destination before approving another send."))
+            .unwrap_or_default();
+        format!("Send to {destination}:\n\n{}{images}{caution}", item.rendered)
     }
 }
 
@@ -348,6 +351,25 @@ mod tests {
         assert!(offer(&db, &sent, &target(), NOW).is_err());
     }
     #[test]
+    fn an_in_flight_fork_is_editable_and_copy_clears_a_previous_failure() {
+        let db = super::super::tests::store();
+        let item = draft(&db);
+        let token = offer(&db, &item, &target(), NOW).unwrap();
+        claim(&db, &item.id, 1, &token, NOW).unwrap();
+        super::super::clone_for_fork(&db, "s", "fork", &[item.id.clone()], NOW).unwrap();
+        let copy = super::super::list(&db, "fork").unwrap().pop().unwrap();
+        assert_eq!(copy.state, OutgoingState::Draft);
+        super::super::update(&db, &copy.id, 1, Some("fork text"), false, None, NOW).unwrap();
+        super::super::discard(&db, &copy.id, NOW).unwrap();
+        assert_eq!(super::super::count_for_session(&db, "fork").unwrap(), 0);
+        assert_eq!(super::super::get(&db, &item.id).unwrap().unwrap().state, OutgoingState::Sending);
+        finish(&db, &item.id, 1, None, Some("offline"), NOW).unwrap();
+        let (_, copied) = super::super::copy(&db, &item.id, 1, NOW).unwrap();
+        assert_eq!(copied.state, OutgoingState::Copied);
+        assert!(copied.last_error.is_none());
+    }
+
+    #[test]
     fn expiry_denial_discard_and_payload_tampering_invalidate_approval() {
         let db = super::super::tests::store();
         let item = draft(&db);
@@ -430,6 +452,7 @@ pub(crate) fn run(
             detail: "Sending cancelled".into(),
         });
     }
+    let mut executed = false;
     let outcome = (|| {
         if approved != Some(true) {
             let item = editable(&core.db.lock().unwrap(), id, revision)?;
@@ -464,36 +487,39 @@ pub(crate) fn run(
                 session_id: item.session_id.clone(),
                 id: item.id.clone(),
             });
+        executed = true;
         let result = execute(&item, &target);
         let (receipt, error) = match &result {
             Ok((receipt, warning)) => (Some(receipt), warning.as_deref()),
             Err(error) => (None, Some(error.as_str())),
         };
+        // Commit the provider outcome first. Transcript logging is optional and
+        // must never roll back a receipt for an effect that already happened.
         let item = {
             let db = core.db.lock().unwrap();
-            let transaction = db.unchecked_transaction()?;
-            let item = finish(&transaction, id, revision, receipt, error, &now())?;
+            let saved = finish(&db, id, revision, receipt, error, &now());
+            // A transient storage error deserves one more attempt with no
+            // forest transaction involved. Never execute the provider again.
+            let item = saved.or_else(|_| finish(&db, id, revision, receipt, error, &now()))?;
             if receipt.is_some() {
-                let head: Option<String> = transaction
-                    .query_row(
+                let logged = (|| -> Result<(), BridgeError> {
+                    let transaction = db.unchecked_transaction()?;
+                    let head: Option<String> = transaction.query_row(
                         "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
-                        [&item.session_id],
-                        |r| r.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-                crate::store::append_session_entry_tx(
-                    &transaction,
-                    &item.session_id,
-                    head.as_deref(),
-                    "outgoing.sent",
-                    &serde_json::json!({"id":id,"revision":revision,"family":if matches!(target, Target::Slack { .. }) {"slack"} else {"github"},"remoteRef":item.remote_ref,"permalink":item.permalink}),
-                    None,
-                    "excluded",
-                    Some(0),
-                )?;
+                        [&item.session_id], |r| r.get(0),
+                    ).optional()?.flatten();
+                    crate::store::append_session_entry_tx(
+                        &transaction, &item.session_id, head.as_deref(), "outgoing.sent",
+                        &serde_json::json!({"id":id,"revision":revision,"family":if matches!(target, Target::Slack { .. }) {"slack"} else {"github"},"remoteRef":item.remote_ref,"permalink":item.permalink}),
+                        None, "excluded", Some(0),
+                    )?;
+                    transaction.commit()?;
+                    Ok(())
+                })();
+                if let Err(error) = logged {
+                    eprintln!("[outgoing] receipt saved, but transcript logging failed: {error}");
+                }
             }
-            transaction.commit()?;
             item
         };
         core.events
@@ -508,9 +534,37 @@ pub(crate) fn run(
         })
     })();
     match outcome {
-        Err(BridgeError::Invalid(detail)) => Ok(R::Refused { detail }),
+        Err(BridgeError::Invalid(detail)) if !executed => Ok(R::Refused { detail }),
         other => other,
     }
+}
+
+/// Recover after a process restart or an abandoned executor. A live action,
+/// however slow, keeps its claim and cannot be mistaken for a failed send.
+pub(crate) fn recover_interrupted(
+    core: &std::sync::Arc<crate::runtime::BridgeCore>,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let recovered = {
+        let db = core.db.lock().unwrap();
+        let mut recovered = Vec::new();
+        for item in super::list(&db, session_id)? {
+            let key = format!("outgoing:{}:{}", item.id, item.revision);
+            if item.state == OutgoingState::Sending && !core.connector_poller.action_in_progress(&key) {
+                let item = finish(&db, &item.id, item.revision, None,
+                    Some("Sending was interrupted. Check the destination before retrying; the message may already have been posted."),
+                    &chrono::Utc::now().to_rfc3339())?;
+                recovered.push(item);
+            }
+        }
+        recovered
+    };
+    for item in recovered {
+        core.events.publish(crate::events::CoreEvent::OutgoingChanged {
+            session_id: item.session_id, id: item.id,
+        });
+    }
+    Ok(())
 }
 
 pub fn resolve_target(
@@ -750,6 +804,44 @@ mod orchestration_tests {
             .unwrap();
         assert_eq!(row, ("outgoing.sent".into(), "excluded".into()));
     }
+    #[test]
+    fn forest_failure_cannot_erase_a_successful_send_receipt() {
+        let (_scratch, core, item) = fixture();
+        let token = offered(&core, &item);
+        core.db.lock().unwrap().execute_batch(
+            "CREATE TRIGGER reject_outgoing_audit BEFORE INSERT ON session_entries
+             WHEN NEW.kind='outgoing.sent' BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;"
+        ).unwrap();
+        let result = run(&core, &item.id, 1, Some(true), Some(&token), target, |_, _| Ok((Receipt {
+            remote_ref: "42".into(),
+            permalink: "https://github.com/o/r/issues/1#issuecomment-42".into(),
+        }, None))).unwrap();
+        assert!(matches!(result, R::Sent { .. }));
+        let stored = super::super::get(&core.db.lock().unwrap(), &item.id).unwrap().unwrap();
+        assert_eq!(stored.state, OutgoingState::Sent);
+        assert_eq!(stored.remote_ref.as_deref(), Some("42"));
+        assert!(matches!(run(&core, &item.id, 1, Some(true), Some(&token), target, no_send).unwrap(), R::Refused { .. }));
+    }
+
+    #[test]
+    fn abandoned_claim_recovers_but_a_live_executor_is_never_recovered() {
+        let (_scratch, core, item) = fixture();
+        let token = offered(&core, &item);
+        let key = format!("outgoing:{}:1", item.id);
+        assert!(core.connector_poller.begin_action(&key));
+        claim(&core.db.lock().unwrap(), &item.id, 1, &token, &chrono::Utc::now().to_rfc3339()).unwrap();
+        let active = crate::api::list_outgoing(&core, "s").unwrap().items.pop().unwrap();
+        assert_eq!(active.state, OutgoingState::Sending);
+        core.connector_poller.finish_action(&key);
+        let recovered = crate::api::list_outgoing(&core, "s").unwrap().items.pop().unwrap();
+        assert_eq!(recovered.state, OutgoingState::Failed);
+        assert!(recovered.last_error.as_deref().unwrap().contains("Check the destination"));
+        assert!(matches!(run(&core, &item.id, 1, Some(true), Some(&token), target, no_send).unwrap(), R::Refused { .. }));
+        let R::ApprovalRequired { effect, .. } = run(&core, &item.id, 1, None, None, target, no_send).unwrap() else { panic!("fresh approval required"); };
+        assert!(effect.contains("may already have been posted"));
+        super::super::discard(&core.db.lock().unwrap(), &item.id, &chrono::Utc::now().to_rfc3339()).unwrap();
+    }
+
     #[test]
     fn failed_send_is_retryable_only_after_fresh_review_and_edit_invalidates_dialog() {
         let (_scratch, core, item) = fixture();

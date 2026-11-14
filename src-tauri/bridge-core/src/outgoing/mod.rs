@@ -112,7 +112,7 @@ fn only_keys(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> Resul
     }
 }
 
-fn valid_repo(repo: &str) -> bool {
+pub(crate) fn valid_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
     let ok = |part: Option<&str>| {
         part.is_some_and(|part| !part.is_empty() && part != "." && part != ".." && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
@@ -387,6 +387,7 @@ pub fn update(
 pub fn copy(db: &Connection, id: &str, revision: u32, now: &str) -> Result<(String, OutgoingMessage), BridgeError> {
     let mut item = current(db, id, Some(revision))?;
     item.state = OutgoingState::Copied;
+    item.last_error = None;
     item.updated_at = now.to_owned();
     write(db, &item)?;
     Ok((item.rendered.clone(), item))
@@ -408,6 +409,8 @@ pub fn clone_for_fork(db: &Connection, parent_session: &str, fork_session: &str,
             id: uuid::Uuid::now_v7().to_string(),
             session_id: fork_session.to_owned(),
             source_id: Some(original.id.clone()),
+            // The fork has no executor for the parent's in-flight claim.
+            state: if original.state == OutgoingState::Sending { OutgoingState::Draft } else { original.state },
             created_at: now.to_owned(),
             updated_at: now.to_owned(),
             ..original
