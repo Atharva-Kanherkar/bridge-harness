@@ -124,7 +124,9 @@ pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude:
             continue;
         }
         let Some(chat) = session_facts(db, &member.reference)? else { continue };
-        let Some(history) = restoration::checkpoint_context_with_window(db, &chat.id, CHAT_WINDOW_TOKENS)? else { continue };
+        // One chat whose history cannot be projected costs its own item, not
+        // the whole brief.
+        let Ok(Some(history)) = restoration::checkpoint_context_with_window(db, &chat.id, CHAT_WINDOW_TOKENS) else { continue };
         let who = harness_name(&chat.harness);
         let text = format!("{}\n\n{history}", header(&format!("recent history of the {who} chat “{}”", chat.title)));
         push(format!("chat:{}", member.reference), format!("Chat “{}” ({who})", chat.title), text);
@@ -280,9 +282,16 @@ mod tests {
         assert!(texts[1].text.contains("Failing: vitest (https://ci/vitest)"));
         assert_eq!(preview.total_tokens, preview.items.iter().map(|item| item.tokens).sum::<u32>());
         assert_eq!(preview.budget_tokens as usize, budget_bytes(crate::model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS) / 4);
+        // A chat whose history cannot be projected offers nothing, and the
+        // rest of the brief still does.
+        db.execute_batch("PRAGMA foreign_keys=OFF; UPDATE session_heads SET active_entry_id='missing' WHERE session_id='s1'; PRAGMA foreign_keys=ON;").unwrap();
+        assert!(restoration::checkpoint_context_with_window(&db, "s1", CHAT_WINDOW_TOKENS).is_err(), "the head now points nowhere");
+        let degraded = super::preview(&db, &notes, &trail).unwrap();
+        assert!(degraded.items.iter().all(|item| !item.id.starts_with("chat:")), "{:?}", degraded.items);
+        assert_eq!(degraded.items.len(), 3);
         // A discarded draft offers nothing.
         db.execute("UPDATE outgoing_messages SET state='discarded'", []).unwrap();
-        assert_eq!(super::preview(&db, &notes, &trail).unwrap().items.len(), 3);
+        assert_eq!(super::preview(&db, &notes, &trail).unwrap().items.len(), 2);
     }
 
     #[test]
