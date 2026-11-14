@@ -52,7 +52,9 @@ async function type(field: HTMLTextAreaElement | HTMLInputElement, value: string
 const selectedHarness = (scope: Element) => scope.querySelector("[role='listbox'][aria-label='Chat harness'] [role='option'][aria-selected='true'] [data-option-label]")?.textContent;
 
 async function openNotes() {
-  await click(byLabel("Notes", container.querySelector("nav[aria-label='Main navigation']")!));
+  // Notes is an app: the Apps row opens the launcher, and its tile opens Notes.
+  await click(buttons(container.querySelector("nav[aria-label='Main navigation']")!).find(node => node.getAttribute("aria-label")?.startsWith("Apps")));
+  await click(document.body.querySelector("[role='option'][aria-label^='Notes']") ?? undefined);
   // The screen (and its editor) is a lazy chunk: wait for it, not a fixed time.
   for (let tries = 0; tries < 100 && !container.querySelector("aside[aria-label='Notes list']"); tries += 1) await wait(50);
 }

@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, Workspace } from "../types";
-import { BridgeSidebar, pendingBadge, type BridgeSidebarProps } from "./BridgeSidebar";
+import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
+import { chordLabel } from "../keymap";
 import { CHAT_VIEW_KEY } from "./sidebarChats";
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
@@ -36,19 +37,12 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   chats: [session("chat-1", { title: "Policy engine budget" })],
   workspaces: [workspace],
   activeSessionId: undefined,
-  projectsActive: false,
-  marketplaceActive: false,
-  agentFleetActive: false,
-  missionControlActive: false,
   settingsActive: false,
   accountName: "cestercian",
   onOpenNewChat: noop,
   onOpenProjects: noop,
-  onOpenMarketplace: noop,
-  onOpenAgentFleet: noop,
-  onOpenMissionControl: noop,
-  onOpenWorkBoard: noop,
-  onOpenMemory: noop,
+  onOpenApps: noop,
+  onOpenApp: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
   ...overrides,
@@ -88,12 +82,13 @@ beforeEach(() => {
 });
 
 describe("BridgeSidebar responsive rail", () => {
-  it("draws the rail's trailing slot after Pulls", () => {
-    const html = render({ onOpenPulls: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
-    const pulls = html.indexOf('aria-label="Pulls"');
-    const usage = html.indexOf('aria-label="Open usage — test"');
-    expect(pulls).toBeGreaterThan(-1);
-    expect(usage).toBeGreaterThan(pulls);
+  it("draws the rail's trailing slot after Settings, with no Pulls button left in the rail", () => {
+    const html = render({ railTrailing: <button type="button" aria-label="Open usage, test">u</button> });
+    const settings = html.indexOf('aria-label="Open settings for cestercian"');
+    const usage = html.indexOf('aria-label="Open usage, test"');
+    expect(settings).toBeGreaterThan(-1);
+    expect(usage).toBeGreaterThan(settings);
+    expect(html).not.toContain('aria-label="Pulls"');
   });
 
   it("marks a chat whose agents are still working after its own turn ended", () => {
@@ -436,42 +431,31 @@ describe("BridgeSidebar without the projects tree", () => {
     expect(html).not.toContain("Connect folder");
   });
 
-  it("marks Projects active when that screen is open", () => {
-    const projectsButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Projects"')) ?? "";
-    expect(projectsButton(render())).toBeTruthy();
-    expect(projectsButton(render())).not.toContain("aria-current");
-    expect(projectsButton(render({ projectsActive: true }))).toContain('aria-current="page"');
+  it("draws pinned apps under Apps, in pin order, and marks the one on screen current", () => {
+    const rows = (html: string) => [...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*>/g)].map(match => match[1]);
+    const html = render({ pinnedApps: [{ id: "usage" }, { id: "notes" }], activeApp: "notes" });
+    const labels = rows(html);
+    expect(labels.indexOf("Usage")).toBe(labels.indexOf("Apps") + 1);
+    expect(labels.indexOf("Notes")).toBe(labels.indexOf("Apps") + 2);
+    const notes = html.split("<button").find(chunk => chunk.includes('aria-label="Notes"')) ?? "";
+    const usage = html.split("<button").find(chunk => chunk.includes('aria-label="Usage"')) ?? "";
+    expect(notes).toContain('aria-current="page"');
+    expect(usage).not.toContain("aria-current");
   });
 
-  it("marks Memory current when that screen is open", () => {
-    const memoryButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Memory"')) ?? "";
-    expect(memoryButton(render())).not.toContain("aria-current");
-    expect(memoryButton(render({ memoryActive: true }))).toContain('aria-current="page"');
-  });
-
-  it("counts memory proposals waiting for review, and shows nothing at zero", () => {
-    const memoryButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Memory')) ?? "";
-    expect(memoryButton(render())).toContain('aria-label="Memory"');
-    expect(memoryButton(render({ memoryPending: 0 }))).toContain('aria-label="Memory"');
-    const three = memoryButton(render({ memoryPending: 3 }));
-    expect(three).toContain('aria-label="Memory, 3 proposals to review"');
-    expect(three).toContain(">3</span>");
-    expect(memoryButton(render({ memoryPending: 1 }))).toContain("1 proposal to review");
-  });
-
-  it("reads a capped proposal list as 50+ rather than an exact count", () => {
-    expect(pendingBadge(0)).toBeUndefined();
-    expect(pendingBadge(-1)).toBeUndefined();
-    expect(pendingBadge(49)?.count).toBe("49");
-    expect(pendingBadge(50)?.count).toBe("50+");
-    expect(pendingBadge(50)?.label).toBe("50+ proposals to review");
+  it("badges a pinned app and the Apps row, and shows nothing at zero", () => {
+    const apps = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Apps')) ?? "";
+    expect(apps(render())).toContain('aria-label="Apps"');
+    const badged = render({ appsBadge: { count: "5", label: "5 waiting for you" }, pinnedApps: [{ id: "memory", badge: { count: "3", label: "3 waiting for you" } }] });
+    expect(apps(badged)).toContain('aria-label="Apps, 5 waiting for you"');
+    expect(apps(badged)).toContain(">5</span>");
+    expect(badged).toContain('aria-label="Memory, 3 waiting for you"');
   });
 
   it("uses a real local account row as the settings entry", () => {
     const html = render();
     expect(html).toContain("Projects");
-    expect(html).toContain("Memory");
-    expect(html).toContain("Marketplace");
+    expect(html).toContain("Apps");
     expect(html).toContain("cestercian");
     expect(html).toContain('aria-label="Open settings for cestercian"');
     expect(html).not.toContain("Yashaswi");
@@ -508,8 +492,14 @@ describe("BridgeSidebar search", () => {
     expect(html).not.toContain("Filter chats and projects");
   });
 
-  it("advertises no ⌘K: that chord opens recall, not this field", () => {
-    expect(render()).not.toContain("⌘K");
+  it("advertises ⌘K on the Apps row only: that chord opens the launcher, not this field", () => {
+    const html = render();
+    const chord = chordLabel("open-launcher");
+    const apps = html.split("<button").find(chunk => chunk.includes('aria-label="Apps"')) ?? "";
+    const search = html.split("<button").find(chunk => chunk.includes('aria-label="Search"')) ?? "";
+    expect(apps).toContain(chord);
+    expect(search).not.toContain(chord);
+    expect(html.split(chord)).toHaveLength(2);
   });
 });
 
@@ -528,21 +518,16 @@ describe("BridgeSidebar harness marks", () => {
 });
 
 describe("BridgeSidebar action rows", () => {
-  it("offers New Chat, Marketplace, Projects, and Memory near the top", () => {
+  it("offers New Chat, Search and one Apps row, and no other nav rows", () => {
     const html = render();
-    expect(html).toContain("New Chat");
-    expect(html).toContain("Marketplace");
-    expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf("Marketplace"));
-    expect(html.indexOf("Marketplace")).toBeLessThan(html.indexOf("Projects"));
-    expect(html.indexOf("Projects")).toBeLessThan(html.indexOf("Memory"));
+    expect(html.indexOf('aria-label="New Chat"')).toBeLessThan(html.indexOf('aria-label="Apps"'));
+    const nav = html.slice(html.indexOf('aria-label="Main navigation"'), html.indexOf("</nav>"));
+    expect([...nav.matchAll(/aria-label="([^"]+)"/g)].map(match => match[1])).toEqual(["Main navigation", "Apps"]);
+    for (const gone of ["Marketplace", "Workflows", "Notes", "Terminals", "Mission Control", "Memory", "Usage", "Pulls", "Agents", "Work board"]) {
+      expect(html, gone).not.toContain(`aria-label="${gone}"`);
+    }
     expect(html).not.toContain("Customize");
     expect(html).not.toContain("Needs you");
-  });
-
-  it("offers Terminals (the Agent Fleet screen) while keeping the Work board hidden", () => {
-    const html = render();
-    expect(html).toContain("Terminals");
-    expect(html).not.toContain("Work board");
   });
 
   it("keeps New Chat a labeled action beside a compact Search control", () => {
@@ -558,24 +543,22 @@ describe("BridgeSidebar action rows", () => {
   it("gives every action an accessible name rather than a bare unlabeled icon", () => {
     const html = render();
     // Every control is named, including the compact search control.
-    for (const label of ["New Chat", "Search", "Marketplace", "Projects", "Memory"]) {
+    for (const label of ["New Chat", "Search", "Apps"]) {
       expect(html).toContain(`aria-label="${label}"`);
     }
-    // The nav rows still carry their visible text.
-    for (const label of ["Marketplace", "Projects", "Memory"]) {
-      expect(html).toContain(`>${label}</button>`);
-    }
+    // The nav row still carries its visible text.
+    expect(html).toContain(">Apps</button>");
     // The icon-rail squares are gone with the rail itself.
     expect(html).not.toContain("mx-auto size-9");
     expect(html).not.toContain("mx-auto size-10");
   });
 
-  it("marks Marketplace and account settings current", () => {
-    const marketplace = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Marketplace"')) ?? "";
+  it("marks a pinned app and account settings current", () => {
+    const store = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Store"')) ?? "";
     const account = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Open settings for cestercian"')) ?? "";
-    expect(marketplace(render({ marketplaceActive: true }))).toContain('aria-current="page"');
+    expect(store(render({ pinnedApps: [{ id: "store" }], activeApp: "store" }))).toContain('aria-current="page"');
     expect(account(render({ settingsActive: true }))).toContain('aria-current="page"');
-    expect(marketplace(render())).not.toContain("aria-current");
+    expect(store(render({ pinnedApps: [{ id: "store" }] }))).not.toContain("aria-current");
   });
 });
 
@@ -586,9 +569,9 @@ describe("BridgeSidebar without the worker panel", () => {
     expect(html).not.toContain("NEEDS DELEGATION");
   });
 
-  it("offers account Memory with no workspace at all", () => {
-    // Account memory is not workspace memory; a plain chat reaches it too.
-    expect(render({ workspaces: [] })).toContain("Memory");
+  it("keeps the Apps row with no workspace at all", () => {
+    // Apps such as Memory are about the account, so no project gates them.
+    expect(render({ workspaces: [] })).toContain('aria-label="Apps"');
   });
 });
 

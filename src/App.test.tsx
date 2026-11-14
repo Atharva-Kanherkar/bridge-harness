@@ -177,6 +177,14 @@ const key = async (init: KeyboardEventInit) => {
   await settle(1);
 };
 const chord = { altKey: true, metaKey: true };
+/** Every app opens from the launcher now: the Apps row, then its tile. */
+const launcherOption = (name: string) => document.body.querySelector<HTMLElement>(`[role="option"][aria-label^="${name}"]`);
+const openFromLauncher = async (name: string) => {
+  await click(container.querySelector('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!);
+  const option = launcherOption(name);
+  if (!option) throw new Error(`no ${name} in the launcher`);
+  await click(option);
+};
 
 /** Open a workspace session identified by its dirty-file pill ("4 files" is
  * demo-1, "7 files" is demo-2 in the mock state). */
@@ -261,7 +269,7 @@ describe("the dock in the session view", () => {
 
   it("cancels new orchestrator setup without creating a session", async () => {
     await mountApp();
-    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!);
+    await openFromLauncher("Projects");
     const create = vi.spyOn(bridgeApi, "createWorkspaceSession");
     const open = () => click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "New agent")!);
     await open();
@@ -1037,7 +1045,12 @@ describe("the dock in the session view", () => {
   it("exposes Terminals while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
+    await click(container.querySelector('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!);
+    expect(launcherOption("Terminals")).not.toBeNull();
+    expect(launcherOption("Work board")).toBeNull();
+    await key({ key: "Escape" });
+    await act(async () => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await settle(2);
     const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]

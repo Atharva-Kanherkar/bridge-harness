@@ -39,7 +39,7 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
-import { appById, appForView, MEMORY_LIST_CAP, type AppBadges, type AppId } from "./apps/registry";
+import { appById, appForView, appsBadge, badgeText, MEMORY_LIST_CAP, type AppBadges, type AppId } from "./apps/registry";
 import { togglePin, usePins } from "./apps/pins";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
@@ -3496,34 +3496,17 @@ function AppContent() {
       unread={unread.byChat}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
-      projectsActive={view === "projects"}
-      memoryActive={view === "memory"}
-      memoryPending={memoryPending}
-      notesActive={view === "notes"}
-      marketplaceActive={view === "marketplace"}
-      usageActive={view === "usage"}
-      pullsActive={view === "pulls"}
-      agentFleetActive={view === "agent-fleet"}
-      missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
-      workActive={view === "work"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
-      onOpenSavedSetups={() => setView("saved-setups")}
-      onOpenWorkflows={() => setView("workflows")}
-      workflowsActive={view === "workflows"}
-      workflowsBadge={needsYouCount(workflowRuns)}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
-      onOpenMarketplace={() => setView("marketplace")}
-      onOpenAgentFleet={() => { setView("agent-fleet"); setParadigm("single"); }}
-      onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
-      onOpenWorkBoard={openWorkBoard}
-      onOpenMemory={() => setView("memory")}
-      onOpenNotes={() => setView("notes")}
-      onOpenUsage={() => setView("usage")}
-      onOpenPulls={() => setView("pulls")}
+      onOpenApps={() => setLauncherOpen(true)}
+      appsBadge={appsBadge(appBadges)}
+      pinnedApps={pins.map(id => ({ id, badge: badgeText(appBadges[id]) }))}
+      activeApp={activeApp}
+      onOpenApp={openApp}
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}

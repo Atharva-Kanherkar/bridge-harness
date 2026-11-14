@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
+import { Archive, AtSign, Blocks, Check, ChevronRight, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
+import { appById, type AppId, type BadgeText } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
 import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
@@ -358,37 +358,6 @@ function RailIconButton({ label, onClick, children }: { label: string; onClick: 
   );
 }
 
-// The bottom rail is achromatic on purpose: settings, source control, usage,
-// and refresh sit at rest in muted ink and only warm to the foreground on hover
-// or when their screen is the current one.
-function RailBottomButton({
-  label,
-  onClick,
-  active = false,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  active?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      aria-current={active ? "page" : undefined}
-      className={cn(
-        "inline-flex h-8 w-8 items-center justify-center rounded-[7px] transition-colors",
-        active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
 function ActionRow({
   icon: Icon,
   label,
@@ -430,16 +399,6 @@ function ActionRow({
   );
 }
 
-/** The list read is capped, so a full page reads as "50+" rather than a count
- *  that stops at the cap and looks exact. */
-export function pendingBadge(pending: number): { count: string; label: string } | undefined {
-  if (pending <= 0) return undefined;
-  const count = pending >= MAX_MEMORY_LIST ? `${MAX_MEMORY_LIST}+` : String(pending);
-  return { count, label: `${count} ${pending === 1 ? "proposal" : "proposals"} to review` };
-}
-
-/** `MAX_MEMORY_LIST_LIMIT` in bridge-protocol: one list read returns at most this many. */
-const MAX_MEMORY_LIST = 50;
 
 export type BridgeSidebarProps = {
   /** Every top-level session. The rail derives both the project tree and the
@@ -456,16 +415,6 @@ export type BridgeSidebarProps = {
    * screen now. */
   workspaces: Workspace[];
   activeSessionId?: string;
-  projectsActive: boolean;
-  memoryActive?: boolean;
-  /** Memory proposals waiting for review. Nothing shows at zero. */
-  memoryPending?: number;
-  marketplaceActive: boolean;
-  usageActive?: boolean;
-  pullsActive?: boolean;
-  agentFleetActive: boolean;
-  missionControlActive: boolean;
-  workActive?: boolean;
   settingsActive: boolean;
   accountName: string;
   newChatBusy?: boolean;
@@ -473,30 +422,22 @@ export type BridgeSidebarProps = {
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
-  onOpenSavedSetups?: () => void;
-  onOpenWorkflows?: () => void;
-  workflowsActive?: boolean;
-  /** Workflow runs waiting on the person plus unread results. */
-  workflowsBadge?: number;
   /** Per-project "+" on a project group header, grouped-by-project only —
    * skips the picker step since the group already names the workspace. */
   onNewChatInProject?: (workspaceId: string) => void;
+  /** The Projects header's "New folder" action. */
   onOpenProjects: () => void;
-  onOpenMarketplace: () => void;
-  onOpenAgentFleet: () => void;
-  onOpenMissionControl: () => void;
-  onOpenWorkBoard: () => void;
-  /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
-  onOpenMemory: () => void;
-  /** Bridge Notes: capture, pages and tasks. Not workspace-gated either. */
-  onOpenNotes?: () => void;
-  notesActive?: boolean;
-  /** Token and cost usage across harnesses. */
-  onOpenUsage?: () => void;
-  /** Drawn at the end of the bottom rail, after Pulls: the usage dot. */
+  /** The Apps row opens the launcher, where every app lives. */
+  onOpenApps: () => void;
+  /** Everything every app is waiting on, summed. Hidden when absent. */
+  appsBadge?: BadgeText;
+  /** Apps the person pinned, in pin order, drawn as rows under Apps. */
+  pinnedApps?: readonly { id: AppId; badge?: BadgeText }[];
+  /** The app on screen, so its pin reads as current. */
+  activeApp?: AppId | null;
+  onOpenApp: (id: AppId) => void;
+  /** Drawn at the end of the bottom rail, after Settings: the usage dot. */
   railTrailing?: React.ReactNode;
-  /** GitHub for any repository, with no chat open. */
-  onOpenPulls?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   /** Open the search field on `query` and search deeper, as `/find` does.
@@ -529,35 +470,20 @@ export function BridgeSidebar({
   unread,
   workspaces,
   activeSessionId,
-  projectsActive,
-  memoryActive = false,
-  memoryPending = 0,
-  notesActive = false,
-  marketplaceActive,
-  usageActive = false,
-  pullsActive = false,
-  agentFleetActive,
-  missionControlActive,
   settingsActive,
   accountName,
   newChatBusy = false,
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
-  onOpenSavedSetups,
-  onOpenWorkflows,
-  workflowsActive = false,
-  workflowsBadge = 0,
   onNewChatInProject,
   onOpenProjects,
-  onOpenMarketplace,
-  onOpenAgentFleet,
-  onOpenMissionControl,
-  onOpenMemory,
-  onOpenNotes,
-  onOpenUsage,
+  onOpenApps,
+  appsBadge,
+  pinnedApps = [],
+  activeApp,
+  onOpenApp,
   railTrailing,
-  onOpenPulls,
   onOpenSettings,
   onOpenSession,
   searchRequest,
@@ -848,7 +774,6 @@ export function BridgeSidebar({
             <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
             {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-[11px] font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
           </button>
-          {!searchOpen && onOpenSavedSetups && <button type="button" onClick={onOpenSavedSetups} aria-label="Agents" title="Agents: your own and Bridge's built-in agents" className="inline-flex size-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground hover:bg-card hover:text-foreground"><Bot size={15} aria-hidden="true" /></button>}
           {!searchOpen && (
             <button
               type="button"
@@ -862,20 +787,14 @@ export function BridgeSidebar({
           )}
         </div>
 
+        {/* One row for every app, then the few the person pinned. Everything
+            else lives in the launcher, so a new app costs the sidebar nothing. */}
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
-          <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" badge={workflowsBadge > 0 ? { count: String(workflowsBadge), label: `${workflowsBadge} waiting for you` } : undefined} onClick={onOpenWorkflows} active={workflowsActive} />}
-          {/* The work-board stays off the nav for now. Routing props remain on the
-           * type (and wired in App) so the screens and their data plumbing are
-           * untouched. */}
-          <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
-          {onOpenNotes && <ActionRow icon={NotebookPen} label="Notes" chord="open-notes" onClick={onOpenNotes} active={notesActive} />}
-          {/* A terminal for every stream of work: named for what it is. */}
-          <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
-          <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
-          <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} badge={pendingBadge(memoryPending)} />
-          {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
-          {onOpenPulls && <ActionRow icon={GitPullRequest} label="Pulls" onClick={onOpenPulls} active={pullsActive} />}
+          <ActionRow icon={Blocks} label="Apps" chord="open-launcher" onClick={onOpenApps} badge={appsBadge} />
+          {pinnedApps.map(pin => {
+            const app = appById(pin.id);
+            return <ActionRow key={app.id} icon={app.icon} label={app.name} onClick={() => onOpenApp(app.id)} active={activeApp === app.id} badge={pin.badge} />;
+          })}
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
@@ -983,15 +902,12 @@ export function BridgeSidebar({
           )}
         </div>
 
-        {/* A rail of achromatic icon buttons pinned to the bottom: settings
-            (the account's settings entry) and Pulls. */}
+        {/* A rail pinned to the bottom: the account's settings entry and the
+            usage dot. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
           <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
-          {/* Source control is Pulls. The usage dot follows it: a quick
-              look at account quota, with the Usage row for the full screen. */}
-          {onOpenPulls && <RailBottomButton label="Pulls" active={pullsActive} onClick={onOpenPulls}>
-            <GitPullRequest size={16} strokeWidth={1.6} aria-hidden="true" />
-          </RailBottomButton>}
+          {/* The usage dot: a quick look at account quota, with the Usage app
+              for the full screen. */}
           {railTrailing}
         </div>
       </div>
