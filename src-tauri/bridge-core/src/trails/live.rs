@@ -41,7 +41,8 @@ pub fn relevance(event: &CoreEvent) -> Relevance {
 }
 
 /// Sweep every open trail and publish what joined, one notification per
-/// trail. With `hint`, also publish a plain refetch hint when there are trails.
+/// trail. With `hint`, also publish a plain refetch hint when there are
+/// trails, whether or not anything was added.
 pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberAdded> {
     let any = {
         let db = core.db.lock().unwrap();
@@ -63,7 +64,9 @@ pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberA
         }
     };
     publish_added(core, &added);
-    if hint && added.is_empty() {
+    // Additions name only the trails that gained a member; a state event in
+    // the same batch may have moved any other trail, so it still refetches.
+    if hint {
         core.events.publish(CoreEvent::TrailsChanged(TrailsChanged { trail_id: None, added: Vec::new() }));
     }
     added
@@ -124,6 +127,32 @@ mod tests {
     }
 
     #[test]
+    fn a_state_batch_still_sends_the_plain_hint_when_another_trail_gains_a_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        {
+            let db = core.db.lock().unwrap();
+            crate::trails::timeline::tests::add_session(&db, "a", "codex", "A", None);
+            crate::trails::timeline::tests::add_session(&db, "b", "codex", "B", None);
+            crate::trails::timeline::tests::attach_pr(&db, "a", "https://github.com/o/r/pull/12", "t", None);
+            for (title, session) in [("A", "a"), ("B", "b")] {
+                let trail = crate::trails::store::create(&db, title, None, "t0").unwrap();
+                crate::trails::store::add_member(&db, &trail.id, &TrailMemberRef { kind: TrailMemberKind::Session, reference: session.into() }, TrailAddedBy::Person, "t0").unwrap();
+            }
+        }
+        let mut events = core.events.subscribe();
+        assert_eq!(sweep_and_publish(&core, true).len(), 1, "trail A gains its PR");
+        let (mut targeted, mut plain) = (0, 0);
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::TrailsChanged(changed) = event {
+                if changed.trail_id.is_some() { targeted += 1 } else { plain += 1 }
+            }
+        }
+        assert_eq!(targeted, 1);
+        assert_eq!(plain, 1, "trail B's state may have moved in the same batch, so every trail refetches");
+    }
+
+    #[test]
     fn a_sweep_publishes_each_trails_additions_once() {
         let dir = tempfile::tempdir().unwrap();
         let core = Arc::new(BridgeCore::for_tests(dir.path()));
@@ -140,7 +169,9 @@ mod tests {
         let mut seen = Vec::new();
         while let Ok(event) = events.try_recv() {
             if let CoreEvent::TrailsChanged(changed) = event {
-                seen.push(changed);
+                if changed.trail_id.is_some() {
+                    seen.push(changed);
+                }
             }
         }
         assert_eq!(seen.len(), 1);
