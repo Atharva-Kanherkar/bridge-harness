@@ -65,8 +65,13 @@ can never be stale. Nothing a read returns changes.
 
 ### Frontend
 
-- Concurrent `bridgeApi.listTrails(includeArchived)` calls with the same
-  argument share one in-flight request; a call after it settles makes a new one.
+- `bridgeApi.listTrails(includeArchived)` calls with the same argument made
+  in the same task (the sidebar badge and the Trails screen both answer one
+  `trails/changed`) share one request, sent after the last of them. A call
+  made after that request was sent makes a new one, so no caller ever gets an
+  answer older than its own call. (Amended before code: sharing a request
+  that is already in flight could hand a caller data from before the change
+  it is reacting to.)
 
 ## Unit Tests
 
@@ -80,7 +85,7 @@ can never be stale. Nothing a read returns changes.
 - `trails::cache::tests::the_read_sweep_runs_again_after_any_write`
 - `trails::brief::tests::chat_history_is_reprojected_after_a_new_entry`
 - `store::tests::migration_79_indexes_pull_request_urls`
-- Vitest: `api.trails.test.ts` concurrent `listTrails` calls share one request.
+- Vitest: `api.trails.test.ts` same-task `listTrails` calls share one request; a call after it was sent makes another.
 
 ## Integration / Functional Tests
 
