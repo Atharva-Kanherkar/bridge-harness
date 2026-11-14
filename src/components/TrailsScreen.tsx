@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TrailDetail, TrailEvent, TrailSummary } from "@/protocol/generated/protocol";
 import { bridgeApi } from "@/api";
 import { TrailsList, type TrailWorkspace } from "./trails/TrailsList";
@@ -38,10 +38,18 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
       .catch(cause => setListError(message(cause)));
   }, []);
 
+  // A read answers for the trail it asked about. Only the newest request for
+  // the trail still on screen may land, success or error: a slow refresh of a
+  // trail the person left must not replace the one rename and archive act on.
+  const selectedRef = useRef(trailId);
+  selectedRef.current = trailId;
+  const requestRef = useRef(0);
   const loadDetail = useCallback((id: string, refresh = false) => {
+    const request = ++requestRef.current;
+    const current = () => request === requestRef.current && selectedRef.current === id;
     bridgeApi.readTrail(id, refresh)
-      .then(result => { setDetail(result.trail); setDetailError(undefined); })
-      .catch(cause => setDetailError(message(cause)));
+      .then(result => { if (current()) { setDetail(result.trail); setDetailError(undefined); } })
+      .catch(cause => { if (current()) setDetailError(message(cause)); });
   }, []);
 
   useEffect(() => { loadList(); }, [loadList]);
@@ -71,7 +79,7 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
   }
 
   async function remove(event: TrailEvent) {
-    if (!detail) return;
+    if (!detail || detail.summary.id !== trailId) return;
     try {
       await bridgeApi.removeTrailMember(detail.summary.id, event.member);
       loadDetail(detail.summary.id);
@@ -81,11 +89,12 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
   }
 
   if (trailId) {
+    const shown = detail?.summary.id === trailId ? detail : null;
     return <>
       <TrailPage
-        trail={detail}
-        workspaceTitle={titleOf(detail?.summary.workspaceId)}
-        loading={!detail && !detailError}
+        trail={shown}
+        workspaceTitle={titleOf(shown?.summary.workspaceId)}
+        loading={!shown && !detailError}
         error={detailError}
         onBack={() => onSelectTrail(null)}
         onContinue={() => setStarting(true)}
@@ -102,9 +111,9 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
         }}
         onRefresh={() => loadDetail(trailId, true)}
       />
-      {starting && detail && (
+      {starting && shown && (
         <TrailStartDialog
-          trail={detail.summary}
+          trail={shown.summary}
           harnesses={harnesses}
           defaultHarness={defaultHarness}
           onClose={() => setStarting(false)}

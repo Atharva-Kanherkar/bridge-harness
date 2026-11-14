@@ -80,3 +80,45 @@ describe("TrailsScreen list", () => {
     expect(button(/^New trail$/)).toBeTruthy();
   });
 });
+
+describe("TrailsScreen selection", () => {
+  it("drops a slower response for a trail the person left, so actions hit the trail on screen", async () => {
+    const api = (await import("../api")).bridgeApi;
+    const { mockReadTrail } = await import("../trailsMock");
+    const pending = new Map<string, Array<{ resolve: () => void; reject: (error: Error) => void }>>();
+    vi.spyOn(api, "readTrail").mockImplementation(id => new Promise((resolve, reject) => {
+      const list = pending.get(id) ?? [];
+      list.push({ resolve: () => resolve(mockReadTrail(id)), reject });
+      pending.set(id, list);
+    }));
+    const update = vi.spyOn(api, "updateTrail").mockResolvedValue({ trail: mockReadTrail("trail-reply").trail.summary });
+    screen({ trailId: "trail-archive" });
+    await settle();
+    screen({ trailId: null });
+    await settle();
+    screen({ trailId: "trail-reply" });
+    await settle();
+    // B answers first, then A's slow GitHub refresh lands.
+    await act(async () => { pending.get("trail-reply")!.shift()!.resolve(); });
+    await settle();
+    await act(async () => { pending.get("trail-archive")!.shift()!.resolve(); });
+    await settle();
+    expect(host.querySelector("h1")?.textContent).toBe("Outgoing: reply watch");
+    act(() => button(/^Archive trail$/)!.click());
+    expect(update).toHaveBeenCalledWith("trail-reply", { archived: true });
+    // An older request for the same trail loses to a newer one, errors included.
+    screen({ trailId: "trail-archive" });
+    await settle();
+    await act(async () => { pending.get("trail-archive")!.shift()!.resolve(); });
+    await settle();
+    act(() => button(/^Refresh from GitHub$/)!.click());
+    act(() => button(/^Refresh from GitHub$/)!.click());
+    const [older, newer] = pending.get("trail-archive")!.splice(0, 2);
+    await act(async () => { newer.resolve(); });
+    await settle();
+    await act(async () => { older.reject(new Error("GitHub timed out")); });
+    await settle();
+    expect(host.textContent).not.toContain("GitHub timed out");
+    expect(host.querySelector("h1")?.textContent).toBe("Archive a chat from the sidebar");
+  });
+});
