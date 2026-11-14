@@ -124,7 +124,7 @@ When a trail has a session member S:
 - A carry changes nothing about the session's harness, model, access mode,
   worktree, write scope or kind.
 
-### Protocol (minor 1.32)
+### Protocol (minor 1.33)
 
 Methods in the `trails` domain: `list_trails`, `read_trail`, `create_trail`,
 `update_trail`, `add_trail_member`, `remove_trail_member`,

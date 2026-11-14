@@ -1199,6 +1199,13 @@
       "resultSchema": "copy-outgoing-result.json"
     },
     {
+      "command": "send_outgoing",
+      "domain": "outgoing",
+      "method": "outgoing/send_outgoing",
+      "paramsSchema": "send-outgoing-params.json",
+      "resultSchema": "send-outgoing-result.json"
+    },
+    {
       "command": "discard_outgoing",
       "domain": "outgoing",
       "method": "outgoing/discard_outgoing",
@@ -2237,7 +2244,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 32
+    "minor": 33
   },
   "reserved": {
     "cancel": "$/cancel",

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationItem } from "../conversation";
 import { MOCK_OUTGOING_ID, resetMockOutgoing } from "../outgoingMock";
 import type { OutgoingMessage } from "../protocol/generated/protocol";
+import { bridgeApi } from "../api";
 import { OutgoingCard } from "./OutgoingCard";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -89,13 +90,13 @@ describe("OutgoingCard", () => {
     expect(row.textContent).toContain("to must be exactly one of");
   });
 
-  it("draws the destination, the rendered preview and the style checks, with no Send", async () => {
+  it("draws the destination, the rendered preview, style checks and Send", async () => {
     await mount();
     expect(container.querySelector("[data-outgoing-destination]")?.textContent).toBe("Slack · #dev");
     expect(container.querySelector("[data-outgoing-preview]")?.textContent).toBe("Deploy is done, all green");
     expect(container.querySelector("[data-finding=no_em_dash]")?.textContent).toContain("Em dash replaced with a comma");
     expect(button("Copy")).toBeTruthy();
-    expect(button("Send")).toBeUndefined();
+    expect(button("Send")).toBeTruthy();
     expect(button("Fix"), "nothing left to fix").toBeUndefined();
   });
 
@@ -239,4 +240,65 @@ describe("OutgoingCard", () => {
     expect(preview.textContent).toContain("<button>Ship it</button>");
     expect(preview.textContent).toContain("graph TD; a-->b");
   });
+});
+
+
+describe("Outgoing send approval", () => {
+  it("opens the exact effect, cancels without sending, and confirms once to a permalink", async () => {
+    await mount(); await click("Send");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Deploy is done, all green");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Slack · #dev");
+    await click("Cancel");
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector('[data-outgoing-state="draft"]')).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await click("Send");
+    const confirm = container.querySelector('[role="dialog"] button:last-child') as HTMLButtonElement;
+    await act(async () => { confirm.click(); confirm.click(); await new Promise(resolve => setTimeout(resolve, 130)); });
+    expect(container.querySelector('[data-outgoing-state="sent"]')).toBeTruthy();
+    expect(container.querySelector('a')?.textContent).toBe("View sent message");
+    expect(button("Edit")).toBeUndefined(); expect(button("Send")).toBeUndefined();
+  });
+  it("keeps the approved revision when the underlying draft changes before confirmation", async () => {
+    await mount(); await click("Send");
+    // No outgoing event: model an older UI still showing its approval.
+    resetMockOutgoing([draft({ revision: 2, body: "changed", rendered: "changed" })]);
+    const confirm = container.querySelector('[role="dialog"] button:last-child') as HTMLButtonElement;
+    await act(async () => { confirm.click(); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("changed since");
+    expect(container.querySelector('[data-outgoing-state="sent"]')).toBeNull();
+  });
+  it("shows failed sends and requires another review on Retry", async () => {
+    resetMockOutgoing([draft({ state: "failed", lastError: "Slack unavailable" })]);
+    await mount(); expect(container.querySelector('[role="alert"]')?.textContent).toBe("Slack unavailable");
+    await click("Retry"); expect(container.querySelector('[role="dialog"]')).toBeTruthy();
+  });
+  it("clears the old failure alert when the draft is copied", async () => {
+    resetMockOutgoing([draft({ state: "failed", lastError: "Slack unavailable" })]);
+    await mount();
+    await click("Copy");
+    expect(container.querySelector('[data-outgoing-state="copied"]')).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Send")).toBeTruthy();
+  });
+  it("explains unavailable image uploads and preserves Copy image", async () => {
+    resetMockOutgoing([draft({ attachments: [{ path: "/tmp/a.png", name: "a.png", mime: "image/png", bytes: 68 }] })]);
+    vi.spyOn(bridgeApi, "sendOutgoing").mockResolvedValue({ kind: "refused", detail: "This Slack connection cannot upload images. Use Copy image." });
+    await mount(); await click("Send");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("cannot upload images");
+    expect(container.querySelector('[aria-label="Copy image a.png"]')).toBeTruthy();
+  });
+  it("clipboard and archived cards cannot send", async () => {
+    resetMockOutgoing([draft({ destination: { kind: "clipboard", format: "plain" } })]);
+    await mount(); expect(button("Send")).toBeUndefined(); expect(button("Copy")).toBeTruthy();
+    await mount(call(), true); expect(container.querySelectorAll("button")).toHaveLength(0);
+  });
+});
+
+it("keeps Copy image available when text was sent but image sharing failed", async () => {
+  resetMockOutgoing([draft({ state: "sent", permalink: "https://acme.slack.com/archives/C123/p1794571200000001", lastError: "Text sent, but an image could not be shared. Use Copy image.", attachments: [{ path: "/tmp/a.png", name: "a.png", mime: "image/png", bytes: 68 }] })]);
+  await mount();
+  expect(container.querySelector('[aria-label="Copy image a.png"]')).toBeTruthy();
+  expect(container.querySelector('[aria-label="Remove image a.png"]')).toBeNull();
+  expect(button("Send")).toBeUndefined();
 });

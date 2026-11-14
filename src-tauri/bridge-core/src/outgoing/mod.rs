@@ -4,7 +4,7 @@
 //! GitHub comment, a post. This module keeps each such text as a record of
 //! its own rather than a paragraph in a transcript, so it can be checked
 //! against the person's style rules, shown the way its destination shows it,
-//! edited, copied, and (in a later slice) sent and answered.
+//! edited, copied, or sent after exact-text approval. Replies are a later slice.
 //!
 //! An agent creates a draft through `outgoing_draft` (see
 //! `crate::outgoing_tools`); the person changes it through the protocol.
@@ -15,6 +15,8 @@
 pub mod attachments;
 pub mod lint;
 pub mod render;
+pub mod send;
+pub(crate) mod slack;
 
 use bridge_protocol::messages::{
     OutgoingAttachment, OutgoingDestination, OutgoingFormat, OutgoingLintFinding, OutgoingMessage, OutgoingState,
@@ -110,10 +112,10 @@ fn only_keys(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> Resul
     }
 }
 
-fn valid_repo(repo: &str) -> bool {
+pub(crate) fn valid_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
     let ok = |part: Option<&str>| {
-        part.is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        part.is_some_and(|part| !part.is_empty() && part != "." && part != ".." && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
     };
     ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
 }
@@ -171,18 +173,24 @@ fn state_name(state: OutgoingState) -> &'static str {
         OutgoingState::Draft => "draft",
         OutgoingState::Copied => "copied",
         OutgoingState::Discarded => "discarded",
+        OutgoingState::Sending => "sending",
+        OutgoingState::Sent => "sent",
+        OutgoingState::Failed => "failed",
     }
 }
 
 fn parse_state(text: &str) -> OutgoingState {
     match text {
+        "sending" => OutgoingState::Sending,
+        "sent" => OutgoingState::Sent,
+        "failed" => OutgoingState::Failed,
         "copied" => OutgoingState::Copied,
         "discarded" => OutgoingState::Discarded,
         _ => OutgoingState::Draft,
     }
 }
 
-const COLUMNS: &str = "id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments,source_id";
+const COLUMNS: &str = "id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments,source_id,remote_ref,permalink,sent_at,last_error";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<OutgoingMessage> {
     let destination: OutgoingDestination = serde_json::from_str(&row.get::<_, String>(2)?)
@@ -204,6 +212,10 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<OutgoingMessage> {
         updated_at: row.get(10)?,
         attachments: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
         source_id: row.get(12)?,
+        remote_ref: row.get(13)?,
+        permalink: row.get(14)?,
+        sent_at: row.get(15)?,
+        last_error: row.get(16)?,
     })
 }
 
@@ -225,7 +237,7 @@ pub fn list(db: &Connection, session_id: &str) -> Result<Vec<OutgoingMessage>, B
 /// frees its slot: the cap stops a looping agent, not a person who said no.
 pub fn count_for_session(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
     Ok(db.query_row(
-        "SELECT COUNT(*) FROM outgoing_messages WHERE session_id=?1 AND state != 'discarded'",
+        "SELECT COUNT(*) FROM outgoing_messages WHERE session_id=?1 AND state IN ('draft','copied','failed','sending')",
         params![session_id],
         |row| row.get(0),
     )?)
@@ -241,10 +253,10 @@ fn fixed_text(body: &str, format: OutgoingFormat) -> (String, Vec<OutgoingLintFi
 
 fn write(db: &Connection, item: &OutgoingMessage) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO outgoing_messages(id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments,source_id)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+        "INSERT INTO outgoing_messages(id,session_id,destination,body,rendered,lint,state,revision,reason,created_at,updated_at,attachments,source_id,remote_ref,permalink,sent_at,last_error)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
          ON CONFLICT(id) DO UPDATE SET body=excluded.body, rendered=excluded.rendered, lint=excluded.lint,
-           state=excluded.state, revision=excluded.revision, updated_at=excluded.updated_at, attachments=excluded.attachments",
+           state=excluded.state, revision=excluded.revision, updated_at=excluded.updated_at, attachments=excluded.attachments, remote_ref=excluded.remote_ref, permalink=excluded.permalink, sent_at=excluded.sent_at, last_error=excluded.last_error",
         params![
             item.id,
             item.session_id,
@@ -259,6 +271,10 @@ fn write(db: &Connection, item: &OutgoingMessage) -> Result<(), BridgeError> {
             item.updated_at,
             serde_json::to_string(&item.attachments).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             item.source_id,
+            item.remote_ref,
+            item.permalink,
+            item.sent_at,
+            item.last_error,
         ],
     )?;
     Ok(())
@@ -296,6 +312,10 @@ pub fn create_draft(
         id: uuid::Uuid::now_v7().to_string(),
         session_id: session_id.to_owned(),
         source_id: None,
+        remote_ref: None,
+        permalink: None,
+        sent_at: None,
+        last_error: None,
         label: label(&destination),
         format,
         destination,
@@ -315,6 +335,9 @@ pub fn create_draft(
 
 fn current(db: &Connection, id: &str, revision: Option<u32>) -> Result<OutgoingMessage, BridgeError> {
     let item = get(db, id)?.ok_or_else(|| BridgeError::Invalid("that draft no longer exists".into()))?;
+    if matches!(item.state, OutgoingState::Sending | OutgoingState::Sent) {
+        return Err(BridgeError::Invalid("this message is already sending or sent".into()));
+    }
     if item.state == OutgoingState::Discarded {
         return Err(BridgeError::Invalid("this draft was discarded".into()));
     }
@@ -351,9 +374,11 @@ pub fn update(
     item.body = text;
     item.lint = lint;
     item.state = OutgoingState::Draft;
+    item.last_error = None;
     item.revision += 1;
     item.updated_at = now.to_owned();
     write(db, &item)?;
+    send::invalidate(db, id)?;
     Ok(item)
 }
 
@@ -362,6 +387,7 @@ pub fn update(
 pub fn copy(db: &Connection, id: &str, revision: u32, now: &str) -> Result<(String, OutgoingMessage), BridgeError> {
     let mut item = current(db, id, Some(revision))?;
     item.state = OutgoingState::Copied;
+    item.last_error = None;
     item.updated_at = now.to_owned();
     write(db, &item)?;
     Ok((item.rendered.clone(), item))
@@ -383,6 +409,8 @@ pub fn clone_for_fork(db: &Connection, parent_session: &str, fork_session: &str,
             id: uuid::Uuid::now_v7().to_string(),
             session_id: fork_session.to_owned(),
             source_id: Some(original.id.clone()),
+            // The fork has no executor for the parent's in-flight claim.
+            state: if original.state == OutgoingState::Sending { OutgoingState::Draft } else { original.state },
             created_at: now.to_owned(),
             updated_at: now.to_owned(),
             ..original
@@ -406,6 +434,10 @@ pub fn read_attachment(db: &Connection, id: &str, index: u32) -> Result<(String,
 /// Put a draft away. Discarding twice is not an error.
 pub fn discard(db: &Connection, id: &str, now: &str) -> Result<OutgoingMessage, BridgeError> {
     let mut item = get(db, id)?.ok_or_else(|| BridgeError::Invalid("that draft no longer exists".into()))?;
+    if matches!(item.state, OutgoingState::Sending | OutgoingState::Sent) {
+        return Err(BridgeError::Invalid("this message is already sending or sent".into()));
+    }
+    send::invalidate(db, id)?;
     if item.state != OutgoingState::Discarded {
         item.state = OutgoingState::Discarded;
         item.updated_at = now.to_owned();
@@ -425,6 +457,7 @@ pub(crate) mod tests {
         // `sessions` row; the cascade itself is covered against a real store.
         db.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
         install_store(&db).unwrap();
+        send::install_store(&db).unwrap();
         db
     }
 

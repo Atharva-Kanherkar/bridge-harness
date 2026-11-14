@@ -1,3 +1,4 @@
+import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import {
@@ -212,7 +213,7 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
         />}
       </div>}
 
-    {pendingApproval && <ApprovalSheet
+    {pendingApproval && <ConnectorApprovalSheet
       effect={pendingApproval.effect}
       busy={busy}
       onDeny={() => void act(pendingApproval.action, false)}
@@ -450,36 +451,6 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
       <button type="button" onClick={onDismiss} className="underline-offset-2 hover:text-foreground hover:underline">
         Dismiss
       </button>
-    </div>
-  </div>;
-}
-
-/**
- * Bridge's own approval chrome.
- *
- * `effect` is the sentence the host composed and refused on — it names the
- * destination and quotes the literal text. Rendering the host's sentence rather
- * than one assembled here is what keeps the dialog honest about what the second
- * call will actually do.
- */
-function ApprovalSheet({ effect, busy, onApprove, onDeny }: {
-  effect: string;
-  busy: boolean;
-  onApprove: () => void;
-  onDeny: () => void;
-}) {
-  return <div className="absolute inset-0 z-20 grid place-items-end bg-background/70 backdrop-blur-sm">
-    <div role="dialog" aria-label="Confirm connector action" className="u-glass-popover connector-approval-in m-2.5 w-[calc(100%-1.25rem)] rounded-xl border border-border p-3.5 shadow-2xl">
-      <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
-        <Send size={14} aria-hidden="true" className="shrink-0" />Send this?
-      </div>
-      <p className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-muted/60 p-2 text-[12px] leading-relaxed text-foreground">
-        {effect}
-      </p>
-      <div className="mt-3 flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onDeny}><X size={12} />Cancel</Button>
-        <Button size="sm" loading={busy} onClick={onApprove}><Send size={12} />Send</Button>
-      </div>
     </div>
   </div>;
 }

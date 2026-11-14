@@ -1,7 +1,7 @@
 import { Check, ChevronUp, CloudOff, Eye, Square, X } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
-import { formatElapsed, type BackgroundOutcome, type BackgroundTaskView } from "../backgroundTasks";
+import { formatElapsed, type BackgroundOutcome, type BackgroundTaskView, type BackgroundWorkStore } from "../backgroundTasks";
 import { chatPrKey, chatPrStatus } from "../chatPullRequests";
 import { orderPullRequests, prCounts, shelfLabel, shelfPhrase, taskSummary, type ShelfTone } from "../workSummary";
 import { cn } from "@/lib/utils";
@@ -137,9 +137,10 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
   </div>;
 }
 
-/** The shelf for the open chat: reads its background work itself, so the
- * owner (App) does not re-render on every tick of a running task. */
-export function ChatWorkShelf({ sessionId, ...props }: Omit<Parameters<typeof WorkShelf>[0], "tasks" | "notice"> & { sessionId: string }) {
-  const { tasks, notice } = useBackgroundTasks(sessionId);
+/** The shelf for a chat: reads its background work itself, so the owner
+ * (App, or a Mission Control tile) does not re-render on every tick of a
+ * running task. A tile passes its own store; the open chat uses the global one. */
+export function ChatWorkShelf({ sessionId, store, ...props }: Omit<Parameters<typeof WorkShelf>[0], "tasks" | "notice"> & { sessionId: string; store?: BackgroundWorkStore }) {
+  const { tasks, notice } = useBackgroundTasks(sessionId, store);
   return <WorkShelf tasks={tasks} notice={notice} {...props} />;
 }

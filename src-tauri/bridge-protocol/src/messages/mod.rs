@@ -362,6 +362,7 @@ typed_methods![
     (ListOutgoing, ListOutgoingParams, ListOutgoingResult),
     (UpdateOutgoing, UpdateOutgoingParams, UpdateOutgoingResult),
     (CopyOutgoing, CopyOutgoingParams, CopyOutgoingResult),
+    (SendOutgoing, SendOutgoingParams, SendOutgoingResult),
     (DiscardOutgoing, DiscardOutgoingParams, DiscardOutgoingResult),
     (ReadOutgoingAttachment, ReadOutgoingAttachmentParams, ReadOutgoingAttachmentResult),
     (ListNotes, ListNotesParams, NotesList),

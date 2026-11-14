@@ -117,13 +117,17 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// client must not pair with an older daemon, whose draft cards would fail
 /// with `method_not_found`; a 1.30 client still pairs with a 1.31 daemon and
 /// simply never shows a draft card.
-/// **1.32 adds the `trails` domain and its `trails/changed` hint.** A new
+/// **1.32 adds revision-bound outgoing sends and remote receipts.** New clients
+/// require this method before offering Send on a draft card. It is also a
+/// minimum-client boundary: older clients cannot decode the new persisted
+/// sending/sent/failed states, so both sides must upgrade together.
+/// **1.33 adds the `trails` domain and its `trails/changed` hint.** A new
 /// client must not pair with an older daemon, whose Trails screen would fail
-/// with `method_not_found`; a 1.31 client still pairs with a 1.32 daemon and
+/// with `method_not_found`; a 1.32 client still pairs with a 1.33 daemon and
 /// simply never shows trails.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 32,
+    minor: 33,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +143,7 @@ impl ProtocolVersion {
         const AUTOMATIC_MEMORY_MINOR: u32 = 17;
         const INDEPENDENT_VOICE_MINOR: u32 = 21;
         const SCOPED_CHAT_SETTINGS_MINOR: u32 = 23;
+        const OUTGOING_SEND_MINOR: u32 = 32;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -150,6 +155,9 @@ impl ProtocolVersion {
             && !(self.major == 1
                 && self.minor >= SCOPED_CHAT_SETTINGS_MINOR
                 && client.minor < SCOPED_CHAT_SETTINGS_MINOR)
+            && !(self.major == 1
+                && self.minor >= OUTGOING_SEND_MINOR
+                && client.minor < OUTGOING_SEND_MINOR)
     }
 }
 
@@ -375,8 +383,8 @@ mod tests {
         assert!(!before_unread.accepts(unread));
         assert!(unread.accepts(before_unread), "a 1.25 client still pairs with a 1.26 daemon");
         assert!(
-            PROTOCOL_VERSION.accepts(before_unread),
-            "a later minimum-client gate that drops 1.25 must change this test on purpose"
+            !PROTOCOL_VERSION.accepts(before_unread),
+            "the outgoing send boundary intentionally requires a 1.32 client"
         );
     }
 
@@ -386,7 +394,7 @@ mod tests {
         let presence = ProtocolVersion { major: 1, minor: 27 };
         assert!(!before.accepts(presence));
         assert!(presence.accepts(before), "a 1.26 client still pairs with a 1.27 daemon");
-        assert!(PROTOCOL_VERSION.accepts(before));
+        assert!(!PROTOCOL_VERSION.accepts(before), "the outgoing send boundary requires 1.32");
     }
 
     #[test]
@@ -395,7 +403,7 @@ mod tests {
         let web_banners = ProtocolVersion { major: 1, minor: 28 };
         assert!(!before.accepts(web_banners));
         assert!(web_banners.accepts(before), "a 1.27 client still pairs with a 1.28 daemon");
-        assert!(PROTOCOL_VERSION.accepts(before));
+        assert!(!PROTOCOL_VERSION.accepts(before), "the outgoing send boundary requires 1.32");
     }
 
     #[test]
@@ -404,7 +412,7 @@ mod tests {
         let post = ProtocolVersion { major: 1, minor: 29 };
         assert!(!before.accepts(post));
         assert!(post.accepts(before), "a 1.28 client still pairs with a 1.29 daemon");
-        assert!(PROTOCOL_VERSION.accepts(before));
+        assert!(!PROTOCOL_VERSION.accepts(before), "the outgoing send boundary requires 1.32");
     }
 
     #[test]
@@ -413,7 +421,25 @@ mod tests {
         let wait = ProtocolVersion { major: 1, minor: 30 };
         assert!(!before.accepts(wait));
         assert!(wait.accepts(before), "a 1.29 client still pairs with a 1.30 daemon");
-        assert!(PROTOCOL_VERSION.accepts(before));
+        assert!(!PROTOCOL_VERSION.accepts(before), "the outgoing send boundary requires 1.32");
+    }
+
+    #[test]
+    fn outgoing_send_states_require_new_clients_and_daemons() {
+        for minor in 23..32 {
+            let old = ProtocolVersion { major: 1, minor };
+            assert!(!PROTOCOL_VERSION.accepts(old), "client {minor} cannot decode sent states");
+            assert!(!old.accepts(PROTOCOL_VERSION));
+        }
+        assert!(PROTOCOL_VERSION.accepts(PROTOCOL_VERSION));
+        assert!(ProtocolVersion { major: 1, minor: 33 }.accepts(PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn a_trails_daemon_still_serves_a_client_without_trails() {
+        let without_trails = ProtocolVersion { major: 1, minor: 32 };
+        assert!(PROTOCOL_VERSION.accepts(without_trails), "a 1.32 client pairs and never shows trails");
+        assert!(!without_trails.accepts(PROTOCOL_VERSION), "a trails client needs a daemon that serves trails");
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

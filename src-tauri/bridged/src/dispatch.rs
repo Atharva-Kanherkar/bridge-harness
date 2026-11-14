@@ -158,6 +158,10 @@ pub fn dispatch(
             let p: wire::UpdateOutgoingParams = decode(method, params)?;
             reply(api::update_outgoing(core, &p.id, p.revision, p.body.as_deref(), p.apply_fixes, p.attachments.as_deref()))
         }
+        MethodName::SendOutgoing => {
+            let p: wire::SendOutgoingParams = decode(method, params)?;
+            reply(api::send_outgoing(core, &p.id, p.revision, p.approved, p.approval_token.as_deref()))
+        }
         MethodName::CopyOutgoing => {
             let p: wire::CopyOutgoingParams = decode(method, params)?;
             reply(api::copy_outgoing(core, &p.id, p.revision))

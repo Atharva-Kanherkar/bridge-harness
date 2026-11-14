@@ -411,34 +411,48 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
                     continue;
                 };
                 use bridge_protocol::messages::OutgoingState;
-                let draft = message.state == OutgoingState::Draft;
-                let mut row = event(
-                    member,
-                    "",
-                    TrailEventKind::Message,
-                    &message.updated_at,
-                    format!("Message to {}", message.label),
-                    if draft { TrailTone::Warning } else { TrailTone::Plain },
-                );
-                row.detail = Some(
-                    match message.state {
-                        OutgoingState::Draft => "draft, not sent yet",
-                        OutgoingState::Copied => "copied to send",
-                        OutgoingState::Discarded => "discarded",
-                    }
-                    .into(),
-                );
+                let (tone, detail, at) = match message.state {
+                    OutgoingState::Draft => (TrailTone::Warning, "draft, not sent yet".to_owned(), message.updated_at.clone()),
+                    OutgoingState::Copied => (TrailTone::Plain, "copied to send".to_owned(), message.updated_at.clone()),
+                    OutgoingState::Discarded => (TrailTone::Plain, "discarded".to_owned(), message.updated_at.clone()),
+                    OutgoingState::Sending => (TrailTone::Plain, "sending".to_owned(), message.updated_at.clone()),
+                    OutgoingState::Sent => (TrailTone::Success, "sent".to_owned(), message.sent_at.clone().unwrap_or_else(|| message.updated_at.clone())),
+                    OutgoingState::Failed => (
+                        TrailTone::Danger,
+                        match message.last_error.as_deref().map(str::trim).filter(|error| !error.is_empty()) {
+                            Some(error) => format!("send failed: {error}"),
+                            None => "send failed".to_owned(),
+                        },
+                        message.updated_at.clone(),
+                    ),
+                };
+                let mut row = event(member, "", TrailEventKind::Message, &at, format!("Message to {}", message.label), tone);
+                row.detail = Some(detail);
                 row.excerpt = Some(excerpt(&message.body));
                 row.session_id = Some(message.session_id.clone());
+                // A sent message opens where it was posted.
+                row.url = message.permalink.clone().filter(|_| message.state == OutgoingState::Sent);
                 events.push(row);
-                if draft {
-                    open.push(TrailOpenItem {
-                        kind: TrailOpenKind::UnsentDraft,
-                        label: format!("Send or discard the draft to {}", message.label),
-                        member: reference(member),
-                        url: None,
-                    });
-                    draft_reason.get_or_insert_with(|| format!("A draft to {} is not sent", message.label));
+                match message.state {
+                    OutgoingState::Draft => {
+                        open.push(TrailOpenItem {
+                            kind: TrailOpenKind::UnsentDraft,
+                            label: format!("Send or discard the draft to {}", message.label),
+                            member: reference(member),
+                            url: None,
+                        });
+                        draft_reason.get_or_insert_with(|| format!("A draft to {} is not sent", message.label));
+                    }
+                    OutgoingState::Failed => {
+                        open.push(TrailOpenItem {
+                            kind: TrailOpenKind::UnsentDraft,
+                            label: format!("Retry or discard the message to {}", message.label),
+                            member: reference(member),
+                            url: None,
+                        });
+                        draft_reason.get_or_insert_with(|| format!("A message to {} failed to send", message.label));
+                    }
+                    OutgoingState::Copied | OutgoingState::Discarded | OutgoingState::Sending | OutgoingState::Sent => {}
                 }
             }
         }
@@ -730,6 +744,36 @@ pub(crate) mod tests {
         let summary = summary(&db, &notes, &trail).unwrap();
         assert_eq!(summary.stage, 3, "an unread PR is still a PR");
         assert_eq!(summary.state, TrailState::InProgress, "an unread PR never counts as shipped");
+    }
+
+    #[test]
+    fn sent_and_failed_messages_read_as_what_happened() {
+        let db = database();
+        add_session(&db, "s1", "codex", "Build", None);
+        let destination = bridge_protocol::messages::OutgoingDestination::SlackDm { user: "@mika".into() };
+        let message = crate::outgoing::create_draft(&db, "s1", destination, "Could you review #12 today?", "ask", &[], "2026-11-12T00:00:00Z").unwrap();
+        let trail = store::create(&db, "T", None, "t0").unwrap();
+        store::add_member(&db, &trail.id, &TrailMemberRef { kind: TrailMemberKind::Outgoing, reference: message.id.clone() }, TrailAddedBy::Auto, "t1").unwrap();
+        db.execute(
+            "UPDATE outgoing_messages SET state='sent', permalink='https://acme.slack.com/archives/D1/p1', sent_at='2026-11-12T01:00:00Z' WHERE id=?1",
+            params![message.id],
+        )
+        .unwrap();
+        let sent = detail(&db, &FakeNotes::default(), &trail).unwrap();
+        assert_eq!(sent.summary.state, TrailState::InProgress, "a sent message waits on nobody");
+        assert_eq!(sent.events[0].detail.as_deref(), Some("sent"));
+        assert_eq!(sent.events[0].tone, TrailTone::Success);
+        assert_eq!(sent.events[0].at, "2026-11-12T01:00:00Z");
+        assert_eq!(sent.events[0].url.as_deref(), Some("https://acme.slack.com/archives/D1/p1"));
+        assert!(sent.open.is_empty());
+        db.execute("UPDATE outgoing_messages SET state='failed', last_error='channel_not_found' WHERE id=?1", params![message.id]).unwrap();
+        let failed = super::detail(&db, &FakeNotes::default(), &trail).unwrap();
+        assert_eq!(failed.summary.state, TrailState::NeedsYou);
+        assert_eq!(failed.summary.needs_you_reason.as_deref(), Some("A message to Slack · @mika failed to send"));
+        assert_eq!(failed.events[0].detail.as_deref(), Some("send failed: channel_not_found"));
+        assert_eq!(failed.events[0].tone, TrailTone::Danger);
+        assert!(failed.events[0].url.is_none());
+        assert_eq!(failed.open[0].label, "Retry or discard the message to Slack · @mika");
     }
 
     #[test]

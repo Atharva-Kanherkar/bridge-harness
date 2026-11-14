@@ -35,7 +35,7 @@
       "type": "object"
     },
     "OutgoingDestination": {
-      "description": "Where a draft is addressed. Names are kept as the agent wrote them (`#dev`, `@nina`); resolving them to ids belongs to the slice that sends.\n\n`rename_all` renames the variant tags only, so multi-word fields carry an explicit rename to stay camelCase on the wire.",
+      "description": "Where a draft is addressed. Names are kept as the agent wrote them (`#dev`, `@nina`); they are resolved to ids before offering send approval.\n\n`rename_all` renames the variant tags only, so multi-word fields carry an explicit rename to stay camelCase on the wire.",
       "oneOf": [
         {
           "properties": {
@@ -243,15 +243,33 @@
           "description": "The chip text: `Slack · #dev · thread`, `GitHub · owner/repo#123`.",
           "type": "string"
         },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "lint": {
           "items": {
             "$ref": "#/definitions/OutgoingLintFinding"
           },
           "type": "array"
         },
+        "permalink": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "reason": {
           "description": "Why the person wants this message, in the agent's words.",
           "type": "string"
+        },
+        "remoteRef": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "rendered": {
           "description": "The body as the destination shows it.",
@@ -262,6 +280,12 @@
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "sentAt": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sessionId": {
           "type": "string"
@@ -302,7 +326,10 @@
       "enum": [
         "draft",
         "copied",
-        "discarded"
+        "discarded",
+        "sending",
+        "sent",
+        "failed"
       ],
       "type": "string"
     }

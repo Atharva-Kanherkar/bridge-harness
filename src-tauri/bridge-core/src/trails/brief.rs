@@ -136,7 +136,14 @@ pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude:
         if message.state == OutgoingState::Discarded {
             continue;
         }
-        let state = if message.state == OutgoingState::Draft { "drafted, not sent yet" } else { "copied to send" };
+        let state = match message.state {
+            OutgoingState::Draft => "drafted, not sent yet",
+            OutgoingState::Copied => "copied to send",
+            OutgoingState::Sending => "being sent",
+            OutgoingState::Sent => "sent",
+            OutgoingState::Failed => "failed to send",
+            OutgoingState::Discarded => "discarded",
+        };
         let text = format!("{}\n\n{}", header(&format!("message to {} ({state})", message.label)), message.body.trim());
         push(format!("message:{}", member.reference), format!("Message to {}", message.label), text);
     }

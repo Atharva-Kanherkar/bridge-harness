@@ -238,6 +238,7 @@ fn launch(
                     "permittedWords": permitted,
                     "forbiddenWords": crate::briefing_policy::BriefingRuntimePolicy::action_forbidden_words(),
                 })),
+                "exactAction": policy.exact_action_config(),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
                 // No tool definitions and no coding preset. Present only for a

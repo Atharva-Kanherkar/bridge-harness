@@ -4,20 +4,21 @@
  * The agent's `outgoing_draft` call becomes this card. It shows where the
  * message is going, the text as the destination will show it, and what
  * Bridge's style rules found or already fixed. The person edits, fixes,
- * copies or discards it here. Nothing is sent from this card yet: Copy is
- * the way out, and a later slice adds Send behind an exact-text approval.
+ * copies, discards or sends it here. Sending requires approval of the exact
+ * destination, text and pinned images, using a one-use revision-bound token.
  *
  * Still being written: a quiet placeholder. Refused by the core: one muted
  * line that opens to the reason, which the agent also received.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, AtSign, Check, ChevronRight, ClipboardCopy, Hash, ImageIcon, MessageSquareText, Pencil, Trash2, Wand2, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertCircle, AtSign, Check, ChevronRight, ClipboardCopy, ExternalLink, Hash, ImageIcon, MessageSquareText, Pencil, Send, Trash2, Wand2, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { ConversationItem } from "../conversation";
 import type { OutgoingAttachment, OutgoingDestination, OutgoingLintFinding, OutgoingMessage } from "../protocol/generated/protocol";
+import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
 import { Markdown } from "./Markdown";
 import { outgoingCallState, outgoingDraftId, outgoingRefusal } from "../transcript/outgoing";
 
@@ -88,11 +89,12 @@ async function pngBlob(dataUrl: string, mime: string): Promise<Blob> {
   return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("could not copy the image")), "image/png"));
 }
 
-function Attachment({ draftId, index, attachment, readOnly, busy, onRemove, onError }: {
+function Attachment({ draftId, index, attachment, readOnly, canRemove, busy, onRemove, onError }: {
   draftId: string;
   index: number;
   attachment: OutgoingAttachment;
   readOnly: boolean;
+  canRemove: boolean;
   busy: boolean;
   onRemove: () => void;
   onError: (message: string) => void;
@@ -134,10 +136,10 @@ function Attachment({ draftId, index, attachment, readOnly, busy, onRemove, onEr
             className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
             {copied ? <Check size={12} aria-hidden="true" /> : <ClipboardCopy size={12} aria-hidden="true" />}
           </button>
-          <button type="button" aria-label={`Remove image ${attachment.name}`} disabled={busy} onClick={onRemove}
+          {canRemove && <button type="button" aria-label={`Remove image ${attachment.name}`} disabled={busy} onClick={onRemove}
             className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
             <X size={12} aria-hidden="true" />
-          </button>
+          </button>}
         </>}
       </div>
     </li>
@@ -151,6 +153,9 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
   onChange: (next: OutgoingMessage) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [approval, setApproval] = useState<{ effect: string; token: string; id: string; revision: number } | null>(null);
+  const actionInFlight = useRef(false);
+  const currentApproval = approval?.id === draft.id && approval.revision === draft.revision ? approval : null;
   // The revision the editor opened at. A refresh while editing must not
   // move it, or a save would overwrite the change that caused the refresh.
   const [editBase, setEditBase] = useState(draft.revision);
@@ -160,6 +165,8 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
   const [error, setError] = useState<string | null>(null);
 
   const run = useCallback(async (action: () => Promise<OutgoingMessage>) => {
+    if (actionInFlight.current) return false;
+    actionInFlight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -169,6 +176,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
       setError(cause instanceof Error ? cause.message : String(cause));
       return false;
     } finally {
+      actionInFlight.current = false;
       setBusy(false);
     }
   }, [onChange]);
@@ -197,15 +205,31 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
     return result.item;
   });
 
+  const immutable = draft.state === "sending" || draft.state === "sent";
+  const send = (decision?: boolean) => run(async () => {
+    const pending = decision === undefined ? null : currentApproval;
+    const result = await bridgeApi.sendOutgoing(pending?.id ?? draft.id, pending?.revision ?? draft.revision, decision, pending?.token);
+    if (result.kind === "approvalRequired") {
+      setApproval({ effect: result.effect, token: result.approvalToken, id: result.item.id, revision: result.item.revision });
+      return result.item;
+    }
+    setApproval(null);
+    if (result.kind === "refused") {
+      if (decision === false) return draft;
+      throw new Error(result.detail);
+    }
+    return result.item;
+  });
+
   return (
     <section
       data-outgoing-state={draft.state}
       aria-label={`Drafted message for ${draft.label}`}
       className="relative overflow-hidden rounded-2xl border border-border-card bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_12px_32px_-16px_rgb(0_0_0/0.18)]"
     >
-      <div className="px-4 pb-3.5 pt-3.5 sm:px-5">
+      <div hidden={!!currentApproval && !readOnly} className="px-4 pb-3.5 pt-3.5 sm:px-5">
         <p className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-          <span>Draft message</span>
+          <span>{draft.state === "sent" ? "Message sent" : draft.state === "sending" ? "Sending message…" : draft.state === "failed" ? "Message failed" : "Draft message"}</span>
           {draft.state === "copied" && <>
             <span aria-hidden="true" className="text-muted-foreground/50">·</span>
             <span className="normal-case tracking-normal">copied</span>
@@ -250,6 +274,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
                 index={index}
                 attachment={attachment}
                 readOnly={readOnly}
+                canRemove={!immutable}
                 busy={busy}
                 onError={setError}
                 onRemove={() => void run(async () => (await bridgeApi.updateOutgoing(
@@ -267,15 +292,20 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           </ul>
         )}
 
+        {draft.lastError && <p role="alert" className="mt-2.5 text-[12px] text-destructive">{draft.lastError}</p>}
+        {draft.state === "sent" && draft.permalink && <a href={draft.permalink} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-[12px] text-foreground underline underline-offset-2"><ExternalLink size={12} aria-hidden="true" />View sent message</a>}
         {error && <p role="alert" className="mt-2.5 text-[12px] text-destructive">{error}</p>}
 
-        {!readOnly && (
+        {!readOnly && !immutable && (
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             {editing ? <>
               <Button size="sm" onClick={() => void save()} disabled={busy || !text.trim()}>Save</Button>
               <Button size="sm" variant="ghost" onClick={() => { setEditing(false); setText(draft.body); setError(null); }} disabled={busy}>Cancel</Button>
             </> : <>
-              <Button size="sm" onClick={() => void copy()} disabled={busy}>
+              {draft.destination.kind !== "clipboard" && <Button size="sm" onClick={() => void send()} disabled={busy}>
+                <Send aria-hidden="true" />{draft.state === "failed" ? "Retry" : "Send"}
+              </Button>}
+              <Button size="sm" variant="outline" onClick={() => void copy()} disabled={busy}>
                 {copied ? <Check aria-hidden="true" /> : <ClipboardCopy aria-hidden="true" />}
                 {copied ? "Copied" : "Copy"}
               </Button>
@@ -294,6 +324,7 @@ export function OutgoingDraft({ draft, readOnly = false, onChange }: {
           </div>
         )}
       </div>
+      {currentApproval && !readOnly && <ConnectorApprovalSheet inFlow effect={currentApproval.effect} busy={busy} onApprove={() => void send(true)} onDeny={() => void send(false)} />}
     </section>
   );
 }

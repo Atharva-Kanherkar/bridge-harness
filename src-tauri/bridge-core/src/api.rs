@@ -566,6 +566,7 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
 
 /// A chat's drafted messages, oldest first.
 pub fn list_outgoing(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ListOutgoingResult, BridgeError> {
+    crate::outgoing::send::recover_interrupted(core, session_id)?;
     let db = core.db.lock().unwrap();
     Ok(wire::ListOutgoingResult { items: crate::outgoing::list(&db, session_id)? })
 }
@@ -589,6 +590,14 @@ pub fn update_outgoing(
     };
     outgoing_changed(core, &item);
     Ok(wire::UpdateOutgoingResult { item })
+}
+
+/// First call describes the exact effect; the UI returns its one-use token
+/// only after the person approves. Full access never bypasses this gate.
+pub fn send_outgoing(core: &Arc<BridgeCore>, id: &str, revision: u32, approved: Option<bool>, approval_token: Option<&str>) -> Result<wire::SendOutgoingResult, BridgeError> {
+    crate::outgoing::send::run(core, id, revision, approved, approval_token,
+        |item| crate::outgoing::send::resolve_target(core, item),
+        |item, target| crate::outgoing::send::execute_target(core, item, target))
 }
 
 /// The text to put on the clipboard; the client writes it there.

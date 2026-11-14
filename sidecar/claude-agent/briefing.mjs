@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 // Briefing authority, enforced at the SDK boundary.
 //
 // Bridge's Rust side decides *what* a briefing run may touch (see
@@ -86,6 +87,7 @@ export function makeBriefingGate({
   allowedTools = [],
   readScopeServers = [],
   actionScope = null,
+  exactAction = null,
   maxArgumentBytes = 8192,
 } = {}) {
   // A Set, so matching is exact by construction rather than by a comparison
@@ -99,8 +101,17 @@ export function makeBriefingGate({
         forbiddenWords: new Set(actionScope.forbiddenWords ?? []),
       }
     : null;
+  let consumed = false;
   return async function canUseTool(toolName, input, options = {}) {
     const toolUseID = options?.toolUseID;
+    if (exactAction) {
+      if (consumed || toolName !== exactAction.tool || !isDeepStrictEqual(input, exactAction.arguments)) {
+        return deny("this call does not match the one-use approved destination and payload", toolUseID);
+      }
+      if (Buffer.byteLength(JSON.stringify(input), "utf8") > maxArgumentBytes) return deny("approved arguments exceed the limit", toolUseID);
+      consumed = true;
+      return allow(toolUseID);
+    }
     if (
       !reviewed.has(toolName) &&
       !isScopedRead(toolName, scoped) &&
@@ -200,6 +211,7 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
       allowedTools: briefing?.allowedTools ?? [],
       readScopeServers: briefing?.readScopeServers ?? [],
       actionScope: briefing?.actionScope ?? null,
+      exactAction: briefing?.exactAction ?? null,
       maxArgumentBytes: briefing?.maxArgumentBytes,
     }),
     // Only the reviewed connectors, and only as declared here.

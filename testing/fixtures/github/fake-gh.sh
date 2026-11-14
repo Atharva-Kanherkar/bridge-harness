@@ -83,6 +83,10 @@ if [ "$1 $2" = "run rerun" ]; then
     fi
     exit 0
 fi
+if [ "$1" = "api" ] && [ "$2" = "--hostname" ] && [ "$4" = "--method" ]; then
+    if [ -f "$root/comment-response.json" ]; then cat "$root/comment-response.json"; fi
+    exit 0
+fi
 if [ "$1" = "api" ] && [ "$2" = "--method" ]; then exit 0; fi
 if [ "$1" = "api" ]; then
     case "$4" in repos/*/pulls/*/files*) cat "$fixtures/pr-files.json"; exit 0 ;; esac

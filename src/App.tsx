@@ -3678,6 +3678,7 @@ function AppContent() {
         onFocusSession={openSession}
         onStopWorker={stopWorker}
         onNewChat={workspaceId => void startChatInWorkspace(workspaceId)}
+        onOpenWork={(sessionId, number) => { openSession(sessionId); showWorkInDock(number); }}
         workflowRuns={workflowRuns}
         workflowNames={workflowNames}
         onOpenWorkflowRun={openWorkflowRun}

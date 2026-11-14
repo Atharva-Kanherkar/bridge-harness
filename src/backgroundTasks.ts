@@ -86,9 +86,10 @@ export function backgroundOutcome(item: ConversationItem): BackgroundOutcome | u
 
 // ── the store ───────────────────────────────────────────────────────────────
 
-/// What the open chat's transcript reports about its background work. Only the
-/// main chat publishes, so one slot is enough; `scope` is its session id, and a
-/// reader asking for any other scope sees nothing.
+/// What a chat's transcript reports about its background work. A store holds
+/// one slot: the global one belongs to the open chat, and each Mission Control
+/// tile keeps its own. `scope` is the session id, and a reader asking for any
+/// other scope sees nothing.
 export type BackgroundWork = {
   scope: string;
   items: ConversationItem[];

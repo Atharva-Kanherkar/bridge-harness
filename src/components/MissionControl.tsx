@@ -17,6 +17,10 @@ import { displayOrder, moveInOrder, moveToEnd, moveToFront, planBoard, readLayou
 import { isChatDrag, readChatDrag, SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
 import { askText, displayTitle, latestAsk, projectLabel } from "./missionControl/identity";
 import { PLACEHOLDER_LABELS } from "./sidebarChats";
+import { createBackgroundWorkStore } from "../backgroundTasks";
+import { fixPrompt } from "../workSummary";
+import { useChatPullRequests } from "./ChatPullRequests";
+import { ChatWorkShelf } from "./WorkShelf";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -27,6 +31,8 @@ export type MissionControlProps = {
   onFocusSession: (sessionId: string) => void;
   onStopWorker?: (childSessionId: string) => Promise<void>;
   onNewChat?: (workspaceId: string) => void;
+  /** Open a chat on its Work pane, on this PR when the shelf was about exactly one. */
+  onOpenWork?: (sessionId: string, number?: number) => void;
   /** Workflow runs, for the strip of active ones; opening one goes to its run view. */
   workflowRuns?: WorkflowRun[];
   workflowNames?: Map<string, string>;
@@ -80,6 +86,7 @@ type TileActions = {
   now: number;
   onFocusSession: (sessionId: string) => void;
   onStopWorker?: (childSessionId: string) => Promise<void>;
+  onOpenWork?: (sessionId: string, number?: number) => void;
   onForest: (sessionId: string, forest: SessionForestSnapshot) => void;
   toggleExpanded: (id: string) => void;
   dropChat: (id: string, fromSidebar: boolean, target?: string, place?: DropPlace) => void;
@@ -135,6 +142,10 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
   // what you just sent shows at once, and gives way the moment the stream records any ask.
   const [sent, setSent] = useState<{ text: string; over: string | null } | null>(null);
   const ask = sent && sent.over === recordedAsk ? sent.text : recordedAsk;
+  // the tile's own background-work slot: the global store belongs to the open
+  // chat, and two tiles sharing one slot would show each other's tasks.
+  const [work] = useState(createBackgroundWorkStore);
+  const prs = useChatPullRequests(id, session?.workspaceId ?? undefined);
   if (!session) return null;
   const status = actions.statusOf(id) ?? tileStatus(session);
   const ink = TONE_INK[status.tone];
@@ -247,12 +258,16 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
         stopping={stopping}
         preview={false}
         density="compact"
+        onBackgroundWork={work.publish}
       />
     </div>
     <div className="shrink-0 border-t border-border">
       {error && <p role="alert" className="px-3 pt-2 text-[11px] text-destructive">{error}</p>}
       <ComposerPill layout="inline" value={draft} onChange={setDraft} onSubmit={() => { void submit(); }} onKeyDown={onKeyDown}
-        placeholder={working ? "Steer this chat…" : "Reply…"} working={working} activeAction="steer" disabled={sending} onStop={() => { void interrupt(); }} stopping={stopping} />
+        placeholder={working ? "Steer this chat…" : "Reply…"} working={working} activeAction="steer" disabled={sending} onStop={() => { void interrupt(); }} stopping={stopping}
+        header={<ChatWorkShelf sessionId={id} store={work} harness={session.harness} prs={prs.prs}
+          onOpen={number => (actions.onOpenWork ? actions.onOpenWork(id, number) : actions.onFocusSession(id))}
+          onFix={pr => setDraft(fixPrompt(pr))} />} />
     </div>
     {/* where the dragged chat will land; nothing splits or resizes. */}
     {drop && <div aria-hidden="true" data-drop-place={drop} className={cn("pointer-events-none absolute inset-y-1 z-10 w-1 rounded-full bg-ring", drop === "before" ? "left-0.5" : "right-0.5")} />}
@@ -328,7 +343,7 @@ function QueueCard({ id, actions, strip, onPromote }: QueueCardProps) {
   </button>;
 }
 
-export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat, workflowRuns = [], workflowNames, onOpenWorkflowRun }: MissionControlProps) {
+export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat, onOpenWork, workflowRuns = [], workflowNames, onOpenWorkflowRun }: MissionControlProps) {
   const [forests, setForests] = useState<Record<string, SessionForestSnapshot>>({});
   const [stored, setStored] = useState(() => readLayout());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -452,7 +467,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   }, [jumpTarget]);
 
   const actions: TileActions = {
-    sessions: sessionMap, workspaces: workspaceMap, events, statusOf, projectOf, highlightedProject, activeSessionId, expandedId, dragging, now, onFocusSession, onStopWorker, onForest,
+    sessions: sessionMap, workspaces: workspaceMap, events, statusOf, projectOf, highlightedProject, activeSessionId, expandedId, dragging, now, onFocusSession, onStopWorker, onOpenWork, onForest,
     toggleExpanded: id => update(prev => ({ expandedId: prev.expandedId === id ? null : id })),
     dropChat, setDragging, move, canMove: (id, step) => !expandedId && !!neighbour(id, step), pinnedSessionIds, drafts,
     setDraft: (id, draft) => setDrafts(prev => ({ ...prev, [id]: draft })),

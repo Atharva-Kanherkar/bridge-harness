@@ -54,7 +54,7 @@ changes the chat's harness, model, access, worktree or scope.
 
 ## Protocol
 
-Protocol 1.32: `trails/list_trails`, `read_trail` (`refresh` re-reads member
+Protocol 1.33: `trails/list_trails`, `read_trail` (`refresh` re-reads member
 PRs from GitHub), `create_trail`, `update_trail`, `add_trail_member`,
 `remove_trail_member`, `preview_trail_brief`, `carry_trail_brief`, and the
 `trails/changed` notification.
