@@ -564,6 +564,9 @@ pub(crate) fn recover_interrupted(
             if item.state == OutgoingState::Sending
                 && !core.connector_poller.action_in_progress(&key)
             {
+                // A crash can land between claiming the row and consuming
+                // its token. Recovery must revoke that leftover approval.
+                invalidate(&db, &item.id)?;
                 let item = finish(&db, &item.id, item.revision, None,
                     Some("Sending was interrupted. Check the destination before retrying; the message may already have been posted."),
                     &chrono::Utc::now().to_rfc3339())?;
@@ -953,6 +956,12 @@ mod orchestration_tests {
             .unwrap();
         assert_eq!(active.state, OutgoingState::Sending);
         core.connector_poller.finish_action(&key);
+        // Simulate a crash after the state claim but before token consumption.
+        core.db.lock().unwrap().execute(
+            "INSERT INTO outgoing_send_approvals(token,outgoing_id,revision,digest,target,created_at) VALUES(?1,?2,1,?3,?4,?5)",
+            params![token, item.id, digest(&item, &target(&item).unwrap()).unwrap(), serde_json::to_string(&target(&item).unwrap()).unwrap(), chrono::Utc::now().to_rfc3339()],
+        ).unwrap();
+
         let recovered = crate::api::list_outgoing(&core, "s")
             .unwrap()
             .items
