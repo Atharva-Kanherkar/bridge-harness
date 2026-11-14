@@ -138,6 +138,8 @@ pub struct PullFacts {
     pub attached_at: String,
     pub fetched_at: Option<String>,
     pub view: Option<SessionPrView>,
+    /// The newest chat holding this pull request.
+    pub session_id: Option<String>,
 }
 
 pub fn pull_facts(db: &Connection, url: &str) -> Result<Option<PullFacts>, BridgeError> {
@@ -151,7 +153,11 @@ pub fn pull_facts(db: &Connection, url: &str) -> Result<Option<PullFacts>, Bridg
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
     let view = snapshot.and_then(|snapshot| serde_json::from_str::<SessionPrView>(&snapshot).ok());
+    let session_id: Option<String> = db
+        .query_row("SELECT session_id FROM session_pull_requests WHERE url=?1 ORDER BY created_at DESC LIMIT 1", params![url], |row| row.get(0))
+        .optional()?;
     Ok(Some(PullFacts {
+        session_id,
         url: url.to_owned(),
         number: number as u64,
         title: view.as_ref().map(|view| view.title.clone()).unwrap_or(title),
@@ -241,6 +247,7 @@ fn event(
         excerpt: None,
         harness: None,
         url: None,
+        session_id: None,
         tone,
         member: reference(member),
         added_by: member.added_by,
@@ -269,6 +276,7 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
                 *harnesses.entry(chat.harness.clone()).or_default() += 1;
                 let mut row = event(member, "", TrailEventKind::Chat, chat.at.as_deref().unwrap_or(&member.added_at), chat.title.clone(), TrailTone::Plain);
                 row.harness = Some(chat.harness.clone());
+                row.session_id = Some(chat.id.clone());
                 row.detail = Some(match &chat.model {
                     Some(model) if !model.is_empty() => format!("{} · {model}", harness_name(&chat.harness)),
                     _ => harness_name(&chat.harness),
@@ -319,6 +327,7 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
                     if merged { TrailTone::Success } else { TrailTone::Plain },
                 );
                 row.url = Some(pull.url.clone());
+                row.session_id = pull.session_id.clone();
                 row.detail = Some(match &pull.view {
                     Some(view) => match view.state {
                         PullRequestState::Merged => "merged".into(),
@@ -420,6 +429,7 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
                     .into(),
                 );
                 row.excerpt = Some(excerpt(&message.body));
+                row.session_id = Some(message.session_id.clone());
                 events.push(row);
                 if draft {
                     open.push(TrailOpenItem {
@@ -642,6 +652,8 @@ pub(crate) mod tests {
             "same instant: the note sorts before the chat; mixed offsets compare as instants"
         );
         assert_eq!(detail.events[1].detail.as_deref(), Some("Claude"));
+        assert_eq!(detail.events[1].session_id.as_deref(), Some("s1"));
+        assert_eq!(detail.events[3].session_id.as_deref(), Some("s2"), "a PR opens the chat holding it");
         assert_eq!(detail.events[4].detail.as_deref(), Some("1 of 1 passing"));
         let again = super::detail(&db, &notes, &trail).unwrap();
         assert_eq!(again.events, detail.events);
@@ -736,6 +748,7 @@ pub(crate) mod tests {
         assert_eq!(detail.summary.state, TrailState::NeedsYou);
         assert_eq!(detail.events[0].excerpt.as_deref(), Some("Could you review #12 today?"));
         assert_eq!(detail.events[0].tone, TrailTone::Warning);
+        assert_eq!(detail.events[0].session_id.as_deref(), Some("s1"), "a message opens the chat that drafted it");
         assert_eq!(detail.open[0].kind, TrailOpenKind::UnsentDraft);
         let _ = CheckRollup::default();
     }

@@ -173,6 +173,10 @@ pub struct TrailEvent {
     pub harness: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The chat this row opens: the chat itself, the chat that drafted a
+    /// message, or the newest chat holding a pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub tone: TrailTone,
     pub member: TrailMemberRef,
     pub added_by: TrailAddedBy,
@@ -397,6 +401,7 @@ mod tests {
             excerpt: None,
             harness: Some("codex".into()),
             url: None,
+            session_id: None,
             tone: TrailTone::Danger,
             member: TrailMemberRef { kind: TrailMemberKind::Session, reference: "s".into() },
             added_by: TrailAddedBy::Auto,

@@ -99,6 +99,13 @@
         "member": {
           "$ref": "#/definitions/TrailMemberRef"
         },
+        "sessionId": {
+          "description": "The chat this row opens: the chat itself, the chat that drafted a message, or the newest chat holding a pull request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "title": {
           "type": "string"
         },

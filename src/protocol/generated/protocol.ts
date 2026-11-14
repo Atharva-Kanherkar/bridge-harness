@@ -3086,6 +3086,7 @@ export interface TrailEvent {
   id: string;
   kind: TrailEventKind;
   member: TrailMemberRef;
+  sessionId?: string | null;
   title: string;
   tone: TrailTone;
   url?: string | null;
