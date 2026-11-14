@@ -20,9 +20,31 @@ A trail is a read model over records Bridge already keeps. It stores only:
 `PRIMARY KEY(kind, ref)` keeps every record on at most one trail. Removing a
 member or archiving a trail changes no chat, page, PR link or draft.
 
-Everything a page shows (timeline, state, stage, open items) is derived on
-each read in `trails::timeline`. Notes live in their own database, so callers
-read them into a `NoteSnapshot` before taking the core database lock.
+Everything a page shows (timeline, state, stage, open items) is derived in
+`trails::timeline`. Notes live in their own database, so callers read them
+into a `NoteSnapshot` before taking the core database lock, and read only what
+they need: a trail's member pages (`NotesService::pages`), or the pages linked
+to chats on open trails for the sweep (`NotesService::linked_to`).
+
+## Reading fast without going stale
+
+`trails::cache` keeps lists, trail pages and brief previews under a stamp of
+both databases' writes: `total_changes` and `PRAGMA data_version` for the core
+connection and for the notes connection. Any committed write, through either
+store or any other connection to the same file, moves the stamp, and reading
+it costs nothing. The stamp is taken before a read touches anything and the
+result is stored under it, so a write during the read only means the next read
+derives again. A read with a matching stamp is a lookup. `read_trail` with
+`refresh` never uses the cache. The sweep a list or read runs first is skipped
+the same way when nothing was written since the last one began; the
+maintenance loop always sweeps.
+
+A chat's brief item (its restoration projection) is kept by session, active
+head entry and window: entries never change and their ids are UUIDs, so a head
+names one history. At most 256 are kept.
+
+`trails::bench` (release, ignored) times the public calls warm and cold on a
+seeded store.
 
 ## Issues
 
