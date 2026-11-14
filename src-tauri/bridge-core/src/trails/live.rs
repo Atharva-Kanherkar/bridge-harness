@@ -72,6 +72,15 @@ pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberA
     added
 }
 
+/// Read from GitHub what the trails still lack (issue snapshots, PRs'
+/// closing references), outside the database lock; if anything landed, the
+/// links may bring new members, so sweep again and tell clients.
+pub fn read_github(core: &Arc<BridgeCore>) {
+    if super::issues::read_missing(core) {
+        sweep_and_publish(core, true);
+    }
+}
+
 pub fn publish_added(core: &Arc<BridgeCore>, added: &[TrailMemberAdded]) {
     let mut by_trail: BTreeMap<&str, Vec<TrailMemberAdded>> = BTreeMap::new();
     for item in added {
@@ -89,6 +98,7 @@ pub fn start_trail_maintenance(core: Arc<BridgeCore>) {
         .name("bridge-trails".into())
         .spawn(move || {
             sweep_and_publish(&core, false);
+            read_github(&core);
             loop {
                 let first = match events.blocking_recv() {
                     Ok(event) => relevance(&event),
@@ -109,6 +119,7 @@ pub fn start_trail_maintenance(core: Arc<BridgeCore>) {
                     }
                 }
                 sweep_and_publish(&core, strongest == Relevance::State);
+                read_github(&core);
             }
         })
         .ok();

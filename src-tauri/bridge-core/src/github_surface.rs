@@ -46,6 +46,13 @@ const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid
 const PR_HEAD_FIELDS: &str = "headRefOid";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
+/// What a trail keeps of an issue: the detail, how and when it closed, and
+/// the pull requests GitHub says closed it.
+const ISSUE_READ_FIELDS: &str =
+    "number,title,body,state,stateReason,author,labels,comments,createdAt,updatedAt,closedAt,url,closedByPullRequestsReferences";
+/// Asked on its own, never added to `PR_BRIEF_FIELDS`: `gh` refuses an unknown
+/// `--json` field, and an older `gh` must not lose every PR card over a trail.
+const PR_CLOSING_FIELDS: &str = "closingIssuesReferences";
 const REPOSITORY_FIELDS: &str = "nameWithOwner,description,visibility,defaultBranchRef,primaryLanguage,url,issues,pullRequests";
 const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:100){nodes{id,databaseId,author{login},body,createdAt,url,replyTo{id}}}}}}}}";
 
@@ -237,6 +244,17 @@ pub struct IssueDetail {
     pub summary: IssueSummary,
     pub body: String,
     pub comments: Vec<GithubComment>,
+}
+
+/// One issue as [`GithubSurface::read_issue`] returns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueRead {
+    pub detail: IssueDetail,
+    /// `COMPLETED`, `NOT_PLANNED`, `REOPENED`; `None` while it never closed.
+    pub state_reason: Option<String>,
+    pub closed_at: Option<String>,
+    /// URLs of the pull requests that closed (or will close) it.
+    pub closed_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1068,6 +1086,47 @@ impl GithubSurface {
         let issue = IssueDetail::try_from(parse_json::<RawIssueDetail>("issue detail", &bytes)?)?;
         self.store(key, CachedResource::Issue(issue.clone()));
         Ok(issue)
+    }
+
+    /// One issue by repository, from any directory: a trail's issue need not
+    /// belong to an open project. Not cached; callers decide when to re-read.
+    pub fn read_issue(&self, cwd: &Path, repository: &GithubRepository, number: u64) -> Result<IssueRead, GithubSurfaceError> {
+        self.require_binary()?;
+        let bytes = self.run_gh(
+            cwd,
+            "issue read",
+            &[
+                "issue".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repository.selector(),
+                "--json".into(),
+                ISSUE_READ_FIELDS.into(),
+            ],
+            false,
+        )?;
+        parse_issue_read(&bytes)
+    }
+
+    /// The issues a pull request closes when it merges, as URLs.
+    pub fn pr_closing_issues(&self, cwd: &Path, repository: &GithubRepository, number: u64) -> Result<Vec<String>, GithubSurfaceError> {
+        self.require_binary()?;
+        let bytes = self.run_gh(
+            cwd,
+            "pr closing issues",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repository.selector(),
+                "--json".into(),
+                PR_CLOSING_FIELDS.into(),
+            ],
+            false,
+        )?;
+        Ok(urls(parse_json::<RawClosingReferences>("pr closing issues", &bytes)?.closing_issues_references))
     }
 
     pub fn repository_overview(
@@ -1983,6 +2042,48 @@ struct RawIssueDetail {
     created_at: String,
     updated_at: String,
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawIssueRead {
+    #[serde(flatten)]
+    detail: RawIssueDetail,
+    #[serde(default)]
+    state_reason: Option<String>,
+    #[serde(default)]
+    closed_at: Option<String>,
+    #[serde(default)]
+    closed_by_pull_requests_references: Vec<RawUrlRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawUrlRef {
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawClosingReferences {
+    #[serde(default)]
+    closing_issues_references: Vec<RawUrlRef>,
+}
+
+fn urls(refs: Vec<RawUrlRef>) -> Vec<String> {
+    refs.into_iter().map(|reference| reference.url).filter(|url| !url.is_empty()).collect()
+}
+
+pub(crate) fn parse_issue_read(bytes: &[u8]) -> Result<IssueRead, GithubSurfaceError> {
+    let raw: RawIssueRead = parse_json("issue read", bytes)?;
+    let state_reason = raw.state_reason.filter(|reason| !reason.is_empty());
+    let closed_at = raw.closed_at.filter(|at| !at.is_empty() && !at.starts_with("0001-"));
+    Ok(IssueRead {
+        detail: IssueDetail::try_from(raw.detail)?,
+        state_reason,
+        closed_at,
+        closed_by: urls(raw.closed_by_pull_requests_references),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -4103,5 +4204,29 @@ mod tests {
 
         open(&surface, "cold open (empty caches)");
         open(&surface, "warm open (within the TTL)");
+    }
+    #[test]
+    fn the_pr_brief_field_list_is_unchanged() {
+        // Every chat PR card rides this call; `gh` refuses unknown fields.
+        assert_eq!(PR_BRIEF_FIELDS, "number,title,state,isDraft,headRefName,headRefOid,url,mergeable");
+        assert!(!PR_BRIEF_FIELDS.contains("closingIssuesReferences"));
+    }
+
+    #[test]
+    fn issue_reads_parse_open_and_closed_issues() {
+        let open = parse_issue_read(br#"{"number":988,"title":"One sidebar","body":"","state":"OPEN","stateReason":"","author":{"login":"a"},
+            "labels":[],"comments":[],"createdAt":"2026-11-14T07:27:47Z","updatedAt":"2026-11-14T07:27:47Z","closedAt":null,
+            "url":"https://github.com/o/r/issues/988","closedByPullRequestsReferences":[]}"#).unwrap();
+        assert_eq!(open.detail.summary.state, IssueState::Open);
+        assert_eq!((open.state_reason, open.closed_at, open.closed_by.len()), (None, None, 0));
+        let closed = parse_issue_read(br#"{"number":987,"title":"Trails","body":"b","state":"CLOSED","stateReason":"COMPLETED","author":null,
+            "labels":[{"name":"ux","color":"fff","description":""}],"comments":[{"id":"c1","author":{"login":"m"},"body":"lgtm","createdAt":"2026-11-14T08:00:00Z","url":"u"}],
+            "createdAt":"2026-11-13T00:00:00Z","updatedAt":"2026-11-14T11:59:10Z","closedAt":"2026-11-14T11:59:10Z","url":"https://github.com/o/r/issues/987",
+            "closedByPullRequestsReferences":[{"id":"x","number":993,"url":"https://github.com/o/r/pull/993"}]}"#).unwrap();
+        assert_eq!(closed.state_reason.as_deref(), Some("COMPLETED"));
+        assert_eq!(closed.closed_at.as_deref(), Some("2026-11-14T11:59:10Z"));
+        assert_eq!(closed.closed_by, vec!["https://github.com/o/r/pull/993".to_owned()]);
+        assert_eq!(closed.detail.comments.len(), 1);
+        assert_eq!(closed.detail.summary.labels[0].name, "ux");
     }
 }

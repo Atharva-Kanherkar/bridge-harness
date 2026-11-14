@@ -3,11 +3,13 @@
 //! A trail joins records Bridge already keeps (chats, notes pages, pull
 //! request links, drafted messages) without copying them. `store` owns the
 //! rows, `timeline` derives what a page shows, `auto` follows hard links,
+//! `issues` keeps what GitHub last said about issue members,
 //! `brief` carries the trail into a new chat, and `live` runs the sweep when
 //! the records move.
 
 pub mod auto;
 pub mod brief;
+pub mod issues;
 #[cfg(test)]
 mod eval;
 pub mod live;
