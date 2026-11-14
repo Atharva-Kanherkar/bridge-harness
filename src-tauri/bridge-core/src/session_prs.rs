@@ -442,6 +442,13 @@ fn record_snapshot(
     Ok(())
 }
 
+/// Trails look links up by URL (timeline, sweep, poller arming), which the
+/// per-chat key cannot serve.
+pub(crate) fn install_url_index(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch("CREATE INDEX IF NOT EXISTS idx_session_pull_requests_url ON session_pull_requests(url);")?;
+    Ok(())
+}
+
 /// What the poller just read for one pull request, written to every chat row
 /// holding it, so screens that read stored snapshots (the Trails list, the
 /// chat list) see the poll without a live read of their own. Returns whether

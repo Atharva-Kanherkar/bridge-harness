@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 78;
+const LATEST_SCHEMA_VERSION: i64 = 79;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -779,6 +779,8 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // GitHub issues on trails: the last read of each issue, and the
             // hard links between issues and the pull requests that close them.
             78 => crate::trails::issues::install_store(&transaction)?,
+            // Trails look pull request links up by URL on every read.
+            79 => crate::session_prs::install_url_index(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -6957,6 +6959,26 @@ mod tests {
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
         // Later migrations may follow; this one must have run.
         assert!(current_schema_version(&db).unwrap() >= 73);
+    }
+
+    #[test]
+    fn migration_79_indexes_pull_request_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        for query in [
+            "SELECT MIN(created_at) FROM session_pull_requests WHERE url='u'",
+            "SELECT number FROM session_pull_requests WHERE url='u' ORDER BY snapshot IS NULL, fetched_at DESC LIMIT 1",
+        ] {
+            let plan: Vec<String> = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap()
+                .query_map([], |row| row.get(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan.iter().any(|step| step.contains("idx_session_pull_requests_url")), "{query}: {plan:?}");
+        }
+        assert!(current_schema_version(&db).unwrap() >= 79);
     }
 
     #[test]
