@@ -58,11 +58,12 @@ pub(crate) fn cases() -> Vec<Case> {
         },
         Case { ask: "why did we drop the keyboard shortcut for archiving?", all: &[&["arc"]] },
         Case { ask: "where does the archive button go in a sidebar row?", all: &[&["before"], &["harness"]] },
+        Case { ask: "what does the github issue ask for, and for how long?", all: &[&["search", "searchable", "find"], &["90 days", "90-day", "ninety days", "3 months", "three months"]] },
     ]
 }
 
 /// The facts the fixture plants, each in exactly one record.
-pub(crate) const FACTS: &[&str] = &["8 seconds", "14 days", "collides with Arc", "before the harness mark", "vitest (macos)", "@yamada"];
+pub(crate) const FACTS: &[&str] = &["8 seconds", "14 days", "collides with Arc", "before the harness mark", "vitest (macos)", "@yamada", "90 days"];
 
 pub(crate) const TRAIL_TITLE: &str = "Archive a chat";
 
@@ -94,7 +95,8 @@ fn chat(db: &rusqlite::Connection, id: &str, harness: &str, title: &str, started
 }
 
 /// A trail with two earlier chats on other harnesses, a plan note, a PR with a
-/// failing check and an unsent draft. Returns the trail id.
+/// failing check, an unsent draft and the issue the work started from (read
+/// from GitHub as the store keeps it). Returns the trail id.
 pub(crate) fn seed(core: &Arc<BridgeCore>, under_test: &str) -> String {
     let (first, second) = earlier_harnesses(under_test);
     let note = core
@@ -158,8 +160,11 @@ pub(crate) fn seed(core: &Arc<BridgeCore>, under_test: &str) -> String {
         "2026-11-12T09:00:00Z",
     )
     .unwrap();
+    let issue = crate::trails::issues::tests::snapshot(41, true, None, &["https://github.com/o/r/pull/12"]);
+    crate::trails::issues::save(&db, &issue).unwrap();
     let trail = crate::trails::store::create(&db, TRAIL_TITLE, None, "2026-11-10T08:00:00Z").unwrap();
     for (kind, reference) in [
+        (TrailMemberKind::Issue, issue.url.clone()),
         (TrailMemberKind::Session, "chat-a".to_owned()),
         (TrailMemberKind::Session, "chat-b".to_owned()),
         (TrailMemberKind::Note, note.id.clone()),
