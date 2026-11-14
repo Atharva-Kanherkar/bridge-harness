@@ -110,23 +110,31 @@ function LauncherPanel({ onClose, badges, pins, chats, chatOpen, onOpenApp, onOp
     setStatus(!result.ok ? PIN_LIMIT_MESSAGE : wasPinned ? `Unpinned ${item.app.name}.` : `Pinned ${item.app.name} to the sidebar.`);
   };
 
+  // A key the launcher acts on is the launcher's alone. Window listeners
+  // underneath (the Code pane answers ⌘P with its file palette) must not
+  // also act on it, and some never check defaultPrevented.
+  const take = (event: React.KeyboardEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     const step = event.key === "ArrowDown" || event.key === "ArrowRight" && event.currentTarget.selectionStart === query.length ? 1
       : event.key === "ArrowUp" || event.key === "ArrowLeft" && event.currentTarget.selectionStart === 0 ? -1
       : 0;
     if (step && items.length) {
-      event.preventDefault();
+      take(event);
       setActive(index => (Math.min(index, items.length - 1) + step + items.length) % items.length);
       return;
     }
     if (event.key === "Enter" && current) {
-      event.preventDefault();
+      take(event);
       run(current);
       return;
     }
     if (event.key.toLowerCase() === "p" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
-      event.preventDefault();
+      take(event);
       pin(current);
     }
   };

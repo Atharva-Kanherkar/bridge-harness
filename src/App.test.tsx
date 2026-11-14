@@ -34,6 +34,7 @@ import "./components/TerminalPane";
 import "./components/CodePanel";
 import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
+import { PINS_KEY, readPins, resetPinsCache } from "./apps/pins";
 import { SHORTCUTS } from "./keymap";
 import { agentName } from "./components/agentIdentity";
 
@@ -409,6 +410,32 @@ describe("the dock in the session view", () => {
     const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
     expect(codeTab.getAttribute("aria-selected")).toBe("true");
     expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src-tauri/bridge-core/src/policy.rs")).toBe(true);
+  });
+
+  // Review fix: ⌘P in the launcher pins; it must not also reach the Code
+  // pane's window listener and open its file palette underneath.
+  it("pins from the launcher without opening the Code pane's Open file dialog", async () => {
+    localStorage.removeItem(PINS_KEY);
+    resetPinsCache();
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit2", key: "2" });
+    await settle(3);
+    const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
+    expect(codeTab.getAttribute("aria-selected"), "the Code pane is open").toBe("true");
+
+    await key({ key: "k", metaKey: true });
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Search apps and chats"]')!;
+    expect(input, "the launcher is open").not.toBeNull();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => { setter.call(input, "notes"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "p", metaKey: true, bubbles: true, cancelable: true })); });
+    await settle(2);
+
+    expect(readPins()).toEqual(["notes"]);
+    expect(document.body.querySelector('[aria-label="Open file"]')).toBeNull();
+    localStorage.removeItem(PINS_KEY);
+    resetPinsCache();
   });
 
   // Contract: testing/feat-dock-code.md §4.
