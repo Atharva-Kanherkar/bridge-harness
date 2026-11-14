@@ -80,22 +80,31 @@ When a trail has a session member S:
 ### Brief
 
 - `preview_trail_brief` returns items in this order: notes, pull requests,
-  chats (recent history, on), chats (full history, off), messages. Each item
-  has `id` (`note:<id>`, `pr:<url>`, `chat:<id>`, `chatFull:<id>`,
+  chats, messages. Each item has `id` (`note:<id>`, `pr:<url>`, `chat:<id>`,
   `message:<id>`), `label`, `tokens` (`ceil(bytes / 4)` of the exact text that
-  would be carried), and `defaultOn`. `totalTokens` sums the default-on items.
+  would be carried), and `defaultOn` (true for all four kinds). `totalTokens`
+  sums the default-on items. `budgetTokens` is what a new chat on the default
+  128k-token window can carry: 90% of the restoration budget, in tokens.
 - Discarded drafts and removed records produce no item. A chat with no stored
   history produces no item.
 - Item text: notes carry their Markdown clipped to 12 000 bytes; PRs carry
-  number, title, URL, state, check counts and failing check names; chat recent
-  history is the restoration projection at a 24 000-token window; full history
-  at a 200 000-token window; messages carry destination, state and body.
+  number, title, URL, state, check counts and failing check names; a chat
+  carries its restoration projection at a 24 000-token window; messages carry
+  destination, state and body.
+- There is no "full history" item: restoration clips each entry and caps the
+  whole carried context, so a full transcript cannot reach the model intact.
+  (Contract change during implementation; see the commit that made it.)
 - `carry_trail_brief {trailId, sessionId, items}` refuses a session that
-  already has a user message, refuses unknown item ids, writes one
-  `handoff.brief` forest entry per chosen item in preview order with payload
-  `{text, trailId, briefItem}` (no `summary`, so restoration reads the full
-  text), and adds the session to the trail as a `person` member. It returns
-  the number of entries written. Carrying zero items still adds the member.
+  already has a user message, refuses unknown item ids, and refuses a
+  selection whose tokens exceed the target chat's budget (90% of
+  `restoration_budget_bytes` for that chat's window, in tokens) with a message
+  naming both numbers. Otherwise it writes the chosen items in preview order
+  as `handoff.brief` forest entries with payload `{text, trailId, briefItem}`
+  (no `summary`, so restoration reads the full text). An item longer than the
+  per-entry restoration allowance is split on line boundaries into several
+  entries, each labelled `part k of n`, so nothing is clipped. It adds the
+  session to the trail as a `person` member and returns the number of entries
+  written. Carrying zero items still adds the member.
 - After a carry, `restoration::checkpoint_context` for the new session
   contains every carried item's text; unchosen items are absent.
 - A carry changes nothing about the session's harness, model, access mode,
@@ -137,7 +146,8 @@ fields. Results are typed wire structs built in Rust, never hand-built JSON.
   Notes, a PR opens its URL, a message selects its chat. Each row has a
   remove action; removing an auto member shows no confirm.
 - Continue: a dialog with the composer text, the harness picker of the new chat
-  composer, and the brief item checkboxes with tokens and a running total.
+  composer, and the brief item checkboxes with tokens and a running total
+  against `budgetTokens`; Send is disabled over budget.
   Send creates the chat in the trail's workspace (direct when none), carries
   the checked items, then sends the text. The new chat appears on the trail.
 - A chat that is a member shows a "Trail: <title>" chip in its toolbar that
@@ -170,6 +180,7 @@ Rust (`bridge-core::trails`):
 - `brief::tests::preview_orders_items_and_counts_tokens`
 - `brief::tests::carry_writes_entries_restoration_reads`
 - `brief::tests::carry_refuses_a_started_chat_and_unknown_items`
+- `brief::tests::carry_refuses_over_budget_and_splits_long_items`
 - `brief::tests::carry_changes_no_session_policy_fields`
 
 Protocol (`bridge-protocol`): every trails params type refuses unknown fields;
