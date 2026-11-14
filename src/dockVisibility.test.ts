@@ -61,3 +61,25 @@ describe("added panes", () => {
     expect(kept).toContain("chat-204");
   });
 });
+
+// Review fix: the same stale cache as pins, for panes added to a chat.
+describe("added panes across tabs", () => {
+  it("builds on another tab's panes instead of overwriting them", () => {
+    expect(readAddedPanes("a")).toEqual([]);
+    const newValue = JSON.stringify({ b: { panes: ["github"], at: 1 } });
+    localStorage.setItem(DOCK_ADDED_KEY, newValue);
+    window.dispatchEvent(new StorageEvent("storage", { key: DOCK_ADDED_KEY, newValue }));
+    expect(readAddedPanes("b")).toEqual(["github"]);
+    addPaneToChat("a", "code", 2);
+    const stored = JSON.parse(localStorage.getItem(DOCK_ADDED_KEY)!);
+    expect(stored.a.panes).toEqual(["code"]);
+    expect(stored.b.panes).toEqual(["github"]);
+  });
+
+  it("re-reads storage before a change even if the event has not arrived", () => {
+    expect(readAddedPanes("a")).toEqual([]);
+    localStorage.setItem(DOCK_ADDED_KEY, JSON.stringify({ b: { panes: ["github"], at: 1 } }));
+    addPaneToChat("a", "code", 2);
+    expect(Object.keys(JSON.parse(localStorage.getItem(DOCK_ADDED_KEY)!)).sort()).toEqual(["a", "b"]);
+  });
+});

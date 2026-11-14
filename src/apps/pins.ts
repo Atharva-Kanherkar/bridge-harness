@@ -57,6 +57,27 @@ export function readPins(): readonly AppId[] {
   return cache;
 }
 
+function notify() {
+  for (const listener of listeners) listener();
+}
+
+/** Storage as it is now, not as this tab last saw it. Another tab may have
+ *  pinned since, and a change built on a stale list would erase its pins. */
+function fresh(): readonly AppId[] {
+  cache = null;
+  return readPins();
+}
+
+// Another tab wrote the pins (or cleared storage): forget the cached read and
+// redraw, so two windows never show different sidebars.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", event => {
+    if (event.key !== null && event.key !== PINS_KEY) return;
+    cache = null;
+    notify();
+  });
+}
+
 function write(next: readonly AppId[]) {
   cache = next;
   try {
@@ -64,11 +85,11 @@ function write(next: readonly AppId[]) {
   } catch {
     // Storage full or blocked: the pin still holds for this session.
   }
-  for (const listener of listeners) listener();
+  notify();
 }
 
 export function pinApp(id: AppId): PinResult {
-  const pins = readPins();
+  const pins = fresh();
   if (pins.includes(id)) return { ok: true, pins };
   if (pins.length >= MAX_PINS) return { ok: false, reason: "full" };
   const next = [...pins, id];
@@ -77,7 +98,7 @@ export function pinApp(id: AppId): PinResult {
 }
 
 export function unpinApp(id: AppId): readonly AppId[] {
-  const pins = readPins();
+  const pins = fresh();
   if (!pins.includes(id)) return pins;
   const next = pins.filter(pin => pin !== id);
   write(next);
@@ -85,7 +106,7 @@ export function unpinApp(id: AppId): readonly AppId[] {
 }
 
 export function togglePin(id: AppId): PinResult {
-  return readPins().includes(id) ? { ok: true, pins: unpinApp(id) } : pinApp(id);
+  return fresh().includes(id) ? { ok: true, pins: unpinApp(id) } : pinApp(id);
 }
 
 export function subscribePins(listener: () => void): () => void {

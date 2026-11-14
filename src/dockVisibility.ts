@@ -74,6 +74,20 @@ function read(): Stored {
   return cache;
 }
 
+function notify() {
+  for (const listener of listeners) listener();
+}
+
+// Another tab added a pane (or cleared storage): drop the cached read so this
+// tab neither shows a stale strip nor writes over the other tab's choice.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", event => {
+    if (event.key !== null && event.key !== DOCK_ADDED_KEY) return;
+    cache = null;
+    notify();
+  });
+}
+
 /** Keep the most recently touched chats, up to the cap. */
 export function pruneAddedPanes(stored: Stored, cap = MAX_REMEMBERED_CHATS): Stored {
   const entries = Object.entries(stored);
@@ -87,6 +101,8 @@ export function readAddedPanes(sessionId: string | null | undefined): readonly D
 }
 
 export function addPaneToChat(sessionId: string, pane: DockPaneId, now = Date.now()): readonly DockPaneId[] {
+  // Build on storage as it is now: another tab may have added panes since.
+  cache = null;
   const stored = read();
   const current = stored[sessionId]?.panes ?? [];
   const next = pruneAddedPanes({ ...stored, [sessionId]: { panes: current.includes(pane) ? current : [...current, pane], at: now } });
@@ -96,7 +112,7 @@ export function addPaneToChat(sessionId: string, pane: DockPaneId, now = Date.no
   } catch {
     // Storage full or blocked: the pane stays for this session.
   }
-  for (const listener of listeners) listener();
+  notify();
   return next[sessionId].panes;
 }
 
