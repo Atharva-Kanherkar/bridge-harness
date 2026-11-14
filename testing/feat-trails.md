@@ -74,7 +74,11 @@ When a trail has a session member S:
   nothing.
 - A maintenance loop runs the sweep at most once per 1.5 s after a relevant
   core event (PR links changed, checks changed, outgoing changed, notes page
-  changed, state changed) and once at start. `trails/list_trails` and
+  changed, state changed) and once at start.
+- (Review, PR #993) When the batch held a member-state event (checks, PR
+  links, drafts, notes, attention), the loop publishes a plain refetch hint
+  even if it also published additions for some trail, so every other trail's
+  state is refetched. `trails/list_trails` and
   `trails/read_trail` also sweep before reading.
 
 ### Brief
@@ -107,6 +111,16 @@ When a trail has a session member S:
   written. Carrying zero items still adds the member.
 - After a carry, `restoration::checkpoint_context` for the new session
   contains every carried item's text; unchosen items are absent.
+- (Review, PR #993) A carry checks every refusal (started chat, unknown item,
+  budget, the chat already on another trail) before writing anything, and
+  writes the entries, the membership and the audit row in one transaction. A
+  refused carry leaves the chat's history unchanged.
+- (Review, PR #993) Budget is the serialized cost restoration actually
+  charges: for every entry the carry writes (after splitting and part
+  labels), the entry text plus `handoff.brief: ` and a newline. An item's
+  `tokens` is `ceil(cost / 4)` of its entries at the default window; a carry
+  admits a selection only if its cost at the target chat's window fits the
+  90% budget. An admitted selection restores every entry it wrote.
 - A carry changes nothing about the session's harness, model, access mode,
   worktree, write scope or kind.
 
@@ -142,6 +156,10 @@ fields. Results are typed wire structs built in Rust, never hand-built JSON.
   "Continue this trail" primary button, an archive action. Timeline grouped by
   day. Right rail: "A new chat starts with" (default-on brief items with their
   tokens), "Open" items, "Agents" (harness chips with chat counts).
+- (Review, PR #993) The trail page shows only a response for the trail that
+  is selected now and for the newest request; a slower response for a trail
+  the person left, or an older request, is dropped, success or error, so
+  rename and archive always act on the trail on screen.
 - Timeline rows open their record: a chat selects it, a note opens it in
   Notes, a PR opens its URL, a message selects its chat. Each row has a
   remove action; removing an auto member shows no confirm.
@@ -150,6 +168,11 @@ fields. Results are typed wire structs built in Rust, never hand-built JSON.
   against `budgetTokens`; Send is disabled over budget.
   Send creates the chat in the trail's workspace (direct when none), carries
   the checked items, then sends the text. The new chat appears on the trail.
+- (Review, PR #993) Before creating the chat, Send re-reads the brief; if a
+  checked item is gone it stops, names it, refreshes the list and keeps the
+  text. If the carry still fails after the chat exists, the first message is
+  not sent, the empty chat is archived, and the dialog stays open with the
+  error, the text and the remaining selection.
 - A chat that is a member shows a "Trail: <title>" chip in its toolbar that
   opens the trail.
 - A chat's toolbar menu has "Add to trail…": a picker listing open trails and
