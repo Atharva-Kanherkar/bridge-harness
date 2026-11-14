@@ -74,7 +74,7 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
 
   function openEvent(event: TrailEvent) {
     if (event.member.kind === "note") onOpenNote(event.member.ref);
-    else if (event.member.kind === "pullRequest" && event.url) onOpenUrl(event.url);
+    else if ((event.member.kind === "pullRequest" || event.member.kind === "issue") && event.url) onOpenUrl(event.url);
     else if (event.sessionId) onOpenSession(event.sessionId);
   }
 
@@ -110,6 +110,10 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
             .catch(cause => setDetailError(message(cause)));
         }}
         onRefresh={() => loadDetail(trailId, true)}
+        onAddIssue={async reference => {
+          await bridgeApi.addTrailMember(trailId, { kind: "issue", ref: reference });
+          loadDetail(trailId);
+        }}
       />
       {starting && shown && (
         <TrailStartDialog

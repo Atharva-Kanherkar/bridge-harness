@@ -1,6 +1,6 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { useEffect, useState, type ComponentType, type FormEvent } from "react";
 import {
-  Archive, ArchiveRestore, ChevronLeft, CircleAlert, FileText, GitBranch, GitPullRequest, ListChecks, MessageSquare,
+  Archive, ArchiveRestore, ChevronLeft, CircleAlert, CircleDot, FileText, GitBranch, GitPullRequest, ListChecks, MessageSquare,
   MessagesSquare, Plus, RefreshCw, Route, Send, Trash2, X,
 } from "lucide-react";
 import type { PreviewTrailBriefResult, TrailDetail, TrailEvent, TrailEventKind } from "@/protocol/generated/protocol";
@@ -14,6 +14,7 @@ import { Chip, RailSection, StageBar } from "./TrailParts";
 import { clsx as cn } from "clsx";
 
 const KIND_LABEL: Record<TrailEventKind, string> = {
+  issue: "Issue",
   note: "Note",
   chat: "Chat",
   pullRequest: "Pull request",
@@ -23,6 +24,7 @@ const KIND_LABEL: Record<TrailEventKind, string> = {
 };
 
 const KIND_ICON: Record<TrailEventKind, ComponentType<{ className?: string }>> = {
+  issue: CircleDot,
   note: FileText,
   chat: MessagesSquare,
   pullRequest: GitPullRequest,
@@ -73,7 +75,43 @@ function EventRow({ event, last, onOpen, onRemove }: { event: TrailEvent; last: 
   );
 }
 
-export function TrailPage({ trail, workspaceTitle, loading, error, onBack, onContinue, onOpenEvent, onRemove, onRename, onArchive, onRefresh }: {
+/** One field: the issue's link, `owner/repo#12`, or `#12` when the trail has a
+ * project. The core reads it from GitHub; a refusal shows here. */
+function AddIssueForm({ hasProject, onAdd, onCancel }: { hasProject: boolean; onAdd: (reference: string) => Promise<void>; onCancel: () => void }) {
+  const [reference, setReference] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!reference.trim() || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try { await onAdd(reference.trim()); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }
+  return (
+    <form onSubmit={submit} className="mt-3 rounded-xl bg-card p-3" aria-label="Add issue">
+      <div className="flex flex-wrap items-center gap-2">
+        <CircleDot className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <input
+          autoFocus
+          value={reference}
+          onChange={event => setReference(event.target.value)}
+          onKeyDown={event => { if (event.key === "Escape") onCancel(); }}
+          placeholder={hasProject ? "Issue link, owner/repo#12, or #12" : "Issue link or owner/repo#12"}
+          aria-label="Issue"
+          className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <Button type="submit" size="sm" disabled={!reference.trim() || busy}>{busy ? "Reading…" : "Add"}</Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+      {error && <p role="alert" className="mt-2 text-caption text-destructive">{error}</p>}
+    </form>
+  );
+}
+
+export function TrailPage({ trail, workspaceTitle, loading, error, onBack, onContinue, onOpenEvent, onRemove, onRename, onArchive, onRefresh, onAddIssue }: {
   trail: TrailDetail | null;
   workspaceTitle?: string;
   loading: boolean;
@@ -85,8 +123,11 @@ export function TrailPage({ trail, workspaceTitle, loading, error, onBack, onCon
   onRename: (title: string) => Promise<void>;
   onArchive: (archived: boolean) => void;
   onRefresh: () => void;
+  /** Read the issue from GitHub and put it on the trail; rejects with why not. */
+  onAddIssue: (reference: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [addingIssue, setAddingIssue] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [brief, setBrief] = useState<PreviewTrailBriefResult | null>(null);
   const memberCount = trail?.summary.memberCount ?? 0;
@@ -143,6 +184,7 @@ export function TrailPage({ trail, workspaceTitle, loading, error, onBack, onCon
               <button type="button" onClick={() => { setDraftTitle(summary.title); setEditing(true); }} title="Rename" className="text-left">{summary.title}</button>
             </h1>
           )}
+          <Button variant="ghost" size="sm" onClick={() => setAddingIssue(true)} aria-expanded={addingIssue}><CircleDot aria-hidden="true" />Add issue</Button>
           <Button variant="ghost" size="icon-sm" onClick={onRefresh} aria-label="Refresh from GitHub" title="Refresh from GitHub"><RefreshCw aria-hidden="true" /></Button>
           <Button variant="ghost" size="icon-sm" onClick={() => onArchive(!summary.archivedAt)} aria-label={summary.archivedAt ? "Unarchive trail" : "Archive trail"} title={summary.archivedAt ? "Unarchive" : "Archive"}>
             {summary.archivedAt ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
@@ -163,13 +205,20 @@ export function TrailPage({ trail, workspaceTitle, loading, error, onBack, onCon
           </p>
         )}
         {error && <p role="alert" className="mt-3 text-caption text-destructive">{error}</p>}
+        {addingIssue && (
+          <AddIssueForm
+            hasProject={Boolean(summary.workspaceId)}
+            onCancel={() => setAddingIssue(false)}
+            onAdd={async reference => { await onAddIssue(reference); setAddingIssue(false); }}
+          />
+        )}
       </header>
 
       <div className="flex flex-col gap-8 lg:flex-row">
         <ol className="min-w-0 flex-1" aria-label="Timeline">
           {trail.events.length === 0 && (
             <li className="rounded-xl bg-card px-4 py-6 text-ui text-muted-foreground">
-              Nothing on this trail yet. Add a chat from its menu (Add to trail), or start one with Continue this trail.
+              Nothing on this trail yet. Add the issue it starts from, add a chat from its menu (Add to trail), or start one with Continue this trail.
             </li>
           )}
           {days.map((day, dayIndex) => (
