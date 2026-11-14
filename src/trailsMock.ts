@@ -37,7 +37,28 @@ function summary(id: string, title: string, fields: Partial<TrailSummary>): Trai
   };
 }
 
+/** The demo trails' project repository, for `#n` in mock mode. */
+const MOCK_REPOSITORY = "github.com/acme/bridge";
+const ISSUE_FORMS = "Paste the issue's link, or owner/repo#number";
+
+/** The core's `parse_reference`, for mock mode: a link, `owner/repo#n`, or `#n` with a project. */
+export function mockIssueUrl(raw: string, hasProject: boolean): string {
+  const text = raw.trim();
+  const url = /^(?:https?:\/\/)?([^/\s]+\.[^/\s]+)\/([^/\s]+)\/([^/\s#?]+)\/issues\/(\d+)\/?(?:[?#].*)?$/i.exec(text);
+  if (url && Number(url[4]) > 0) return `https://${url[1].toLowerCase()}/${url[2]}/${url[3]}/issues/${Number(url[4])}`;
+  if (text.includes("/pull/")) throw new Error(`That link is a pull request, not an issue. ${ISSUE_FORMS}.`);
+  const short = /^([^/\s#]+)\/([^/\s#]+)#(\d+)$/.exec(text);
+  if (short && Number(short[3]) > 0) return `https://github.com/${short[1]}/${short[2]}/issues/${Number(short[3])}`;
+  const bare = /^#?(\d+)$/.exec(text);
+  if (bare && Number(bare[1]) > 0) {
+    if (!hasProject) throw new Error(`This trail has no project to read ${text.startsWith("#") ? text : `#${text}`} from. ${ISSUE_FORMS}.`);
+    return `https://${MOCK_REPOSITORY}/issues/${Number(bare[1])}`;
+  }
+  throw new Error(`${ISSUE_FORMS}.`);
+}
+
 function seed(): MockTrail[] {
+  const issue = member("issue", "https://github.com/acme/bridge/issues/1004", "person", iso(9, 9));
   const plan = member("note", "note-plan", "person", iso(9, 10, 1));
   const design = member("session", "session-1w", "person", iso(9, 9, 20));
   const build = member("session", "session-1", "auto", iso(10, 11, 34));
@@ -48,11 +69,12 @@ function seed(): MockTrail[] {
       state: "needsYou", needsYouReason: "vitest is failing on #1012", stage: 3,
       lastEvent: { title: "Checks on #1012", at: iso(11, 8, 44) },
       harnesses: [{ harness: "claude", chats: 1 }, { harness: "codex", chats: 1 }],
-      sessionIds: ["session-1w", "session-1"], memberCount: 5,
+      sessionIds: ["session-1w", "session-1"], memberCount: 6,
     }),
-    members: [design, plan, build, pr, dm],
+    members: [issue, design, plan, build, pr, dm],
     branch: "feat/archive-chat",
     events: [
+      row(issue, { kind: "issue", at: iso(8, 16, 12), title: "#1004 Archive a chat without losing its history", detail: "open · 2 comments", url: issue.ref, tone: "plain" }),
       row(design, { kind: "chat", at: iso(9, 9, 20), title: "Design the archive action", detail: "Claude · fable", harness: "claude", tone: "plain" }),
       row(plan, { kind: "note", at: iso(9, 10, 1), title: "Plan: archive action per chat", detail: "last edited by you", tone: "plain" }),
       row(build, { kind: "chat", at: iso(10, 11, 34), title: "Implement the archive row action", detail: "Codex · gpt-5.6-luna", harness: "codex", tone: "plain" }),
@@ -97,6 +119,7 @@ function seed(): MockTrail[] {
     {
       detail: archive,
       brief: [
+        { id: `issue:${issue.ref}`, label: "Issue #1004 Archive a chat without losing its history", tokens: 420, defaultOn: true },
         { id: "note:note-plan", label: "Note “Plan: archive action per chat”", tokens: 612, defaultOn: true },
         { id: `pr:${pr.ref}`, label: "PR #1012 feat(sidebar): archive a chat from its row: 1 failing", tokens: 180, defaultOn: true },
         { id: "chat:session-1w", label: "Chat “Design the archive action” (Claude)", tokens: 1840, defaultOn: true },
@@ -182,14 +205,23 @@ export function mockUpdateTrail(trailId: string, title?: string | null, archived
 
 const key = (trailId: string, ref: TrailMemberRef) => `${trailId}|${ref.kind}|${ref.ref}`;
 
-export function mockAddTrailMember(trailId: string, ref: TrailMemberRef): AddTrailMemberResult {
+export function mockAddTrailMember(trailId: string, given: TrailMemberRef): AddTrailMemberResult {
   const trail = find(trailId);
+  const ref = given.kind === "issue" ? { kind: "issue" as const, ref: mockIssueUrl(given.ref, Boolean(trail.detail.summary.workspaceId)) } : given;
   const owner = store().find(item => item.detail.members.some(m => m.kind === ref.kind && m.ref === ref.ref));
   if (owner && owner !== trail) throw new Error(`This is already on the trail “${owner.detail.summary.title}”. Remove it there first.`);
   if (!owner) {
     const added = member(ref.kind, ref.ref, "person", new Date().toISOString());
     trail.detail.members.push(added);
-    trail.detail.events.push(row(added, { kind: ref.kind === "session" ? "chat" : ref.kind === "outgoing" ? "message" : ref.kind, at: added.addedAt, title: ref.kind === "session" ? "A chat" : ref.ref, tone: "plain" }));
+    if (ref.kind === "issue") {
+      const number = ref.ref.split("/").pop();
+      // The core orders the timeline by time; so does the mock.
+      trail.detail.events.push(row(added, { kind: "issue", at: added.addedAt, title: `#${number} Issue read in mock mode`, detail: "open", url: ref.ref, tone: "plain" }));
+      trail.detail.events.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+      if (trail.detail.summary.stage === 0) trail.detail.summary = { ...trail.detail.summary, stage: 1 };
+    } else {
+      trail.detail.events.push(row(added, { kind: ref.kind === "session" ? "chat" : ref.kind === "outgoing" ? "message" : ref.kind, at: added.addedAt, title: ref.kind === "session" ? "A chat" : ref.ref, tone: "plain" }));
+    }
     dismissed.delete(key(trailId, ref));
     touch(trail);
   }
@@ -219,7 +251,7 @@ export function mockPreviewTrailBrief(trailId: string): PreviewTrailBriefResult 
 function refOf(id: string): TrailMemberRef {
   const [kind, ...rest] = id.split(":");
   const ref = rest.join(":");
-  return { kind: kind === "chat" ? "session" : kind === "pr" ? "pullRequest" : kind === "message" ? "outgoing" : "note", ref };
+  return { kind: kind === "chat" ? "session" : kind === "pr" ? "pullRequest" : kind === "message" ? "outgoing" : kind === "issue" ? "issue" : "note", ref };
 }
 
 export function mockCarryTrailBrief(trailId: string, sessionId: string, items: string[]): CarryTrailBriefResult {

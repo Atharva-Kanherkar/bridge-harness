@@ -128,9 +128,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.34 adds `attention/mark_attention_unread`.** A new client must not
 /// pair with an older daemon, whose Mark as unread would fail with
 /// `method_not_found`; a 1.33 client still pairs with a 1.34 daemon.
+/// **1.35 adds GitHub issues to trails** (`issue` member and event kinds). A
+/// 1.33 or 1.34 client reads trails but cannot draw an `issue` member, so a
+/// 1.35 daemon refuses those two; a 1.32 client never reads trails and still
+/// pairs.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 34,
+    minor: 35,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -147,6 +151,8 @@ impl ProtocolVersion {
         const INDEPENDENT_VOICE_MINOR: u32 = 21;
         const SCOPED_CHAT_SETTINGS_MINOR: u32 = 23;
         const OUTGOING_SEND_MINOR: u32 = 32;
+        const TRAILS_MINOR: u32 = 33;
+        const TRAIL_ISSUES_MINOR: u32 = 35;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -161,6 +167,9 @@ impl ProtocolVersion {
             && !(self.major == 1
                 && self.minor >= OUTGOING_SEND_MINOR
                 && client.minor < OUTGOING_SEND_MINOR)
+            && !(self.major == 1
+                && self.minor >= TRAIL_ISSUES_MINOR
+                && (TRAILS_MINOR..TRAIL_ISSUES_MINOR).contains(&client.minor))
     }
 }
 
@@ -425,6 +434,17 @@ mod tests {
         assert!(!before.accepts(wait));
         assert!(wait.accepts(before), "a 1.29 client still pairs with a 1.30 daemon");
         assert!(!PROTOCOL_VERSION.accepts(before), "the outgoing send boundary requires 1.32");
+    }
+
+    #[test]
+    fn trail_issues_require_new_clients_and_daemons() {
+        let before = ProtocolVersion { major: 1, minor: 34 };
+        let issues = ProtocolVersion { major: 1, minor: 35 };
+        assert!(!before.accepts(issues), "a 1.35 client needs the issue kinds");
+        assert!(!issues.accepts(before), "a 1.34 client cannot draw an issue member");
+        assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
+        assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
+        assert!(issues.accepts(issues));
     }
 
     #[test]

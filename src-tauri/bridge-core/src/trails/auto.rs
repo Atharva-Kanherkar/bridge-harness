@@ -7,6 +7,11 @@
 //! 3. a notes page linked to S,
 //! 4. a chat forked from S or spawned by it,
 //!
+//! and for each pull request P and issue I on it (`trail_issue_links`, read
+//! from GitHub by `issues`):
+//! 5. an issue P closes,
+//! 6. a pull request attached to any chat that closes I,
+//!
 //! joins the trail, unless it sits on another trail or the person took it off
 //! this one. Rules repeat until nothing new joins, so a fork of a fork follows.
 
@@ -30,16 +35,14 @@ pub fn sweep(db: &Connection, notes: &dyn NoteSource, now: &str) -> Result<Vec<T
     let mut added = Vec::new();
     for trail in trails {
         loop {
-            let sessions: Vec<String> = store::members(db, &trail.id)?
-                .into_iter()
-                .filter(|member| member.kind == TrailMemberKind::Session)
-                .map(|member| member.reference)
-                .collect();
-            if sessions.is_empty() {
+            let members = store::members(db, &trail.id)?;
+            let of = |kind: TrailMemberKind| members.iter().filter(|member| member.kind == kind).map(|member| member.reference.clone()).collect::<Vec<_>>();
+            let (sessions, pulls, issues) = (of(TrailMemberKind::Session), of(TrailMemberKind::PullRequest), of(TrailMemberKind::Issue));
+            if sessions.is_empty() && pulls.is_empty() && issues.is_empty() {
                 break;
             }
             let mut joined = 0;
-            for candidate in candidates(db, &sessions, &all_notes)? {
+            for candidate in candidates(db, &sessions, &all_notes)?.into_iter().chain(issue_links(db, &pulls, &issues)?) {
                 if store::trail_of(db, &candidate)?.is_some() || store::is_dismissed(db, &trail.id, &candidate)? {
                     continue;
                 }
@@ -71,8 +74,37 @@ fn strings(db: &Connection, sql: &str, sessions: &[String]) -> Result<Vec<String
     Ok(rows)
 }
 
+/// Rules 5 and 6: issues the trail's PRs close, then attached PRs that close
+/// the trail's issues.
+fn issue_links(db: &Connection, pulls: &[String], issues: &[String]) -> Result<Vec<TrailMemberRef>, BridgeError> {
+    let mut found = Vec::new();
+    if !pulls.is_empty() {
+        let marks = placeholders(pulls.len());
+        for url in strings(db, &format!("SELECT DISTINCT issue_url FROM trail_issue_links WHERE pr_url IN ({marks}) ORDER BY issue_url"), pulls)? {
+            found.push(TrailMemberRef { kind: TrailMemberKind::Issue, reference: url });
+        }
+    }
+    if !issues.is_empty() {
+        let marks = placeholders(issues.len());
+        for url in strings(
+            db,
+            &format!(
+                "SELECT DISTINCT l.pr_url FROM trail_issue_links l WHERE l.issue_url IN ({marks})
+                 AND EXISTS(SELECT 1 FROM session_pull_requests p WHERE p.url=l.pr_url) ORDER BY l.pr_url"
+            ),
+            issues,
+        )? {
+            found.push(TrailMemberRef { kind: TrailMemberKind::PullRequest, reference: url });
+        }
+    }
+    Ok(found)
+}
+
 /// Linked records in a stable order: PRs, drafts, notes, chats.
 fn candidates(db: &Connection, sessions: &[String], notes: &[NoteFacts]) -> Result<Vec<TrailMemberRef>, BridgeError> {
+    if sessions.is_empty() {
+        return Ok(Vec::new());
+    }
     let marks = placeholders(sessions.len());
     let mut found = Vec::new();
     let mut seen = HashSet::new();
@@ -117,6 +149,10 @@ fn candidates(db: &Connection, sessions: &[String], notes: &[NoteFacts]) -> Resu
 /// What a toast names: `PR #12 Fix login`, `Chat “Fix login”`, ...
 pub fn label(db: &Connection, notes: &dyn NoteSource, member: &TrailMemberRef) -> Result<String, BridgeError> {
     Ok(match member.kind {
+        TrailMemberKind::Issue => match super::issues::get(db, &member.reference)? {
+            Some(issue) => format!("Issue #{} {}", issue.number, issue.title),
+            None => super::issues::parse_url(&member.reference).map(|issue| format!("Issue #{}", issue.number)).unwrap_or_else(|| "An issue".into()),
+        },
         TrailMemberKind::PullRequest => match pull_facts(db, &member.reference)? {
             Some(pull) => format!("PR #{} {}", pull.number, pull.title),
             None => "A pull request".into(),
@@ -239,5 +275,57 @@ mod tests {
         store::add_member(&db, &trail.id, &session("s1"), TrailAddedBy::Person, "t0").unwrap();
         assert_eq!(sweep(&db, &FakeNotes::default(), "t1").unwrap().len(), 1);
         assert!(sweep(&db, &FakeNotes::default(), "t2").unwrap().is_empty());
+    }
+    fn issue(number: u64) -> TrailMemberRef {
+        TrailMemberRef { kind: TrailMemberKind::Issue, reference: format!("https://github.com/o/r/issues/{number}") }
+    }
+
+    #[test]
+    fn a_member_prs_closing_issue_joins() {
+        let db = database();
+        add_session(&db, "s1", "codex", "Build", None);
+        attach_pr(&db, "s1", URL, "2026-11-10T01:00:00Z", None);
+        let trail = store::create(&db, "Archive", None, "t0").unwrap();
+        store::add_member(&db, &trail.id, &session("s1"), TrailAddedBy::Person, "t0").unwrap();
+        assert_eq!(refs(&sweep(&db, &FakeNotes::default(), "t1").unwrap()), vec![(TrailMemberKind::PullRequest, URL.to_string())]);
+        // The PR's closing references arrive later, from GitHub.
+        crate::trails::issues::save_closing(&db, URL, &["https://github.com/o/r/issues/41".into()], "t2").unwrap();
+        let added = sweep(&db, &FakeNotes::default(), "t3").unwrap();
+        assert_eq!(refs(&added), vec![(TrailMemberKind::Issue, issue(41).reference)]);
+        assert_eq!(added[0].label, "Issue #41", "an unread issue is named by its number");
+        assert!(sweep(&db, &FakeNotes::default(), "t4").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_pr_that_closes_a_member_issue_joins() {
+        let db = database();
+        add_session(&db, "elsewhere", "claude", "Some other chat", None);
+        attach_pr(&db, "elsewhere", URL, "2026-11-10T01:00:00Z", None);
+        // A trail with only an issue on it: no chats, still swept.
+        let trail = store::create(&db, "Archive", None, "t0").unwrap();
+        store::add_member(&db, &trail.id, &issue(41), TrailAddedBy::Person, "t0").unwrap();
+        // The issue says which PRs close it; one is attached to a chat, one is not.
+        crate::trails::issues::save(&db, &crate::trails::issues::tests::snapshot(41, true, None, &[URL, "https://github.com/o/r/pull/99"])).unwrap();
+        let added = sweep(&db, &FakeNotes::default(), "t1").unwrap();
+        assert_eq!(refs(&added), vec![(TrailMemberKind::PullRequest, URL.to_string())], "a PR no chat holds cannot render, so it stays off");
+        assert_eq!(store::trail_of(&db, &session("elsewhere")).unwrap(), None, "the PR's chat is not pulled in");
+    }
+
+    #[test]
+    fn a_dismissed_issue_is_not_re_added() {
+        let db = database();
+        add_session(&db, "s1", "codex", "Build", None);
+        attach_pr(&db, "s1", URL, "2026-11-10T01:00:00Z", None);
+        crate::trails::issues::save_closing(&db, URL, &["https://github.com/o/r/issues/41".into()], "t").unwrap();
+        let trail = store::create(&db, "Archive", None, "t0").unwrap();
+        store::add_member(&db, &trail.id, &session("s1"), TrailAddedBy::Person, "t0").unwrap();
+        assert_eq!(sweep(&db, &FakeNotes::default(), "t1").unwrap().len(), 2);
+        store::remove_member(&db, &trail.id, &issue(41), "t2").unwrap();
+        assert!(sweep(&db, &FakeNotes::default(), "t3").unwrap().is_empty());
+        // On another trail, the issue is not pulled across either.
+        let other = store::create(&db, "Other", None, "t0").unwrap();
+        store::add_member(&db, &other.id, &issue(41), TrailAddedBy::Person, "t4").unwrap();
+        assert!(sweep(&db, &FakeNotes::default(), "t5").unwrap().is_empty());
+        assert_eq!(store::trail_of(&db, &TrailMemberRef { kind: TrailMemberKind::PullRequest, reference: URL.into() }).unwrap().as_deref(), Some(trail.id.as_str()));
     }
 }

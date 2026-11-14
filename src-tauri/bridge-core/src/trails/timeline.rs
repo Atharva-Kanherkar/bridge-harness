@@ -211,10 +211,11 @@ fn excerpt(text: &str) -> String {
 
 fn kind_rank(kind: TrailMemberKind) -> u8 {
     match kind {
-        TrailMemberKind::Note => 0,
-        TrailMemberKind::Session => 1,
-        TrailMemberKind::PullRequest => 2,
-        TrailMemberKind::Outgoing => 3,
+        TrailMemberKind::Issue => 0,
+        TrailMemberKind::Note => 1,
+        TrailMemberKind::Session => 2,
+        TrailMemberKind::PullRequest => 3,
+        TrailMemberKind::Outgoing => 4,
     }
 }
 
@@ -261,11 +262,39 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
     let mut open = Vec::new();
     let mut harnesses: BTreeMap<String, u32> = BTreeMap::new();
     let mut session_ids = Vec::new();
-    let (mut has_note, mut has_session, mut pulls) = (false, false, Vec::<PullFacts>::new());
+    let (mut has_plan, mut has_session, mut pulls) = (false, false, Vec::<PullFacts>::new());
     let (mut failing_reason, mut draft_reason, mut waiting_reason) = (None, None, None);
 
     for member in &members {
         match member.kind {
+            TrailMemberKind::Issue => {
+                // An issue is where work starts: it counts as the plan, read
+                // or not. It never needs the person and opens nothing.
+                has_plan = true;
+                let row = match super::issues::get(db, &member.reference)? {
+                    Some(issue) => {
+                        let tone = if issue.completed() { TrailTone::Success } else { TrailTone::Plain };
+                        let mut row = event(member, "", TrailEventKind::Issue, &issue.created_at, format!("#{} {}", issue.number, issue.title), tone);
+                        let mut detail = issue.state_words().to_owned();
+                        if issue.comment_count > 0 {
+                            detail.push_str(&format!(" · {} comment{}", issue.comment_count, if issue.comment_count == 1 { "" } else { "s" }));
+                        }
+                        row.detail = Some(detail);
+                        row.url = Some(issue.url);
+                        row
+                    }
+                    None => {
+                        let title = super::issues::parse_url(&member.reference)
+                            .map(|issue| format!("Issue #{}", issue.number))
+                            .unwrap_or_else(|| "An issue".into());
+                        let mut row = event(member, "", TrailEventKind::Issue, &member.added_at, title, TrailTone::Plain);
+                        row.detail = Some("not read from GitHub yet".into());
+                        row.url = Some(member.reference.clone());
+                        row
+                    }
+                };
+                events.push(row);
+            }
             TrailMemberKind::Session => {
                 session_ids.push(member.reference.clone());
                 let Some(chat) = session_facts(db, &member.reference)? else {
@@ -306,7 +335,7 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
                     events.push(event(member, "", TrailEventKind::Removed, &member.added_at, "A note that was deleted".into(), TrailTone::Plain));
                     continue;
                 };
-                has_note = true;
+                has_plan = true;
                 let title = note.title.clone().filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "Untitled".into());
                 let mut row = event(member, "", TrailEventKind::Note, &note.created_at, title, TrailTone::Plain);
                 row.detail = Some(format!("last edited by {}", actor(&note.last_actor)));
@@ -486,7 +515,7 @@ pub fn detail(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Resu
         3
     } else if has_session {
         2
-    } else if has_note {
+    } else if has_plan {
         1
     } else {
         0
@@ -745,6 +774,57 @@ pub(crate) mod tests {
         let summary = summary(&db, &notes, &trail).unwrap();
         assert_eq!(summary.stage, 3, "an unread PR is still a PR");
         assert_eq!(summary.state, TrailState::InProgress, "an unread PR never counts as shipped");
+    }
+
+    fn issue(url: &str) -> TrailMemberRef {
+        TrailMemberRef { kind: TrailMemberKind::Issue, reference: url.into() }
+    }
+
+    #[test]
+    fn issue_rows_and_ties() {
+        use crate::trails::issues::{self, tests::snapshot};
+        let db = database();
+        let trail = store::create(&db, "T", None, "t0").unwrap();
+        let mut open = snapshot(41, true, None, &[]);
+        open.comment_count = 3;
+        issues::save(&db, &open).unwrap();
+        issues::save(&db, &snapshot(42, false, Some("COMPLETED"), &[])).unwrap();
+        let mut dropped = snapshot(43, false, Some("NOT_PLANNED"), &[]);
+        dropped.comment_count = 0;
+        dropped.created_at = "2026-11-09T09:20:00Z".into();
+        issues::save(&db, &dropped).unwrap();
+        // A note at the same instant as issue 43: the issue sorts first.
+        let notes = FakeNotes::default().with("n1", "Plan", "2026-11-09T09:20:00Z", &[], "");
+        for member in [note("n1"), issue("https://github.com/o/r/issues/43"), issue("https://github.com/o/r/issues/41"), issue("https://github.com/o/r/issues/42"), issue("https://github.com/o/r/issues/44")] {
+            store::add_member(&db, &trail.id, &member, TrailAddedBy::Person, "2026-11-12T00:00:00Z").unwrap();
+        }
+        let detail = detail(&db, &notes, &trail).unwrap();
+        let rows: Vec<_> = detail.events.iter().map(|event| (event.kind, event.title.as_str(), event.detail.as_deref().unwrap_or(""), event.tone)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (TrailEventKind::Issue, "#41 Archived chats stay searchable", "open · 3 comments", TrailTone::Plain),
+                (TrailEventKind::Issue, "#42 Archived chats stay searchable", "closed · 1 comment", TrailTone::Success),
+                (TrailEventKind::Issue, "#43 Archived chats stay searchable", "closed as not planned", TrailTone::Plain),
+                (TrailEventKind::Note, "Plan", "last edited by you", TrailTone::Plain),
+                (TrailEventKind::Issue, "Issue #44", "not read from GitHub yet", TrailTone::Plain),
+            ]
+        );
+        assert_eq!(detail.events[0].url.as_deref(), Some("https://github.com/o/r/issues/41"));
+        assert_eq!(detail.events[4].url.as_deref(), Some("https://github.com/o/r/issues/44"), "an unread issue still links out");
+    }
+
+    #[test]
+    fn an_issue_counts_as_plan_and_never_needs_you() {
+        let db = database();
+        let trail = store::create(&db, "T", None, "t0").unwrap();
+        store::add_member(&db, &trail.id, &issue("https://github.com/o/r/issues/41"), TrailAddedBy::Person, "t1").unwrap();
+        let unread = detail(&db, &FakeNotes::default(), &trail).unwrap();
+        assert_eq!((unread.summary.stage, unread.summary.state), (1, TrailState::InProgress));
+        crate::trails::issues::save(&db, &crate::trails::issues::tests::snapshot(41, true, None, &[])).unwrap();
+        let read = detail(&db, &FakeNotes::default(), &trail).unwrap();
+        assert_eq!((read.summary.stage, read.summary.state), (1, TrailState::InProgress));
+        assert!(read.open.is_empty());
     }
 
     #[test]

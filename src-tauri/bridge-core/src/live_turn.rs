@@ -118,6 +118,20 @@ fn compile_purposed_session_prompt(
     compiler.compile()
 }
 
+/// The instructions a plain direct chat's cold start launches with right now:
+/// the configured prompt, the prompt stack, the restoration projection and the
+/// compiler `start_chat` uses, in the same order. Evals use it to see exactly
+/// what the model is given without standing up a workspace and a policy.
+#[cfg(test)]
+pub(crate) fn direct_cold_start_instructions(state: &BridgeCore, session_id: &str, adapter_id: &str) -> Result<String, BridgeError> {
+    let (configured_prompt, prompt_stack) = {
+        let db = state.db.lock().unwrap();
+        (agent_config::session_prompt(&db, adapter_id), prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0)?)
+    };
+    let checkpoint_context = restoration::checkpoint_context(&state.db.lock().unwrap(), session_id)?;
+    Ok(compile_purposed_session_prompt(&prompt_stack, &configured_prompt, checkpoint_context.as_deref(), None)?.instructions().to_owned())
+}
+
 /// A workflow run's prompt: a direct session's, plus the run brief as its own
 /// stable section. The brief is the session's stored `purpose` text; unlike the
 /// keyed purposes above it is the workflow's own words, compiled per revision.

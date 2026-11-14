@@ -30,6 +30,11 @@ pub enum Relevance {
 pub fn relevance(event: &CoreEvent) -> Relevance {
     match event {
         CoreEvent::StateChanged => Relevance::Links,
+        // A person changed a trail (added an issue, created one from a chat):
+        // its new members may need reading from GitHub and watching. The
+        // loop's own announcements carry additions or no trail, so it never
+        // wakes itself.
+        CoreEvent::TrailsChanged(changed) if changed.trail_id.is_some() && changed.added.is_empty() => Relevance::Links,
         CoreEvent::GithubSessionPrsChanged { .. }
         | CoreEvent::GithubChecksChanged { .. }
         | CoreEvent::GithubCiFinished { .. }
@@ -72,6 +77,46 @@ pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberA
     added
 }
 
+/// Watch every open pull request on an open trail, so the poller carries its
+/// checks and state into the stored snapshot (and so the Trails list) with no
+/// chat or trail page open. Merged and closed ones are left alone; arming is
+/// idempotent and keeps each PR's cadence. Returns how many are watched.
+pub fn arm_trail_pulls(core: &Arc<BridgeCore>) -> usize {
+    let rows: Vec<(String, i64, String, String)> = {
+        let db = core.db.lock().unwrap();
+        let statement = db.prepare(
+            "SELECT p.workspace_id, p.number, p.head_branch, p.title FROM trail_members m
+             JOIN trails t ON t.id=m.trail_id AND t.archived_at IS NULL
+             JOIN session_pull_requests p ON p.url=m.ref
+             WHERE m.kind='pullRequest' AND COALESCE(json_extract(p.snapshot,'$.state'),'open')='open'
+             GROUP BY p.url",
+        );
+        match statement.and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect()) {
+            Ok(rows) => rows,
+            Err(error) => {
+                eprintln!("trails: could not list trail pull requests: {error}");
+                return 0;
+            }
+        }
+    };
+    let mut watched = 0;
+    for (workspace_id, number, head_branch, title) in rows {
+        let Ok(path) = core.workspace_path(&workspace_id) else { continue };
+        core.github_poller.watch_attached(&workspace_id, std::path::PathBuf::from(path), number as u64, &head_branch, &title);
+        watched += 1;
+    }
+    watched
+}
+
+/// Read from GitHub what the trails still lack (issue snapshots, PRs'
+/// closing references), outside the database lock; if anything landed, the
+/// links may bring new members, so sweep again and tell clients.
+pub fn read_github(core: &Arc<BridgeCore>) {
+    if super::issues::read_missing(core) {
+        sweep_and_publish(core, true);
+    }
+}
+
 pub fn publish_added(core: &Arc<BridgeCore>, added: &[TrailMemberAdded]) {
     let mut by_trail: BTreeMap<&str, Vec<TrailMemberAdded>> = BTreeMap::new();
     for item in added {
@@ -89,6 +134,8 @@ pub fn start_trail_maintenance(core: Arc<BridgeCore>) {
         .name("bridge-trails".into())
         .spawn(move || {
             sweep_and_publish(&core, false);
+            read_github(&core);
+            arm_trail_pulls(&core);
             loop {
                 let first = match events.blocking_recv() {
                     Ok(event) => relevance(&event),
@@ -109,6 +156,8 @@ pub fn start_trail_maintenance(core: Arc<BridgeCore>) {
                     }
                 }
                 sweep_and_publish(&core, strongest == Relevance::State);
+                read_github(&core);
+                arm_trail_pulls(&core);
             }
         })
         .ok();
@@ -122,6 +171,15 @@ mod tests {
     #[test]
     fn trails_changed_is_not_relevant_to_itself() {
         assert_eq!(relevance(&CoreEvent::TrailsChanged(TrailsChanged { trail_id: None, added: Vec::new() })), Relevance::None);
+        let announced = TrailMemberAdded {
+            trail_id: "t".into(),
+            trail_title: "T".into(),
+            member: TrailMemberRef { kind: TrailMemberKind::Issue, reference: "https://github.com/o/r/issues/1".into() },
+            label: "Issue #1".into(),
+        };
+        assert_eq!(relevance(&CoreEvent::TrailsChanged(TrailsChanged { trail_id: Some("t".into()), added: vec![announced] })), Relevance::None);
+        // A person's edit wakes the loop, so a new issue or PR is read and watched.
+        assert_eq!(relevance(&CoreEvent::TrailsChanged(TrailsChanged { trail_id: Some("t".into()), added: Vec::new() })), Relevance::Links);
         assert_eq!(relevance(&CoreEvent::StateChanged), Relevance::Links);
         assert_eq!(relevance(&CoreEvent::OutgoingChanged { session_id: "s".into(), id: "o".into() }), Relevance::State);
     }
@@ -185,5 +243,73 @@ mod tests {
             }
         }
         assert_eq!(hints, 1, "a second sweep sends a plain hint, no additions");
+    }
+    fn trail_with_pr(core: &Arc<BridgeCore>, view: &crate::session_prs::SessionPrView) -> String {
+        let db = core.db.lock().unwrap();
+        crate::trails::timeline::tests::attach_pr(&db, "s", "https://github.com/o/r/pull/12", "2026-11-12T00:00:00Z", Some(view));
+        let trail = crate::trails::store::create(&db, "Archive", None, "t0").unwrap();
+        for member in [
+            TrailMemberRef { kind: TrailMemberKind::Session, reference: "s".into() },
+            TrailMemberRef { kind: TrailMemberKind::PullRequest, reference: "https://github.com/o/r/pull/12".into() },
+        ] {
+            crate::trails::store::add_member(&db, &trail.id, &member, TrailAddedBy::Person, "t0").unwrap();
+        }
+        trail.id
+    }
+
+    fn state(core: &Arc<BridgeCore>) -> bridge_protocol::messages::TrailState {
+        crate::api::list_trails(core, false).unwrap().trails[0].state
+    }
+
+    #[test]
+    fn open_trail_prs_are_watched_and_merged_ones_are_not() {
+        use crate::github_surface::{CheckConclusion, PullRequestState};
+        let (_scratch, core, _repo) = crate::session_prs::tests::fixture();
+        let trail = trail_with_pr(&core, &crate::trails::timeline::tests::view(PullRequestState::Open, vec![("test", Some(CheckConclusion::Success))]));
+        assert!(!core.github_poller.is_watching("w", 12), "nothing has read the PR since launch");
+        assert_eq!(arm_trail_pulls(&core), 1);
+        assert!(core.github_poller.is_watching("w", 12));
+        assert_eq!(arm_trail_pulls(&core), 1, "arming twice is harmless");
+
+        let (_scratch, merged_core, _repo) = crate::session_prs::tests::fixture();
+        trail_with_pr(&merged_core, &crate::trails::timeline::tests::view(PullRequestState::Merged, vec![]));
+        assert_eq!(arm_trail_pulls(&merged_core), 0);
+        assert!(!merged_core.github_poller.is_watching("w", 12));
+
+        // An archived trail's PRs are not watched either.
+        crate::trails::store::set_archived(&core.db.lock().unwrap(), &trail, true, "t1").unwrap();
+        let (_scratch, archived_core, _repo) = crate::session_prs::tests::fixture();
+        let archived = trail_with_pr(&archived_core, &crate::trails::timeline::tests::view(PullRequestState::Open, vec![]));
+        crate::trails::store::set_archived(&archived_core.db.lock().unwrap(), &archived, true, "t1").unwrap();
+        assert_eq!(arm_trail_pulls(&archived_core), 0);
+    }
+
+    #[test]
+    fn a_failing_check_and_a_merge_move_a_trail_without_a_read() {
+        use crate::github_surface::{CheckConclusion, PullRequestState};
+        let (scratch, core, _repo) = crate::session_prs::tests::fixture();
+        trail_with_pr(&core, &crate::trails::timeline::tests::view(PullRequestState::Open, vec![("test", Some(CheckConclusion::Success))]));
+        assert_eq!(state(&core), bridge_protocol::messages::TrailState::InProgress);
+        // CI goes red on GitHub. No chat, no trail page, no refresh.
+        std::fs::write(
+            scratch.path().join("checks.json"),
+            r#"[{"name":"test","state":"FAILURE","bucket":"fail","link":"https://ci/test","workflow":"CI"}]"#,
+        )
+        .unwrap();
+        arm_trail_pulls(&core);
+        core.github_poller.poll_once(&core);
+        let listed = crate::api::list_trails(&core, false).unwrap().trails.remove(0);
+        assert_eq!(listed.state, bridge_protocol::messages::TrailState::NeedsYou);
+        assert_eq!(listed.needs_you_reason.as_deref(), Some("test is failing on #12"));
+        // Fixed and merged.
+        std::fs::write(scratch.path().join("checks.json"), r#"[{"name":"test","state":"SUCCESS","bucket":"pass","link":"","workflow":"CI"}]"#).unwrap();
+        let path = scratch.path().join("brief.json");
+        let mut brief: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        brief["state"] = serde_json::json!("MERGED");
+        std::fs::write(&path, brief.to_string()).unwrap();
+        core.github_poller.due_now();
+        core.github_poller.poll_once(&core);
+        assert_eq!(state(&core), bridge_protocol::messages::TrailState::Shipped);
+        assert_eq!(arm_trail_pulls(&core), 0, "a merged PR is no longer armed");
     }
 }

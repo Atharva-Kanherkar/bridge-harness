@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 77;
+const LATEST_SCHEMA_VERSION: i64 = 78;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -776,6 +776,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // The latest snapshot of each background task, kept by a trigger,
             // so finding live work never parses a chat's whole tool history.
             77 => crate::background_activity::install_index(&transaction)?,
+            // GitHub issues on trails: the last read of each issue, and the
+            // hard links between issues and the pull requests that close them.
+            78 => crate::trails::issues::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -6954,6 +6957,19 @@ mod tests {
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
         // Later migrations may follow; this one must have run.
         assert!(current_schema_version(&db).unwrap() >= 73);
+    }
+
+    #[test]
+    fn migration_78_adds_the_issue_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        for table in ["issue_snapshots", "trail_issue_links", "trail_pr_link_reads"] {
+            let found: i64 = db
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", params![table], |row| row.get(0))
+                .unwrap();
+            assert_eq!(found, 1, "{table}");
+        }
+        assert!(current_schema_version(&db).unwrap() >= 78);
     }
 
     #[test]

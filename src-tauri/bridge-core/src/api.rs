@@ -692,6 +692,10 @@ pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str, refresh: bool) -> Resu
             // A failed read keeps the last good snapshot, labelled stale.
             let _ = crate::session_prs::session_pull_requests(core, &session_id, true);
         }
+        // Issues and the PRs' closing references, then whatever they link.
+        if crate::trails::issues::read_trail(core, trail_id)? {
+            crate::trails::live::sweep_and_publish(core, false);
+        }
     }
     let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
     let db = core.db.lock().unwrap();
@@ -753,17 +757,40 @@ fn trail_member_exists(core: &Arc<BridgeCore>, member: &wire::TrailMemberRef) ->
         wire::TrailMemberKind::Session => crate::trails::timeline::session_facts(&db, &member.reference)?.is_some(),
         wire::TrailMemberKind::PullRequest => crate::trails::timeline::pull_facts(&db, &member.reference)?.is_some(),
         wire::TrailMemberKind::Outgoing => crate::outgoing::get(&db, &member.reference)?.is_some(),
+        wire::TrailMemberKind::Issue => crate::trails::issues::get(&db, &member.reference)?.is_some(),
         wire::TrailMemberKind::Note => unreachable!("answered above"),
     })
 }
 
+/// The issue a person pasted (a link, `owner/repo#n`, or `#n` on a trail with
+/// a project), read from GitHub outside the database lock and stored, so the
+/// member is its canonical URL and the page shows it at once. An issue GitHub
+/// cannot read is refused and stores nothing.
+fn trail_issue(core: &Arc<BridgeCore>, trail_id: &str, raw: &str) -> Result<wire::TrailMemberRef, BridgeError> {
+    use crate::trails::issues;
+    let workspace = crate::trails::store::require(&core.db.lock().unwrap(), trail_id)?.workspace_id;
+    // A full reference needs no project; only `#n` asks which repository.
+    let issue = match issues::parse_reference(raw, None) {
+        Ok(issue) => issue,
+        Err(_) => issues::parse_reference(raw, issues::default_repository(core, workspace.as_deref()).as_ref())?,
+    };
+    let snapshot = issues::fetch(core, &issue, &issues::cwd(core, workspace.as_deref()))?;
+    issues::save(&core.db.lock().unwrap(), &snapshot)?;
+    Ok(wire::TrailMemberRef { kind: wire::TrailMemberKind::Issue, reference: snapshot.url })
+}
+
 pub fn add_trail_member(core: &Arc<BridgeCore>, trail_id: &str, member: &wire::TrailMemberRef) -> Result<wire::AddTrailMemberResult, BridgeError> {
-    if !trail_member_exists(core, member)? {
-        return Err(BridgeError::Invalid("Bridge can't find that record any more.".into()));
-    }
+    let member = if member.kind == wire::TrailMemberKind::Issue {
+        trail_issue(core, trail_id, &member.reference)?
+    } else {
+        if !trail_member_exists(core, member)? {
+            return Err(BridgeError::Invalid("Bridge can't find that record any more.".into()));
+        }
+        member.clone()
+    };
     {
         let db = core.db.lock().unwrap();
-        crate::trails::store::add_member(&db, trail_id, member, wire::TrailAddedBy::Person, &trail_now())?;
+        crate::trails::store::add_member(&db, trail_id, &member, wire::TrailAddedBy::Person, &trail_now())?;
     }
     crate::trails::live::sweep_and_publish(core, false);
     trails_changed(core, trail_id);
