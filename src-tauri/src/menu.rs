@@ -37,7 +37,8 @@ const DOCK_COMMANDS: &[Command] = &[
     Command("expand-dock", "Expand Dock", "Alt+CmdOrCtrl+Enter"),
 ];
 const GO_COMMANDS: &[Command] = &[
-    Command("open-recall", "Search This Chat", "CmdOrCtrl+K"),
+    Command("open-launcher", "Apps", "CmdOrCtrl+K"),
+    Command("open-recall", "Search This Chat", "CmdOrCtrl+F"),
     Command("open-projects", "Projects", "Shift+CmdOrCtrl+P"),
     Command("open-notes", "Notes", "Shift+CmdOrCtrl+O"),
     Command("capture-note", "Capture a Note", "Alt+CmdOrCtrl+N"),

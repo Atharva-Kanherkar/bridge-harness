@@ -12,6 +12,7 @@ export type CommandId =
   | "new-chat"
   | "new-project"
   | "interrupt-turn"
+  | "open-launcher"
   | "open-recall"
   | "jump-to-chat"
   | "next-chat"
@@ -95,7 +96,10 @@ export const SHORTCUTS: Shortcut[] = [
   // Held while typing on purpose: wanting a turn to stop is something you
   // realise with your hands already in the composer.
   { id: "interrupt-turn", label: "Interrupt the running turn", group: "Chat", chord: { key: ".", meta: true }, whileTyping: true, displayKey: ".", menu: "File", accelerator: "CmdOrCtrl+." },
-  { id: "open-recall", label: "Search this chat's history", group: "Navigation", chord: { key: "k", meta: true }, menu: "Go", accelerator: "CmdOrCtrl+K" },
+  // Held while typing: the launcher is where every app lives now, and the
+  // hands are usually in the composer when the thought "open Usage" arrives.
+  { id: "open-launcher", label: "Apps", group: "Navigation", chord: { key: "k", meta: true }, whileTyping: true, menu: "Go", accelerator: "CmdOrCtrl+K" },
+  { id: "open-recall", label: "Search this chat's history", group: "Navigation", chord: { key: "f", meta: true }, menu: "Go", accelerator: "CmdOrCtrl+F" },
   { id: "jump-to-chat", label: "Jump to chat 1-9", group: "Navigation", chord: { meta: true }, digits: true, displayKey: "1-9" },
   { id: "next-chat", label: "Next chat", group: "Navigation", chord: { key: "ArrowDown", code: "ArrowDown", meta: true, alt: true }, menu: "Go", accelerator: "Alt+CmdOrCtrl+Down" },
   { id: "previous-chat", label: "Previous chat", group: "Navigation", chord: { key: "ArrowUp", code: "ArrowUp", meta: true, alt: true }, menu: "Go", accelerator: "Alt+CmdOrCtrl+Up" },

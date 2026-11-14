@@ -31,9 +31,12 @@ const settle = () => act(async () => { await new Promise(resolve => setTimeout(r
 const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(candidate => candidate.textContent?.trim().includes(label));
 
 describe("WorkflowsScreen", () => {
-  it("replaces Scheduled tasks in the sidebar", () => {
+  it("replaces Scheduled tasks as an app", () => {
+    // Workflows lives in the launcher now, as an app, not a sidebar row.
+    const registry = readFileSync(resolve(process.cwd(), "src/apps/registry.ts"), "utf8");
     const sidebar = readFileSync(resolve(process.cwd(), "src/components/BridgeSidebar.tsx"), "utf8");
-    expect(sidebar).toContain('label="Workflows"');
+    expect(registry).toContain('name: "Workflows"');
+    expect(registry).not.toContain("Scheduled tasks");
     expect(sidebar).not.toContain("Scheduled tasks");
   });
 

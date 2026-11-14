@@ -12,6 +12,15 @@ if [ "${1:-}" = "dev" ]; then
   bun run prepare:voice-helper
 fi
 
+# A Linux bundle runs linuxdeploy, whose patchelf corrupts the Claude SDK's
+# native binary. The wrapper skips that one file; a PATCHELF the caller chose
+# still handles everything else.
+if [ "${1:-}" = "build" ] && [ "$(uname -s)" = "Linux" ]; then
+  BRIDGE_REAL_PATCHELF=${PATCHELF:-patchelf}
+  PATCHELF="$project_root/scripts/linuxdeploy-patchelf.sh"
+  export BRIDGE_REAL_PATCHELF PATCHELF
+fi
+
 # Use the installed CLI directly so this does not recurse through the package
 # script. exec keeps Tauri in charge of Vite and desktop process cleanup.
 exec "$project_root/node_modules/.bin/tauri" "$@"

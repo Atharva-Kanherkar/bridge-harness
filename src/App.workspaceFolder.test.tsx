@@ -26,6 +26,11 @@ async function settle() {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 }
 
+/** Projects is an app: the Apps row opens the launcher, and its tile opens it. */
+async function openProjects() {
+  await act(async () => container.querySelector<HTMLButtonElement>('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!.click());
+  await act(async () => document.body.querySelector<HTMLElement>('[role="option"][aria-label^="Projects"]')!.click());
+}
 const buttonByText = (text: string) => [...document.body.querySelectorAll<HTMLButtonElement>("button")]
   .find(button => button.textContent?.includes(text));
 
@@ -64,8 +69,7 @@ describe("new project folder flow (#351)", () => {
   it("asks before opening the folder picker, then reuses a repeat pick", async () => {
     const create = vi.spyOn(bridgeApi, "createWorkspace");
     const connect = vi.spyOn(bridgeApi, "connectWorkspaceFolder");
-    const projects = container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!;
-    await act(async () => projects.click());
+    await openProjects();
     await settle();
 
     await act(async () => buttonByText("New project")!.click());
@@ -82,7 +86,7 @@ describe("new project folder flow (#351)", () => {
     expect(connect.mock.calls[0][1]).toBe("/Users/you/Developer/project");
     expect(container.textContent).not.toContain("Workspace name");
 
-    await act(async () => projects.click());
+    await openProjects();
     await settle();
     await act(async () => buttonByText("New project")!.click());
     await settle();
@@ -95,8 +99,7 @@ describe("new project folder flow (#351)", () => {
   it("opens a direct-chat draft when that project choice is selected", async () => {
     const create = vi.spyOn(bridgeApi, "createConfiguredChat");
     localStorage.setItem("bridge.chat.lastWorkspaceId", "demo-1");
-    const projects = container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!;
-    await act(async () => projects.click());
+    await openProjects();
     await settle();
 
     await act(async () => buttonByText("New project")!.click());

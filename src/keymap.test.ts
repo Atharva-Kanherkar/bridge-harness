@@ -92,7 +92,32 @@ describe("the keymap", () => {
   });
 
   it("lets Control stand in for Command", () => {
-    expect(matchShortcut(stroke({ key: "k", ctrlKey: true }))?.shortcut.id).toBe("open-recall");
+    expect(matchShortcut(stroke({ key: "k", ctrlKey: true }))?.shortcut.id).toBe("open-launcher");
+  });
+
+  it("opens the launcher on ⌘K, even mid-sentence, and searches the chat on ⌘F", () => {
+    expect(matchShortcut(stroke({ key: "k", metaKey: true }))?.shortcut.id).toBe("open-launcher");
+    expect(matchShortcut(stroke({ key: "k", metaKey: true }), true)?.shortcut.id).toBe("open-launcher");
+    expect(matchShortcut(stroke({ key: "f", metaKey: true }))?.shortcut.id).toBe("open-recall");
+    // ⌥⌘F stays the fullscreen layout.
+    expect(matchShortcut(stroke({ key: "f", code: "KeyF", metaKey: true, altKey: true }))?.shortcut.id).toBe("toggle-fullscreen");
+  });
+
+  // Two commands on one chord means the first in the table silently wins and
+  // the other is dead, with a tooltip still advertising it.
+  it("binds no chord twice", () => {
+    const signature = (shortcut: (typeof SHORTCUTS)[number]) => {
+      const { chord } = shortcut;
+      const keys = shortcut.digits ? ["<digit>"] : (chord.keys ?? [chord.key ?? chord.code ?? ""]).map(key => key.toLowerCase());
+      return keys.map(key => `${chord.meta ? "M" : ""}${chord.alt ? "A" : ""}${chord.shift ? "S" : ""}${chord.shiftOptional ? "s?" : ""}+${key}`);
+    };
+    const seen = new Map<string, string>();
+    for (const shortcut of SHORTCUTS) {
+      for (const key of signature(shortcut)) {
+        expect(seen.get(key), `${shortcut.id} reuses ${key}`).toBeUndefined();
+        seen.set(key, shortcut.id);
+      }
+    }
   });
 
   it("keeps zoom reachable from inside the composer", () => {

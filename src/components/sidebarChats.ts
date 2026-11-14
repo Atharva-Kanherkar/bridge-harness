@@ -265,7 +265,7 @@ export function filterChats(
   });
 }
 
-function byRecency(a: Session, b: Session): number {
+export function byRecency(a: Session, b: Session): number {
   const left = chatTimestamp(a);
   const right = chatTimestamp(b);
   if (left === null && right === null) return 0;

@@ -78,7 +78,7 @@ async function openPlugins(catalogValue: MarketplaceCatalog, states: Marketplace
   vi.spyOn(bridgeApi, "marketplaceCatalog").mockResolvedValue(catalogValue);
   vi.spyOn(bridgeApi, "marketplaceAppAuthStates").mockResolvedValue(states);
   const view = await render();
-  await view.click(view.button("Apps"));
+  await view.click(view.button("Plugins"));
   await view.flush();
   return view;
 }
@@ -102,13 +102,13 @@ const fallbackApp = (overrides: Partial<MarketplaceVariant> = {}): MarketplaceVa
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
 
 describe("Apps catalog", () => {
-  it("contains only Apps and Skills and does not load an agent installer or scheduled tasks", async () => {
+  it("contains Apps, Plugins and Skills and does not load an agent installer or scheduled tasks", async () => {
     const managed = vi.spyOn(bridgeApi, "listManagedAgents");
     const schedules = vi.spyOn(bridgeApi, "automationCatalog");
     vi.spyOn(bridgeApi, "marketplaceCatalog").mockResolvedValue(catalog([]));
     vi.spyOn(bridgeApi, "marketplaceAppAuthStates").mockResolvedValue([]);
     const view = await render();
-    expect([...view.host.querySelectorAll('[aria-label="Marketplace sections"] button')].map(item => item.textContent)).toEqual(["Apps", "Skills"]);
+    expect([...view.host.querySelectorAll('[aria-label="Store sections"] button')].map(item => item.textContent)).toEqual(["Apps", "Plugins", "Skills"]);
     expect(managed).not.toHaveBeenCalled(); expect(schedules).not.toHaveBeenCalled();
     await view.click(view.button("Skills"));
     expect(view.text()).toContain("Add capabilities to your coding agents");
@@ -120,7 +120,7 @@ describe("Apps catalog", () => {
     vi.spyOn(bridgeApi, "marketplaceAppAuthStates").mockResolvedValue([]);
 
     const view = await render();
-    await view.click(view.button("Apps"));
+    await view.click(view.button("Plugins"));
 
     expect(view.host.querySelector('[data-testid="plugin-catalog-skeleton"]')).not.toBeNull();
     await view.unmount();
@@ -188,7 +188,7 @@ describe("Apps catalog", () => {
       .mockResolvedValueOnce([codexAppState]);
 
     const view = await render();
-    await view.click(view.button("Apps"));
+    await view.click(view.button("Plugins"));
     await view.flush();
 
     expect(view.text()).not.toContain("Remote Desktop Commander");

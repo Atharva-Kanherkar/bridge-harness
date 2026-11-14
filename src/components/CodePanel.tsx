@@ -332,6 +332,8 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
   useEffect(() => {
     if (!visible) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // A dialog above the pane (the apps launcher pins on ⌘P) already took it.
+      if (event.defaultPrevented) return;
       if (!(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
       if (key === "p") { event.preventDefault(); setPaletteOpen(value => !value); }

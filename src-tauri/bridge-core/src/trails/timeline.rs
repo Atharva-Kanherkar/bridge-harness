@@ -603,6 +603,7 @@ pub(crate) mod tests {
             url: "https://github.com/o/r/pull/12".into(),
             state,
             is_draft: false,
+            mergeability: crate::github_surface::Mergeability::Unknown,
             head_branch: "feat/archive".into(),
             head_sha: "abc".into(),
             checks: crate::session_prs::rollup_for(&details),

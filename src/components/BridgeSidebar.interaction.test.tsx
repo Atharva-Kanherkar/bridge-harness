@@ -39,19 +39,12 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   chats: [session("plain", { title: "Japan relocation" }), session("project", { title: "Sidebar redesign", workspaceId: "ws-1" })],
   workspaces: [workspace],
   activeSessionId: undefined,
-  projectsActive: false,
-  marketplaceActive: false,
-  agentFleetActive: false,
-  missionControlActive: false,
   settingsActive: false,
   accountName: "cestercian",
   onOpenNewChat: noop,
   onOpenProjects: noop,
-  onOpenMarketplace: noop,
-  onOpenAgentFleet: noop,
-  onOpenMissionControl: noop,
-  onOpenWorkBoard: noop,
-  onOpenMemory: noop,
+  onOpenApps: noop,
+  onOpenApp: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
   ...overrides,
@@ -228,14 +221,19 @@ describe("BridgeSidebar repositories list", () => {
   });
 });
 
-describe("BridgeSidebar account actions", () => {
-  it("the memory row opens account memory without a workspace", () => {
-    const onOpenMemory = vi.fn();
-    mount({ workspaces: [], onOpenMemory });
-    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent === "Memory")!;
-    act(() => row.click());
-    expect(onOpenMemory).toHaveBeenCalledOnce();
+describe("BridgeSidebar apps", () => {
+  it("opens the launcher from the Apps row, without a workspace", () => {
+    const onOpenApps = vi.fn();
+    mount({ workspaces: [], onOpenApps });
+    click(container.querySelector('button[aria-label="Apps"]')!);
+    expect(onOpenApps).toHaveBeenCalledOnce();
+  });
+
+  it("opens a pinned app by its id", () => {
+    const onOpenApp = vi.fn();
+    mount({ pinnedApps: [{ id: "notes" }], onOpenApp });
+    click(container.querySelector('button[aria-label="Notes"]')!);
+    expect(onOpenApp).toHaveBeenCalledWith("notes");
   });
 });
 
@@ -255,20 +253,20 @@ describe("BridgeSidebar action rows", () => {
   });
   it("fires the matching handler from each action row", () => {
     const onOpenNewChat = vi.fn();
-    const onOpenMarketplace = vi.fn();
+    const onOpenApps = vi.fn();
     const onOpenSettings = vi.fn();
-    mount({ onOpenNewChat, onOpenMarketplace, onOpenSettings });
+    mount({ onOpenNewChat, onOpenApps, onOpenSettings });
     click(container.querySelector('button[aria-label="New Chat"]')!);
-    click(container.querySelector('button[aria-label="Marketplace"]')!);
+    click(container.querySelector('button[aria-label="Apps"]')!);
     click(container.querySelector('button[aria-label="Open settings for cestercian"]')!);
     expect(onOpenNewChat).toHaveBeenCalledOnce();
-    expect(onOpenMarketplace).toHaveBeenCalledOnce();
+    expect(onOpenApps).toHaveBeenCalledOnce();
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("renders Terminals and keeps the Work board hidden", () => {
+  it("keeps Terminals and the Work board out of the sidebar", () => {
     mount();
-    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Terminals"]')).toBeNull();
     expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 
@@ -310,7 +308,7 @@ describe("BridgeSidebar action rows", () => {
     expect(compose.textContent).toContain("New Chat");
 
     click(container.querySelector('button[aria-label="Search"]')!);
-    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Marketplace"]')!.focus());
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Apps"]')!.focus());
     expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
   });
 
@@ -395,18 +393,18 @@ describe("mobile drawer scrim", () => {
   });
 });
 
-describe("BridgeSidebar Notes row", () => {
-  it("sits after Projects, opens Notes, and shows where you are", () => {
-    const onOpenNotes = vi.fn();
-    mount({ onOpenNotes });
+describe("BridgeSidebar pinned Notes", () => {
+  it("sits right after Apps, opens Notes, and shows where you are", () => {
+    const onOpenApp = vi.fn();
+    mount({ pinnedApps: [{ id: "notes" }], onOpenApp });
     const rows = [...container.querySelectorAll<HTMLButtonElement>("nav[aria-label='Main navigation'] button")].map(button => button.getAttribute("aria-label"));
-    expect(rows.indexOf("Notes")).toBe(rows.indexOf("Projects") + 1);
+    expect(rows).toEqual(["Apps", "Notes"]);
     const notes = container.querySelector<HTMLButtonElement>("button[aria-label='Notes']")!;
     expect(notes.title).toContain("Notes");
     expect(notes.getAttribute("aria-current")).toBeNull();
     click(notes);
-    expect(onOpenNotes).toHaveBeenCalledTimes(1);
-    mount({ onOpenNotes, notesActive: true });
+    expect(onOpenApp).toHaveBeenCalledWith("notes");
+    mount({ pinnedApps: [{ id: "notes" }], onOpenApp, activeApp: "notes" });
     expect(container.querySelector("button[aria-label='Notes']")?.getAttribute("aria-current")).toBe("page");
   });
 });

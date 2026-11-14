@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SkillMarketplace } from "./SkillMarketplace";
+import { StoreApps } from "./StoreApps";
+import type { AppId } from "../apps/registry";
 
 type InstallTarget = MarketplaceProvider | "both";
 type CatalogScope = "public" | "personal";
@@ -349,7 +351,7 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Apps" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
       <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
@@ -405,13 +407,22 @@ function PluginMarketplace() {
   </div>;
 }
 
-export function MarketplaceScreen() {
-  const [resource, setResource] = useState<"apps" | "skills">("apps");
+type StoreSection = "apps" | "plugins" | "skills";
+
+const STORE_SECTIONS: { id: StoreSection; label: string; hint: string }[] = [
+  { id: "apps", label: "Apps", hint: "Built into Bridge." },
+  { id: "plugins", label: "Plugins", hint: "Connect tools such as GitHub or Slack." },
+  { id: "skills", label: "Skills", hint: "Add workflows such as reviewing code or creating documents." },
+];
+
+/** The Store: Bridge's own apps, the harnesses' plugins, and skills. */
+export function MarketplaceScreen({ onOpenApp }: { onOpenApp?: (id: AppId) => void } = {}) {
+  const [section, setSection] = useState<StoreSection>("apps");
   return <div className="flex h-full min-h-0 flex-col">
-    <nav className="flex shrink-0 items-center gap-4 border-b border-border px-5 py-2 sm:px-8" aria-label="Marketplace sections">
-      <div className="u-segmented">{(["apps", "skills"] as const).map(value => <button key={value} type="button" data-active={resource === value} aria-pressed={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value === "apps" ? "Apps" : "Skills"}</button>)}</div>
-      <p className="text-xs text-muted-foreground">{resource === "apps" ? "Connect tools such as GitHub or Slack." : "Add workflows such as reviewing code or creating documents."}</p>
+    <nav className="flex shrink-0 items-center gap-4 border-b border-border px-5 py-2 sm:px-8" aria-label="Store sections">
+      <div className="u-segmented">{STORE_SECTIONS.map(item => <button key={item.id} type="button" data-active={section === item.id} aria-pressed={section === item.id} onClick={() => setSection(item.id)} className="u-segmented-item">{item.label}</button>)}</div>
+      <p className="text-xs text-muted-foreground">{STORE_SECTIONS.find(item => item.id === section)!.hint}</p>
     </nav>
-    <div className="min-h-0 flex-1">{resource === "apps" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>
+    <div className="min-h-0 flex-1">{section === "apps" ? <StoreApps onOpenApp={onOpenApp} /> : section === "plugins" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>
   </div>;
 }

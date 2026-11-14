@@ -37,7 +37,11 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { AppLauncher } from "./components/AppLauncher";
+import { appById, appForView, appsBadge, badgeText, MEMORY_LIST_CAP, type AppBadges, type AppId } from "./apps/registry";
+import { togglePin, usePins } from "./apps/pins";
+import { splitDockPanes, useAddedPanes } from "./dockVisibility";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -1119,6 +1123,9 @@ function AppContent() {
     // gating it on a worktree would hide it exactly where a direct chat is.
     ...(INBOX_PANE_ENABLED ? [{ id: "inbox" as const, label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined }] : []),
   ];
+  // The strip shows what this chat uses; the rest waits behind the + menu.
+  const [addedDockPanes, addDockPane] = useAddedPanes(session?.id);
+  const dockStrip = splitDockPanes(dockPanes, { active: dock.pane, added: addedDockPanes, visited: dock.visited });
   // A dock persisted on the Inbox would otherwise open onto an empty pane.
   useEffect(() => {
     if (!INBOX_PANE_ENABLED && dock.open && dock.pane === "inbox") dispatchDock({ type: "open-pane", pane: "transcript" });
@@ -3220,6 +3227,20 @@ function AppContent() {
   // Proposals waiting for review, for the sidebar badge. Re-read on every
   // memory-changed hint; a failed read leaves the last count rather than a toast.
   const [memoryPending, setMemoryPending] = useState(0);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const pins = usePins();
+  const workflowsWaiting = needsYouCount(workflowRuns);
+  const trailsWaiting = trailsNeedingYou(trailSummaries);
+  const appBadges = useMemo<AppBadges>(() => ({
+    trails: { count: trailsWaiting },
+    workflows: { count: workflowsWaiting },
+    memory: { count: memoryPending, capped: memoryPending >= MEMORY_LIST_CAP },
+  }), [trailsWaiting, workflowsWaiting, memoryPending]);
+  const launcherChats = useMemo(() => [...topSessions].sort(byRecency).slice(0, 20).map(chat => ({
+    id: chat.id,
+    title: chatName(chat),
+    detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
+  })), [topSessions, state.workspaces]);
   useEffect(() => {
     let active = true;
     let off: (() => void) | undefined;
@@ -3411,6 +3432,9 @@ function AppContent() {
         // Reachable mid-sentence, so it has to be inert when nothing is running.
         if (turnActive) requestStop();
         return;
+      case "open-launcher":
+        setLauncherOpen(open => !open);
+        return;
       case "open-recall":
         if (!session) return;
         // Recall reads the conversation, so an expanded pane steps aside first.
@@ -3590,7 +3614,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3632,6 +3656,22 @@ function AppContent() {
       <WindowHistoryChevrons canBack={canBack} canForward={canForward} onBack={goBack} onForward={goForward} />
     </>
   ) : undefined;
+  // Every app opens the way its old sidebar row did. Terminals and Mission
+  // Control also leave the grid paradigm, as their rows always had.
+  const openApp = (id: AppId) => {
+    // Trails opens on its list, the way its old row did.
+    if (id === "trails") { openTrail(null); return; }
+    const { view: target } = appById(id);
+    if (target === "agent-fleet" || target === "mission-control") setParadigm("single");
+    setView(target);
+  };
+  const activeApp = appForView(view, paradigm);
+  const searchAllChats = (query: string) => {
+    setSidebarCollapsed(false);
+    setNavOpen(true);
+    setSidebarSearch(current => ({ query, nonce: (current?.nonce ?? 0) + 1 }));
+  };
+
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
@@ -3642,37 +3682,17 @@ function AppContent() {
       pullRequests={sidebarPrs}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
-      projectsActive={view === "projects"}
-      memoryActive={view === "memory"}
-      memoryPending={memoryPending}
-      notesActive={view === "notes"}
-      trailsActive={view === "trails"}
-      trailsNeedYou={trailsNeedingYou(trailSummaries)}
-      marketplaceActive={view === "marketplace"}
-      usageActive={view === "usage"}
-      pullsActive={view === "pulls"}
-      agentFleetActive={view === "agent-fleet"}
-      missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
-      workActive={view === "work"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
-      onOpenSavedSetups={() => setView("saved-setups")}
-      onOpenWorkflows={() => setView("workflows")}
-      workflowsActive={view === "workflows"}
-      workflowsBadge={needsYouCount(workflowRuns)}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
-      onOpenMarketplace={() => setView("marketplace")}
-      onOpenAgentFleet={() => { setView("agent-fleet"); setParadigm("single"); }}
-      onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
-      onOpenWorkBoard={openWorkBoard}
-      onOpenMemory={() => setView("memory")}
-      onOpenNotes={() => setView("notes")}
-      onOpenTrails={() => openTrail(null)}
-      onOpenUsage={() => setView("usage")}
-      onOpenPulls={() => setView("pulls")}
+      onOpenApps={() => setLauncherOpen(true)}
+      appsBadge={appsBadge(appBadges)}
+      pinnedApps={pins.map(id => ({ id, badge: badgeText(appBadges[id]) }))}
+      activeApp={activeApp}
+      onOpenApp={openApp}
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
@@ -3767,7 +3787,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening the Store…"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
@@ -4144,6 +4164,8 @@ function AppContent() {
           <SessionDock
             state={dock}
             panes={dockPanes}
+            hiddenPanes={dockStrip.hidden}
+            onAddPane={pane => { addDockPane(pane); dispatchDock({ type: "open-pane", pane }); }}
             availableWidth={dockSectionWidth}
             sheet={dockSheet}
             concealed={fullscreen}
@@ -4402,6 +4424,19 @@ function AppContent() {
       onClose={() => { if (!forkBusy) { setForkDraft(null); setForkError(null); } }}
     />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    <AppLauncher
+      open={launcherOpen}
+      onClose={() => setLauncherOpen(false)}
+      badges={appBadges}
+      pins={pins}
+      chats={launcherChats}
+      chatOpen={view === "workspace" && !!session}
+      onOpenApp={openApp}
+      onOpenChat={openSession}
+      onSearchThisChat={() => commandRef.current("open-recall")}
+      onSearchChats={searchAllChats}
+      onTogglePin={togglePin}
+    />
     {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
 }

@@ -51,8 +51,10 @@ async function type(field: HTMLTextAreaElement | HTMLInputElement, value: string
 }
 
 async function openContinue() {
+  // Trails is an app: the Apps row opens the launcher, and its tile opens Trails.
   const nav = container.querySelector("nav[aria-label='Main navigation']")!;
-  await click(buttons(nav).find(item => item.getAttribute("aria-label")?.startsWith("Trails")));
+  await click(buttons(nav).find(item => item.getAttribute("aria-label")?.startsWith("Apps")));
+  await click(document.body.querySelector("[role='option'][aria-label^='Trails']") ?? undefined);
   for (let tries = 0; tries < 100 && !buttons().some(item => item.textContent?.includes("Archive a chat from the sidebar")); tries += 1) await wait(50);
   await click(buttons().find(item => item.textContent?.includes("Archive a chat from the sidebar")));
   for (let tries = 0; tries < 100 && !buttons().some(item => item.textContent?.includes("Continue this trail")); tries += 1) await wait(50);

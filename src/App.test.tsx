@@ -34,6 +34,7 @@ import "./components/TerminalPane";
 import "./components/CodePanel";
 import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
+import { PINS_KEY, readPins, resetPinsCache } from "./apps/pins";
 import { SHORTCUTS } from "./keymap";
 import { agentName } from "./components/agentIdentity";
 
@@ -84,10 +85,10 @@ describe("shell flags", () => {
     expect(source).not.toContain("RightRailPreview");
     expect(source).not.toContain("NewChatDialog");
     expect(source).toContain("BridgeSidebar");
-    expect(source).toContain('onOpenMarketplace={() => setView("marketplace")}');
-    expect(source).toContain('onOpenMemory={() => setView("memory")}');
+    // Every screen the old rows opened is an app now, opened through one path.
+    expect(source).toContain("onOpenApps={() => setLauncherOpen(true)}");
+    expect(source).toContain("onOpenApp={openApp}");
     expect(source).toContain('if (view !== "memory") setMemoryDraft(null)');
-    expect(source).toContain('onOpenWorkflows={() => setView("workflows")}');
     expect(source).toContain('view === "workflows"');
     expect(source).not.toContain("Scheduled tasks");
     expect(source).toContain("chromeFullscreen");
@@ -177,6 +178,14 @@ const key = async (init: KeyboardEventInit) => {
   await settle(1);
 };
 const chord = { altKey: true, metaKey: true };
+/** Every app opens from the launcher now: the Apps row, then its tile. */
+const launcherOption = (name: string) => document.body.querySelector<HTMLElement>(`[role="option"][aria-label^="${name}"]`);
+const openFromLauncher = async (name: string) => {
+  await click(container.querySelector('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!);
+  const option = launcherOption(name);
+  if (!option) throw new Error(`no ${name} in the launcher`);
+  await click(option);
+};
 
 /** Open a workspace session identified by its dirty-file pill ("4 files" is
  * demo-1, "7 files" is demo-2 in the mock state). */
@@ -261,7 +270,7 @@ describe("the dock in the session view", () => {
 
   it("cancels new orchestrator setup without creating a session", async () => {
     await mountApp();
-    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!);
+    await openFromLauncher("Projects");
     const create = vi.spyOn(bridgeApi, "createWorkspaceSession");
     const open = () => click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "New agent")!);
     await open();
@@ -384,7 +393,8 @@ describe("the dock in the session view", () => {
     expect(textarea.value).toContain("@src-tauri/bridge-core/src/policy.rs");
     expect(document.activeElement).toBe(textarea);
 
-    await click(dock.querySelector('button[aria-expanded="false"]')!);
+    // Scoped to the pane: the strip's + button is a collapsed control too.
+    await click(dock.querySelector('[role="tabpanel"][aria-label="Changes"] button[aria-expanded="false"]')!);
     await click(dock.querySelector('button[aria-label="Reference lines 10-30 in the composer"]')!);
     expect(textarea.value).toMatch(/lines 10-30 $/);
   });
@@ -400,6 +410,32 @@ describe("the dock in the session view", () => {
     const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
     expect(codeTab.getAttribute("aria-selected")).toBe("true");
     expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src-tauri/bridge-core/src/policy.rs")).toBe(true);
+  });
+
+  // Review fix: ⌘P in the launcher pins; it must not also reach the Code
+  // pane's window listener and open its file palette underneath.
+  it("pins from the launcher without opening the Code pane's Open file dialog", async () => {
+    localStorage.removeItem(PINS_KEY);
+    resetPinsCache();
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit2", key: "2" });
+    await settle(3);
+    const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
+    expect(codeTab.getAttribute("aria-selected"), "the Code pane is open").toBe("true");
+
+    await key({ key: "k", metaKey: true });
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Search apps and chats"]')!;
+    expect(input, "the launcher is open").not.toBeNull();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => { setter.call(input, "notes"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "p", metaKey: true, bubbles: true, cancelable: true })); });
+    await settle(2);
+
+    expect(readPins()).toEqual(["notes"]);
+    expect(document.body.querySelector('[aria-label="Open file"]')).toBeNull();
+    localStorage.removeItem(PINS_KEY);
+    resetPinsCache();
   });
 
   // Contract: testing/feat-dock-code.md §4.
@@ -1003,7 +1039,7 @@ describe("the dock in the session view", () => {
     vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
     const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
     await mountApp();
-    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Pulls")!);
+    await openFromLauncher("Pulls");
     await settle(4);
     await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
     await settle(4);
@@ -1037,7 +1073,12 @@ describe("the dock in the session view", () => {
   it("exposes Terminals while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
+    await click(container.querySelector('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!);
+    expect(launcherOption("Terminals")).not.toBeNull();
+    expect(launcherOption("Work board")).toBeNull();
+    await key({ key: "Escape" });
+    await act(async () => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await settle(2);
     const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
