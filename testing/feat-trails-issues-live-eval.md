@@ -135,6 +135,10 @@ Refresh:
   (`watch_attached`) for every PR member of an open trail whose stored
   snapshot is open (or has none). Merged and closed PRs are not watched.
   Arming is idempotent.
+- (Manual check) A person's membership edit (`trails/changed` with a trail
+  id and nothing added) wakes the loop, so an issue added by hand has its
+  linked PR read and watched without waiting for an unrelated core event.
+  The loop's own announcements (additions, or no trail id) never wake it.
 - Result: with no chat or trail page open, a check that fails on a trail's
   PR moves that trail to Needs you on the next poll, and a merge moves it to
   Shipped. Lag is at most one poll cadence (15 s while checks run, 2 min
