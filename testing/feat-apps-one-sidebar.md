@@ -143,3 +143,25 @@ Manifests, core registry, `apps/*` methods, community installs, trails.
 - N/A for cURL (no network surface).
 - Manual in the desktop build: ⌘K from the composer opens the launcher; ⌘F
   opens chat recall; the Go menu shows "Apps ⌘K" and "Search This Chat ⌘F".
+
+## CI: Linux AppImage (added after opening the PR)
+
+`Linux release candidates` has failed on every PR since the Claude Agent SDK
+moved to 0.3.322: linuxdeploy rewrites the RPATH of every ELF in the AppDir
+with its bundled patchelf 0.8, which corrupts the SDK's native `claude`
+binary; `ldd` then exits 1 on it and the GTK plugin pass aborts.
+
+- Linux `tauri build` sets `PATCHELF` to `scripts/linuxdeploy-patchelf.sh`
+  (unless the caller already set one, which it then forwards to).
+- The wrapper skips any modifying patchelf call on
+  `*/claude-agent-sdk-*/claude` and passes every other call, unchanged, to the
+  patchelf linuxdeploy would have used.
+- Unit: `scripts/test/linuxdeploy-patchelf.test.mjs`: a modifying call on an
+  SDK binary never reaches patchelf; a read-only call on it does; a modifying
+  call on any other file does, with identical arguments; `tauri.sh` exports the
+  wrapper only for Linux builds.
+- Repro (Docker, ubuntu:24.04 amd64, real linuxdeploy): without the wrapper the
+  second pass aborts with `Failed to run ldd: exited with code 1`; with it both
+  passes exit 0 and `claude` stays byte-identical to the SDK's.
+- CI: `Linux release candidates` passes, including the AppImage and the
+  Debian install smoke.
