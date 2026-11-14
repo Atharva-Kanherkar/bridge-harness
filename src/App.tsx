@@ -41,6 +41,7 @@ import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./compo
 import { AppLauncher } from "./components/AppLauncher";
 import { appById, appForView, appsBadge, badgeText, MEMORY_LIST_CAP, type AppBadges, type AppId } from "./apps/registry";
 import { togglePin, usePins } from "./apps/pins";
+import { splitDockPanes, useAddedPanes } from "./dockVisibility";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -1048,6 +1049,9 @@ function AppContent() {
     // gating it on a worktree would hide it exactly where a direct chat is.
     ...(INBOX_PANE_ENABLED ? [{ id: "inbox" as const, label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined }] : []),
   ];
+  // The strip shows what this chat uses; the rest waits behind the + menu.
+  const [addedDockPanes, addDockPane] = useAddedPanes(session?.id);
+  const dockStrip = splitDockPanes(dockPanes, { active: dock.pane, added: addedDockPanes, visited: dock.visited });
   // A dock persisted on the Inbox would otherwise open onto an empty pane.
   useEffect(() => {
     if (!INBOX_PANE_ENABLED && dock.open && dock.pane === "inbox") dispatchDock({ type: "open-pane", pane: "transcript" });
@@ -3959,6 +3963,8 @@ function AppContent() {
           <SessionDock
             state={dock}
             panes={dockPanes}
+            hiddenPanes={dockStrip.hidden}
+            onAddPane={pane => { addDockPane(pane); dispatchDock({ type: "open-pane", pane }); }}
             availableWidth={dockSectionWidth}
             sheet={dockSheet}
             concealed={fullscreen}

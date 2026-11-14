@@ -45,6 +45,8 @@ type MountOptions = {
   concealed?: boolean;
   onAction?: (action: DockAction) => void;
   onConnectFolder?: () => void;
+  hiddenPanes?: DockPaneDescriptor[];
+  onAddPane?: (pane: DockPaneDescriptor["id"]) => void;
 };
 
 function mount(options: MountOptions = {}) {
@@ -58,6 +60,8 @@ function mount(options: MountOptions = {}) {
         concealed={options.concealed ?? false}
         onAction={options.onAction ?? (() => {})}
         onConnectFolder={options.onConnectFolder}
+        hiddenPanes={options.hiddenPanes}
+        onAddPane={options.onAddPane}
       >
         {pane => <output data-pane={pane}>{pane} body</output>}
       </SessionDock>,
@@ -289,5 +293,42 @@ describe("dock keyboard navigation", () => {
     act(() => tabs()[2].dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
     expect(document.activeElement).toBe(changes);
     expect(document.getElementById(changes.getAttribute("aria-controls")!)?.getAttribute("role")).toBe("tabpanel");
+  });
+});
+
+describe("SessionDock + menu", () => {
+  const hidden: DockPaneDescriptor[] = [
+    { id: "transcript", label: "Transcript", icon: Code2, available: true },
+    { id: "github", label: "GitHub", icon: Code2, available: false, unavailableReason: "GitHub needs a repository." },
+  ];
+  const plus = () => container.querySelector<HTMLButtonElement>('button[aria-label="Add a pane to this chat"]');
+
+  it("is absent when nothing is hidden", () => {
+    mount({ onAddPane: () => {} });
+    expect(plus()).toBeNull();
+    mount({ hiddenPanes: hidden });
+    expect(plus()).toBeNull();
+  });
+
+  it("lists the hidden panes and adds the one picked", () => {
+    const onAddPane = vi.fn();
+    mount({ hiddenPanes: hidden, onAddPane });
+    act(() => plus()!.click());
+    const items = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Add a pane to this chat"] [role="menuitem"]')];
+    expect(items.map(item => item.textContent)).toEqual(["Transcript", "GitHubUnavailable here"]);
+    expect(items[1].title).toBe("GitHub needs a repository.");
+    act(() => items[0].click());
+    expect(onAddPane).toHaveBeenCalledWith("transcript");
+    expect(document.body.querySelector('[role="menu"][aria-label="Add a pane to this chat"]')).toBeNull();
+  });
+});
+
+describe("SessionDock hidden tabs", () => {
+  it("keeps a visited pane's body mounted when its tab is hidden", () => {
+    const hiddenCode = PANES.filter(pane => pane.id === "code");
+    mount({ state: open({ pane: "changes", visited: ["changes", "code"] }), hiddenPanes: hiddenCode, onAddPane: () => {} });
+    expect(tabs().map(tab => tab.getAttribute("aria-label"))).toEqual(["Changes", "Terminal"]);
+    expect(body("code")).not.toBeNull();
+    expect(hidden(body("code"))).toBe(true);
   });
 });

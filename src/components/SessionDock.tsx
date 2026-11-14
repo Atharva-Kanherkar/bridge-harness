@@ -1,8 +1,9 @@
 import { useId, useRef } from "react";
-import { FolderGit2, Maximize2, Minimize2, X } from "lucide-react";
+import { FolderGit2, Maximize2, Minimize2, Plus, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PaneState } from "./ui/pane";
+import { MenuPanel, useMenuPanel } from "./ui/menu-panel";
 import {
   DEFAULT_DOCK_WIDTH,
   MIN_DOCK_WIDTH,
@@ -48,6 +49,11 @@ export type SessionDockProps = {
   concealed?: boolean;
   onAction: (action: DockAction) => void;
   onConnectFolder?: () => void;
+  /** Panes this chat does not show on its strip yet, offered behind the +
+   *  menu. Their bodies, if ever opened, stay mounted. */
+  hiddenPanes?: DockPaneDescriptor[];
+  /** Add a hidden pane to this chat and open it. */
+  onAddPane?: (pane: DockPaneId) => void;
   children: (pane: DockPaneId) => React.ReactNode;
 };
 
@@ -68,7 +74,11 @@ const RESIZE_STEP = 16;
  */
 export const DOCK_TAB_LABEL_MIN_WIDTH = 400;
 
-export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, children }: SessionDockProps) {
+export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, hiddenPanes = [], onAddPane, children }: SessionDockProps) {
+  // `panes` is every pane, so a body never unmounts because its tab was
+  // hidden; the strip draws only the ones this chat shows.
+  const hiddenIds = new Set(hiddenPanes.map(pane => pane.id));
+  const strip = panes.filter(pane => !hiddenIds.has(pane.id));
   const dockId = useId();
   const dragging = useRef(false);
   // Expanded means the dock is `flex-1` — the whole split, always wider than
@@ -143,7 +153,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
         {state.open && !concealed && (
           <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
             <div role="tablist" aria-label="Dock panes" className="flex min-h-8 min-w-0 flex-1 items-center gap-0.5 overflow-x-auto rounded-lg p-0.5">
-              {panes.map((pane, index) => {
+              {strip.map((pane, index) => {
                 const active = pane.id === state.pane;
                 const Icon = pane.icon;
                 // The chord follows DOCK_PANES, not the strip order: a pane
@@ -163,14 +173,14 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
                     onKeyDown={event => {
                       let next = index;
-                      if (event.key === "ArrowRight") next = (index + 1) % panes.length;
-                      else if (event.key === "ArrowLeft") next = (index - 1 + panes.length) % panes.length;
+                      if (event.key === "ArrowRight") next = (index + 1) % strip.length;
+                      else if (event.key === "ArrowLeft") next = (index - 1 + strip.length) % strip.length;
                       else if (event.key === "Home") next = 0;
-                      else if (event.key === "End") next = panes.length - 1;
+                      else if (event.key === "End") next = strip.length - 1;
                       else return;
                       event.preventDefault();
-                      onAction({ type: "open-pane", pane: panes[next].id });
-                      document.getElementById(`${dockId}-tab-${panes[next].id}`)?.focus();
+                      onAction({ type: "open-pane", pane: strip[next].id });
+                      document.getElementById(`${dockId}-tab-${strip[next].id}`)?.focus();
                     }}
                     className={cn(
                       "relative flex h-7 min-w-7 shrink-0 items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-colors",
@@ -194,6 +204,8 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                 );
               })}
             </div>
+
+            {onAddPane && hiddenPanes.length > 0 && <AddPaneMenu panes={hiddenPanes} onAdd={onAddPane} />}
 
             <span className="ml-auto" />
 
@@ -244,6 +256,48 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
           )}
         </div>
       </aside>
+    </>
+  );
+}
+
+/** The panes this chat does not show, one click away. Picking one keeps it on
+ *  this chat's strip from then on. */
+function AddPaneMenu({ panes, onAdd }: { panes: DockPaneDescriptor[]; onAdd: (pane: DockPaneId) => void }) {
+  const menu = useMenuPanel<HTMLButtonElement>({ width: 260, height: 44 + panes.length * 40 });
+  return (
+    <>
+      <button
+        ref={menu.triggerRef}
+        type="button"
+        onClick={menu.toggle}
+        aria-haspopup="menu"
+        aria-expanded={menu.open}
+        aria-label="Add a pane to this chat"
+        title="Add a pane to this chat"
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+      <MenuPanel controller={menu} label="Add a pane to this chat" className="w-[260px] p-1.5">
+        <p className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Add to this chat</p>
+        {panes.map(pane => {
+          const Icon = pane.icon;
+          return (
+            <button
+              key={pane.id}
+              type="button"
+              role="menuitem"
+              onClick={() => { menu.close(); onAdd(pane.id); }}
+              title={pane.available ? undefined : pane.unavailableReason}
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[12.5px] text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+            >
+              <Icon size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">{pane.label}</span>
+              {!pane.available && <span className="shrink-0 text-[11px] text-muted-foreground">Unavailable here</span>}
+            </button>
+          );
+        })}
+      </MenuPanel>
     </>
   );
 }

@@ -84,10 +84,10 @@ describe("shell flags", () => {
     expect(source).not.toContain("RightRailPreview");
     expect(source).not.toContain("NewChatDialog");
     expect(source).toContain("BridgeSidebar");
-    expect(source).toContain('onOpenMarketplace={() => setView("marketplace")}');
-    expect(source).toContain('onOpenMemory={() => setView("memory")}');
+    // Every screen the old rows opened is an app now, opened through one path.
+    expect(source).toContain("onOpenApps={() => setLauncherOpen(true)}");
+    expect(source).toContain("onOpenApp={openApp}");
     expect(source).toContain('if (view !== "memory") setMemoryDraft(null)');
-    expect(source).toContain('onOpenWorkflows={() => setView("workflows")}');
     expect(source).toContain('view === "workflows"');
     expect(source).not.toContain("Scheduled tasks");
     expect(source).toContain("chromeFullscreen");
@@ -392,7 +392,8 @@ describe("the dock in the session view", () => {
     expect(textarea.value).toContain("@src-tauri/bridge-core/src/policy.rs");
     expect(document.activeElement).toBe(textarea);
 
-    await click(dock.querySelector('button[aria-expanded="false"]')!);
+    // Scoped to the pane: the strip's + button is a collapsed control too.
+    await click(dock.querySelector('[role="tabpanel"][aria-label="Changes"] button[aria-expanded="false"]')!);
     await click(dock.querySelector('button[aria-label="Reference lines 10-30 in the composer"]')!);
     expect(textarea.value).toMatch(/lines 10-30 $/);
   });
@@ -1011,7 +1012,7 @@ describe("the dock in the session view", () => {
     vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
     const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
     await mountApp();
-    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Pulls")!);
+    await openFromLauncher("Pulls");
     await settle(4);
     await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
     await settle(4);
