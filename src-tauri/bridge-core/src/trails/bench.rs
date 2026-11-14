@@ -155,11 +155,16 @@ fn reads() {
         ),
     ];
     // Where the time goes, part by part.
-    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let (sessions, ids) = {
+        let db = core.db.lock().unwrap();
+        (crate::trails::timeline::open_trail_sessions(&db).unwrap(), crate::trails::timeline::member_note_ids(&db, None).unwrap())
+    };
+    let notes = crate::trails::timeline::NoteSnapshot::linked(core.notes.as_ref(), &sessions);
     let row = crate::trails::store::require(&core.db.lock().unwrap(), &middle).unwrap();
     let mut rows = rows;
     rows.extend([
-        ("  part: NoteSnapshot::all", time(runs, || drop(crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())))),
+        ("  part: NoteSnapshot::linked (sweep)", time(runs, || drop(crate::trails::timeline::NoteSnapshot::linked(core.notes.as_ref(), &sessions)))),
+        ("  part: NoteSnapshot::members (list)", time(runs, || drop(crate::trails::timeline::NoteSnapshot::members(core.notes.as_ref(), &ids, false)))),
         ("  part: auto::sweep (notes in hand)", time(runs, || drop(crate::trails::auto::sweep(&core.db.lock().unwrap(), &notes, "t").unwrap()))),
         ("  part: timeline::detail, one trail", time(runs, || drop(crate::trails::timeline::detail(&core.db.lock().unwrap(), &notes, &row).unwrap()))),
         (
@@ -172,7 +177,7 @@ fn reads() {
             }),
         ),
         ("  part: brief::preview (notes in hand)", time(runs, || drop(crate::trails::brief::preview(&core.db.lock().unwrap(), &notes, &row).unwrap()))),
-        ("  part: arm_trail_pulls", time(runs, || drop(crate::trails::live::arm_trail_pulls(&core)))),
+        ("  part: arm_trail_pulls", time(runs, || { crate::trails::live::arm_trail_pulls(&core); })),
     ]);
     println!("\n{:<40} {:>12} {:>12}", "call", "median", "p90");
     for (name, (median, p90)) in rows {

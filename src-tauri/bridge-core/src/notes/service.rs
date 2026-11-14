@@ -1632,6 +1632,43 @@ impl NotesService {
         })
     }
 
+    /// The facts and body of exactly these pages (archived included, deleted
+    /// not), in one query, without a full read's structure, tasks, backlinks
+    /// or database. For callers that need many pages' text and nothing else.
+    pub fn pages(&self, ids: &[String]) -> Result<Vec<(Note, String)>, BridgeError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.with_db(|db| {
+            let marks = (1..=ids.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+            let mut statement = db.prepare(&format!("SELECT {NOTE_COLUMNS}, body FROM pages WHERE id IN ({marks}) AND deleted_at IS NULL"))?;
+            let pages = statement
+                .query_map(rusqlite::params_from_iter(ids.iter()), |row| Ok((note_from_row(row)?, row.get::<_, String>(19)?)))?
+                .collect::<Result<_, _>>()?;
+            Ok(pages)
+        })
+    }
+
+    /// Every live page in this space (archived included, the system database
+    /// not) linked to any of these chats, in one query.
+    pub fn linked_to(&self, sessions: &[String]) -> Result<Vec<Note>, BridgeError> {
+        if sessions.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.with_db(|db| {
+            let marks = (2..=sessions.len() + 1).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+            let mut statement = db.prepare(&format!(
+                "SELECT {NOTE_COLUMNS} FROM pages WHERE deleted_at IS NULL AND space_id=?1 AND session_ids <> '[]'
+                 AND id NOT IN (SELECT system_database_id FROM spaces WHERE system_database_id IS NOT NULL)
+                 AND EXISTS (SELECT 1 FROM json_each(pages.session_ids) WHERE value IN ({marks}))
+                 ORDER BY id"
+            ))?;
+            let args = std::iter::once(&self.space).chain(sessions.iter());
+            let notes = statement.query_map(rusqlite::params_from_iter(args), note_from_row)?.collect::<Result<_, _>>()?;
+            Ok(notes)
+        })
+    }
+
     /// Drop the index and rebuild every page from `page_updates`.
     pub fn rebuild_index(&self) -> Result<usize, BridgeError> {
         let db = self.db.lock().unwrap();
@@ -2553,6 +2590,32 @@ pub(crate) mod tests {
         assert_eq!(notes.read(&page.id).unwrap().markdown, "raw words, untouched");
         assert!(notes.update(UpdateNote { id: page.id.clone(), kind: Some("essay".into()), ..Default::default() }, PERSON).is_err());
         assert!(notes.update(UpdateNote { id: page.id, state: Some("someday".into()), ..Default::default() }, PERSON).is_err());
+    }
+
+    #[test]
+    fn pages_and_linked_to_read_only_what_they_name() {
+        let (_dir, notes) = service();
+        let first = page(&notes, "First", "one body");
+        let second = page(&notes, "Second", "two body");
+        let other = page(&notes, "Other", "unrelated");
+        let gone = page(&notes, "Gone", "deleted");
+        for (id, session) in [(&first.id, "s1"), (&second.id, "s2"), (&other.id, "s9"), (&gone.id, "s1")] {
+            notes.update(UpdateNote { id: id.clone(), add_session_id: Some(session.into()), ..Default::default() }, PERSON).unwrap();
+        }
+        notes.update(UpdateNote { id: second.id.clone(), state: Some("archived".into()), ..Default::default() }, PERSON).unwrap();
+        notes.delete(&gone.id, PERSON).unwrap();
+
+        let read = notes.pages(&[first.id.clone(), second.id.clone(), gone.id.clone(), "missing".into()]).unwrap();
+        let mut found: Vec<(String, String)> = read.iter().map(|(note, body)| (note.title.clone().unwrap(), body.clone())).collect();
+        found.sort();
+        assert_eq!(found, [("First".to_owned(), notes.read(&first.id).unwrap().markdown), ("Second".to_owned(), notes.read(&second.id).unwrap().markdown)]);
+        assert!(notes.pages(&[]).unwrap().is_empty());
+
+        let mut linked: Vec<String> = notes.linked_to(&["s1".into(), "s2".into()]).unwrap().into_iter().map(|note| note.title.unwrap()).collect();
+        linked.sort();
+        assert_eq!(linked, ["First", "Second"], "archived included, deleted and unlinked not");
+        assert!(notes.linked_to(&[]).unwrap().is_empty());
+        assert!(notes.linked_to(&["nobody".into()]).unwrap().is_empty());
     }
 
     #[test]

@@ -31,7 +31,6 @@ pub fn sweep(db: &Connection, notes: &dyn NoteSource, now: &str) -> Result<Vec<T
     if trails.is_empty() {
         return Ok(Vec::new());
     }
-    let all_notes = notes.all_notes();
     let mut added = Vec::new();
     for trail in trails {
         loop {
@@ -42,7 +41,8 @@ pub fn sweep(db: &Connection, notes: &dyn NoteSource, now: &str) -> Result<Vec<T
                 break;
             }
             let mut joined = 0;
-            for candidate in candidates(db, &sessions, &all_notes)?.into_iter().chain(issue_links(db, &pulls, &issues)?) {
+            let linked = notes.linked_to(&sessions);
+            for candidate in candidates(db, &sessions, &linked)?.into_iter().chain(issue_links(db, &pulls, &issues)?) {
                 if store::trail_of(db, &candidate)?.is_some() || store::is_dismissed(db, &trail.id, &candidate)? {
                     continue;
                 }
@@ -127,11 +127,9 @@ fn candidates(db: &Connection, sessions: &[String], notes: &[NoteFacts]) -> Resu
     )? {
         push(TrailMemberKind::Outgoing, id);
     }
-    let members: HashSet<&str> = sessions.iter().map(String::as_str).collect();
+    // `notes` are the pages linked to these chats already.
     for note in notes {
-        if note.session_ids.iter().any(|id| members.contains(id.as_str())) {
-            push(TrailMemberKind::Note, note.id.clone());
-        }
+        push(TrailMemberKind::Note, note.id.clone());
     }
     for id in strings(
         db,

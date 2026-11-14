@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bridge_protocol::messages::{TrailMemberAdded, TrailsChanged};
+use bridge_protocol::messages::{TrailMemberAdded, TrailMemberKind, TrailsChanged};
 
 use super::auto;
 use super::timeline::NoteSnapshot;
@@ -45,36 +45,51 @@ pub fn relevance(event: &CoreEvent) -> Relevance {
     }
 }
 
+/// The most sweeps one call runs while chats keep joining.
+const MAX_ROUNDS: usize = 8;
+
 /// Sweep every open trail and publish what joined, one notification per
 /// trail. With `hint`, also publish a plain refetch hint when there are
 /// trails, whether or not anything was added.
+///
+/// The sweep follows "a note linked to a member chat" through a snapshot of
+/// only the notes linked to member chats, so when a chat joins, the sweep runs
+/// again with its notes in view.
 pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberAdded> {
-    let any = {
+    let sessions = {
         let db = core.db.lock().unwrap();
-        super::store::list(&db, false).map(|trails| !trails.is_empty()).unwrap_or(false)
+        if !super::store::list(&db, false).map(|trails| !trails.is_empty()).unwrap_or(false) {
+            return Vec::new();
+        }
+        super::timeline::open_trail_sessions(&db).unwrap_or_default()
     };
-    if !any {
-        return Vec::new();
-    }
-    let notes = NoteSnapshot::all(core.notes.as_ref());
-    let now = chrono::Utc::now().to_rfc3339();
-    let added = {
+    let mut sessions = sessions;
+    let mut all = Vec::new();
+    for _ in 0..MAX_ROUNDS {
+        let notes = NoteSnapshot::linked(core.notes.as_ref(), &sessions);
+        let now = chrono::Utc::now().to_rfc3339();
         let db = core.db.lock().unwrap();
-        match auto::sweep(&db, &notes, &now) {
+        let added = match auto::sweep(&db, &notes, &now) {
             Ok(added) => added,
             Err(error) => {
                 eprintln!("trails: sweep failed: {error}");
                 Vec::new()
             }
+        };
+        let chat_joined = added.iter().any(|item| item.member.kind == TrailMemberKind::Session);
+        all.extend(added);
+        if !chat_joined {
+            break;
         }
-    };
-    publish_added(core, &added);
+        sessions = super::timeline::open_trail_sessions(&db).unwrap_or_default();
+    }
+    publish_added(core, &all);
     // Additions name only the trails that gained a member; a state event in
     // the same batch may have moved any other trail, so it still refetches.
     if hint {
         core.events.publish(CoreEvent::TrailsChanged(TrailsChanged { trail_id: None, added: Vec::new() }));
     }
-    added
+    all
 }
 
 /// Watch every open pull request on an open trail, so the poller carries its
@@ -500,5 +515,32 @@ esac
             assert!(core.github_poller.is_watching(live, 12), "archived {archived}: the PR is armed under {live}");
             assert!(!core.github_poller.is_watching(archived, 12));
         }
+    }
+
+    #[test]
+    fn a_chat_that_joins_mid_sweep_brings_its_linked_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let note = core
+            .notes
+            .create(crate::notes::service::CreatePage { title: Some("Fork plan".into()), ..Default::default() }, "person")
+            .unwrap();
+        core.notes
+            .update(crate::notes::service::UpdateNote { id: note.id.clone(), add_session_id: Some("fork".into()), ..Default::default() }, "person")
+            .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            crate::trails::timeline::tests::add_session(&db, "s1", "codex", "Build", None);
+            crate::trails::timeline::tests::add_session(&db, "fork", "claude", "Try again", None);
+            db.execute("UPDATE sessions SET fork_parent_session_id='s1' WHERE id='fork'", []).unwrap();
+            let trail = crate::trails::store::create(&db, "T", None, "t0").unwrap();
+            crate::trails::store::add_member(&db, &trail.id, &TrailMemberRef { kind: TrailMemberKind::Session, reference: "s1".into() }, TrailAddedBy::Person, "t0").unwrap();
+        }
+        // Before the fork joined, its note was not in the snapshot; one call
+        // still brings both.
+        let added = sweep_and_publish(&core, false);
+        let kinds: Vec<(TrailMemberKind, String)> = added.iter().map(|item| (item.member.kind, item.member.reference.clone())).collect();
+        assert_eq!(kinds, [(TrailMemberKind::Session, "fork".to_owned()), (TrailMemberKind::Note, note.id.clone())]);
+        assert_eq!(added[1].label, "Note “Fork plan”");
     }
 }
