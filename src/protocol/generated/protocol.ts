@@ -5147,6 +5147,7 @@ export interface QueryDatabaseParams {
   groupBy?: NoteGroupBy | null;
   groupLimit?: number | null;
   limit?: number | null;
+  notesOnly?: boolean;
   query?: string | null;
   sorts?: NoteSort[] | null;
   today?: string | null;

@@ -55,6 +55,11 @@ pub struct QuerySpec {
     pub today: Option<String>,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
+    /// Rows as pages, without their cells. A cell is the only reason a query
+    /// opens a page's document, and replaying documents costs more than the
+    /// rest of the query put together; the Notes list's tabs show rows as
+    /// pages, ask for no cells, and get the query back in milliseconds.
+    pub notes_only: bool,
 }
 
 /// One matching row: the page and its cells by property id.
@@ -935,7 +940,7 @@ pub fn run(db: &Connection, space: &str, database: &DatabaseDoc, spec: &QuerySpe
             wanted.extend(ids.iter().map(String::as_str));
         }
     }
-    let rows = load_rows(db, Some(database), &wanted)?;
+    let rows = load_rows(db, Some(database), &wanted, spec.notes_only)?;
     let pick = |id: &str| rows.get(id).cloned();
     Ok(QueryResult {
         rows: page.iter().filter_map(|row| pick(&row.id)).collect(),
@@ -1015,8 +1020,9 @@ fn bucket_rows(ordered: &[Ordered], grouping: &Grouping, group_limit: usize) -> 
 /// Notes and their cells for the given ids, keyed by id. Only the cells of
 /// properties the database still has: a deleted property's cell stays in the
 /// row's doc but is not a value of the row, as on a page read. Each id's doc
-/// is decoded once, however many groups it appears in.
-fn load_rows(db: &Connection, database: Option<&DatabaseDoc>, ids: &[&str]) -> Result<BTreeMap<String, Row>, BridgeError> {
+/// is decoded once, however many groups it appears in. `notes_only` leaves
+/// every row's cells empty and opens no document at all.
+fn load_rows(db: &Connection, database: Option<&DatabaseDoc>, ids: &[&str], notes_only: bool) -> Result<BTreeMap<String, Row>, BridgeError> {
     let mut unique: Vec<&str> = ids.to_vec();
     unique.sort_unstable();
     unique.dedup();
@@ -1026,7 +1032,7 @@ fn load_rows(db: &Connection, database: Option<&DatabaseDoc>, ids: &[&str]) -> R
         let mut statement = db.prepare(&format!("SELECT {NOTE_COLUMNS} FROM pages WHERE id IN ({marks})"))?;
         let notes: Vec<Note> = statement.query_map(rusqlite::params_from_iter(chunk.iter()), note_from_row)?.collect::<Result<_, _>>()?;
         for note in notes {
-            let mut values = doc::load_page(db, &note.id, None)?.0.values();
+            let mut values = if notes_only { BTreeMap::new() } else { doc::load_page(db, &note.id, None)?.0.values() };
             if let Some(database) = database {
                 values.retain(|prop, _| database.schema.contains_key(prop));
             }
