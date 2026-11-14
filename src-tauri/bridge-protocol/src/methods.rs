@@ -223,6 +223,15 @@ methods![
     (ScanDirectory, "storage", "scan_directory"),
     (DeletePaths, "storage", "delete_paths"),
     (EmptyTrash, "storage", "empty_trash"),
+    // trails: one page per piece of work, joining chats, notes, PRs and drafts
+    (ListTrails, "trails", "list_trails"),
+    (ReadTrail, "trails", "read_trail"),
+    (CreateTrail, "trails", "create_trail"),
+    (UpdateTrail, "trails", "update_trail"),
+    (AddTrailMember, "trails", "add_trail_member"),
+    (RemoveTrailMember, "trails", "remove_trail_member"),
+    (PreviewTrailBrief, "trails", "preview_trail_brief"),
+    (CarryTrailBrief, "trails", "carry_trail_brief"),
     // outgoing: messages a chat drafts for a person or a place
     (ListOutgoing, "outgoing", "list_outgoing"),
     (UpdateOutgoing, "outgoing", "update_outgoing"),

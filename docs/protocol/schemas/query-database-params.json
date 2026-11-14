@@ -85,6 +85,11 @@
         "null"
       ]
     },
+    "notesOnly": {
+      "default": false,
+      "description": "Rows as pages, without their cells: no page document is opened to answer, which is what the Notes list's tabs ask for.",
+      "type": "boolean"
+    },
     "query": {
       "default": null,
       "description": "Words to look for, intersected with the filter.",
