@@ -60,9 +60,17 @@ Store (migration 78):
   title, state, state_reason, author, labels, body, comments, created_at,
   closed_at, fetched_at)`. `labels` and `comments` are JSON arrays.
   `comments` keeps the last 5, each `{author, body, createdAt}`.
-- `session_pull_requests.closing_issues` (JSON array of issue URLs, nullable).
-  Written whenever a PR brief is read (attach, card refresh, poller), from
-  `closingIssuesReferences`.
+- `issue_snapshots.closed_by`: PR URLs from the issue's
+  `closedByPullRequestsReferences`.
+- `trail_issue_links(pr_url, issue_url, PRIMARY KEY(pr_url, issue_url))`, the
+  hard links both rules read, filled from an issue snapshot's `closed_by` and
+  from a PR's `closingIssuesReferences`; `trail_pr_link_reads(pr_url,
+  fetched_at)` remembers which PRs were read.
+- (Amended before code.) The chat PR card's `gh pr view` field list is NOT
+  changed: `gh` refuses an unknown `--json` field, so adding
+  `closingIssuesReferences` there would break every PR card on an older `gh`.
+  Closing references are read by a separate trail-only `gh pr view`, and a
+  failure there stores nothing and changes nothing else.
 
 References:
 
@@ -101,17 +109,20 @@ Brief:
 Automatic adds (hard links only, no model call), applied with the existing
 rules in the same transitive sweep:
 
-5. An issue URL in a member PR's `closing_issues` joins the trail.
-6. A PR (any `session_pull_requests` URL) whose `closing_issues` contains a
-   member issue joins the trail.
+5. An issue linked (`trail_issue_links`) to a member PR joins the trail.
+6. A PR attached to any chat (`session_pull_requests`) and linked to a member
+   issue joins the trail.
 
 - Dismissed and other-trail records are skipped, as for the other rules.
-- After a sweep adds issues without a snapshot, the maintenance loop reads
-  them from GitHub outside the database lock and publishes a refetch hint.
+- The maintenance loop, outside the database lock: reads issue members with
+  no snapshot, and PR members with no link read (closing references), stores
+  what it got, sweeps again if a link was stored, and publishes a refetch
+  hint when anything changed.
 
 Refresh:
 
-- `read_trail {refresh: true}` re-reads member issues as well as PRs.
+- `read_trail {refresh: true}` re-reads member issues and member PRs'
+  closing references as well as PR state.
 
 ### 3. Fresh PR state
 
@@ -154,7 +165,9 @@ Refresh:
 - `trails::auto::tests::a_member_prs_closing_issue_joins` and
   `a_pr_that_closes_a_member_issue_joins` and
   `a_dismissed_issue_is_not_re_added`.
-- `session_prs::tests::closing_issues_are_stored_with_the_brief`.
+- `trails::issues::tests::links_come_from_both_directions` (issue `closed_by`
+  and PR closing references land in one table, idempotently).
+- `github_surface::tests::the_pr_brief_field_list_is_unchanged`.
 - `github_poll::tests::a_poll_writes_the_snapshot_before_it_publishes`
   (subscribe, poll, on the event read the row: snapshot has the new checks).
 - `github_poll::tests::a_failed_poll_keeps_the_snapshot`.
