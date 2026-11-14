@@ -10,12 +10,13 @@
 //! entries once the budget is spent, so a carry splits a long item into parts
 //! that each fit, and refuses a selection that would not fit at all.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
 
 use bridge_protocol::messages::{
     OutgoingState, PreviewTrailBriefResult, TrailBriefItem, TrailMemberKind, TrailMemberRef, TrailAddedBy,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 use super::store::{self, TrailRow};
@@ -174,7 +175,7 @@ pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude:
         let Some(chat) = session_facts(db, &member.reference)? else { continue };
         // One chat whose history cannot be projected costs its own item, not
         // the whole brief.
-        let Ok(Some(history)) = restoration::checkpoint_context_with_window(db, &chat.id, CHAT_WINDOW_TOKENS) else { continue };
+        let Ok(Some(history)) = chat_history(db, &chat.id, CHAT_WINDOW_TOKENS) else { continue };
         let who = harness_name(&chat.harness);
         let text = format!("{}\n\n{history}", header(&format!("recent history of the {who} chat “{}”", chat.title)));
         push(format!("chat:{}", member.reference), format!("Chat “{}” ({who})", chat.title), text);
@@ -196,6 +197,49 @@ pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude:
         push(format!("message:{}", member.reference), format!("Message to {}", message.label), text);
     }
     Ok(parts)
+}
+
+/// The most chat projections kept; the oldest go first.
+pub const KEPT_HISTORIES: usize = 256;
+
+type HistoryKey = (String, String, i64);
+
+#[derive(Default)]
+struct Histories {
+    projected: HashMap<HistoryKey, Option<String>>,
+    order: VecDeque<HistoryKey>,
+}
+
+fn histories() -> &'static Mutex<Histories> {
+    static HISTORIES: OnceLock<Mutex<Histories>> = OnceLock::new();
+    HISTORIES.get_or_init(Default::default)
+}
+
+/// A chat's restoration projection at `window`, kept by its active head.
+/// Forest entries never change and their ids are UUIDs, so a head names one
+/// history exactly: a new entry or a rewind moves the head, and the key with
+/// it. A failed projection is never kept.
+pub fn chat_history(db: &Connection, session_id: &str, window: i64) -> Result<Option<String>, BridgeError> {
+    let head: Option<String> = db
+        .query_row("SELECT active_entry_id FROM session_heads WHERE session_id=?1", params![session_id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    let Some(head) = head else { return restoration::checkpoint_context_with_window(db, session_id, window) };
+    let key = (session_id.to_owned(), head, window);
+    if let Some(hit) = histories().lock().unwrap().projected.get(&key) {
+        return Ok(hit.clone());
+    }
+    let projected = restoration::checkpoint_context_with_window(db, session_id, window)?;
+    let mut kept = histories().lock().unwrap();
+    if kept.projected.insert(key.clone(), projected.clone()).is_none() {
+        kept.order.push_back(key);
+        while kept.order.len() > KEPT_HISTORIES {
+            if let Some(oldest) = kept.order.pop_front() {
+                kept.projected.remove(&oldest);
+            }
+        }
+    }
+    Ok(projected)
 }
 
 pub fn preview(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Result<PreviewTrailBriefResult, BridgeError> {
@@ -410,6 +454,19 @@ mod tests {
         let unread = &parts[1];
         assert_eq!(unread.item.label, "Issue #77");
         assert!(unread.text.contains("not read from GitHub yet"));
+    }
+
+    #[test]
+    fn chat_history_is_reprojected_after_a_new_entry() {
+        let (db, notes, trail) = fixture();
+        let text = |db: &Connection| parts(db, &notes, &trail, None).unwrap().into_iter().find(|part| part.item.id == "chat:s1").unwrap().text;
+        let before = text(&db);
+        assert_eq!(text(&db), before, "an unchanged head reads the same projection");
+        SessionForest::new(&db).append("s1", EntryKind::AssistantMessage, json!({ "text": "a brand new decision: ship on Friday" })).unwrap();
+        let after = text(&db);
+        assert!(after.contains("ship on Friday") && !before.contains("ship on Friday"));
+        // The kept projection is exactly what restoration says now.
+        assert_eq!(chat_history(&db, "s1", CHAT_WINDOW_TOKENS).unwrap(), restoration::checkpoint_context_with_window(&db, "s1", CHAT_WINDOW_TOKENS).unwrap());
     }
 
     #[test]
