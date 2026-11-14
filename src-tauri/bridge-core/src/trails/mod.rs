@@ -8,6 +8,8 @@
 //! the records move.
 
 pub mod auto;
+#[cfg(test)]
+mod bench;
 pub mod brief;
 pub mod issues;
 #[cfg(test)]
