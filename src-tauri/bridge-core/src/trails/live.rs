@@ -56,9 +56,13 @@ const MAX_ROUNDS: usize = 8;
 /// only the notes linked to member chats, so when a chat joins, the sweep runs
 /// again with its notes in view.
 pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberAdded> {
+    // Taken before reading anything: a write during the sweep (its own
+    // additions included) moves the stamp, so the next read sweeps again.
+    let started = super::cache::stamp(core);
     let sessions = {
         let db = core.db.lock().unwrap();
         if !super::store::list(&db, false).map(|trails| !trails.is_empty()).unwrap_or(false) {
+            core.trails_cache.mark_swept(started);
             return Vec::new();
         }
         super::timeline::open_trail_sessions(&db).unwrap_or_default()
@@ -83,6 +87,7 @@ pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberA
         }
         sessions = super::timeline::open_trail_sessions(&db).unwrap_or_default();
     }
+    core.trails_cache.mark_swept(started);
     publish_added(core, &all);
     // Additions name only the trails that gained a member; a state event in
     // the same batch may have moved any other trail, so it still refetches.

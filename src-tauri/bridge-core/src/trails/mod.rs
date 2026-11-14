@@ -11,6 +11,7 @@ pub mod auto;
 #[cfg(test)]
 mod bench;
 pub mod brief;
+pub mod cache;
 pub mod issues;
 #[cfg(test)]
 mod eval;

@@ -1632,6 +1632,14 @@ impl NotesService {
         })
     }
 
+    /// `(total_changes, data_version)` of the notes connection: it moves on
+    /// every write to `notes.db`, through this service or another connection.
+    /// Reading it costs nothing; caches over notes compare it.
+    pub fn change_stamp(&self) -> (u64, i64) {
+        let db = self.db.lock().unwrap();
+        (db.total_changes(), db.query_row("PRAGMA data_version", [], |row| row.get(0)).unwrap_or(-1))
+    }
+
     /// The facts and body of exactly these pages (archived included, deleted
     /// not), in one query, without a full read's structure, tasks, backlinks
     /// or database. For callers that need many pages' text and nothing else.
