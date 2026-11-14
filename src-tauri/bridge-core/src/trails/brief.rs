@@ -144,7 +144,11 @@ pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude:
 }
 
 pub fn preview(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow) -> Result<PreviewTrailBriefResult, BridgeError> {
-    let items: Vec<TrailBriefItem> = parts(db, notes, trail, None)?.into_iter().map(|part| part.item).collect();
+    let pieces = piece_bytes(crate::model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS);
+    let items: Vec<TrailBriefItem> = parts(db, notes, trail, None)?
+        .into_iter()
+        .map(|part| TrailBriefItem { tokens: restored_bytes(&entries(&part.text, pieces)).div_ceil(4) as u32, ..part.item })
+        .collect();
     let total_tokens = items.iter().filter(|item| item.default_on).map(|item| item.tokens).sum();
     let budget_tokens = (budget_bytes(crate::model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS) / 4) as u32;
     Ok(PreviewTrailBriefResult { items, total_tokens, budget_tokens })
@@ -175,6 +179,33 @@ pub fn split(text: &str, max: usize) -> Vec<String> {
         pieces.push(current);
     }
     pieces
+}
+
+/// What restoration prints before every carried entry's text.
+const ENTRY_PREFIX: &str = "handoff.brief: ";
+
+/// The allowance one restored entry gets on a window, less room for the
+/// kind prefix restoration prints and the part label.
+fn piece_bytes(window_tokens: i64) -> usize {
+    restoration::restoration_entry_bytes(restoration::restoration_budget_bytes(window_tokens)).saturating_sub(64)
+}
+
+/// The entry texts a carry writes for one item: the item split to fit the
+/// restoration allowance, each part labelled.
+pub fn entries(text: &str, piece_bytes: usize) -> Vec<String> {
+    let pieces = split(text, piece_bytes);
+    let count = pieces.len();
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(index, piece)| if count > 1 { format!("(part {} of {count}) {piece}", index + 1) } else { piece })
+        .collect()
+}
+
+/// What restoration charges for these entries: each one's trimmed text, the
+/// kind prefix and a newline. This, not the raw text, is what has to fit.
+pub fn restored_bytes(entries: &[String]) -> usize {
+    entries.iter().map(|text| ENTRY_PREFIX.len() + text.trim().len() + 1).sum()
 }
 
 /// Write the chosen items into a new chat and put the chat on the trail.
@@ -209,7 +240,9 @@ pub fn carry(
 
     let window = restoration::session_context_window_tokens(db, session_id)?;
     let budget = budget_bytes(window);
-    let wanted: usize = selected.iter().map(|part| part.text.len()).sum();
+    let pieces = piece_bytes(window);
+    let planned: Vec<(&BriefPart, Vec<String>)> = selected.into_iter().map(|part| (part, entries(&part.text, pieces))).collect();
+    let wanted: usize = planned.iter().map(|(_, texts)| restored_bytes(texts)).sum();
     if wanted > budget {
         return Err(BridgeError::Invalid(format!(
             "These items need about {} tokens; this chat can start with at most {}. Untick some and try again.",
@@ -222,17 +255,12 @@ pub fn carry(
         let title = store::get(db, &owner)?.map(|other| other.title).unwrap_or_default();
         return Err(BridgeError::Invalid(format!("This is already on the trail “{title}”. Remove it there first.")));
     }
-    let allowance = restoration::restoration_entry_bytes(restoration::restoration_budget_bytes(window));
     // Every refusal above wrote nothing; from here the entries, the
     // membership and the audit row land together or not at all.
     let transaction = db.unchecked_transaction()?;
     let mut written = 0u32;
-    for part in selected {
-        // Restoration prefixes each entry's kind; keep that room inside the allowance.
-        let pieces = split(&part.text, allowance.saturating_sub(64));
-        let count = pieces.len();
-        for (index, piece) in pieces.into_iter().enumerate() {
-            let text = if count > 1 { format!("(part {} of {count}) {piece}", index + 1) } else { piece };
+    for (part, texts) in planned {
+        for text in texts {
             append_in_transaction(&transaction, session_id, EntryKind::HandoffBrief, json!({ "text": text, "trailId": trail.id, "briefItem": part.item.id }))
                 .map_err(|error| BridgeError::Invalid(error.to_string()))?;
             written += 1;
@@ -398,6 +426,42 @@ mod tests {
         assert!(refused.contains("Untick some") && refused.contains("at most 14400"), "{refused}");
         let entries: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='other'", [], |row| row.get(0)).unwrap();
         assert_eq!(entries, 0);
+    }
+
+    #[test]
+    fn an_admitted_brief_survives_restoration_whole() {
+        let db = database();
+        let mut notes = FakeNotes::default();
+        let trail = store::create(&db, "T", None, "t0").unwrap();
+        for index in 0..1100 {
+            notes = notes.with(&format!("n{index:04}"), &format!("n{index:04}"), "t", &[], "ok");
+            store::add_member(&db, &trail.id, &TrailMemberRef { kind: TrailMemberKind::Note, reference: format!("n{index:04}") }, TrailAddedBy::Person, "t0").unwrap();
+        }
+        let ids: Vec<String> = parts(&db, &notes, &trail, None).unwrap().into_iter().map(|part| part.item.id).collect();
+        add_session(&db, "all", "codex", "All", None);
+        let text_only: usize = parts(&db, &notes, &trail, None).unwrap().iter().map(|part| part.text.len()).sum();
+        let budget = budget_bytes(crate::model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS);
+        assert!(text_only < budget, "the texts alone fit ({text_only} < {budget}), the entries do not");
+        let refused = carry(&db, &notes, &trail.id, "all", &ids, "t1").unwrap_err().to_string();
+        assert!(refused.contains("Untick some"), "{refused}");
+
+        // The largest selection a carry admits restores every entry it wrote.
+        let mut admitted = None;
+        for count in (100..=1100).rev().step_by(50) {
+            let session = format!("s{count}");
+            add_session(&db, &session, "codex", "Some", None);
+            if let Ok(written) = carry(&db, &notes, &trail.id, &session, &ids[..count], "t1") {
+                admitted = Some((session, written));
+                break;
+            }
+        }
+        let (session, written) = admitted.expect("some selection fits");
+        let context = restoration::checkpoint_context(&db, &session).unwrap().unwrap();
+        assert_eq!(context.matches("handoff.brief: ").count(), written as usize, "nothing an admitted carry wrote is dropped");
+        // The preview's tokens are what restoration charges, label and newline included.
+        let preview = preview(&db, &notes, &trail).unwrap();
+        let part = &parts(&db, &notes, &trail, None).unwrap()[0];
+        assert_eq!(preview.items[0].tokens as usize, ("handoff.brief: ".len() + part.text.trim().len() + 1).div_ceil(4));
     }
 
     #[test]
