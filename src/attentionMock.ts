@@ -2,7 +2,7 @@
 // tests read. Same rules as `bridge_core::attention` — a new row supersedes
 // the chat's older unseen rows, reads skip superseded rows, and seen is
 // per chat — so a mock-mode screen behaves like the real one.
-import type { AttentionItem, AttentionKind, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, UnreadSummary } from "./protocol/generated/protocol";
+import type { AttentionItem, AttentionKind, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, UnreadSummary } from "./protocol/generated/protocol";
 
 type StoredItem = AttentionItem & { superseded: boolean };
 
@@ -75,6 +75,15 @@ export function mockMarkAttentionSeen(sessionId: string): MarkAttentionSeenResul
   }
   if (updated) changed();
   return { updated };
+}
+
+/** Clear the seen stamp on a session's newest unanswered row, as core's `mark_unread` does. */
+export function mockMarkAttentionUnread(sessionId: string): MarkAttentionUnreadResult {
+  const newest = rows.filter(row => row.sessionId === sessionId).at(-1);
+  if (!newest || !newest.seenAt || newest.resolvedAt) return { updated: 0 };
+  newest.seenAt = null;
+  changed();
+  return { updated: 1 };
 }
 
 /** How strongly a kind claims a chat's row, as in core's rollup. */

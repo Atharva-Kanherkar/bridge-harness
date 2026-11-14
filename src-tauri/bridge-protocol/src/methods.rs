@@ -176,6 +176,7 @@ methods![
     // attention — what a person should know about, decided in core
     (ListAttention, "attention", "list_attention"),
     (MarkAttentionSeen, "attention", "mark_attention_seen"),
+    (MarkAttentionUnread, "attention", "mark_attention_unread"),
     (UnreadSummary, "attention", "unread_summary"),
     (ReportPresence, "attention", "report_presence"),
     (Post, "attention", "post"),

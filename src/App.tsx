@@ -851,19 +851,57 @@ function AppContent() {
   // its row from it, so a finished chat that starts waiting at the same total
   // must still be sent. The Dock just sets the same count again.
   useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
-  // The chat on screen in a focused window never stays unread: a turn that
+  // A chat on screen in a focused window never stays unread: a turn that
   // ends while you watch, or one that ended while Bridge was in the
-  // background, is seen once you are looking at it.
+  // background, is seen once you are looking at it. On screen is the chat
+  // open in the single view, or every tile on Mission Control's stage: a tile
+  // shows the conversation and takes replies, so reading it there is reading
+  // the chat.
   const windowFocused = useWindowFocused();
-  const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
-  const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  const [missionStage, setMissionStage] = useState<string[]>([]);
+  const onScreenKey = view === "workspace" && paradigm !== "grid" ? selectedSessionId ?? "" : missionStage.join(",");
+  const onScreenIds = useMemo(() => onScreenKey ? onScreenKey.split(",") : [], [onScreenKey]);
+  // Mark as unread on a chat you are looking at holds it unread until it
+  // leaves the screen; otherwise the stamp below would undo the click at once.
+  const heldUnreadRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const held = [...heldUnreadRef.current].filter(id => onScreenIds.includes(id));
+    if (held.length !== heldUnreadRef.current.size) heldUnreadRef.current = new Set(held);
+  }, [onScreenIds]);
   // Core names one client to post OS banners, so a second client on the same
   // daemon does not raise a second banner for the same event.
   const bannerOwner = useBannerOwner(windowFocused);
-  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []), bannerOwner };
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenIds), bannerOwner };
   useEffect(() => {
-    if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
-  }, [onScreenUnread, onScreenSessionId, unread]);
+    if (!windowFocused) return;
+    for (const id of onScreenIds) {
+      if (unread.bySession[id] && !heldUnreadRef.current.has(id)) void bridgeApi.markAttentionSeen(id).catch(() => undefined);
+    }
+  }, [windowFocused, onScreenIds, unread]);
+  // The row menu's Mark as read clears the chat's dot, so it stamps every
+  // unread session in the chat's tree: a worker's request or post rolls up to
+  // the chat, and opening the chat alone does not stamp it.
+  const markChatRead = useCallback((chatId: string) => {
+    heldUnreadRef.current = new Set([...heldUnreadRef.current].filter(id => id !== chatId));
+    const parentOf = new Map(state.sessions.map(item => [item.id, item.parentSessionId]));
+    const rootOf = (id: string) => {
+      const visited = new Set<string>();
+      let current = id;
+      while (!visited.has(current)) {
+        visited.add(current);
+        const parent = parentOf.get(current);
+        if (!parent) break;
+        current = parent;
+      }
+      return current;
+    };
+    const tree = Object.keys(unread.bySession).filter(id => rootOf(id) === chatId);
+    for (const id of new Set([chatId, ...tree])) void bridgeApi.markAttentionSeen(id).catch(() => undefined);
+  }, [state.sessions, unread.bySession]);
+  const markChatUnread = useCallback((chatId: string) => {
+    if (onScreenIds.includes(chatId)) heldUnreadRef.current = new Set([...heldUnreadRef.current, chatId]);
+    void bridgeApi.markAttentionUnread(chatId).catch(() => undefined);
+  }, [onScreenIds]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -3497,6 +3535,8 @@ function AppContent() {
       onOpenSession={openSession}
       searchRequest={sidebarSearch}
       onArchiveChat={archiveChat}
+      onMarkChatRead={markChatRead}
+      onMarkChatUnread={markChatUnread}
       // Only while a chat is open: the Welcome screen owns its own draft, so
       // a mention there would land in a composer nobody can see.
       onMentionChat={session ? mentionChat : undefined}
@@ -3595,6 +3635,7 @@ function AppContent() {
         workflowRuns={workflowRuns}
         workflowNames={workflowNames}
         onOpenWorkflowRun={openWorkflowRun}
+        onStageChange={setMissionStage}
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}

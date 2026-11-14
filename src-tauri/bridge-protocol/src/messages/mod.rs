@@ -301,6 +301,7 @@ typed_methods![
     // attention
     (ListAttention, ListAttentionParams, ListAttentionResult),
     (MarkAttentionSeen, MarkAttentionSeenParams, MarkAttentionSeenResult),
+    (MarkAttentionUnread, MarkAttentionUnreadParams, MarkAttentionUnreadResult),
     (UnreadSummary, _, UnreadSummary),
     (ReportPresence, ReportPresenceParams, ReportPresenceResult),
     (Post, PostParams, PostResult),

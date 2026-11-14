@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { mockListAttention, mockMarkAttentionSeen, mockUnreadSummary, onMockAttentionChanged, pushMockAttention, resetMockAttention, resolveMockAttention } from "./attentionMock";
+import { mockListAttention, mockMarkAttentionSeen, mockMarkAttentionUnread, mockUnreadSummary, onMockAttentionChanged, pushMockAttention, resetMockAttention, resolveMockAttention } from "./attentionMock";
 
 describe("attention mock ledger", () => {
   beforeEach(() => resetMockAttention());
@@ -23,6 +23,27 @@ describe("attention mock ledger", () => {
     expect(mockListAttention({ unseenOnly: true }).items.map(item => item.sessionId)).toEqual(["b"]);
     pushMockAttention({ kind: "failed", sessionId: "a", title: "Turn failed" });
     expect(mockListAttention().items.map(item => item.kind)).toEqual(["finished", "finished", "failed"]);
+  });
+
+  it("marks a session unread again the way core does", () => {
+    const top = () => null;
+    expect(mockMarkAttentionUnread("a"), "no row, nothing to mark").toEqual({ updated: 0 });
+    pushMockAttention({ kind: "failed", sessionId: "a", title: "Turn failed" });
+    pushMockAttention({ kind: "finished", sessionId: "a", title: "Turn completed" });
+    mockMarkAttentionSeen("a");
+    expect(mockUnreadSummary(top).total).toBe(0);
+    let calls = 0;
+    const off = onMockAttentionChanged(() => { calls += 1; });
+    expect(mockMarkAttentionUnread("a")).toEqual({ updated: 1 });
+    expect(mockMarkAttentionUnread("a"), "already unread").toEqual({ updated: 0 });
+    off();
+    expect(calls).toBe(1);
+    expect(mockUnreadSummary(top).byChat).toEqual({ a: "finished" });
+    // An answered request waits on nobody.
+    const request = pushMockAttention({ kind: "needsYou", sessionId: "b", title: "Bridge needs you" });
+    resolveMockAttention(request.sequence);
+    mockMarkAttentionSeen("b");
+    expect(mockMarkAttentionUnread("b")).toEqual({ updated: 0 });
   });
 
   it("announces every change and stops after unsubscribe", () => {

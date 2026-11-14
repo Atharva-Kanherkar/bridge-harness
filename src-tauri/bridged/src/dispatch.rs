@@ -466,6 +466,10 @@ pub fn dispatch(
             let p: wire::MarkAttentionSeenParams = decode(method, params)?;
             reply(api::mark_attention_seen(core, &p))
         }
+        MethodName::MarkAttentionUnread => {
+            let p: wire::MarkAttentionUnreadParams = decode(method, params)?;
+            reply(api::mark_attention_unread(core, &p))
+        }
         MethodName::UnreadSummary => reply(api::unread_summary(core)),
         MethodName::Wait => {
             // Long-lived: it holds this connection, never the database.
@@ -1589,6 +1593,17 @@ mod tests {
         let unseen = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
         assert_eq!(unseen["items"], json!([]));
         assert_eq!(dispatch(&core, MethodName::UnreadSummary, None).unwrap()["total"], json!(0));
+
+        // Mark as unread brings the chat's dot and badge back; a second call has nothing to do.
+        let unmarked = dispatch(&core, MethodName::MarkAttentionUnread, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(unmarked, json!({"updated": 1}));
+        let unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(unread, json!({"total": 1, "needsYou": 0, "byChat": {"s": "finished"}, "bySession": {"s": "finished"}}));
+        assert_eq!(dispatch(&core, MethodName::MarkAttentionUnread, Some(json!({"sessionId": "s"}))).unwrap(), json!({"updated": 0}));
+        assert_eq!(dispatch(&core, MethodName::MarkAttentionSeen, Some(json!({"sessionId": "s"}))).unwrap(), json!({"updated": 1}));
+        let error = dispatch(&core, MethodName::MarkAttentionUnread, Some(json!({"sessionId": "s", "all": true})))
+            .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
 
         let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());

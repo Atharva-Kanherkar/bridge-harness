@@ -121,9 +121,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// require this method before offering Send on a draft card. It is also a
 /// minimum-client boundary: older clients cannot decode the new persisted
 /// sending/sent/failed states, so both sides must upgrade together.
+/// **1.33 adds `attention/mark_attention_unread`.** A new client must not
+/// pair with an older daemon, whose Mark as unread would fail with
+/// `method_not_found`; a 1.32 client still pairs with a 1.33 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 32,
+    minor: 33,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -418,6 +421,14 @@ mod tests {
         assert!(!before.accepts(wait));
         assert!(wait.accepts(before), "a 1.29 client still pairs with a 1.30 daemon");
         assert!(!PROTOCOL_VERSION.accepts(before), "the outgoing send boundary requires 1.32");
+    }
+
+    #[test]
+    fn mark_unread_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 32 };
+        let unread = ProtocolVersion { major: 1, minor: 33 };
+        assert!(!before.accepts(unread));
+        assert!(unread.accepts(before), "a 1.32 client still pairs with a 1.33 daemon");
     }
 
     #[test]

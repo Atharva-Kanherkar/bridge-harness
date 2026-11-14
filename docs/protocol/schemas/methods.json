@@ -863,6 +863,13 @@
       "resultSchema": "mark-attention-seen-result.json"
     },
     {
+      "command": "mark_attention_unread",
+      "domain": "attention",
+      "method": "attention/mark_attention_unread",
+      "paramsSchema": "mark-attention-unread-params.json",
+      "resultSchema": "mark-attention-unread-result.json"
+    },
+    {
       "command": "unread_summary",
       "domain": "attention",
       "method": "attention/unread_summary",
@@ -2188,7 +2195,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 32
+    "minor": 33
   },
   "reserved": {
     "cancel": "$/cancel",

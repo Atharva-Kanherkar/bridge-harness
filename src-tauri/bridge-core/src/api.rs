@@ -4506,6 +4506,16 @@ pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionS
     Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
 }
 
+/// The person marks a chat unread by hand. Like seen, it is a server fact, so
+/// every client's dot and badge follow it through `attention/changed`.
+pub fn mark_attention_unread(core: &Arc<BridgeCore>, params: &wire::MarkAttentionUnreadParams) -> Result<wire::MarkAttentionUnreadResult, BridgeError> {
+    let updated = crate::attention::mark_unread(&core.db.lock().unwrap(), &params.session_id)?;
+    if updated > 0 {
+        core.events.publish(CoreEvent::AttentionChanged);
+    }
+    Ok(wire::MarkAttentionUnreadResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
+}
+
 /// An agent asks for the person. Posts one `posted` row for the chat, or says
 /// the chat is rate limited.
 pub fn post_attention(core: &Arc<BridgeCore>, params: &wire::PostParams) -> Result<wire::PostResult, BridgeError> {
