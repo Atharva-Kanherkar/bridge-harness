@@ -320,6 +320,12 @@ async fn github_session_prs(session_id: String, refresh: bool, state: State<'_, 
 }
 
 #[tauri::command]
+async fn github_sidebar_prs(refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSidebarPrsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("chat list pull requests", move || api::github_sidebar_prs(&core, refresh)).await
+}
+
+#[tauri::command]
 async fn github_attach_pr(session_id: String, reference: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubAttachPrResult, BridgeError> {
     let core = state.inner().clone();
     blocking("attach pull request", move || api::github_attach_pr(&core, &session_id, &reference)).await
@@ -3445,6 +3451,7 @@ pub fn run() -> i32 {
             github_checkout,
             github_connect,
             github_session_prs,
+            github_sidebar_prs,
             github_attach_pr,
             list_trails,
             read_trail,

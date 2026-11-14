@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use crate::agent::NormalizedEvent;
 use crate::events::CoreEvent;
 use crate::github_surface::{
-    CheckConclusion, CheckRollup, CheckStatus, PullRequestBrief, PullRequestCheck, PullRequestState,
+    CheckConclusion, CheckRollup, CheckStatus, Mergeability, PullRequestBrief, PullRequestCheck, PullRequestState,
 };
 use crate::{BridgeCore, BridgeError};
 
@@ -78,6 +78,9 @@ pub struct SessionPrView {
     pub url: String,
     pub state: PullRequestState,
     pub is_draft: bool,
+    /// Snapshots written before this field existed read back as `unknown`.
+    #[serde(default = "unknown_mergeability")]
+    pub mergeability: Mergeability,
     pub head_branch: String,
     pub head_sha: String,
     pub checks: CheckRollup,
@@ -87,6 +90,10 @@ pub struct SessionPrView {
     pub fetched_at: Option<String>,
     pub stale: bool,
     pub error: Option<String>,
+}
+
+fn unknown_mergeability() -> Mergeability {
+    Mergeability::Unknown
 }
 
 // --- detection: `gh pr create` in a completed command tool call -------------
@@ -319,6 +326,7 @@ fn build_view(
         url: brief.url.clone(),
         state: brief.state,
         is_draft: brief.is_draft,
+        mergeability: brief.mergeability,
         head_branch: brief.head_branch.clone(),
         head_sha: brief.head_sha.clone(),
         checks: rollup_for(&checks),
@@ -371,13 +379,21 @@ fn brief_repository(brief: &PullRequestBrief) -> (String, String, String) {
     )
 }
 
+/// Every attached row across all sessions, newest first within each session.
+fn list_all(db: &Connection) -> Result<Vec<SessionPullRequestRow>, BridgeError> {
+    query_rows(db, "SELECT session_id,workspace_id,repo_host,repo_owner,repo_name,number,url,title,head_branch,head_sha,attribution,snapshot,fetched_at,created_at
+         FROM session_pull_requests ORDER BY session_id, created_at DESC, rowid DESC", params![])
+}
+
 pub fn list(db: &Connection, session_id: &str) -> Result<Vec<SessionPullRequestRow>, BridgeError> {
-    let mut statement = db.prepare(
-        "SELECT session_id,workspace_id,repo_host,repo_owner,repo_name,number,url,title,head_branch,head_sha,attribution,snapshot,fetched_at,created_at
-         FROM session_pull_requests WHERE session_id=?1 ORDER BY created_at DESC, rowid DESC",
-    )?;
+    query_rows(db, "SELECT session_id,workspace_id,repo_host,repo_owner,repo_name,number,url,title,head_branch,head_sha,attribution,snapshot,fetched_at,created_at
+         FROM session_pull_requests WHERE session_id=?1 ORDER BY created_at DESC, rowid DESC", params![session_id])
+}
+
+fn query_rows(db: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<Vec<SessionPullRequestRow>, BridgeError> {
+    let mut statement = db.prepare(sql)?;
     let rows = statement
-        .query_map(params![session_id], |row| {
+        .query_map(args, |row| {
             Ok(SessionPullRequestRow {
                 session_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -447,35 +463,72 @@ pub fn session_pull_requests(
     let rows = list(&core.db.lock().unwrap(), session_id)?;
     let mut views = Vec::with_capacity(rows.len());
     for row in rows {
-        let path = match core.workspace_path(&row.workspace_id) {
-            Ok(path) => PathBuf::from(path),
-            Err(error) => {
-                views.push(stale_view(&row, &error.to_string()));
-                continue;
-            }
-        };
         if refresh {
-            core.github_surface.invalidate_brief(&path, row.number);
-            core.github_surface.invalidate_checks(&path, row.number);
-        }
-        match core.github_surface.pr_brief(&path, row.number) {
-            Ok(brief) => {
-                core.github_poller.watch_attached(
-                    &row.workspace_id,
-                    path.clone(),
-                    row.number,
-                    &brief.head_branch,
-                    &brief.title,
-                );
-                let view = read_view(core, &path, &row, &brief);
-                views.push(view);
-            }
-            Err(error) => {
-                views.push(stale_view(&row, &error.to_string()));
+            if let Ok(path) = core.workspace_path(&row.workspace_id) {
+                let path = PathBuf::from(path);
+                core.github_surface.invalidate_brief(&path, row.number);
+                core.github_surface.invalidate_checks(&path, row.number);
             }
         }
+        views.push(live_view(core, &row));
     }
     Ok(views)
+}
+
+/// Every chat's attached pull requests at once, for the sidebar. Without
+/// `refresh` this is a pure database read: the stored snapshots, no `gh` call,
+/// so painting hundreds of rows stays instant. With `refresh` only open pull
+/// requests are re-read live; merged and closed are terminal and never cost a
+/// `gh` call again. Rows come back grouped by session, newest first.
+pub fn sidebar_pull_requests(
+    core: &Arc<BridgeCore>,
+    refresh: bool,
+) -> Result<Vec<(String, Vec<SessionPrView>)>, BridgeError> {
+    let rows = list_all(&core.db.lock().unwrap())?;
+    let mut chats: Vec<(String, Vec<SessionPrView>)> = Vec::new();
+    for row in rows {
+        let stored = snapshot_view(&row);
+        let view = if refresh && stored.state == PullRequestState::Open {
+            live_view(core, &row)
+        } else {
+            stored
+        };
+        match chats.iter_mut().find(|(session_id, _)| *session_id == row.session_id) {
+            Some((_, views)) => views.push(view),
+            None => chats.push((row.session_id.clone(), vec![view])),
+        }
+    }
+    Ok(chats)
+}
+
+/// One row read live, falling back to its last snapshot labelled stale. Also
+/// (re)arms the poller, exactly like the per-chat read.
+fn live_view(core: &Arc<BridgeCore>, row: &SessionPullRequestRow) -> SessionPrView {
+    let path = match core.workspace_path(&row.workspace_id) {
+        Ok(path) => PathBuf::from(path),
+        Err(error) => return stale_view(row, &error.to_string()),
+    };
+    match core.github_surface.pr_brief(&path, row.number) {
+        Ok(brief) => {
+            core.github_poller.watch_attached(&row.workspace_id, path.clone(), row.number, &brief.head_branch, &brief.title);
+            read_view(core, &path, row, &brief)
+        }
+        Err(error) => stale_view(row, &error.to_string()),
+    }
+}
+
+/// The stored snapshot as last read, not labelled stale: it is what the chat's
+/// own card last showed. A row never read successfully is the honest minimum.
+fn snapshot_view(row: &SessionPullRequestRow) -> SessionPrView {
+    if let Some(snapshot) = &row.snapshot {
+        if let Ok(mut view) = serde_json::from_str::<SessionPrView>(snapshot) {
+            view.attached_at = row.created_at.clone();
+            return view;
+        }
+    }
+    let mut view = stale_view(row, "");
+    view.error = None;
+    view
 }
 
 /// Both attachment and refresh preserve the last successful full snapshot.
@@ -517,6 +570,7 @@ fn stale_view(row: &SessionPullRequestRow, error: &str) -> SessionPrView {
         url: row.url.clone(),
         state: PullRequestState::Open,
         is_draft: false,
+        mergeability: Mergeability::Unknown,
         head_branch: row.head_branch.clone(),
         head_sha: row.head_sha.clone(),
         checks: CheckRollup::default(),
@@ -679,6 +733,86 @@ esac
         assert!(stale.error.unwrap().contains("offline"));
         std::fs::remove_file(scratch.path().join("offline")).unwrap();
         assert!(!session_pull_requests(&core, "s", true).unwrap()[0].stale);
+    }
+
+    fn set_brief(scratch: &tempfile::TempDir, field: &str, value: &str) {
+        let path = scratch.path().join("brief.json");
+        let mut brief: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        brief[field] = serde_json::json!(value);
+        std::fs::write(path, brief.to_string()).unwrap();
+    }
+
+    fn forget_gh_caches(core: &Arc<BridgeCore>, repo: &std::path::Path) {
+        core.github_surface.invalidate_brief(repo, 12);
+        core.github_surface.invalidate_checks(repo, 12);
+    }
+
+    #[test]
+    fn mergeability_is_read_and_survives_in_the_snapshot() {
+        let (scratch, core, repo) = fixture();
+        set_brief(&scratch, "mergeable", "CONFLICTING");
+        let view = attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        assert_eq!(view.mergeability, Mergeability::Conflicting);
+        // Unknown values and snapshots older than the field are never a conflict.
+        set_brief(&scratch, "mergeable", "SOMETHING_NEW");
+        forget_gh_caches(&core, &repo);
+        assert_eq!(session_pull_requests(&core, "s", true).unwrap()[0].mergeability, Mergeability::Unknown);
+        let mut legacy = serde_json::to_value(&view).unwrap();
+        legacy.as_object_mut().unwrap().remove("mergeability");
+        let legacy: SessionPrView = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.mergeability, Mergeability::Unknown);
+    }
+
+    #[test]
+    fn sidebar_read_without_refresh_never_calls_gh() {
+        let (scratch, core, repo) = fixture();
+        set_brief(&scratch, "mergeable", "CONFLICTING");
+        attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        forget_gh_caches(&core, &repo);
+        std::fs::remove_file(scratch.path().join("gh")).unwrap();
+        let chats = sidebar_pull_requests(&core, false).unwrap();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].0, "s");
+        let view = &chats[0].1[0];
+        assert!(!view.stale, "a snapshot read must not touch gh: {:?}", view.error);
+        assert_eq!(view.mergeability, Mergeability::Conflicting);
+        assert_eq!(view.checks.passed, 1);
+    }
+
+    #[test]
+    fn sidebar_refresh_rereads_open_prs_and_skips_terminal_ones() {
+        let (scratch, core, repo) = fixture();
+        attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        // Open: a refresh picks up the new state and records it.
+        set_brief(&scratch, "mergeable", "CONFLICTING");
+        forget_gh_caches(&core, &repo);
+        let refreshed = sidebar_pull_requests(&core, true).unwrap();
+        assert_eq!(refreshed[0].1[0].mergeability, Mergeability::Conflicting);
+        set_brief(&scratch, "state", "MERGED");
+        forget_gh_caches(&core, &repo);
+        assert_eq!(sidebar_pull_requests(&core, true).unwrap()[0].1[0].state, PullRequestState::Merged);
+        // Terminal: with gh gone, a refresh still answers from the snapshot.
+        std::fs::remove_file(scratch.path().join("gh")).unwrap();
+        forget_gh_caches(&core, &repo);
+        let merged = &sidebar_pull_requests(&core, true).unwrap()[0].1[0];
+        assert_eq!(merged.state, PullRequestState::Merged);
+        assert!(!merged.stale, "a merged PR must not be re-read: {:?}", merged.error);
+    }
+
+    #[test]
+    fn sidebar_groups_rows_by_chat_and_omits_chats_without_prs() {
+        let (_scratch, core, _) = fixture();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('t','w','codex','T','idle')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('u','w','codex','U','idle')", []).unwrap();
+        }
+        attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        attach(&core, "t", &AttachReference::Number(12), ATTRIBUTION_MANUAL).unwrap();
+        let chats = sidebar_pull_requests(&core, false).unwrap();
+        let ids: Vec<&str> = chats.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["s", "t"]);
+        assert!(chats.iter().all(|(_, views)| views.len() == 1));
     }
 
     #[test]
@@ -897,6 +1031,7 @@ esac
             url: "u".into(),
             state: PullRequestState::Merged,
             is_draft: false,
+            mergeability: Mergeability::Unknown,
             head_branch: "feat/x".into(),
             head_sha: "abc".into(),
             checks: CheckRollup { total: 2, passed: 2, ..CheckRollup::default() },

@@ -118,6 +118,10 @@ pub fn dispatch(
             let p: wire::GithubSessionPrsParams = decode(method, params)?;
             reply(api::github_session_prs(core, &p.session_id, p.refresh))
         }
+        MethodName::GithubSidebarPrs => {
+            let p: wire::GithubSidebarPrsParams = decode(method, params)?;
+            reply(api::github_sidebar_prs(core, p.refresh))
+        }
         MethodName::ListTrails => {
             let p: wire::ListTrailsParams = decode(method, params)?;
             reply(api::list_trails(core, p.include_archived))

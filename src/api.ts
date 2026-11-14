@@ -77,6 +77,7 @@ import type {
   GithubConnectResult,
   GithubAttachPrResult,
   GithubSessionPrsResult,
+  GithubSidebarPrsResult,
   SessionPullRequest,
   SearchGithubReposResult,
   GithubChecksResult,
@@ -1853,6 +1854,9 @@ export const bridgeApi = {
    * server caches — a reopened chat or a manual retry. */
   githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
     hasBackend() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
+  /** Every chat's linked PRs for the chat list; snapshot-only unless `refresh`. */
+  githubSidebarPrs: (refresh = false): Promise<GithubSidebarPrsResult> =>
+    hasBackend() ? call("github/github_sidebar_prs", { refresh }) : Promise.resolve(mockGithubSidebarPrs()),
   /** A chat's drafted messages, oldest first, discarded ones included. */
   // Trails: one page per piece of work. Mock mode serves demo trails.
   listTrails: (includeArchived = false): Promise<ListTrailsResult> =>
@@ -3959,11 +3963,14 @@ function mockGithubSessionPrs(sessionId: string): GithubSessionPrsResult {
   }
   return { pullRequests: (mockChatPrs.get(sessionId) ?? []).map(mockChatPrView) };
 }
+function mockGithubSidebarPrs(): GithubSidebarPrsResult {
+  return { chats: [...mockChatPrs].map(([sessionId, entries]) => ({ sessionId, pullRequests: entries.map(mockChatPrView) })).filter(chat => chat.pullRequests.length > 0) };
+}
 function mockChatPrEntry(number: number, title: string, failing: boolean) {
   const url = `https://github.com/Atharva-Kanherkar/bridge-harness/pull/${number}`;
   const at = new Date().toISOString();
   const pr: SessionPullRequest = {
-    number, title, url, state: "open", isDraft: false, headBranch: "feat/pr-status-in-chat", headSha: "e3ad782c0ffee",
+    number, title, url, state: "open", isDraft: false, mergeability: "unknown", headBranch: "feat/pr-status-in-chat", headSha: "e3ad782c0ffee",
     checks: { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 },
     checkDetails: [], attribution: "manual", attachedAt: at, fetchedAt: at, stale: false, error: null,
   };

@@ -42,7 +42,7 @@ const PR_LIST_BASE_FIELDS: &str = "number,title,state,isDraft,author,headRefName
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,headRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
 const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url,comments,labels,commits,additions,deletions,changedFiles";
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
-const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url";
+const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url,mergeable";
 const PR_HEAD_FIELDS: &str = "headRefOid";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
@@ -490,7 +490,15 @@ pub struct PullRequestBrief {
     pub head_branch: String,
     pub head_sha: String,
     pub url: String,
+    /// GitHub computes this lazily: `unknown` right after a push is normal and
+    /// never reads as a conflict.
+    #[serde(default = "unknown_mergeability")]
+    pub mergeability: Mergeability,
     pub repository: GithubRepository,
+}
+
+fn unknown_mergeability() -> Mergeability {
+    Mergeability::Unknown
 }
 
 #[derive(Debug, Clone)]
@@ -1155,6 +1163,8 @@ impl GithubSurface {
             head_branch: raw.head_ref_name,
             head_sha: raw.head_ref_oid,
             url: raw.url,
+            // A value this build does not know is not a conflict either.
+            mergeability: raw.mergeable.as_deref().and_then(|value| parse_mergeability(value).ok()).unwrap_or(Mergeability::Unknown),
             repository,
         };
         self.store(key, CachedResource::PullRequestBrief(Box::new(brief.clone())));
@@ -1930,6 +1940,8 @@ struct RawPullRequestBrief {
     head_ref_oid: String,
     #[serde(default)]
     url: String,
+    #[serde(default)]
+    mergeable: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

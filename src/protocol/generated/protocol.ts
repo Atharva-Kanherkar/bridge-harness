@@ -29,6 +29,7 @@ export type BridgeMethod =
   | "github/github_checkout"
   | "github/github_connect"
   | "github/github_session_prs"
+  | "github/github_sidebar_prs"
   | "github/github_attach_pr"
   | "connectors/connector_list"
   | "connectors/connector_inbox"
@@ -352,6 +353,7 @@ export const BRIDGE_METHODS = [
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
   { method: "github/github_connect", domain: "github", command: "github_connect" },
   { method: "github/github_session_prs", domain: "github", command: "github_session_prs" },
+  { method: "github/github_sidebar_prs", domain: "github", command: "github_sidebar_prs" },
   { method: "github/github_attach_pr", domain: "github", command: "github_attach_pr" },
   { method: "connectors/connector_list", domain: "connectors", command: "connector_list" },
   { method: "connectors/connector_inbox", domain: "connectors", command: "connector_inbox" },
@@ -766,6 +768,7 @@ export interface BridgeMethodParams {
   "github/github_checkout": GithubCheckoutParams;
   "github/github_connect": GithubConnectParams;
   "github/github_session_prs": GithubSessionPrsParams;
+  "github/github_sidebar_prs": GithubSidebarPrsParams;
   "github/github_attach_pr": GithubAttachPrParams;
   "connectors/connector_list": ConnectorListParams;
   "connectors/connector_inbox": ConnectorInboxParams;
@@ -1091,6 +1094,7 @@ export interface BridgeMethodResults {
   "github/github_checkout": GithubCheckoutResult;
   "github/github_connect": GithubConnectResult;
   "github/github_session_prs": GithubSessionPrsResult;
+  "github/github_sidebar_prs": GithubSidebarPrsResult;
   "github/github_attach_pr": GithubAttachPrResult;
   "connectors/connector_list": ConnectorListResult;
   "connectors/connector_inbox": ConnectorInboxResult;
@@ -1572,6 +1576,11 @@ export interface ChatModelChoice {
   account?: string | null;
   harness: string;
   model?: string | null;
+}
+
+export interface ChatPullRequests {
+  pullRequests: SessionPullRequest[];
+  sessionId: string;
 }
 
 export interface ChatSearchHit {
@@ -2985,6 +2994,7 @@ export interface SessionPullRequest {
   headBranch: string;
   headSha: string;
   isDraft: boolean;
+  mergeability?: Mergeability;
   number: number;
   stale: boolean;
   state: PullRequestState;
@@ -4103,6 +4113,14 @@ export interface GithubSessionPrsParams {
 
 export interface GithubSessionPrsResult {
   pullRequests: SessionPullRequest[];
+}
+
+export interface GithubSidebarPrsParams {
+  refresh?: boolean;
+}
+
+export interface GithubSidebarPrsResult {
+  chats: ChatPullRequests[];
 }
 
 export interface GithubAttachPrParams {

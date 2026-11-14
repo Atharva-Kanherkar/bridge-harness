@@ -13,7 +13,7 @@ export type ShelfTone = "danger" | "success" | "info" | "neutral" | "faint";
 export type ShelfPhrase = { text: string; tone: ShelfTone };
 
 const RANK: Record<ChatPrPhase, number> = {
-  failing: 0, running: 1, passing: 2, none: 3, closed: 4, merged: 5,
+  conflicts: 0, failing: 1, running: 2, passing: 3, none: 4, closed: 5, merged: 6,
 };
 
 /** Worst first — what needs the person leads — and stable within a phase. */
@@ -38,6 +38,7 @@ export function shelfPhrase(pr: SessionPullRequest): ShelfPhrase {
   switch (phase) {
     case "merged": return { text: "Merged", tone: "info" };
     case "closed": return { text: "Closed", tone: "faint" };
+    case "conflicts": return { text: `${draft}Merge conflicts`, tone: "danger" };
     case "failing": {
       const failed = failingChecks(pr);
       const text = checks.failed === 1 && failed.length === 1 ? `${failed[0].name} failed` : `${plural(checks.failed, "check")} failed`;
@@ -59,9 +60,10 @@ export type CountPart = { count: number; label: string; tone: ShelfTone };
 
 /** The several-PR line: what each count means, worst first, zeros dropped. */
 export function prCounts(prs: readonly SessionPullRequest[]): CountPart[] {
-  const tally = { failing: 0, running: 0, passing: 0, merged: 0, closed: 0, none: 0 };
+  const tally = { conflicts: 0, failing: 0, running: 0, passing: 0, merged: 0, closed: 0, none: 0 };
   for (const pr of prs) tally[chatPrStatus(pr).phase] += 1;
   const parts: CountPart[] = [
+    { count: tally.conflicts, label: "conflicting", tone: "danger" },
     { count: tally.failing, label: "failing", tone: "danger" },
     { count: tally.running, label: "running", tone: "neutral" },
     { count: tally.passing, label: "passed", tone: "success" },
@@ -69,6 +71,41 @@ export function prCounts(prs: readonly SessionPullRequest[]): CountPart[] {
     { count: tally.closed, label: "closed", tone: "faint" },
   ];
   return parts.filter(part => part.count > 0);
+}
+
+/** The sidebar row's chip: the most urgent PR in a word or two, so a long
+ * chat list shows at a glance which chats landed and which need a hand. */
+export type SidebarPrChip = {
+  pr: SessionPullRequest;
+  text: string;
+  tone: ShelfTone;
+  /** PRs beyond the one shown. */
+  more: number;
+  /** Every PR, one per line, for the hover. */
+  title: string;
+};
+
+function sidebarWord(pr: SessionPullRequest): { text: string; tone: ShelfTone } {
+  const status = chatPrStatus(pr);
+  switch (status.phase) {
+    case "merged": return { text: "merged", tone: "info" };
+    case "closed": return { text: "closed", tone: "faint" };
+    case "conflicts": return { text: "conflicts", tone: "danger" };
+    case "failing": return { text: `${pr.checks.failed} failing`, tone: "danger" };
+    case "running": return { text: "CI running", tone: "neutral" };
+    case "passing": return { text: pr.isDraft ? "draft" : "passing", tone: pr.isDraft ? "faint" : "success" };
+    case "none": return { text: pr.isDraft ? "draft" : "open", tone: "faint" };
+  }
+}
+
+export function sidebarPrChip(prs: readonly SessionPullRequest[] | undefined): SidebarPrChip | null {
+  if (!prs?.length) return null;
+  const ordered = orderPullRequests(prs);
+  const lead = ordered[0];
+  const title = ordered
+    .map(pr => `PR #${pr.number} · ${chatPrStatus(pr).headline}${pr.stale ? " (last known)" : ""}`)
+    .join("\n");
+  return { pr: lead, ...sidebarWord(lead), more: ordered.length - 1, title };
 }
 
 export type TaskSummary =
