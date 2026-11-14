@@ -442,6 +442,24 @@ fn record_snapshot(
     Ok(())
 }
 
+/// What the poller just read for one pull request, written to every chat row
+/// holding it, so screens that read stored snapshots (the Trails list, the
+/// chat list) see the poll without a live read of their own. Returns how many
+/// rows it wrote.
+pub(crate) fn record_polled(db: &Connection, brief: &PullRequestBrief, checks: &[PullRequestCheck]) -> Result<usize, BridgeError> {
+    let (host, owner, name) = brief_repository(brief);
+    let rows = query_rows(
+        db,
+        "SELECT session_id,workspace_id,repo_host,repo_owner,repo_name,number,url,title,head_branch,head_sha,attribution,snapshot,fetched_at,created_at
+         FROM session_pull_requests WHERE repo_host=?1 AND repo_owner=?2 AND repo_name=?3 AND number=?4",
+        params![host, owner, name, brief.number],
+    )?;
+    for row in &rows {
+        record_snapshot(db, &row.session_id, row, &build_view(brief, checks.to_vec(), &row.attribution, &row.created_at))?;
+    }
+    Ok(rows.len())
+}
+
 fn read_checks(
     core: &Arc<BridgeCore>,
     path: &std::path::Path,

@@ -89,6 +89,20 @@ impl GithubPoller {
 
     /// Follow one chat-attached PR. Idempotent: a re-arm keeps the baselines
     /// the change detection diffs against.
+    /// Whether a chat-attached pull request is being watched.
+    #[cfg(test)]
+    pub(crate) fn is_watching(&self, workspace_id: &str, number: u64) -> bool {
+        self.watched.lock().unwrap().get(&(workspace_id.to_owned(), number)).is_some_and(|entry| entry.attached)
+    }
+
+    /// Make every watched pull request due now, as if its cadence had passed.
+    #[cfg(test)]
+    pub(crate) fn due_now(&self) {
+        for entry in self.watched.lock().unwrap().values_mut() {
+            entry.next_poll = None;
+        }
+    }
+
     pub fn watch_attached(
         &self,
         workspace_id: &str,
@@ -118,7 +132,7 @@ impl GithubPoller {
             });
     }
 
-    fn poll_once(&self, core: &BridgeCore) {
+    pub(crate) fn poll_once(&self, core: &BridgeCore) {
         let pending: Vec<_> = self.watched.lock().unwrap().iter()
             .filter(|(_, value)| value.next_poll.is_none_or(|due| due <= Instant::now()))
             .map(|(key, value)| (key.clone(), value.clone())).collect();
@@ -166,6 +180,12 @@ impl GithubPoller {
         // shows its stored snapshot labelled stale and the next cycle retries.
         let Ok(brief) = core.github_surface.pr_brief(&watched.path, number) else { return };
         let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { return };
+        // Store what was read before telling anyone: a screen that refetches
+        // on the event reads the stored snapshot, and a failed read above
+        // leaves the last good one in place.
+        if let Err(error) = crate::session_prs::record_polled(&core.db.lock().unwrap(), &brief, &checks) {
+            eprintln!("github poll: could not store #{number}: {error}");
+        }
         let checks_active = checks.iter().any(|check| check.status != CheckStatus::Completed);
         let state_terminal = matches!(brief.state, PullRequestState::Closed | PullRequestState::Merged);
         let complete = all_checks_complete(&checks);
@@ -560,5 +580,54 @@ mod tests {
         assert!(poller.begin_refresh("other"), "workspaces refresh independently");
         poller.finish_refresh("ws");
         assert!(poller.begin_refresh("ws"), "completion releases the refresh slot");
+    }
+    fn failing_checks(scratch: &tempfile::TempDir) {
+        std::fs::write(
+            scratch.path().join("checks.json"),
+            r#"[{"name":"test","state":"FAILURE","bucket":"fail","link":"https://ci/test","workflow":"CI"},{"name":"lint","state":"SUCCESS","bucket":"pass","link":"","workflow":"CI"}]"#,
+        )
+        .unwrap();
+    }
+
+    fn stored_failed(core: &crate::runtime::BridgeCore) -> u32 {
+        let snapshot: String = core.db.lock().unwrap().query_row("SELECT snapshot FROM session_pull_requests WHERE session_id='s'", [], |row| row.get(0)).unwrap();
+        serde_json::from_str::<crate::session_prs::SessionPrView>(&snapshot).unwrap().checks.failed
+    }
+
+    #[test]
+    fn a_poll_writes_the_snapshot_before_it_publishes() {
+        let (scratch, core, repo) = crate::session_prs::tests::fixture();
+        let green = crate::trails::timeline::tests::view(PullRequestState::Open, vec![("test", Some(CheckConclusion::Success))]);
+        crate::trails::timeline::tests::attach_pr(&core.db.lock().unwrap(), "s", "https://github.com/o/r/pull/12", "2026-11-12T00:00:00Z", Some(&green));
+        assert_eq!(stored_failed(&core), 0);
+        failing_checks(&scratch);
+        // Whoever hears the event reads the store, as the Trails list does.
+        let mut events = core.events.subscribe();
+        let reader = {
+            let core = core.clone();
+            std::thread::spawn(move || loop {
+                match events.blocking_recv() {
+                    Ok(CoreEvent::GithubChecksChanged { number: 12, .. }) => return stored_failed(&core),
+                    Ok(_) => continue,
+                    Err(_) => return u32::MAX,
+                }
+            })
+        };
+        core.github_poller.watch_attached("w", repo, 12, "feat/pr", "PR");
+        core.github_poller.poll_once(&core);
+        assert_eq!(reader.join().unwrap(), 1, "the event must find the failing check already stored");
+    }
+
+    #[test]
+    fn a_failed_poll_keeps_the_snapshot() {
+        let (scratch, core, repo) = crate::session_prs::tests::fixture();
+        let red = crate::trails::timeline::tests::view(PullRequestState::Open, vec![("test", Some(CheckConclusion::Failure))]);
+        crate::trails::timeline::tests::attach_pr(&core.db.lock().unwrap(), "s", "https://github.com/o/r/pull/12", "2026-11-12T00:00:00Z", Some(&red));
+        let before: (String, String) = core.db.lock().unwrap().query_row("SELECT snapshot, fetched_at FROM session_pull_requests WHERE session_id='s'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        std::fs::write(scratch.path().join("offline"), "").unwrap();
+        core.github_poller.watch_attached("w", repo, 12, "feat/pr", "PR");
+        core.github_poller.poll_once(&core);
+        let after: (String, String) = core.db.lock().unwrap().query_row("SELECT snapshot, fetched_at FROM session_pull_requests WHERE session_id='s'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(before, after);
     }
 }
