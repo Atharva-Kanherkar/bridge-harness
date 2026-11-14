@@ -121,7 +121,7 @@ describe("AppLauncher", () => {
     const value = await mount();
     expect(selected()?.textContent).toContain("Notes");
     await press("ArrowDown");
-    expect(selected()?.textContent).toContain("Pulls");
+    expect(selected()?.textContent).toContain("Trails");
     await press("ArrowUp");
     await press("ArrowUp");
     // Wrapped to the last item: the oldest recent chat.
@@ -129,7 +129,7 @@ describe("AppLauncher", () => {
     await press("ArrowDown");
     await press("ArrowDown");
     await press("Enter");
-    expect(value.onOpenApp).toHaveBeenCalledWith("pulls");
+    expect(value.onOpenApp).toHaveBeenCalledWith("trails");
     expect(value.onClose).toHaveBeenCalled();
   });
 

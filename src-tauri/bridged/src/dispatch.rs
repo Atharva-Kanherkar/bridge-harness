@@ -118,6 +118,42 @@ pub fn dispatch(
             let p: wire::GithubSessionPrsParams = decode(method, params)?;
             reply(api::github_session_prs(core, &p.session_id, p.refresh))
         }
+        MethodName::GithubSidebarPrs => {
+            let p: wire::GithubSidebarPrsParams = decode(method, params)?;
+            reply(api::github_sidebar_prs(core, p.refresh))
+        }
+        MethodName::ListTrails => {
+            let p: wire::ListTrailsParams = decode(method, params)?;
+            reply(api::list_trails(core, p.include_archived))
+        }
+        MethodName::ReadTrail => {
+            let p: wire::ReadTrailParams = decode(method, params)?;
+            reply(api::read_trail(core, &p.trail_id, p.refresh))
+        }
+        MethodName::CreateTrail => {
+            let p: wire::CreateTrailParams = decode(method, params)?;
+            reply(api::create_trail(core, &p))
+        }
+        MethodName::UpdateTrail => {
+            let p: wire::UpdateTrailParams = decode(method, params)?;
+            reply(api::update_trail(core, &p))
+        }
+        MethodName::AddTrailMember => {
+            let p: wire::AddTrailMemberParams = decode(method, params)?;
+            reply(api::add_trail_member(core, &p.trail_id, &p.member))
+        }
+        MethodName::RemoveTrailMember => {
+            let p: wire::RemoveTrailMemberParams = decode(method, params)?;
+            reply(api::remove_trail_member(core, &p.trail_id, &p.member))
+        }
+        MethodName::PreviewTrailBrief => {
+            let p: wire::PreviewTrailBriefParams = decode(method, params)?;
+            reply(api::preview_trail_brief(core, &p.trail_id))
+        }
+        MethodName::CarryTrailBrief => {
+            let p: wire::CarryTrailBriefParams = decode(method, params)?;
+            reply(api::carry_trail_brief(core, &p))
+        }
         MethodName::ListOutgoing => {
             let p: wire::ListOutgoingParams = decode(method, params)?;
             reply(api::list_outgoing(core, &p.session_id))
@@ -234,7 +270,7 @@ pub fn dispatch(
 
         MethodName::GetSessionForest => {
             let p: wire::GetSessionForestParams = decode(method, params)?;
-            reply(api::get_session_forest(core, &p.session_id))
+            reply(api::get_session_forest(core, &p.session_id, p.limit))
         }
         MethodName::GetSessionForestDigest => {
             let p: wire::GetSessionForestDigestParams = decode(method, params)?;
@@ -465,6 +501,10 @@ pub fn dispatch(
         MethodName::MarkAttentionSeen => {
             let p: wire::MarkAttentionSeenParams = decode(method, params)?;
             reply(api::mark_attention_seen(core, &p))
+        }
+        MethodName::MarkAttentionUnread => {
+            let p: wire::MarkAttentionUnreadParams = decode(method, params)?;
+            reply(api::mark_attention_unread(core, &p))
         }
         MethodName::UnreadSummary => reply(api::unread_summary(core)),
         MethodName::Wait => {
@@ -1471,6 +1511,38 @@ mod tests {
     }
 
     #[test]
+    fn both_hosts_start_the_trail_maintenance_loop() {
+        // Automatic adds and their toasts stop under a host that forgets it.
+        for (host, source) in [("bridged", include_str!("lib.rs")), ("desktop", include_str!("../../src/lib.rs"))] {
+            assert!(
+                source.contains("trails::live::start_trail_maintenance(core.clone())"),
+                "{host} does not start trail maintenance"
+            );
+        }
+    }
+
+    #[test]
+    fn trails_answer_through_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let created = dispatch(&core, MethodName::CreateTrail, Some(json!({"title": "  Archive a chat "}))).unwrap();
+        let id = created["trail"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(created["trail"]["title"], "Archive a chat");
+        assert_eq!(created["trail"]["state"], "inProgress");
+        let listed = dispatch(&core, MethodName::ListTrails, Some(json!({}))).unwrap();
+        assert_eq!(listed["trails"][0]["id"], id);
+        let read = dispatch(&core, MethodName::ReadTrail, Some(json!({"trailId": id}))).unwrap();
+        assert_eq!(read["trail"]["events"], json!([]));
+        let preview = dispatch(&core, MethodName::PreviewTrailBrief, Some(json!({"trailId": id}))).unwrap();
+        assert_eq!(preview["items"], json!([]));
+        assert!(preview["budgetTokens"].as_u64().unwrap() > 0);
+        let missing = dispatch(&core, MethodName::AddTrailMember, Some(json!({"trailId": id, "member": {"kind": "session", "ref": "nope"}})));
+        assert!(missing.is_err());
+        let refused = dispatch(&core, MethodName::ListTrails, Some(json!({"bogus": true})));
+        assert!(refused.is_err(), "unknown fields are refused");
+    }
+
+    #[test]
     fn both_hosts_start_the_workflow_maintenance_loop() {
         // I-4: the daemon and the embedded desktop host must both tick, or
         // schedules silently stop under one of them.
@@ -1589,6 +1661,17 @@ mod tests {
         let unseen = dispatch(&core, MethodName::ListAttention, Some(json!({"unseenOnly": true}))).unwrap();
         assert_eq!(unseen["items"], json!([]));
         assert_eq!(dispatch(&core, MethodName::UnreadSummary, None).unwrap()["total"], json!(0));
+
+        // Mark as unread brings the chat's dot and badge back; a second call has nothing to do.
+        let unmarked = dispatch(&core, MethodName::MarkAttentionUnread, Some(json!({"sessionId": "s"}))).unwrap();
+        assert_eq!(unmarked, json!({"updated": 1}));
+        let unread = dispatch(&core, MethodName::UnreadSummary, None).unwrap();
+        assert_eq!(unread, json!({"total": 1, "needsYou": 0, "byChat": {"s": "finished"}, "bySession": {"s": "finished"}}));
+        assert_eq!(dispatch(&core, MethodName::MarkAttentionUnread, Some(json!({"sessionId": "s"}))).unwrap(), json!({"updated": 0}));
+        assert_eq!(dispatch(&core, MethodName::MarkAttentionSeen, Some(json!({"sessionId": "s"}))).unwrap(), json!({"updated": 1}));
+        let error = dispatch(&core, MethodName::MarkAttentionUnread, Some(json!({"sessionId": "s", "all": true})))
+            .expect_err("unknown fields are refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
 
         let error = dispatch(&core, MethodName::MarkAttentionSeen, None).expect_err("a session is required");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());

@@ -292,7 +292,7 @@ pub(crate) fn reference(filter: &Value, row: &Row, database: &DatabaseDoc, today
 
 fn all_rows(fixture: &Fixture) -> Vec<Row> {
     let ids: Vec<&str> = fixture.rows.iter().map(String::as_str).collect();
-    { let database = fixture.doc(); fixture.notes.with_db(|db| super::load_rows(db, Some(&database), &ids)).unwrap().into_values().collect() }
+    { let database = fixture.doc(); fixture.notes.with_db(|db| super::load_rows(db, Some(&database), &ids, false)).unwrap().into_values().collect() }
 }
 
 fn ids_of(rows: &[Row]) -> BTreeSet<String> {
@@ -430,6 +430,23 @@ fn a_bad_filter_names_the_valid_choices() {
     assert!(error.contains("not extra"), "{error}");
     let error = fixture.notes.query_database(&fixture.db, &QuerySpec { sorts: Some(vec![SortDef { property: fixture.props["Labels"].clone(), direction: "asc".into() }]), ..Default::default() }).unwrap_err().to_string();
     assert!(error.contains("cannot be sorted"), "{error}");
+}
+
+#[test]
+fn notes_only_returns_the_same_rows_without_their_cells() {
+    let fixture = fixture(60, 9);
+    let full = query(&fixture, QuerySpec { limit: Some(MAX_LIMIT), ..Default::default() });
+    let bare = query(&fixture, QuerySpec { limit: Some(MAX_LIMIT), notes_only: true, ..Default::default() });
+    let ids = |rows: &[Row]| rows.iter().map(|row| row.note.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&full.rows), ids(&bare.rows), "the same rows in the same order");
+    assert_eq!(full.total, bare.total);
+    assert_eq!(full.next_cursor, bare.next_cursor);
+    assert!(full.rows.iter().any(|row| !row.values.is_empty()), "the fixture has cells to leave behind");
+    assert!(bare.rows.iter().all(|row| row.values.is_empty()), "no row carries a cell");
+    // What a row is, apart from its cells, is untouched.
+    for (whole, bare) in full.rows.iter().zip(&bare.rows) {
+        assert_eq!(whole.note, bare.note);
+    }
 }
 
 #[test]

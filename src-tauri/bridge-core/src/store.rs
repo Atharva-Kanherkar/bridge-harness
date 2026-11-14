@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 75;
+const LATEST_SCHEMA_VERSION: i64 = 77;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -770,6 +770,12 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Workflows: definitions, immutable revisions, runs and effects.
             74 => crate::workflows::install_store(&transaction)?,
             75 => crate::outgoing::send::install_store(&transaction)?,
+            // Trails: one page per piece of work. Members point at chats,
+            // notes pages, PR links and drafts; nothing is copied.
+            76 => crate::trails::store::install_store(&transaction)?,
+            // The latest snapshot of each background task, kept by a trigger,
+            // so finding live work never parses a chat's whole tool history.
+            77 => crate::background_activity::install_index(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -3629,11 +3635,14 @@ fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>
     }
 }
 
-/// The active branch: the session head and every entry it descends from.
+/// The walk from the session head to the root: the head and every entry it
+/// descends from, nearest first.
 ///
 /// Shared verbatim by the count and the page so the two can never disagree
 /// about which entries the window is a window onto.
-const ACTIVE_BRANCH_CTE: &str = "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
+macro_rules! active_branch_walk {
+    () => {
+        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
          SELECT id,parent_entry_id,sequence FROM session_entries
          WHERE session_id=?1
            AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
@@ -3641,8 +3650,20 @@ const ACTIVE_BRANCH_CTE: &str = "WITH RECURSIVE active_branch(id,parent_entry_id
          SELECT parent.id,parent.parent_entry_id,parent.sequence
          FROM session_entries parent
          JOIN active_branch child ON parent.id=child.parent_entry_id
-         WHERE parent.session_id=?1
-     )";
+         WHERE parent.session_id=?1"
+    };
+}
+
+/// The whole active branch. Only the exact count of a forked history needs it.
+const ACTIVE_BRANCH_CTE: &str = concat!(active_branch_walk!(), "\n     )");
+
+/// The newest `?2` entries of the active branch.
+///
+/// The walk runs from the head toward the root, so its first `?2` rows are the
+/// newest ancestors, and SQLite stops a recursive query at its `LIMIT`. A
+/// 29,101-entry chat used to walk (and sort) every ancestor twice per snapshot,
+/// once for the count and once for the page, to return 1,500 of them.
+const BOUNDED_ACTIVE_BRANCH_CTE: &str = concat!(active_branch_walk!(), "\n         LIMIT ?2\n     )");
 
 /// One read of the window at a given per-string ceiling, oldest-first.
 ///
@@ -3662,7 +3683,7 @@ fn read_session_entry_window(
     let mut bytes = 0usize;
     let mut over_budget = false;
     let sql = format!(
-        "{ACTIVE_BRANCH_CTE}
+        "{BOUNDED_ACTIVE_BRANCH_CTE}
          SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
          FROM active_branch branch
          JOIN session_entries entry ON entry.id=branch.id
@@ -3732,36 +3753,144 @@ pub fn session_entry_window_with_budget(
     limit: usize,
     entry_budget: usize,
 ) -> Result<SessionEntryWindow, BridgeError> {
-    let total: i64 = db.query_row(
-        &format!("{ACTIVE_BRANCH_CTE} SELECT count(*) FROM active_branch"),
-        params![session_id],
-        |row| row.get(0),
-    )?;
     let window = |cap, budget| read_session_entry_window(db, session_id, limit, cap, budget);
-    let assemble = |(entries, trimmed_payloads)| SessionEntryWindow {
-        entries,
-        total,
-        trimmed_payloads,
+    let assemble = |(entries, trimmed_payloads): (Vec<SessionEntry>, i64)| {
+        Ok::<_, BridgeError>(SessionEntryWindow {
+            total: active_branch_total(db, session_id, entries.len(), limit)?,
+            entries,
+            trimmed_payloads,
+        })
     };
 
     // Untrimmed first. Nearly every session fits, and one that fits must reach
     // the UI byte-identical to what is stored.
     if let Some(read) = window(usize::MAX, entry_budget)? {
-        return Ok(assemble(read));
+        return assemble(read);
     }
     let (floor, rungs) = SNAPSHOT_STRING_CAPS
         .split_last()
         .expect("the cap ladder is never empty");
     for &cap in rungs {
         if let Some(read) = window(cap, entry_budget)? {
-            return Ok(assemble(read));
+            return assemble(read);
         }
     }
     // The floor is forced: a session too large even at the tightest rung still
     // has to render, and that rung is what every session used to get.
-    Ok(assemble(
-        window(*floor, usize::MAX)?.expect("an unbounded budget always fits"),
-    ))
+    assemble(window(*floor, usize::MAX)?.expect("an unbounded budget always fits"))
+}
+
+/// The length of the active branch, given a bounded walk that returned
+/// `walked` of at most `limit` rows.
+///
+/// A walk that stopped short of its limit reached the root, so it is the whole
+/// branch. A longer branch is counted by sequence when the history is a single
+/// chain, which nearly every chat is; only a forked history pays for walking
+/// every ancestor.
+fn active_branch_total(
+    db: &Connection,
+    session_id: &str,
+    walked: usize,
+    limit: usize,
+) -> Result<i64, BridgeError> {
+    if walked < limit {
+        return Ok(walked as i64);
+    }
+    if let Some(total) = single_chain_branch_total(db, session_id)? {
+        return Ok(total);
+    }
+    Ok(db.query_row(
+        &format!("{ACTIVE_BRANCH_CTE} SELECT count(*) FROM active_branch"),
+        params![session_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// The active branch's length when the session's history is one chain, or
+/// `None` when it is not.
+///
+/// One root, one leaf and no entry with two children make the history a single
+/// chain: with no forks, every entry whose parent sits outside the session
+/// would be one more leaf than there are roots. A child is always appended
+/// after its parent, so sequence increases along the chain, and the head's
+/// ancestors are exactly the entries at or before its sequence. That holds for
+/// a head moved back along the chain too. Each query here reads only the
+/// `(session_id, parent_entry_id)` and `(session_id, sequence)` indexes.
+fn single_chain_branch_total(db: &Connection, session_id: &str) -> Result<Option<i64>, BridgeError> {
+    let roots: i64 = db.query_row(
+        "SELECT count(*) FROM session_entries WHERE session_id=?1 AND parent_entry_id IS NULL",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if roots != 1 {
+        return Ok(None);
+    }
+    let forked: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_entries
+           WHERE session_id=?1 AND parent_entry_id IS NOT NULL
+           GROUP BY parent_entry_id HAVING count(*)>1)",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if forked {
+        return Ok(None);
+    }
+    let leaves: i64 = db.query_row(
+        "SELECT count(*) FROM (
+           SELECT 1 FROM session_entries entry
+           WHERE entry.session_id=?1
+             AND NOT EXISTS (SELECT 1 FROM session_entries child
+                             WHERE child.session_id=?1 AND child.parent_entry_id=entry.id)
+           LIMIT 2)",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if leaves != 1 {
+        return Ok(None);
+    }
+    Ok(Some(db.query_row(
+        "SELECT count(*) FROM session_entries
+         WHERE session_id=?1
+           AND sequence<=(SELECT entry.sequence FROM session_heads head
+                          JOIN session_entries entry ON entry.id=head.active_entry_id
+                          WHERE head.session_id=?1 AND entry.session_id=?1)",
+        params![session_id],
+        |row| row.get(0),
+    )?))
+}
+
+/// The entries no other entry of the session descends from, in sequence
+/// order: the tips of every branch.
+///
+/// Reads payloads only for the leaves themselves. Finding them used to load
+/// and parse every entry the chat ever had, 229 MB in one real chat, on every
+/// snapshot.
+pub fn session_leaf_entries(db: &Connection, session_id: &str) -> Result<Vec<SessionEntry>, BridgeError> {
+    query_with_params(
+        db,
+        "SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
+         FROM session_entries entry
+         WHERE entry.session_id=?1
+           AND NOT EXISTS (SELECT 1 FROM session_entries child
+                           WHERE child.session_id=?1 AND child.parent_entry_id=entry.id)
+         ORDER BY entry.sequence",
+        params![session_id],
+        |row| {
+            Ok(SessionEntry {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                parent_entry_id: row.get(2)?,
+                sequence: row.get(3)?,
+                semantic_schema_version: row.get(4)?,
+                kind: row.get(5)?,
+                payload: parse_json_column(row, 6),
+                provider_event_id: row.get(7)?,
+                context_visibility: row.get(8)?,
+                token_estimate: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )
 }
 
 pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionHead>, BridgeError> {
@@ -4057,49 +4186,82 @@ pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i6
     Ok(db.last_insert_rowid())
 }
 
+const USAGE_LEDGER_COLUMNS: &str = "id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd";
+
+fn usage_ledger_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageLedgerRow> {
+    Ok(UsageLedgerRow {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        session_id: row.get(2)?,
+        turn_id: row.get(3)?,
+        input_tokens: row.get(4)?,
+        output_tokens: row.get(5)?,
+        cache_read_tokens: row.get(6)?,
+        cache_write_tokens: row.get(7)?,
+        uncached_input_tokens: row.get(8)?,
+        context_percent: row.get(9)?,
+        capability_units: row.get(10)?,
+        runtime_ms: row.get(11)?,
+        cost_microusd: row.get(12)?,
+        cost_source: row.get(13)?,
+        stable_prefix_id: row.get(14)?,
+        stable_prefix_hash: row.get(15)?,
+        prompt_schema_version: row.get(16)?,
+        prefix_token_estimate: row.get(17)?,
+        harness: row.get(18)?,
+        model: row.get(19)?,
+        role: row.get(20)?,
+        task_family: row.get(21)?,
+        restoration_mode: row.get(22)?,
+        cross_harness_reuse: row.get(23)?,
+        source: row.get(24)?,
+        created_at: row.get(25)?,
+        reasoning_tokens: row.get(26)?,
+        serving_model: row.get(27)?,
+        context_window_tokens: row.get(28)?,
+        context_used_tokens: row.get(29)?,
+        provider_record_id: row.get(30)?,
+        cache_savings_microusd: row.get(31)?,
+    })
+
+}
+
 pub fn usage_ledger(
     db: &Connection,
     workspace_id: &str,
     session_id: Option<&str>,
 ) -> Result<Vec<UsageLedgerRow>, BridgeError> {
-    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd
-               FROM usage_ledger WHERE workspace_id=?1 AND (?2 IS NULL OR session_id=?2) ORDER BY id";
-    query_with_params(db, sql, params![workspace_id, session_id], |row| {
-        Ok(UsageLedgerRow {
-            id: row.get(0)?,
-            workspace_id: row.get(1)?,
-            session_id: row.get(2)?,
-            turn_id: row.get(3)?,
-            input_tokens: row.get(4)?,
-            output_tokens: row.get(5)?,
-            cache_read_tokens: row.get(6)?,
-            cache_write_tokens: row.get(7)?,
-            uncached_input_tokens: row.get(8)?,
-            context_percent: row.get(9)?,
-            capability_units: row.get(10)?,
-            runtime_ms: row.get(11)?,
-            cost_microusd: row.get(12)?,
-            cost_source: row.get(13)?,
-            stable_prefix_id: row.get(14)?,
-            stable_prefix_hash: row.get(15)?,
-            prompt_schema_version: row.get(16)?,
-            prefix_token_estimate: row.get(17)?,
-            harness: row.get(18)?,
-            model: row.get(19)?,
-            role: row.get(20)?,
-            task_family: row.get(21)?,
-            restoration_mode: row.get(22)?,
-            cross_harness_reuse: row.get(23)?,
-            source: row.get(24)?,
-            created_at: row.get(25)?,
-            reasoning_tokens: row.get(26)?,
-            serving_model: row.get(27)?,
-            context_window_tokens: row.get(28)?,
-            context_used_tokens: row.get(29)?,
-            provider_record_id: row.get(30)?,
-            cache_savings_microusd: row.get(31)?,
-        })
-    })
+    let sql = format!(
+        "SELECT {USAGE_LEDGER_COLUMNS} FROM usage_ledger
+         WHERE workspace_id=?1 AND (?2 IS NULL OR session_id=?2) ORDER BY id"
+    );
+    query_with_params(db, &sql, params![workspace_id, session_id], usage_ledger_row)
+}
+
+/// The usage rows of one chat's latest turn: its active turn, or the newest
+/// turn it recorded usage for when none is active.
+///
+/// Rows are matched by turn across the workspace, not by session, because a
+/// worker's spawn charge is recorded under the worker's session id against its
+/// orchestrator's turn. This is everything the turn budget reads; the snapshot
+/// used to carry the workspace's entire ledger instead (35,172 rows, 30.7 MB,
+/// in one real project) on every chat open.
+pub fn latest_turn_usage(
+    db: &Connection,
+    workspace_id: &str,
+    session_id: &str,
+) -> Result<Vec<UsageLedgerRow>, BridgeError> {
+    let sql = format!(
+        "SELECT {USAGE_LEDGER_COLUMNS} FROM usage_ledger
+         WHERE workspace_id=?1
+           AND turn_id=COALESCE(
+             (SELECT active_turn_id FROM sessions WHERE id=?2),
+             (SELECT turn_id FROM usage_ledger
+              WHERE workspace_id=?1 AND session_id=?2 AND turn_id IS NOT NULL
+              ORDER BY id DESC LIMIT 1))
+         ORDER BY id"
+    );
+    query_with_params(db, &sql, params![workspace_id, session_id], usage_ledger_row)
 }
 
 pub fn record_prompt_compilation(
@@ -4388,6 +4550,7 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashSet;
 
     #[test]
     fn schema_68_records_the_account_a_chat_signs_in_with() {
@@ -7177,6 +7340,133 @@ mod tests {
             whole.trimmed_payloads, 0,
             "small payloads travel exactly as stored"
         );
+    }
+
+    /// The active branch the slow way: every entry loaded, parents followed
+    /// from the head in Rust. The oracle the bounded walk must agree with.
+    fn walked_branch_sequences(db: &Connection, session_id: &str) -> Vec<i64> {
+        let entries = session_entries(db, session_id).unwrap();
+        let by_id: HashMap<&str, &SessionEntry> =
+            entries.iter().map(|entry| (entry.id.as_str(), entry)).collect();
+        let mut current = session_head(db, session_id)
+            .unwrap()
+            .and_then(|head| head.active_entry_id);
+        let mut branch = Vec::new();
+        while let Some(entry) = current.as_deref().and_then(|id| by_id.get(id)) {
+            branch.push(entry.sequence);
+            current = entry.parent_entry_id.clone();
+        }
+        branch.reverse();
+        branch
+    }
+
+    /// Leaves the slow way: every entry no other entry names as its parent.
+    fn scanned_leaf_ids(db: &Connection, session_id: &str) -> Vec<String> {
+        let entries = session_entries(db, session_id).unwrap();
+        let parents: HashSet<&str> = entries
+            .iter()
+            .filter_map(|entry| entry.parent_entry_id.as_deref())
+            .collect();
+        entries
+            .iter()
+            .filter(|entry| !parents.contains(entry.id.as_str()))
+            .map(|entry| entry.id.clone())
+            .collect()
+    }
+
+    fn assert_window_matches_walk(db: &Connection, case: &str) {
+        let branch = walked_branch_sequences(db, "s");
+        for limit in [1, 3, 4, branch.len().max(1), branch.len() + 5] {
+            let window = session_entry_window(db, "s", limit).unwrap();
+            let sequences: Vec<i64> = window.entries.iter().map(|entry| entry.sequence).collect();
+            let expected = branch[branch.len().saturating_sub(limit)..].to_vec();
+            assert_eq!(sequences, expected, "{case}: newest {limit} of the branch, oldest first");
+            assert_eq!(window.total, branch.len() as i64, "{case}: total at limit {limit}");
+        }
+        let leaves: Vec<String> = session_leaf_entries(db, "s")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(leaves, scanned_leaf_ids(db, "s"), "{case}: leaves");
+    }
+
+    #[test]
+    fn the_bounded_window_and_indexed_leaves_match_a_full_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let append = |parent: Option<&str>, text: &str| {
+            append_session_entry(&db, "s", parent, "assistant.message", &json!({"text": text}), None, "eligible", Some(1))
+                .unwrap()
+        };
+        let set_head = |id: &str| {
+            db.execute("UPDATE session_heads SET active_entry_id=?2 WHERE session_id=?1", params!["s", id])
+                .unwrap();
+        };
+
+        // An empty session: no head, no branch.
+        assert_eq!(session_entry_window(&db, "s", 4).unwrap().total, 0);
+        assert!(session_leaf_entries(&db, "s").unwrap().is_empty());
+
+        // One chain, head at its tip: the sequence-count fast path.
+        let mut chain = Vec::new();
+        let mut parent: Option<String> = None;
+        for index in 0..12 {
+            let entry = append(parent.as_deref(), &format!("chain {index}"));
+            parent = Some(entry.id.clone());
+            chain.push(entry);
+        }
+        assert!(single_chain_branch_total(&db, "s").unwrap().is_some());
+        assert_window_matches_walk(&db, "chain");
+
+        // The head moved back along the chain, nothing appended yet.
+        set_head(&chain[6].id);
+        assert_eq!(single_chain_branch_total(&db, "s").unwrap(), Some(7));
+        assert_window_matches_walk(&db, "rewound chain");
+
+        // A fork from the rewound head: two leaves, so the exact walk counts.
+        let mut fork_parent = chain[6].id.clone();
+        for index in 0..3 {
+            fork_parent = append(Some(&fork_parent), &format!("fork {index}")).id;
+        }
+        assert_eq!(single_chain_branch_total(&db, "s").unwrap(), None);
+        assert_window_matches_walk(&db, "fork head");
+        set_head(&chain[11].id);
+        assert_window_matches_walk(&db, "original branch after a fork");
+
+        // A second root in the same session, with the head on its chain.
+        let mut orphan_parent = append(None, "second root").id;
+        for index in 0..5 {
+            orphan_parent = append(Some(&orphan_parent), &format!("second chain {index}")).id;
+        }
+        assert_eq!(single_chain_branch_total(&db, "s").unwrap(), None);
+        assert_window_matches_walk(&db, "second root");
+    }
+
+    #[test]
+    fn a_dangling_parent_is_not_mistaken_for_a_single_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        // A chain from the root, plus a second chain whose first entry names a
+        // parent that is not in this session. Still one NULL-parent root and
+        // no forks, but the extra chain brings its own leaf, so the shape check
+        // refuses the sequence count.
+        let root = append_session_entry(&db, "s", None, "assistant.message", &json!({"text": "root"}), None, "eligible", Some(1)).unwrap();
+        append_session_entry(&db, "s", Some(&root.id), "assistant.message", &json!({"text": "tip"}), None, "eligible", Some(1)).unwrap();
+        db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('stray','s','gone',3,'assistant.message','{\"text\":\"stray\"}','now'),
+                   ('stray-tip','s','stray',4,'assistant.message','{\"text\":\"stray tip\"}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("UPDATE session_heads SET active_entry_id='stray-tip' WHERE session_id='s'", [])
+            .unwrap();
+        assert_eq!(single_chain_branch_total(&db, "s").unwrap(), None);
+        assert_window_matches_walk(&db, "dangling parent");
     }
 
     #[test]

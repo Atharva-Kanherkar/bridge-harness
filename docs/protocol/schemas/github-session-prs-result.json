@@ -73,6 +73,14 @@
       ],
       "type": "string"
     },
+    "Mergeability": {
+      "enum": [
+        "mergeable",
+        "conflicting",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "PullRequestCheck": {
       "properties": {
         "conclusion": {
@@ -153,6 +161,15 @@
         },
         "isDraft": {
           "type": "boolean"
+        },
+        "mergeability": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Mergeability"
+            }
+          ],
+          "default": "unknown",
+          "description": "`conflicting` when the PR cannot merge cleanly. GitHub computes it lazily, so `unknown` is normal right after a push and never a conflict."
         },
         "number": {
           "format": "uint64",

@@ -23,6 +23,18 @@ live page, with its ID breaking ties. Unresolved links resolve when their target
 arrives; deleted sources disappear from backlinks. Each backlink includes its
 source page, kind, quoting line (at most 200 characters), and update timestamp.
 
+## Reads
+
+`notes/query_database` answers from SQL for the filter, sort, group and page,
+then reads each returned row's cells from its Yjs document. A cell is the only
+reason a query opens a document, and replaying one costs far more than the rest
+of the query: a 50 KB page with a rewritten body can take a second, and a tab of
+500 rows replays 500 of them. A caller that shows rows as pages passes
+`notesOnly: true`, gets every row with an empty cells map, and opens no document
+at all. The Notes list's tabs do this; table, board and calendar views ask for
+cells and pay the replay.
+
+
 Renaming a titled page rewrites incoming wiki links and matching child page tag
 labels, preserving aliases and bytes outside the links. Each affected page gets
 an attributed history update and a Markdown mirror through the normal write

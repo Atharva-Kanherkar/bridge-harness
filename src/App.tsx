@@ -4,7 +4,7 @@ import { ChatOptionsControl } from "./components/ChatOptionsControl";
 import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings, SessionPullRequest } from "./protocol/generated/protocol";
 import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
-import { ForestCache } from "./forestCache";
+import { FIRST_PAGE_ENTRIES, ForestCache, isPartialForest, markPartialForest, pageIsComplete } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -55,7 +55,7 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
-import { useChatPullRequests } from "./components/ChatPullRequests";
+import { useChatPullRequests, useSidebarPullRequests } from "./components/ChatPullRequests";
 import { ChatWorkShelf } from "./components/WorkShelf";
 import { ChatWorkPane, type WorkFocus } from "./components/WorkPane";
 import { useBackgroundTaskCount } from "./components/useBackgroundTasks";
@@ -65,6 +65,11 @@ import { fixPrompt } from "./workSummary";
 import { PullsScreen } from "./components/PullsScreen";
 import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
+import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
+import type { TrailStartRequest } from "./components/TrailsScreen";
+import type { TrailSummary } from "./protocol/generated/protocol";
+import { TrailStartError, needsYouCount as trailsNeedingYou, trailForSession } from "./trails";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
@@ -98,6 +103,7 @@ import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNav
 // stays; flip this to bring the tab and its toasts back.
 const INBOX_PANE_ENABLED = false;
 const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => ({ default: module.AgentFleet })));
+const TrailsScreen = lazy(() => import("./components/TrailsScreen").then(module => ({ default: module.TrailsScreen })));
 const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
@@ -225,6 +231,8 @@ type NewChatDraft = {
   overrides?: ChatDefaults;
   workspaceId: string | null;
   carryFromSessionId?: string;
+  /** Start the chat on a trail, carrying these brief items first. */
+  trailCarry?: { trailId: string; items: string[] };
 };
 
 type AsidePhase = "creating" | "handing_off" | "ready" | "switching" | "failed" | "cancelled" | "closed";
@@ -641,6 +649,27 @@ function AppContent() {
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
   const forestCacheRef = useRef(new ForestCache());
+  // Pointing at a chat in the sidebar reads its newest page into the cache, so
+  // the click that usually follows paints from memory. One read per chat at a
+  // time; never over anything already cached, and never for the open chat.
+  const prefetchingRef = useRef(new Set<string>());
+  const prefetchSession = useCallback((sessionId: string) => {
+    if (sessionId === selectedSessionIdRef.current || forestCacheRef.current.has(sessionId) || prefetchingRef.current.has(sessionId)) return;
+    prefetchingRef.current.add(sessionId);
+    void (async () => {
+      try {
+        // The digest first, so a page that turns out complete can be trusted
+        // under it, the same order the open path uses.
+        const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
+        const page = await bridgeApi.sessionForest(sessionId, { limit: FIRST_PAGE_ENTRIES }).catch(() => undefined);
+        if (!page || forestCacheRef.current.has(sessionId) || sessionId === selectedSessionIdRef.current) return;
+        if (pageIsComplete(page)) forestCacheRef.current.set(sessionId, page, digest);
+        else forestCacheRef.current.set(sessionId, markPartialForest(page));
+      } finally {
+        prefetchingRef.current.delete(sessionId);
+      }
+    })();
+  }, []);
   // Durable frames the live channel dropped, put back from each session's
   // cursor. The forest poll alone was too slow to be the only recovery.
   const [liveReplay] = useState(() => createLiveReplay({
@@ -855,19 +884,57 @@ function AppContent() {
   // its row from it, so a finished chat that starts waiting at the same total
   // must still be sent. The Dock just sets the same count again.
   useEffect(() => { void bridgeApi.setUnreadBadge(unread.total).catch(() => undefined); }, [unread.total, unread.needsYou]);
-  // The chat on screen in a focused window never stays unread: a turn that
+  // A chat on screen in a focused window never stays unread: a turn that
   // ends while you watch, or one that ended while Bridge was in the
-  // background, is seen once you are looking at it.
+  // background, is seen once you are looking at it. On screen is the chat
+  // open in the single view, or every tile on Mission Control's stage: a tile
+  // shows the conversation and takes replies, so reading it there is reading
+  // the chat.
   const windowFocused = useWindowFocused();
-  const onScreenSessionId = view === "workspace" && paradigm !== "grid" ? selectedSessionId : undefined;
-  const onScreenUnread = !!onScreenSessionId && windowFocused && !!unread.bySession[onScreenSessionId];
+  const [missionStage, setMissionStage] = useState<string[]>([]);
+  const onScreenKey = view === "workspace" && paradigm !== "grid" ? selectedSessionId ?? "" : missionStage.join(",");
+  const onScreenIds = useMemo(() => onScreenKey ? onScreenKey.split(",") : [], [onScreenKey]);
+  // Mark as unread on a chat you are looking at holds it unread until it
+  // leaves the screen; otherwise the stamp below would undo the click at once.
+  const heldUnreadRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const held = [...heldUnreadRef.current].filter(id => onScreenIds.includes(id));
+    if (held.length !== heldUnreadRef.current.size) heldUnreadRef.current = new Set(held);
+  }, [onScreenIds]);
   // Core names one client to post OS banners, so a second client on the same
   // daemon does not raise a second banner for the same event.
   const bannerOwner = useBannerOwner(windowFocused);
-  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenSessionId ? [onScreenSessionId] : []), bannerOwner };
+  presenceRef.current = { focused: windowFocused, onScreen: new Set(onScreenIds), bannerOwner };
   useEffect(() => {
-    if (onScreenUnread && onScreenSessionId) void bridgeApi.markAttentionSeen(onScreenSessionId).catch(() => undefined);
-  }, [onScreenUnread, onScreenSessionId, unread]);
+    if (!windowFocused) return;
+    for (const id of onScreenIds) {
+      if (unread.bySession[id] && !heldUnreadRef.current.has(id)) void bridgeApi.markAttentionSeen(id).catch(() => undefined);
+    }
+  }, [windowFocused, onScreenIds, unread]);
+  // The row menu's Mark as read clears the chat's dot, so it stamps every
+  // unread session in the chat's tree: a worker's request or post rolls up to
+  // the chat, and opening the chat alone does not stamp it.
+  const markChatRead = useCallback((chatId: string) => {
+    heldUnreadRef.current = new Set([...heldUnreadRef.current].filter(id => id !== chatId));
+    const parentOf = new Map(state.sessions.map(item => [item.id, item.parentSessionId]));
+    const rootOf = (id: string) => {
+      const visited = new Set<string>();
+      let current = id;
+      while (!visited.has(current)) {
+        visited.add(current);
+        const parent = parentOf.get(current);
+        if (!parent) break;
+        current = parent;
+      }
+      return current;
+    };
+    const tree = Object.keys(unread.bySession).filter(id => rootOf(id) === chatId);
+    for (const id of new Set([chatId, ...tree])) void bridgeApi.markAttentionSeen(id).catch(() => undefined);
+  }, [state.sessions, unread.bySession]);
+  const markChatUnread = useCallback((chatId: string) => {
+    if (onScreenIds.includes(chatId)) heldUnreadRef.current = new Set([...heldUnreadRef.current, chatId]);
+    void bridgeApi.markAttentionUnread(chatId).catch(() => undefined);
+  }, [onScreenIds]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -1032,11 +1099,18 @@ function AppContent() {
   // PRs and the agent's background work are doing; neither draws in the
   // transcript.
   const chatPrs = useChatPullRequests(session?.id, workspace?.id);
+  // Every chat's PRs for the chat list. The open chat's own read is fresher
+  // (it refreshes on open and polls), so it wins for that one row.
+  const listPrs = useSidebarPullRequests();
+  const sidebarPrs = useMemo(
+    () => (session?.id && chatPrs.loaded ? { ...listPrs, [session.id]: chatPrs.prs } : listPrs),
+    [listPrs, session?.id, chatPrs.loaded, chatPrs.prs],
+  );
   const backgroundTaskCount = useBackgroundTaskCount(session?.id);
   const dockPanes: DockPaneDescriptor[] = [
     // First in the strip, always available: a chat's PRs and background work
     // need no repository of their own to be listed.
-    { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => chatPrStatus(pr).phase === "failing") || undefined },
+    { id: "work", label: "Work", icon: ListChecks, available: true, badge: (chatPrs.prs.length + backgroundTaskCount) || undefined, alert: chatPrs.prs.some(pr => ["failing", "conflicts"].includes(chatPrStatus(pr).phase)) || undefined },
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
@@ -1123,6 +1197,12 @@ function AppContent() {
   const githubIntentNonce = useRef(0);
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
+  // Trails: the list feeds the sidebar badge and a chat's trail chip; the
+  // Trails view shows one trail when `trailId` is set.
+  const [trailSummaries, setTrailSummaries] = useState<TrailSummary[]>([]);
+  const [trailId, setTrailId] = useState<string | null>(null);
+  const [trailToasts, setTrailToasts] = useState<TrailToast[]>([]);
+  const [addToTrailSessionId, setAddToTrailSessionId] = useState<string | null>(null);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
   const openGithubPane = useCallback((view: GithubLinkView) => {
@@ -1250,6 +1330,33 @@ function AppContent() {
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };
   }, []);
+
+  // ── Trails glue ─────────────────────────────────────────────────────────────
+  const refreshTrails = useCallback(() => {
+    bridgeApi.listTrails(true).then(result => setTrailSummaries(result.trails)).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    refreshTrails();
+    void bridgeApi.onTrailsChanged(payload => {
+      if (!active) return;
+      refreshTrails();
+      if (!payload.added?.length) return;
+      setTrailToasts(current => {
+        const fresh = payload.added
+          .map(added => ({ key: trailToastKey(added), added }))
+          .filter(toast => !current.some(item => item.key === toast.key));
+        return [...current, ...fresh].slice(-6);
+      });
+    }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
+    return () => { active = false; off?.(); };
+  }, [refreshTrails]);
+
+  function openTrail(id: string | null) {
+    setTrailId(id);
+    setView("trails");
+  }
 
   // ── Connector surface glue ─────────────────────────────────────────────────
   // Inbound connector notifications and the deep link from a toast into the
@@ -1714,11 +1821,24 @@ function AppContent() {
     // Seed from this session's own cache rather than clearing to empty: a
     // durable card (including a pending approval) must never vanish and pop
     // back just because the poll for the freshly-selected session hasn't
-    // resolved yet.
-    const cached = forestCacheRef.current.get(sessionId);
-    setForest(cached);
+    // resolved yet. A long chat may be cached as only its newest page; that
+    // paints now and the full window follows.
+    const cached = forestCacheRef.current.peek(sessionId);
+    setForest(cached?.value);
+    // A whole snapshot cached under a known digest needs no refetch while the
+    // digest still matches: reopening an unchanged chat costs one digest read.
+    forestKeyRef.current = cached && !cached.partial ? cached.digest ?? "" : "";
     let active = true;
     let pollsSinceFullFetch = 0;
+    let opening = true;
+    const newestSequence = (value: SessionForestSnapshot) => value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0);
+    const accept = (value: SessionForestSnapshot, digest: string | undefined) => {
+      pollsSinceFullFetch = 0;
+      forestKeyRef.current = digest ?? "";
+      forestCacheRef.current.set(sessionId, value, digest);
+      setForest(current => mergeForestSnapshot(current, value));
+      liveReplay.seed(sessionId, newestSequence(value));
+    };
     const refresh = async () => {
       // Read the digest before the snapshot. If state changes between the two,
       // the snapshot is newer than its key and the next poll safely refetches.
@@ -1727,9 +1847,37 @@ function AppContent() {
       const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
       const force = pollsSinceFullFetch >= 9 || digest === undefined;
       if (!active) return;
+      const firstPoll = opening;
+      opening = false;
       if (!force && digest === forestKeyRef.current) {
         pollsSinceFullFetch += 1;
+        // Adoptions are not cached: a reopen served from the cache still
+        // needs them once.
+        if (firstPoll) {
+          const adoptions = await bridgeApi.pendingWorkerAdoptions(sessionId).catch(() => []);
+          if (active) setPendingAdoptions(adoptions);
+        }
         return;
+      }
+      // Nothing on screen yet: paint the newest page first. For a long chat it
+      // arrives in a fraction of the full window's time, and the full window
+      // is fetched right behind it rather than on the next poll.
+      if (firstPoll && !cached) {
+        const page = await bridgeApi.sessionForest(sessionId, { limit: FIRST_PAGE_ENTRIES }).catch(() => undefined);
+        if (!active) return;
+        if (page && pageIsComplete(page)) {
+          const adoptions = await bridgeApi.pendingWorkerAdoptions(sessionId).catch(() => []);
+          if (!active) return;
+          setPendingAdoptions(adoptions);
+          accept(page, digest);
+          return;
+        }
+        if (page) {
+          const partial = markPartialForest(page);
+          forestCacheRef.current.set(sessionId, partial);
+          setForest(current => current && !isPartialForest(current) ? current : partial);
+          liveReplay.seed(sessionId, newestSequence(partial));
+        }
       }
       const [value, adoptions] = await Promise.all([
         bridgeApi.sessionForest(sessionId).catch(() => undefined),
@@ -1739,10 +1887,7 @@ function AppContent() {
       pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
-      forestKeyRef.current = digest ?? "";
-      forestCacheRef.current.set(sessionId, value);
-      setForest(current => mergeForestSnapshot(current, value));
-      liveReplay.seed(sessionId, value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0));
+      accept(value, digest);
     };
     const stop = startSerialPoll(refresh, 3000);
     return () => { active = false; stop(); };
@@ -2099,6 +2244,19 @@ function AppContent() {
           try { await bridgeApi.carrySessionHandoff(created.id, draft.carryFromSessionId); }
           catch { /* context carry is best-effort; the chat starts regardless */ }
         }
+        // A trail brief lands in the forest before the first cold start, like
+        // the handoff above. If it fails, the chat still joins the trail and
+        // starts, and the person is told it started without the brief.
+        // The person chose what this chat starts with, so it never starts
+        // without it: a failed carry archives the still-empty chat, sends
+        // nothing, and hands the error back to the Continue dialog.
+        if (created && draft.trailCarry) {
+          try { await bridgeApi.carryTrailBrief(draft.trailCarry.trailId, created.id, draft.trailCarry.items); }
+          catch (carryError) {
+            await bridgeApi.archiveChat(created.id).catch(() => undefined);
+            throw new TrailStartError(errorMessage(carryError));
+          }
+        }
         if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
         // Tag the message with the created session so it can only land there, even if
         // another session became active while the create awaited.
@@ -2112,6 +2270,7 @@ function AppContent() {
         return created?.id;
       } catch (e) {
         pendingWelcomeMessageRef.current = null;
+        if (e instanceof TrailStartError) throw e;
         setError(errorMessage(e));
         draftSettings.reload();
       }
@@ -2150,6 +2309,24 @@ function AppContent() {
       // say about worktrees.
       : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false } };
     return submitNewChatDraft(draft, message);
+  }
+  async function startChatOnTrail({ trail, text, harness, items }: TrailStartRequest): Promise<void> {
+    // The selection was made against an earlier preview. Re-read it first, so
+    // an item that left the trail stops the start before a chat exists.
+    const current = await bridgeApi.previewTrailBrief(trail.id);
+    if (items.some(id => !current.items.some(item => item.id === id))) {
+      throw new TrailStartError("Something you picked is no longer on this trail.");
+    }
+    const adapter = adapters.find(candidate => candidate.id === harness);
+    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
+    const workspaceId = trail.workspaceId && state.workspaces.some(item => item.id === trail.workspaceId) ? trail.workspaceId : null;
+    const draft: NewChatDraft = workspaceId
+      ? { workspaceId, overrides: { model }, trailCarry: { trailId: trail.id, items } }
+      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false }, trailCarry: { trailId: trail.id, items } };
+    const created = await submitNewChatDraft(draft, text);
+    if (!created) throw new Error("Bridge could not start the chat. Check that an agent is signed in.");
+    setView("workspace");
+    setParadigm("single");
   }
   // The harness every Notes picker preselects: the saved application chat
   // default (Settings, Chat defaults), the same one the core's note passes
@@ -3053,10 +3230,12 @@ function AppContent() {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const pins = usePins();
   const workflowsWaiting = needsYouCount(workflowRuns);
+  const trailsWaiting = trailsNeedingYou(trailSummaries);
   const appBadges = useMemo<AppBadges>(() => ({
+    trails: { count: trailsWaiting },
     workflows: { count: workflowsWaiting },
     memory: { count: memoryPending, capped: memoryPending >= MEMORY_LIST_CAP },
-  }), [workflowsWaiting, memoryPending]);
+  }), [trailsWaiting, workflowsWaiting, memoryPending]);
   const launcherChats = useMemo(() => [...topSessions].sort(byRecency).slice(0, 20).map(chat => ({
     id: chat.id,
     title: chatName(chat),
@@ -3435,7 +3614,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Store" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3480,6 +3659,8 @@ function AppContent() {
   // Every app opens the way its old sidebar row did. Terminals and Mission
   // Control also leave the grid paradigm, as their rows always had.
   const openApp = (id: AppId) => {
+    // Trails opens on its list, the way its old row did.
+    if (id === "trails") { openTrail(null); return; }
     const { view: target } = appById(id);
     if (target === "agent-fleet" || target === "mission-control") setParadigm("single");
     setView(target);
@@ -3498,6 +3679,7 @@ function AppContent() {
       chats={topSessions}
       liveAgents={liveAgents}
       unread={unread.byChat}
+      pullRequests={sidebarPrs}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       settingsActive={view === "settings"}
@@ -3514,8 +3696,11 @@ function AppContent() {
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
+      onPrefetchSession={prefetchSession}
       searchRequest={sidebarSearch}
       onArchiveChat={archiveChat}
+      onMarkChatRead={markChatRead}
+      onMarkChatUnread={markChatUnread}
       // Only while a chat is open: the Welcome screen owns its own draft, so
       // a mention there would land in a composer nobody can see.
       onMentionChat={session ? mentionChat : undefined}
@@ -3568,7 +3753,18 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "notes" ? <Suspense fallback={<NotesScreenSkeleton />}><NotesScreen
+      /> : view === "trails" ? <Suspense fallback={null}><TrailsScreen
+        trailId={trailId}
+        onSelectTrail={id => setTrailId(id)}
+        workspaces={state.workspaces.map(item => ({ id: item.id, title: item.title }))}
+        defaultWorkspaceId={workspace?.id ?? null}
+        harnesses={adapters.filter(adapter => adapter.available).map(adapter => ({ id: adapter.id, label: adapter.label }))}
+        defaultHarness={resolveDraftHarnessModel().harness}
+        onOpenSession={openSession}
+        onOpenNote={id => { setView("notes"); setNoteOpenRequest(current => ({ id, nonce: (current?.nonce ?? 0) + 1 })); }}
+        onOpenUrl={url => void openExternalUrl(url)}
+        onStart={startChatOnTrail}
+      /></Suspense> : view === "notes" ? <Suspense fallback={<NotesScreenSkeleton />}><NotesScreen
         adapters={adapters}
         workspaces={state.workspaces}
         sessions={visibleSessions}
@@ -3614,9 +3810,13 @@ function AppContent() {
         workflowRuns={workflowRuns}
         workflowNames={workflowNames}
         onOpenWorkflowRun={openWorkflowRun}
+        onStageChange={setMissionStage}
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}
+          trailTitle={trailForSession(trailSummaries, session.id)?.title}
+          onOpenTrail={() => { const trail = trailForSession(trailSummaries, session.id); if (trail) openTrail(trail.id); }}
+          onAddToTrail={!session.parentSessionId ? () => setAddToTrailSessionId(session.id) : undefined}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
@@ -3745,7 +3945,8 @@ function AppContent() {
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeProcessEntries={forest?.activeProcessEntries}
-                  entryWindow={forest?.entryWindow}
+                  // A first page is not a window onto the chat: the full one is on its way.
+                  entryWindow={isPartialForest(forest) ? undefined : forest?.entryWindow}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   completion={forest?.completion}
@@ -4148,6 +4349,15 @@ function AppContent() {
       onOpen={toast => openConnectorItem(toast.itemKey)}
       onDismiss={key => setConnectorToasts(current => reduceToasts(current, { type: "dismiss", key }))}
     />}
+    <TrailToasts
+      toasts={trailToasts}
+      onOpen={toast => { setTrailToasts(current => current.filter(item => item.key !== toast.key)); openTrail(toast.added.trailId); }}
+      onUndo={toast => {
+        setTrailToasts(current => current.filter(item => item.key !== toast.key));
+        void bridgeApi.removeTrailMember(toast.added.trailId, toast.added.member).catch(error => setError(errorMessage(error)));
+      }}
+      onDismiss={key => setTrailToasts(current => current.filter(item => item.key !== key))}
+    />
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
@@ -4183,6 +4393,17 @@ function AppContent() {
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => { if (!busy) { closeModal(); setPendingWorkspaceId(undefined); } }}
     />
+    {addToTrailSessionId && (() => {
+      const target = state.sessions.find(item => item.id === addToTrailSessionId);
+      if (!target) return null;
+      return <AddToTrailDialog
+        chatTitle={chatName(target)}
+        trails={trailSummaries}
+        onClose={() => setAddToTrailSessionId(null)}
+        onAdd={async id => { await bridgeApi.addTrailMember(id, { kind: "session", ref: target.id }); refreshTrails(); }}
+        onCreate={async title => { await bridgeApi.createTrail(title, target.workspaceId ?? null, target.id); refreshTrails(); }}
+      />;
+    })()}
     <NewProjectDialog
       open={newProjectOpen}
       busy={busy}

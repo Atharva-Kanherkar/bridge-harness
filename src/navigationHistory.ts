@@ -1,5 +1,5 @@
 /** Every top-level screen, as a value so a test can walk them. */
-export const APP_VIEWS = ["workspace", "agent-fleet", "mission-control", "work", "projects", "memory", "notes", "marketplace", "usage", "pulls", "settings", "workflows", "archives", "saved-setups", "briefing-settings"] as const;
+export const APP_VIEWS = ["workspace", "agent-fleet", "mission-control", "work", "projects", "memory", "notes", "trails", "marketplace", "usage", "pulls", "settings", "workflows", "archives", "saved-setups", "briefing-settings"] as const;
 
 export type AppView = typeof APP_VIEWS[number];
 

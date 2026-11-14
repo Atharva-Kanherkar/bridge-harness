@@ -4,11 +4,12 @@
 // cannot be reachable from one and missing from another. Later slices load
 // this from core as manifests; until then it is the frontend's own list.
 
-import { Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
+import { Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Route, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
 import type { AppView } from "../navigationHistory";
 
 export type AppId =
   | "notes"
+  | "trails"
   | "pulls"
   | "workflows"
   | "memory"
@@ -35,6 +36,7 @@ export type BuiltinApp = {
 
 export const BUILTIN_APPS: readonly BuiltinApp[] = [
   { id: "notes", name: "Notes", description: "Pages, tasks and quick captures", icon: NotebookPen, view: "notes", slots: ["screen"], keywords: ["pages", "tasks", "capture", "write"] },
+  { id: "trails", name: "Trails", description: "One page per piece of work: its chats, notes, PRs and drafts", icon: Route, view: "trails", slots: ["screen"], keywords: ["work", "issue", "plan", "continuity"] },
   { id: "pulls", name: "Pulls", description: "Pull requests across your repositories", icon: GitPullRequest, view: "pulls", slots: ["screen", "dock"], keywords: ["github", "pr", "review", "source control"] },
   { id: "workflows", name: "Workflows", description: "Runs that repeat on a schedule", icon: Workflow, view: "workflows", slots: ["screen"], keywords: ["automation", "schedule", "runs"] },
   { id: "memory", name: "Memory", description: "What Bridge remembers about you", icon: Library, view: "memory", slots: ["screen"], keywords: ["remember", "proposals", "facts"] },

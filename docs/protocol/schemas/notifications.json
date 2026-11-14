@@ -95,6 +95,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "trails/changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "config/app_preferences_changed"
     },
     {

@@ -25,6 +25,19 @@ describe("chatPrStatus", () => {
     expect(chatPrStatus(pr({ state: "closed" })).headline).toBe("Closed without merging");
   });
 
+  it("leads with a merge conflict, and never reads unknown mergeability as one", () => {
+    const conflicted = chatPrStatus(pr({ mergeability: "conflicting", checks: rollup({ total: 2, failed: 1, passed: 1 }) }));
+    expect(conflicted.phase).toBe("conflicts");
+    expect(conflicted.tone).toBe("danger");
+    expect(conflicted.headline).toBe("Merge conflicts · 1 check failing");
+    expect(chatPrStatus(pr({ mergeability: "unknown", checks: rollup({ total: 1, passed: 1 }) })).phase).toBe("passing");
+    // Snapshots from before the field existed carry no mergeability at all.
+    expect(chatPrStatus(pr({ checks: rollup({ total: 1, passed: 1 }) })).phase).toBe("passing");
+    // Once merged or closed, a stale conflict flag is irrelevant.
+    expect(chatPrStatus(pr({ state: "merged", mergeability: "conflicting" })).phase).toBe("merged");
+    expect(chatPrStatus(pr({ state: "closed", mergeability: "conflicting" })).phase).toBe("closed");
+  });
+
   it("zero checks and queued checks are not the same state", () => {
     expect(chatPrStatus(pr()).live).toBe(false);
     expect(chatPrStatus(pr({ checks: rollup({ total: 1, queued: 1 }) })).live).toBe(true);

@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Archive, AtSign, Blocks, Check, ChevronRight, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
+import { Archive, AtSign, Blocks, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { appById, type AppId, type BadgeText } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
 import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
+import type { SessionPullRequest } from "../protocol/generated/protocol";
+import { PullRequestGlyph, type SidebarPullRequests } from "./ChatPullRequests";
+import { SHELF_TONE } from "./WorkShelf";
+import { sidebarPrChip } from "../workSummary";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
@@ -67,6 +71,28 @@ function rowStatus(status: SessionStatus, liveAgents = 0, unread?: AttentionKind
   return null;
 }
 
+/** How long the pointer rests on a row before its history is read. Long
+ * enough that sweeping across the list reads nothing, short enough to finish
+ * before the click. */
+export const PREFETCH_INTENT_MS = 90;
+
+/** Hover intent for one row: a resting pointer or keyboard focus triggers the
+ * callback once; a pointer that moves on before the delay does not. */
+function usePrefetchIntent(onPrefetch?: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const latest = useRef(onPrefetch);
+  latest.current = onPrefetch;
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return useMemo(() => ({
+    start: () => {
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => latest.current?.(), PREFETCH_INTENT_MS);
+    },
+    cancel: () => clearTimeout(timer.current),
+    now: () => { clearTimeout(timer.current); latest.current?.(); },
+  }), []);
+}
+
 function ChatRow({
   chat,
   active,
@@ -81,13 +107,21 @@ function ChatRow({
   onJumpToParent,
   liveAgents,
   unread,
+  pullRequests,
+  onPrefetch,
+  onMarkRead,
+  onMarkUnread,
 }: {
   chat: Session;
   active: boolean;
   indented: boolean;
   time: string | null;
   onClick: () => void;
+  /** Warm this chat's history before the click lands. */
+  onPrefetch?: () => void;
   onArchive?: () => void;
+  onMarkRead?: () => void;
+  onMarkUnread?: () => void;
   onMention?: () => void;
   onFork?: () => void;
   onSaveAsWorkflow?: () => void;
@@ -97,12 +131,16 @@ function ChatRow({
   liveAgents?: number;
   /** The strongest unread kind in this chat's tree, from the attention ledger. */
   unread?: AttentionKind;
+  /** PRs linked to this chat; the row shows the most urgent one. */
+  pullRequests?: SessionPullRequest[];
 }) {
   const name = chatName(chat);
   // The hover names the chat in full: the ladder's longest rung, whatever width shows.
   const full = chat.titleLadder?.at(-1) ?? name;
   const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
   const status = rowStatus(chat.status, liveAgents, unread);
+  const pr = sidebarPrChip(pullRequests);
+  const intent = usePrefetchIntent(active ? undefined : onPrefetch);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -116,6 +154,9 @@ function ChatRow({
         event.dataTransfer.effectAllowed = "copy";
       }}
       onClick={onClick}
+      onPointerEnter={intent.start}
+      onPointerLeave={intent.cancel}
+      onFocus={intent.now}
       title={detail}
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
@@ -138,10 +179,27 @@ function ChatRow({
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}
         <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
-          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
-          {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span></>}
+          {/* The PR comes before the time: on a narrow rail the time is what
+              truncates, never the word saying whether the PR landed. The
+              number lives in the hover and the screen-reader text. */}
+          {pr && <>
+            {status && <span aria-hidden="true">·</span>}
+            <span data-sidebar-pr={pr.pr.number} title={pr.title} className="flex shrink-0 items-center gap-1">
+              <PullRequestGlyph pr={pr.pr} size={11} />
+              <span className="sr-only">Pull request #{pr.pr.number} </span>
+              <span className={pr.tone === "danger" ? SHELF_TONE.danger : undefined}>{pr.text}</span>
+              {pr.more > 0 && <span className="text-faint" aria-label={`and ${pr.more} more`}>+{pr.more}</span>}
+            </span>
+          </>}
+          {/* Working plus a PR already fills the line, and a working chat is
+              current anyway, so the time steps aside rather than clip. */}
+          {time && !(status && pr) && <>
+            {(status || pr) && <span aria-hidden="true">·</span>}
+            <span className="shrink-0 tabular-nums text-faint">{time}</span>
+          </>}
           {forkLabel && <>
-            {(status || time) && <span aria-hidden="true">·</span>}
+            {(status || time || pr) && <span aria-hidden="true">·</span>}
             <GitFork size={9} strokeWidth={1.6} className="shrink-0 text-faint" aria-hidden="true" />
             <span className="truncate">forked from {forkLabel}</span>
           </>}
@@ -163,6 +221,8 @@ function ChatRow({
       onArchive={onArchive}
       forkLabel={forkLabel}
       onJumpToParent={onJumpToParent}
+      onMarkRead={unread ? onMarkRead : undefined}
+      onMarkUnread={unread ? undefined : onMarkUnread}
     />
     <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
@@ -181,6 +241,8 @@ function ChatRowMenu({
   onArchive,
   forkLabel,
   onJumpToParent,
+  onMarkRead,
+  onMarkUnread,
 }: {
   chat: Session;
   name: string;
@@ -190,6 +252,10 @@ function ChatRowMenu({
   onArchive?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
+  /** Offered while the chat is unread; clears its dot. */
+  onMarkRead?: () => void;
+  /** Offered while it is not; brings the dot back until you open it. */
+  onMarkUnread?: () => void;
 }) {
   const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
   const alias = toPublicAlias(chat.id);
@@ -213,6 +279,19 @@ function ChatRowMenu({
         <MoreHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
       </button>
       <MenuPanel controller={menu} label={`Chat actions for ${name}`}>
+        {onMarkRead && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMarkRead)}>
+            <CheckCheck size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mark as read</span>
+          </button>
+        )}
+        {onMarkUnread && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMarkUnread)}>
+            <CircleDot size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mark as unread</span>
+          </button>
+        )}
+        {(onMarkRead || onMarkUnread) && <MenuSeparator />}
         <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
           <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
@@ -411,6 +490,8 @@ export type BridgeSidebarProps = {
   /** Top-level chat id to the strongest unread kind in its tree
    * (`attention/unread_summary`'s `byChat`). */
   unread?: Readonly<Record<string, AttentionKind>>;
+  /** Session id to the pull requests linked to that chat. */
+  pullRequests?: SidebarPullRequests;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
@@ -440,11 +521,17 @@ export type BridgeSidebarProps = {
   railTrailing?: React.ReactNode;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** The pointer is resting on (or focus reached) a chat: warm its history. */
+  onPrefetchSession?: (id: string) => void;
   /** Open the search field on `query` and search deeper, as `/find` does.
    * A new `nonce` repeats the request for the same query. */
   searchRequest?: { query: string; nonce: number };
   /** Absent when the host cannot archive — the row then shows no action. */
   onArchiveChat?: (chat: Session) => void;
+  /** Clear a chat's unread dot by hand, workers' rows included. */
+  onMarkChatRead?: (chatId: string) => void;
+  /** Bring a chat's unread dot back by hand. */
+  onMarkChatUnread?: (chatId: string) => void;
   /** Drop `@session:<alias>` for this chat into the open chat's draft. */
   onMentionChat?: (chat: Session) => void;
   /** Open the fork dialog at this chat's head. */
@@ -468,6 +555,7 @@ export function BridgeSidebar({
   chats,
   liveAgents,
   unread,
+  pullRequests,
   workspaces,
   activeSessionId,
   settingsActive,
@@ -486,8 +574,11 @@ export function BridgeSidebar({
   railTrailing,
   onOpenSettings,
   onOpenSession,
+  onPrefetchSession,
   searchRequest,
   onArchiveChat,
+  onMarkChatRead,
+  onMarkChatUnread,
   onMentionChat,
   onForkChat,
   onSaveChatAsWorkflow,
@@ -868,6 +959,7 @@ export function BridgeSidebar({
                     indented={!!group.label}
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
+                    onPrefetch={onPrefetchSession && (() => onPrefetchSession(chat.id))}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
                     onMention={onMentionChat && (() => onMentionChat(chat))}
                     onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}
@@ -876,6 +968,9 @@ export function BridgeSidebar({
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                     liveAgents={liveAgents?.get(chat.id)?.length}
                     unread={unread?.[chat.id]}
+                    pullRequests={pullRequests?.[chat.id]}
+                    onMarkRead={onMarkChatRead && (() => onMarkChatRead(chat.id))}
+                    onMarkUnread={onMarkChatUnread && (() => onMarkChatUnread(chat.id))}
                   />
                 );
               })}

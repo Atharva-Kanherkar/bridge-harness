@@ -286,6 +286,78 @@ describe("App attention wiring", () => {
       await wait(40);
       expect(badge).toHaveBeenLastCalledWith(0);
     });
+
+    it("marks a chat seen when you read it on Mission Control's stage", async () => {
+      // A stage tile shows the conversation and takes replies: reading a turn
+      // there is reading the chat, and it must not stay unread.
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      const badge = vi.spyOn(bridgeApi, "setUnreadBadge");
+      await mountApp();
+      // Mission Control is an app: the Apps row opens the launcher, and its tile opens it.
+      await act(async () => { container.querySelector<HTMLButtonElement>('nav[aria-label="Main navigation"] button[aria-label^="Apps"]')!.click(); });
+      await act(async () => { document.body.querySelector<HTMLElement>('[role="option"][aria-label^="Mission Control"]')!.click(); });
+      await wait(60);
+      expect(container.querySelector('[data-stage] [data-session-id="a"]'), "the working chat is on the stage").toBeTruthy();
+      const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "a", title: "Turn completed" }); });
+      await wait(40);
+      expect(seen).toHaveBeenCalledWith("a");
+      expect(row(container, "a").textContent).not.toContain("Unread");
+      expect(badge).toHaveBeenLastCalledWith(0);
+      expect(toastRegion(container), "no toast for a tile you are looking at").toBeFalsy();
+      // A chat that is not on the stage still counts.
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(row(container, "b").textContent).toContain("Unread: ");
+      expect(badge).toHaveBeenLastCalledWith(1);
+    });
+
+    const menuItem = async (id: string, label: string) => {
+      const trigger = container.querySelector(`button[aria-label="Chat actions for Title ${id}"]`) as HTMLButtonElement;
+      if (trigger.getAttribute("aria-expanded") !== "true") await act(async () => { trigger.click(); });
+      return [...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent?.trim() === label) as HTMLButtonElement | undefined;
+    };
+
+    it("marks a read chat unread from its row menu, and holds the open one until you leave it", async () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      const badge = vi.spyOn(bridgeApi, "setUnreadBadge");
+      await mountApp();
+      await open(container, "b");
+      await act(async () => { pushMockAttention({ kind: "finished", sessionId: "b", title: "Turn completed" }); });
+      await wait(40);
+      expect(row(container, "b").textContent, "read on screen").not.toContain("Unread");
+      expect(await menuItem("b", "Mark as read"), "a read chat offers only Mark as unread").toBeUndefined();
+      const markUnread = await menuItem("b", "Mark as unread");
+      expect(markUnread).toBeTruthy();
+      await act(async () => { markUnread!.click(); });
+      await wait(40);
+      expect(row(container, "b").textContent).toContain("Unread: ");
+      expect(badge).toHaveBeenLastCalledWith(1);
+      // Still on screen, still unread: the click is not undone by the auto-seen stamp.
+      await wait(60);
+      expect(row(container, "b").textContent).toContain("Unread: ");
+      // Leaving keeps it unread; coming back reads it.
+      await open(container, "a");
+      expect(row(container, "b").textContent).toContain("Unread: ");
+      await open(container, "b");
+      expect(row(container, "b").textContent).not.toContain("Unread");
+      expect(badge).toHaveBeenLastCalledWith(0);
+    });
+
+    it("marks a chat read from its row menu, its worker's rows included", async () => {
+      const seen = vi.spyOn(bridgeApi, "markAttentionSeen");
+      await mountApp();
+      await open(container, "b");
+      await act(async () => { pushMockAttention({ kind: "posted", sessionId: "w", title: "Your agent asks for you" }); });
+      await wait(40);
+      expect(row(container, "a").textContent, "the worker's post rolls up to its chat").toContain("Unread: ");
+      expect(await menuItem("a", "Mark as unread"), "an unread chat offers only Mark as read").toBeUndefined();
+      const markRead = await menuItem("a", "Mark as read");
+      await act(async () => { markRead!.click(); });
+      await wait(40);
+      expect(seen).toHaveBeenCalledWith("w");
+      expect(row(container, "a").textContent).not.toContain("Unread");
+    });
   });
 
   describe("policy", () => {
