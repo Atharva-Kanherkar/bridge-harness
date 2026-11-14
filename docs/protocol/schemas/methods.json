@@ -1136,6 +1136,27 @@
       "resultSchema": "empty-trash-result.json"
     },
     {
+      "command": "list_apps",
+      "domain": "apps",
+      "method": "apps/list_apps",
+      "paramsSchema": null,
+      "resultSchema": "list-apps-result.json"
+    },
+    {
+      "command": "set_app_pinned",
+      "domain": "apps",
+      "method": "apps/set_app_pinned",
+      "paramsSchema": "set-app-pinned-params.json",
+      "resultSchema": "list-apps-result.json"
+    },
+    {
+      "command": "set_app_enabled",
+      "domain": "apps",
+      "method": "apps/set_app_enabled",
+      "paramsSchema": "set-app-enabled-params.json",
+      "resultSchema": "list-apps-result.json"
+    },
+    {
       "command": "list_trails",
       "domain": "trails",
       "method": "trails/list_trails",
@@ -2258,7 +2279,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 34
+    "minor": 35
   },
   "reserved": {
     "cancel": "$/cancel",

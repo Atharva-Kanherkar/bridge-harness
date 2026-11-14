@@ -224,6 +224,10 @@ methods![
     (ScanDirectory, "storage", "scan_directory"),
     (DeletePaths, "storage", "delete_paths"),
     (EmptyTrash, "storage", "empty_trash"),
+    // apps: manifests in core, their state, pins and badges
+    (ListApps, "apps", "list_apps"),
+    (SetAppPinned, "apps", "set_app_pinned"),
+    (SetAppEnabled, "apps", "set_app_enabled"),
     // trails: one page per piece of work, joining chats, notes, PRs and drafts
     (ListTrails, "trails", "list_trails"),
     (ReadTrail, "trails", "read_trail"),

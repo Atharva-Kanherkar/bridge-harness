@@ -660,6 +660,35 @@ fn trail_brief_notes(core: &Arc<BridgeCore>, trail_id: &str) -> Result<crate::tr
     Ok(crate::trails::timeline::NoteSnapshot::default().with_markdown(core.notes.as_ref(), &ids))
 }
 
+/// Every app, with its state on this Mac and its badge.
+pub fn list_apps(core: &Arc<BridgeCore>) -> Result<wire::ListAppsResult, BridgeError> {
+    // Notes first: the notes store takes its own lock, never under the core's.
+    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let apps = crate::apps::badges::summaries(&core.db.lock().unwrap(), &notes)?;
+    Ok(wire::ListAppsResult { apps })
+}
+
+/// Pin or unpin an app in the sidebar. Core holds the three-pin limit.
+pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams) -> Result<wire::ListAppsResult, BridgeError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = crate::apps::registry::set_pinned(&core.db.lock().unwrap(), &params.id, params.pinned, &now)?;
+    if changed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_apps(core)
+}
+
+/// Turn an app on or off. Off removes its tools from new chats, refuses
+/// their calls, drops its prompt text, its pin and its badge.
+pub fn set_app_enabled(core: &Arc<BridgeCore>, params: &wire::SetAppEnabledParams) -> Result<wire::ListAppsResult, BridgeError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = crate::apps::registry::set_enabled(&core.db.lock().unwrap(), &params.id, params.enabled, &now)?;
+    if changed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_apps(core)
+}
+
 /// Every trail, needs-you first. Follows new links before reading.
 pub fn list_trails(core: &Arc<BridgeCore>, include_archived: bool) -> Result<wire::ListTrailsResult, BridgeError> {
     crate::trails::live::sweep_and_publish(core, false);
