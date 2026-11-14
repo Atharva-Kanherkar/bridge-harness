@@ -165,3 +165,27 @@ binary; `ldd` then exits 1 on it and the GTK plugin pass aborts.
   passes exit 0 and `claude` stays byte-identical to the SDK's.
 - CI: `Linux release candidates` passes, including the AppImage and the
   Debian install smoke.
+
+## Review fixes (PR review, two P2 findings)
+
+### ⌘P in the launcher reaches the Code pane
+- Pinning with ⌘P in the launcher must not also open the Code pane's
+  "Open file" dialog, with the Code dock pane open underneath.
+- The launcher stops propagation of every key it handles (arrows, Enter, ⌘P).
+- The Code pane's window shortcut listener ignores events another handler has
+  already taken (`defaultPrevented`).
+- Regression: `src/App.test.tsx`, Code pane open, ⌘K, type "notes", ⌘P on the
+  launcher input: Notes is pinned and no "Open file" dialog exists. Fails
+  without the fix.
+
+### A second tab overwrites pins
+- Pins written by another tab are seen by this one: a `storage` event for the
+  pins key drops the cache and notifies subscribers.
+- Every pin mutation re-reads storage first, so it builds on the latest
+  stored list, never on a stale cache.
+- The same applies to per-chat dock panes (`bridge.dock.added.v1`), which had
+  the same cache.
+- Regression: `src/apps/pins.test.ts` two-tab case (tab A pins Notes, tab B,
+  which read before that, pins Usage: storage holds both, and B's subscribers
+  hear A's write), and the equivalent case in `src/dockVisibility.test.ts`.
+  Fail without the fix.
