@@ -179,7 +179,9 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       const notes: Note[] = [];
       let cursor: string | null = null;
       do {
-        const result = await bridgeApi.queryDatabase({ databaseId: sys.id, ...base, query: queryRef.current.trim() || null, limit: 500, cursor });
+        // The tab shows rows as pages, so the core opens no document for
+        // their cells: asking for them was every millisecond of this read.
+        const result = await bridgeApi.queryDatabase({ databaseId: sys.id, ...base, query: queryRef.current.trim() || null, limit: 500, cursor, notesOnly: true });
         if (ticket !== tabRequest.current) return;
         notes.push(...result.rows.map(row => row.note));
         cursor = result.nextCursor ?? null;

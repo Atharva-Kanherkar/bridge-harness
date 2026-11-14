@@ -89,7 +89,7 @@ Profiling the first page after items 1 to 5 showed it was still spent in
 every tool and command payload of the chat (239 MB in one chat), and every
 store open did it for the whole database (3.3 GB, 9.4 s).
 
-- Migration 76 adds `session_background_tasks`, one row per task holding its
+- Migration 77 adds `session_background_tasks`, one row per task holding its
   latest background snapshot, kept by an insert trigger and cleared by a
   delete trigger. The migration backfills tasks still running, so the first
   open after upgrade closes exactly what the old scan would have.

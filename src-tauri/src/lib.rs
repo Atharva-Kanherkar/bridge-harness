@@ -230,6 +230,54 @@ async fn github_connect(workspace_id: String, remote_url: String, state: State<'
 }
 
 #[tauri::command]
+async fn list_trails(include_archived: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListTrailsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("list trails", move || api::list_trails(&core, include_archived)).await
+}
+
+#[tauri::command]
+async fn read_trail(trail_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ReadTrailResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("read trail", move || api::read_trail(&core, &trail_id, refresh)).await
+}
+
+#[tauri::command]
+async fn create_trail(title: String, workspace_id: Option<String>, session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::CreateTrailResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("create trail", move || api::create_trail(&core, &wire::CreateTrailParams { title, workspace_id, session_id })).await
+}
+
+#[tauri::command]
+async fn update_trail(trail_id: String, title: Option<String>, archived: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::UpdateTrailResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("update trail", move || api::update_trail(&core, &wire::UpdateTrailParams { trail_id, title, archived })).await
+}
+
+#[tauri::command]
+async fn add_trail_member(trail_id: String, member: wire::TrailMemberRef, state: State<'_, Arc<BridgeCore>>) -> Result<wire::AddTrailMemberResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("add to trail", move || api::add_trail_member(&core, &trail_id, &member)).await
+}
+
+#[tauri::command]
+async fn remove_trail_member(trail_id: String, member: wire::TrailMemberRef, state: State<'_, Arc<BridgeCore>>) -> Result<wire::RemoveTrailMemberResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("remove from trail", move || api::remove_trail_member(&core, &trail_id, &member)).await
+}
+
+#[tauri::command]
+async fn preview_trail_brief(trail_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::PreviewTrailBriefResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("preview trail brief", move || api::preview_trail_brief(&core, &trail_id)).await
+}
+
+#[tauri::command]
+async fn carry_trail_brief(trail_id: String, session_id: String, items: Vec<String>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::CarryTrailBriefResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("start chat on trail", move || api::carry_trail_brief(&core, &wire::CarryTrailBriefParams { trail_id, session_id, items })).await
+}
+
+#[tauri::command]
 async fn list_outgoing(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListOutgoingResult, BridgeError> {
     let core = state.inner().clone();
     blocking("drafted messages", move || api::list_outgoing(&core, &session_id)).await
@@ -1276,9 +1324,9 @@ async fn delete_view(database_id: String, view_id: String, core: State<'_, Arc<B
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-async fn query_database(database_id: String, view_id: Option<String>, filter: Option<serde_json::Value>, sorts: Option<Vec<bridge_protocol::messages::NoteSort>>, group_by: Option<bridge_protocol::messages::NoteGroupBy>, group_limit: Option<u32>, query: Option<String>, today: Option<String>, limit: Option<u32>, cursor: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DatabaseQueryResult, BridgeError> {
+async fn query_database(database_id: String, view_id: Option<String>, filter: Option<serde_json::Value>, sorts: Option<Vec<bridge_protocol::messages::NoteSort>>, group_by: Option<bridge_protocol::messages::NoteGroupBy>, group_limit: Option<u32>, query: Option<String>, today: Option<String>, limit: Option<u32>, cursor: Option<String>, notes_only: Option<bool>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DatabaseQueryResult, BridgeError> {
     let core = core.inner().clone();
-    blocking("query database", move || api::query_database(&core, &bridge_protocol::messages::QueryDatabaseParams { database_id, view_id, filter, sorts, group_by, group_limit, query, today, limit, cursor })).await
+    blocking("query database", move || api::query_database(&core, &bridge_protocol::messages::QueryDatabaseParams { database_id, view_id, filter, sorts, group_by, group_limit, query, today, limit, cursor, notes_only: notes_only.unwrap_or(false) })).await
 }
 
 #[tauri::command]
@@ -3327,6 +3375,7 @@ fn setup_embedded(
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
     bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
     bridge_core::workflow_trigger::start_workflow_maintenance(core.clone());
+    bridge_core::trails::live::start_trail_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
@@ -3392,6 +3441,14 @@ pub fn run() -> i32 {
             github_connect,
             github_session_prs,
             github_attach_pr,
+            list_trails,
+            read_trail,
+            create_trail,
+            update_trail,
+            add_trail_member,
+            remove_trail_member,
+            preview_trail_brief,
+            carry_trail_brief,
             list_outgoing,
             update_outgoing,
             copy_outgoing,

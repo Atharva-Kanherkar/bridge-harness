@@ -29,6 +29,9 @@ import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, Not
 import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
+import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrails, mockPreviewTrailBrief, mockReadTrail, mockRemoveTrailMember, mockUpdateTrail, onMockTrailsChanged } from "./trailsMock";
+import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
+import type { TrailsChangedPayload } from "./trails";
 import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockSendOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
 import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
@@ -1851,6 +1854,23 @@ export const bridgeApi = {
   githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
     hasBackend() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
   /** A chat's drafted messages, oldest first, discarded ones included. */
+  // Trails: one page per piece of work. Mock mode serves demo trails.
+  listTrails: (includeArchived = false): Promise<ListTrailsResult> =>
+    hasBackend() ? call("trails/list_trails", { includeArchived }) : Promise.resolve(mockListTrails(includeArchived)),
+  readTrail: (trailId: string, refresh = false): Promise<ReadTrailResult> =>
+    hasBackend() ? call("trails/read_trail", { trailId, refresh }) : Promise.resolve().then(() => mockReadTrail(trailId)),
+  createTrail: (title: string, workspaceId?: string | null, sessionId?: string | null): Promise<CreateTrailResult> =>
+    hasBackend() ? call("trails/create_trail", { title, workspaceId: workspaceId ?? undefined, sessionId: sessionId ?? undefined }) : Promise.resolve().then(() => mockCreateTrail(title, workspaceId, sessionId)),
+  updateTrail: (trailId: string, change: { title?: string; archived?: boolean }): Promise<UpdateTrailResult> =>
+    hasBackend() ? call("trails/update_trail", { trailId, ...change }) : Promise.resolve().then(() => mockUpdateTrail(trailId, change.title, change.archived)),
+  addTrailMember: (trailId: string, member: TrailMemberRef): Promise<AddTrailMemberResult> =>
+    hasBackend() ? call("trails/add_trail_member", { trailId, member }) : Promise.resolve().then(() => mockAddTrailMember(trailId, member)),
+  removeTrailMember: (trailId: string, member: TrailMemberRef): Promise<RemoveTrailMemberResult> =>
+    hasBackend() ? call("trails/remove_trail_member", { trailId, member }) : Promise.resolve().then(() => mockRemoveTrailMember(trailId, member)),
+  previewTrailBrief: (trailId: string): Promise<PreviewTrailBriefResult> =>
+    hasBackend() ? call("trails/preview_trail_brief", { trailId }) : Promise.resolve().then(() => mockPreviewTrailBrief(trailId)),
+  carryTrailBrief: (trailId: string, sessionId: string, items: string[]): Promise<CarryTrailBriefResult> =>
+    hasBackend() ? call("trails/carry_trail_brief", { trailId, sessionId, items }) : Promise.resolve().then(() => mockCarryTrailBrief(trailId, sessionId, items)),
   listOutgoing: (sessionId: string): Promise<ListOutgoingResult> =>
     hasBackend() ? call("outgoing/list_outgoing", { sessionId }) : Promise.resolve(mockListOutgoing(sessionId)),
   /** Edit a draft and/or apply its fixable style rules, against the revision
@@ -3801,6 +3821,10 @@ export const bridgeApi = {
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
+  },
+  onTrailsChanged: async (handler: (payload: TrailsChangedPayload) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<TrailsChangedPayload>("trails/changed", handler);
+    return onMockTrailsChanged(handler);
   },
   onOutgoingChanged: async (handler: (payload: { sessionId: string; id: string }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ sessionId: string; id: string }>("outgoing/changed", handler);

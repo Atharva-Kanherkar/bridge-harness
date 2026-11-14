@@ -61,6 +61,11 @@ import { fixPrompt } from "./workSummary";
 import { PullsScreen } from "./components/PullsScreen";
 import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
+import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
+import type { TrailStartRequest } from "./components/TrailsScreen";
+import type { TrailSummary } from "./protocol/generated/protocol";
+import { TrailStartError, needsYouCount as trailsNeedingYou, trailForSession } from "./trails";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
@@ -94,6 +99,7 @@ import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNav
 // stays; flip this to bring the tab and its toasts back.
 const INBOX_PANE_ENABLED = false;
 const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => ({ default: module.AgentFleet })));
+const TrailsScreen = lazy(() => import("./components/TrailsScreen").then(module => ({ default: module.TrailsScreen })));
 const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
@@ -221,6 +227,8 @@ type NewChatDraft = {
   overrides?: ChatDefaults;
   workspaceId: string | null;
   carryFromSessionId?: string;
+  /** Start the chat on a trail, carrying these brief items first. */
+  trailCarry?: { trailId: string; items: string[] };
 };
 
 type AsidePhase = "creating" | "handing_off" | "ready" | "switching" | "failed" | "cancelled" | "closed";
@@ -1137,6 +1145,12 @@ function AppContent() {
   const githubIntentNonce = useRef(0);
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
+  // Trails: the list feeds the sidebar badge and a chat's trail chip; the
+  // Trails view shows one trail when `trailId` is set.
+  const [trailSummaries, setTrailSummaries] = useState<TrailSummary[]>([]);
+  const [trailId, setTrailId] = useState<string | null>(null);
+  const [trailToasts, setTrailToasts] = useState<TrailToast[]>([]);
+  const [addToTrailSessionId, setAddToTrailSessionId] = useState<string | null>(null);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
   const openGithubPane = useCallback((view: GithubLinkView) => {
@@ -1264,6 +1278,33 @@ function AppContent() {
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };
   }, []);
+
+  // ── Trails glue ─────────────────────────────────────────────────────────────
+  const refreshTrails = useCallback(() => {
+    bridgeApi.listTrails(true).then(result => setTrailSummaries(result.trails)).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    refreshTrails();
+    void bridgeApi.onTrailsChanged(payload => {
+      if (!active) return;
+      refreshTrails();
+      if (!payload.added?.length) return;
+      setTrailToasts(current => {
+        const fresh = payload.added
+          .map(added => ({ key: trailToastKey(added), added }))
+          .filter(toast => !current.some(item => item.key === toast.key));
+        return [...current, ...fresh].slice(-6);
+      });
+    }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
+    return () => { active = false; off?.(); };
+  }, [refreshTrails]);
+
+  function openTrail(id: string | null) {
+    setTrailId(id);
+    setView("trails");
+  }
 
   // ── Connector surface glue ─────────────────────────────────────────────────
   // Inbound connector notifications and the deep link from a toast into the
@@ -2151,6 +2192,19 @@ function AppContent() {
           try { await bridgeApi.carrySessionHandoff(created.id, draft.carryFromSessionId); }
           catch { /* context carry is best-effort; the chat starts regardless */ }
         }
+        // A trail brief lands in the forest before the first cold start, like
+        // the handoff above. If it fails, the chat still joins the trail and
+        // starts, and the person is told it started without the brief.
+        // The person chose what this chat starts with, so it never starts
+        // without it: a failed carry archives the still-empty chat, sends
+        // nothing, and hands the error back to the Continue dialog.
+        if (created && draft.trailCarry) {
+          try { await bridgeApi.carryTrailBrief(draft.trailCarry.trailId, created.id, draft.trailCarry.items); }
+          catch (carryError) {
+            await bridgeApi.archiveChat(created.id).catch(() => undefined);
+            throw new TrailStartError(errorMessage(carryError));
+          }
+        }
         if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
         // Tag the message with the created session so it can only land there, even if
         // another session became active while the create awaited.
@@ -2164,6 +2218,7 @@ function AppContent() {
         return created?.id;
       } catch (e) {
         pendingWelcomeMessageRef.current = null;
+        if (e instanceof TrailStartError) throw e;
         setError(errorMessage(e));
         draftSettings.reload();
       }
@@ -2202,6 +2257,24 @@ function AppContent() {
       // say about worktrees.
       : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false } };
     return submitNewChatDraft(draft, message);
+  }
+  async function startChatOnTrail({ trail, text, harness, items }: TrailStartRequest): Promise<void> {
+    // The selection was made against an earlier preview. Re-read it first, so
+    // an item that left the trail stops the start before a chat exists.
+    const current = await bridgeApi.previewTrailBrief(trail.id);
+    if (items.some(id => !current.items.some(item => item.id === id))) {
+      throw new TrailStartError("Something you picked is no longer on this trail.");
+    }
+    const adapter = adapters.find(candidate => candidate.id === harness);
+    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
+    const workspaceId = trail.workspaceId && state.workspaces.some(item => item.id === trail.workspaceId) ? trail.workspaceId : null;
+    const draft: NewChatDraft = workspaceId
+      ? { workspaceId, overrides: { model }, trailCarry: { trailId: trail.id, items } }
+      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false }, trailCarry: { trailId: trail.id, items } };
+    const created = await submitNewChatDraft(draft, text);
+    if (!created) throw new Error("Bridge could not start the chat. Check that an agent is signed in.");
+    setView("workspace");
+    setParadigm("single");
   }
   // The harness every Notes picker preselects: the saved application chat
   // default (Settings, Chat defaults), the same one the core's note passes
@@ -3472,7 +3545,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3527,6 +3600,8 @@ function AppContent() {
       memoryActive={view === "memory"}
       memoryPending={memoryPending}
       notesActive={view === "notes"}
+      trailsActive={view === "trails"}
+      trailsNeedYou={trailsNeedingYou(trailSummaries)}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
       pullsActive={view === "pulls"}
@@ -3549,6 +3624,7 @@ function AppContent() {
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
       onOpenNotes={() => setView("notes")}
+      onOpenTrails={() => openTrail(null)}
       onOpenUsage={() => setView("usage")}
       onOpenPulls={() => setView("pulls")}
       railTrailing={usageDot}
@@ -3609,7 +3685,18 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "notes" ? <Suspense fallback={<NotesScreenSkeleton />}><NotesScreen
+      /> : view === "trails" ? <Suspense fallback={null}><TrailsScreen
+        trailId={trailId}
+        onSelectTrail={id => setTrailId(id)}
+        workspaces={state.workspaces.map(item => ({ id: item.id, title: item.title }))}
+        defaultWorkspaceId={workspace?.id ?? null}
+        harnesses={adapters.filter(adapter => adapter.available).map(adapter => ({ id: adapter.id, label: adapter.label }))}
+        defaultHarness={resolveDraftHarnessModel().harness}
+        onOpenSession={openSession}
+        onOpenNote={id => { setView("notes"); setNoteOpenRequest(current => ({ id, nonce: (current?.nonce ?? 0) + 1 })); }}
+        onOpenUrl={url => void openExternalUrl(url)}
+        onStart={startChatOnTrail}
+      /></Suspense> : view === "notes" ? <Suspense fallback={<NotesScreenSkeleton />}><NotesScreen
         adapters={adapters}
         workspaces={state.workspaces}
         sessions={visibleSessions}
@@ -3658,6 +3745,9 @@ function AppContent() {
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}
+          trailTitle={trailForSession(trailSummaries, session.id)?.title}
+          onOpenTrail={() => { const trail = trailForSession(trailSummaries, session.id); if (trail) openTrail(trail.id); }}
+          onAddToTrail={!session.parentSessionId ? () => setAddToTrailSessionId(session.id) : undefined}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
@@ -4188,6 +4278,15 @@ function AppContent() {
       onOpen={toast => openConnectorItem(toast.itemKey)}
       onDismiss={key => setConnectorToasts(current => reduceToasts(current, { type: "dismiss", key }))}
     />}
+    <TrailToasts
+      toasts={trailToasts}
+      onOpen={toast => { setTrailToasts(current => current.filter(item => item.key !== toast.key)); openTrail(toast.added.trailId); }}
+      onUndo={toast => {
+        setTrailToasts(current => current.filter(item => item.key !== toast.key));
+        void bridgeApi.removeTrailMember(toast.added.trailId, toast.added.member).catch(error => setError(errorMessage(error)));
+      }}
+      onDismiss={key => setTrailToasts(current => current.filter(item => item.key !== key))}
+    />
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
@@ -4223,6 +4322,17 @@ function AppContent() {
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => { if (!busy) { closeModal(); setPendingWorkspaceId(undefined); } }}
     />
+    {addToTrailSessionId && (() => {
+      const target = state.sessions.find(item => item.id === addToTrailSessionId);
+      if (!target) return null;
+      return <AddToTrailDialog
+        chatTitle={chatName(target)}
+        trails={trailSummaries}
+        onClose={() => setAddToTrailSessionId(null)}
+        onAdd={async id => { await bridgeApi.addTrailMember(id, { kind: "session", ref: target.id }); refreshTrails(); }}
+        onCreate={async title => { await bridgeApi.createTrail(title, target.workspaceId ?? null, target.id); refreshTrails(); }}
+      />;
+    })()}
     <NewProjectDialog
       open={newProjectOpen}
       busy={busy}

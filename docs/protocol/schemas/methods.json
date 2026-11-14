@@ -1122,6 +1122,62 @@
       "resultSchema": "empty-trash-result.json"
     },
     {
+      "command": "list_trails",
+      "domain": "trails",
+      "method": "trails/list_trails",
+      "paramsSchema": "list-trails-params.json",
+      "resultSchema": "list-trails-result.json"
+    },
+    {
+      "command": "read_trail",
+      "domain": "trails",
+      "method": "trails/read_trail",
+      "paramsSchema": "read-trail-params.json",
+      "resultSchema": "read-trail-result.json"
+    },
+    {
+      "command": "create_trail",
+      "domain": "trails",
+      "method": "trails/create_trail",
+      "paramsSchema": "create-trail-params.json",
+      "resultSchema": "create-trail-result.json"
+    },
+    {
+      "command": "update_trail",
+      "domain": "trails",
+      "method": "trails/update_trail",
+      "paramsSchema": "update-trail-params.json",
+      "resultSchema": "update-trail-result.json"
+    },
+    {
+      "command": "add_trail_member",
+      "domain": "trails",
+      "method": "trails/add_trail_member",
+      "paramsSchema": "add-trail-member-params.json",
+      "resultSchema": "add-trail-member-result.json"
+    },
+    {
+      "command": "remove_trail_member",
+      "domain": "trails",
+      "method": "trails/remove_trail_member",
+      "paramsSchema": "remove-trail-member-params.json",
+      "resultSchema": "remove-trail-member-result.json"
+    },
+    {
+      "command": "preview_trail_brief",
+      "domain": "trails",
+      "method": "trails/preview_trail_brief",
+      "paramsSchema": "preview-trail-brief-params.json",
+      "resultSchema": "preview-trail-brief-result.json"
+    },
+    {
+      "command": "carry_trail_brief",
+      "domain": "trails",
+      "method": "trails/carry_trail_brief",
+      "paramsSchema": "carry-trail-brief-params.json",
+      "resultSchema": "carry-trail-brief-result.json"
+    },
+    {
       "command": "list_outgoing",
       "domain": "outgoing",
       "method": "outgoing/list_outgoing",
@@ -2188,7 +2244,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 32
+    "minor": 33
   },
   "reserved": {
     "cancel": "$/cancel",

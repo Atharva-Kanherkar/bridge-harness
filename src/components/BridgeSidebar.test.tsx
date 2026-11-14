@@ -88,6 +88,15 @@ beforeEach(() => {
 });
 
 describe("BridgeSidebar responsive rail", () => {
+  it("shows Trails between Projects and Notes with a needs-you badge that hides at zero", () => {
+    const html = render({ onOpenTrails: noop, onOpenNotes: noop, trailsNeedYou: 2 });
+    expect(html).toContain('aria-label="Trails, 2 need you"');
+    expect(html.indexOf(">Projects<")).toBeLessThan(html.indexOf(">Trails<"));
+    expect(html.indexOf(">Trails<")).toBeLessThan(html.indexOf(">Notes<"));
+    expect(render({ onOpenTrails: noop, trailsNeedYou: 1 })).toContain('aria-label="Trails, 1 needs you"');
+    expect(render({ onOpenTrails: noop, trailsNeedYou: 0 })).not.toContain("need");
+  });
+
   it("draws the rail's trailing slot after Pulls", () => {
     const html = render({ onOpenPulls: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
     const pulls = html.indexOf('aria-label="Pulls"');

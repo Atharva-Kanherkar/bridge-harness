@@ -121,9 +121,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// require this method before offering Send on a draft card. It is also a
 /// minimum-client boundary: older clients cannot decode the new persisted
 /// sending/sent/failed states, so both sides must upgrade together.
+/// **1.33 adds the `trails` domain and its `trails/changed` hint.** A new
+/// client must not pair with an older daemon, whose Trails screen would fail
+/// with `method_not_found`; a 1.32 client still pairs with a 1.33 daemon and
+/// simply never shows trails.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 32,
+    minor: 33,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -429,6 +433,13 @@ mod tests {
         }
         assert!(PROTOCOL_VERSION.accepts(PROTOCOL_VERSION));
         assert!(ProtocolVersion { major: 1, minor: 33 }.accepts(PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn a_trails_daemon_still_serves_a_client_without_trails() {
+        let without_trails = ProtocolVersion { major: 1, minor: 32 };
+        assert!(PROTOCOL_VERSION.accepts(without_trails), "a 1.32 client pairs and never shows trails");
+        assert!(!without_trails.accepts(PROTOCOL_VERSION), "a trails client needs a daemon that serves trails");
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

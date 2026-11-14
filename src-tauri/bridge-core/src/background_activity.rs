@@ -320,7 +320,7 @@ mod tests {
                 "DROP TRIGGER session_background_tasks_ai;
                  DROP TRIGGER session_background_tasks_ad;
                  DROP TABLE session_background_tasks;
-                 DELETE FROM schema_version WHERE version=76;",
+                 DELETE FROM schema_version WHERE version=77;",
             )
             .unwrap();
             store::session_event(&db, "s", &task_event("done", "inProgress"), &json!({})).unwrap();
