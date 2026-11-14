@@ -20,6 +20,14 @@ pub const MAX_CONTEXT_BREAKDOWN_SEGMENTS: u32 = 64;
 #[serde(rename_all = "camelCase")]
 pub struct GetSessionForestParams {
     pub session_id: String,
+    /// How many of the active branch's newest entries to return, clamped to
+    /// 1..=1500. Omitted means 1500. A client opening a long chat asks for a
+    /// small first page to paint at once, then for the full window.
+    /// `entryWindow.returned` and `entryWindow.total` describe what came back.
+    /// A daemon that predates this field ignores it and returns the full
+    /// window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1146,8 +1154,15 @@ mod tests {
         let activate =
             ActivateSessionEntryParams { session_id: "s-1".into(), entry_id: "e-9".into() };
         assert_eq!(round_trip(&activate), activate);
-        let forest = GetSessionForestParams { session_id: "s-1".into() };
+        let forest = GetSessionForestParams { session_id: "s-1".into(), limit: None };
         assert_eq!(round_trip(&forest), forest);
+        assert_eq!(serde_json::to_value(&forest).unwrap(), json!({"sessionId": "s-1"}));
+        let page = GetSessionForestParams { session_id: "s-1".into(), limit: Some(160) };
+        assert_eq!(round_trip(&page), page);
+        assert_eq!(
+            serde_json::from_value::<GetSessionForestParams>(json!({"sessionId": "s-1", "limit": 160})).unwrap(),
+            page
+        );
 
         let start = StartSessionParams {
             workspace_id: "w-1".into(),

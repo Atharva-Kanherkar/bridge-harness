@@ -219,6 +219,10 @@ pub struct SessionForestSnapshot {
     pub worker_leases: Vec<WorkerLease>,
     pub worker_runtimes: Vec<WorkerRuntimeRecord>,
     pub worker_queue: Vec<QueuedWorkerRequest>,
+    /// The usage rows of this chat's latest turn (its active turn, else the
+    /// newest turn it recorded), including workers' spawn charges on that
+    /// turn. The workspace's full ledger is `usage/*`'s job, not the
+    /// snapshot's.
     pub usage: Vec<UsageLedgerRow>,
     pub reasons: Vec<BridgeEvent>,
     pub policy_limits: PolicyLimits,

@@ -3,6 +3,87 @@ use crate::{agent::NormalizedEvent, model::AgentEvent, store, BridgeError};
 use rusqlite::{params, Connection, Transaction};
 use serde_json::Value;
 
+/// The latest background snapshot of every task, maintained as entries are
+/// appended.
+///
+/// Finding live background work used to mean JSON-parsing every tool and
+/// command payload a chat ever recorded: 239 MB for one real chat, on every
+/// forest snapshot, every provider start and exit, and (for every chat at
+/// once, 3.3 GB) every time the store opened. A task's snapshots are appended
+/// like any other entry, so a trigger can keep the latest one per task here,
+/// and every reader looks up a handful of rows instead.
+///
+/// A task is keyed by its `itemId`; snapshots without one share the empty
+/// key, the same grouping the old scan produced. Only the entry the row points
+/// at decides whether the task is still running, so a stale row can never
+/// claim live work: readers re-check the entry's own status.
+pub(crate) fn install_index(db: &Transaction<'_>) -> Result<(), BridgeError> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_background_tasks(
+           session_id TEXT NOT NULL,
+           item_id TEXT NOT NULL,
+           sequence INTEGER NOT NULL,
+           in_progress INTEGER NOT NULL,
+           PRIMARY KEY(session_id,item_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS idx_session_background_tasks_open
+           ON session_background_tasks(in_progress,session_id);
+         CREATE TRIGGER IF NOT EXISTS session_background_tasks_ai AFTER INSERT ON session_entries
+           WHEN NEW.kind IN ('tool.started','tool.completed','command.started','command.completed')
+            AND json_valid(NEW.payload)
+            AND json_extract(NEW.payload,'$.data.backgroundTask')=1
+         BEGIN
+           INSERT INTO session_background_tasks(session_id,item_id,sequence,in_progress)
+           VALUES(NEW.session_id,
+                  COALESCE(json_extract(NEW.payload,'$.itemId'),''),
+                  NEW.sequence,
+                  json_extract(NEW.payload,'$.status') IS 'inProgress')
+           ON CONFLICT(session_id,item_id) DO UPDATE
+             SET sequence=excluded.sequence,in_progress=excluded.in_progress
+             WHERE excluded.sequence>=session_background_tasks.sequence;
+         END;
+         CREATE TRIGGER IF NOT EXISTS session_background_tasks_ad AFTER DELETE ON session_entries
+           WHEN OLD.kind IN ('tool.started','tool.completed','command.started','command.completed')
+         BEGIN
+           DELETE FROM session_background_tasks
+           WHERE session_id=OLD.session_id AND sequence=OLD.sequence;
+         END;",
+    )?;
+    // One pass over the history that already exists, the same scan every
+    // store open used to repeat. Only tasks whose latest snapshot is still
+    // running need a row: a missing row and a finished one read the same.
+    db.execute(
+        "INSERT OR REPLACE INTO session_background_tasks(session_id,item_id,sequence,in_progress)
+         SELECT latest.session_id,latest.item_id,latest.sequence,1
+         FROM (SELECT session_id,
+                      COALESCE(json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId'),'') AS item_id,
+                      MAX(sequence) AS sequence
+               FROM session_entries
+               WHERE kind IN ('tool.started','tool.completed','command.started','command.completed')
+                 AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.data.backgroundTask')=1
+               GROUP BY session_id,2) latest
+         CROSS JOIN session_entries entry
+           ON entry.session_id=latest.session_id AND entry.sequence=latest.sequence
+         WHERE json_extract(CASE WHEN json_valid(entry.payload) THEN entry.payload ELSE '{}' END,'$.status')='inProgress'",
+        [],
+    )?;
+    Ok(())
+}
+
+/// The latest snapshot of every still-running background task, for one
+/// session or for all of them, oldest first. `columns` is the entry column
+/// list the caller reads.
+fn open_task_snapshots_sql(columns: &str) -> String {
+    format!(
+        "SELECT {columns}
+         FROM session_background_tasks task
+         CROSS JOIN session_entries e ON e.session_id=task.session_id AND e.sequence=task.sequence
+         WHERE task.in_progress=1 AND (?1 IS NULL OR task.session_id=?1)
+           AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{{}}' END,'$.status')='inProgress'
+         ORDER BY e.sequence"
+    )
+}
+
 /// Close the latest task snapshots without inferring an outcome. `None` is
 /// startup recovery; a session id is a generation-checked reader exit.
 pub(crate) fn interrupt(
@@ -20,17 +101,7 @@ pub(crate) fn interrupt_in_transaction(
     db: &Transaction<'_>,
     session_id: Option<&str>,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
-    // Keep the grouped process set outside the entry lookup. SQLite otherwise
-    // restarts its coroutine once per history row (quadratic on long sessions).
-    let mut statement = db.prepare(
-        "SELECT e.session_id,e.payload FROM (SELECT session_id,json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId') AS item_id,MAX(sequence) AS sequence
-               FROM session_entries WHERE kind IN ('tool.started','tool.completed','command.started','command.completed')
-                 AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.data.backgroundTask')=1
-                 AND (?1 IS NULL OR session_id=?1)
-               GROUP BY session_id,json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId')) latest CROSS JOIN session_entries e
-           ON e.session_id=latest.session_id AND e.sequence=latest.sequence
-         WHERE json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.status')='inProgress'",
-    )?;
+    let mut statement = db.prepare(&open_task_snapshots_sql("e.session_id,e.payload"))?;
     let rows: Vec<(String, String)> = statement
         .query_map(params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
@@ -77,18 +148,12 @@ pub(crate) fn current(
     db: &Connection,
     session_id: &str,
 ) -> Result<Vec<crate::model::SessionEntry>, BridgeError> {
-    let mut statement = db.prepare(
-        "SELECT e.id,e.session_id,e.parent_entry_id,e.sequence,e.semantic_schema_version,e.kind,e.payload,e.provider_event_id,e.context_visibility,e.token_estimate,e.created_at
-         FROM (
-           SELECT json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId') AS item_id,MAX(sequence) AS sequence
-           FROM session_entries WHERE session_id=?1
-             AND kind IN ('tool.started','tool.completed','command.started','command.completed')
-             AND json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.data.backgroundTask')=1
-           GROUP BY json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.itemId')
-         ) latest CROSS JOIN session_entries e ON e.session_id=?1 AND e.sequence=latest.sequence
-         WHERE json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.status')='inProgress'
-         ORDER BY e.sequence LIMIT 256"
-    )?;
+    let mut statement = db.prepare(&format!(
+        "{} LIMIT 256",
+        open_task_snapshots_sql(
+            "e.id,e.session_id,e.parent_entry_id,e.sequence,e.semantic_schema_version,e.kind,e.payload,e.provider_event_id,e.context_visibility,e.token_estimate,e.created_at"
+        )
+    ))?;
     let rows = statement
         .query_map([session_id], |row| {
             let raw: String = row.get(6)?;
@@ -188,6 +253,94 @@ mod tests {
         done.status = Some("completed".into());
         store::session_event(&db, "s", &done, &json!({})).unwrap();
         assert!(current(&db, "s").unwrap().is_empty());
+    }
+
+    fn task_event(item: &str, status: &str) -> NormalizedEvent {
+        let mut event = NormalizedEvent::new(if status == "inProgress" { "tool.started" } else { "tool.completed" });
+        event.item_id = Some(item.into());
+        event.status = Some(status.into());
+        event.data = json!({"backgroundTask":true,"background":status == "inProgress","command":"cargo test"});
+        event
+    }
+
+    fn open_rows(db: &Connection) -> Vec<(String, String, i64)> {
+        db.prepare("SELECT session_id,item_id,in_progress FROM session_background_tasks ORDER BY session_id,item_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_task_index_follows_appends_without_reading_history() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','ready','reported');
+             INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('t','claude','Other','ready','reported');",
+        )
+        .unwrap();
+        store::session_event(&db, "s", &task_event("a", "inProgress"), &json!({})).unwrap();
+        store::session_event(&db, "s", &task_event("b", "inProgress"), &json!({})).unwrap();
+        store::session_event(&db, "t", &task_event("a", "inProgress"), &json!({})).unwrap();
+        // Ordinary tools never get a row.
+        let mut plain = NormalizedEvent::new("tool.started");
+        plain.item_id = Some("plain".into());
+        plain.status = Some("inProgress".into());
+        store::session_event(&db, "s", &plain, &json!({})).unwrap();
+        assert_eq!(
+            open_rows(&db),
+            vec![("s".into(), "a".into(), 1), ("s".into(), "b".into(), 1), ("t".into(), "a".into(), 1)]
+        );
+        store::session_event(&db, "s", &task_event("a", "completed"), &json!({})).unwrap();
+        let running: Vec<String> = current(&db, "s")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.payload["itemId"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(running, vec!["b"]);
+        // Interrupting one session leaves the other's work alone.
+        interrupt(&db, Some("s")).unwrap();
+        assert!(current(&db, "s").unwrap().is_empty());
+        assert_eq!(current(&db, "t").unwrap().len(), 1);
+        // Deleting the history drops its rows.
+        db.execute_batch("DELETE FROM session_heads WHERE session_id='t'; DELETE FROM session_entries WHERE session_id='t';").unwrap();
+        assert!(open_rows(&db).iter().all(|(session, _, _)| session == "s"));
+    }
+
+    #[test]
+    fn upgrading_closes_tasks_left_running_before_the_index_existed() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("bridge.db");
+        {
+            let db = store::open(&path).unwrap();
+            db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','ready','reported')", []).unwrap();
+            // History written before the index: no trigger, no table.
+            db.execute_batch(
+                "DROP TRIGGER session_background_tasks_ai;
+                 DROP TRIGGER session_background_tasks_ad;
+                 DROP TABLE session_background_tasks;
+                 DELETE FROM schema_version WHERE version=76;",
+            )
+            .unwrap();
+            store::session_event(&db, "s", &task_event("done", "inProgress"), &json!({})).unwrap();
+            store::session_event(&db, "s", &task_event("done", "completed"), &json!({})).unwrap();
+            store::session_event(&db, "s", &task_event("left", "inProgress"), &json!({})).unwrap();
+        }
+        // The migration backfills what the old full scan would have found, and
+        // startup recovery then closes it, exactly as before.
+        let db = store::open(&path).unwrap();
+        assert!(current(&db, "s").unwrap().is_empty());
+        let closed: Vec<(String, String)> = db
+            .prepare("SELECT json_extract(payload,'$.itemId'),json_extract(payload,'$.status') FROM session_entries WHERE session_id='s' ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(closed.last().unwrap(), &("left".to_owned(), "unknown".to_owned()));
+        assert_eq!(closed.iter().filter(|(_, status)| status == "unknown").count(), 1);
+        assert_eq!(open_rows(&db), vec![("s".into(), "left".into(), 0)]);
     }
 
     #[test]

@@ -921,6 +921,7 @@
       "type": "string"
     },
     "usage": {
+      "description": "The usage rows of this chat's latest turn (its active turn, else the newest turn it recorded), including workers' spawn charges on that turn. The workspace's full ledger is `usage/*`'s job, not the snapshot's.",
       "items": {
         "$ref": "#/definitions/UsageLedgerRow"
       },
