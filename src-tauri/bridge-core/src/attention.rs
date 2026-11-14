@@ -752,6 +752,26 @@ pub fn mark_seen(db: &Connection, session_id: &str) -> Result<usize, BridgeError
     Ok(stamped)
 }
 
+/// The person marks a session unread by hand: clear the seen stamp on its
+/// newest row, so the session reads as unread again. Only an unanswered row
+/// can be: an answered request waits on nobody. No row is added, so no toast
+/// or banner fires for it. Returns how many rows it changed, 0 or 1; 0 means
+/// the session has nothing to mark, or is unread already.
+pub fn mark_unread(db: &Connection, session_id: &str) -> Result<usize, BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let changed = transaction.execute(
+        "UPDATE attention_events SET seen_at=NULL
+         WHERE seen_at IS NOT NULL AND resolved_at IS NULL
+           AND sequence=(SELECT MAX(sequence) FROM attention_events WHERE session_id=?1 AND audience=?2)",
+        params![session_id, HUMAN],
+    )?;
+    if changed > 0 {
+        bump(&transaction)?;
+    }
+    transaction.commit()?;
+    Ok(changed)
+}
+
 /// What is still unread, per session and rolled up to the chats a person sees.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnreadSummary {
@@ -1376,6 +1396,48 @@ mod tests {
         db.execute("UPDATE sessions SET archived_at=NULL WHERE id='worker'", []).unwrap();
         db.execute("UPDATE sessions SET archived_at='2026-11-01T00:00:00+00:00' WHERE id='nested'", []).unwrap();
         assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+    }
+
+    #[test]
+    fn mark_unread_brings_back_the_newest_seen_row() {
+        let db = unread_store();
+        record(&db, "chat", "turn.completed", json!({"status": "failed"}), 2);
+        record(&db, "chat", "turn.completed", json!({"status": "completed"}), 3);
+        mark_seen(&db, "chat").unwrap();
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+        let before = revision(&db).unwrap();
+        assert_eq!(mark_unread(&db, "chat").unwrap(), 1);
+        assert!(revision(&db).unwrap() > before, "clients hear about it through attention/changed");
+        // The newest row comes back, not the older failure it superseded.
+        assert_eq!(kinds(&unread_summary(&db).unwrap().by_chat), vec![("chat", AttentionKind::Finished)]);
+        // Already unread: nothing to change, and the revision stays.
+        let unread = revision(&db).unwrap();
+        assert_eq!(mark_unread(&db, "chat").unwrap(), 0);
+        assert_eq!(revision(&db).unwrap(), unread);
+        // Marking it seen again clears it, like any unread row.
+        mark_seen(&db, "chat").unwrap();
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+    }
+
+    #[test]
+    fn mark_unread_leaves_answered_requests_and_quiet_sessions_alone() {
+        let db = unread_store();
+        // A session with no row has nothing to mark.
+        assert_eq!(mark_unread(&db, "other").unwrap(), 0);
+        // An answered request waits on nobody, even after it was seen.
+        record(&db, "chat", "permission.requested", json!({}), 2);
+        record(&db, "chat", "permission.resolved", json!({"requestEventId": 2}), 3);
+        mark_seen(&db, "chat").unwrap();
+        assert_eq!(mark_unread(&db, "chat").unwrap(), 0);
+        assert_eq!(unread_summary(&db).unwrap(), UnreadSummary::default());
+        // Only the named session moves.
+        raise(&db, "other", AttentionKind::Finished);
+        mark_seen(&db, "other").unwrap();
+        raise(&db, "worker", AttentionKind::Posted);
+        mark_seen(&db, "worker").unwrap();
+        assert_eq!(mark_unread(&db, "other").unwrap(), 1);
+        let summary = unread_summary(&db).unwrap();
+        assert_eq!(kinds(&summary.by_session), vec![("other", AttentionKind::Finished)]);
     }
 
     #[test]

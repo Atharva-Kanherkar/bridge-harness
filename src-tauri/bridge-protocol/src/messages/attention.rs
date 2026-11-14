@@ -96,6 +96,20 @@ pub struct MarkAttentionSeenResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkAttentionUnreadParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkAttentionUnreadResult {
+    /// How many rows this call un-stamped: 1, or 0 when the session has no
+    /// unanswered row to mark or is unread already.
+    pub updated: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeliverQueuedInputParams {
     pub session_id: String,
 }
