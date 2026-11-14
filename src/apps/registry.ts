@@ -70,6 +70,10 @@ export function appForView(view: AppView, paradigm?: "single" | "grid"): AppId |
   return BUILTIN_APPS.find(app => app.view === view)?.id ?? null;
 }
 
+/** `MAX_MEMORY_LIST_LIMIT` in bridge-protocol: one list read returns at most
+ *  this many, so a full page means "at least this many". */
+export const MEMORY_LIST_CAP = 50;
+
 /** A count of things waiting on the person. `capped` means the source list
  *  stopped at its limit, so the true number may be higher. */
 export type AppBadgeCount = { count: number; capped?: boolean };

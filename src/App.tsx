@@ -37,7 +37,10 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { AppLauncher } from "./components/AppLauncher";
+import { appById, appForView, MEMORY_LIST_CAP, type AppBadges, type AppId } from "./apps/registry";
+import { togglePin, usePins } from "./apps/pins";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -3043,6 +3046,18 @@ function AppContent() {
   // Proposals waiting for review, for the sidebar badge. Re-read on every
   // memory-changed hint; a failed read leaves the last count rather than a toast.
   const [memoryPending, setMemoryPending] = useState(0);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const pins = usePins();
+  const workflowsWaiting = needsYouCount(workflowRuns);
+  const appBadges = useMemo<AppBadges>(() => ({
+    workflows: { count: workflowsWaiting },
+    memory: { count: memoryPending, capped: memoryPending >= MEMORY_LIST_CAP },
+  }), [workflowsWaiting, memoryPending]);
+  const launcherChats = useMemo(() => [...topSessions].sort(byRecency).slice(0, 20).map(chat => ({
+    id: chat.id,
+    title: chatName(chat),
+    detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
+  })), [topSessions, state.workspaces]);
   useEffect(() => {
     let active = true;
     let off: (() => void) | undefined;
@@ -3233,6 +3248,9 @@ function AppContent() {
       case "interrupt-turn":
         // Reachable mid-sentence, so it has to be inert when nothing is running.
         if (turnActive) requestStop();
+        return;
+      case "open-launcher":
+        setLauncherOpen(open => !open);
         return;
       case "open-recall":
         if (!session) return;
@@ -3455,6 +3473,20 @@ function AppContent() {
       <WindowHistoryChevrons canBack={canBack} canForward={canForward} onBack={goBack} onForward={goForward} />
     </>
   ) : undefined;
+  // Every app opens the way its old sidebar row did. Terminals and Mission
+  // Control also leave the grid paradigm, as their rows always had.
+  const openApp = (id: AppId) => {
+    const { view: target } = appById(id);
+    if (target === "agent-fleet" || target === "mission-control") setParadigm("single");
+    setView(target);
+  };
+  const activeApp = appForView(view, paradigm);
+  const searchAllChats = (query: string) => {
+    setSidebarCollapsed(false);
+    setNavOpen(true);
+    setSidebarSearch(current => ({ query, nonce: (current?.nonce ?? 0) + 1 }));
+  };
+
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
@@ -4182,6 +4214,19 @@ function AppContent() {
       onClose={() => { if (!forkBusy) { setForkDraft(null); setForkError(null); } }}
     />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    <AppLauncher
+      open={launcherOpen}
+      onClose={() => setLauncherOpen(false)}
+      badges={appBadges}
+      pins={pins}
+      chats={launcherChats}
+      chatOpen={view === "workspace" && !!session}
+      onOpenApp={openApp}
+      onOpenChat={openSession}
+      onSearchThisChat={() => commandRef.current("open-recall")}
+      onSearchChats={searchAllChats}
+      onTogglePin={togglePin}
+    />
     {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
 }
