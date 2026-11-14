@@ -55,19 +55,22 @@ pub(crate) fn seeded(dir: &std::path::Path) -> (Arc<BridgeCore>, Vec<String>) {
     }
     let mut trails = Vec::new();
     let db = core.db.lock().unwrap();
-    let transaction = db.unchecked_transaction().unwrap();
+    // The forest opens its own transactions; only seeding skips the fsyncs.
+    let synchronous: i64 = db.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+    db.execute_batch("PRAGMA synchronous=OFF").unwrap();
+    let transaction = &*db;
     for other in 0..OTHER_CHATS {
-        crate::trails::timeline::tests::add_session(&transaction, &format!("other-{other}"), "codex", &format!("Other {other}"), Some("2026-11-01T00:00:00Z"));
-        crate::trails::timeline::tests::attach_pr(&transaction, &format!("other-{other}"), &format!("https://github.com/o/r/pull/{}", 5000 + other), "2026-11-01T00:00:00Z", None);
+        crate::trails::timeline::tests::add_session(transaction, &format!("other-{other}"), "codex", &format!("Other {other}"), Some("2026-11-01T00:00:00Z"));
+        crate::trails::timeline::tests::attach_pr(transaction, &format!("other-{other}"), &format!("https://github.com/o/r/pull/{}", 5000 + other), "2026-11-01T00:00:00Z", None);
     }
     for trail_index in 0..TRAILS {
-        let trail = crate::trails::store::create(&transaction, &format!("Trail {trail_index}"), None, "2026-11-01T00:00:00Z").unwrap();
+        let trail = crate::trails::store::create(transaction, &format!("Trail {trail_index}"), None, "2026-11-01T00:00:00Z").unwrap();
         let mut members = Vec::new();
         for chat in 0..CHATS_PER_TRAIL {
             let id = format!("t{trail_index}-c{chat}");
             let harness = ["claude", "codex", "opencode"][chat % 3];
-            crate::trails::timeline::tests::add_session(&transaction, &id, harness, &format!("Chat {chat} of trail {trail_index}"), Some("2026-11-02T00:00:00Z"));
-            let forest = SessionForest::new(&transaction);
+            crate::trails::timeline::tests::add_session(transaction, &id, harness, &format!("Chat {chat} of trail {trail_index}"), Some("2026-11-02T00:00:00Z"));
+            let forest = SessionForest::new(transaction);
             for turn in 0..TURNS_PER_CHAT {
                 forest.append(&id, EntryKind::UserMessage, serde_json::json!({ "text": paragraph(turn) })).unwrap();
                 forest.append(&id, EntryKind::AssistantMessage, serde_json::json!({ "text": paragraph(turn + 1).repeat(3) })).unwrap();
@@ -79,11 +82,11 @@ pub(crate) fn seeded(dir: &std::path::Path) -> (Arc<BridgeCore>, Vec<String>) {
             .map(|check| (format!("check {check}"), Some(if check == 3 && trail_index % 2 == 0 { CheckConclusion::Failure } else { CheckConclusion::Success })))
             .collect();
         let view = crate::trails::timeline::tests::view(PullRequestState::Open, checks.iter().map(|(name, conclusion)| (name.as_str(), *conclusion)).collect());
-        crate::trails::timeline::tests::attach_pr(&transaction, &format!("t{trail_index}-c0"), &url, "2026-11-03T00:00:00Z", Some(&view));
+        crate::trails::timeline::tests::attach_pr(transaction, &format!("t{trail_index}-c0"), &url, "2026-11-03T00:00:00Z", Some(&view));
         transaction.execute("INSERT INTO trail_pr_link_reads(pr_url,fetched_at) VALUES(?1,'2026-11-03T00:00:00Z')", rusqlite::params![url]).unwrap();
         members.push(TrailMemberRef { kind: TrailMemberKind::PullRequest, reference: url });
         let draft = crate::outgoing::create_draft(
-            &transaction,
+            transaction,
             &format!("t{trail_index}-c0"),
             OutgoingDestination::SlackDm { user: "@mika".into() },
             "Could you review the archive PR today?",
@@ -94,15 +97,15 @@ pub(crate) fn seeded(dir: &std::path::Path) -> (Arc<BridgeCore>, Vec<String>) {
         .unwrap();
         members.push(TrailMemberRef { kind: TrailMemberKind::Outgoing, reference: draft.id });
         let issue = crate::trails::issues::tests::snapshot(2000 + trail_index as u64, true, None, &[]);
-        crate::trails::issues::save(&transaction, &issue).unwrap();
+        crate::trails::issues::save(transaction, &issue).unwrap();
         members.push(TrailMemberRef { kind: TrailMemberKind::Issue, reference: issue.url });
         members.push(TrailMemberRef { kind: TrailMemberKind::Note, reference: note_ids[OTHER_NOTES + trail_index].clone() });
         for member in members {
-            crate::trails::store::add_member(&transaction, &trail.id, &member, TrailAddedBy::Person, "2026-11-05T00:00:00Z").unwrap();
+            crate::trails::store::add_member(transaction, &trail.id, &member, TrailAddedBy::Person, "2026-11-05T00:00:00Z").unwrap();
         }
         trails.push(trail.id);
     }
-    transaction.commit().unwrap();
+    db.execute_batch(&format!("PRAGMA synchronous={synchronous}")).unwrap();
     drop(db);
     (core, trails)
 }
@@ -151,6 +154,26 @@ fn reads() {
             }),
         ),
     ];
+    // Where the time goes, part by part.
+    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let row = crate::trails::store::require(&core.db.lock().unwrap(), &middle).unwrap();
+    let mut rows = rows;
+    rows.extend([
+        ("  part: NoteSnapshot::all", time(runs, || drop(crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())))),
+        ("  part: auto::sweep (notes in hand)", time(runs, || drop(crate::trails::auto::sweep(&core.db.lock().unwrap(), &notes, "t").unwrap()))),
+        ("  part: timeline::detail, one trail", time(runs, || drop(crate::trails::timeline::detail(&core.db.lock().unwrap(), &notes, &row).unwrap()))),
+        (
+            "  part: all summaries",
+            time(runs, || {
+                let db = core.db.lock().unwrap();
+                for trail in crate::trails::store::list(&db, false).unwrap() {
+                    drop(crate::trails::timeline::summary(&db, &notes, &trail).unwrap());
+                }
+            }),
+        ),
+        ("  part: brief::preview (notes in hand)", time(runs, || drop(crate::trails::brief::preview(&core.db.lock().unwrap(), &notes, &row).unwrap()))),
+        ("  part: arm_trail_pulls", time(runs, || drop(crate::trails::live::arm_trail_pulls(&core)))),
+    ]);
     println!("\n{:<40} {:>12} {:>12}", "call", "median", "p90");
     for (name, (median, p90)) in rows {
         println!("{name:<40} {:>12.2?} {:>12.2?}", median, p90);
