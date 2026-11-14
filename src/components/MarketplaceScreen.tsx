@@ -410,7 +410,7 @@ function PluginMarketplace() {
 type StoreSection = "apps" | "plugins" | "skills";
 
 const STORE_SECTIONS: { id: StoreSection; label: string; hint: string }[] = [
-  { id: "apps", label: "Apps", hint: "Everything Bridge does, one app each." },
+  { id: "apps", label: "Apps", hint: "Built into Bridge." },
   { id: "plugins", label: "Plugins", hint: "Connect tools such as GitHub or Slack." },
   { id: "skills", label: "Skills", hint: "Add workflows such as reviewing code or creating documents." },
 ];
