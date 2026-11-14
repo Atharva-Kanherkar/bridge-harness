@@ -534,6 +534,10 @@ pub struct SessionPullRequest {
     pub url: String,
     pub state: PullRequestState,
     pub is_draft: bool,
+    /// `conflicting` when the PR cannot merge cleanly. GitHub computes it
+    /// lazily, so `unknown` is normal right after a push and never a conflict.
+    #[serde(default = "unknown_mergeability")]
+    pub mergeability: Mergeability,
     pub head_branch: String,
     pub head_sha: String,
     pub checks: CheckRollup,
@@ -550,6 +554,35 @@ pub struct SessionPullRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GithubSessionPrsResult {
     pub pull_requests: Vec<SessionPullRequest>,
+}
+
+fn unknown_mergeability() -> Mergeability {
+    Mergeability::Unknown
+}
+
+/// Every chat's linked pull requests in one read, for the chat list. Without
+/// `refresh` the daemon answers from stored snapshots and makes no `gh` call;
+/// with it, only open pull requests are re-read live.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubSidebarPrsParams {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// One chat's linked pull requests, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPullRequests {
+    pub session_id: String,
+    pub pull_requests: Vec<SessionPullRequest>,
+}
+
+/// Only chats with at least one linked pull request appear.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubSidebarPrsResult {
+    pub chats: Vec<ChatPullRequests>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

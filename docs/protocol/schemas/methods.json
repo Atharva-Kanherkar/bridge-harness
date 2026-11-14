@@ -156,6 +156,13 @@
       "resultSchema": "github-session-prs-result.json"
     },
     {
+      "command": "github_sidebar_prs",
+      "domain": "github",
+      "method": "github/github_sidebar_prs",
+      "paramsSchema": "github-sidebar-prs-params.json",
+      "resultSchema": "github-sidebar-prs-result.json"
+    },
+    {
       "command": "github_attach_pr",
       "domain": "github",
       "method": "github/github_attach_pr",

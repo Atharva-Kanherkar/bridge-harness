@@ -203,6 +203,7 @@ typed_methods![
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
     (GithubConnect, GithubConnectParams, GithubConnectResult),
     (GithubSessionPrs, GithubSessionPrsParams, GithubSessionPrsResult),
+    (GithubSidebarPrs, GithubSidebarPrsParams, GithubSidebarPrsResult),
     (GithubAttachPr, GithubAttachPrParams, GithubAttachPrResult),
     // connectors — in-app surfaces over the harness's own MCP servers
     (ConnectorList, ConnectorListParams, ConnectorListResult),

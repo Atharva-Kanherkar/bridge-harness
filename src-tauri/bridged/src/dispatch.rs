@@ -118,6 +118,10 @@ pub fn dispatch(
             let p: wire::GithubSessionPrsParams = decode(method, params)?;
             reply(api::github_session_prs(core, &p.session_id, p.refresh))
         }
+        MethodName::GithubSidebarPrs => {
+            let p: wire::GithubSidebarPrsParams = decode(method, params)?;
+            reply(api::github_sidebar_prs(core, p.refresh))
+        }
         MethodName::ListOutgoing => {
             let p: wire::ListOutgoingParams = decode(method, params)?;
             reply(api::list_outgoing(core, &p.session_id))

@@ -642,6 +642,22 @@ pub fn github_session_prs(
     Ok(wire::GithubSessionPrsResult { pull_requests })
 }
 
+/// Every chat's linked pull requests, for the chat list. Snapshot-only unless
+/// `refresh`, and then only open pull requests touch `gh`.
+pub fn github_sidebar_prs(
+    core: &Arc<BridgeCore>,
+    refresh: bool,
+) -> Result<wire::GithubSidebarPrsResult, BridgeError> {
+    let chats = crate::session_prs::sidebar_pull_requests(core, refresh)?
+        .into_iter()
+        .map(|(session_id, views)| {
+            let pull_requests = views.into_iter().map(github_wire).collect::<Result<Vec<_>, _>>()?;
+            Ok(wire::ChatPullRequests { session_id, pull_requests })
+        })
+        .collect::<Result<Vec<_>, BridgeError>>()?;
+    Ok(wire::GithubSidebarPrsResult { chats })
+}
+
 /// Attach a chat to a pull request the user named explicitly. Verification is
 /// server-side and repository-scoped; the client cannot bind an arbitrary PR.
 pub fn github_attach_pr(
