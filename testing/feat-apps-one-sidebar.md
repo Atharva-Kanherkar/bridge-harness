@@ -64,7 +64,10 @@ and the Store shell. Frontend and the native menu only. No protocol change.
 ### Dock
 - Visible panes = (core panes `work`, `changes`, `terminal`, `browser` when
   available) ∪ (any available pane with a badge or alert) ∪ (the active pane)
-  ∪ (panes added for this chat). Strip order stays `DOCK_PANES` order.
+  ∪ (panes already opened in this dock, whose content is still mounted) ∪
+  (panes added for this chat). The strip keeps the order it has today.
+- Hiding a tab never unmounts a pane's content: a terminal or editor buffer
+  survives whatever the strip shows.
 - A **+** button opens a menu of the hidden panes. Picking one adds it to this
   chat and opens it. The button is absent when nothing is hidden.
 - Added panes persist per chat in localStorage (`bridge.dock.added.v1`),
@@ -96,8 +99,9 @@ Manifests, core registry, `apps/*` methods, community installs, trails.
   - subscribers hear every change
 - `src/dockVisibility.test.ts`
   - core panes only when available
-  - a non-core pane shows with a badge or alert, or when active, or added
-  - hidden panes keep `DOCK_PANES` order
+  - a non-core pane shows with a badge or alert, or when active, opened
+    before, or added
+  - hidden panes keep the strip's order
   - added-pane storage caps at 200 chats
 - `src/keymap.test.ts`
   - ⌘K resolves to `open-launcher`, ⌘F to `open-recall`
@@ -118,6 +122,7 @@ Manifests, core registry, `apps/*` methods, community installs, trails.
   - the existing search, archive and interaction suites still pass
 - `src/components/SessionDock.test.tsx`
   - the + menu lists hidden panes and calls `onAddPane`; absent when none hidden
+  - a visited pane's body stays mounted even when its tab is hidden
 - `src/components/MarketplaceScreen.test.tsx`
   - tabs read Apps, Plugins, Skills; the plugin suite runs under Plugins
   - the Apps tab pins and unpins
