@@ -1275,9 +1275,9 @@ async fn delete_view(database_id: String, view_id: String, core: State<'_, Arc<B
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-async fn query_database(database_id: String, view_id: Option<String>, filter: Option<serde_json::Value>, sorts: Option<Vec<bridge_protocol::messages::NoteSort>>, group_by: Option<bridge_protocol::messages::NoteGroupBy>, group_limit: Option<u32>, query: Option<String>, today: Option<String>, limit: Option<u32>, cursor: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DatabaseQueryResult, BridgeError> {
+async fn query_database(database_id: String, view_id: Option<String>, filter: Option<serde_json::Value>, sorts: Option<Vec<bridge_protocol::messages::NoteSort>>, group_by: Option<bridge_protocol::messages::NoteGroupBy>, group_limit: Option<u32>, query: Option<String>, today: Option<String>, limit: Option<u32>, cursor: Option<String>, notes_only: Option<bool>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DatabaseQueryResult, BridgeError> {
     let core = core.inner().clone();
-    blocking("query database", move || api::query_database(&core, &bridge_protocol::messages::QueryDatabaseParams { database_id, view_id, filter, sorts, group_by, group_limit, query, today, limit, cursor })).await
+    blocking("query database", move || api::query_database(&core, &bridge_protocol::messages::QueryDatabaseParams { database_id, view_id, filter, sorts, group_by, group_limit, query, today, limit, cursor, notes_only: notes_only.unwrap_or(false) })).await
 }
 
 #[tauri::command]

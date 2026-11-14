@@ -132,5 +132,6 @@ pub fn query_spec(params: &wire::QueryDatabaseParams) -> super::query::QuerySpec
         today: params.today.clone(),
         limit: params.limit.map(|limit| limit as usize),
         cursor: params.cursor.clone(),
+        notes_only: params.notes_only,
     }
 }
