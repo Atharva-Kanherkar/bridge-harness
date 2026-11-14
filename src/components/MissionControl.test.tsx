@@ -16,14 +16,32 @@ vi.mock("../api", () => ({
     resolveApproval: vi.fn(),
     resolveQuestion: vi.fn(),
     interruptTurn: vi.fn(),
+    githubSessionPrs: vi.fn(),
+    onGithubSessionPrsChanged: vi.fn(),
+    onGithubChecksChanged: vi.fn(),
+    onGithubCiFinished: vi.fn(),
   },
 }));
-vi.mock("./AgentConversation", () => ({
-  AgentConversation: ({ session, onResolve }: { session?: Session; onResolve: (eventId: number, decision: string) => unknown }) =>
-    <div data-conversation={session?.id}><button type="button" data-approve={session?.id} onClick={() => { void onResolve(7, "accept"); }}>approve</button></div>,
-}));
+// what each chat's transcript would report as work its agent left running.
+const runningWork = new Map<string, ConversationItem[]>();
+vi.mock("./AgentConversation", async () => {
+  const { useEffect } = await import("react");
+  return {
+    AgentConversation: ({ session, onResolve, onBackgroundWork }: { session?: Session; onResolve: (eventId: number, decision: string) => unknown; onBackgroundWork?: (work: BackgroundWork) => void }) => {
+      useEffect(() => {
+        const items = (session && runningWork.get(session.id)) ?? [];
+        if (session) onBackgroundWork?.({ scope: session.id, items, signature: items.map(item => item.identity).join(","), outcomeOf: () => undefined });
+      });
+      return <div data-conversation={session?.id}><button type="button" data-approve={session?.id} onClick={() => { void onResolve(7, "accept"); }}>approve</button></div>;
+    },
+  };
+});
 
 import { bridgeApi } from "../api";
+import type { BackgroundWork } from "../backgroundTasks";
+import { reduceConversation, type ConversationItem } from "../conversation";
+import type { SessionPullRequest } from "../protocol/generated/protocol";
+import { asWireKind } from "../transcript/wire";
 
 const forest = (sessionId: string): SessionForestSnapshot => ({
   sessionId, entries: [], leaves: [], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [],
@@ -49,6 +67,9 @@ beforeEach(() => {
   vi.mocked(bridgeApi.submitInput).mockReset().mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
   vi.mocked(bridgeApi.resolveApproval).mockReset().mockResolvedValue({} as never);
   vi.mocked(bridgeApi.interruptTurn).mockReset().mockResolvedValue(undefined);
+  vi.mocked(bridgeApi.githubSessionPrs).mockReset().mockResolvedValue({ pullRequests: [] });
+  for (const listen of [bridgeApi.onGithubSessionPrsChanged, bridgeApi.onGithubChecksChanged, bridgeApi.onGithubCiFinished]) vi.mocked(listen).mockReset().mockResolvedValue(() => undefined);
+  runningWork.clear();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -685,4 +706,68 @@ it("shows running workflows as chips inside the board toolbar, not a separate ca
   await render({ sessions: [], workflowRuns: runs, workflowNames: new Map(), onOpenWorkflowRun: open });
   expect(host.querySelector("[role='toolbar'] [aria-label='Workflows running']")).not.toBeNull();
   expect(host.querySelector("[aria-label='Tiles on the stage']")).toBeNull();
+});
+
+describe("each tile's pull requests and background work", () => {
+  const pr = (number: number, over: Partial<SessionPullRequest> = {}): SessionPullRequest => ({
+    number, title: `PR ${number}`, url: `https://github.com/o/r/pull/${number}`, state: "open", isDraft: false, headBranch: "feat/x", headSha: "abc1234",
+    checks: { total: 1, queued: 0, inProgress: 1, passed: 0, failed: 0, skipped: 0, cancelled: 0 }, checkDetails: [],
+    attribution: "toolCompletion", attachedAt: "2026-11-14T00:00:00Z", fetchedAt: "2026-11-14T00:00:00Z", stale: false, error: null, ...over,
+  } as SessionPullRequest);
+  const failing = { checks: { total: 1, queued: 0, inProgress: 0, passed: 0, failed: 1, skipped: 0, cancelled: 0 }, checkDetails: [{ name: "unit", status: "completed", conclusion: "failure", logUrl: "", workflow: "CI" }] } as Partial<SessionPullRequest>;
+  const task = (sessionId: string, title: string): ConversationItem => reduceConversation([{
+    id: 1, sessionId, sequence: 1, protocolVersion: 1, kind: asWireKind("tool.started"), itemId: `task-${sessionId}`, role: null, status: "inProgress", title, text: null,
+    data: { type: "backgroundTask", backgroundTask: true, background: true, command: "cargo test" }, providerMeta: {}, createdAt: "2026-11-14T00:00:00Z",
+  } as AgentEvent]).at(-1)!;
+  const shelf = (id: string) => host.querySelector<HTMLElement>(`[data-session-id="${id}"] [data-work-shelf]`);
+  const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  it("shows each tile's own pull requests on its shelf", async () => {
+    vi.mocked(bridgeApi.githubSessionPrs).mockImplementation(async id => ({ pullRequests: id === "a" ? [pr(12)] : id === "b" ? [pr(34)] : [] }));
+    await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working")] });
+    await flush();
+    expect(bridgeApi.githubSessionPrs).toHaveBeenCalledWith("a", true);
+    expect(bridgeApi.githubSessionPrs).toHaveBeenCalledWith("b", true);
+    expect(shelf("a")?.textContent).toContain("#12");
+    expect(shelf("a")?.textContent).not.toContain("#34");
+    expect(shelf("b")?.textContent).toContain("#34");
+  });
+
+  it("shows each tile's own background work, not another tile's", async () => {
+    runningWork.set("a", [task("a", "Run the Rust suite")]);
+    runningWork.set("b", [task("b", "Watch the deploy")]);
+    await render({ sessions: [session("a", "completed", { activeTurnId: "t" }), session("b", "working")] });
+    await flush();
+    expect(shelf("a")?.textContent).toContain("Run the Rust suite");
+    expect(shelf("a")?.textContent).not.toContain("Watch the deploy");
+    expect(shelf("b")?.textContent).toContain("Watch the deploy");
+  });
+
+  it("draws no shelf when a tile has no PRs and no background work", async () => {
+    await render({ sessions: [session("a", "working")] });
+    await flush();
+    expect(host.querySelector("[data-session-id='a']")).not.toBeNull();
+    expect(shelf("a")).toBeNull();
+  });
+
+  it("opens the chat's Work pane from a tile's shelf", async () => {
+    vi.mocked(bridgeApi.githubSessionPrs).mockResolvedValue({ pullRequests: [pr(12)] });
+    const onOpenWork = vi.fn();
+    const onFocusSession = vi.fn();
+    await render({ sessions: [session("a", "working")], onOpenWork, onFocusSession });
+    await flush();
+    await act(async () => { shelf("a")!.querySelector<HTMLButtonElement>("[data-work-shelf-open]")!.click(); });
+    expect(onOpenWork).toHaveBeenCalledWith("a", 12);
+    expect(onFocusSession).not.toHaveBeenCalled();
+  });
+
+  it("drafts a PR fix into the tile's composer without sending", async () => {
+    vi.mocked(bridgeApi.githubSessionPrs).mockResolvedValue({ pullRequests: [pr(12, failing)] });
+    await render({ sessions: [session("a", "working")] });
+    await flush();
+    await act(async () => { shelf("a")!.querySelector<HTMLButtonElement>("[data-work-shelf-fix]")!.click(); });
+    const textarea = host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!;
+    expect(textarea.value).toContain("#12");
+    expect(bridgeApi.submitInput).not.toHaveBeenCalled();
+  });
 });
