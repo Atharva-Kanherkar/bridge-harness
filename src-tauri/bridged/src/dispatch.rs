@@ -118,6 +118,38 @@ pub fn dispatch(
             let p: wire::GithubSessionPrsParams = decode(method, params)?;
             reply(api::github_session_prs(core, &p.session_id, p.refresh))
         }
+        MethodName::ListTrails => {
+            let p: wire::ListTrailsParams = decode(method, params)?;
+            reply(api::list_trails(core, p.include_archived))
+        }
+        MethodName::ReadTrail => {
+            let p: wire::ReadTrailParams = decode(method, params)?;
+            reply(api::read_trail(core, &p.trail_id, p.refresh))
+        }
+        MethodName::CreateTrail => {
+            let p: wire::CreateTrailParams = decode(method, params)?;
+            reply(api::create_trail(core, &p))
+        }
+        MethodName::UpdateTrail => {
+            let p: wire::UpdateTrailParams = decode(method, params)?;
+            reply(api::update_trail(core, &p))
+        }
+        MethodName::AddTrailMember => {
+            let p: wire::AddTrailMemberParams = decode(method, params)?;
+            reply(api::add_trail_member(core, &p.trail_id, &p.member))
+        }
+        MethodName::RemoveTrailMember => {
+            let p: wire::RemoveTrailMemberParams = decode(method, params)?;
+            reply(api::remove_trail_member(core, &p.trail_id, &p.member))
+        }
+        MethodName::PreviewTrailBrief => {
+            let p: wire::PreviewTrailBriefParams = decode(method, params)?;
+            reply(api::preview_trail_brief(core, &p.trail_id))
+        }
+        MethodName::CarryTrailBrief => {
+            let p: wire::CarryTrailBriefParams = decode(method, params)?;
+            reply(api::carry_trail_brief(core, &p))
+        }
         MethodName::ListOutgoing => {
             let p: wire::ListOutgoingParams = decode(method, params)?;
             reply(api::list_outgoing(core, &p.session_id))
@@ -1464,6 +1496,38 @@ mod tests {
         eprintln!("settled: {settled:#}");
         assert_eq!(settled["status"], "succeeded", "{settled:#}");
         assert!(settled["tokens"].as_i64().unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn both_hosts_start_the_trail_maintenance_loop() {
+        // Automatic adds and their toasts stop under a host that forgets it.
+        for (host, source) in [("bridged", include_str!("lib.rs")), ("desktop", include_str!("../../src/lib.rs"))] {
+            assert!(
+                source.contains("trails::live::start_trail_maintenance(core.clone())"),
+                "{host} does not start trail maintenance"
+            );
+        }
+    }
+
+    #[test]
+    fn trails_answer_through_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let created = dispatch(&core, MethodName::CreateTrail, Some(json!({"title": "  Archive a chat "}))).unwrap();
+        let id = created["trail"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(created["trail"]["title"], "Archive a chat");
+        assert_eq!(created["trail"]["state"], "inProgress");
+        let listed = dispatch(&core, MethodName::ListTrails, Some(json!({}))).unwrap();
+        assert_eq!(listed["trails"][0]["id"], id);
+        let read = dispatch(&core, MethodName::ReadTrail, Some(json!({"trailId": id}))).unwrap();
+        assert_eq!(read["trail"]["events"], json!([]));
+        let preview = dispatch(&core, MethodName::PreviewTrailBrief, Some(json!({"trailId": id}))).unwrap();
+        assert_eq!(preview["items"], json!([]));
+        assert!(preview["budgetTokens"].as_u64().unwrap() > 0);
+        let missing = dispatch(&core, MethodName::AddTrailMember, Some(json!({"trailId": id, "member": {"kind": "session", "ref": "nope"}})));
+        assert!(missing.is_err());
+        let refused = dispatch(&core, MethodName::ListTrails, Some(json!({"bogus": true})));
+        assert!(refused.is_err(), "unknown fields are refused");
     }
 
     #[test]

@@ -117,9 +117,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// client must not pair with an older daemon, whose draft cards would fail
 /// with `method_not_found`; a 1.30 client still pairs with a 1.31 daemon and
 /// simply never shows a draft card.
+/// **1.32 adds the `trails` domain and its `trails/changed` hint.** A new
+/// client must not pair with an older daemon, whose Trails screen would fail
+/// with `method_not_found`; a 1.31 client still pairs with a 1.32 daemon and
+/// simply never shows trails.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 31,
+    minor: 32,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

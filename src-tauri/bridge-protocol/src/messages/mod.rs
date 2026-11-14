@@ -348,6 +348,15 @@ typed_methods![
     (ScanDirectory, ScanDirectoryParams, DiskListing),
     (DeletePaths, DeletePathsParams, DiskDeleteResult),
     (EmptyTrash, _, EmptyTrashResult),
+    // trails: one page per piece of work
+    (ListTrails, ListTrailsParams, ListTrailsResult),
+    (ReadTrail, ReadTrailParams, ReadTrailResult),
+    (CreateTrail, CreateTrailParams, CreateTrailResult),
+    (UpdateTrail, UpdateTrailParams, UpdateTrailResult),
+    (AddTrailMember, AddTrailMemberParams, AddTrailMemberResult),
+    (RemoveTrailMember, RemoveTrailMemberParams, RemoveTrailMemberResult),
+    (PreviewTrailBrief, PreviewTrailBriefParams, PreviewTrailBriefResult),
+    (CarryTrailBrief, CarryTrailBriefParams, CarryTrailBriefResult),
     // notes
     // outgoing: drafted messages for a person or a place
     (ListOutgoing, ListOutgoingParams, ListOutgoingResult),
