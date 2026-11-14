@@ -29,8 +29,8 @@ memory) has its own contract.
 - `apps/set_app_pinned {id, pinned: true}` appends the app at the next
   position and returns the full list. Pinning an already pinned app is a
   no-op that keeps its position.
-- A 4th pin is refused with `invalid_params`: "You can pin 3 apps. Unpin one
-  first." Nothing changes.
+- A 4th pin is refused with Bridge's `invalid` error (the code every domain
+  refusal uses): "You can pin 3 apps. Unpin one first." Nothing changes.
 - Unpinning closes the gap: pins at 0, 1, 2 with the middle one unpinned
   leave positions 0 and 1 in the original order.
 - Pinning an app that is off is refused: "Turn <Name> on before pinning it."
@@ -83,7 +83,8 @@ memory) has its own contract.
   state.
 - `MemoryChanged`, `WorkflowRunChanged` and `TrailsChanged` also produce
   `AppsChanged`, and a lagged client is reconciled with it.
-- `apps/changed` is Transient with payload `{}`.
+- `apps/changed` is Transient with no payload (`null`), like
+  `attention/changed`.
 
 ### Frontend
 
