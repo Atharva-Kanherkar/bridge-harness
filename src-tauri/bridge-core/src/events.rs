@@ -116,6 +116,8 @@ pub enum CoreEvent {
     NotesPageChanged(bridge_protocol::messages::NotePageChanged),
     /// A notes pass's reply so far.
     NotesPassProgress(bridge_protocol::messages::NotePassProgress),
+    /// Refetch hint for trails, carrying what the automatic sweep added.
+    TrailsChanged(bridge_protocol::messages::TrailsChanged),
     /// Refetch hint: the attention ledger may have moved. Never constructed
     /// by callers for forest changes: [`EventBus::publish`] derives it from
     /// the durable agent event that moved the ledger. See `attention`.
@@ -158,6 +160,7 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
             CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
             CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
+            CoreEvent::TrailsChanged(_) => NotificationName::TrailsChanged,
             CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
             CoreEvent::AppPreferencesChanged => NotificationName::AppPreferencesChanged,
             CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
@@ -232,6 +235,7 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
             CoreEvent::NotesPageChanged(change) => serde_json::to_value(change).expect("page change serializes"),
             CoreEvent::NotesPassProgress(progress) => serde_json::to_value(progress).expect("pass progress serializes"),
+            CoreEvent::TrailsChanged(changed) => serde_json::to_value(changed).expect("trails change serializes"),
             CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
             CoreEvent::WorkflowRunChanged { run } => serde_json::json!({ "run": run }),
         }
@@ -344,6 +348,16 @@ impl EventReceiver {
         }
     }
 
+    /// The next waiting event without blocking. `Err(true)` reports a lag
+    /// (events were missed), `Err(false)` that nothing is waiting.
+    pub fn try_next(&mut self) -> Result<CoreEvent, bool> {
+        match self.receiver.try_recv() {
+            Ok(event) => Ok(event),
+            Err(broadcast::error::TryRecvError::Lagged(_)) => Err(true),
+            Err(_) => Err(false),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn try_recv(&mut self) -> Result<CoreEvent, broadcast::error::TryRecvError> {
         self.receiver.try_recv()
@@ -435,7 +449,8 @@ impl EventBus {
                 | CoreEvent::ConnectorItemResolved { .. }
                 | CoreEvent::ConnectorInboxChanged { .. }
                 | CoreEvent::NotesPageChanged(_)
-                | CoreEvent::NotesPassProgress(_) => {}
+                | CoreEvent::NotesPassProgress(_)
+                | CoreEvent::TrailsChanged(_) => {}
             }
             if moves_attention {
                 state.attention_changed = true;
@@ -615,6 +630,7 @@ mod tests {
             CoreEvent::ConnectorInboxChanged { family: "slack".into() },
             CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
             CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
+            CoreEvent::TrailsChanged(bridge_protocol::messages::TrailsChanged { trail_id: Some("t".into()), added: Vec::new() }),
             CoreEvent::AttentionChanged,
             CoreEvent::AppPreferencesChanged,
             CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },

@@ -27,6 +27,38 @@ export function nextWindowStart(start: number): number {
   return Math.max(0, Math.max(0, start) - TRANSCRIPT_HYDRATE_CHUNK);
 }
 
+/** How many leading row keys the window remembers to recognise its rows after
+ * older history arrives above them. More than one, because the row at the
+ * seam can be regrouped once its earlier half arrives. */
+const ANCHOR_ROWS = 8;
+
+/** Reads the key of the row at an index, or nothing past the end. */
+export type RowKeyAt = (index: number) => string | undefined;
+
+function leadingKeys(total: number, rowKeyAt?: RowKeyAt): string[] {
+  if (!rowKeyAt) return [];
+  const keys: string[] = [];
+  for (let index = 0; index < Math.min(ANCHOR_ROWS, total); index += 1) {
+    const key = rowKeyAt(index);
+    if (key !== undefined) keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * How far the rows that used to lead the list have moved: positive when older
+ * rows arrived above them, negative when the oldest rows left the window.
+ * `undefined` when none of them is in the list any more.
+ */
+export function leadingShift(anchor: readonly string[], total: number, rowKeyAt: RowKeyAt): number | undefined {
+  for (let index = 0; index < anchor.length; index += 1) {
+    for (let now = 0; now < total; now += 1) {
+      if (rowKeyAt(now) === anchor[index]) return now - index;
+    }
+  }
+  return undefined;
+}
+
 interface WindowState {
   key: string;
   /** Whether the window has seen a non-empty transcript. */
@@ -39,9 +71,11 @@ interface WindowState {
    * window keeps its entrance animation instead of flipping to instant.
    */
   instantBefore: number;
+  /** The keys that led the list when the window last looked. */
+  anchor: readonly string[];
 }
 
-function windowState(key: string, total: number, full: boolean): WindowState {
+function windowState(key: string, total: number, full: boolean, rowKeyAt?: RowKeyAt): WindowState {
   // `seeded` is what makes history that arrives after the first commit still
   // open on its newest rows instead of mounting all at once.
   return {
@@ -49,6 +83,7 @@ function windowState(key: string, total: number, full: boolean): WindowState {
     seeded: total > 0,
     start: initialWindowStart(total, full),
     instantBefore: Math.max(0, total - INITIAL_TRANSCRIPT_ROWS),
+    anchor: leadingKeys(total, rowKeyAt),
   };
 }
 
@@ -94,9 +129,15 @@ function cancelIdle(handle: IdleHandle): void {
  * session a commit before its forest follows, and seeding from the previous
  * chat's row count is how a short chat used to open a long one fully mounted.
  * Until the forest catches up the window keeps describing the rows it can see.
+ *
+ * `rowKeyAt` lets the window follow its rows when history arrives *above*
+ * them: a long chat opens on its newest page and the full window replaces it a
+ * moment later. As an index into the head, the start would otherwise land deep
+ * inside the older rows and mount all of them at once. With it, the rows
+ * already on screen stay mounted and the older ones hydrate above them.
  */
-export function useTranscriptWindow(total: number, key: string, full: boolean, ready = true): TranscriptWindow {
-  const [state, setState] = useState(() => windowState(key, total, full));
+export function useTranscriptWindow(total: number, key: string, full: boolean, ready = true, rowKeyAt?: RowKeyAt): TranscriptWindow {
+  const [state, setState] = useState(() => windowState(key, total, full, rowKeyAt));
   let current = state;
   // Adjust during render, React's own pattern for state derived from props: a
   // new session (or the first rows of a chat that opened empty) must mount its
@@ -104,7 +145,21 @@ export function useTranscriptWindow(total: number, key: string, full: boolean, r
   // remembered, not re-derived: clearing a search highlight must not collapse
   // the history it just opened, or yank the row the reader jumped to.
   if (ready && (current.key !== key || (!current.seeded && total > 0) || (full && current.start !== 0))) {
-    current = windowState(key, total, full);
+    current = windowState(key, total, full, rowKeyAt);
+    setState(current);
+  }
+  // The rows at the head changed under the same chat. Move the start by as
+  // much as the old leading rows moved, so exactly the rows already mounted
+  // stay mounted. Comparing the first key is the whole cost on every other
+  // render, including each streamed character.
+  if (ready && rowKeyAt && current.key === key && rowKeyAt(0) !== current.anchor[0]) {
+    const shift = leadingShift(current.anchor, total, rowKeyAt) ?? 0;
+    current = {
+      ...current,
+      start: full ? 0 : Math.max(0, current.start + shift),
+      instantBefore: Math.max(0, current.instantBefore + shift),
+      anchor: leadingKeys(total, rowKeyAt),
+    };
     setState(current);
   }
   // A rewind can shrink the branch under the window. Clamp to the opening

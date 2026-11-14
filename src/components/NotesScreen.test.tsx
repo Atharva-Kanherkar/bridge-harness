@@ -271,6 +271,13 @@ describe("loading and failure", () => {
     expect(rowTitles().some(title => title.startsWith("Local-first sync libraries"))).toBe(true);
   });
 
+  it("asks the tabs' query for rows without their cells, so it opens no page document", async () => {
+    const query = vi.spyOn(bridgeApi, "queryDatabase");
+    await render();
+    expect(query).toHaveBeenCalled();
+    for (const [params] of query.mock.calls) expect(params.notesOnly).toBe(true);
+  });
+
   it("says the list did not load, with Try again, instead of an empty list", async () => {
     const listNotes = bridgeApi.listNotes;
     let failures = 1;

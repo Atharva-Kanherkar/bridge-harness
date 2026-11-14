@@ -121,9 +121,16 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// require this method before offering Send on a draft card. It is also a
 /// minimum-client boundary: older clients cannot decode the new persisted
 /// sending/sent/failed states, so both sides must upgrade together.
+/// **1.33 adds the `trails` domain and its `trails/changed` hint.** A new
+/// client must not pair with an older daemon, whose Trails screen would fail
+/// with `method_not_found`; a 1.32 client still pairs with a 1.33 daemon and
+/// simply never shows trails.
+/// **1.34 adds `attention/mark_attention_unread`.** A new client must not
+/// pair with an older daemon, whose Mark as unread would fail with
+/// `method_not_found`; a 1.33 client still pairs with a 1.34 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 32,
+    minor: 34,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -421,6 +428,14 @@ mod tests {
     }
 
     #[test]
+    fn mark_unread_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 33 };
+        let unread = ProtocolVersion { major: 1, minor: 34 };
+        assert!(!before.accepts(unread));
+        assert!(unread.accepts(before), "a 1.33 client still pairs with a 1.34 daemon");
+    }
+
+    #[test]
     fn outgoing_send_states_require_new_clients_and_daemons() {
         for minor in 23..32 {
             let old = ProtocolVersion { major: 1, minor };
@@ -428,7 +443,14 @@ mod tests {
             assert!(!old.accepts(PROTOCOL_VERSION));
         }
         assert!(PROTOCOL_VERSION.accepts(PROTOCOL_VERSION));
-        assert!(ProtocolVersion { major: 1, minor: 33 }.accepts(PROTOCOL_VERSION));
+        assert!(ProtocolVersion { major: 1, minor: PROTOCOL_VERSION.minor + 1 }.accepts(PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn a_trails_daemon_still_serves_a_client_without_trails() {
+        let without_trails = ProtocolVersion { major: 1, minor: 32 };
+        assert!(PROTOCOL_VERSION.accepts(without_trails), "a 1.32 client pairs and never shows trails");
+        assert!(!without_trails.accepts(PROTOCOL_VERSION), "a trails client needs a daemon that serves trails");
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

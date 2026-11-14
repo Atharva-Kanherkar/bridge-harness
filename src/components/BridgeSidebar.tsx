@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
+ Copy, AtSign, CheckCheck, CircleDot, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Route, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
@@ -71,6 +71,28 @@ function rowStatus(status: SessionStatus, liveAgents = 0, unread?: AttentionKind
   return null;
 }
 
+/** How long the pointer rests on a row before its history is read. Long
+ * enough that sweeping across the list reads nothing, short enough to finish
+ * before the click. */
+export const PREFETCH_INTENT_MS = 90;
+
+/** Hover intent for one row: a resting pointer or keyboard focus triggers the
+ * callback once; a pointer that moves on before the delay does not. */
+function usePrefetchIntent(onPrefetch?: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const latest = useRef(onPrefetch);
+  latest.current = onPrefetch;
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return useMemo(() => ({
+    start: () => {
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => latest.current?.(), PREFETCH_INTENT_MS);
+    },
+    cancel: () => clearTimeout(timer.current),
+    now: () => { clearTimeout(timer.current); latest.current?.(); },
+  }), []);
+}
+
 function ChatRow({
   chat,
   active,
@@ -86,13 +108,20 @@ function ChatRow({
   liveAgents,
   unread,
   pullRequests,
+  onPrefetch,
+  onMarkRead,
+  onMarkUnread,
 }: {
   chat: Session;
   active: boolean;
   indented: boolean;
   time: string | null;
   onClick: () => void;
+  /** Warm this chat's history before the click lands. */
+  onPrefetch?: () => void;
   onArchive?: () => void;
+  onMarkRead?: () => void;
+  onMarkUnread?: () => void;
   onMention?: () => void;
   onFork?: () => void;
   onSaveAsWorkflow?: () => void;
@@ -111,6 +140,7 @@ function ChatRow({
   const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
   const status = rowStatus(chat.status, liveAgents, unread);
   const pr = sidebarPrChip(pullRequests);
+  const intent = usePrefetchIntent(active ? undefined : onPrefetch);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -124,6 +154,9 @@ function ChatRow({
         event.dataTransfer.effectAllowed = "copy";
       }}
       onClick={onClick}
+      onPointerEnter={intent.start}
+      onPointerLeave={intent.cancel}
+      onFocus={intent.now}
       title={detail}
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
@@ -188,6 +221,8 @@ function ChatRow({
       onArchive={onArchive}
       forkLabel={forkLabel}
       onJumpToParent={onJumpToParent}
+      onMarkRead={unread ? onMarkRead : undefined}
+      onMarkUnread={unread ? undefined : onMarkUnread}
     />
     <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
@@ -206,6 +241,8 @@ function ChatRowMenu({
   onArchive,
   forkLabel,
   onJumpToParent,
+  onMarkRead,
+  onMarkUnread,
 }: {
   chat: Session;
   name: string;
@@ -215,6 +252,10 @@ function ChatRowMenu({
   onArchive?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
+  /** Offered while the chat is unread; clears its dot. */
+  onMarkRead?: () => void;
+  /** Offered while it is not; brings the dot back until you open it. */
+  onMarkUnread?: () => void;
 }) {
   const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
   const alias = toPublicAlias(chat.id);
@@ -238,6 +279,19 @@ function ChatRowMenu({
         <MoreHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
       </button>
       <MenuPanel controller={menu} label={`Chat actions for ${name}`}>
+        {onMarkRead && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMarkRead)}>
+            <CheckCheck size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mark as read</span>
+          </button>
+        )}
+        {onMarkUnread && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMarkUnread)}>
+            <CircleDot size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mark as unread</span>
+          </button>
+        )}
+        {(onMarkRead || onMarkUnread) && <MenuSeparator />}
         <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
           <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
@@ -518,6 +572,11 @@ export type BridgeSidebarProps = {
   /** Bridge Notes: capture, pages and tasks. Not workspace-gated either. */
   onOpenNotes?: () => void;
   notesActive?: boolean;
+  /** Trails: one page per piece of work. Not workspace-gated either. */
+  onOpenTrails?: () => void;
+  trailsActive?: boolean;
+  /** Trails waiting on the person; the row's badge hides at zero. */
+  trailsNeedYou?: number;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
   /** Drawn at the end of the bottom rail, after Pulls: the usage dot. */
@@ -526,11 +585,17 @@ export type BridgeSidebarProps = {
   onOpenPulls?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** The pointer is resting on (or focus reached) a chat: warm its history. */
+  onPrefetchSession?: (id: string) => void;
   /** Open the search field on `query` and search deeper, as `/find` does.
    * A new `nonce` repeats the request for the same query. */
   searchRequest?: { query: string; nonce: number };
   /** Absent when the host cannot archive — the row then shows no action. */
   onArchiveChat?: (chat: Session) => void;
+  /** Clear a chat's unread dot by hand, workers' rows included. */
+  onMarkChatRead?: (chatId: string) => void;
+  /** Bring a chat's unread dot back by hand. */
+  onMarkChatUnread?: (chatId: string) => void;
   /** Drop `@session:<alias>` for this chat into the open chat's draft. */
   onMentionChat?: (chat: Session) => void;
   /** Open the fork dialog at this chat's head. */
@@ -561,6 +626,9 @@ export function BridgeSidebar({
   memoryActive = false,
   memoryPending = 0,
   notesActive = false,
+  onOpenTrails,
+  trailsActive = false,
+  trailsNeedYou = 0,
   marketplaceActive,
   usageActive = false,
   pullsActive = false,
@@ -588,8 +656,11 @@ export function BridgeSidebar({
   onOpenPulls,
   onOpenSettings,
   onOpenSession,
+  onPrefetchSession,
   searchRequest,
   onArchiveChat,
+  onMarkChatRead,
+  onMarkChatUnread,
   onMentionChat,
   onForkChat,
   onSaveChatAsWorkflow,
@@ -897,6 +968,7 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          {onOpenTrails && <ActionRow icon={Route} label="Trails" badge={trailsNeedYou > 0 ? { count: String(trailsNeedYou), label: `${trailsNeedYou} need${trailsNeedYou === 1 ? "s" : ""} you` } : undefined} onClick={onOpenTrails} active={trailsActive} />}
           {onOpenNotes && <ActionRow icon={NotebookPen} label="Notes" chord="open-notes" onClick={onOpenNotes} active={notesActive} />}
           {/* A terminal for every stream of work: named for what it is. */}
           <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
@@ -977,6 +1049,7 @@ export function BridgeSidebar({
                     indented={!!group.label}
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
+                    onPrefetch={onPrefetchSession && (() => onPrefetchSession(chat.id))}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
                     onMention={onMentionChat && (() => onMentionChat(chat))}
                     onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}
@@ -986,6 +1059,8 @@ export function BridgeSidebar({
                     liveAgents={liveAgents?.get(chat.id)?.length}
                     unread={unread?.[chat.id]}
                     pullRequests={pullRequests?.[chat.id]}
+                    onMarkRead={onMarkChatRead && (() => onMarkChatRead(chat.id))}
+                    onMarkUnread={onMarkChatUnread && (() => onMarkChatUnread(chat.id))}
                   />
                 );
               })}

@@ -281,6 +281,7 @@ impl Daemon {
         bridge_core::github_poll::start_github_poll_maintenance(core.clone());
         bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
         bridge_core::workflow_trigger::start_workflow_maintenance(core.clone());
+        bridge_core::trails::live::start_trail_maintenance(core.clone());
         bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
         bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
         bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());

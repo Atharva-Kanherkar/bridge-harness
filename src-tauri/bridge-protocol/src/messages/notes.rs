@@ -599,6 +599,10 @@ pub struct QueryDatabaseParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Rows as pages, without their cells: no page document is opened to
+    /// answer, which is what the Notes list's tabs ask for.
+    #[serde(default)]
+    pub notes_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

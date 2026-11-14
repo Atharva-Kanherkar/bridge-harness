@@ -56,6 +56,7 @@ mod slash;
 mod state;
 mod storage;
 mod terminal;
+mod trails;
 mod usage;
 mod work;
 mod workspaces;
@@ -96,6 +97,7 @@ pub use slash::*;
 pub use state::*;
 pub use storage::*;
 pub use terminal::*;
+pub use trails::*;
 pub use usage::*;
 pub use work::*;
 pub use workspaces::*;
@@ -302,6 +304,7 @@ typed_methods![
     // attention
     (ListAttention, ListAttentionParams, ListAttentionResult),
     (MarkAttentionSeen, MarkAttentionSeenParams, MarkAttentionSeenResult),
+    (MarkAttentionUnread, MarkAttentionUnreadParams, MarkAttentionUnreadResult),
     (UnreadSummary, _, UnreadSummary),
     (ReportPresence, ReportPresenceParams, ReportPresenceResult),
     (Post, PostParams, PostResult),
@@ -347,6 +350,15 @@ typed_methods![
     (ScanDirectory, ScanDirectoryParams, DiskListing),
     (DeletePaths, DeletePathsParams, DiskDeleteResult),
     (EmptyTrash, _, EmptyTrashResult),
+    // trails: one page per piece of work
+    (ListTrails, ListTrailsParams, ListTrailsResult),
+    (ReadTrail, ReadTrailParams, ReadTrailResult),
+    (CreateTrail, CreateTrailParams, CreateTrailResult),
+    (UpdateTrail, UpdateTrailParams, UpdateTrailResult),
+    (AddTrailMember, AddTrailMemberParams, AddTrailMemberResult),
+    (RemoveTrailMember, RemoveTrailMemberParams, RemoveTrailMemberResult),
+    (PreviewTrailBrief, PreviewTrailBriefParams, PreviewTrailBriefResult),
+    (CarryTrailBrief, CarryTrailBriefParams, CarryTrailBriefResult),
     // notes
     // outgoing: drafted messages for a person or a place
     (ListOutgoing, ListOutgoingParams, ListOutgoingResult),

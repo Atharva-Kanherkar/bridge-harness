@@ -279,6 +279,15 @@ fn databases_round_trip_over_the_socket() {
     assert_eq!(rest["result"]["rows"].as_array().unwrap().len(), 1);
     assert!(rest["result"].get("nextCursor").is_none());
 
+    // Rows as pages: the same rows, no cells, nothing read from a document.
+    let bare = client.call(49, "notes/query_database", json!({"databaseId": id, "viewId": view_id, "notesOnly": true}));
+    assert_eq!(bare["result"]["total"], 2, "{bare}");
+    let bare_rows = bare["result"]["rows"].as_array().unwrap_or_else(|| panic!("{bare}"));
+    assert_eq!(bare_rows.iter().map(|row| row["note"]["title"].as_str().unwrap()).collect::<Vec<_>>(), vec!["DDIA", "TAOCP"]);
+    for row in bare_rows {
+        assert_eq!(row["values"], json!({}), "a page row carries no cell: {row}");
+    }
+
     let bad = client.call(44, "notes/query_database", json!({"databaseId": id, "filter": {"property": "Score", "op": "gte", "value": 4}}));
     assert!(bad["error"]["message"].as_str().unwrap().contains("Score ("), "a name is not an id; the error lists both: {bad}");
     let deleted = client.call(45, "notes/delete_view", json!({"databaseId": id, "viewId": view_id}));

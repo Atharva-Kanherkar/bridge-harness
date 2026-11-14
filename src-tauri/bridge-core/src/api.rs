@@ -626,6 +626,179 @@ pub fn discard_outgoing(core: &Arc<BridgeCore>, id: &str) -> Result<wire::Discar
     Ok(wire::DiscardOutgoingResult { item })
 }
 
+// --- trails: one page per piece of work ------------------------------------
+//
+// The notes store has its own lock, so every trails call reads notes into a
+// snapshot first and only then takes the core database lock.
+
+fn trail_now() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn trails_changed(core: &Arc<BridgeCore>, trail_id: &str) {
+    core.events.publish(CoreEvent::TrailsChanged(wire::TrailsChanged { trail_id: Some(trail_id.to_owned()), added: Vec::new() }));
+}
+
+fn trail_summary(core: &Arc<BridgeCore>, trail_id: &str) -> Result<wire::TrailSummary, BridgeError> {
+    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let db = core.db.lock().unwrap();
+    let row = crate::trails::store::require(&db, trail_id)?;
+    crate::trails::timeline::summary(&db, &notes, &row)
+}
+
+/// A snapshot with the bodies of the trail's notes, for the brief.
+fn trail_brief_notes(core: &Arc<BridgeCore>, trail_id: &str) -> Result<crate::trails::timeline::NoteSnapshot, BridgeError> {
+    let ids: Vec<String> = {
+        let db = core.db.lock().unwrap();
+        crate::trails::store::require(&db, trail_id)?;
+        crate::trails::store::members(&db, trail_id)?
+            .into_iter()
+            .filter(|member| member.kind == wire::TrailMemberKind::Note)
+            .map(|member| member.reference)
+            .collect()
+    };
+    Ok(crate::trails::timeline::NoteSnapshot::default().with_markdown(core.notes.as_ref(), &ids))
+}
+
+/// Every trail, needs-you first. Follows new links before reading.
+pub fn list_trails(core: &Arc<BridgeCore>, include_archived: bool) -> Result<wire::ListTrailsResult, BridgeError> {
+    crate::trails::live::sweep_and_publish(core, false);
+    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let db = core.db.lock().unwrap();
+    let mut trails = crate::trails::store::list(&db, include_archived)?
+        .iter()
+        .map(|row| crate::trails::timeline::summary(&db, &notes, row))
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::trails::timeline::sort_summaries(&mut trails);
+    Ok(wire::ListTrailsResult { trails })
+}
+
+/// One trail's page. `refresh` re-reads its pull requests from GitHub first
+/// (network: hosts run this off the UI thread).
+pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str, refresh: bool) -> Result<wire::ReadTrailResult, BridgeError> {
+    crate::trails::live::sweep_and_publish(core, false);
+    if refresh {
+        let sessions: Vec<String> = {
+            let db = core.db.lock().unwrap();
+            crate::trails::store::require(&db, trail_id)?;
+            let mut statement = db.prepare(
+                "SELECT DISTINCT p.session_id FROM session_pull_requests p
+                 JOIN trail_members m ON m.kind='pullRequest' AND m.ref=p.url WHERE m.trail_id=?1",
+            )?;
+            let sessions = statement.query_map(params![trail_id], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            sessions
+        };
+        for session_id in sessions {
+            // A failed read keeps the last good snapshot, labelled stale.
+            let _ = crate::session_prs::session_pull_requests(core, &session_id, true);
+        }
+    }
+    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let db = core.db.lock().unwrap();
+    let row = crate::trails::store::require(&db, trail_id)?;
+    Ok(wire::ReadTrailResult { trail: crate::trails::timeline::detail(&db, &notes, &row)? })
+}
+
+pub fn create_trail(core: &Arc<BridgeCore>, params: &wire::CreateTrailParams) -> Result<wire::CreateTrailResult, BridgeError> {
+    let id = {
+        let db = core.db.lock().unwrap();
+        let now = trail_now();
+        let workspace_id = match (&params.workspace_id, &params.session_id) {
+            (Some(workspace), _) => Some(workspace.clone()),
+            (None, Some(session)) => crate::trails::timeline::session_facts(&db, session)?
+                .ok_or_else(|| BridgeError::Invalid("That chat no longer exists.".into()))?
+                .workspace_id,
+            (None, None) => None,
+        };
+        let row = crate::trails::store::create(&db, &params.title, workspace_id.as_deref(), &now)?;
+        if let Some(session) = &params.session_id {
+            let member = wire::TrailMemberRef { kind: wire::TrailMemberKind::Session, reference: session.clone() };
+            if let Err(error) = crate::trails::store::add_member(&db, &row.id, &member, wire::TrailAddedBy::Person, &now) {
+                db.execute("DELETE FROM trails WHERE id=?1", params![row.id])?;
+                return Err(error);
+            }
+        }
+        row.id
+    };
+    // A chat brings its PRs, drafts, notes and forks along, announced once.
+    crate::trails::live::sweep_and_publish(core, false);
+    trails_changed(core, &id);
+    Ok(wire::CreateTrailResult { trail: trail_summary(core, &id)? })
+}
+
+pub fn update_trail(core: &Arc<BridgeCore>, params: &wire::UpdateTrailParams) -> Result<wire::UpdateTrailResult, BridgeError> {
+    {
+        let db = core.db.lock().unwrap();
+        let now = trail_now();
+        crate::trails::store::require(&db, &params.trail_id)?;
+        if let Some(title) = &params.title {
+            crate::trails::store::rename(&db, &params.trail_id, title, &now)?;
+        }
+        if let Some(archived) = params.archived {
+            crate::trails::store::set_archived(&db, &params.trail_id, archived, &now)?;
+        }
+    }
+    trails_changed(core, &params.trail_id);
+    Ok(wire::UpdateTrailResult { trail: trail_summary(core, &params.trail_id)? })
+}
+
+/// Whether the record a person names exists, so a typo never becomes a member.
+fn trail_member_exists(core: &Arc<BridgeCore>, member: &wire::TrailMemberRef) -> Result<bool, BridgeError> {
+    use crate::trails::NoteSource;
+    if member.kind == wire::TrailMemberKind::Note {
+        return Ok(core.notes.note(&member.reference).is_some());
+    }
+    let db = core.db.lock().unwrap();
+    Ok(match member.kind {
+        wire::TrailMemberKind::Session => crate::trails::timeline::session_facts(&db, &member.reference)?.is_some(),
+        wire::TrailMemberKind::PullRequest => crate::trails::timeline::pull_facts(&db, &member.reference)?.is_some(),
+        wire::TrailMemberKind::Outgoing => crate::outgoing::get(&db, &member.reference)?.is_some(),
+        wire::TrailMemberKind::Note => unreachable!("answered above"),
+    })
+}
+
+pub fn add_trail_member(core: &Arc<BridgeCore>, trail_id: &str, member: &wire::TrailMemberRef) -> Result<wire::AddTrailMemberResult, BridgeError> {
+    if !trail_member_exists(core, member)? {
+        return Err(BridgeError::Invalid("Bridge can't find that record any more.".into()));
+    }
+    {
+        let db = core.db.lock().unwrap();
+        crate::trails::store::add_member(&db, trail_id, member, wire::TrailAddedBy::Person, &trail_now())?;
+    }
+    crate::trails::live::sweep_and_publish(core, false);
+    trails_changed(core, trail_id);
+    Ok(wire::AddTrailMemberResult { trail: trail_summary(core, trail_id)? })
+}
+
+/// Take a record off a trail. It never comes back on its own.
+pub fn remove_trail_member(core: &Arc<BridgeCore>, trail_id: &str, member: &wire::TrailMemberRef) -> Result<wire::RemoveTrailMemberResult, BridgeError> {
+    {
+        let db = core.db.lock().unwrap();
+        crate::trails::store::remove_member(&db, trail_id, member, &trail_now())?;
+    }
+    trails_changed(core, trail_id);
+    Ok(wire::RemoveTrailMemberResult { trail: trail_summary(core, trail_id)? })
+}
+
+pub fn preview_trail_brief(core: &Arc<BridgeCore>, trail_id: &str) -> Result<wire::PreviewTrailBriefResult, BridgeError> {
+    let notes = trail_brief_notes(core, trail_id)?;
+    let db = core.db.lock().unwrap();
+    let row = crate::trails::store::require(&db, trail_id)?;
+    crate::trails::brief::preview(&db, &notes, &row)
+}
+
+/// Start a new chat on a trail: write the chosen brief items into its history
+/// before its first message, and put it on the trail.
+pub fn carry_trail_brief(core: &Arc<BridgeCore>, params: &wire::CarryTrailBriefParams) -> Result<wire::CarryTrailBriefResult, BridgeError> {
+    let notes = trail_brief_notes(core, &params.trail_id)?;
+    let carried = {
+        let db = core.db.lock().unwrap();
+        crate::trails::brief::carry(&db, &notes, &params.trail_id, &params.session_id, &params.items, &trail_now())?
+    };
+    trails_changed(core, &params.trail_id);
+    Ok(wire::CarryTrailBriefResult { carried, trail: trail_summary(core, &params.trail_id)? })
+}
+
 /// The pull requests attached to one chat, newest first, with live state.
 /// Reading (re)arms the poller, so a reopened chat resumes background updates
 /// without the GitHub pane being open.
@@ -1411,9 +1584,13 @@ pub fn get_context_windows(
     core.context_windows(session_id)
 }
 
+/// One chat's forest snapshot. `limit` asks for only the newest entries of
+/// the active branch (clamped to 1..=1500, default 1500), which is how a long
+/// chat paints its first page before the full window arrives.
 pub fn get_session_forest(
     core: &Arc<BridgeCore>,
     session_id: &str,
+    limit: Option<u32>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // call this while holding the global SQLite lock.
@@ -1422,7 +1599,11 @@ pub fn get_session_forest(
         Some(path) => store::repository_state_for_path(&path),
         None => serde_json::json!({"status":"unavailable"}),
     };
-    core.session_forest_snapshot_with_repository_state(session_id, repository_state)
+    core.session_forest_page_with_repository_state(
+        session_id,
+        repository_state,
+        crate::sessions::snapshot_entry_limit(limit),
+    )
 }
 
 /// Replay durable session events after a cursor — the recovery half of the
@@ -4522,6 +4703,16 @@ pub fn mark_attention_seen(core: &Arc<BridgeCore>, params: &wire::MarkAttentionS
     Ok(wire::MarkAttentionSeenResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
 }
 
+/// The person marks a chat unread by hand. Like seen, it is a server fact, so
+/// every client's dot and badge follow it through `attention/changed`.
+pub fn mark_attention_unread(core: &Arc<BridgeCore>, params: &wire::MarkAttentionUnreadParams) -> Result<wire::MarkAttentionUnreadResult, BridgeError> {
+    let updated = crate::attention::mark_unread(&core.db.lock().unwrap(), &params.session_id)?;
+    if updated > 0 {
+        core.events.publish(CoreEvent::AttentionChanged);
+    }
+    Ok(wire::MarkAttentionUnreadResult { updated: u32::try_from(updated).unwrap_or(u32::MAX) })
+}
+
 /// An agent asks for the person. Posts one `posted` row for the chat, or says
 /// the chat is rate limited.
 pub fn post_attention(core: &Arc<BridgeCore>, params: &wire::PostParams) -> Result<wire::PostResult, BridgeError> {
@@ -6466,6 +6657,56 @@ pub fn execute_automation_action(
 
 #[cfg(test)]
 mod tests {
+    use super::{create_trail, list_trails, read_trail, remove_trail_member, wire, CoreEvent};
+
+    #[test]
+    fn a_trail_follows_a_pr_attached_in_its_chat_and_announces_it_once() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            crate::trails::timeline::tests::add_session(&db, "s1", "codex", "Build it", Some("2026-11-10T00:00:00Z"));
+        }
+        let created = create_trail(&core, &wire::CreateTrailParams { title: "Archive a chat".into(), workspace_id: None, session_id: Some("s1".into()) }).unwrap();
+        assert_eq!(created.trail.session_ids, vec!["s1"]);
+        assert_eq!(created.trail.stage, 2);
+        {
+            let db = core.db.lock().unwrap();
+            crate::trails::timeline::tests::attach_pr(&db, "s1", "https://github.com/o/r/pull/12", "2026-11-10T01:00:00Z", None);
+        }
+        let mut events = core.events.subscribe();
+        let read = read_trail(&core, &created.trail.id, false).unwrap();
+        let pr = read.trail.members.iter().find(|member| member.kind == wire::TrailMemberKind::PullRequest).expect("the PR joined");
+        assert_eq!(pr.added_by, wire::TrailAddedBy::Auto);
+        assert_eq!(read.trail.summary.stage, 3);
+        let mut announced = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::TrailsChanged(changed) = event {
+                announced.extend(changed.added);
+            }
+        }
+        assert_eq!(announced.len(), 1);
+        assert_eq!(announced[0].member.reference, "https://github.com/o/r/pull/12");
+        read_trail(&core, &created.trail.id, false).unwrap();
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::TrailsChanged(changed) = event {
+                assert!(changed.added.is_empty(), "announced once");
+            }
+        }
+        // Taking it off sticks.
+        remove_trail_member(&core, &created.trail.id, &pr_ref()).unwrap();
+        let read = read_trail(&core, &created.trail.id, false).unwrap();
+        assert!(read.trail.members.iter().all(|member| member.kind != wire::TrailMemberKind::PullRequest));
+        // A chat already on a trail cannot start a second one.
+        let refused = create_trail(&core, &wire::CreateTrailParams { title: "Other".into(), workspace_id: None, session_id: Some("s1".into()) });
+        assert!(refused.is_err());
+        assert_eq!(list_trails(&core, true).unwrap().trails.len(), 1, "the refused trail is not left behind");
+    }
+
+    fn pr_ref() -> wire::TrailMemberRef {
+        wire::TrailMemberRef { kind: wire::TrailMemberKind::PullRequest, reference: "https://github.com/o/r/pull/12".into() }
+    }
+
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct PolicyReplayCase {

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Search, Settings2, Square } from "lucide-react";
+import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Route, Search, Settings2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { DockPaneId } from "../dockLayout";
@@ -18,6 +18,11 @@ import { formatShortcut } from "@/lib/platform";
 
 export type SessionToolbarProps = {
   title: string;
+  /** The trail this chat sits on: a chip that opens it. */
+  trailTitle?: string;
+  onOpenTrail?: () => void;
+  /** "Add to trail…" in the overflow menu. */
+  onAddToTrail?: () => void;
   /** The workspace/project this session belongs to. Renders as the muted first
    * crumb of the breadcrumb (`project / title`). Optional: a session without a
    * known project just shows the folder mark and its title. */
@@ -83,6 +88,9 @@ function toolButtonClass(active: boolean) {
 
 export function SessionToolbar({
   title,
+  trailTitle,
+  onOpenTrail,
+  onAddToTrail,
   projectName,
   sourceBadge,
   modelControl,
@@ -142,6 +150,20 @@ export function SessionToolbar({
         <h1 className="truncate text-[13px] font-semibold leading-4 text-foreground">{title}</h1>
         {projectName && <p className="truncate text-[11px] leading-4 text-muted-foreground">{projectName}</p>}
       </div>
+
+      {trailTitle && onOpenTrail && (
+        <button
+          type="button"
+          onClick={onOpenTrail}
+          title={`Trail: ${trailTitle}`}
+          aria-label={`Open trail ${trailTitle}`}
+          data-testid="trail-chip"
+          className="hidden h-6 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md bg-muted px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
+        >
+          <Route size={12} strokeWidth={1.8} aria-hidden="true" />
+          <span className="truncate">{trailTitle}</span>
+        </button>
+      )}
 
       {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.04em] text-muted-foreground sm:inline">{sourceBadge}</span>}
 
@@ -283,6 +305,13 @@ export function SessionToolbar({
           />
         )}
         {overflowPanes.length > 0 && <MenuSeparator />}
+        {onAddToTrail && !trailTitle && (
+          <MenuItem
+            label="Add to trail…"
+            leading={<Route size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+            onClick={() => { onAddToTrail(); menu.close(); }}
+          />
+        )}
         <MenuItem
           role="menuitemcheckbox"
           checked={fullscreen}
