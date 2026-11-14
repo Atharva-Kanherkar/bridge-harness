@@ -8,6 +8,8 @@
 
 pub mod auto;
 pub mod brief;
+#[cfg(test)]
+mod eval;
 pub mod live;
 pub mod store;
 pub mod timeline;
