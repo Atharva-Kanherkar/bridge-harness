@@ -8,6 +8,7 @@ import { Pin, PinOff } from "lucide-react";
 import { BUILTIN_APPS, SLOT_LABELS, type AppId } from "../apps/registry";
 import { PIN_LIMIT_MESSAGE, togglePin, usePins } from "../apps/pins";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
+import { chordLabel } from "../keymap";
 import { Button } from "@/components/ui/button";
 
 export function StoreApps({ onOpenApp }: { onOpenApp?: (id: AppId) => void }) {
@@ -25,7 +26,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (id: AppId) => void }) {
   return (
     <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Apps" description={`Everything Bridge does, one app each. Open any of them with ⌘K, and pin up to three to the sidebar.`} />
+      <ScreenHeading title="Apps" description={`Everything Bridge does, one app each. Open any of them with ${chordLabel("open-launcher")}, and pin up to three to the sidebar.`} />
       <p role="status" className={status ? "mb-3 text-[12.5px] text-foreground" : "sr-only"}>{status}</p>
       <ul aria-label="Installed apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {apps.map(app => {

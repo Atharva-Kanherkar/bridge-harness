@@ -167,7 +167,7 @@ function LauncherPanel({ onClose, badges, pins, chats, chatOpen, onOpenApp, onOp
           <div key={section.id} role="group" aria-labelledby={`${baseId}-${section.id}`} data-launcher-section={section.id} className="border-b border-border px-2 py-2.5 last:border-b-0">
             <p id={`${baseId}-${section.id}`} className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">{section.label}</p>
             {section.id === "apps"
-              ? <div className="grid grid-cols-5 gap-1">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.id)} badge={badgeText(badges[item.app.id])} active={item === current} {...optionProps(item)} />)}</div>
+              ? <div className="grid grid-cols-4 gap-1 sm:grid-cols-5">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.id)} badge={badgeText(badges[item.app.id])} active={item === current} {...optionProps(item)} />)}</div>
               : section.items.map(item => <Row key={item.key} item={item} active={item === current} {...optionProps(item)} />)}
           </div>
         ))}

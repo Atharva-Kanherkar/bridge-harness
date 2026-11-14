@@ -158,10 +158,13 @@ describe("App attention wiring", () => {
     await mountApp();
     await act(async () => { (container.querySelector('button[title^="Title b"]') as HTMLButtonElement).click(); });
     await wait(20);
-    // Away to Memory; the chat stays selected underneath.
-    const memory = [...container.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Memory")) as HTMLButtonElement;
-    expect(memory, "the Memory entry in the sidebar").toBeTruthy();
-    await act(async () => { memory.click(); });
+    // Away to Memory, through the launcher; the chat stays selected underneath.
+    const apps = container.querySelector<HTMLButtonElement>('nav[aria-label="Main navigation"] button[aria-label^="Apps"]');
+    expect(apps, "the Apps row in the sidebar").toBeTruthy();
+    await act(async () => { apps!.click(); });
+    const memory = document.body.querySelector<HTMLElement>('[role="option"][aria-label^="Memory"]');
+    expect(memory, "Memory in the launcher").toBeTruthy();
+    await act(async () => { memory!.click(); });
     await wait(20);
     seen.mockClear();
 

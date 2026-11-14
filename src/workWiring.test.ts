@@ -1,3 +1,4 @@
+import { BUILTIN_APPS, NON_APP_VIEWS } from "./apps/registry";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -90,13 +91,17 @@ describe("the shell knows about Work", () => {
   });
 
   it("keeps the Needs-you count off the rail; Work board is wired but hidden from the nav (#458)", () => {
+    // Wired: Settings still opens the board. Hidden: the sidebar has no way
+    // in, and the board is not an app the launcher could list.
     expect(APP).toContain("onOpenWorkBoard={openWorkBoard}");
     expect(APP).not.toContain("workBoardActive");
     expect(APP).not.toContain("workNeedsYouCount");
     expect(APP).not.toContain('import { needsYouCount } from "./components/workFacts";');
-    expect(SIDEBAR).toContain("onOpenWorkBoard");
+    expect(SIDEBAR).not.toContain("onOpenWorkBoard");
     expect(SIDEBAR).not.toContain("Work board");
     expect(SIDEBAR).not.toContain("Needs you");
+    expect(NON_APP_VIEWS).toContain("work");
+    expect(BUILTIN_APPS.some(app => app.view === "work")).toBe(false);
   });
 
   it("does not revive the Work/Code scope switch", () => {
