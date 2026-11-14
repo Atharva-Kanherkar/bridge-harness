@@ -67,6 +67,28 @@ function rowStatus(status: SessionStatus, liveAgents = 0, unread?: AttentionKind
   return null;
 }
 
+/** How long the pointer rests on a row before its history is read. Long
+ * enough that sweeping across the list reads nothing, short enough to finish
+ * before the click. */
+export const PREFETCH_INTENT_MS = 90;
+
+/** Hover intent for one row: a resting pointer or keyboard focus triggers the
+ * callback once; a pointer that moves on before the delay does not. */
+function usePrefetchIntent(onPrefetch?: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const latest = useRef(onPrefetch);
+  latest.current = onPrefetch;
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return useMemo(() => ({
+    start: () => {
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => latest.current?.(), PREFETCH_INTENT_MS);
+    },
+    cancel: () => clearTimeout(timer.current),
+    now: () => { clearTimeout(timer.current); latest.current?.(); },
+  }), []);
+}
+
 function ChatRow({
   chat,
   active,
@@ -81,12 +103,15 @@ function ChatRow({
   onJumpToParent,
   liveAgents,
   unread,
+  onPrefetch,
 }: {
   chat: Session;
   active: boolean;
   indented: boolean;
   time: string | null;
   onClick: () => void;
+  /** Warm this chat's history before the click lands. */
+  onPrefetch?: () => void;
   onArchive?: () => void;
   onMention?: () => void;
   onFork?: () => void;
@@ -103,6 +128,7 @@ function ChatRow({
   const full = chat.titleLadder?.at(-1) ?? name;
   const detail = `${full} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
   const status = rowStatus(chat.status, liveAgents, unread);
+  const intent = usePrefetchIntent(active ? undefined : onPrefetch);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -116,6 +142,9 @@ function ChatRow({
         event.dataTransfer.effectAllowed = "copy";
       }}
       onClick={onClick}
+      onPointerEnter={intent.start}
+      onPointerLeave={intent.cancel}
+      onFocus={intent.now}
       title={detail}
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
@@ -499,6 +528,8 @@ export type BridgeSidebarProps = {
   onOpenPulls?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** The pointer is resting on (or focus reached) a chat: warm its history. */
+  onPrefetchSession?: (id: string) => void;
   /** Open the search field on `query` and search deeper, as `/find` does.
    * A new `nonce` repeats the request for the same query. */
   searchRequest?: { query: string; nonce: number };
@@ -560,6 +591,7 @@ export function BridgeSidebar({
   onOpenPulls,
   onOpenSettings,
   onOpenSession,
+  onPrefetchSession,
   searchRequest,
   onArchiveChat,
   onMentionChat,
@@ -949,6 +981,7 @@ export function BridgeSidebar({
                     indented={!!group.label}
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
+                    onPrefetch={onPrefetchSession && (() => onPrefetchSession(chat.id))}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
                     onMention={onMentionChat && (() => onMentionChat(chat))}
                     onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}

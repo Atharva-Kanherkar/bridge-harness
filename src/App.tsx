@@ -4,7 +4,7 @@ import { ChatOptionsControl } from "./components/ChatOptionsControl";
 import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings, SessionPullRequest } from "./protocol/generated/protocol";
 import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
-import { ForestCache } from "./forestCache";
+import { FIRST_PAGE_ENTRIES, ForestCache, isPartialForest, markPartialForest, pageIsComplete } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -637,6 +637,27 @@ function AppContent() {
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
   const forestCacheRef = useRef(new ForestCache());
+  // Pointing at a chat in the sidebar reads its newest page into the cache, so
+  // the click that usually follows paints from memory. One read per chat at a
+  // time; never over anything already cached, and never for the open chat.
+  const prefetchingRef = useRef(new Set<string>());
+  const prefetchSession = useCallback((sessionId: string) => {
+    if (sessionId === selectedSessionIdRef.current || forestCacheRef.current.has(sessionId) || prefetchingRef.current.has(sessionId)) return;
+    prefetchingRef.current.add(sessionId);
+    void (async () => {
+      try {
+        // The digest first, so a page that turns out complete can be trusted
+        // under it, the same order the open path uses.
+        const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
+        const page = await bridgeApi.sessionForest(sessionId, { limit: FIRST_PAGE_ENTRIES }).catch(() => undefined);
+        if (!page || forestCacheRef.current.has(sessionId) || sessionId === selectedSessionIdRef.current) return;
+        if (pageIsComplete(page)) forestCacheRef.current.set(sessionId, page, digest);
+        else forestCacheRef.current.set(sessionId, markPartialForest(page));
+      } finally {
+        prefetchingRef.current.delete(sessionId);
+      }
+    })();
+  }, []);
   // Durable frames the live channel dropped, put back from each session's
   // cursor. The forest poll alone was too slow to be the only recovery.
   const [liveReplay] = useState(() => createLiveReplay({
@@ -1707,11 +1728,24 @@ function AppContent() {
     // Seed from this session's own cache rather than clearing to empty: a
     // durable card (including a pending approval) must never vanish and pop
     // back just because the poll for the freshly-selected session hasn't
-    // resolved yet.
-    const cached = forestCacheRef.current.get(sessionId);
-    setForest(cached);
+    // resolved yet. A long chat may be cached as only its newest page; that
+    // paints now and the full window follows.
+    const cached = forestCacheRef.current.peek(sessionId);
+    setForest(cached?.value);
+    // A whole snapshot cached under a known digest needs no refetch while the
+    // digest still matches: reopening an unchanged chat costs one digest read.
+    forestKeyRef.current = cached && !cached.partial ? cached.digest ?? "" : "";
     let active = true;
     let pollsSinceFullFetch = 0;
+    let opening = true;
+    const newestSequence = (value: SessionForestSnapshot) => value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0);
+    const accept = (value: SessionForestSnapshot, digest: string | undefined) => {
+      pollsSinceFullFetch = 0;
+      forestKeyRef.current = digest ?? "";
+      forestCacheRef.current.set(sessionId, value, digest);
+      setForest(current => mergeForestSnapshot(current, value));
+      liveReplay.seed(sessionId, newestSequence(value));
+    };
     const refresh = async () => {
       // Read the digest before the snapshot. If state changes between the two,
       // the snapshot is newer than its key and the next poll safely refetches.
@@ -1720,9 +1754,37 @@ function AppContent() {
       const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
       const force = pollsSinceFullFetch >= 9 || digest === undefined;
       if (!active) return;
+      const firstPoll = opening;
+      opening = false;
       if (!force && digest === forestKeyRef.current) {
         pollsSinceFullFetch += 1;
+        // Adoptions are not cached: a reopen served from the cache still
+        // needs them once.
+        if (firstPoll) {
+          const adoptions = await bridgeApi.pendingWorkerAdoptions(sessionId).catch(() => []);
+          if (active) setPendingAdoptions(adoptions);
+        }
         return;
+      }
+      // Nothing on screen yet: paint the newest page first. For a long chat it
+      // arrives in a fraction of the full window's time, and the full window
+      // is fetched right behind it rather than on the next poll.
+      if (firstPoll && !cached) {
+        const page = await bridgeApi.sessionForest(sessionId, { limit: FIRST_PAGE_ENTRIES }).catch(() => undefined);
+        if (!active) return;
+        if (page && pageIsComplete(page)) {
+          const adoptions = await bridgeApi.pendingWorkerAdoptions(sessionId).catch(() => []);
+          if (!active) return;
+          setPendingAdoptions(adoptions);
+          accept(page, digest);
+          return;
+        }
+        if (page) {
+          const partial = markPartialForest(page);
+          forestCacheRef.current.set(sessionId, partial);
+          setForest(current => current && !isPartialForest(current) ? current : partial);
+          liveReplay.seed(sessionId, newestSequence(partial));
+        }
       }
       const [value, adoptions] = await Promise.all([
         bridgeApi.sessionForest(sessionId).catch(() => undefined),
@@ -1732,10 +1794,7 @@ function AppContent() {
       pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
-      forestKeyRef.current = digest ?? "";
-      forestCacheRef.current.set(sessionId, value);
-      setForest(current => mergeForestSnapshot(current, value));
-      liveReplay.seed(sessionId, value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0));
+      accept(value, digest);
     };
     const stop = startSerialPoll(refresh, 3000);
     return () => { active = false; stop(); };
@@ -3495,6 +3554,7 @@ function AppContent() {
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
+      onPrefetchSession={prefetchSession}
       searchRequest={sidebarSearch}
       onArchiveChat={archiveChat}
       // Only while a chat is open: the Welcome screen owns its own draft, so
@@ -3726,7 +3786,8 @@ function AppContent() {
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeProcessEntries={forest?.activeProcessEntries}
-                  entryWindow={forest?.entryWindow}
+                  // A first page is not a window onto the chat: the full one is on its way.
+                  entryWindow={isPartialForest(forest) ? undefined : forest?.entryWindow}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   completion={forest?.completion}

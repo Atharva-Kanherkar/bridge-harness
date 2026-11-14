@@ -970,6 +970,14 @@ function mockChildRuntimes(sessionId: string): SessionForestSnapshot["workerRunt
     .filter(item => item.parentSessionId === sessionId && item.kind === "worker")
     .map(item => ({ sessionId: item.id, parentSessionId: sessionId, lifecycleState: item.status === "working" ? "working" : "completed", taskFamily: "documentation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: `/tmp/bridge/${item.id}`, worktreeBranch: `bridge/${item.id}`, lastResult: null, lastActivityAt: now, progressSummary: "editing docs/deck/shell.md", updatedAt: now }));
 }
+/** The mock backend's `limit`: the newest entries, with the window it
+ * reports, exactly as the daemon pages them. */
+function mockForestPage(forest: SessionForestSnapshot, limit?: number): SessionForestSnapshot {
+  if (limit === undefined || forest.entries.length <= limit) return forest;
+  const entries = forest.entries.slice(-Math.max(1, limit));
+  return { ...forest, entries, entryWindow: { ...forest.entryWindow, returned: entries.length } };
+}
+
 function mockForest(sessionId: string): SessionForestSnapshot {
   const existing = mockForests[sessionId];
   if (existing) return structuredClone(existing);
@@ -2518,7 +2526,11 @@ export const bridgeApi = {
     mockRouterPreferences.set(workspaceId, structuredClone(preferences));
     return Promise.resolve(structuredClone(preferences));
   },
-  sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => hasBackend() ? call("sessions/get_session_forest", { sessionId }) as Promise<SessionForestSnapshot> : Promise.resolve(mockForest(sessionId)),
+  // `limit` asks for only the newest entries of the active branch: the page a
+  // long chat paints first, before its full window arrives.
+  sessionForest: (sessionId: string, options: { limit?: number } = {}): Promise<SessionForestSnapshot> => hasBackend()
+    ? call("sessions/get_session_forest", options.limit === undefined ? { sessionId } : { sessionId, limit: options.limit }) as Promise<SessionForestSnapshot>
+    : Promise.resolve(mockForestPage(mockForest(sessionId), options.limit)),
   // Tens of bytes per poll instead of the entire history; equal digests mean
   // sessionForest would return unchanged store content.
   sessionForestDigest: (sessionId: string): Promise<string> => hasBackend() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),

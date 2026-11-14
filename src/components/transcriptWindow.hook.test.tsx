@@ -4,15 +4,20 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTranscriptWindow } from "./transcriptWindow";
 
-function Probe({ total, sessionKey = "session", ready = true, full = false }: {
+function Probe({ total, sessionKey = "session", ready = true, full = false, keys }: {
   total: number;
   sessionKey?: string;
   ready?: boolean;
   full?: boolean;
+  /** Row keys, oldest first. When given, `total` should be their count. */
+  keys?: readonly string[];
 }) {
-  const { start, instantBefore } = useTranscriptWindow(total, sessionKey, full, ready);
+  const { start, instantBefore } = useTranscriptWindow(total, sessionKey, full, ready, keys && (index => keys[index]));
   return <div data-start={start} data-instant={instantBefore} />;
 }
+
+/** Rows `from`..`to` (exclusive) as keys, like a forest's sequences. */
+const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, index) => `row-${from + index}`);
 
 describe("useTranscriptWindow", () => {
   let container: HTMLDivElement;
@@ -106,5 +111,61 @@ describe("useTranscriptWindow", () => {
     // The newest 40 rows joined below the opening window; the boundary that
     // decides which rows arrive instantly does not move with them.
     expect(instant()).toBe(268);
+  });
+
+  it("keeps the mounted rows when the full window arrives above a first page", async () => {
+    // A first page of 120 rows: the newest 32 mount, then the rest hydrate.
+    const page = rows(880, 1000);
+    act(() => root!.render(<Probe total={page.length} keys={page} />));
+    expect(start()).toBe(88);
+    await act(async () => { vi.advanceTimersByTime(16); });
+    expect(start()).toBe(40);
+
+    // The full window brings 880 older rows above them. The 80 rows already
+    // mounted stay mounted: the start follows them to index 920, instead of
+    // staying at 40 and mounting 960 rows in one commit.
+    const whole = rows(0, 1000);
+    act(() => root!.render(<Probe total={whole.length} keys={whole} />));
+    expect(start()).toBe(920);
+    expect(instant()).toBe(88 + 880);
+
+    // Hydration carries on toward the head from there, one slice at a time.
+    await act(async () => { vi.advanceTimersByTime(16); });
+    expect(start()).toBe(872);
+  });
+
+  it("follows its rows when the regrouped seam row changes key", () => {
+    const page = ["seam-short", ...rows(901, 1000)];
+    act(() => root!.render(<Probe total={page.length} keys={page} />));
+    expect(start()).toBe(68);
+    // The first row of the page was the tail of a group that now starts
+    // earlier, so its key is gone; the next anchor still places the window.
+    const whole = [...rows(0, 900), "seam-long", ...rows(901, 1000)];
+    act(() => root!.render(<Probe total={whole.length} keys={whole} />));
+    expect(start()).toBe(68 + 900);
+  });
+
+  it("keeps the same rows when the oldest rows leave a full window", () => {
+    const before = rows(0, 1500);
+    act(() => root!.render(<Probe total={before.length} keys={before} />));
+    expect(start()).toBe(1468);
+    // A long chat at the 1,500-entry cap: each new row pushes the oldest out.
+    const after = rows(2, 1502);
+    act(() => root!.render(<Probe total={after.length} keys={after} />));
+    expect(start()).toBe(1466);
+  });
+
+  it("leaves the start alone when none of its rows survived", () => {
+    act(() => root!.render(<Probe total={200} keys={rows(0, 200)} />));
+    expect(start()).toBe(168);
+    act(() => root!.render(<Probe total={200} keys={rows(5000, 5200)} />));
+    expect(start()).toBe(168);
+  });
+
+  it("keeps a forced full window at the head when rows arrive above", () => {
+    act(() => root!.render(<Probe total={100} keys={rows(900, 1000)} full />));
+    expect(start()).toBe(0);
+    act(() => root!.render(<Probe total={1000} keys={rows(0, 1000)} full />));
+    expect(start()).toBe(0);
   });
 });
