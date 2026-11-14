@@ -65,7 +65,7 @@ import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
 import type { TrailStartRequest } from "./components/TrailsScreen";
 import type { TrailSummary } from "./protocol/generated/protocol";
-import { needsYouCount as trailsNeedingYou, trailForSession } from "./trails";
+import { TrailStartError, needsYouCount as trailsNeedingYou, trailForSession } from "./trails";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
@@ -2136,11 +2136,14 @@ function AppContent() {
         // A trail brief lands in the forest before the first cold start, like
         // the handoff above. If it fails, the chat still joins the trail and
         // starts, and the person is told it started without the brief.
+        // The person chose what this chat starts with, so it never starts
+        // without it: a failed carry archives the still-empty chat, sends
+        // nothing, and hands the error back to the Continue dialog.
         if (created && draft.trailCarry) {
           try { await bridgeApi.carryTrailBrief(draft.trailCarry.trailId, created.id, draft.trailCarry.items); }
           catch (carryError) {
-            await bridgeApi.addTrailMember(draft.trailCarry.trailId, { kind: "session", ref: created.id }).catch(() => undefined);
-            setError(`Started without the trail brief: ${errorMessage(carryError)}`);
+            await bridgeApi.archiveChat(created.id).catch(() => undefined);
+            throw new TrailStartError(errorMessage(carryError));
           }
         }
         if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
@@ -2156,6 +2159,7 @@ function AppContent() {
         return created?.id;
       } catch (e) {
         pendingWelcomeMessageRef.current = null;
+        if (e instanceof TrailStartError) throw e;
         setError(errorMessage(e));
         draftSettings.reload();
       }
@@ -2196,6 +2200,12 @@ function AppContent() {
     return submitNewChatDraft(draft, message);
   }
   async function startChatOnTrail({ trail, text, harness, items }: TrailStartRequest): Promise<void> {
+    // The selection was made against an earlier preview. Re-read it first, so
+    // an item that left the trail stops the start before a chat exists.
+    const current = await bridgeApi.previewTrailBrief(trail.id);
+    if (items.some(id => !current.items.some(item => item.id === id))) {
+      throw new TrailStartError("Something you picked is no longer on this trail.");
+    }
     const adapter = adapters.find(candidate => candidate.id === harness);
     const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
     const workspaceId = trail.workspaceId && state.workspaces.some(item => item.id === trail.workspaceId) ? trail.workspaceId : null;

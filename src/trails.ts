@@ -14,6 +14,14 @@ export type TrailMemberAdded = {
   label: string;
 };
 
+/** Starting a chat on a trail stopped before its first message was sent. */
+export class TrailStartError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TrailStartError";
+  }
+}
+
 /** The `trails/changed` notification. */
 export type TrailsChangedPayload = {
   trailId?: string | null;

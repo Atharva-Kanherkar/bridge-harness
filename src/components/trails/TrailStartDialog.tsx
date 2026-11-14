@@ -46,7 +46,20 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
     try {
       await onStart({ trail, text: text.trim(), harness, items: chosenInOrder(preview.items, chosen) });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      // Nothing was sent. Re-read what the chat can start with, untick what
+      // left the trail and say which, and keep the text for another try.
+      const fresh = await bridgeApi.previewTrailBrief(trail.id).catch(() => null);
+      if (fresh) {
+        const gone = preview.items.filter(item => chosen.has(item.id) && !fresh.items.some(next => next.id === item.id));
+        setPreview(fresh);
+        setChosen(current => new Set([...current].filter(id => fresh.items.some(next => next.id === id))));
+        setError(gone.length
+          ? `${gone.map(item => `“${item.label.replace(/^\S+ “|”.*$/g, "")}”`).join(", ")} ${gone.length === 1 ? "is" : "are"} no longer on this trail, so ${gone.length === 1 ? "it was" : "they were"} unticked. Check the list and send again.`
+          : `${reason} Nothing was sent.`);
+      } else {
+        setError(`${reason} Nothing was sent.`);
+      }
       setBusy(false);
     }
   }
