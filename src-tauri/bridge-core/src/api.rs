@@ -1568,9 +1568,13 @@ pub fn get_context_windows(
     core.context_windows(session_id)
 }
 
+/// One chat's forest snapshot. `limit` asks for only the newest entries of
+/// the active branch (clamped to 1..=1500, default 1500), which is how a long
+/// chat paints its first page before the full window arrives.
 pub fn get_session_forest(
     core: &Arc<BridgeCore>,
     session_id: &str,
+    limit: Option<u32>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // call this while holding the global SQLite lock.
@@ -1579,7 +1583,11 @@ pub fn get_session_forest(
         Some(path) => store::repository_state_for_path(&path),
         None => serde_json::json!({"status":"unavailable"}),
     };
-    core.session_forest_snapshot_with_repository_state(session_id, repository_state)
+    core.session_forest_page_with_repository_state(
+        session_id,
+        repository_state,
+        crate::sessions::snapshot_entry_limit(limit),
+    )
 }
 
 /// Replay durable session events after a cursor — the recovery half of the

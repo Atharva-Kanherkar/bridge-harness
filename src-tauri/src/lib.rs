@@ -967,12 +967,13 @@ async fn get_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, Bri
 #[tauri::command]
 async fn get_session_forest(
     session_id: String,
+    limit: Option<u32>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // run it on the macOS event loop or while holding the global SQLite lock.
     let core = state.inner().clone();
-    blocking("Repository refresh", move || api::get_session_forest(&core, &session_id)).await
+    blocking("Repository refresh", move || api::get_session_forest(&core, &session_id, limit)).await
 }
 
 #[tauri::command]

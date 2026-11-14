@@ -266,7 +266,7 @@ pub fn dispatch(
 
         MethodName::GetSessionForest => {
             let p: wire::GetSessionForestParams = decode(method, params)?;
-            reply(api::get_session_forest(core, &p.session_id))
+            reply(api::get_session_forest(core, &p.session_id, p.limit))
         }
         MethodName::GetSessionForestDigest => {
             let p: wire::GetSessionForestDigestParams = decode(method, params)?;

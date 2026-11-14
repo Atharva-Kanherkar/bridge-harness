@@ -916,17 +916,11 @@ impl<'connection> SessionForest<'connection> {
             .collect())
     }
 
+    /// Every entry of the session that no other entry descends from, in
+    /// sequence order. Indexed: never loads a payload that is not a leaf's.
     pub fn branch_leaves(&self, session_id: &str) -> Result<Vec<SessionEntry>, ForestError> {
         self.ensure_session(session_id)?;
-        let entries = store::session_entries(self.db, session_id)?;
-        let parent_ids: HashSet<String> = entries
-            .iter()
-            .filter_map(|entry| entry.parent_entry_id.clone())
-            .collect();
-        Ok(entries
-            .into_iter()
-            .filter(|entry| !parent_ids.contains(entry.id.as_str()))
-            .collect())
+        Ok(store::session_leaf_entries(self.db, session_id)?)
     }
 
     pub fn integrity_report(&self) -> Result<IntegrityReport, ForestError> {

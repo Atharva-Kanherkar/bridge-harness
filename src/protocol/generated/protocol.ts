@@ -4270,6 +4270,7 @@ export interface WorkspaceChangesResult {
 }
 
 export interface GetSessionForestParams {
+  limit?: number | null;
   sessionId: string;
 }
 

@@ -519,8 +519,23 @@ impl BridgeCore {
         session_id: &str,
         repository_state: serde_json::Value,
     ) -> Result<SessionForestSnapshot, BridgeError> {
+        self.session_forest_page_with_repository_state(
+            session_id,
+            repository_state,
+            store::SNAPSHOT_ENTRY_WINDOW,
+        )
+    }
+
+    /// The snapshot with at most `entry_limit` of the active branch's newest
+    /// entries.
+    pub fn session_forest_page_with_repository_state(
+        &self,
+        session_id: &str,
+        repository_state: serde_json::Value,
+        entry_limit: usize,
+    ) -> Result<SessionForestSnapshot, BridgeError> {
         let db = self.db.lock().unwrap();
-        session_forest_snapshot_with_repository_state(&db, session_id, repository_state)
+        session_forest_page_with_repository_state(&db, session_id, repository_state, entry_limit)
     }
 
     /// Resolve the orchestrator selection and workspace facts for a new
@@ -1599,35 +1614,62 @@ fn short_id() -> String {
 /// An opaque change token composed from the monotonic columns behind every
 /// store-derived field of [`SessionForestSnapshot`]. Equal tokens mean the
 /// snapshot would be byte-identical except for repository divergence, which
-/// lives outside the store; a token may change without a visible snapshot
-/// change (worker tables are folded in globally), and that costs one full
-/// fetch — the same work every poll used to do. Entries never need loading:
-/// the forest is append-only, so the max sequence plus the head row cover it.
+/// lives outside the store. Entries never need loading: the forest is
+/// append-only, so the max sequence plus the head row cover it.
+///
+/// Every part is scoped to what this chat's snapshot actually reads: its own
+/// entries, head, status, turn usage, completion and adoptions, plus its own
+/// workspace's leases, runtimes, queue and reason events. It used to fold in
+/// the newest event and usage row of the whole database, so any busy chat
+/// anywhere made the open chat download its entire snapshot again on the next
+/// poll.
 pub fn session_forest_digest(db: &Connection, session_id: &str) -> Result<String, BridgeError> {
     // The same existence check the snapshot performs, so both surfaces agree
-    // on unknown sessions. Direct chats carry no workspace.
-    let _workspace: Option<String> = db.query_row(
+    // on unknown sessions.
+    let workspace_id: Option<String> = db.query_row(
         "SELECT workspace_id FROM sessions WHERE id=?1",
         params![session_id],
         |row| row.get(0),
     )?;
-    let digest: String = db.query_row(
-        "SELECT 'v1'
+    let session: String = db.query_row(
+        "SELECT 'v2'
             ||':'||COALESCE((SELECT MAX(sequence) FROM session_entries WHERE session_id=?1),0)
             ||':'||COALESCE((SELECT updated_at FROM session_heads WHERE session_id=?1),'')
             ||':'||COALESCE((SELECT active_entry_id FROM session_heads WHERE session_id=?1),'')
             ||':'||(SELECT status||'/'||COALESCE(active_turn_id,'') FROM sessions WHERE id=?1)
-            ||':'||COALESCE((SELECT MAX(id) FROM usage_ledger),0)
-            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_leases)
-            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_runtime)
-            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(sequence),0)||'/'||COALESCE(MAX(updated_at),'') FROM worker_queue)
-            ||':'||COALESCE((SELECT MAX(id) FROM events),0)
-            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_worktree_adoptions)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_worktree_adoptions WHERE parent_session_id=?1)
             ||':'||COALESCE((SELECT rowid||'/'||status FROM eval_attempts WHERE session_id=?1 ORDER BY started_at DESC,rowid DESC LIMIT 1),'')",
         params![session_id],
         |row| row.get(0),
     )?;
-    Ok(digest)
+    // Direct chats carry no workspace, and their snapshot's workspace-scoped
+    // fields are empty, so there is nothing more to cover.
+    let Some(workspace_id) = workspace_id.filter(|id| !id.is_empty()) else {
+        return Ok(session);
+    };
+    let workspace: String = db.query_row(
+        // The usage part matches `store::latest_turn_usage` row for row.
+        "SELECT COALESCE((SELECT MAX(id) FROM usage_ledger
+                          WHERE workspace_id=?2
+                            AND turn_id=COALESCE(
+                              (SELECT active_turn_id FROM sessions WHERE id=?1),
+                              (SELECT turn_id FROM usage_ledger
+                               WHERE workspace_id=?2 AND session_id=?1 AND turn_id IS NOT NULL
+                               ORDER BY id DESC LIMIT 1))),0)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_leases WHERE workspace_id=?2)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(runtime.updated_at),'')
+                    FROM worker_runtime runtime JOIN sessions owner ON owner.id=runtime.session_id
+                    WHERE owner.workspace_id=?2)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(sequence),0)||'/'||COALESCE(MAX(updated_at),'') FROM worker_queue WHERE workspace_id=?2)
+            ||':'||COALESCE((SELECT id FROM events
+                             WHERE entity_id=?2
+                                OR entity_id IN (SELECT id FROM sessions WHERE workspace_id=?2)
+                                OR entity_id IN (SELECT id FROM worker_queue WHERE workspace_id=?2)
+                             ORDER BY id DESC LIMIT 1),0)",
+        params![session_id, workspace_id],
+        |row| row.get(0),
+    )?;
+    Ok(format!("{session}:{workspace}"))
 }
 
 pub fn session_forest_snapshot(
@@ -1638,10 +1680,29 @@ pub fn session_forest_snapshot(
     session_forest_snapshot_with_repository_state(db, session_id, current_state)
 }
 
+/// The entry count a `get_session_forest` caller asked for, clamped to the
+/// snapshot window. Omitted means the full window.
+pub fn snapshot_entry_limit(requested: Option<u32>) -> usize {
+    requested.map_or(store::SNAPSHOT_ENTRY_WINDOW, |limit| {
+        (limit as usize).clamp(1, store::SNAPSHOT_ENTRY_WINDOW)
+    })
+}
+
 pub fn session_forest_snapshot_with_repository_state(
     db: &Connection,
     session_id: &str,
     current_state: serde_json::Value,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    session_forest_page_with_repository_state(db, session_id, current_state, store::SNAPSHOT_ENTRY_WINDOW)
+}
+
+/// [`session_forest_snapshot_with_repository_state`] with at most
+/// `entry_limit` entries. Every other field is the same as the full snapshot.
+pub fn session_forest_page_with_repository_state(
+    db: &Connection,
+    session_id: &str,
+    current_state: serde_json::Value,
+    entry_limit: usize,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Imported and other workspace-less direct chats carry a NULL
     // workspace_id; the workspace-scoped queries below simply return empty
@@ -1666,7 +1727,7 @@ pub fn session_forest_snapshot_with_repository_state(
     let worker_leases = store::worker_leases(db, &workspace_id)?;
     let worker_runtimes = store::worker_runtimes(db, &workspace_id)?;
     let worker_queue = store::worker_queue_requests(db, &workspace_id)?;
-    let usage = store::usage_ledger(db, &workspace_id, None)?;
+    let usage = store::latest_turn_usage(db, &workspace_id, session_id)?;
     let reasons =
         store::workspace_reason_events(db, &workspace_id, store::SNAPSHOT_REASON_WINDOW)?;
     let completion = completion::latest_summary(db, session_id)?;
@@ -1689,7 +1750,7 @@ pub fn session_forest_snapshot_with_repository_state(
     // payload, which is both slow to parse twice (here and in the renderer)
     // and past the daemon's frame ceiling, so it failed the open outright.
     let window =
-        store::session_entry_window_with_budget(db, session_id, store::SNAPSHOT_ENTRY_WINDOW, entry_budget)?;
+        store::session_entry_window_with_budget(db, session_id, entry_limit, entry_budget)?;
     let entries = window.entries;
     let selected_state = head
         .as_ref()
@@ -2768,15 +2829,32 @@ mod tests {
     #[test]
     fn forest_digest_is_stable_until_a_store_input_changes() {
         let (_scratch, core) = fixture();
-        core.create_chat(&Harness::Codex, Some("stub-standard"), Some("Digest"))
-            .unwrap();
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session("w", false).unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
         let session_id = only_session_id(&core);
+        // A worker and a sibling chat in this workspace, and a chat in another.
+        core.db
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO workspaces(id,project_id,title,path,status,created_at) VALUES('w2',NULL,'Other','/tmp/sessions-other','idle','now');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('worker-1','w','codex','Worker','working','reported');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('sibling','w','codex','Sibling','working','reported');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('elsewhere','w2','codex','Elsewhere','working','reported');",
+            )
+            .unwrap();
         let baseline = core.session_forest_digest(&session_id).unwrap();
         assert_eq!(
             baseline,
             core.session_forest_digest(&session_id).unwrap(),
             "an unchanged session yields an unchanged digest"
         );
+        let exec = |sql: &str| {
+            core.db.lock().unwrap().execute(sql, params![session_id]).unwrap();
+        };
+        let plain = |sql: &str| core.db.lock().unwrap().execute_batch(sql).unwrap();
+        let digest = || core.session_forest_digest(&session_id).unwrap();
 
         // An appended forest entry.
         {
@@ -2789,52 +2867,181 @@ mod tests {
                 )
                 .unwrap();
         }
-        let after_entry = core.session_forest_digest(&session_id).unwrap();
+        let after_entry = digest();
         assert_ne!(baseline, after_entry, "entry appends invalidate");
 
         // A head move.
-        {
-            let db = core.db.lock().unwrap();
-            db.execute(
-                "INSERT INTO session_heads(session_id,restoration_mode,resume_eligibility,updated_at)
-                 VALUES(?1,'fresh','fresh','2026-08-20T10:00:00Z')
-                 ON CONFLICT(session_id) DO UPDATE SET updated_at='2026-08-20T10:00:00Z'",
-                params![session_id],
-            )
-            .unwrap();
-        }
-        let after_head = core.session_forest_digest(&session_id).unwrap();
+        exec(
+            "INSERT INTO session_heads(session_id,restoration_mode,resume_eligibility,updated_at)
+             VALUES(?1,'fresh','fresh','2026-08-20T10:00:00Z')
+             ON CONFLICT(session_id) DO UPDATE SET updated_at='2026-08-20T10:00:00Z'",
+        );
+        let after_head = digest();
         assert_ne!(after_entry, after_head, "head updates invalidate");
 
-        // A usage row.
+        // This chat's turn usage, and a worker's spawn charge on the same turn
+        // recorded under the worker's own session id.
+        exec("INSERT INTO usage_ledger(workspace_id,session_id,turn_id,source,created_at) VALUES('w',?1,'turn-1','test','now')");
+        let after_usage = digest();
+        assert_ne!(after_head, after_usage, "this chat's usage invalidates");
+        plain("INSERT INTO usage_ledger(workspace_id,session_id,turn_id,source,created_at) VALUES('w','worker-1','turn-1','policy.spawn.standard','now')");
+        let after_spawn = digest();
+        assert_ne!(after_usage, after_spawn, "a spawn charge on this chat's turn invalidates");
+
+        // A reason event on the workspace.
+        plain("INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','test.reason','w','because','now')");
+        let after_event = digest();
+        assert_ne!(after_spawn, after_event, "workspace events invalidate");
+
+        // A lease and a queued request in this workspace.
+        plain("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at)
+              VALUES('worker-1','w','implementation','standard','code','[]','isolated','active','later','now','now')");
+        let after_lease = digest();
+        assert_ne!(after_event, after_lease, "workspace leases invalidate");
+
+        assert_eq!(after_lease, digest(), "quiescence is stable again");
+
+        // Activity that this chat's snapshot never reads: another workspace's
+        // usage, events and leases, another chat's usage on its own turn, and
+        // another chat's entries.
         {
             let db = core.db.lock().unwrap();
-            db.execute(
-                "INSERT INTO usage_ledger(workspace_id,session_id,source,created_at) VALUES('w',?1,'test','now')",
-                params![session_id],
+            db.execute_batch(
+                "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,source,created_at) VALUES('w2','elsewhere','turn-9','test','now');
+                 INSERT INTO usage_ledger(workspace_id,session_id,turn_id,source,created_at) VALUES('w','sibling','turn-2','test','now');
+                 INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','test.reason','w2','elsewhere','now');
+                 INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at)
+                   VALUES('elsewhere','w2','implementation','standard','code','[]','isolated','active','later','now','now');",
             )
             .unwrap();
         }
-        let after_usage = core.session_forest_digest(&session_id).unwrap();
-        assert_ne!(after_head, after_usage, "usage appends invalidate");
-
-        // A reason event.
+        core.create_chat(&Harness::Codex, Some("stub-standard"), Some("Elsewhere"))
+            .unwrap();
+        let other: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions WHERE workspace_id IS NULL", [], |row| row.get(0))
+            .unwrap();
         {
             let db = core.db.lock().unwrap();
-            db.execute(
-                "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','test.reason','w','because','now')",
-                [],
-            )
-            .unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &other,
+                    session_forest::EntryKind::SessionStatus,
+                    serde_json::json!({"status":"working"}),
+                )
+                .unwrap();
         }
-        let after_event = core.session_forest_digest(&session_id).unwrap();
-        assert_ne!(after_usage, after_event, "workspace events invalidate");
-
         assert_eq!(
-            after_event,
-            core.session_forest_digest(&session_id).unwrap(),
-            "quiescence is stable again"
+            after_lease,
+            digest(),
+            "work this chat's snapshot does not read must not force a refetch"
         );
+    }
+
+    #[test]
+    fn a_snapshot_carries_its_latest_turn_usage_and_honours_a_page_limit() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session("w", false).unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute_batch(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('worker-1','w','codex','Worker','working','reported');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('sibling','w','codex','Sibling','working','reported');",
+            )
+            .unwrap();
+            for (row_session, turn, source) in [
+                (session_id.as_str(), "turn-0", "provider.codex"),
+                (session_id.as_str(), "turn-1", "provider.codex"),
+                ("worker-1", "turn-1", "policy.spawn.standard"),
+                ("sibling", "turn-2", "provider.codex"),
+            ] {
+                db.execute(
+                    "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,capability_units,source,created_at) VALUES('w',?1,?2,2,?3,'now')",
+                    params![row_session, turn, source],
+                )
+                .unwrap();
+            }
+            let forest = session_forest::SessionForest::new(&db);
+            for index in 0..30 {
+                forest
+                    .append(
+                        &session_id,
+                        session_forest::EntryKind::SessionStatus,
+                        serde_json::json!({"status":"working","detail":format!("step {index}")}),
+                    )
+                    .unwrap();
+            }
+        }
+        let unavailable = || serde_json::json!({"status":"unavailable"});
+        let full = core
+            .session_forest_snapshot_with_repository_state(&session_id, unavailable())
+            .unwrap();
+        // The newest turn this chat recorded, including a worker's spawn
+        // charge on it, and nothing from older turns or other chats.
+        let turns: Vec<(&str, &str)> = full
+            .usage
+            .iter()
+            .map(|row| (row.turn_id.as_deref().unwrap_or(""), row.source.as_str()))
+            .collect();
+        assert_eq!(turns, vec![("turn-1", "provider.codex"), ("turn-1", "policy.spawn.standard")]);
+
+        // An active turn wins over the newest recorded one.
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET active_turn_id='turn-0' WHERE id=?1", params![session_id])
+            .unwrap();
+        let active = core
+            .session_forest_snapshot_with_repository_state(&session_id, unavailable())
+            .unwrap();
+        assert_eq!(active.usage.len(), 1);
+        assert_eq!(active.usage[0].turn_id.as_deref(), Some("turn-0"));
+
+        let page = core
+            .session_forest_page_with_repository_state(&session_id, unavailable(), snapshot_entry_limit(Some(8)))
+            .unwrap();
+        assert_eq!(page.entry_window.returned, 8);
+        assert_eq!(page.entry_window.total, full.entry_window.total);
+        assert_eq!(page.entries[..], full.entries[full.entries.len() - 8..]);
+        assert_eq!(page.leaves, full.leaves);
+        assert_eq!(snapshot_entry_limit(None), store::SNAPSHOT_ENTRY_WINDOW);
+        assert_eq!(snapshot_entry_limit(Some(0)), 1);
+        assert_eq!(snapshot_entry_limit(Some(50_000)), store::SNAPSHOT_ENTRY_WINDOW);
+    }
+
+    #[test]
+    fn a_direct_chat_digest_ignores_every_workspace() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        core.create_chat(&Harness::Codex, Some("stub-standard"), Some("Direct"))
+            .unwrap();
+        let session_id = only_session_id(&core);
+        let baseline = core.session_forest_digest(&session_id).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,source,created_at) VALUES('w','someone','turn-1','test','now');
+                 INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','test.reason','w','because','now');",
+            )
+            .unwrap();
+        assert_eq!(baseline, core.session_forest_digest(&session_id).unwrap());
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::SessionStatus,
+                    serde_json::json!({"status":"working"}),
+                )
+                .unwrap();
+        }
+        assert_ne!(baseline, core.session_forest_digest(&session_id).unwrap());
     }
 
     #[test]

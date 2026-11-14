@@ -932,6 +932,11 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     transcriptKey,
     fullTranscript,
     transcriptIsForThisSession,
+    // Older history can arrive above the rows on screen: a long chat opens on
+    // its newest page and the full window follows. The window follows its
+    // rows by key so they stay mounted instead of the start landing deep in
+    // the older ones.
+    index => shownItems[index]?.key,
   );
 
   // Every file name in the transcript resolves against this one set; without
