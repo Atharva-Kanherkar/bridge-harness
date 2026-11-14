@@ -4,7 +4,7 @@
 // cannot be reachable from one and missing from another. Later slices load
 // this from core as manifests; until then it is the frontend's own list.
 
-import { Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Route, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
+import { Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Route, Send, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
 import type { AppView } from "../navigationHistory";
 
 export type AppId =
@@ -48,6 +48,13 @@ export const BUILTIN_APPS: readonly BuiltinApp[] = [
   { id: "store", name: "Store", description: "Apps, plugins and skills", icon: Store, view: "marketplace", slots: ["screen"], keywords: ["marketplace", "plugins", "skills", "install"] },
 ];
 
+/** Apps core lists that have no screen of their own: they show up only as
+ *  cards in a chat, so the launcher has nothing to open. The Store still
+ *  lists them, to turn them on or off. */
+export const CARD_APPS: readonly { id: string; name: string; description: string; icon: LucideIcon }[] = [
+  { id: "outgoing", name: "Outgoing", description: "Messages a chat drafts for you to send", icon: Send },
+];
+
 /** Screens that are not apps: the chat itself, its board, and settings pages
  *  reached from inside other screens. Anything else must be an app, or the
  *  launcher would leave it unreachable. */
@@ -71,10 +78,6 @@ export function appForView(view: AppView, paradigm?: "single" | "grid"): AppId |
   if (view === "workspace") return paradigm === "grid" ? "mission-control" : null;
   return BUILTIN_APPS.find(app => app.view === view)?.id ?? null;
 }
-
-/** `MAX_MEMORY_LIST_LIMIT` in bridge-protocol: one list read returns at most
- *  this many, so a full page means "at least this many". */
-export const MEMORY_LIST_CAP = 50;
 
 /** A count of things waiting on the person. `capped` means the source list
  *  stopped at its limit, so the true number may be higher. */

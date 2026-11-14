@@ -10,8 +10,8 @@ import { MessageSquare, Pin, Search, TextSearch } from "lucide-react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
-import { appMatches, badgeText, BUILTIN_APPS, type AppBadges, type AppId, type BadgeText, type BuiltinApp } from "../apps/registry";
-import { PIN_LIMIT_MESSAGE, type PinResult } from "../apps/pins";
+import { appMatches, badgeText, type AppBadges, type AppId, type BadgeText, type BuiltinApp } from "../apps/registry";
+import type { PinResult } from "../apps/pins";
 import { CHAT_SEARCH_MIN_CHARS } from "../chatSearch";
 import { chordLabel } from "../keymap";
 import { formatShortcut } from "../lib/platform";
@@ -21,6 +21,8 @@ export type LauncherChat = { id: string; title: string; detail?: string };
 export type AppLauncherProps = {
   open: boolean;
   onClose: () => void;
+  /** The apps that are on, in launcher order. An app that is off is not here. */
+  apps: readonly BuiltinApp[];
   badges: AppBadges;
   pins: readonly AppId[];
   /** Top-level chats, most recent first. The launcher shows at most five. */
@@ -32,7 +34,7 @@ export type AppLauncherProps = {
   onSearchThisChat: () => void;
   /** Hand the query to the sidebar's chat search, deep stage included. */
   onSearchChats: (query: string) => void;
-  onTogglePin: (id: AppId) => PinResult;
+  onTogglePin: (id: AppId) => Promise<PinResult>;
 };
 
 const MAX_CHATS = 5;
@@ -47,9 +49,9 @@ type Item =
 
 type Section = { id: string; label: string; items: Item[] };
 
-export function launcherSections({ query, badges, chats, chatOpen }: { query: string; badges: AppBadges; chats: readonly LauncherChat[]; chatOpen: boolean }): Section[] {
+export function launcherSections({ query, apps: available, badges, chats, chatOpen }: { query: string; apps: readonly BuiltinApp[]; badges: AppBadges; chats: readonly LauncherChat[]; chatOpen: boolean }): Section[] {
   const needle = query.trim().toLowerCase();
-  const apps = BUILTIN_APPS.filter(app => appMatches(app, needle));
+  const apps = available.filter(app => appMatches(app, needle));
   const needs = apps.flatMap(app => {
     const badge = badgeText(badges[app.id]);
     return badge ? [{ key: `needs:${app.id}`, kind: "needs" as const, app, badge }] : [];
@@ -75,14 +77,14 @@ export function AppLauncher(props: AppLauncherProps) {
   );
 }
 
-function LauncherPanel({ onClose, badges, pins, chats, chatOpen, onOpenApp, onOpenChat, onSearchThisChat, onSearchChats, onTogglePin }: AppLauncherProps) {
+function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp, onOpenChat, onSearchThisChat, onSearchChats, onTogglePin }: AppLauncherProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const baseId = useId();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
 
-  const sections = useMemo(() => launcherSections({ query, badges, chats, chatOpen }), [query, badges, chats, chatOpen]);
+  const sections = useMemo(() => launcherSections({ query, apps, badges, chats, chatOpen }), [query, apps, badges, chats, chatOpen]);
   const items = useMemo(() => sections.flatMap(section => section.items), [sections]);
   const current = items[Math.min(active, items.length - 1)];
   const optionId = (item: Item) => `${baseId}-${item.key}`;
@@ -105,9 +107,11 @@ function LauncherPanel({ onClose, badges, pins, chats, chatOpen, onOpenApp, onOp
 
   const pin = (item: Item | undefined) => {
     if (!item || (item.kind !== "needs" && item.kind !== "app")) return;
-    const wasPinned = pins.includes(item.app.id);
-    const result = onTogglePin(item.app.id);
-    setStatus(!result.ok ? PIN_LIMIT_MESSAGE : wasPinned ? `Unpinned ${item.app.name}.` : `Pinned ${item.app.name} to the sidebar.`);
+    const { app } = item;
+    const wasPinned = pins.includes(app.id);
+    void onTogglePin(app.id).then(result => {
+      setStatus(!result.ok ? result.message : wasPinned ? `Unpinned ${app.name}.` : `Pinned ${app.name} to the sidebar.`);
+    });
   };
 
   // A key the launcher acts on is the launcher's alone. Window listeners

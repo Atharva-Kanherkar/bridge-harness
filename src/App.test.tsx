@@ -34,7 +34,8 @@ import "./components/TerminalPane";
 import "./components/CodePanel";
 import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
-import { PINS_KEY, readPins, resetPinsCache } from "./apps/pins";
+import { pinsOf, resetAppsStore } from "./apps/store";
+import { resetMockApps } from "./appsMock";
 import { SHORTCUTS } from "./keymap";
 import { agentName } from "./components/agentIdentity";
 
@@ -415,8 +416,8 @@ describe("the dock in the session view", () => {
   // Review fix: ⌘P in the launcher pins; it must not also reach the Code
   // pane's window listener and open its file palette underneath.
   it("pins from the launcher without opening the Code pane's Open file dialog", async () => {
-    localStorage.removeItem(PINS_KEY);
-    resetPinsCache();
+    resetMockApps();
+    resetAppsStore();
     await mountApp();
     await openWorkspaceSession("4 files");
     await key({ ...chord, code: "Digit2", key: "2" });
@@ -432,10 +433,10 @@ describe("the dock in the session view", () => {
     await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "p", metaKey: true, bubbles: true, cancelable: true })); });
     await settle(2);
 
-    expect(readPins()).toEqual(["notes"]);
+    expect(pinsOf((await bridgeApi.listApps()).apps)).toEqual(["notes"]);
     expect(document.body.querySelector('[aria-label="Open file"]')).toBeNull();
-    localStorage.removeItem(PINS_KEY);
-    resetPinsCache();
+    resetMockApps();
+    resetAppsStore();
   });
 
   // Contract: testing/feat-dock-code.md §4.

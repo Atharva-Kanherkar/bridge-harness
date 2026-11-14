@@ -32,6 +32,8 @@ import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrails, mockPreviewTrailBrief, mockReadTrail, mockRemoveTrailMember, mockUpdateTrail, onMockTrailsChanged } from "./trailsMock";
 import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
 import type { TrailsChangedPayload } from "./trails";
+import { mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
+import type { ListAppsResult } from "./protocol/generated/protocol";
 import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockSendOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
 import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
@@ -1592,6 +1594,15 @@ mockState.agentEvents.push(
   agentEvent(9004, "wf-run-session", "assistant.message", { role: "assistant", text: "Three mentions need replies. I drafted a note to #team to say I'm on it." }),
   agentEvent(9005, "wf-run-session", "permission.requested", { status: "pending", title: "Use claude_ai_Slack · slack_send_message?", data: { tool_name: "mcp__claude_ai_Slack__slack_send_message", tool_input: { channel: "#team", text: "On it: replying to the three threads this morning." } } }),
 );
+/** What the mock apps' badges count, from the other mocks, with core's rules. */
+function mockBadgeCounts(): MockBadgeCounts {
+  return {
+    workflows: mockWorkflowRuns.filter(run => run.status === "waiting_approval" || (run.unread && run.status !== "running" && run.status !== "queued")).length,
+    memory: mockMemoryRecords.filter(record => record.status === "proposed").length,
+    trails: mockListTrails(false).trails.filter(trail => trail.state === "needsYou").length,
+  };
+}
+
 let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settings: { paused: false, quotaReservePercent: 25 } };
 
 /** The mock's mirror of `workflows::widens`. */
@@ -1858,6 +1869,24 @@ export const bridgeApi = {
   githubSidebarPrs: (refresh = false): Promise<GithubSidebarPrsResult> =>
     hasBackend() ? call("github/github_sidebar_prs", { refresh }) : Promise.resolve(mockGithubSidebarPrs()),
   /** A chat's drafted messages, oldest first, discarded ones included. */
+  // Apps: core's manifests, their state on this Mac, pins and badges.
+  listApps: async (): Promise<ListAppsResult> =>
+    hasBackend() ? call("apps/list_apps") : mockListApps(mockBadgeCounts()),
+  setAppPinned: async (id: string, pinned: boolean): Promise<ListAppsResult> =>
+    hasBackend() ? call("apps/set_app_pinned", { id, pinned }) : mockSetAppPinned(id, pinned, mockBadgeCounts()),
+  setAppEnabled: async (id: string, enabled: boolean): Promise<ListAppsResult> =>
+    hasBackend() ? call("apps/set_app_enabled", { id, enabled }) : mockSetAppEnabled(id, enabled, mockBadgeCounts()),
+  /** Refetch hint: an app was turned on or off or pinned, or a badge moved.
+   *  The mock fires it for its own badge sources too, as core does. */
+  onAppsChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe("apps/changed", () => handler());
+    const relay = () => handler();
+    const offApps = onMockAppsChanged(relay);
+    const offTrails = onMockTrailsChanged(relay);
+    memoryListeners.add(relay);
+    mockWorkflowRunListeners.add(relay);
+    return () => { offApps(); offTrails(); memoryListeners.delete(relay); mockWorkflowRunListeners.delete(relay); };
+  },
   // Trails: one page per piece of work. Mock mode serves demo trails.
   listTrails: (includeArchived = false): Promise<ListTrailsResult> =>
     hasBackend() ? call("trails/list_trails", { includeArchived }) : Promise.resolve(mockListTrails(includeArchived)),

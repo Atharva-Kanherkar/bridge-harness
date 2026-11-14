@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppLauncher, launcherSections, type AppLauncherProps } from "./AppLauncher";
 import { PIN_LIMIT_MESSAGE, type PinResult } from "../apps/pins";
-import type { AppId } from "../apps/registry";
+import { BUILTIN_APPS, type AppId } from "../apps/registry";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -30,6 +30,7 @@ function props(overrides: Partial<AppLauncherProps> = {}): AppLauncherProps {
   return {
     open: true,
     onClose: vi.fn(),
+    apps: BUILTIN_APPS,
     badges: {},
     pins: [],
     chats,
@@ -38,7 +39,7 @@ function props(overrides: Partial<AppLauncherProps> = {}): AppLauncherProps {
     onOpenChat: vi.fn(),
     onSearchThisChat: vi.fn(),
     onSearchChats: vi.fn(),
-    onTogglePin: vi.fn((): PinResult => ({ ok: true, pins: [] })),
+    onTogglePin: vi.fn(async (): Promise<PinResult> => ({ ok: true })),
     ...overrides,
   };
 }
@@ -68,23 +69,32 @@ async function press(key: string, init: KeyboardEventInit = {}) {
 }
 
 describe("launcherSections", () => {
+  it("lists only the apps that are on, in Needs you and in the grid", () => {
+    const on = BUILTIN_APPS.filter(app => app.id !== "workflows");
+    const sections = launcherSections({ apps: on, query: "", badges: { workflows: { count: 2 }, memory: { count: 1 } }, chats: [], chatOpen: false });
+    const ids = (id: string) => sections.find(section => section.id === id)!.items.map(item => "app" in item ? item.app.id : "");
+    expect(ids("apps")).not.toContain("workflows");
+    expect(ids("needs")).toEqual(["memory"]);
+  });
+
+
   it("puts needs-you first and hides empty sections", () => {
-    const empty = launcherSections({ query: "", badges: {}, chats: [], chatOpen: false });
+    const empty = launcherSections({ apps: BUILTIN_APPS, query: "", badges: {}, chats: [], chatOpen: false });
     expect(empty.map(section => section.id)).toEqual(["apps"]);
-    const full = launcherSections({ query: "", badges: { workflows: { count: 2 } }, chats, chatOpen: true });
+    const full = launcherSections({ apps: BUILTIN_APPS, query: "", badges: { workflows: { count: 2 } }, chats, chatOpen: true });
     expect(full.map(section => section.id)).toEqual(["needs", "apps", "chats", "actions"]);
   });
 
   it("offers a search across chats only past the minimum length", () => {
-    const short = launcherSections({ query: "a", badges: {}, chats, chatOpen: false });
+    const short = launcherSections({ apps: BUILTIN_APPS, query: "a", badges: {}, chats, chatOpen: false });
     expect(short.find(section => section.id === "actions")).toBeUndefined();
-    const long = launcherSections({ query: "deploy", badges: {}, chats, chatOpen: false });
+    const long = launcherSections({ apps: BUILTIN_APPS, query: "deploy", badges: {}, chats, chatOpen: false });
     expect(long.find(section => section.id === "actions")?.items.map(item => item.kind)).toEqual(["search-all"]);
   });
 
   it("shows at most five chats", () => {
     const many = Array.from({ length: 9 }, (_, index) => ({ id: `c${index}`, title: `Chat ${index}` }));
-    expect(launcherSections({ query: "", badges: {}, chats: many, chatOpen: false }).find(section => section.id === "chats")?.items).toHaveLength(5);
+    expect(launcherSections({ apps: BUILTIN_APPS, query: "", badges: {}, chats: many, chatOpen: false }).find(section => section.id === "chats")?.items).toHaveLength(5);
   });
 });
 
@@ -142,7 +152,7 @@ describe("AppLauncher", () => {
 
   it("pins the highlighted app with ⌘P and says so", async () => {
     let pins: AppId[] = [];
-    const onTogglePin = vi.fn((id: AppId): PinResult => { pins = [...pins, id]; return { ok: true, pins }; });
+    const onTogglePin = vi.fn(async (id: AppId): Promise<PinResult> => { pins = [...pins, id]; return { ok: true }; });
     await mount({ onTogglePin });
     await press("p", { metaKey: true });
     expect(onTogglePin).toHaveBeenCalledWith("notes");
@@ -150,7 +160,7 @@ describe("AppLauncher", () => {
   });
 
   it("refuses a fourth pin with the limit message", async () => {
-    const onTogglePin = vi.fn((): PinResult => ({ ok: false, reason: "full" }));
+    const onTogglePin = vi.fn(async (): Promise<PinResult> => ({ ok: false, message: PIN_LIMIT_MESSAGE }));
     await mount({ pins: ["pulls", "usage", "memory"], onTogglePin });
     await press("p", { metaKey: true });
     expect(document.querySelector('[role="status"]')?.textContent).toBe(PIN_LIMIT_MESSAGE);
