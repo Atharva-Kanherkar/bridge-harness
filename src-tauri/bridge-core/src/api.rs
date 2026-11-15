@@ -674,14 +674,14 @@ pub fn list_apps(core: &Arc<BridgeCore>) -> Result<wire::ListAppsResult, BridgeE
     } else {
         crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())
     };
-    let apps = crate::apps::badges::summaries(&core.db.lock().unwrap(), &notes, Some(cached))?;
+    let apps = crate::apps::badges::summaries(&*core.try_db()?, &notes, Some(cached))?;
     Ok(wire::ListAppsResult { apps })
 }
 
 /// Pin or unpin an app in the sidebar. Core holds the three-pin limit.
 pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams) -> Result<wire::ListAppsResult, BridgeError> {
     let now = chrono::Utc::now().to_rfc3339();
-    let changed = crate::apps::registry::set_pinned(&core.db.lock().unwrap(), &params.id, params.pinned, &now)?;
+    let changed = crate::apps::registry::set_pinned(&*core.try_db()?, &params.id, params.pinned, &now)?;
     if changed {
         core.events.publish(CoreEvent::AppsChanged);
     }
@@ -692,7 +692,7 @@ pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams)
 /// their calls, drops its prompt text, its pin and its badge.
 pub fn set_app_enabled(core: &Arc<BridgeCore>, params: &wire::SetAppEnabledParams) -> Result<wire::ListAppsResult, BridgeError> {
     let now = chrono::Utc::now().to_rfc3339();
-    let changed = crate::apps::registry::set_enabled(&core.db.lock().unwrap(), &params.id, params.enabled, &now)?;
+    let changed = crate::apps::registry::set_enabled(&*core.try_db()?, &params.id, params.enabled, &now)?;
     if changed {
         core.events.publish(CoreEvent::AppsChanged);
     }
