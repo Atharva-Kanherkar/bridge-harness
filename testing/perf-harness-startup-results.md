@@ -2,7 +2,9 @@
 
 Every number here was produced on this machine, in a debug build, with the
 provider sign-ins already on it. The bench is
-`src-tauri/bridge-core/tests/launch_latency.rs`.
+`src-tauri/bridge-core/tests/launch_latency.rs`. Numbers move with machine load:
+other agents compiling in the same checkout added up to about a second to a
+launch, which is why the ranges below are ranges.
 
 ## Experiment 0: where the time actually went
 
