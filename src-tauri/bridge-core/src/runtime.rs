@@ -50,6 +50,8 @@ pub struct RuntimeSession {
 
 pub struct BridgeCore {
     pub db: Mutex<rusqlite::Connection>,
+    /// App badge counts worth keeping between reads of the app list.
+    pub(crate) app_badges: crate::apps::badges::BadgeCache,
     pub telemetry_db: Mutex<rusqlite::Connection>,
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub(crate) terminal_state: Mutex<Option<crate::terminal_workspace::StateSidecar>>,
@@ -340,6 +342,7 @@ impl BridgeCore {
         #[cfg(target_os = "macos")]
         let browser_clone_orchestrator = build_clone_orchestrator(Arc::clone(&browser_clones)).unwrap();
         BridgeCore {
+            app_badges: Default::default(),
             db: Mutex::new(store::open(std::path::Path::new(":memory:")).unwrap()),
             telemetry_db: Mutex::new(
                 store::open_telemetry(std::path::Path::new(":memory:")).unwrap(),
@@ -512,6 +515,7 @@ impl BridgeCore {
             config.data_dir.join("browser-site-metrics.json"),
         );
         Ok(Self {
+            app_badges: Default::default(),
             db: Mutex::new(connection),
             telemetry_db: Mutex::new(telemetry_connection),
             runtimes: Mutex::new(HashMap::new()),

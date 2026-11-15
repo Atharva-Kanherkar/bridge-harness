@@ -132,6 +132,10 @@ notifications![
     // sweep added, once, for the "Added to a trail" toast. Transient: a client
     // that missed it sees the members on its next `trails/read_trail`.
     (TrailsChanged, "trails/changed", Transient),
+    // Refetch hint: an app was turned on or off, pinned or unpinned, or one of
+    // its badges may have moved. Empty payload; clients reread
+    // `apps/list_apps`, whose answer is the truth.
+    (AppsChanged, "apps/changed", Transient),
     // Refetch hint: the app preferences record moved (theme, skin, transcript
     // display), whether a person or a chat changed it. Transient: a client that
     // missed it rereads `config/get_app_preferences`, whose revision is the truth.
@@ -201,6 +205,7 @@ mod tests {
             NotificationName::SessionStartup,
             NotificationName::StreamLagged,
             NotificationName::AttentionChanged,
+            NotificationName::AppsChanged,
         ] {
             assert_eq!(
                 transient.delivery(),

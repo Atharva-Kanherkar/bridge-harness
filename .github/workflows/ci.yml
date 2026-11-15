@@ -57,6 +57,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       # Rust terminal integration tests launch the Node history sidecar.
       - uses: actions/setup-node@v4
@@ -89,6 +91,11 @@ jobs:
 
       - name: cargo check (workspace)
         run: cargo check --manifest-path src-tauri/Cargo.toml --workspace --locked
+
+      # Deny-tier lints fail here; warn-tier counts may not rise above
+      # src-tauri/lint-baseline.json.
+      - name: clippy ratchet
+        run: node scripts/clippy-ratchet.mjs
 
       - name: cargo test (workspace)
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked

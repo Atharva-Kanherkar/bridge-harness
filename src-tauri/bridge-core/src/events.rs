@@ -122,6 +122,10 @@ pub enum CoreEvent {
     /// by callers for forest changes: [`EventBus::publish`] derives it from
     /// the durable agent event that moved the ledger. See `attention`.
     AttentionChanged,
+    /// Refetch hint: an app was turned on or off or (un)pinned, or a badge
+    /// source moved. [`EventBus::publish`] derives it from the badge sources
+    /// (memory, workflow runs, trails); the app setters publish it directly.
+    AppsChanged,
     /// Refetch hint: the app preferences record moved.
     AppPreferencesChanged,
     /// Refetch hint: one workflow was saved, approved, enabled, disabled or
@@ -162,6 +166,7 @@ impl CoreEvent {
             CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
             CoreEvent::TrailsChanged(_) => NotificationName::TrailsChanged,
             CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
+            CoreEvent::AppsChanged => NotificationName::AppsChanged,
             CoreEvent::AppPreferencesChanged => NotificationName::AppPreferencesChanged,
             CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
             CoreEvent::WorkflowRunChanged { .. } => NotificationName::WorkflowRunChanged,
@@ -171,7 +176,7 @@ impl CoreEvent {
     /// The wire payload, exactly as today's `app.emit` serializes it.
     pub fn payload(&self) -> Value {
         match self {
-            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged | CoreEvent::AppPreferencesChanged => Value::Null,
+            CoreEvent::StateChanged | CoreEvent::AdaptersChanged | CoreEvent::AttentionChanged | CoreEvent::AppsChanged | CoreEvent::AppPreferencesChanged => Value::Null,
             CoreEvent::Agent(event) => serde_json::to_value(event).expect("agent event serializes"),
             CoreEvent::LearningJobChanged(payload) => payload.clone(),
             // The scope only. Rebuilding a record from the hint would leave a
@@ -265,6 +270,7 @@ struct ReconciliationState {
     /// as the agent set above, for the same reason: the hint names its scope.
     memory_scopes_changed: std::collections::BTreeSet<String>,
     attention_changed: bool,
+    apps_changed: bool,
     app_preferences_changed: bool,
     /// Which workflows changed while a subscriber was lagging. Same shape, for
     /// the same reason: the hint names its workflow.
@@ -330,6 +336,9 @@ impl EventReceiver {
         if state.attention_changed {
             events.push(CoreEvent::AttentionChanged);
         }
+        if state.apps_changed {
+            events.push(CoreEvent::AppsChanged);
+        }
         if state.app_preferences_changed {
             events.push(CoreEvent::AppPreferencesChanged);
         }
@@ -382,6 +391,10 @@ impl EventReceiver {
 pub struct EventBus {
     sender: broadcast::Sender<CoreEvent>,
     reconciliation: Arc<Mutex<ReconciliationState>>,
+    /// How many `TrailsChanged` hints this bus has published. Readers that
+    /// cache something derived from trails compare it to know when to
+    /// derive again.
+    trails_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for EventBus {
@@ -396,7 +409,13 @@ impl EventBus {
         Self {
             sender,
             reconciliation: Arc::new(Mutex::new(ReconciliationState::default())),
+            trails_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// Bumped by every published `TrailsChanged`, before subscribers see it.
+    pub fn trails_generation(&self) -> u64 {
+        self.trails_generation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn subscribe(&self) -> EventReceiver {
@@ -415,11 +434,22 @@ impl EventBus {
     /// transaction as the forest entry, and this runs after that commit, so
     /// the hint can never arrive before the row. A trigger that wrote no row
     /// (a worker's finished turn) costs a client one empty read.
+    ///
+    /// A change to an app badge's source (memory, a workflow run, a trail) is
+    /// followed by [`CoreEvent::AppsChanged`] the same way, so every client's
+    /// badges follow without knowing which store each badge reads.
     pub fn publish(&self, event: CoreEvent) {
         let moves_attention = matches!(
             &event,
             CoreEvent::Agent(agent) if agent.sequence > 0 && crate::attention::is_trigger(&agent.kind, agent.status.as_deref())
         );
+        let moves_badges = matches!(
+            &event,
+            CoreEvent::MemoryChanged { .. } | CoreEvent::WorkflowRunChanged { .. } | CoreEvent::TrailsChanged(_)
+        );
+        if matches!(&event, CoreEvent::TrailsChanged(_)) {
+            self.trails_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
         {
             let mut state = self.reconciliation.lock().unwrap();
             match &event {
@@ -438,6 +468,7 @@ impl EventBus {
                     state.memory_scopes_changed.insert(scope_key.clone());
                 }
                 CoreEvent::AttentionChanged => state.attention_changed = true,
+                CoreEvent::AppsChanged => state.apps_changed = true,
                 CoreEvent::AppPreferencesChanged => state.app_preferences_changed = true,
                 CoreEvent::WorkflowsChanged { workflow_id } => {
                     state.workflows_changed.insert(workflow_id.clone());
@@ -467,10 +498,16 @@ impl EventBus {
             if moves_attention {
                 state.attention_changed = true;
             }
+            if moves_badges {
+                state.apps_changed = true;
+            }
         }
         let _ = self.sender.send(event);
         if moves_attention {
             let _ = self.sender.send(CoreEvent::AttentionChanged);
+        }
+        if moves_badges {
+            let _ = self.sender.send(CoreEvent::AppsChanged);
         }
     }
 }
@@ -644,6 +681,7 @@ mod tests {
             CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
             CoreEvent::TrailsChanged(bridge_protocol::messages::TrailsChanged { trail_id: Some("t".into()), added: Vec::new() }),
             CoreEvent::AttentionChanged,
+            CoreEvent::AppsChanged,
             CoreEvent::AppPreferencesChanged,
             CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },
             CoreEvent::WorkflowRunChanged { run: run_fixture() },
@@ -836,6 +874,35 @@ mod tests {
         assert_eq!(CoreEvent::AttentionChanged.kind(), NotificationName::AttentionChanged);
         assert_eq!(CoreEvent::AttentionChanged.payload(), Value::Null, "the hint carries no rows");
         assert_eq!(CoreEvent::AttentionChanged.durable_cursor(), None);
+    }
+
+    #[test]
+    fn badge_sources_also_publish_apps_changed() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe();
+        for source in [
+            CoreEvent::MemoryChanged { scope_key: "account:local".into() },
+            CoreEvent::WorkflowRunChanged { run: run_fixture() },
+            CoreEvent::TrailsChanged(bridge_protocol::messages::TrailsChanged { trail_id: None, added: Vec::new() }),
+        ] {
+            let kind = source.kind();
+            bus.publish(source);
+            assert!(matches!(receiver.try_recv(), Ok(event) if event.kind() == kind));
+            assert!(matches!(receiver.try_recv(), Ok(CoreEvent::AppsChanged)), "{} moves a badge", kind.as_str());
+        }
+        bus.publish(CoreEvent::AppPreferencesChanged);
+        assert!(matches!(receiver.try_recv(), Ok(CoreEvent::AppPreferencesChanged)));
+        assert!(receiver.try_recv().is_err(), "other hints move no badge");
+        assert_eq!(CoreEvent::AppsChanged.kind(), NotificationName::AppsChanged);
+        assert_eq!(CoreEvent::AppsChanged.payload(), Value::Null);
+
+        let mut lagging = bus.subscribe();
+        bus.publish(CoreEvent::MemoryChanged { scope_key: "account:local".into() });
+        for index in 0..=EVENT_BUS_CAPACITY {
+            bus.publish(CoreEvent::SessionOutput { session_id: "s".into(), terminal_id: "t1".into(), data: index.to_string() });
+        }
+        assert!(matches!(lagging.try_recv(), Err(broadcast::error::TryRecvError::Lagged(_))));
+        assert!(lagging.reconciliation_events().iter().any(|event| matches!(event, CoreEvent::AppsChanged)));
     }
 
     #[test]

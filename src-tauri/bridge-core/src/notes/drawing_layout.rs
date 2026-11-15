@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 /// Excalifont's advance widths at 20 px for ASCII 32..=126, measured with the
 /// editor's canvas (`scripts/drawing-bench`). They add up exactly: Excalifont
 /// has no kerning, so a line's width is the sum of its characters'.
+#[expect(clippy::approx_constant, reason = "measured glyph widths, not constants")]
 const EXCALIFONT_20: [f64; 95] = [
     8.0, 6.28, 7.42, 15.66, 14.42, 18.56, 14.36, 4.36, 8.82, 8.04, 10.5, 11.0, 5.14, 8.22, 5.48, 11.22, 13.28, 8.54, 14.0, 12.16, 11.7, 12.36, 12.8, 11.16, 12.72, 12.58, 5.28, 5.96, 11.0, 11.0, 11.0, 9.32, 16.58, 13.52,
     15.22, 12.58, 15.6, 14.14, 13.22, 15.6, 11.46, 10.9, 11.38, 12.26, 10.86, 15.32, 12.64, 15.34, 13.96, 15.36, 14.72, 12.44, 17.14, 14.6, 11.84, 15.72, 12.56, 11.28, 16.64, 9.44, 11.78, 9.94, 10.2, 13.4, 12.0, 11.52, 11.1,

@@ -9,6 +9,9 @@ edition = "2021"
 # cannot be packaged standalone.
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 bridge-protocol = { path = "../bridge-protocol" }
 serde = { workspace = true }

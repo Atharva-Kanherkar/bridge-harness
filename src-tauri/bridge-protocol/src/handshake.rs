@@ -132,9 +132,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// 1.33 or 1.34 client reads trails but cannot draw an `issue` member, so a
 /// 1.35 daemon refuses those two; a 1.32 client never reads trails and still
 /// pairs.
+/// **1.36 adds the `apps` domain and its `apps/changed` hint.** A new client
+/// must not pair with an older daemon, whose launcher, pins and Store would
+/// fail with `method_not_found`; a 1.35 client still pairs with a 1.36 daemon
+/// and keeps its own local app list.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 35,
+    minor: 36,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -453,6 +457,14 @@ mod tests {
         let unread = ProtocolVersion { major: 1, minor: 34 };
         assert!(!before.accepts(unread));
         assert!(unread.accepts(before), "a 1.33 client still pairs with a 1.34 daemon");
+    }
+
+    #[test]
+    fn apps_client_rejects_a_daemon_without_the_domain() {
+        let before = ProtocolVersion { major: 1, minor: 35 };
+        let apps = ProtocolVersion { major: 1, minor: 36 };
+        assert!(!before.accepts(apps));
+        assert!(apps.accepts(before), "a 1.35 client still pairs with a 1.36 daemon");
     }
 
     #[test]

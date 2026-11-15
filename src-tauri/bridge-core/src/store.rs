@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 78;
+const LATEST_SCHEMA_VERSION: i64 = 79;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -779,6 +779,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // GitHub issues on trails: the last read of each issue, and the
             // hard links between issues and the pull requests that close them.
             78 => crate::trails::issues::install_store(&transaction)?,
+            // Apps: which built-ins are off, and the sidebar pins. Departures
+            // only; a missing row means the default.
+            79 => crate::apps::registry::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

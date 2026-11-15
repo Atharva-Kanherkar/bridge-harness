@@ -571,18 +571,35 @@ pub fn latest_audit(
 /// The launch-path helper: account scope, swallowing nothing silently — an
 /// error surfaces, a disabled or empty scope is simply no section.
 pub fn for_compile(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
-    let retrieval = if crate::memory_tools::has_memory_search(db, session_id) {
-        Retrieval::MemorySearch
-    } else {
-        Retrieval::PacketOnly
-    };
+    let retrieval = retrieval_for(crate::memory_tools::has_memory_search(db, session_id));
     Ok(for_session(db, ACCOUNT_MEMORY_SCOPE, session_id, retrieval)?.map(|packet| packet.text))
+}
+
+/// Clip long records only for a chat that can call `memory_search`: the
+/// clip marker sends the model there for the rest. A chat without it, a
+/// worker, another harness, or any chat while the Memory app is off, gets
+/// every record whole; the packet's own character budget still bounds it.
+pub(crate) fn retrieval_for(has_memory_search: bool) -> Retrieval {
+    if has_memory_search { Retrieval::MemorySearch } else { Retrieval::PacketOnly }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store;
+
+    #[test]
+    fn with_memory_off_a_chat_gets_whole_records_not_a_pointer_to_a_missing_tool() {
+        let (_dir, db) = packet_db();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat','claude','Chat','ready','direct','Apps')", []).unwrap();
+        let retrieval = |db: &Connection| retrieval_for(crate::memory_tools::session_has_memory_search(db, "chat", true));
+        assert_eq!(retrieval(&db), Retrieval::MemorySearch, "the chat has memory_search, so long records are clipped");
+        assert!(CLIPPED_MARKER.contains("memory_search"), "the clip marker sends the model to memory_search");
+        crate::apps::registry::set_enabled(&db, "memory", false, "t").unwrap();
+        assert_eq!(retrieval(&db), Retrieval::PacketOnly, "no memory_search, so nothing points the model at it");
+        crate::apps::registry::set_enabled(&db, "memory", true, "t").unwrap();
+        assert_eq!(retrieval(&db), Retrieval::MemorySearch);
+    }
 
     fn packet_db() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
