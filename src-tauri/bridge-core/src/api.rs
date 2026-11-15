@@ -4643,6 +4643,62 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+pub fn get_limit_recovery_settings(core: &Arc<BridgeCore>) -> Result<wire::LimitRecoverySettings, BridgeError> {
+    crate::limit_recovery::load_settings(&core.db.lock().unwrap())
+}
+
+/// Store what a chat does when a usage limit stops it. A backup must name a
+/// harness this Bridge has an adapter for, and a model that harness lists.
+pub fn save_limit_recovery_settings(
+    core: &Arc<BridgeCore>,
+    settings: &wire::LimitRecoverySettings,
+) -> Result<wire::LimitRecoverySettings, BridgeError> {
+    let descriptors = core.adapter_registry.descriptors();
+    if let Some(backup) = settings.backup.as_ref().filter(|backup| !backup.harness.trim().is_empty()) {
+        let harness = backup.harness.trim().to_ascii_lowercase();
+        if let (Some(descriptor), Some(model)) = (
+            descriptors.iter().find(|adapter| adapter.id == harness),
+            backup.model.as_deref().map(str::trim).filter(|model| !model.is_empty()),
+        ) {
+            if !descriptor.models.is_empty() && !descriptor.models.iter().any(|option| option.id == model) {
+                return Err(BridgeError::Invalid(format!("{model} is not a model {harness} lists; refresh models")));
+            }
+        }
+    }
+    let saved = crate::limit_recovery::save_settings(&core.db.lock().unwrap(), settings, |harness| {
+        descriptors.iter().any(|adapter| adapter.id == harness)
+    })?;
+    Ok(saved)
+}
+
+pub fn limit_recovery_status(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {
+    crate::limit_recovery::status(&core.db.lock().unwrap(), session_id)
+}
+
+pub fn cancel_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {
+    let db = core.db.lock().unwrap();
+    crate::limit_recovery::cancel(&db, session_id, chrono::Utc::now())?;
+    let status = crate::limit_recovery::status(&db, session_id)?;
+    drop(db);
+    core.events.publish(crate::events::CoreEvent::StateChanged);
+    Ok(status)
+}
+
+/// "Resume now" on the banner: act on the chat's pending row without waiting
+/// for its due time. Runs the same guarded pass the loop runs.
+pub fn resume_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {
+    let now = chrono::Utc::now();
+    if !crate::limit_recovery::make_due_now(&core.db.lock().unwrap(), session_id, now)? {
+        return Err(BridgeError::Invalid("This chat has no recovery waiting".into()));
+    }
+    let report = crate::limit_recovery::tick(&core.db, &crate::limit_recovery::LiveActions { core }, now)?;
+    if let Some((_, message)) = report.failed.iter().find(|(id, _)| id == session_id) {
+        return Err(BridgeError::Invalid(message.clone()));
+    }
+    core.events.publish(crate::events::CoreEvent::StateChanged);
+    crate::limit_recovery::status(&core.db.lock().unwrap(), session_id)
+}
+
 /// Deliver a chat's queued input now, resuming its adapter if it is gone.
 pub fn deliver_queued_input(core: &Arc<BridgeCore>, params: &wire::DeliverQueuedInputParams) -> Result<wire::DeliverQueuedInputResult, BridgeError> {
     use crate::live_turn::QueuedDelivery;

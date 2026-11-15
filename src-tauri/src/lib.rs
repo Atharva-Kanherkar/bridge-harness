@@ -1173,6 +1173,33 @@ async fn get_reviewer_settings(state: State<'_, Arc<BridgeCore>>) -> Result<brid
 }
 
 #[tauri::command]
+async fn get_limit_recovery_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::LimitRecoverySettings, BridgeError> {
+    api::get_limit_recovery_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_limit_recovery_settings(settings: bridge_protocol::messages::LimitRecoverySettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::LimitRecoverySettings, BridgeError> {
+    api::save_limit_recovery_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
+async fn limit_recovery_status(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::LimitRecoveryStatus, BridgeError> {
+    api::limit_recovery_status(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn cancel_limit_recovery(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::LimitRecoveryStatus, BridgeError> {
+    api::cancel_limit_recovery(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn resume_limit_recovery(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::LimitRecoveryStatus, BridgeError> {
+    // Switching a model stops a provider and the continue turn may start one.
+    let core = state.inner().clone();
+    blocking("Usage limit recovery", move || api::resume_limit_recovery(&core, &session_id)).await
+}
+
+#[tauri::command]
 async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
     api::save_reviewer_settings(state.inner(), &settings)
 }
@@ -3391,6 +3418,7 @@ fn setup_embedded(
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+    bridge_core::limit_recovery::start_limit_recovery_maintenance(core.clone());
     bridge_core::notes::live::start_note_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_worktree_maintenance(core.clone());
@@ -3563,6 +3591,11 @@ pub fn run() -> i32 {
             update_chat_options,
             get_reviewer_settings,
             save_reviewer_settings,
+            get_limit_recovery_settings,
+            save_limit_recovery_settings,
+            limit_recovery_status,
+            cancel_limit_recovery,
+            resume_limit_recovery,
             get_delegation_notify_settings,
             save_delegation_notify_settings,
             list_attention,
