@@ -365,6 +365,7 @@ typed_methods![
     (RemoveTrailMember, RemoveTrailMemberParams, RemoveTrailMemberResult),
     (PreviewTrailBrief, PreviewTrailBriefParams, PreviewTrailBriefResult),
     (CarryTrailBrief, CarryTrailBriefParams, CarryTrailBriefResult),
+    (ListTrailCandidates, ListTrailCandidatesParams, ListTrailCandidatesResult),
     // notes
     // outgoing: drafted messages for a person or a place
     (ListOutgoing, ListOutgoingParams, ListOutgoingResult),

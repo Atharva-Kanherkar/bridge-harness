@@ -209,7 +209,7 @@ pub fn harness_name(harness: &str) -> String {
 }
 
 /// Who last edited a page, as a person reads it.
-fn actor(last_actor: &str) -> String {
+pub(crate) fn actor(last_actor: &str) -> String {
     match last_actor.split(':').collect::<Vec<_>>().as_slice() {
         ["person"] => "you".into(),
         ["agent", harness, ..] => harness_name(harness),

@@ -4,11 +4,13 @@
 //! request links, drafted messages) without copying them. `store` owns the
 //! rows, `timeline` derives what a page shows, `auto` follows hard links,
 //! `issues` keeps what GitHub last said about issue members,
+//! `candidates` lists what a person can add by hand,
 //! `brief` carries the trail into a new chat, and `live` runs the sweep when
 //! the records move.
 
 pub mod auto;
 pub mod brief;
+pub mod candidates;
 pub mod issues;
 #[cfg(test)]
 mod eval;
