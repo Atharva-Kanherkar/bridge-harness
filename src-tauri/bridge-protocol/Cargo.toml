@@ -7,6 +7,9 @@ edition = "2021"
 # Workspace-internal contract crate; artifacts are generated into the repo.
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
