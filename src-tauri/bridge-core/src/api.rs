@@ -4660,8 +4660,12 @@ pub fn save_limit_recovery_settings(
             descriptors.iter().find(|adapter| adapter.id == harness),
             backup.model.as_deref().map(str::trim).filter(|model| !model.is_empty()),
         ) {
-            if !descriptor.models.is_empty() && !descriptor.models.iter().any(|option| option.id == model) {
-                return Err(BridgeError::Invalid(format!("{model} is not a model {harness} lists; refresh models")));
+            if !descriptor.models.is_empty() {
+                let option = descriptor.models.iter().find(|option| option.id == model)
+                    .ok_or_else(|| BridgeError::Invalid(format!("{model} is not a model {harness} lists; refresh models")))?;
+                // Refused now rather than when the limit hits: a backup the
+                // switch would reject is no backup at all.
+                selected_chat_effort(option, backup.effort.map(effort_wire_name), None)?;
             }
         }
     }
@@ -4669,6 +4673,15 @@ pub fn save_limit_recovery_settings(
         descriptors.iter().any(|adapter| adapter.id == harness)
     })?;
     Ok(saved)
+}
+
+fn effort_wire_name(effort: wire::Effort) -> &'static str {
+    match effort {
+        wire::Effort::Low => "low",
+        wire::Effort::Medium => "medium",
+        wire::Effort::High => "high",
+        wire::Effort::Xhigh => "xhigh",
+    }
 }
 
 pub fn limit_recovery_status(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {

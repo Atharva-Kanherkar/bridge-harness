@@ -595,7 +595,14 @@ pub fn observe(
 /// A person sent the chat a message: any pending recovery is theirs to
 /// replace. Only `pending` rows are touched, so the tick's own send (which
 /// holds the row in `acting`) does not cancel itself.
+///
+/// A message after a recovery Bridge finished also ends its streak: the next
+/// limit is on the person's turn, not a repeat of Bridge's.
 pub fn cancel_for_user_input(db: &Connection, session_id: &str, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    db.execute(
+        "UPDATE limit_recoveries SET attempts=0 WHERE session_id=?1 AND state='done'",
+        [session_id],
+    )?;
     transition(
         db,
         session_id,
@@ -1304,6 +1311,16 @@ mod tests {
         let later = now() + FIRST_PROBE + Duration::minutes(1);
         let decision = observe(&db.lock().unwrap(), "chat", LimitKind::Usage, "usage limit", None, later).unwrap();
         assert!(matches!(decision, Decision::Schedule { attempts: 2, due_at, .. } if due_at == later + Duration::minutes(30)));
+    }
+
+    #[test]
+    fn a_person_writing_after_a_recovery_restarts_the_count() {
+        let db = db();
+        set(&db, &resume());
+        upsert(&db, &row(LimitRecoveryState::Done, 4, now())).unwrap();
+        assert!(!cancel_for_user_input(&db, "chat", now()).unwrap(), "nothing pending to cancel");
+        let decision = observe(&db, "chat", LimitKind::Usage, "usage limit", None, now()).unwrap();
+        assert!(matches!(decision, Decision::Schedule { attempts: 1, .. }), "{decision:?}");
     }
 
     #[test]
