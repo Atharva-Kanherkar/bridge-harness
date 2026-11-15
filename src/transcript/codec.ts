@@ -133,6 +133,9 @@ const NATIVE_COMPACTION_KIND = "context.compacted";
  */
 export const NATIVE_COMPACTING_KIND = "context.compacting";
 
+/** Mirrors `APP_EVENT_KIND` in `bridge-core/src/apps/events.rs`. */
+const APP_EVENT_KIND = "app.event";
+
 /** Families the Rust side owns. A new member of one of these is not unknown. */
 const KNOWN_PREFIXES = [
   "message.", "reasoning.", "tool.", "command.", "file_change.", "diff.",
@@ -557,6 +560,9 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
     throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
   }
   const kind = entry.kind;
+  // What an app recorded for memory (`bridge-core/src/apps/events.rs`). It
+  // is not conversation and has no row.
+  if (kind === APP_EVENT_KIND) return null;
   const payload = entry.payload;
   const nested = objectValue(payload.data);
   const itemId = stringValue(payload.itemId);

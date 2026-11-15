@@ -191,6 +191,11 @@ describe("normalizeSessionEntry", () => {
     expect(replayed?.envelope.origin).toBe("durable");
   });
 
+  it("drops app events: they are for memory, never a transcript row", () => {
+    const event = durable("app.event", { appId: "outgoing", type: "outgoing.sent", summary: "Sent a Slack message to #dev", payload: { family: "slack", destination: "#dev" } });
+    expect(normalizeSessionEntry(event)).toBeNull();
+  });
+
   it("turns a stored user turn into a message, which the live channel never sees", () => {
     expect(normalizeSessionEntry(durable("user.message", { text: "hi" })))
       .toMatchObject({ type: "message.completed", role: "user", text: "hi" });
