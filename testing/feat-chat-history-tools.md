@@ -84,6 +84,11 @@ snippet is cut, so a secret cannot be split into a fragment no detector knows:
 - Every tool the core may list has an MCP definition, and every MCP definition
   is listable by some access, so nothing is listed that cannot be called.
 - Server instructions mention `chats_search` and `chats_read`.
+- Harness allowlists (found during step 2): Claude's Ask mode allows both
+  like the other Bridge reads, so they never wait on a prompt Bridge cannot
+  show. Claude-native subagents carry the root chat's token, so the sidecar's
+  PreToolUse hook denies both to any call with an `agent_id`, in every write
+  mode. OpenCode denies both to read-only sessions.
 
 ### Rate limit
 
