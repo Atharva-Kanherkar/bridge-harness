@@ -7,7 +7,7 @@ import type { AppBadge, AppManifest, AppSlot, AppSummary, ListAppsResult } from 
 const STATE_KEY = "bridge.apps.mock.v1";
 const MAX_PINS = 3;
 
-type Spec = { id: string; name: string; description: string; slots: AppSlot[]; tools?: [string, boolean][]; canDisable?: boolean };
+type Spec = { id: string; name: string; description: string; slots: AppSlot[]; tools?: [string, boolean][]; events?: string[]; memory?: string[]; canDisable?: boolean };
 
 // Mirrors `bridge-core/src/apps/builtin.rs`. `appsMock.test.ts` keeps the ids
 // in step with the frontend registry.
@@ -23,7 +23,7 @@ const SPECS: Spec[] = [
   { id: "projects", name: "Projects", description: "Your repositories and folders", slots: ["screen"] },
   { id: "agents", name: "Agents", description: "Your own agents and Bridge's built-in ones", slots: ["screen"] },
   { id: "store", name: "Store", description: "Apps, plugins and skills", slots: ["screen"], canDisable: false },
-  { id: "outgoing", name: "Outgoing", description: "Messages a chat drafts for you to send", slots: ["card"], tools: [["outgoing_draft", false]] },
+  { id: "outgoing", name: "Outgoing", description: "Messages a chat drafts for you to send", slots: ["card"], tools: [["outgoing_draft", false]], events: ["outgoing.sent"], memory: ["the people, channels and repositories the person writes to"] },
 ];
 
 export const MOCK_APP_IDS: readonly string[] = SPECS.map(spec => spec.id);
@@ -37,8 +37,8 @@ function manifest(spec: Spec): AppManifest {
     source: "builtin",
     views: spec.slots.map(slot => ({ slot })),
     tools: (spec.tools ?? []).map(([name, asksFirst]) => ({ name, asksFirst })),
-    events: [],
-    memory: [],
+    events: spec.events ?? [],
+    memory: spec.memory ?? [],
   };
 }
 

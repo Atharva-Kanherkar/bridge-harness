@@ -14,6 +14,7 @@
 
 pub mod badges;
 pub mod builtin;
+pub mod events;
 pub mod manifest;
 pub mod registry;
 
