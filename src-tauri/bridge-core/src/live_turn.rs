@@ -3142,6 +3142,11 @@ fn handle_agent_value_timed(
                             params![session_id],
                         );
                     }
+                    // Children the provider never closed would read as working
+                    // agents forever once the turn that started them is over.
+                    if crate::harness_subagents::idle_children(&db, session_id).unwrap_or(0) > 0 {
+                        state.events.publish(CoreEvent::StateChanged);
+                    }
                     if let Some(workspace_id) = &workspace_id {
                         let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
                     }
