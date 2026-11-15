@@ -60,3 +60,17 @@ describe("trails helpers", () => {
     expect([formatTokens(640), formatTokens(2940), formatTokens(3000), formatTokens(14400)]).toEqual(["640", "2.9k", "3k", "14k"]);
   });
 });
+
+describe("mock issue references", () => {
+  it("accepts and refuses the forms the core does", async () => {
+    const { mockIssueUrl } = await import("./trailsMock");
+    const want = "https://github.com/o/r/issues/41";
+    for (const raw of [want, `${want}/`, `${want}#issuecomment-9`, `${want}?x=1`, "github.com/o/r/issues/41", "  http://GitHub.com/o/r/issues/41  ", "o/r#41"]) {
+      expect(mockIssueUrl(raw, false), raw).toBe(want);
+    }
+    expect(mockIssueUrl("#41", true)).toBe("https://github.com/acme/bridge/issues/41");
+    expect(() => mockIssueUrl("https://github.com/o/r/pull/12", true)).toThrow(/pull request, not an issue/);
+    expect(() => mockIssueUrl("#41", false)).toThrow(/no project to read #41/);
+    for (const raw of ["", "fix the bug", "o/r#x", "#0", "https://github.com/o/r/issues/abc"]) expect(() => mockIssueUrl(raw, true), raw).toThrow();
+  });
+});

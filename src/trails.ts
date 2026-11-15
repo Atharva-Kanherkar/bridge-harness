@@ -124,5 +124,6 @@ export function memberNoun(ref: TrailMemberRef): string {
     case "note": return "note";
     case "pullRequest": return "pull request";
     case "outgoing": return "message";
+    case "issue": return "issue";
   }
 }
