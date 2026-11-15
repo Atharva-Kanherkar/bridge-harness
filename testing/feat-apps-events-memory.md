@@ -42,7 +42,8 @@ No protocol method, no protocol version bump, no migration.
   `excluded`) and then, in the same transaction, one `app.event` of type
   `outgoing.sent` whose parent is the `outgoing.sent` entry.
 - Summary: Slack "Sent a Slack message to <label>" (thread: "Replied in a
-  Slack thread in <label>"); GitHub "Posted a GitHub comment on
+  Slack thread in <label>"; a DM, channel id starting U or W: "Sent a Slack
+  direct message to <label>"); GitHub "Posted a GitHub comment on
   <repo>#<number>". Payload `{family, destination}`. The message text is never
   in the event.
 - With Outgoing off, only `outgoing.sent` is written. A refusal from the
@@ -59,8 +60,10 @@ No protocol method, no protocol version bump, no migration.
 - Entries of an app that is off, unknown, or has an empty `memory` scope are
   left out. If nothing is left, there is no block.
 - A session with app activity and no messages still yields a digest.
-- The block counts against the existing `MAX_DIGEST_CHARS` budget; the
-  conversation is not shortened to make room for it.
+- The block has its own bound (20 lines, each summary at most 280
+  characters, whitespace collapsed to single spaces so a summary cannot start
+  a new line) on top of `MAX_DIGEST_CHARS`. A long conversation never crowds
+  activity out, and activity never shortens the conversation.
 
 ### Prompt
 
@@ -94,7 +97,7 @@ Rust, bridge-core:
 - `outgoing::send` test: a send writes `outgoing.sent` and one `app.event`; with Outgoing off only `outgoing.sent`
 - `memory_extraction::tests::digest_lists_app_activity_under_its_scope`
 - `memory_extraction::tests::digest_skips_off_and_unscoped_apps`
-- `memory_extraction::tests::digest_caps_app_activity_at_twenty`
+- `memory_extraction::tests::digest_caps_app_activity_at_twenty` (newest 20 kept, after filtering off and unscoped apps)
 - `memory_extraction::tests::app_activity_alone_yields_a_digest`
 - `memory_extraction::tests::a_proposal_citing_app_activity_is_never_auto_applied`
 - a context projection / recall test: `app.event` is never projected and never a recall hit
