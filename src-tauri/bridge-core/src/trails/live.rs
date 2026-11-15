@@ -118,7 +118,7 @@ const MAX_READ_ROUNDS: usize = 8;
 /// wake this loop, so nothing else would read them.
 pub fn read_github(core: &Arc<BridgeCore>) {
     for _ in 0..MAX_READ_ROUNDS {
-        if !super::issues::read_missing(core) {
+        if !super::issues::read_missing(core).stored {
             break;
         }
         if sweep_and_publish(core, true).is_empty() {
@@ -137,6 +137,43 @@ pub fn publish_added(core: &Arc<BridgeCore>, added: &[TrailMemberAdded]) {
     }
 }
 
+/// How often the loop looks for an event while a retry is pending.
+const RETRY_TICK: Duration = Duration::from_millis(250);
+
+enum Wake {
+    Event(CoreEvent),
+    Retry,
+    Lagged,
+    Closed,
+}
+
+/// The next event, or the moment the earliest failed GitHub read is due
+/// again, whichever comes first. With no retry pending it blocks on events
+/// alone; with one it looks for events every [`RETRY_TICK`] and re-reads the
+/// deadline each time, so a read that succeeds meanwhile clears it.
+fn next_wake(core: &BridgeCore, events: &mut crate::events::EventReceiver) -> Wake {
+    loop {
+        let Some(due) = core.trail_reads.next_retry() else {
+            return match events.blocking_recv() {
+                Ok(event) => Wake::Event(event),
+                Err(ReceiveError::Lagged(_)) => Wake::Lagged,
+                Err(ReceiveError::Closed) => Wake::Closed,
+            };
+        };
+        match events.poll() {
+            Ok(Some(event)) => return Wake::Event(event),
+            Ok(None) => {}
+            Err(ReceiveError::Lagged(_)) => return Wake::Lagged,
+            Err(ReceiveError::Closed) => return Wake::Closed,
+        }
+        let now = std::time::Instant::now();
+        if due <= now {
+            return Wake::Retry;
+        }
+        std::thread::sleep((due - now).min(RETRY_TICK));
+    }
+}
+
 /// Started by both hosts with the other maintenance loops.
 pub fn start_trail_maintenance(core: Arc<BridgeCore>) {
     let mut events = core.events.subscribe();
@@ -147,11 +184,18 @@ pub fn start_trail_maintenance(core: Arc<BridgeCore>) {
             read_github(&core);
             arm_trail_pulls(&core);
             loop {
-                let first = match events.blocking_recv() {
-                    Ok(event) => relevance(&event),
+                let first = match next_wake(&core, &mut events) {
+                    Wake::Event(event) => relevance(&event),
+                    // A failed GitHub read is due again; nothing else would
+                    // ask for it, so read now.
+                    Wake::Retry => {
+                        read_github(&core);
+                        arm_trail_pulls(&core);
+                        continue;
+                    }
                     // Missed events may have carried links: sweep anyway.
-                    Err(ReceiveError::Lagged(_)) => Relevance::State,
-                    Err(ReceiveError::Closed) => break,
+                    Wake::Lagged => Relevance::State,
+                    Wake::Closed => break,
                 };
                 if first == Relevance::None {
                     continue;
@@ -368,5 +412,33 @@ esac
         assert!(crate::trails::issues::get(&db, "https://github.com/o/r/issues/41").unwrap().is_some(), "the issue that joined must have been read");
         let (issues, pulls) = crate::trails::issues::missing(&db).unwrap();
         assert!(issues.is_empty() && pulls.is_empty(), "nothing left unread: {issues:?} {pulls:?}");
+    }
+    #[test]
+    fn a_failed_read_wakes_the_loop_when_it_is_due() {
+        // `for_tests` has no `gh`: every GitHub read fails, as offline.
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let url = "https://github.com/o/r/issues/77";
+        {
+            let db = core.db.lock().unwrap();
+            let trail = crate::trails::store::create(&db, "T", None, "t0").unwrap();
+            crate::trails::store::add_member(&db, &trail.id, &TrailMemberRef { kind: TrailMemberKind::Issue, reference: url.into() }, TrailAddedBy::Person, "t0").unwrap();
+        }
+        start_trail_maintenance(core.clone());
+        let until = |done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline {
+                if done() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            false
+        };
+        assert!(until(&|| core.trail_reads.failed_at(url).is_some()), "the first read fails offline");
+        // The backoff runs out with nothing published at all.
+        core.trail_reads.backdate(url, crate::trails::issues::RETRY_AFTER + std::time::Duration::from_secs(1));
+        let backdated = core.trail_reads.failed_at(url).unwrap();
+        assert!(until(&|| core.trail_reads.failed_at(url).is_some_and(|at| at > backdated)), "the due read must be tried again without an event");
     }
 }

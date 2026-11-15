@@ -693,8 +693,14 @@ pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str, refresh: bool) -> Resu
             let _ = crate::session_prs::session_pull_requests(core, &session_id, true);
         }
         // Issues and the PRs' closing references, then whatever they link.
-        if crate::trails::issues::read_trail(core, trail_id)? {
+        let read = crate::trails::issues::read_trail(core, trail_id)?;
+        if read.stored {
             crate::trails::live::sweep_and_publish(core, false);
+        }
+        // A failed read waits for its retry; the hint wakes the trail loop
+        // so it schedules one.
+        if read.failed {
+            trails_changed(core, trail_id);
         }
     }
     let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());

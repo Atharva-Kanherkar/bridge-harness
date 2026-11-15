@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bridge_protocol::messages::TrailMemberKind;
@@ -358,16 +358,27 @@ pub fn missing(db: &Connection) -> Result<(Vec<(String, Option<String>)>, Vec<St
     Ok((issues, pulls))
 }
 
-/// Read what [`missing`] names and store it. Returns whether anything was
-/// stored, so the caller can sweep again and tell clients.
-pub fn read_missing(core: &Arc<BridgeCore>) -> bool {
-    let Ok((issues, pulls)) = missing(&core.db.lock().unwrap()) else { return false };
+/// What one batch of reads did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReadOutcome {
+    /// A snapshot or a set of links was stored.
+    pub stored: bool,
+    /// At least one read failed and waits for its retry.
+    pub failed: bool,
+}
+
+/// Read what [`missing`] names and store it. Failures for records that are no
+/// longer missing are forgotten first, so their retries never come due.
+pub fn read_missing(core: &Arc<BridgeCore>) -> ReadOutcome {
+    let Ok((issues, pulls)) = missing(&core.db.lock().unwrap()) else { return ReadOutcome::default() };
+    let still: std::collections::HashSet<&str> = issues.iter().map(|(url, _)| url.as_str()).chain(pulls.iter().map(String::as_str)).collect();
+    core.trail_reads.retain(&still);
     read_some(core, &issues, &pulls, true)
 }
 
 /// Read every issue member and every PR member's closing references of one
 /// trail, for an explicit refresh.
-pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str) -> Result<bool, BridgeError> {
+pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str) -> Result<ReadOutcome, BridgeError> {
     let (workspace, members) = {
         let db = core.db.lock().unwrap();
         let trail = super::store::require(&db, trail_id)?;
@@ -379,27 +390,60 @@ pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str) -> Result<bool, Bridge
     Ok(read_some(core, &issues, &pulls, false))
 }
 
-/// How long a failed background read waits before the loop tries it again.
-/// An explicit refresh never waits.
+/// How long a failed background read waits before it is tried again. An
+/// explicit refresh never waits.
 pub const RETRY_AFTER: Duration = Duration::from_secs(600);
 
-/// URLs whose last background read failed, and when.
-fn failures() -> &'static Mutex<HashMap<String, Instant>> {
-    static FAILURES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-    FAILURES.get_or_init(Default::default)
+/// Records whose last GitHub read failed, and when; one per core.
+#[derive(Default)]
+pub struct ReadBackoff {
+    failed: Mutex<HashMap<String, Instant>>,
 }
 
-fn read_some(core: &Arc<BridgeCore>, issues: &[(String, Option<String>)], pulls: &[String], background: bool) -> bool {
-    let waiting = |url: &str| background && failures().lock().unwrap().get(url).is_some_and(|at| at.elapsed() < RETRY_AFTER);
-    let outcome = |url: &str, ok: bool| {
-        let mut failed = failures().lock().unwrap();
+impl ReadBackoff {
+    /// Whether a background read of `url` should wait.
+    pub fn waiting(&self, url: &str) -> bool {
+        self.failed.lock().unwrap().get(url).is_some_and(|at| at.elapsed() < RETRY_AFTER)
+    }
+
+    pub fn record(&self, url: &str, ok: bool) {
+        let mut failed = self.failed.lock().unwrap();
         if ok {
             failed.remove(url);
         } else {
             failed.insert(url.to_owned(), Instant::now());
         }
-    };
-    let mut stored = false;
+    }
+
+    /// When the earliest failed read is due again, if any is waiting. The
+    /// trail loop wakes then even if no event arrives.
+    pub fn next_retry(&self) -> Option<Instant> {
+        self.failed.lock().unwrap().values().min().map(|at| *at + RETRY_AFTER)
+    }
+
+    /// Keep only the failures of records still missing.
+    pub fn retain(&self, missing: &std::collections::HashSet<&str>) {
+        self.failed.lock().unwrap().retain(|url, _| missing.contains(url.as_str()));
+    }
+
+    #[cfg(test)]
+    pub fn failed_at(&self, url: &str) -> Option<Instant> {
+        self.failed.lock().unwrap().get(url).copied()
+    }
+
+    /// Pretend the failure of `url` happened `by` earlier.
+    #[cfg(test)]
+    pub fn backdate(&self, url: &str, by: Duration) {
+        if let Some(at) = self.failed.lock().unwrap().get_mut(url) {
+            *at -= by;
+        }
+    }
+}
+
+fn read_some(core: &Arc<BridgeCore>, issues: &[(String, Option<String>)], pulls: &[String], background: bool) -> ReadOutcome {
+    let backoff = &core.trail_reads;
+    let waiting = |url: &str| background && backoff.waiting(url);
+    let mut outcome = ReadOutcome::default();
     for (url, workspace) in issues {
         let Some(issue) = parse_url(url) else { continue };
         if waiting(url) {
@@ -408,11 +452,12 @@ fn read_some(core: &Arc<BridgeCore>, issues: &[(String, Option<String>)], pulls:
         // A failed read keeps the last snapshot; the page says how old it is.
         match fetch(core, &issue, &cwd(core, workspace.as_deref())) {
             Ok(snapshot) => {
-                outcome(url, true);
-                stored |= save(&core.db.lock().unwrap(), &snapshot).is_ok();
+                backoff.record(url, true);
+                outcome.stored |= save(&core.db.lock().unwrap(), &snapshot).is_ok();
             }
             Err(error) => {
-                outcome(url, false);
+                backoff.record(url, false);
+                outcome.failed = true;
                 eprintln!("trails: {error}");
             }
         }
@@ -424,13 +469,16 @@ fn read_some(core: &Arc<BridgeCore>, issues: &[(String, Option<String>)], pulls:
         // An older `gh` without the field, or offline: nothing is stored.
         match fetch_closing(core, pr_url) {
             Some(closing) => {
-                outcome(pr_url, true);
-                stored |= save_closing(&core.db.lock().unwrap(), pr_url, &closing, &chrono::Utc::now().to_rfc3339()).is_ok();
+                backoff.record(pr_url, true);
+                outcome.stored |= save_closing(&core.db.lock().unwrap(), pr_url, &closing, &chrono::Utc::now().to_rfc3339()).is_ok();
             }
-            None => outcome(pr_url, false),
+            None => {
+                backoff.record(pr_url, false);
+                outcome.failed = true;
+            }
         }
     }
-    stored
+    outcome
 }
 
 #[cfg(test)]
@@ -558,5 +606,22 @@ pub(crate) mod tests {
         assert!(links(&db).is_empty());
         let read_at: String = db.query_row("SELECT fetched_at FROM trail_pr_link_reads WHERE pr_url='https://github.com/o/r/pull/13'", [], |row| row.get(0)).unwrap();
         assert_eq!(read_at, "t3");
+    }
+    #[test]
+    fn failures_schedule_a_retry_and_reads_prune_them() {
+        let backoff = ReadBackoff::default();
+        assert!(backoff.next_retry().is_none());
+        backoff.record("https://github.com/o/r/issues/1", false);
+        let failed = backoff.failed_at("https://github.com/o/r/issues/1").unwrap();
+        assert_eq!(backoff.next_retry(), Some(failed + RETRY_AFTER));
+        assert!(backoff.waiting("https://github.com/o/r/issues/1"));
+        backoff.backdate("https://github.com/o/r/issues/1", RETRY_AFTER);
+        assert!(!backoff.waiting("https://github.com/o/r/issues/1"), "due again");
+        backoff.record("https://github.com/o/r/pull/2", false);
+        // A record that is no longer missing never comes due.
+        backoff.retain(&["https://github.com/o/r/pull/2"].into_iter().collect());
+        assert!(backoff.failed_at("https://github.com/o/r/issues/1").is_none());
+        backoff.record("https://github.com/o/r/pull/2", true);
+        assert!(backoff.next_retry().is_none());
     }
 }
