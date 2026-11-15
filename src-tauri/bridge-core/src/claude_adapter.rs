@@ -152,18 +152,38 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
     )
 }
 
+/// The discovery parts one launch needs, from the authority it runs under.
+///
+/// - A chat is handed its plugin paths and no explicit connector list.
+/// - A briefing is handed connectors and no plugins (`strictMcpConfig` means
+///   the compiled list is the only route it has).
+/// - A networked read-only worker is handed connectors, like a briefing; a
+///   non-networked one has no route to any server and is handed neither.
+/// - A briefing that can reach nothing (toolless, or a worktree workflow) is
+///   handed neither, so nothing is probed for it.
+fn launch_discovery(
+    restricted: bool,
+    briefing: bool,
+    briefing_reaches_nothing: bool,
+    networked_read_only: bool,
+) -> crate::marketplace::ClaudeDiscovery {
+    crate::marketplace::ClaudeDiscovery {
+        plugins: !restricted,
+        connectors: !briefing_reaches_nothing && (briefing || networked_read_only),
+    }
+}
+
 fn sdk_configuration_for_launch(
-    briefing: Option<&crate::briefing_policy::BriefingRuntimePolicy>,
-    discover: impl FnOnce() -> crate::marketplace::ClaudeSdkConfiguration,
+    discovery: crate::marketplace::ClaudeDiscovery,
+    discover: impl FnOnce(crate::marketplace::ClaudeDiscovery) -> crate::marketplace::ClaudeSdkConfiguration,
 ) -> crate::marketplace::ClaudeSdkConfiguration {
-    if briefing.is_some_and(|policy| policy.toolless() || policy.workflow_worktree()) {
+    if !discovery.plugins && !discovery.connectors {
         // There can be no plugin or connector in this run. Discovery invokes
         // CLI commands and connection probes; skip it rather than discarding
         // its output after paying for it on every search.
-        crate::marketplace::ClaudeSdkConfiguration::default()
-    } else {
-        discover()
+        return crate::marketplace::ClaudeSdkConfiguration::default();
     }
+    discover(discovery)
 }
 
 fn launch(
@@ -253,7 +273,15 @@ fn launch(
         }
         None => None,
     };
-    let sdk_configuration = sdk_configuration_for_launch(briefing, crate::marketplace::claude_sdk_configuration);
+    let sdk_configuration = sdk_configuration_for_launch(
+        launch_discovery(
+            briefing_config.is_some() || read_only_sandbox.is_some(),
+            briefing_config.is_some(),
+            briefing.is_some_and(|policy| policy.toolless() || policy.workflow_worktree()),
+            read_only_sandbox.is_some_and(|sandbox| sandbox.network_allowed()),
+        ),
+        |discovery| crate::marketplace::cached_claude_sdk_configuration(discovery),
+    );
     let lifecycle_phase = if resume_session_id.is_some() {
         ContextLifecyclePhase::Resume
     } else {
@@ -1671,36 +1699,125 @@ mod briefing_boundary_tests {
         assert!(BriefingRuntimePolicy::check_write_mode(Some(WriteMode::ReadOnly)).is_ok());
     }
 
+    /// A chat reads its plugin paths and nothing else: its connectors arrive
+    /// natively, so probing their health is a subprocess whose answer is thrown
+    /// away. This is the launch-time cost that made every cold send wait.
     #[test]
-    fn a_toolless_launch_skips_discovery_but_other_launches_keep_it() {
+    fn claude_mcp_discovery_is_skipped_for_a_chat_launch() {
+        assert_eq!(
+            super::launch_discovery(false, false, false, false),
+            crate::marketplace::ClaudeDiscovery {
+                plugins: true,
+                connectors: false
+            }
+        );
+    }
+
+    /// A launch that did not probe connectors must not report anything about
+    /// them: no servers, no health, and no failure it did not have.
+    #[test]
+    fn connector_health_is_empty_when_not_probed() {
+        let discovery = super::launch_discovery(false, false, false, false);
+        let configuration = super::sdk_configuration_for_launch(discovery, |_| {
+            crate::marketplace::ClaudeSdkConfiguration {
+                plugins: vec!["/plugins/one".into()],
+                ..Default::default()
+            }
+        });
+        assert!(configuration.mcp_servers.is_empty());
+        assert!(configuration.connector_health.is_empty());
+        assert!(configuration
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.stage != "mcp"));
+    }
+
+    /// A briefing is handed connectors and no plugins, because `strictMcpConfig`
+    /// makes the compiled list its only route to them.
+    #[test]
+    fn briefing_launch_keeps_connector_discovery() {
+        assert_eq!(
+            super::launch_discovery(true, true, false, false),
+            crate::marketplace::ClaudeDiscovery {
+                plugins: false,
+                connectors: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_networked_read_only_worker_discovers_connectors_only() {
+        assert_eq!(
+            super::launch_discovery(true, false, false, true),
+            crate::marketplace::ClaudeDiscovery {
+                plugins: false,
+                connectors: true
+            }
+        );
+        // Without network there is no route to a connector at all.
+        assert_eq!(
+            super::launch_discovery(true, false, false, false),
+            crate::marketplace::ClaudeDiscovery {
+                plugins: false,
+                connectors: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_toolless_or_worktree_launch_skips_discovery_but_other_launches_keep_it() {
         let ordinary = policy();
         let toolless = BriefingRuntimePolicy::compile_toolless(wire::WorkBriefLimits {
             max_wall_seconds: 60, max_turns: 4, max_tool_calls: 1,
             max_output_tokens: None, cost_ceiling_microusd: None,
         }).unwrap();
-        let empty = super::sdk_configuration_for_launch(Some(&toolless), || {
-            panic!("tool-free search must not run plugin or connector discovery")
-        });
-        assert!(empty.plugins.is_empty());
-        assert!(empty.mcp_servers.is_empty());
         let worktree = BriefingRuntimePolicy::compile_worktree_workflow(*ordinary.limits()).unwrap();
-        let empty = super::sdk_configuration_for_launch(Some(&worktree), || {
-            panic!("a worktree workflow must not discover the person's connectors")
-        });
-        assert!(empty.plugins.is_empty());
-        assert!(empty.mcp_servers.is_empty());
-        for briefing in [None, Some(&ordinary)] {
-            let calls = std::cell::Cell::new(0);
-            let configuration = super::sdk_configuration_for_launch(briefing, || {
-                calls.set(calls.get() + 1);
-                crate::marketplace::ClaudeSdkConfiguration {
-                    plugins: vec!["fixture-plugin".into()],
-                    ..Default::default()
+        // The two runs that can reach nothing are skipped outright.
+        for briefing in [&toolless, &worktree] {
+            let discovery = super::launch_discovery(
+                true,
+                true,
+                briefing.toolless() || briefing.workflow_worktree(),
+                false,
+            );
+            assert_eq!(
+                discovery,
+                crate::marketplace::ClaudeDiscovery {
+                    plugins: false,
+                    connectors: false
                 }
-            });
-            assert_eq!(calls.get(), 1);
-            assert_eq!(configuration.plugins, vec!["fixture-plugin"]);
+            );
+            assert_eq!(
+                super::sdk_configuration_for_launch(discovery, |_| {
+                    panic!("a run that can reach nothing must not discover anything")
+                })
+                .plugins,
+                Vec::<String>::new()
+            );
         }
+        // An ordinary briefing does discover, and asks once, with the parts it
+        // can actually use.
+        let discovery = super::launch_discovery(
+            true,
+            true,
+            ordinary.toolless() || ordinary.workflow_worktree(),
+            false,
+        );
+        let calls = std::cell::Cell::new(0);
+        let configuration = super::sdk_configuration_for_launch(discovery, |asked| {
+            calls.set(calls.get() + 1);
+            assert_eq!(asked, discovery);
+            crate::marketplace::ClaudeSdkConfiguration {
+                mcp_servers: std::collections::BTreeMap::from([(
+                    "notion".into(),
+                    serde_json::json!({"type": "http", "url": "https://example.test/mcp"}),
+                )]),
+                ..Default::default()
+            }
+        });
+        assert_eq!(calls.get(), 1);
+        assert!(configuration.mcp_servers.contains_key("notion"));
+        assert!(configuration.plugins.is_empty());
     }
 
     #[test]
