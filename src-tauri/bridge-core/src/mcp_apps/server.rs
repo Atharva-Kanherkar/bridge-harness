@@ -10,7 +10,7 @@ use std::io::{BufRead, Write};
 use serde_json::{json, Value};
 
 use super::guard::RepeatGuard;
-use super::notes_tools::{self, NotesLink};
+use super::notes_tools::NotesLink;
 use super::{lint, spec, tool};
 
 /// Protocol revisions this server speaks. It answers with the client's
@@ -243,6 +243,7 @@ impl VisualServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_apps::notes_tools;
 
     fn request(id: u64, method: &str, params: Value) -> Value {
         json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
