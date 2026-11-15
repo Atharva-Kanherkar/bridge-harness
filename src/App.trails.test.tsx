@@ -138,4 +138,25 @@ describe("Continue this trail in the App", () => {
     expect(dialog.textContent).toContain("no brief item");
     expect(dialog.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("Implement the decisions in the selected plan.");
   });
+
+  it("starts on the saved chat defaults, not the provider's default model", { timeout: 20_000 }, async () => {
+    const view = await bridgeApi.getChatDefaults();
+    let saved = await bridgeApi.saveChatDefaults({ expectedRevision: view.application.revision, defaults: { ...view.application.defaults, model: { harness: "claude", model: "opus" }, effort: { value: "xhigh" } } });
+    try {
+      await mountApp();
+      vi.spyOn(bridgeApi, "carryTrailBrief").mockResolvedValue(undefined as never);
+      const create = vi.spyOn(bridgeApi, "createConfiguredChat");
+      const dialog = await openContinue();
+      await click(buttons(dialog).find(item => item.getAttribute("role") === "radio" && item.textContent?.includes("Claude")));
+      await click(byLabel("Start chat", dialog));
+      for (let tries = 0; tries < 60 && create.mock.results.length === 0; tries += 1) await wait(50);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0][0].overrides.model).toBeUndefined();
+      const { configuration } = await create.mock.results[0].value;
+      expect(configuration.settings.model).toMatchObject({ harness: "claude", model: "opus" });
+      expect(configuration.settings.effort).toBe("xhigh");
+    } finally {
+      saved = await bridgeApi.saveChatDefaults({ expectedRevision: saved.application.revision, defaults: view.application.defaults });
+    }
+  });
 });
