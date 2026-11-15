@@ -99,8 +99,7 @@ describe("ContextLensDialog", () => {
     expect(pressure.textContent).toContain("compacts ~186k");
     const bar = pressure.querySelector('[role="img"]')!;
     expect(bar.getAttribute("aria-label")).toBe("82% of the window is occupied");
-    expect(bar.querySelector(".bg-ctx-1")).not.toBeNull();
-    expect(bar.querySelector(".bg-ctx-2")).not.toBeNull();
+    expect(bar.children).toHaveLength(3); // two named segments and the hatch
     expect(bar.querySelector(".ctx-hatch-neutral")).not.toBeNull();
     const text = dialog()!.textContent!;
     expect(text).toContain("Messages");
@@ -142,6 +141,60 @@ describe("ContextLensDialog", () => {
     await mount();
     expect(tabs()).toHaveLength(0);
     expect(dialog()!.querySelector('[aria-label="Context pressure"]')).not.toBeNull();
+  });
+
+  it("lays the window list out as a wrapping grid that becomes a rail, never a sideways scroller", async () => {
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue(result);
+    await mount();
+    const list = dialog()!.querySelector<HTMLElement>('[role="tablist"]')!;
+    const classes = list.className.split(/\s+/);
+    expect(classes).toContain("grid");
+    expect(classes.some(name => name.startsWith("grid-cols-[repeat(auto-fill"))).toBe(true);
+    expect(classes).toContain("@3xl/lens:grid-cols-1");
+    expect(classes).toContain("@3xl/lens:w-60");
+    // The panel sizes itself to its widest child, so a one-row strip that
+    // scrolls sideways pushes every card past the dialog's edge.
+    expect(classes).not.toContain("grid-flow-col");
+    expect(classes).not.toContain("overflow-x-auto");
+    expect(list.closest('[class~="@container/lens"]')).not.toBeNull();
+  });
+
+  it("widens the dialog only when there is more than one window", async () => {
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue(result);
+    await mount();
+    expect(dialog()!.className.split(/\s+/)).toEqual(expect.arrayContaining(["max-w-2xl", "lg:max-w-4xl"]));
+    act(() => root.unmount());
+    root = createRoot(container);
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue({ ...result, windows: [result.windows[0]] });
+    await mount();
+    const single = dialog()!.className.split(/\s+/);
+    expect(single).toContain("max-w-2xl");
+    expect(single).not.toContain("lg:max-w-4xl");
+  });
+
+  it("draws segments in the ink ramp, strongest first, with no categorical hue", async () => {
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue(result);
+    await mount();
+    const bar = dialog()!.querySelector('[aria-label="Context pressure"] [role="img"]')!;
+    const [first, second, rest] = [...bar.children].map(child => child.className);
+    expect(first).toContain("bg-foreground/90");
+    expect(second).toContain("bg-foreground/68");
+    expect(rest).toContain("ctx-hatch-neutral");
+    expect(dialog()!.innerHTML).not.toMatch(/bg-ctx-\d/);
+  });
+
+  it("puts Compact inside the pressure card as a kit button", async () => {
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue(result);
+    await mount({ onCompact: vi.fn().mockResolvedValue(undefined) });
+    const pressure = dialog()!.querySelector<HTMLElement>('[aria-label="Context pressure"]')!;
+    const button = pressure.querySelector<HTMLButtonElement>('button[aria-label="Compact Chat"]')!;
+    expect(button).not.toBeNull();
+    expect(button.dataset.slot).toBe("button");
+    // Primary once the window is under pressure, quiet otherwise.
+    expect(button.className).toContain("bg-primary");
+    await act(async () => tabs()[1].click());
+    const calm = dialog()!.querySelector<HTMLButtonElement>('[aria-label="Context pressure"] button[aria-label^="Compact"]')!;
+    expect(calm.className).not.toContain("bg-primary");
   });
 
   it("stops polling and says so when the daemon lacks the method", async () => {
