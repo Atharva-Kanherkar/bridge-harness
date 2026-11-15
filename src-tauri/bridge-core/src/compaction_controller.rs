@@ -1161,11 +1161,17 @@ pub fn conversation_token_estimate(
         .sum())
 }
 
+/// The whole stored payload, envelope included, as compaction has always
+/// counted it.
+///
+/// Deliberately not `entry.token_estimate`. That column now holds the
+/// model-readable text alone (`entry_tokens`), which is far smaller, and
+/// reading it here would move the switch-summary floor and every
+/// `tokensBefore`: a compaction change made in the name of measurement.
+/// Moving compaction onto the stored figure is its own, eval-gated decision.
 fn entry_token_estimate(entry: &SessionEntry) -> i64 {
-    entry.token_estimate.unwrap_or_else(|| {
-        let bytes = entry.payload.to_string().len() as i64;
-        (bytes + 3) / 4
-    })
+    let bytes = entry.payload.to_string().len() as i64;
+    (bytes + 3) / 4
 }
 
 #[cfg(test)]
@@ -1386,6 +1392,29 @@ mod tests {
         assert_eq!(boundary.payload["decisions"].as_array().unwrap().len(), 0);
         assert_eq!(boundary.payload["filesTouched"].as_array().unwrap().len(), 0);
         assert_eq!(boundary.payload["provenance"], "agent");
+    }
+
+    #[test]
+    fn stored_estimates_do_not_move_compaction_figures() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        let entry = forest
+            .append("s", EntryKind::UserMessage, json!({"text": "x".repeat(400)}))
+            .unwrap();
+        let stored = entry.token_estimate.expect("a user message is estimated at append");
+        let branch = forest.active_branch("s").unwrap();
+        let envelope: i64 = branch
+            .iter()
+            .map(|entry| (entry.payload.to_string().len() as i64 + 3) / 4)
+            .sum();
+        assert_eq!(active_token_estimate(&db, "s").unwrap(), envelope);
+        let conversation_envelope: i64 = branch
+            .iter()
+            .filter(|entry| CONVERSATION_KINDS.contains(&entry.kind.as_str()))
+            .map(|entry| (entry.payload.to_string().len() as i64 + 3) / 4)
+            .sum();
+        assert_eq!(conversation_token_estimate(&db, "s").unwrap(), conversation_envelope);
+        assert!(envelope > stored, "compaction still counts the envelope ({envelope}), not the text ({stored})");
     }
 
     /// The two estimates answer different questions and must be allowed to

@@ -1027,6 +1027,9 @@ fn write_conversation(
         crate::session_forest::EntryKind::from_storage(kind)
             .validate_payload(&Value::Object(payload.clone()))
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        // The same method as every live entry, so imported and native rows
+        // sum together.
+        let token_estimate = crate::entry_tokens::estimate(kind, message);
         transaction.execute(
             "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,
                 payload,provider_event_id,context_visibility,token_estimate,created_at)
@@ -1040,10 +1043,7 @@ fn write_conversation(
                 kind,
                 Value::Object(payload).to_string(),
                 source_id,
-                message
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(|text| (text.chars().count() as i64 + 3) / 4),
+                token_estimate,
                 timestamp,
             ],
         )?;

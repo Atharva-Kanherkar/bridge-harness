@@ -166,6 +166,46 @@ mod tests {
     }
 
     #[test]
+    fn append_records_token_estimates_for_model_readable_kinds() {
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        let user = forest
+            .append("s", EntryKind::UserMessage, message(&"u".repeat(40)))
+            .unwrap();
+        let status = forest
+            .append("s", EntryKind::SessionStatus, json!({"status": "ready"}))
+            .unwrap();
+
+        // Adapter frames reach the forest through `session_event`, in the
+        // envelope every adapter shares.
+        let mut tool = crate::agent::NormalizedEvent::new("tool.completed");
+        tool.item_id = Some("toolu_1".into());
+        tool.status = Some("completed".into());
+        tool.text = Some("o".repeat(80));
+        tool.data = json!({"tool_use_id": "toolu_1", "command": "c".repeat(4_000), "content": "o".repeat(80)});
+        store::session_event(&db, "s", &tool, &json!({"raw": "r".repeat(4_000)})).unwrap();
+        let mut command = crate::agent::NormalizedEvent::new("command.completed");
+        command.item_id = Some("call_1".into());
+        command.data = json!({"command": "ls", "aggregatedOutput": "a".repeat(20), "exitCode": 0});
+        store::session_event(&db, "s", &command, &json!({})).unwrap();
+
+        let stored = |kind: &str| -> Option<i64> {
+            db.query_row(
+                "SELECT token_estimate FROM session_entries WHERE session_id='s' AND kind=?1",
+                params![kind],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(user.token_estimate, Some(10));
+        assert_eq!(stored("user.message"), Some(10));
+        assert_eq!(stored("tool.completed"), Some(20));
+        assert_eq!(stored("command.completed"), Some(5));
+        assert_eq!(status.token_estimate, None);
+        assert_eq!(stored("session.status"), None);
+    }
+
+    #[test]
     fn append_rewind_append_preserves_immutable_history() {
         let db = database(&["s"]);
         let forest = SessionForest::new(&db);

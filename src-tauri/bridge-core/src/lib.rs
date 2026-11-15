@@ -82,6 +82,7 @@ pub mod context;
 pub mod context_breakdown;
 pub mod context_inventory;
 pub mod context_windows;
+pub mod entry_tokens;
 pub mod credential_broker;
 pub mod credential_policy;
 pub mod cursor_adapter;
