@@ -553,9 +553,8 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             Ok(_) => {
                 commands.insert(instruction);
             }
-            Err(reason) => {
+            Err(_) => {
                 semantic_verification.push(instruction);
-                let _ = reason;
             }
         }
     }
