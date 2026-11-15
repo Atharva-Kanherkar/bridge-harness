@@ -97,6 +97,7 @@ pub mod github_poll;
 pub mod github_policy;
 pub mod handoff;
 pub mod health;
+pub mod history_tools;
 pub mod learning_job;
 pub mod learning_router;
 pub mod live_turn;
