@@ -5,6 +5,8 @@
 //! badge, and a count that cannot be read is no badge rather than a failed
 //! app list.
 
+use std::sync::Mutex;
+
 use bridge_protocol::messages::{AppBadge, AppSummary, TrailState};
 use rusqlite::Connection;
 
@@ -51,12 +53,56 @@ pub fn trails_needing_you(db: &Connection, notes: &dyn NoteSource) -> Result<u32
     Ok(waiting)
 }
 
-fn badge(db: &Connection, notes: &dyn NoteSource, app: &BuiltinApp) -> Option<AppBadge> {
+/// The trails count, kept until the next `trails/changed`.
+///
+/// `apps/changed` follows every memory and workflow-run hint, and each one
+/// makes every client reread the app list. Deriving every trail summary on
+/// each of those reads would turn a workflow run's status hints into
+/// whole-trail derivations under the database lock. The frontend refreshed
+/// trails only on `trails/changed`; the cached count keeps that freshness.
+#[derive(Debug, Default)]
+pub struct BadgeCache {
+    /// `(trails generation it was counted at, count)`.
+    trails: Mutex<Option<(u64, u32)>>,
+}
+
+impl BadgeCache {
+    /// The cached count, when it was taken at `generation` or later.
+    pub fn trails(&self, generation: u64) -> Option<u32> {
+        match *self.trails.lock().unwrap() {
+            Some((counted_at, count)) if counted_at >= generation => Some(count),
+            _ => None,
+        }
+    }
+
+    fn store_trails(&self, generation: u64, count: u32) {
+        let mut slot = self.trails.lock().unwrap();
+        if slot.is_none_or(|(counted_at, _)| counted_at <= generation) {
+            *slot = Some((generation, count));
+        }
+    }
+}
+
+/// What a badge read may reuse: the cache and the trails generation the
+/// caller saw before reading notes.
+#[derive(Clone, Copy)]
+pub struct Cached<'a> {
+    pub cache: &'a BadgeCache,
+    pub trails_generation: u64,
+}
+
+fn badge(db: &Connection, notes: &dyn NoteSource, app: &BuiltinApp, cached: Option<Cached<'_>>) -> Option<AppBadge> {
     let counted = match app.badge {
         BadgeSource::None => return None,
         BadgeSource::WorkflowRuns => workflow_runs(db),
         BadgeSource::MemoryProposals => memory_proposals(db),
-        BadgeSource::TrailsNeedingYou => trails_needing_you(db, notes),
+        BadgeSource::TrailsNeedingYou => match cached {
+            Some(Cached { cache, trails_generation }) => match cache.trails(trails_generation) {
+                Some(count) => Ok(count),
+                None => trails_needing_you(db, notes).inspect(|count| cache.store_trails(trails_generation, *count)),
+            },
+            None => trails_needing_you(db, notes),
+        },
     };
     match counted {
         Ok(count) => Some(AppBadge { count }),
@@ -68,8 +114,9 @@ fn badge(db: &Connection, notes: &dyn NoteSource, app: &BuiltinApp) -> Option<Ap
 }
 
 /// Every app with its state on this Mac and its badge. `notes` is read
-/// before the caller takes the database lock (see `NoteSnapshot`).
-pub fn summaries(db: &Connection, notes: &dyn NoteSource) -> Result<Vec<AppSummary>, BridgeError> {
+/// before the caller takes the database lock (see `NoteSnapshot`); with a
+/// cache hit for trails it is not consulted.
+pub fn summaries(db: &Connection, notes: &dyn NoteSource, cached: Option<Cached<'_>>) -> Result<Vec<AppSummary>, BridgeError> {
     let off = registry::disabled_ids(db)?;
     let pins = registry::pins(db)?;
     Ok(builtins()
@@ -82,7 +129,7 @@ pub fn summaries(db: &Connection, notes: &dyn NoteSource) -> Result<Vec<AppSumma
                 enabled,
                 can_disable: app.can_disable,
                 pinned: pins.iter().position(|pin| pin == id).map(|index| index as u32),
-                badge: if enabled { badge(db, notes, app) } else { None },
+                badge: if enabled { badge(db, notes, app, cached) } else { None },
             }
         })
         .collect())
@@ -169,12 +216,12 @@ mod tests {
     fn off_apps_have_no_badge() {
         let db = database();
         let notes = NoteSnapshot::default();
-        let summaries = summaries(&db, &notes).unwrap();
+        let summaries = summaries(&db, &notes, None).unwrap();
         assert_eq!(summaries.len(), 12);
         assert_eq!(badge_of(&summaries, "memory"), Some(0), "a zero count is still a badge");
         assert_eq!(badge_of(&summaries, "notes"), None, "notes has no badge source");
         registry::set_enabled(&db, "memory", false, "t").unwrap();
-        let summaries = super::summaries(&db, &notes).unwrap();
+        let summaries = super::summaries(&db, &notes, None).unwrap();
         assert_eq!(badge_of(&summaries, "memory"), None);
         assert!(!summaries.iter().find(|summary| summary.manifest.id == "memory").unwrap().enabled);
     }
@@ -183,7 +230,7 @@ mod tests {
     fn a_failing_source_is_no_badge_not_a_failed_list() {
         let db = database();
         db.execute_batch("DROP TABLE workflow_runs").unwrap();
-        let summaries = summaries(&db, &NoteSnapshot::default()).unwrap();
+        let summaries = summaries(&db, &NoteSnapshot::default(), None).unwrap();
         assert_eq!(badge_of(&summaries, "workflows"), None);
         assert_eq!(badge_of(&summaries, "memory"), Some(0));
     }

@@ -379,6 +379,10 @@ impl EventReceiver {
 pub struct EventBus {
     sender: broadcast::Sender<CoreEvent>,
     reconciliation: Arc<Mutex<ReconciliationState>>,
+    /// How many `TrailsChanged` hints this bus has published. Readers that
+    /// cache something derived from trails compare it to know when to
+    /// derive again.
+    trails_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for EventBus {
@@ -393,7 +397,13 @@ impl EventBus {
         Self {
             sender,
             reconciliation: Arc::new(Mutex::new(ReconciliationState::default())),
+            trails_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// Bumped by every published `TrailsChanged`, before subscribers see it.
+    pub fn trails_generation(&self) -> u64 {
+        self.trails_generation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn subscribe(&self) -> EventReceiver {
@@ -425,6 +435,9 @@ impl EventBus {
             &event,
             CoreEvent::MemoryChanged { .. } | CoreEvent::WorkflowRunChanged { .. } | CoreEvent::TrailsChanged(_)
         );
+        if matches!(&event, CoreEvent::TrailsChanged(_)) {
+            self.trails_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
         {
             let mut state = self.reconciliation.lock().unwrap();
             match &event {
