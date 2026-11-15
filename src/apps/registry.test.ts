@@ -69,8 +69,8 @@ describe("badges", () => {
   });
 });
 
-describe("core and the frontend agree on the apps", () => {
-  it("draws every app core lists and lists every app it draws", async () => {
+describe("the mock and the frontend agree on the apps (core is pinned to both by apps::builtin::tests::frontend_and_mock_list_exactly_the_builtin_ids)", () => {
+  it("serves every app the frontend draws and draws every app it serves", async () => {
     const { MOCK_APP_IDS } = await import("../appsMock");
     const drawn = [...BUILTIN_APPS.map(app => app.id as string), ...CARD_APPS.map(app => app.id)];
     expect([...MOCK_APP_IDS].sort()).toEqual([...drawn].sort());

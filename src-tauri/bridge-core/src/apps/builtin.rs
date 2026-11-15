@@ -169,6 +169,28 @@ mod tests {
         }
     }
 
+    /// Every `id: "..."` in a TypeScript source, in order.
+    fn ts_ids(source: &str) -> BTreeSet<String> {
+        source
+            .split("id: \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A client draws only the apps it has a descriptor for, so an app core
+    /// lists that the frontend does not know would vanish without an error.
+    /// Core, the frontend descriptors and the mock must name the same apps.
+    #[test]
+    fn frontend_and_mock_list_exactly_the_builtin_ids() {
+        let core: BTreeSet<String> = builtins().iter().map(|app| app.manifest.id.clone()).collect();
+        let frontend = ts_ids(include_str!("../../../../src/apps/registry.ts"));
+        let mock = ts_ids(include_str!("../../../../src/appsMock.ts"));
+        assert_eq!(frontend, core, "src/apps/registry.ts (BUILTIN_APPS plus CARD_APPS) must describe exactly core's apps");
+        assert_eq!(mock, core, "src/appsMock.ts must serve exactly core's apps");
+    }
+
     /// The Claude sidecar runs exactly the tools that do not ask first and
     /// refuses the rest outside Full access. This keeps the two lists one.
     #[test]
