@@ -108,12 +108,22 @@ pub fn arm_trail_pulls(core: &Arc<BridgeCore>) -> usize {
     watched
 }
 
+/// The most read-then-sweep rounds one pass runs.
+const MAX_READ_ROUNDS: usize = 8;
+
 /// Read from GitHub what the trails still lack (issue snapshots, PRs'
 /// closing references), outside the database lock; if anything landed, the
-/// links may bring new members, so sweep again and tell clients.
+/// links may bring new members, so sweep again and tell clients. Members a
+/// sweep brings in are read in the same pass: the events it publishes never
+/// wake this loop, so nothing else would read them.
 pub fn read_github(core: &Arc<BridgeCore>) {
-    if super::issues::read_missing(core) {
-        sweep_and_publish(core, true);
+    for _ in 0..MAX_READ_ROUNDS {
+        if !super::issues::read_missing(core) {
+            break;
+        }
+        if sweep_and_publish(core, true).is_empty() {
+            break;
+        }
     }
 }
 
@@ -311,5 +321,52 @@ mod tests {
         core.github_poller.poll_once(&core);
         assert_eq!(state(&core), bridge_protocol::messages::TrailState::Shipped);
         assert_eq!(arm_trail_pulls(&core), 0, "a merged PR is no longer armed");
+    }
+    /// The session PR fixture, with a `gh` that also answers closing
+    /// references and issue reads.
+    fn fixture_with_issues() -> (tempfile::TempDir, Arc<BridgeCore>) {
+        use std::os::unix::fs::PermissionsExt;
+        let (scratch, core, _repo) = crate::session_prs::tests::fixture();
+        std::fs::write(scratch.path().join("closing.json"), r#"{"closingIssuesReferences":[{"url":"https://github.com/o/r/issues/41"}]}"#).unwrap();
+        std::fs::write(
+            scratch.path().join("issue.json"),
+            r#"{"number":41,"title":"Archived chats stay searchable","body":"For 90 days.","state":"OPEN","stateReason":"","author":{"login":"mika"},
+                "labels":[],"comments":[],"createdAt":"2026-11-09T09:00:00Z","updatedAt":"2026-11-09T09:00:00Z","closedAt":null,
+                "url":"https://github.com/o/r/issues/41","closedByPullRequestsReferences":[{"url":"https://github.com/o/r/pull/12"}]}"#,
+        )
+        .unwrap();
+        let gh = scratch.path().join("gh");
+        std::fs::write(
+            &gh,
+            r#"#!/bin/sh
+root=$(dirname "$0")
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "pr view") case "$*" in *closingIssuesReferences*) cat "$root/closing.json" ;; *) cat "$root/brief.json" ;; esac ;;
+  "pr checks") cat "$root/checks.json" ;;
+  "issue view") cat "$root/issue.json" ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (scratch, core)
+    }
+
+    #[test]
+    fn an_issue_a_read_brings_in_is_read_in_the_same_pass() {
+        use crate::github_surface::PullRequestState;
+        let (_scratch, core) = fixture_with_issues();
+        let trail = trail_with_pr(&core, &crate::trails::timeline::tests::view(PullRequestState::Merged, vec![]));
+        // One pass: the PR's closing reference is read, the sweep adds the
+        // issue, and the issue itself is read too, with no other event.
+        read_github(&core);
+        let db = core.db.lock().unwrap();
+        let members = crate::trails::store::members(&db, &trail).unwrap();
+        assert!(members.iter().any(|member| member.kind == TrailMemberKind::Issue && member.reference == "https://github.com/o/r/issues/41"), "{members:?}");
+        assert!(crate::trails::issues::get(&db, "https://github.com/o/r/issues/41").unwrap().is_some(), "the issue that joined must have been read");
+        let (issues, pulls) = crate::trails::issues::missing(&db).unwrap();
+        assert!(issues.is_empty() && pulls.is_empty(), "nothing left unread: {issues:?} {pulls:?}");
     }
 }
