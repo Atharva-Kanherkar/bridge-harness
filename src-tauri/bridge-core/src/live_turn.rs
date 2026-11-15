@@ -3450,7 +3450,23 @@ fn handle_agent_value_timed(
                         // produces no assistant message and no typed result,
                         // so every downstream detector that reads those sees
                         // nothing at all.
-                        record_provider_limit(&db, session_id, event.text.as_deref());
+                        let limit = record_provider_limit(&db, session_id, event.text.as_deref());
+                        // A root chat the person asked Bridge to carry past
+                        // a limit: schedule the resume or the switch. Only a
+                        // row is written here; the recovery loop acts later,
+                        // outside this lock.
+                        if let (Some(limit), 0) = (limit, own_depth) {
+                            if let Err(error) = crate::limit_recovery::observe(
+                                &db,
+                                session_id,
+                                limit.kind,
+                                &limit.signal,
+                                limit.reset_at,
+                                Utc::now(),
+                            ) {
+                                eprintln!("[limit-recovery] could not schedule {session_id}: {error}");
+                            }
+                        }
                         if own_depth > 0 {
                             let lifecycle = store::worker_runtime(&db, session_id)
                                 .ok()
@@ -8140,10 +8156,12 @@ pub fn process_worker_result_output(
 /// as a worker hitting it, and the worker that hits it has usually already
 /// gone `failed` — which is exactly the state the settle path returns early
 /// on. Writing it here is what makes the cooldown reachable at all.
-fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) {
-    let Some(limit) = text.and_then(provider_limit::detect) else {
-        return;
-    };
+fn record_provider_limit(
+    db: &Connection,
+    session_id: &str,
+    text: Option<&str>,
+) -> Option<provider_limit::ProviderLimit> {
+    let limit = text.and_then(provider_limit::detect)?;
     let Some((workspace_id, harness)) = db
         .query_row(
             "SELECT workspace_id,harness FROM sessions WHERE id=?1",
@@ -8153,7 +8171,7 @@ fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) 
         .ok()
         .and_then(|(workspace_id, harness)| workspace_id.map(|id| (id, harness)))
     else {
-        return;
+        return Some(limit);
     };
     let _ = learning_router::mark_harness_quota_exhausted_until(
         db,
@@ -8173,6 +8191,7 @@ fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) 
         session_id,
         &limit.signal,
     );
+    Some(limit)
 }
 
 /// The event that says Bridge watched this worker go silent.
@@ -11719,6 +11738,7 @@ pub fn send_turn(
     // The legacy entry point: always deliver now. Clients that want Bridge to
     // decide between starting, steering, and queueing call `submit_input`.
     refuse_user_turn_to_workflow(core, &session_id)?;
+    cancel_limit_recovery_for_user(core, &session_id);
     submit_input_internal(core, session_id, text, true, Vec::new(), None).map(|_| ())
 }
 
@@ -11729,6 +11749,27 @@ pub fn send_turn(
 /// a worker's turn is steered or queued, never stopped. `interrupt_turn` stays
 /// the way to stop without saying anything new.
 pub fn submit_input(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    refuse_user_turn_to_workflow(core, &session_id)?;
+    cancel_limit_recovery_for_user(core, &session_id);
+    submit_input_internal(core, session_id, text, false, Vec::new(), None)
+}
+
+/// A person writing to a chat replaces whatever Bridge was waiting to send it
+/// after a usage limit.
+fn cancel_limit_recovery_for_user(core: &Arc<BridgeCore>, session_id: &str) {
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Err(error) = crate::limit_recovery::cancel_for_user_input(&db, session_id, Utc::now()) {
+        eprintln!("[limit-recovery] could not cancel for {session_id}: {error}");
+    }
+}
+
+/// The usage-limit recovery loop's continue turn: the person's own input path
+/// (resume, route, queue), without cancelling the recovery that sends it.
+pub(crate) fn submit_recovery_turn(
     core: &Arc<BridgeCore>,
     session_id: String,
     text: String,
@@ -11767,6 +11808,7 @@ pub fn submit_input_with_attachments(
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     refuse_user_turn_to_workflow(core, &session_id)?;
+    cancel_limit_recovery_for_user(core, &session_id);
     submit_input_internal(core, session_id, text, false, attachments, None)
 }
 
@@ -11775,6 +11817,7 @@ pub fn submit_input_with_preference(
     attachments: Vec<wire::TurnImage>, preference: Option<wire::ActiveTurnInput>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     refuse_user_turn_to_workflow(core, &session_id)?;
+    cancel_limit_recovery_for_user(core, &session_id);
     submit_input_internal(core, session_id, text, false, attachments, preference)
 }
 

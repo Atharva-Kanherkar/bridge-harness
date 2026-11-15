@@ -107,6 +107,11 @@ export type BridgeMethod =
   | "config/save_delegation_notify_settings"
   | "config/get_chat_search_settings"
   | "config/save_chat_search_settings"
+  | "config/get_limit_recovery_settings"
+  | "config/save_limit_recovery_settings"
+  | "sessions/limit_recovery_status"
+  | "sessions/cancel_limit_recovery"
+  | "sessions/resume_limit_recovery"
   | "sessions/list_archived_chats"
   | "sessions/unarchive_chat"
   | "memory/save_memory_record"
@@ -434,6 +439,11 @@ export const BRIDGE_METHODS = [
   { method: "config/save_delegation_notify_settings", domain: "config", command: "save_delegation_notify_settings" },
   { method: "config/get_chat_search_settings", domain: "config", command: "get_chat_search_settings" },
   { method: "config/save_chat_search_settings", domain: "config", command: "save_chat_search_settings" },
+  { method: "config/get_limit_recovery_settings", domain: "config", command: "get_limit_recovery_settings" },
+  { method: "config/save_limit_recovery_settings", domain: "config", command: "save_limit_recovery_settings" },
+  { method: "sessions/limit_recovery_status", domain: "sessions", command: "limit_recovery_status" },
+  { method: "sessions/cancel_limit_recovery", domain: "sessions", command: "cancel_limit_recovery" },
+  { method: "sessions/resume_limit_recovery", domain: "sessions", command: "resume_limit_recovery" },
   { method: "sessions/list_archived_chats", domain: "sessions", command: "list_archived_chats" },
   { method: "sessions/unarchive_chat", domain: "sessions", command: "unarchive_chat" },
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
@@ -953,6 +963,11 @@ export interface BridgeMethodParams {
   "config/get_delegation_notify_settings": GetDelegationNotifySettingsParams;
   "config/save_delegation_notify_settings": SaveDelegationNotifySettingsParams;
   "config/get_chat_search_settings": undefined;
+  "config/get_limit_recovery_settings": undefined;
+  "config/save_limit_recovery_settings": SaveLimitRecoverySettingsParams;
+  "sessions/limit_recovery_status": LimitRecoveryStatusParams;
+  "sessions/cancel_limit_recovery": CancelLimitRecoveryParams;
+  "sessions/resume_limit_recovery": ResumeLimitRecoveryParams;
   "config/save_chat_search_settings": SaveChatSearchSettingsParams;
   "sessions/list_archived_chats": ListArchivedChatsParams;
   "sessions/unarchive_chat": UnarchiveChatParams;
@@ -1183,6 +1198,11 @@ export interface BridgeMethodResults {
   "config/save_delegation_notify_settings": DelegationNotifySettingsView;
   "config/get_chat_search_settings": ChatSearchSettings;
   "config/save_chat_search_settings": ChatSearchSettings;
+  "config/get_limit_recovery_settings": LimitRecoverySettings;
+  "config/save_limit_recovery_settings": LimitRecoverySettings;
+  "sessions/limit_recovery_status": LimitRecoveryStatus;
+  "sessions/cancel_limit_recovery": LimitRecoveryStatus;
+  "sessions/resume_limit_recovery": LimitRecoveryStatus;
   "sessions/list_archived_chats": ArchivedChatsResult;
   "sessions/unarchive_chat": UnitResult;
   "memory/save_memory_record": MemoryRecord;
@@ -2184,6 +2204,35 @@ export interface LearningSchedule {
   nextRunAt?: string | null;
   runBudgetMicrousd: number;
   runBudgetTokens: number;
+}
+
+export type LimitRecoveryMode = "off" | "resume" | "backup";
+
+export interface LimitRecoverySettings {
+  backup?: LimitRecoveryTarget | null;
+  mode?: LimitRecoveryMode;
+}
+
+export type LimitRecoveryState = "pending" | "acting" | "done" | "cancelled" | "gave_up" | "expired" | "failed";
+
+export interface LimitRecoveryTarget {
+  effort?: Effort | null;
+  harness?: string;
+  model?: string | null;
+}
+
+export interface LimitRecoveryView {
+  attempts: number;
+  dueAt: string;
+  mode: LimitRecoveryMode;
+  outcome?: string | null;
+  resetAt?: string | null;
+  sessionId: string;
+  signal: string;
+  state: LimitRecoveryState;
+  switchesModel: boolean;
+  target: LimitRecoveryTarget;
+  updatedAt: string;
 }
 
 export type LocalLearningTriggerKind = "manual" | "in_app";
@@ -5571,6 +5620,26 @@ export interface DelegationNotifySettingsView {
 export interface SaveDelegationNotifySettingsParams {
   level?: DelegationNotifyLevel | null;
   sessionId?: string | null;
+}
+
+export interface SaveLimitRecoverySettingsParams {
+  settings: LimitRecoverySettings;
+}
+
+export interface LimitRecoveryStatusParams {
+  sessionId: string;
+}
+
+export interface LimitRecoveryStatus {
+  recovery?: LimitRecoveryView | null;
+}
+
+export interface CancelLimitRecoveryParams {
+  sessionId: string;
+}
+
+export interface ResumeLimitRecoveryParams {
+  sessionId: string;
 }
 
 export interface SaveChatSearchSettingsParams {

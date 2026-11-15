@@ -1,6 +1,7 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import type { AppPreferences, AppPreferenceValues } from "./protocol/generated/protocol";
+import type { LimitRecoverySettings, LimitRecoveryStatus } from "./protocol/generated/protocol";
 import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import type { DeliverQueuedInputResult, ListAttentionParams, ListAttentionResult, MarkAttentionSeenResult, MarkAttentionUnreadResult, ReportPresenceResult, UnreadSummary } from "./protocol/generated/protocol";
 import { mockListAttention, mockMarkAttentionSeen, mockMarkAttentionUnread, mockUnreadSummary, onMockAttentionChanged, pushMockAttention } from "./attentionMock";
@@ -1523,6 +1524,7 @@ function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
 
 /// The default reviewer instructions the mock reports; the real text lives in
 /// `bridge_core::reviewer_settings` and reaches the UI through the result.
+let mockLimitRecovery: LimitRecoverySettings = { mode: "off", backup: null };
 const MOCK_REVIEWER_PROMPT = "Review pull request #{number} in this repository and post a concise, constructive review as a comment. Do not approve, merge, request changes, or close the PR.";
 
 let mockNotifyGlobal: DelegationNotifyLevel = "all";
@@ -2739,6 +2741,28 @@ export const bridgeApi = {
   saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
     if (hasBackend()) return call("config/save_worker_settings", { workspaceId, settings });
     return structuredClone(settings);
+  },
+  limitRecoverySettings: async (): Promise<LimitRecoverySettings> => {
+    if (hasBackend()) return call("config/get_limit_recovery_settings");
+    return structuredClone(mockLimitRecovery);
+  },
+  saveLimitRecoverySettings: async (settings: LimitRecoverySettings): Promise<LimitRecoverySettings> => {
+    if (hasBackend()) return call("config/save_limit_recovery_settings", { settings });
+    if (settings.mode === "backup" && !settings.backup?.harness) throw new Error("Choose a backup model before turning on Switch to a backup model");
+    mockLimitRecovery = structuredClone(settings);
+    return structuredClone(mockLimitRecovery);
+  },
+  limitRecoveryStatus: async (sessionId: string): Promise<LimitRecoveryStatus> => {
+    if (hasBackend()) return call("sessions/limit_recovery_status", { sessionId });
+    return { recovery: null };
+  },
+  cancelLimitRecovery: async (sessionId: string): Promise<LimitRecoveryStatus> => {
+    if (hasBackend()) return call("sessions/cancel_limit_recovery", { sessionId });
+    return { recovery: null };
+  },
+  resumeLimitRecovery: async (sessionId: string): Promise<LimitRecoveryStatus> => {
+    if (hasBackend()) return call("sessions/resume_limit_recovery", { sessionId });
+    return { recovery: null };
   },
   reviewerSettings: async (): Promise<ReviewerSettingsResult> => {
     if (hasBackend()) return call("config/get_reviewer_settings");

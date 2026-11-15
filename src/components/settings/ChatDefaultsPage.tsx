@@ -5,6 +5,7 @@ import { layerChatDefaults, WORKER_EFFORTS } from "../../chatDefaults";
 import type { AdapterDescriptor, AgentDefinition, Project } from "../../types";
 import type { ChatDefaults, ChatDefaultsView, ChatLaunchTarget } from "../../protocol/generated/protocol";
 import { SettingsGroup, SettingsPage, SettingsRow, TextButton, Select } from "./kit";
+import { LimitRecoverySection } from "./LimitRecoverySection";
 
 const INHERIT = "inherit";
 function targetValue(target: ChatLaunchTarget | null | undefined) {
@@ -106,5 +107,6 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
         {saved && <span role="status" className="text-ui text-muted-foreground">Saved</span>}
       </div>
     </>}
+    {!scope && <LimitRecoverySection adapters={adapters} />}
   </SettingsPage>;
 }

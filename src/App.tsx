@@ -83,6 +83,7 @@ import { playAttentionSound } from "./attentionSound";
 import { decide, TOAST_QUEUE_MAX, type Presence } from "./attentionPolicy";
 import { useAttentionFeed } from "./useAttentionFeed";
 import { useBannerOwner } from "./useBannerOwner";
+import { LimitRecoveryBanner } from "./components/LimitRecoveryBanner";
 import { useUnreadSummary } from "./useUnreadSummary";
 import { useWindowFocused } from "./useWindowFocused";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
@@ -4001,6 +4002,7 @@ function AppContent() {
                     <span>{`${queuedFollowUpCount} follow-up${queuedFollowUpCount === 1 ? "" : "s"} queued — sent when this step finishes`}</span>
                   </div>
                 </div>}
+                {!isWorkerView && <LimitRecoveryBanner sessionId={session.id} sessionStatus={session.status} adapters={adapters} onError={message => setError(message)} />}
                 {fallbackNotice && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <span>{fallbackNotice}</span>

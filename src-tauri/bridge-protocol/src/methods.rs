@@ -145,6 +145,11 @@ methods![
     (SaveDelegationNotifySettings, "config", "save_delegation_notify_settings"),
     (GetChatSearchSettings, "config", "get_chat_search_settings"),
     (SaveChatSearchSettings, "config", "save_chat_search_settings"),
+    (GetLimitRecoverySettings, "config", "get_limit_recovery_settings"),
+    (SaveLimitRecoverySettings, "config", "save_limit_recovery_settings"),
+    (LimitRecoveryStatus, "sessions", "limit_recovery_status"),
+    (CancelLimitRecovery, "sessions", "cancel_limit_recovery"),
+    (ResumeLimitRecovery, "sessions", "resume_limit_recovery"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router

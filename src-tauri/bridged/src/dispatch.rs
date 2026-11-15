@@ -787,6 +787,23 @@ pub fn dispatch(
         MethodName::CreateConfiguredChat => { let p:wire::CreateConfiguredChatParams=decode(method,params)?; reply(api::create_configured_chat(core,&p)) },
         MethodName::GetChatSettings => { let p:wire::GetChatSettingsParams=decode(method,params)?; reply(api::get_chat_settings(core,&p.session_id)) },
         MethodName::UpdateChatOptions => { let p:wire::UpdateChatOptionsParams=decode(method,params)?; reply(api::update_chat_options(core,&p)) },
+        MethodName::GetLimitRecoverySettings => reply(api::get_limit_recovery_settings(core)),
+        MethodName::SaveLimitRecoverySettings => {
+            let p: wire::SaveLimitRecoverySettingsParams = decode(method, params)?;
+            reply(api::save_limit_recovery_settings(core, &p.settings))
+        }
+        MethodName::LimitRecoveryStatus => {
+            let p: wire::LimitRecoveryStatusParams = decode(method, params)?;
+            reply(api::limit_recovery_status(core, &p.session_id))
+        }
+        MethodName::CancelLimitRecovery => {
+            let p: wire::CancelLimitRecoveryParams = decode(method, params)?;
+            reply(api::cancel_limit_recovery(core, &p.session_id))
+        }
+        MethodName::ResumeLimitRecovery => {
+            let p: wire::ResumeLimitRecoveryParams = decode(method, params)?;
+            reply(api::resume_limit_recovery(core, &p.session_id))
+        }
         MethodName::GetReviewerSettings => reply(api::get_reviewer_settings(core)),
         MethodName::SaveReviewerSettings => {
             let p: wire::SaveReviewerSettingsParams = decode(method, params)?;

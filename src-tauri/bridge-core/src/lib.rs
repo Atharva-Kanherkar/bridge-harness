@@ -201,6 +201,7 @@ pub mod worker_pool;
 pub mod worker_retry;
 pub mod worker_settings;
 pub mod reviewer_settings;
+pub mod limit_recovery;
 pub mod dependency_seed;
 pub mod worker_sandbox;
 pub mod work;

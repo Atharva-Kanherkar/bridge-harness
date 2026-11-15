@@ -29,6 +29,7 @@ mod attention;
 mod auth;
 mod automations;
 mod workflows;
+mod limit_recovery;
 mod browser;
 mod clones;
 mod keys;
@@ -71,6 +72,7 @@ pub use attention::*;
 pub use auth::*;
 pub use automations::*;
 pub use workflows::*;
+pub use limit_recovery::*;
 pub use browser::*;
 pub use clones::*;
 pub use keys::*;
@@ -414,6 +416,11 @@ typed_methods![
     (GetDelegationNotifySettings, GetDelegationNotifySettingsParams, DelegationNotifySettingsView),
     (SaveDelegationNotifySettings, SaveDelegationNotifySettingsParams, DelegationNotifySettingsView),
     (GetChatSearchSettings, _, ChatSearchSettings),
+    (GetLimitRecoverySettings, _, LimitRecoverySettings),
+    (SaveLimitRecoverySettings, SaveLimitRecoverySettingsParams, LimitRecoverySettings),
+    (LimitRecoveryStatus, LimitRecoveryStatusParams, LimitRecoveryStatus),
+    (CancelLimitRecovery, CancelLimitRecoveryParams, LimitRecoveryStatus),
+    (ResumeLimitRecovery, ResumeLimitRecoveryParams, LimitRecoveryStatus),
     (SaveChatSearchSettings, SaveChatSearchSettingsParams, ChatSearchSettings),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
     (UnarchiveChat, UnarchiveChatParams, UnitResult),

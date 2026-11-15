@@ -18,7 +18,7 @@
 //! only sees "429", and the old fixed 15-minute cooldown treated them alike —
 //! which meant re-hammering an exhausted account 160 times before it cleared.
 
-use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -29,6 +29,41 @@ pub struct ProviderLimit {
     pub signal: String,
     /// When the provider says it clears, when it says so at all.
     pub reset_at: Option<DateTime<Utc>>,
+    /// Whether the account ran out or the provider is busy for everyone.
+    pub kind: LimitKind,
+}
+
+/// The two things a "limit" frame can mean. Both cool a harness down; only a
+/// usage limit is something a chat should wait out or switch away from on the
+/// user's behalf. A capacity error clears on its own in seconds and is the
+/// provider's in-place retry to make, not a reason to resend a turn later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitKind {
+    Usage,
+    Capacity,
+}
+
+/// Claude and newer Codex builds say "You've hit your session limit" or
+/// "your 5-hour limit" or "your weekly limit", none of which contains the
+/// shared vocabulary's "usage limit". The phrase is read only from adapter
+/// frames, which the provider wrote, never from worker prose: it is the
+/// provider's own account statement, so the wider reading is safe here.
+fn hit_your_limit(haystack: &str) -> bool {
+    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
+    PATTERN
+        .get_or_init(|| Regex::new(r"hit your [a-z0-9 -]{0,24}limit").ok())
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(haystack))
+}
+
+/// A bare "429" only counts as a whole number. As a substring it matches hex
+/// request ids and cf-ray headers in unrelated 401s.
+fn whole_429(haystack: &str) -> bool {
+    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
+    PATTERN
+        .get_or_init(|| Regex::new(r"(?:^|[^0-9a-z])429(?:[^0-9a-z]|$)").ok())
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(haystack))
 }
 
 /// The longest reset hint that is believable. A parsed timestamp beyond this
@@ -50,13 +85,26 @@ pub fn detect(text: &str) -> Option<ProviderLimit> {
 /// [`detect`] with an explicit "now", so reset parsing is testable without
 /// waiting for the calendar.
 pub fn detect_at(text: &str, now: DateTime<Utc>) -> Option<ProviderLimit> {
-    let haystack = text.to_ascii_lowercase();
+    // Curly apostrophes ("You’ve") are as common as straight ones in the
+    // recorded frames; folding them keeps one pattern per phrase.
+    let haystack = text.to_lowercase().replace('\u{2019}', "'");
     // The same vocabulary the result-prose classifier uses. One list, so a
-    // phrase recognised on one path cannot be missed on the other.
-    let signal = crate::worker_retry::quota_signal_in(&haystack)?;
+    // phrase recognised on one path cannot be missed on the other. The frame
+    // reading adds only the provider's own "hit your ... limit" wording.
+    let signal = match crate::worker_retry::quota_signal_in(&haystack) {
+        Some("429") if !whole_429(&haystack) => None,
+        found => found,
+    }
+    .or_else(|| hit_your_limit(&haystack).then_some("usage limit"))?;
+    let kind = if matches!(signal, "overloaded" | "at capacity") {
+        LimitKind::Capacity
+    } else {
+        LimitKind::Usage
+    };
     Some(ProviderLimit {
         signal: signal.to_owned(),
         reset_at: parse_reset_at(&haystack, now),
+        kind,
     })
 }
 
@@ -114,93 +162,131 @@ fn retry_after_reset(haystack: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>
     Some(now + delay)
 }
 
-/// Codex says it in words: "Try again at Sep 7th, 11:35 AM." The date is
-/// optional and the year never appears, so a bare time is read as the next
-/// occurrence of that clock time and a date is read against the current year.
+/// Codex says it in words: "Try again at Sep 7th, 11:35 AM." or, in newer
+/// builds, "try again at Sep 7th, 2026 11:35 AM." Claude says "resets 7:50pm
+/// (Asia/Tokyo)". A bare time is read as the next occurrence of that clock
+/// time; a date without a year is read against the current year.
 ///
-/// The clock it names is the user's, not UTC. Reading "11:35 AM" as 11:35 UTC
-/// on a machine in PDT puts the reset seven hours early, and routing resumes
-/// straight into the account that is still exhausted — so the wall-clock form
-/// is built in the local zone and converted, unlike the epoch and delay forms
-/// which are already absolute.
+/// The clock is the one the frame names, else the user's, never UTC. Reading
+/// "11:35 AM" as 11:35 UTC on a machine in PDT puts the reset seven hours
+/// early, and routing resumes straight into the account that is still
+/// exhausted. Claude names its zone because the account's zone and the
+/// machine's need not agree (a laptop that travelled, a VPN), and ignoring it
+/// would be wrong by the difference.
 fn wall_clock_reset(haystack: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
         Regex::new(
-            r"(?:try again|resets?|available again|back)\s*(?:at|on|in)?\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)",
+            r"(?:try again|resets?|available again|back)\s*(?:at|on|in)?\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(?:(\d{4}),?\s*)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([a-z_]+(?:/[a-z_+-]+){1,2})\))?",
         )
         .expect("static pattern")
     });
     let captures = pattern.captures(haystack)?;
-    let hour: u32 = captures.get(3)?.as_str().parse().ok()?;
+    let hour: u32 = captures.get(4)?.as_str().parse().ok()?;
     if hour == 0 || hour > 12 {
         return None;
     }
-    let minute: u32 = captures
-        .get(4)
-        .and_then(|minute| minute.as_str().parse().ok())
-        .unwrap_or(0);
-    let hour24 = match (hour, captures.get(5)?.as_str()) {
+    let minute: u32 = match captures.get(5) {
+        Some(minute) => minute.as_str().parse().ok().filter(|minute| *minute < 60)?,
+        None => 0,
+    };
+    let hour24 = match (hour, captures.get(6)?.as_str()) {
         (12, "am") => 0,
         (12, "pm") => 12,
         (hour, "pm") => hour + 12,
         (hour, _) => hour,
     };
-    let local_now = now.with_timezone(&Local);
-    let candidate = match (captures.get(1), captures.get(2)) {
-        (Some(month), Some(day)) => {
-            let month = month_number(month.as_str())?;
-            let day: u32 = day.as_str().parse().ok()?;
-            let dated = local_reset(local_now.year(), month, day, hour24, minute)?;
-            // No year in the text, so a date that already passed is next year's.
-            if dated > now {
-                dated
-            } else {
-                local_reset(local_now.year() + 1, month, day, hour24, minute)?
-            }
-        }
-        _ => {
-            let today = local_reset(
-                local_now.year(),
-                local_now.month(),
-                local_now.day(),
-                hour24,
-                minute,
-            )?;
-            if today > now {
-                today
-            } else {
-                // A day later on the wall clock, which a DST boundary makes
-                // 23 or 25 hours rather than 24 — so it is rebuilt from the
-                // next local date, not by adding a fixed span.
-                let tomorrow = (local_now + Duration::days(1)).date_naive();
-                local_reset(
-                    tomorrow.year(),
-                    tomorrow.month(),
-                    tomorrow.day(),
-                    hour24,
-                    minute,
-                )?
-            }
-        }
+    let date = match (captures.get(1), captures.get(2)) {
+        (Some(month), Some(day)) => Some((
+            month_number(month.as_str())?,
+            day.as_str().parse::<u32>().ok()?,
+            match captures.get(3) {
+                Some(year) => Some(year.as_str().parse::<i32>().ok()?),
+                None => None,
+            },
+        )),
+        _ => None,
     };
-    Some(candidate)
+    let clock = WallClock { date, hour: hour24, minute };
+    match captures.get(7).and_then(|zone| named_zone(zone.as_str())) {
+        Some(zone) => clock.next_after(&zone, now),
+        None => clock.next_after(&Local, now),
+    }
 }
 
-/// A local wall-clock instant as UTC. Ambiguous and skipped times (the two
+/// An IANA zone from the frame's lowercased text. The table is matched case
+/// insensitively against chrono-tz's own names, so "asia/calcutta" finds the
+/// `Asia/Calcutta` alias without an extra crate feature.
+fn named_zone(lowered: &str) -> Option<chrono_tz::Tz> {
+    chrono_tz::TZ_VARIANTS
+        .iter()
+        .find(|zone| zone.name().eq_ignore_ascii_case(lowered))
+        .copied()
+}
+
+/// A reset stated on a wall clock: a time, and a date when the frame gave one.
+struct WallClock {
+    /// Month, day, and the year when stated.
+    date: Option<(u32, u32, Option<i32>)>,
+    hour: u32,
+    minute: u32,
+}
+
+impl WallClock {
+    /// The instant this clock reading names in `zone`, as the next occurrence
+    /// after `now` when the frame left the date or the year out.
+    fn next_after<Z: TimeZone>(&self, zone: &Z, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let zoned_now = now.with_timezone(zone);
+        match self.date {
+            Some((month, day, Some(year))) => zoned_reset(zone, year, month, day, self.hour, self.minute),
+            Some((month, day, None)) => {
+                let dated = zoned_reset(zone, zoned_now.year(), month, day, self.hour, self.minute)?;
+                // No year in the text, so a date that already passed is next year's.
+                if dated > now {
+                    Some(dated)
+                } else {
+                    zoned_reset(zone, zoned_now.year() + 1, month, day, self.hour, self.minute)
+                }
+            }
+            None => {
+                let today = zoned_now.date_naive();
+                let first = zoned_reset_on(zone, today, self.hour, self.minute)?;
+                if first > now {
+                    Some(first)
+                } else {
+                    // A day later on the wall clock, which a DST boundary makes
+                    // 23 or 25 hours rather than 24, so it is rebuilt from the
+                    // next local date, not by adding a fixed span.
+                    zoned_reset_on(zone, today.succ_opt()?, self.hour, self.minute)
+                }
+            }
+        }
+    }
+}
+
+fn zoned_reset_on<Z: TimeZone>(zone: &Z, date: NaiveDate, hour: u32, minute: u32) -> Option<DateTime<Utc>> {
+    zoned_reset(zone, date.year(), date.month(), date.day(), hour, minute)
+}
+
+/// A wall-clock instant in `zone` as UTC. Ambiguous and skipped times (the two
 /// DST edges) resolve to the later reading, which errs toward waiting longer
 /// rather than resuming into an exhausted account.
-fn local_reset(
+fn zoned_reset<Z: TimeZone>(
+    zone: &Z,
     year: i32,
     month: u32,
     day: u32,
     hour: u32,
     minute: u32,
 ) -> Option<DateTime<Utc>> {
-    let local = Local
-        .with_ymd_and_hms(year, month, day, hour, minute, 0)
-        .latest()?;
-    Some(local.with_timezone(&Utc))
+    let zoned = zone.with_ymd_and_hms(year, month, day, hour, minute, 0).latest()?;
+    Some(zoned.with_timezone(&Utc))
+}
+
+/// [`zoned_reset`] on the machine's clock.
+#[cfg(test)]
+fn local_reset(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option<DateTime<Utc>> {
+    zoned_reset(&Local, year, month, day, hour, minute)
 }
 
 fn month_number(month: &str) -> Option<u32> {
@@ -366,6 +452,177 @@ mod tests {
             "Refusing to create helper binaries under temporary dir",
         ] {
             assert_eq!(detect_at(text, now()), None, "{text}");
+        }
+    }
+
+    /// The labeled corpus of real provider frames, as an eval with gates:
+    /// every limit recognised (recall 1.0), nothing else (no false
+    /// positives), the right kind, and the stated reset recovered to the
+    /// minute. The expected instant is computed independently of the parser,
+    /// by walking calendar days in the frame's zone.
+    #[test]
+    fn eval_recorded_limit_frames() {
+        use chrono::{Datelike, TimeZone};
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/limit-recovery/frames.json"
+        ))
+        .unwrap();
+        let now: DateTime<Utc> = corpus["now"].as_str().unwrap().parse().unwrap();
+        fn next_occurrence<Z: TimeZone>(zone: &Z, now: DateTime<Utc>, hour: u32, minute: u32) -> DateTime<Utc> {
+            let start = now.with_timezone(zone).date_naive();
+            (0..3)
+                .filter_map(|offset| {
+                    let date = start + Duration::days(offset);
+                    zone.with_ymd_and_hms(date.year(), date.month(), date.day(), hour, minute, 0)
+                        .latest()
+                        .map(|instant| instant.with_timezone(&Utc))
+                })
+                .find(|instant| *instant > now)
+                .unwrap()
+        }
+        let (mut positives, mut recalled, mut false_positives, mut resets, mut resets_right) = (0, 0, 0, 0, 0);
+        let mut failures = Vec::new();
+        for case in corpus["cases"].as_array().unwrap() {
+            let text = case["text"].as_str().unwrap();
+            let got = detect_at(text, now);
+            if !case["limit"].as_bool().unwrap() {
+                if got.is_some() {
+                    false_positives += 1;
+                    failures.push(format!("false positive: {text}"));
+                }
+                continue;
+            }
+            positives += 1;
+            let Some(limit) = got else {
+                failures.push(format!("missed: {text}"));
+                continue;
+            };
+            recalled += 1;
+            let kind = if limit.kind == LimitKind::Usage { "usage" } else { "capacity" };
+            if kind != case["kind"].as_str().unwrap() {
+                failures.push(format!("kind {kind}: {text}"));
+            }
+            let reset = &case["reset"];
+            let expected = if reset.is_null() {
+                None
+            } else if let Some(epoch) = reset["epoch"].as_i64() {
+                Some(Utc.timestamp_opt(epoch, 0).unwrap())
+            } else if let Some(after) = reset["afterSeconds"].as_i64() {
+                Some(now + Duration::seconds(after))
+            } else {
+                let (hour, minute) = (reset["hour"].as_u64().unwrap() as u32, reset["minute"].as_u64().unwrap() as u32);
+                let zone = reset["zone"].as_str().unwrap();
+                Some(match (reset["year"].as_i64(), zone) {
+                    (Some(year), "local") => Local
+                        .with_ymd_and_hms(year as i32, reset["month"].as_u64().unwrap() as u32, reset["day"].as_u64().unwrap() as u32, hour, minute, 0)
+                        .latest()
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    (None, "local") => next_occurrence(&Local, now, hour, minute),
+                    (None, named) => next_occurrence(&named.parse::<chrono_tz::Tz>().unwrap(), now, hour, minute),
+                    (Some(_), named) => panic!("dated case in a named zone is not in the corpus: {named}"),
+                })
+            };
+            if expected.is_some() {
+                resets += 1;
+            }
+            if limit.reset_at == expected {
+                if expected.is_some() {
+                    resets_right += 1;
+                }
+            } else {
+                failures.push(format!("reset {:?} != {:?}: {text}", limit.reset_at, expected));
+            }
+        }
+        eprintln!(
+            "limit-frame eval: recall {recalled}/{positives}, false positives {false_positives}, resets {resets_right}/{resets}"
+        );
+        assert!(failures.is_empty(), "{failures:#?}");
+        assert_eq!(recalled, positives);
+        assert_eq!(false_positives, 0);
+        assert_eq!(resets_right, resets);
+    }
+
+    mod fuzz {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        /// The case count, unless `PROPTEST_CASES` asks for another (mutation
+        /// runs lower it; a soak raises it).
+        fn fuzz_cases(default: u32) -> u32 {
+            std::env::var("PROPTEST_CASES").ok().and_then(|value| value.parse().ok()).unwrap_or(default)
+        }
+
+        fn any_now() -> impl Strategy<Value = DateTime<Utc>> {
+            // 2000-01-01 .. 2090-01-01
+            (946_684_800i64..3_786_912_000i64).prop_map(|seconds| Utc.timestamp_opt(seconds, 0).unwrap())
+        }
+
+        /// Frame-shaped noise: the vocabulary, digits, clock words, zones.
+        fn frame_text() -> impl Strategy<Value = String> {
+            let pieces = prop::collection::vec(
+                prop_oneof![
+                    Just("You've hit your ".to_owned()),
+                    Just("session limit".to_owned()),
+                    Just(" · resets ".to_owned()),
+                    Just("try again at ".to_owned()),
+                    Just("retry-after: ".to_owned()),
+                    Just("usage limit".to_owned()),
+                    Just("429".to_owned()),
+                    Just("overloaded".to_owned()),
+                    Just("|".to_owned()),
+                    Just(" (Asia/Tokyo)".to_owned()),
+                    Just(" (Not/AZone)".to_owned()),
+                    Just("Feb 30th, ".to_owned()),
+                    Just("Sep 7th, 2026 ".to_owned()),
+                    Just("am".to_owned()),
+                    Just("pm".to_owned()),
+                    Just(":".to_owned()),
+                    "[0-9]{1,11}",
+                    "\\PC{0,12}",
+                ],
+                0..12,
+            );
+            pieces.prop_map(|pieces| pieces.concat())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: fuzz_cases(4096), ..ProptestConfig::default() })]
+
+            /// Whatever a provider writes: no panic, and any reset Bridge
+            /// believes is strictly ahead of now and inside the plausible
+            /// window. A reset outside it would bench a provider or resume a
+            /// chat at a nonsense time.
+            #[test]
+            fn any_frame_yields_only_a_plausible_reset(text in frame_text(), now in any_now()) {
+                if let Some(limit) = detect_at(&text, now) {
+                    if let Some(reset) = limit.reset_at {
+                        prop_assert!(reset > now, "{text:?} -> {reset} at {now}");
+                        prop_assert!(reset <= now + Duration::days(MAX_PLAUSIBLE_RESET_DAYS), "{text:?} -> {reset}");
+                    }
+                }
+            }
+
+            /// Arbitrary Unicode never panics the detector.
+            #[test]
+            fn arbitrary_text_never_panics(text in "\\PC{0,400}", now in any_now()) {
+                let _ = detect_at(&text, now);
+            }
+
+            /// A stated clock time in a named zone lands on that wall clock,
+            /// within a day of now, whatever the date.
+            #[test]
+            fn a_named_zone_reset_reads_back_on_that_zone_clock(hour in 1u32..=12, minute in 0u32..60, pm in any::<bool>(), now in any_now()) {
+                use chrono::Timelike;
+                let suffix = if pm { "pm" } else { "am" };
+                let text = format!("You've hit your session limit · resets {hour}:{minute:02}{suffix} (Asia/Tokyo)");
+                let limit = detect_at(&text, now).expect("a limit");
+                let reset = limit.reset_at.expect("a reset");
+                let tokyo = reset.with_timezone(&chrono_tz::Asia::Tokyo);
+                let hour24 = match (hour, pm) { (12, false) => 0, (12, true) => 12, (hour, true) => hour + 12, (hour, false) => hour };
+                prop_assert_eq!((tokyo.hour(), tokyo.minute()), (hour24, minute));
+                prop_assert!(reset > now && reset <= now + Duration::hours(24));
+            }
         }
     }
 }

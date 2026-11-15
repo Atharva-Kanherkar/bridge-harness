@@ -702,6 +702,41 @@
       "resultSchema": "chat-search-settings.json"
     },
     {
+      "command": "get_limit_recovery_settings",
+      "domain": "config",
+      "method": "config/get_limit_recovery_settings",
+      "paramsSchema": null,
+      "resultSchema": "limit-recovery-settings.json"
+    },
+    {
+      "command": "save_limit_recovery_settings",
+      "domain": "config",
+      "method": "config/save_limit_recovery_settings",
+      "paramsSchema": "save-limit-recovery-settings-params.json",
+      "resultSchema": "limit-recovery-settings.json"
+    },
+    {
+      "command": "limit_recovery_status",
+      "domain": "sessions",
+      "method": "sessions/limit_recovery_status",
+      "paramsSchema": "limit-recovery-status-params.json",
+      "resultSchema": "limit-recovery-status.json"
+    },
+    {
+      "command": "cancel_limit_recovery",
+      "domain": "sessions",
+      "method": "sessions/cancel_limit_recovery",
+      "paramsSchema": "cancel-limit-recovery-params.json",
+      "resultSchema": "limit-recovery-status.json"
+    },
+    {
+      "command": "resume_limit_recovery",
+      "domain": "sessions",
+      "method": "sessions/resume_limit_recovery",
+      "paramsSchema": "resume-limit-recovery-params.json",
+      "resultSchema": "limit-recovery-status.json"
+    },
+    {
       "command": "list_archived_chats",
       "domain": "sessions",
       "method": "sessions/list_archived_chats",
