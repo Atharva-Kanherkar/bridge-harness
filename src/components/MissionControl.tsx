@@ -391,13 +391,15 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   );
   const pinnedSessionIds = useMemo(() => stored.pinnedSessionIds.filter(id => sessionMap.has(id) && !dismissedSessionIds.includes(id)), [stored.pinnedSessionIds, sessionMap, dismissedSessionIds]);
   const incoming = useMemo(() => [...new Set([...live.map(session => session.id), ...pinnedSessionIds])], [live, pinnedSessionIds]);
-  // chats already on the board keep their place; a finished one stays, showing
-  // that it is done, until you close it or a newly active chat takes its slot.
+  // the board is what is running: chats already on it keep their place while
+  // they work, and leave once they finish. Only a pinned chat, or the one you
+  // maximized to read, outlives its turn.
   const order = useMemo(() => reconcileOrder(stored.order, {
-    keep: id => sessionMap.has(id) && !dismissedSessionIds.includes(id) && (pinnedSessionIds.includes(id) || visible(id)),
+    keep: id => sessionMap.has(id) && !dismissedSessionIds.includes(id)
+      && (pinnedSessionIds.includes(id) || (visible(id) && (isActive(id) || id === stored.expandedId))),
     incoming,
     replaceable: id => !isActive(id) && !pinnedSessionIds.includes(id),
-  }), [stored.order, sessionMap, dismissedSessionIds, pinnedSessionIds, visible, incoming, isActive]);
+  }), [stored.order, stored.expandedId, sessionMap, dismissedSessionIds, pinnedSessionIds, visible, incoming, isActive]);
   const orderKey = order.join("\u0000");
   const expandedId = stored.expandedId && order.includes(stored.expandedId) ? stored.expandedId : null;
   const layout: MissionLayout = useMemo(() => ({ version: 2, order, pinnedSessionIds, dismissedSessionIds, expandedId, stageLimit: stored.stageLimit }),

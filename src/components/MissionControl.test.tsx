@@ -128,7 +128,7 @@ it("lets a new chat take a finished worker's slot despite a cached working runti
   await render({ sessions: [session("w", "working", { parentSessionId: "a" })] });
   expect(tiles()).toEqual(["w"]);
   await render({ sessions: [session("w", "completed", { parentSessionId: "a" })] });
-  expect(tiles()).toEqual(["w"]);
+  expect(tiles()).toEqual([]);
   await render({ sessions: [session("w", "completed", { parentSessionId: "a" }), session("b", "working")] });
   expect(tiles()).toEqual(["b"]);
 });
@@ -161,17 +161,25 @@ it("resolves approvals against the tile's session, not the selected one", async 
   expect(host.querySelector("[data-session-id='b']")?.className).not.toContain("ring-1");
 });
 
-it("keeps a finished chat in place and lets the next new chat take its slot", async () => {
+it("drops a chat from the board once it finishes, keeping the others in place", async () => {
   await render({ sessions: [session("a", "working")] });
   expect(tiles()).toEqual(["a"]);
   await render({ sessions: [session("a", "working"), session("b", "working")] });
   expect(tiles()).toEqual(["a", "b"]);
   expect(host.querySelector("[role='separator']")).toBeNull();
-  await render({ sessions: [session("a", "completed"), session("b", "working")] });
-  expect(tiles()).toEqual(["a", "b"]);
-  expect(host.querySelector("[data-session-id='a']")?.textContent).not.toContain("Working");
-  await render({ sessions: [session("a", "completed"), session("b", "working"), session("c", "working")] });
-  expect(tiles()).toEqual(["c", "b"]);
+  await render({ sessions: [session("a", "ready"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+  await render({ sessions: [session("a", "ready"), session("b", "working"), session("c", "working")] });
+  expect(tiles()).toEqual(["b", "c"]);
+});
+
+it("does not count or show a provider subagent the chat's ended turn left idle", async () => {
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
+  await render({ sessions: [session("a", "working"), session("s", "working", { parentSessionId: "a", kind: "harness_subagent" })] });
+  expect(tiles()).toEqual(["a", "s"]);
+  await render({ sessions: [session("a", "ready"), session("s", "ready", { parentSessionId: "a", kind: "harness_subagent" })] });
+  expect(tiles()).toEqual([]);
+  expect(host.textContent).not.toContain("1 working");
 });
 
 it("persists a flat order and migrates a stored split tree in reading order", async () => {
@@ -348,7 +356,7 @@ it("pins from the tile header and keeps the chat visible after completion and re
   expect(tiles()).toEqual([]);
 });
 
-it("unpins an active chat without stopping it, and a new chat may then replace it once finished", async () => {
+it("unpins an active chat without stopping it, and it leaves once finished", async () => {
   await render({ sessions: [session("a", "working")] });
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Unpin chat']")!.click());
@@ -356,7 +364,7 @@ it("unpins an active chat without stopping it, and a new chat may then replace i
   expect(savedLayout().pinnedSessionIds).toEqual([]);
   expect(bridgeApi.interruptTurn).not.toHaveBeenCalled();
   await render({ sessions: [session("a", "completed")] });
-  expect(tiles()).toEqual(["a"]);
+  expect(tiles()).toEqual([]);
   await render({ sessions: [session("a", "completed"), session("b", "working")] });
   expect(tiles()).toEqual(["b"]);
 });
@@ -672,12 +680,13 @@ describe("measured board", () => {
     expect(savedLayout().order.at(-1)).toBe("g");
   });
 
-  it("does not move or resize other tiles when one chat finishes", async () => {
+  it("removes a finished chat and keeps the rest in their order", async () => {
     await render({ sessions: seven() });
     await resize(1116, 694);
-    const before = [tiles(), queued(), stage().dataset.cols, stage().dataset.rows];
+    const before = [...tiles(), ...queued()];
     await render({ sessions: seven().map(item => item.id === "b" ? { ...item, status: "completed" as const } : item) });
-    expect([tiles(), queued(), stage().dataset.cols, stage().dataset.rows]).toEqual(before);
+    expect([...tiles(), ...queued()]).toEqual(before.filter(id => id !== "b"));
+    expect(host.querySelector("[data-session-id='b'], [data-queue-id='b']")).toBeNull();
   });
 });
 
