@@ -1365,6 +1365,77 @@ pub struct ClaudeStreamState {
     /// Survives the per-result reset below: it is the one thing a turn needs
     /// from the turns before it.
     usage_cumulative: ClaudeUsageCumulative,
+    /// The newest main-thread request's own usage. A `result` sums every
+    /// request of the turn, so it cannot say how full the window was; the
+    /// last request can. A subagent's frames run on a child state and never
+    /// reach this one.
+    last_request: Option<ClaudeRequestUsage>,
+}
+
+/// One API request's usage as the stream reports it. The same message is
+/// seen several times (`message_start`, each `assistant` snapshot,
+/// `message_delta`), and the counters only grow within it, so each keeps its
+/// largest figure.
+#[derive(Debug, Default, Clone)]
+struct ClaudeRequestUsage {
+    message_id: Option<String>,
+    model: Option<String>,
+    input: i64,
+    cache_read: i64,
+    cache_write: i64,
+    output: i64,
+}
+
+impl ClaudeRequestUsage {
+    /// The window this request filled: everything it read, cache included,
+    /// and what it wrote. The same meaning as Codex's `last.total_tokens`.
+    fn context_used_tokens(&self) -> i64 {
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+            .saturating_add(self.output)
+    }
+}
+
+/// Fold one frame's usage into the request in flight. A frame naming another
+/// message starts a new request; one naming none (`message_delta`) updates
+/// the current one.
+fn observe_claude_request(
+    state: &mut ClaudeStreamState,
+    message_id: Option<&str>,
+    model: Option<&str>,
+    usage: Option<&Value>,
+) {
+    let Some(usage) = usage.filter(|usage| usage.is_object()) else {
+        return;
+    };
+    if let Some(id) = message_id {
+        let same = state
+            .last_request
+            .as_ref()
+            .is_some_and(|last| last.message_id.as_deref() == Some(id));
+        if !same {
+            state.last_request = Some(ClaudeRequestUsage {
+                message_id: Some(id.to_owned()),
+                ..ClaudeRequestUsage::default()
+            });
+        }
+    }
+    let Some(last) = state.last_request.as_mut() else {
+        return;
+    };
+    if last.model.is_none() {
+        last.model = model.map(str::to_owned);
+    }
+    let mut raise = |slot: &mut i64, key: &str| {
+        if let Some(value) = usage.get(key).and_then(Value::as_i64) {
+            *slot = (*slot).max(value.max(0));
+        }
+    };
+    raise(&mut last.input, "input_tokens");
+    raise(&mut last.cache_read, "cache_read_input_tokens");
+    raise(&mut last.cache_write, "cache_creation_input_tokens");
+    raise(&mut last.output, "output_tokens");
 }
 
 /// The running totals the previous `result` frame carried. The SDK documents
@@ -1860,13 +1931,14 @@ fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState
                 .filter_map(|(id, block)| complete_claude_thinking(id, block))
                 .collect();
             let usage_cumulative = std::mem::take(&mut state.usage_cumulative);
+            let last_request = state.last_request.take();
             let child_streams = std::mem::take(&mut state.child_streams);
             let tasks = std::mem::take(&mut state.tasks);
             let ignored_tasks = std::mem::take(&mut state.ignored_tasks);
             let activity = std::mem::take(&mut state.activity);
             *state = ClaudeStreamState { child_streams, tasks, ignored_tasks, activity, ..Default::default() };
             state.usage_cumulative = usage_cumulative;
-            events.extend(normalize_claude_result(message, state));
+            events.extend(normalize_claude_result(message, state, last_request));
             events
         }
         "control_request" | "sdk_control_request" => normalize_claude_control_request(message)
@@ -1965,10 +2037,17 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 state.active_message_id = Some(id.clone());
                 state.active_reasoning_id = Some(format!("reasoning-{id}"));
             }
+            observe_claude_request(
+                state,
+                event.pointer("/message/id").and_then(Value::as_str),
+                event.pointer("/message/model").and_then(Value::as_str),
+                event.pointer("/message/usage"),
+            );
             state.workflow_message_usage = event.get("message").cloned().unwrap_or(Value::Null);
             claude_workflow_usage(message, &state.workflow_message_usage).into_iter().collect()
         }
         "message_delta" => {
+            observe_claude_request(state, None, None, event.get("usage"));
             if let (Some(current), Some(update)) = (
                 state.workflow_message_usage.get_mut("usage").and_then(Value::as_object_mut),
                 event.get("usage").and_then(Value::as_object),
@@ -2104,6 +2183,12 @@ fn normalize_claude_assistant(
     if state.active_message_id.is_none() {
         state.active_message_id = Some(message_id.clone());
     }
+    observe_claude_request(
+        state,
+        payload.get("id").and_then(Value::as_str),
+        payload.get("model").and_then(Value::as_str),
+        payload.get("usage"),
+    );
     let content = payload
         .get("content")
         .and_then(Value::as_array)
@@ -2264,7 +2349,11 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
     events
 }
 
-fn normalize_claude_result(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
+fn normalize_claude_result(
+    message: &Value,
+    state: &mut ClaudeStreamState,
+    last_request: Option<ClaudeRequestUsage>,
+) -> Vec<NormalizedEvent> {
     let subtype = message
         .get("subtype")
         .and_then(Value::as_str)
@@ -2297,6 +2386,13 @@ fn normalize_claude_result(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 "durationMs": message.get("duration_ms"),
                 "durationApiMs": message.get("duration_api_ms"),
                 "numTurns": message.get("num_turns"),
+                // How full the window was on the turn's last request.
+                "lastRequest": last_request
+                    .filter(|request| request.context_used_tokens() > 0)
+                    .map(|request| json!({
+                        "model": request.model,
+                        "contextUsedTokens": request.context_used_tokens(),
+                    })),
             }),
         ));
     }
@@ -4051,6 +4147,58 @@ mod tests {
         // `UsageReport::from_normalized` recursing into the raw frame, where it
         // would find the cumulative `tokenUsage.total` this case must reject.
         assert_eq!(events[0].data["usage"], json!({}));
+    }
+
+    fn claude_usage_window_fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../testing/fixtures/claude-usage-window.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn claude_result_carries_last_main_thread_request_usage() {
+        let fixture = claude_usage_window_fixture();
+        let mut state = ClaudeStreamState::default();
+        let usage: Vec<Value> = fixture["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|frame| normalize_claude_message_with_state(frame, &mut state))
+            .filter(|event| event.kind == "usage.updated")
+            .map(|event| event.data)
+            .collect();
+        assert_eq!(usage.len(), 1, "one result, one usage event");
+        // msg_2's message_delta raised output from 1 to 40; the subagent's
+        // 900k-token request ran on a child state and is absent.
+        assert_eq!(usage[0]["lastRequest"]["model"], fixture["expected"]["model"]);
+        assert_eq!(
+            usage[0]["lastRequest"]["contextUsedTokens"],
+            fixture["expected"]["contextUsedTokens"]
+        );
+
+        // The next turn starts clean: a result with no request of its own
+        // reports no window.
+        let next = normalize_claude_message_with_state(
+            &json!({"type":"result","subtype":"success","usage":{"input_tokens":1}}),
+            &mut state,
+        );
+        let next = next.iter().find(|event| event.kind == "usage.updated").unwrap();
+        assert!(next.data["lastRequest"].is_null());
+    }
+
+    #[test]
+    fn claude_request_usage_keeps_each_counters_largest_figure() {
+        let mut state = ClaudeStreamState::default();
+        observe_claude_request(&mut state, Some("m1"), Some("opus"), Some(&json!({"input_tokens": 10, "output_tokens": 50})));
+        // A late snapshot of the same message with smaller output.
+        observe_claude_request(&mut state, Some("m1"), None, Some(&json!({"input_tokens": 10, "output_tokens": 1})));
+        observe_claude_request(&mut state, None, None, Some(&json!({"output_tokens": 30})));
+        let last = state.last_request.clone().unwrap();
+        assert_eq!((last.input, last.output, last.model.as_deref()), (10, 50, Some("opus")));
+        // A new message replaces it.
+        observe_claude_request(&mut state, Some("m2"), Some("opus"), Some(&json!({"cache_read_input_tokens": 7})));
+        assert_eq!(state.last_request.unwrap().context_used_tokens(), 7);
     }
 
     fn opencode_step_finish(message_id: &str, tokens: Value, cost: Value) -> Value {
