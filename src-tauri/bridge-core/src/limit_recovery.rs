@@ -466,9 +466,11 @@ pub fn probe_delay(attempts: u32) -> Duration {
 pub struct ChatFacts {
     pub exists: bool,
     pub archived: bool,
-    /// The chat's status column: `working` and `waiting` mean a turn is
-    /// already in flight, which a person started.
-    pub status: String,
+    /// A turn is in flight: a real turn id, an approval waiting, or a
+    /// checkpoint. Deliberately not `status='working'` alone, which also means
+    /// only "the provider process is up" (a Codex chat reopened after the
+    /// limit) and would cancel a recovery nobody pre-empted.
+    pub turn_in_flight: bool,
     pub selection: Selection,
 }
 
@@ -484,7 +486,7 @@ pub fn guard(row: &Recovery, chat: &ChatFacts, now: DateTime<Utc>) -> Result<(),
     if now - row.due_at > CATCH_UP {
         return Err("Bridge was closed past the reset");
     }
-    if matches!(chat.status.as_str(), "working" | "waiting") {
+    if chat.turn_in_flight {
         return Err("the chat is already running");
     }
     if row.switches_model {
@@ -673,13 +675,15 @@ impl TickReport {
 fn chat_facts(db: &Connection, session_id: &str) -> Result<ChatFacts, BridgeError> {
     let row = db
         .query_row(
-            "SELECT harness,model,effort,status,archived_at FROM sessions WHERE id=?1",
+            "SELECT harness,model,effort,
+                    active_turn_id IS NOT NULL OR COALESCE(status,'') IN ('waiting','checkpointing'),
+                    archived_at FROM sessions WHERE id=?1",
             [session_id],
             |row| {
                 Ok(ChatFacts {
                     exists: true,
                     archived: row.get::<_, Option<String>>(4)?.is_some(),
-                    status: row.get(3)?,
+                    turn_in_flight: row.get(3)?,
                     selection: Selection { harness: row.get(0)?, model: row.get(1)?, effort: row.get(2)? },
                 })
             },
@@ -688,7 +692,7 @@ fn chat_facts(db: &Connection, session_id: &str) -> Result<ChatFacts, BridgeErro
     Ok(row.unwrap_or(ChatFacts {
         exists: false,
         archived: false,
-        status: String::new(),
+        turn_in_flight: false,
         selection: Selection { harness: String::new(), model: None, effort: None },
     }))
 }
@@ -1049,7 +1053,7 @@ mod tests {
     // ------------------------------------------------------------ guard
 
     fn facts(status: &str, selection: Selection) -> ChatFacts {
-        ChatFacts { exists: true, archived: false, status: status.into(), selection }
+        ChatFacts { exists: true, archived: false, turn_in_flight: status == "running", selection }
     }
 
     #[test]
@@ -1060,8 +1064,7 @@ mod tests {
         assert_eq!(guard(&due, &facts("idle", sel("claude", "opus")), now()), Ok(()));
         assert_eq!(guard(&due, &ChatFacts { exists: false, ..ok.clone() }, now()), Err("the chat was deleted"));
         assert_eq!(guard(&due, &ChatFacts { archived: true, ..ok.clone() }, now()), Err("the chat was archived"));
-        assert_eq!(guard(&due, &facts("working", sel("claude", "opus")), now()), Err("the chat is already running"));
-        assert_eq!(guard(&due, &facts("waiting", sel("claude", "opus")), now()), Err("the chat is already running"));
+        assert_eq!(guard(&due, &facts("running", sel("claude", "opus")), now()), Err("the chat is already running"));
         assert_eq!(guard(&due, &facts("failed", sel("claude", "sonnet")), now()), Err("the chat's model was changed"));
         assert_eq!(guard(&due, &ok, now() + CATCH_UP), Ok(()), "the catch-up window is inclusive");
         assert_eq!(guard(&due, &ok, now() + CATCH_UP + Duration::seconds(1)), Err("Bridge was closed past the reset"));
@@ -1275,6 +1278,29 @@ mod tests {
         assert_eq!(row.state, LimitRecoveryState::Failed);
         assert!(row.outcome.unwrap().contains("provider is not running"));
         assert!(!tick(&db, &actions, now() + Duration::hours(2)).unwrap().changed());
+    }
+
+    /// `working` with no turn id is a provider that is merely up (Codex's
+    /// `start_chat`), not a person's turn: the recovery still acts. A real
+    /// turn id, an approval wait or a checkpoint cancels it.
+    #[test]
+    fn only_a_real_turn_in_flight_preempts_a_recovery() {
+        for (status, turn, preempted) in [
+            ("working", None, false),
+            ("working", Some("t1"), true),
+            ("waiting", None, true),
+            ("checkpointing", None, true),
+            ("ready", None, false),
+        ] {
+            let db = db();
+            set(&db, &resume());
+            observe(&db, "chat", LimitKind::Usage, "usage limit", None, now()).unwrap();
+            db.execute("UPDATE sessions SET status=?1,active_turn_id=?2 WHERE id='chat'", params![status, turn]).unwrap();
+            let db = Mutex::new(db);
+            let actions = Recorder::default();
+            let report = tick(&db, &actions, now() + Duration::hours(1)).unwrap();
+            assert_eq!(report.acted.is_empty(), preempted, "{status} {turn:?}");
+        }
     }
 
     #[test]
