@@ -98,6 +98,16 @@ export function timeLabel(at: string): string {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+/** When something last changed, short: `14:05` today, `Yesterday`, then `14 Nov`. */
+export function whenLabel(at: string, now = new Date()): string {
+  const day = dayLabel(at, now);
+  if (day === "Undated") return "";
+  if (day === "Today") return timeLabel(at);
+  if (day === "Yesterday") return day;
+  const date = new Date(at);
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+}
+
 /** `2.9k`, `640`. */
 export function formatTokens(tokens: number): string {
   if (tokens < 1000) return String(tokens);

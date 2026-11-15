@@ -4,6 +4,7 @@ import { bridgeApi } from "@/api";
 import { TrailsList, type TrailWorkspace } from "./trails/TrailsList";
 import { TrailPage } from "./trails/TrailPage";
 import { TrailStartDialog, type TrailHarnessOption, type TrailStartRequest } from "./trails/TrailStartDialog";
+import { TrailAddDialog } from "./trails/TrailAddDialog";
 
 export type { TrailStartRequest } from "./trails/TrailStartDialog";
 
@@ -31,6 +32,7 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
   const [detail, setDetail] = useState<TrailDetail | null>(null);
   const [detailError, setDetailError] = useState<string>();
   const [starting, setStarting] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const loadList = useCallback(() => {
     bridgeApi.listTrails(true)
@@ -110,11 +112,28 @@ export function TrailsScreen({ trailId, onSelectTrail, workspaces, defaultWorksp
             .catch(cause => setDetailError(message(cause)));
         }}
         onRefresh={() => loadDetail(trailId, true)}
-        onAddIssue={async reference => {
-          await bridgeApi.addTrailMember(trailId, { kind: "issue", ref: reference });
-          loadDetail(trailId);
-        }}
+        onAdd={() => setAdding(true)}
       />
+      {adding && shown && (
+        <TrailAddDialog
+          trail={shown.summary}
+          onClose={() => setAdding(false)}
+          onAdd={async member => {
+            await bridgeApi.addTrailMember(trailId, member);
+            loadDetail(trailId);
+          }}
+          onAddIssue={async reference => {
+            await bridgeApi.addTrailMember(trailId, { kind: "issue", ref: reference });
+            loadDetail(trailId);
+          }}
+          onCreateNote={async title => {
+            const note = await bridgeApi.createNotePage({ title, workspaceId: shown.summary.workspaceId ?? undefined });
+            await bridgeApi.addTrailMember(trailId, { kind: "note", ref: note.id });
+            setAdding(false);
+            onOpenNote(note.id);
+          }}
+        />
+      )}
       {starting && shown && (
         <TrailStartDialog
           trail={shown.summary}

@@ -29,8 +29,8 @@ import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, Not
 import type { CreateDatabaseParams, CreatePageParams, DatabaseQueryResult, DeleteViewParams, EditPageParams, ListNotesParams, NoteDatabase, NoteDatabaseView, NoteJobQueued, QueryDatabaseParams, SaveNotesSettingsParams, SaveViewParams, UpdateNoteParams, UpdateSchemaParams } from "./protocol/generated/protocol";
 import { mockCaptureNote, mockCreateDatabase, mockCreatePage, mockDeleteNote, mockDeleteView, mockQueryDatabase, mockSaveView, mockUpdateSchema, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
-import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrails, mockPreviewTrailBrief, mockReadTrail, mockRemoveTrailMember, mockUpdateTrail, onMockTrailsChanged } from "./trailsMock";
-import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
+import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrailCandidates, mockListTrails, mockPreviewTrailBrief, mockReadTrail, mockRemoveTrailMember, mockUpdateTrail, onMockTrailsChanged } from "./trailsMock";
+import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailCandidatesResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberKind, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
 import type { TrailsChangedPayload } from "./trails";
 import { mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
 import type { ListAppsResult } from "./protocol/generated/protocol";
@@ -1902,6 +1902,9 @@ export const bridgeApi = {
     hasBackend() ? call("trails/remove_trail_member", { trailId, member }) : Promise.resolve().then(() => mockRemoveTrailMember(trailId, member)),
   previewTrailBrief: (trailId: string): Promise<PreviewTrailBriefResult> =>
     hasBackend() ? call("trails/preview_trail_brief", { trailId }) : Promise.resolve().then(() => mockPreviewTrailBrief(trailId)),
+  /** What a person can put on the trail by hand, by kind, newest first. */
+  listTrailCandidates: (trailId: string, kind: TrailMemberKind, query?: string): Promise<ListTrailCandidatesResult> =>
+    hasBackend() ? call("trails/list_trail_candidates", { trailId, kind, query: query?.trim() || undefined }) : Promise.resolve().then(() => mockListTrailCandidates(trailId, kind, query)),
   carryTrailBrief: (trailId: string, sessionId: string, items: string[]): Promise<CarryTrailBriefResult> =>
     hasBackend() ? call("trails/carry_trail_brief", { trailId, sessionId, items }) : Promise.resolve().then(() => mockCarryTrailBrief(trailId, sessionId, items)),
   listOutgoing: (sessionId: string): Promise<ListOutgoingResult> =>

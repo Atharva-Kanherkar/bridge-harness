@@ -69,7 +69,8 @@ import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
 import type { TrailStartRequest } from "./components/TrailsScreen";
-import type { TrailSummary } from "./protocol/generated/protocol";
+import type { TrailMemberRef, TrailSummary } from "./protocol/generated/protocol";
+import { noteDisplayTitle } from "./notesDraft";
 import { TrailStartError, trailForSession } from "./trails";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -1207,7 +1208,8 @@ function AppContent() {
   const [trailSummaries, setTrailSummaries] = useState<TrailSummary[]>([]);
   const [trailId, setTrailId] = useState<string | null>(null);
   const [trailToasts, setTrailToasts] = useState<TrailToast[]>([]);
-  const [addToTrailSessionId, setAddToTrailSessionId] = useState<string | null>(null);
+  // A chat (its menu) or a note (its page's menu) on its way onto a trail.
+  const [addToTrail, setAddToTrail] = useState<{ member: TrailMemberRef; title: string; workspaceId: string | null } | null>(null);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
   const openGithubPane = useCallback((view: GithubLinkView) => {
@@ -3770,6 +3772,7 @@ function AppContent() {
         listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
+        onAddToTrail={note => setAddToTrail({ member: { kind: "note", ref: note.id }, title: noteDisplayTitle(note), workspaceId: note.workspaceId ?? null })}
         onError={setError}
         copilot={notesCopilot}
       /></Suspense> : view === "memory" ? <MemoryDialog
@@ -3811,7 +3814,7 @@ function AppContent() {
           title={chatName(session)}
           trailTitle={trailForSession(trailSummaries, session.id)?.title}
           onOpenTrail={() => { const trail = trailForSession(trailSummaries, session.id); if (trail) openTrail(trail.id); }}
-          onAddToTrail={!session.parentSessionId ? () => setAddToTrailSessionId(session.id) : undefined}
+          onAddToTrail={!session.parentSessionId ? () => setAddToTrail({ member: { kind: "session", ref: session.id }, title: chatName(session), workspaceId: session.workspaceId ?? null }) : undefined}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
@@ -4388,17 +4391,14 @@ function AppContent() {
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => { if (!busy) { closeModal(); setPendingWorkspaceId(undefined); } }}
     />
-    {addToTrailSessionId && (() => {
-      const target = state.sessions.find(item => item.id === addToTrailSessionId);
-      if (!target) return null;
-      return <AddToTrailDialog
-        chatTitle={chatName(target)}
-        trails={trailSummaries}
-        onClose={() => setAddToTrailSessionId(null)}
-        onAdd={async id => { await bridgeApi.addTrailMember(id, { kind: "session", ref: target.id }); refreshTrails(); }}
-        onCreate={async title => { await bridgeApi.createTrail(title, target.workspaceId ?? null, target.id); refreshTrails(); }}
-      />;
-    })()}
+    {addToTrail && <AddToTrailDialog
+      member={addToTrail.member}
+      title={addToTrail.title}
+      workspaceId={addToTrail.workspaceId}
+      trails={trailSummaries}
+      onDone={refreshTrails}
+      onClose={() => setAddToTrail(null)}
+    />}
     <NewProjectDialog
       open={newProjectOpen}
       busy={busy}
