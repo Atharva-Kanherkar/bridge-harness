@@ -6,6 +6,9 @@ authors = ["Bridge"]
 edition = "2021"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 bridge-core = { path = "../bridge-core" }
 bridge-protocol = { path = "../bridge-protocol" }

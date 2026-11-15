@@ -197,7 +197,7 @@ pub(crate) fn reference(filter: &Value, row: &Row, database: &DatabaseDoc, today
     let note = &row.note;
     let cell = row.values.get(id);
     let text_test = |cell: Option<String>| -> bool {
-        let Some(cell) = cell else { return positive == "isNotEmpty" && false };
+        let Some(cell) = cell else { return false };
         let needle = value.and_then(Value::as_str).map(lower).unwrap_or_default();
         match positive {
             "isNotEmpty" => true,

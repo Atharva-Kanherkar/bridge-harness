@@ -16,6 +16,28 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 
+# Lints are the enforced half of the code rules. The deny tier fails the
+# build. The warn tier is held by scripts/clippy-ratchet.mjs, which fails CI
+# when any file gains a violation over lint-baseline.json.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+await_holding_lock = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+cognitive_complexity = "warn"
+exit = "warn"
+expect_used = "warn"
+large_futures = "warn"
+let_underscore_must_use = "warn"
+mem_forget = "warn"
+panic = "warn"
+too_many_lines = "warn"
+unwrap_used = "warn"
+
 [package]
 name = "bridge-deck"
 version = { workspace = true }
@@ -23,6 +45,9 @@ description = "Local control room for supervised coding-agent workspaces"
 authors = ["Bridge"]
 edition = "2021"
 default-run = "bridge-deck"
+
+[lints]
+workspace = true
 
 [lib]
 name = "bridge_deck_lib"

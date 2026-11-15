@@ -7,6 +7,9 @@ edition = "2021"
 publish = false
 default-run = "bridge"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "bridge"
 path = "src/bin/bridge.rs"
