@@ -67,13 +67,12 @@ const SUMMARY_KINDS: &str = "'compaction','checkpoint','branch.summary'";
 const MESSAGE_KINDS: &str = "'user.message','assistant.message','worker.result'";
 const VISIBLE: &str = "('eligible','visible')";
 
-static HEX_RUN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[0-9A-Fa-f]{64,}").expect("hex run regex"));
-static PROXY_URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"/credential-proxy/[^\s"'`<>()\[\]{}]*"#).expect("proxy url regex")
-});
-static PASTED_REF: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[secret:sec_[0-9A-Za-z]+\]").expect("pasted ref regex"));
+// Constant patterns, compiled once. `None` only if one failed to compile,
+// which [`scrub`] treats as "redact everything" rather than "redact less".
+static HEX_RUN: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"[0-9A-Fa-f]{64,}").ok());
+static PROXY_URL: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r#"/credential-proxy/[^\s"'`<>()\[\]{}]*"#).ok());
+static PASTED_REF: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\[secret:sec_[0-9A-Za-z]+\]").ok());
 
 /// Remove every credential this module knows the shape or value of.
 ///
@@ -86,13 +85,19 @@ static PASTED_REF: LazyLock<Regex> =
 /// - a pasted key's reference, `[secret:sec_...]`, which only works in the
 ///   chat it was pasted into. Named saved-key placeholders stay: every chat
 ///   may already use them and they carry no value.
+///
+/// Fails closed: if a pattern is unavailable, nothing of the text is returned.
 pub fn scrub(text: &str) -> String {
+    scrub_with_patterns(text).unwrap_or_else(|| "[redacted]".to_owned())
+}
+
+fn scrub_with_patterns(text: &str) -> Option<String> {
     let pass = credential_broker::proxy_pass();
     let text = if pass.is_empty() { text.to_owned() } else { text.replace(pass, "[redacted]") };
     let text = secret_interception::sanitize(&text).text;
-    let text = PROXY_URL.replace_all(&text, "/credential-proxy/[redacted]");
-    let text = HEX_RUN.replace_all(&text, "[redacted]");
-    PASTED_REF.replace_all(&text, "[secret]").into_owned()
+    let text = PROXY_URL.as_ref()?.replace_all(&text, "/credential-proxy/[redacted]");
+    let text = HEX_RUN.as_ref()?.replace_all(&text, "[redacted]");
+    Some(PASTED_REF.as_ref()?.replace_all(&text, "[secret]").into_owned())
 }
 
 fn bad(message: impl Into<String>) -> ToolError {
@@ -682,6 +687,12 @@ mod tests {
             // in a header no detector names, so only its shape gives it away.
             "0a1b2c3d".repeat(8),
         ]
+    }
+
+    #[test]
+    fn the_patterns_compile_so_scrub_never_fails_closed_in_practice() {
+        assert!(HEX_RUN.is_some() && PROXY_URL.is_some() && PASTED_REF.is_some());
+        assert_eq!(scrub("plain words stay"), "plain words stay");
     }
 
     #[test]

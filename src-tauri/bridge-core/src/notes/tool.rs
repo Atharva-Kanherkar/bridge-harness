@@ -581,7 +581,7 @@ fn history_call(core: &BridgeCore, access: Access, session_id: &str, tool: &str,
         return (error.status, json!({"error": error.message}));
     }
     let outcome = {
-        let db = core.db.lock().unwrap();
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::history_tools::run(&db, session_id, tool, args, chrono::Utc::now())
     };
     match outcome {

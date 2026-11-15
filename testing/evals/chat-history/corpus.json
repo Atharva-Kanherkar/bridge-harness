@@ -210,5 +210,6 @@
     {"args": {"id": "env-dump"}, "expect": ["listener was not running"]}
   ],
   "leakProbeWords": ["key", "api", "anthropic", "openai", "token", "github", "slack", "bearer", "aws", "access", "password", "database", "env", "environment", "proxy", "auth", "secret", "payments", "webhook", "notes", "curl"],
-  "neverShown": ["SECRET_INTERNAL_FRAME", "HIDDEN_TOOL_OUTPUT", "ZEBRAPLAN", "QUOKKA", "BLUEFIN", "CALLERMARK", "sec_9a8b7c6d", "sec_77"]
+  "neverShown": ["SECRET_INTERNAL_FRAME", "HIDDEN_TOOL_OUTPUT", "ZEBRAPLAN", "QUOKKA", "BLUEFIN", "sec_9a8b7c6d", "sec_77"],
+  "callerMarker": "CALLERMARK"
 }
