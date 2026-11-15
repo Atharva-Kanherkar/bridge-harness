@@ -34,6 +34,9 @@ memory) has its own contract.
 - Unpinning closes the gap: pins at 0, 1, 2 with the middle one unpinned
   leave positions 0 and 1 in the original order.
 - Pinning an app that is off is refused: "Turn <Name> on before pinning it."
+- Pinning an app with no screen or dock view (Outgoing, a chat card) is
+  refused: "<Name> has no screen to pin to the sidebar." It would hold one of
+  the three slots while no client could draw or undo it.
 - An unknown id is refused: "Bridge has no app called <id>."
 - Pins and their order survive closing and reopening the database.
 
@@ -58,7 +61,11 @@ memory) has its own contract.
   visualize sentence and the core-tool paragraphs (notify_user, settings)
   stay whenever those tools are listed.
 - With memory off, `memory_tools::has_memory_search` is false, so no
-  `SESSION_GUIDANCE` is added to a chat.
+  `SESSION_GUIDANCE` is added to a chat, and the memory packet renders as
+  `Retrieval::PacketOnly`, the same as for any chat without `memory_search`:
+  bodies are not clipped, because the clip marker points at `memory_search`,
+  which the chat no longer has. The packet's own character budget still
+  bounds its size.
 - The tools the Claude sidecar auto-allows (`BRIDGE_READ_TOOLS`,
   `BRIDGE_REVIEWED_TOOLS`, `BRIDGE_PREFERENCE_TOOLS` in
   `sidecar/claude-agent/options.mjs`) are exactly the bridge tools with
@@ -68,7 +75,10 @@ memory) has its own contract.
 
 - workflows: runs where `status = 'waiting_approval'`, or `unread = 1` and
   status is not `running` or `queued`.
-- trails: trail summaries in state `needsYou` that are not archived.
+- trails: trail summaries in state `needsYou` that are not archived. The
+  count is cached and recomputed only after a `trails/changed` hint, the
+  same freshness the frontend had, so a memory or workflow-run hint never
+  derives trail summaries.
 - memory: count of proposed records in the account scope, uncapped.
 - Every other app: no badge (`null`).
 - An app that is off has `badge: null`.
@@ -147,8 +157,14 @@ Vitest:
 - `src/apps/store.test.ts`: loads the list, re-reads on `apps/changed`,
   coalesces bursts, keeps only the newest response
 - `src/apps/pins.test.ts`: the one-time localStorage import
-- `src/apps/registry.test.ts`: every core id has a frontend descriptor except
-  `outgoing`, and every descriptor has a core id
+- `src/apps/registry.test.ts`: the mock lists exactly the frontend's ids
+- `apps::builtin::tests::frontend_and_mock_list_exactly_the_builtin_ids`
+  (Rust): the ids in `builtin.rs` equal the descriptor ids in
+  `src/apps/registry.ts` (`BUILTIN_APPS` plus `CARD_APPS`) and the ids in
+  `src/appsMock.ts`
+- `apps::registry::tests::an_app_without_a_screen_cannot_be_pinned`
+- `apps::badges::tests::the_trails_badge_is_recomputed_only_after_trails_changed`
+- `memory_packet` test: with Memory off a chat's packet is `PacketOnly`
 - `src/components/AppLauncher.test.tsx`: off apps leave the grid and "Needs
   you"
 - `src/components/BridgeSidebar.test.tsx`: the Apps badge is the sum of core
@@ -184,7 +200,7 @@ bridge exec --data-dir /tmp/bapps --method apps/list_apps --params '{}'
 bridge exec --data-dir /tmp/bapps --method apps/set_app_pinned --params '{"id":"notes","pinned":true}'
 bridge exec --data-dir /tmp/bapps --method apps/set_app_pinned --params '{"id":"pulls","pinned":true}'
 # restart the daemon, list again: notes at 0, pulls at 1
-bridge exec --data-dir /tmp/bapps --method apps/set_app_enabled --params '{"id":"store","enabled":false}'   # invalid_params
+bridge exec --data-dir /tmp/bapps --method apps/set_app_enabled --params '{"id":"store","enabled":false}'   # Bridge's `invalid` error (code 1000), not JSON-RPC invalid_params
 ```
 
 Live tool gating: start a Claude chat and a Codex chat, ask each to list its
