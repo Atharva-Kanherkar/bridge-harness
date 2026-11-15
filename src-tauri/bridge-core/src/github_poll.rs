@@ -183,9 +183,13 @@ impl GithubPoller {
         // Store what was read before telling anyone: a screen that refetches
         // on the event reads the stored snapshot, and a failed read above
         // leaves the last good one in place.
-        if let Err(error) = crate::session_prs::record_polled(&core.db.lock().unwrap(), &brief, &checks) {
-            eprintln!("github poll: could not store #{number}: {error}");
-        }
+        let stored_moved = match crate::session_prs::record_polled(&core.db.lock().unwrap(), &brief, &checks) {
+            Ok(moved) => moved,
+            Err(error) => {
+                eprintln!("github poll: could not store #{number}: {error}");
+                false
+            }
+        };
         let checks_active = checks.iter().any(|check| check.status != CheckStatus::Completed);
         let state_terminal = matches!(brief.state, PullRequestState::Closed | PullRequestState::Merged);
         let complete = all_checks_complete(&checks);
@@ -193,7 +197,10 @@ impl GithubPoller {
         let Some(entry) = watched_map.get_mut(&(workspace_id.to_owned(), number)) else { return };
         // Baselines start empty, so the first observation reports only a
         // genuinely completed check set — same rule as the list-watched path.
-        let changed = rollup_changed(entry.checks.as_deref(), &checks, complete)
+        // A first poll has no baselines; what the store held decides then, so
+        // a restart that finds a PR merged meanwhile still says so.
+        let changed = stored_moved
+            || rollup_changed(entry.checks.as_deref(), &checks, complete)
             || entry.state.is_some_and(|state| state != brief.state)
             || entry.head_sha.as_deref().is_some_and(|sha| sha != brief.head_sha);
         let terminal = complete.then(|| (entry.head_branch.clone(), entry.title.clone()));
@@ -629,5 +636,33 @@ mod tests {
         core.github_poller.poll_once(&core);
         let after: (String, String) = core.db.lock().unwrap().query_row("SELECT snapshot, fetched_at FROM session_pull_requests WHERE session_id='s'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
         assert_eq!(before, after);
+    }
+    #[test]
+    fn a_first_poll_that_corrects_a_stored_state_is_published() {
+        // After a restart: the store says open, GitHub says merged with no
+        // checks. The new watch has no baselines and no check set completes,
+        // so only the stored snapshot can tell this is news.
+        let (scratch, core, repo) = crate::session_prs::tests::fixture();
+        let stale = crate::trails::timeline::tests::view(PullRequestState::Open, vec![("test", Some(CheckConclusion::Success))]);
+        crate::trails::timeline::tests::attach_pr(&core.db.lock().unwrap(), "s", "https://github.com/o/r/pull/12", "2026-11-12T00:00:00Z", Some(&stale));
+        let path = scratch.path().join("brief.json");
+        let mut brief: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        brief["state"] = serde_json::json!("MERGED");
+        std::fs::write(&path, brief.to_string()).unwrap();
+        std::fs::write(scratch.path().join("checks.json"), "[]").unwrap();
+        let mut events = core.events.subscribe();
+        core.github_poller.watch_attached("w", repo, 12, "feat/pr", "PR");
+        core.github_poller.poll_once(&core);
+        let mut published = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            published.push(event);
+        }
+        assert!(
+            published.iter().any(|event| matches!(event, CoreEvent::GithubChecksChanged { number: 12, .. })),
+            "the corrected state must be announced: {published:?}"
+        );
+        let stored: String = core.db.lock().unwrap().query_row("SELECT snapshot FROM session_pull_requests WHERE session_id='s'", [], |row| row.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<crate::session_prs::SessionPrView>(&stored).unwrap().state, PullRequestState::Merged);
+        assert!(!core.github_poller.is_watching("w", 12), "a merged PR with nothing running is unwatched");
     }
 }
