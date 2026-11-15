@@ -1371,6 +1371,12 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
+        /// The case count, unless `PROPTEST_CASES` asks for another (mutation
+        /// runs lower it; a soak raises it).
+        fn fuzz_cases(default: u32) -> u32 {
+            std::env::var("PROPTEST_CASES").ok().and_then(|value| value.parse().ok()).unwrap_or(default)
+        }
+
         fn any_state() -> impl Strategy<Value = LimitRecoveryState> {
             prop_oneof![
                 Just(LimitRecoveryState::Pending),
@@ -1400,7 +1406,7 @@ mod tests {
         }
 
         proptest! {
-            #![proptest_config(ProptestConfig { cases: 2048, ..ProptestConfig::default() })]
+            #![proptest_config(ProptestConfig { cases: fuzz_cases(2048), ..ProptestConfig::default() })]
 
             /// For any settings, limit, chat and history: never schedules in
             /// the past, never more than the probe cap or reset+grace ahead,
@@ -1445,7 +1451,7 @@ mod tests {
         proptest! {
             // Each case opens a fresh store and runs every migration, so this
             // one is cheaper per case to keep at a lower count.
-            #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+            #![proptest_config(ProptestConfig { cases: fuzz_cases(256), ..ProptestConfig::default() })]
 
             /// Any interleaving of limits, user messages, cancels, resume-now
             /// and ticks against the real store: the chat is sent at most one

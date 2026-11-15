@@ -545,6 +545,12 @@ mod tests {
         use super::super::*;
         use proptest::prelude::*;
 
+        /// The case count, unless `PROPTEST_CASES` asks for another (mutation
+        /// runs lower it; a soak raises it).
+        fn fuzz_cases(default: u32) -> u32 {
+            std::env::var("PROPTEST_CASES").ok().and_then(|value| value.parse().ok()).unwrap_or(default)
+        }
+
         fn any_now() -> impl Strategy<Value = DateTime<Utc>> {
             // 2000-01-01 .. 2090-01-01
             (946_684_800i64..3_786_912_000i64).prop_map(|seconds| Utc.timestamp_opt(seconds, 0).unwrap())
@@ -579,7 +585,7 @@ mod tests {
         }
 
         proptest! {
-            #![proptest_config(ProptestConfig { cases: 4096, ..ProptestConfig::default() })]
+            #![proptest_config(ProptestConfig { cases: fuzz_cases(4096), ..ProptestConfig::default() })]
 
             /// Whatever a provider writes: no panic, and any reset Bridge
             /// believes is strictly ahead of now and inside the plausible
