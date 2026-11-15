@@ -507,7 +507,8 @@ impl EventBus {
             let _ = self.sender.send(CoreEvent::AttentionChanged);
         }
         if moves_badges {
-            let _ = self.sender.send(CoreEvent::AppsChanged);
+            // A send fails only when nobody is subscribed, which is fine.
+            drop(self.sender.send(CoreEvent::AppsChanged));
         }
     }
 }

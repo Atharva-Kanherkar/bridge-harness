@@ -491,7 +491,7 @@ fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) 
     };
     if tool == "tools" {
         let label = if access == Access::Write { "write" } else { "read" };
-        let tools = match crate::apps::filter_tools(&core.db.lock().unwrap(), access.tools()) {
+        let tools = match core.try_db().and_then(|db| crate::apps::filter_tools(&db, access.tools())) {
             Ok(tools) => tools,
             Err(error) => return reply(500, json!({"error": error.to_string()})),
         };
@@ -500,7 +500,7 @@ fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) 
     // An app that is off refuses its tools at once, even in a chat that
     // listed them before the switch: the list is read when a chat launches.
     if let Some(app) = crate::apps::tool_owner(tool) {
-        match crate::apps::registry::is_enabled(&core.db.lock().unwrap(), &app.manifest.id) {
+        match core.try_db().and_then(|db| crate::apps::registry::is_enabled(&db, &app.manifest.id)) {
             Ok(true) => {}
             Ok(false) => {
                 return reply(403, json!({"error": format!("{} is turned off in Bridge. The person can turn it on in the Store.", app.manifest.name)}));
