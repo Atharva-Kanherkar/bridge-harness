@@ -144,6 +144,36 @@ Refresh:
   Shipped. Lag is at most one poll cadence (15 s while checks run, 2 min
   otherwise) plus the 1.5 s debounce.
 
+### Review, PR #999 (amended before the fixes)
+
+- **A first poll that corrects a stored state is news.** `record_polled`
+  reports whether any chat row's stored snapshot differed from what was just
+  read (state, draft, head, checks) or had none. `poll_attached` publishes
+  `GithubChecksChanged` when it did, even though the new watch has no
+  baselines, and before a terminal PR is unwatched. Test: stored `open`,
+  GitHub `MERGED` with no checks: one poll publishes the event and the
+  trail lists as Shipped.
+- **What a read brings in is read too.** `read_github` repeats read, then
+  sweep, while a read stored something and the sweep added members (at most
+  8 rounds), so an issue that joins through a PR's closing references gets
+  its snapshot in the same pass. Backoff still applies. Test: a member PR
+  whose closing reference names an issue; one `read_github` leaves the issue
+  on the trail with a snapshot and `missing()` empty.
+- **A failed background read wakes the loop when it is due.** Backoff is per
+  core (`BridgeCore::trail_reads`), not process-wide. The loop waits for the
+  next event or the earliest retry deadline, whichever comes first, and on
+  the deadline runs the GitHub reads again. Entries for records no longer
+  missing are dropped when the loop reads. A refresh whose read fails sends a
+  trail hint so the loop schedules the retry. Tests: a failure schedules a
+  retry at `failed_at + RETRY_AFTER` and a read prunes stale entries; with
+  the maintenance loop running and no event published, a backdated failure
+  is retried.
+- **Arming tries every attachment.** `arm_trail_pulls` reads every chat row
+  of a trail PR, decides open or not from the newest snapshot, and arms the
+  first row whose workspace still resolves. Test: the PR attached in two
+  workspaces, one archived through `archive_workspace_records`, in either
+  order: the PR is armed under the live workspace.
+
 ### Protocol (minor 1.35)
 
 - `TrailMemberKind` gains `issue`; `TrailEventKind` gains `issue`. No new
