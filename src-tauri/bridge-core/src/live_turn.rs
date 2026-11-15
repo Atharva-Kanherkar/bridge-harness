@@ -18,7 +18,7 @@ use crate::{
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
     prompts, prompt_mutations, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
     session_prs, session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
-    worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
+    worker_artifacts, worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
 };
@@ -4862,7 +4862,10 @@ pub struct PendingApproval {
 pub enum WorkerLaunchOutcome {
     Launched(String),
     Queued(String),
-    AwaitingApproval,
+    /// The launch is waiting on a live approval card. The id is carried so the
+    /// dispatcher can name the card that owns this work instead of treating the
+    /// row as a terminal failure while the approval can still start it.
+    AwaitingApproval { approval_id: String },
     Failed,
 }
 
@@ -5387,7 +5390,7 @@ pub fn launch_worker_outcome(
                 directive,
                 &pending,
             );
-            return WorkerLaunchOutcome::AwaitingApproval;
+            return WorkerLaunchOutcome::AwaitingApproval { approval_id: pending.approval_id };
         }
         Ok(WorkerReservationOutcome::Blocked(reason)) => {
             let _ = learning_router::record_route_status(
@@ -6025,12 +6028,19 @@ pub fn launch_worker_outcome(
                         }
                     }
                 }
-                state
-                    .delegations
-                    .lock()
-                    .unwrap()
-                    .read_only_sandboxes
-                    .insert(reservation.session_id.clone(), sandbox.clone());
+                {
+                    // The declared artifact contract is what survives the
+                    // sandbox; the boundary and that contract are retained
+                    // together until the worker exits.
+                    let mut delegations = state.delegations.lock().unwrap();
+                    delegations
+                        .read_only_sandboxes
+                        .insert(reservation.session_id.clone(), sandbox.clone());
+                    delegations.read_only_output_paths.insert(
+                        reservation.session_id.clone(),
+                        directive.writable_output_paths.clone(),
+                    );
+                }
                 read_only_sandbox = Some(sandbox);
                 instructions.push_str(&format!("\n\nRead-only OS isolation is active. The workspace is immutable and network access is {}. Write artifacts only under BRIDGE_WORKER_OUTPUT_DIR: {output}", if directive.network_access { "authorized" } else { "denied" }));
                 let _ = store::event(
@@ -6244,19 +6254,19 @@ pub fn launch_worker_outcome(
     let (started, activation) = match activation {
         Ok(started) => started,
         Err(error) => {
-            state
-                .delegations
-                .lock()
-                .unwrap()
-                .read_only_baselines
-                .remove(&reservation.session_id);
-            if let Some(sandbox) = state
-                .delegations
-                .lock()
-                .unwrap()
-                .read_only_sandboxes
-                .remove(&reservation.session_id)
-            {
+            let sandbox = {
+                let mut delegations = state.delegations.lock().unwrap();
+                delegations
+                    .read_only_baselines
+                    .remove(&reservation.session_id);
+                delegations
+                    .read_only_output_paths
+                    .remove(&reservation.session_id);
+                delegations
+                    .read_only_sandboxes
+                    .remove(&reservation.session_id)
+            };
+            if let Some(sandbox) = sandbox {
                 sandbox.cleanup();
             }
             fail_reserved_worker(
@@ -7646,7 +7656,7 @@ fn launch_worker(
     match launch_worker_outcome(core, parent_session_id, turn_id, directive, queue_on_block) {
         WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
         WorkerLaunchOutcome::Queued(_)
-        | WorkerLaunchOutcome::AwaitingApproval
+        | WorkerLaunchOutcome::AwaitingApproval { .. }
         | WorkerLaunchOutcome::Failed => None,
     }
 }
@@ -7908,7 +7918,7 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
         return;
     };
     let _ = (label, harness, model, effort);
-    match settle_worker_after_result(core, child_session_id, &result) {
+    let artifacts = match settle_worker_after_result(core, child_session_id, &result) {
         Ok(true) => verify_read_only_worker(core, child_session_id),
         Ok(false) => return,
         Err(error) => {
@@ -7921,8 +7931,8 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
             );
             return;
         }
-    }
-    report_to_parent(core, child_session_id, &result);
+    };
+    report_to_parent_with_artifacts(core, child_session_id, &result, &artifacts);
     stop_terminal_worker_adapter(core, child_session_id);
 }
 
@@ -9843,7 +9853,13 @@ fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &st
     }
 }
 
-fn verify_read_only_worker(core: &Arc<BridgeCore>, child_session_id: &str) {
+/// Verify the tracked-state baseline, persist the worker's declared artifacts
+/// into durable storage while the sandbox still exists, then remove the
+/// transient tree. Returns the artifacts the parent can open after delivery.
+fn verify_read_only_worker(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+) -> Vec<worker_artifacts::PersistedArtifact> {
     let state = core.clone();
     let baseline = state
         .delegations
@@ -9863,22 +9879,54 @@ fn verify_read_only_worker(core: &Arc<BridgeCore>, child_session_id: &str) {
             );
         }
     }
-    let sandbox = state
-        .delegations
-        .lock()
-        .unwrap()
-        .read_only_sandboxes
-        .remove(child_session_id);
-    if let Some(sandbox) = sandbox {
-        let _ = store::event(
-            &state.db.lock().unwrap(),
+    let (declared, sandbox) = {
+        let mut delegations = state.delegations.lock().unwrap();
+        (
+            delegations
+                .read_only_output_paths
+                .remove(child_session_id)
+                .unwrap_or_default(),
+            delegations.read_only_sandboxes.remove(child_session_id),
+        )
+    };
+    let Some(sandbox) = sandbox else {
+        return Vec::new();
+    };
+    // Copy the declared files out first. The cleanup below is recursive and
+    // would otherwise take the report the delegation asked for with it.
+    let artifacts = state
+        .database_path
+        .parent()
+        .map(|data_dir| {
+            worker_artifacts::persist(
+                sandbox.output_dir(),
+                &declared,
+                child_session_id,
+                data_dir,
+            )
+        })
+        .unwrap_or_default();
+    {
+        let db = state.db.lock().unwrap();
+        if !artifacts.is_empty() {
+            drop(store::event(
+                &db,
+                "sandbox",
+                "worker.artifacts_persisted",
+                child_session_id,
+                &serde_json::to_string(&artifacts).unwrap_or_default(),
+            ));
+        }
+        drop(store::event(
+            &db,
             "sandbox",
             "worker.read_only_isolation_cleaned",
             child_session_id,
             &format!("output_dir={}", sandbox.output_dir().display()),
-        );
-        sandbox.cleanup();
+        ));
     }
+    sandbox.cleanup();
+    artifacts
 }
 
 /// Record the canonical result and its durable parent-delivery obligation.
@@ -9887,6 +9935,15 @@ fn report_to_parent(
     core: &Arc<BridgeCore>,
     child_session_id: &str,
     result: &delegation::WorkerResult,
+) -> bool {
+    report_to_parent_with_artifacts(core, child_session_id, result, &[])
+}
+
+fn report_to_parent_with_artifacts(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+    artifacts: &[worker_artifacts::PersistedArtifact],
 ) -> bool {
     let state = core.clone();
     // Check the claim against the repository *before* it becomes canonical. A
@@ -9950,11 +10007,12 @@ fn report_to_parent(
     let result = &reconciled.result;
     let report = {
         let db = state.db.lock().unwrap();
-        match session_supervisor::SessionSupervisor::record_result_with_evidence(
+        match session_supervisor::SessionSupervisor::record_result_with_artifacts(
             &db,
             child_session_id,
             result,
             evidence_payload.as_ref(),
+            artifacts,
         ) {
             Ok(report) => report,
             Err(error) => {
@@ -10003,7 +10061,7 @@ fn prepare_worker_result_delivery(
     delivery: session_supervisor::WorkerResultDelivery,
 ) -> Result<(), BridgeError> {
     let session_supervisor::WorkerResultDelivery {
-        report, child_session_id, result, repository: evidence_payload,
+        report, child_session_id, result, repository: evidence_payload, artifacts,
     } = delivery;
     let state = core.clone();
     {
@@ -10113,6 +10171,9 @@ fn prepare_worker_result_delivery(
         // Derived from Git, not from the worker: the exact checkout, branch,
         // revision, dirty state, and diffstat behind this claim.
         "repository": evidence_payload,
+        // Durable files the worker was authorized to produce. Each path is
+        // readable after the sandbox is gone; an empty list means none was declared.
+        "artifacts": artifacts,
         "awaitsAdoption": awaits_adoption,
         "suggestedRole": suggested_role,
         "suggestedTask": handoff.then(|| result.suggested_task.clone()).flatten(),
@@ -10237,7 +10298,7 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
             return;
         }
     };
-    let launched = launch_worker(
+    let launched = launch_worker_outcome(
         core,
         &queued.parent_session_id,
         &queued.turn_id,
@@ -10245,11 +10306,32 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
         false,
     );
     let db = state.db.lock().unwrap();
-    let _ = if let Some(session_id) = launched.as_deref() {
-        store::update_worker_queue(&db, &queued.id, "dispatched", Some(session_id))
-    } else {
-        store::update_worker_queue(&db, &queued.id, "rejected", None)
-    };
+    match launched {
+        WorkerLaunchOutcome::Launched(session_id) => {
+            let _ = store::update_worker_queue(&db, &queued.id, "dispatched", Some(&session_id));
+        }
+        // A live approval card can still start this work. Rejecting the row here
+        // produced a terminal "no worker will start" notice beside an approval
+        // that could start it, so the row is cancelled as already explained and
+        // the card remains the single path. Declining produces its own notice;
+        // approving launches through the approval seam.
+        WorkerLaunchOutcome::AwaitingApproval { approval_id } => {
+            let cancelled = store::cancel_worker_queue_for_approval(&db, &queued.id, &approval_id)
+                .unwrap_or(false);
+            drop(store::event(
+                &db,
+                "worker-pool",
+                "worker.queue.awaiting_approval",
+                &queued.id,
+                &format!(
+                    "queue row closed in favour of live approval {approval_id} (cancelled={cancelled})"
+                ),
+            ));
+        }
+        _ => {
+            let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);
+        }
+    }
 }
 
 /// How often terminal worker worktrees are collected. Reclaiming disk is
@@ -11819,7 +11901,7 @@ pub fn dispatch_agent_shortcut(
             (wire::AgentShortcutDisposition::Launched, Some(child_session_id))
         }
         WorkerLaunchOutcome::Queued(_) => (wire::AgentShortcutDisposition::Queued, None),
-        WorkerLaunchOutcome::AwaitingApproval => {
+        WorkerLaunchOutcome::AwaitingApproval { .. } => {
             (wire::AgentShortcutDisposition::AwaitingApproval, None)
         }
         WorkerLaunchOutcome::Failed => {
@@ -13170,14 +13252,16 @@ pub fn stop_worker_session(
     // `report_to_parent` claims once and returns `None` for an already-reported
     // worker, so cancelling one that had reported used to be swallowed
     // entirely — the forest gained a cancellation nobody was informed of.
-    if !report_to_parent(core, session_id, &result) {
+    // Capture declared artifacts before the report: the sandbox is transient
+    // and a cancelled worker may still have finished its report file.
+    let artifacts = verify_read_only_worker(core, session_id);
+    if !report_to_parent_with_artifacts(core, session_id, &result, &artifacts) {
         announce_worker_cancellation(core, session_id, &result.summary);
     }
     core.events.publish(CoreEvent::StateChanged);
     if let Some(mut runtime) = runtime {
         runtime.stop(cause.shutdown());
     }
-    verify_read_only_worker(core, session_id);
     let db = state.db.lock().unwrap();
     crate::harness_subagents::interrupt_children(&db, session_id)?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;

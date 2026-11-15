@@ -258,6 +258,9 @@ pub struct DelegationState {
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
     pub read_only_sandboxes: HashMap<String, worker_sandbox::ReadOnlySandbox>,
+    /// Read-only worker session → the artifact paths its delegation declared.
+    /// Retained with the sandbox so the files can be persisted before cleanup.
+    pub read_only_output_paths: HashMap<String, Vec<String>>,
 }
 
 /// Host-provided configuration for [`BridgeCore::boot`]. The host resolves

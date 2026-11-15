@@ -306,6 +306,10 @@ fn launch(
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
         "networkAllowed": network_allowed,
+        // Only a read-only worker has an assigned output directory. It is the
+        // one place an offline (shell-less) worker may create its declared
+        // artifact, so the sidecar policy scopes Write to exactly this root.
+        "outputDir": read_only_sandbox.map(|sandbox| sandbox.output_dir().to_string_lossy().into_owned()),
         "plugins": launch_plugins,
         "mcpServers": launch_mcp_servers,
         // Absent for every non-briefing session, so the sidecar's existing
@@ -839,22 +843,27 @@ impl ClaudeRuntime {
     }
 
     pub fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
-        let behavior = match decision {
-            "accept" | "acceptForSession" => "allow",
-            _ => "deny",
-        };
-        write_value(
-            &self.writer,
-            &json!({
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": request_id,
-                    "response": {"behavior": behavior}
-                }
-            }),
-        )
+        // `decision` keeps the duration the person chose. The sidecar uses it to
+        // attach the SDK's scoped permission update for "Allow for session";
+        // collapsing both accepts to the same frame made that button a one-shot.
+        write_value(&self.writer, &approval_response(request_id, decision))
     }
+}
+
+/// The `control_response` frame for one approval decision.
+fn approval_response(request_id: Value, decision: &str) -> Value {
+    let behavior = match decision {
+        "accept" | "acceptForSession" => "allow",
+        _ => "deny",
+    };
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {"behavior": behavior, "decision": decision}
+        }
+    })
 }
 
 /// The `/compact` line a harness reads off its input stream.
@@ -1177,6 +1186,25 @@ mod tests {
             lock_writer(&writer, "Claude"),
             Err(BridgeError::Adapter(_))
         ));
+    }
+
+    #[test]
+    fn a_control_response_preserves_the_chosen_grant_duration() {
+        for (decision, behavior) in [
+            ("accept", "allow"),
+            ("acceptForSession", "allow"),
+            ("decline", "deny"),
+            ("cancel", "deny"),
+        ] {
+            let frame = approval_response(json!("root-permission-1"), decision);
+            assert_eq!(frame["type"], "control_response");
+            assert_eq!(frame["response"]["request_id"], "root-permission-1");
+            assert_eq!(frame["response"]["response"]["behavior"], behavior);
+            assert_eq!(
+                frame["response"]["response"]["decision"], decision,
+                "the sidecar needs the duration, not only the behavior"
+            );
+        }
     }
 
     #[test]
