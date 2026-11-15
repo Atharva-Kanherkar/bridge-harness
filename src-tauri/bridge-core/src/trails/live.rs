@@ -82,16 +82,20 @@ pub fn sweep_and_publish(core: &Arc<BridgeCore>, hint: bool) -> Vec<TrailMemberA
 /// chat or trail page open. Merged and closed ones are left alone; arming is
 /// idempotent and keeps each PR's cadence. Returns how many are watched.
 pub fn arm_trail_pulls(core: &Arc<BridgeCore>) -> usize {
-    let rows: Vec<(String, i64, String, String)> = {
+    // Every chat row of each trail PR, newest snapshot first: the same PR can
+    // be attached from several workspaces, and an archived one leaves its row.
+    let rows: Vec<(String, String, i64, String, String, Option<String>)> = {
         let db = core.db.lock().unwrap();
         let statement = db.prepare(
-            "SELECT p.workspace_id, p.number, p.head_branch, p.title FROM trail_members m
+            "SELECT p.url, p.workspace_id, p.number, p.head_branch, p.title, json_extract(p.snapshot,'$.state') FROM trail_members m
              JOIN trails t ON t.id=m.trail_id AND t.archived_at IS NULL
              JOIN session_pull_requests p ON p.url=m.ref
-             WHERE m.kind='pullRequest' AND COALESCE(json_extract(p.snapshot,'$.state'),'open')='open'
-             GROUP BY p.url",
+             WHERE m.kind='pullRequest'
+             ORDER BY p.url, p.snapshot IS NULL, p.fetched_at DESC, p.created_at DESC",
         );
-        match statement.and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect()) {
+        match statement.and_then(|mut statement| {
+            statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))?.collect()
+        }) {
             Ok(rows) => rows,
             Err(error) => {
                 eprintln!("trails: could not list trail pull requests: {error}");
@@ -100,10 +104,26 @@ pub fn arm_trail_pulls(core: &Arc<BridgeCore>) -> usize {
         }
     };
     let mut watched = 0;
-    for (workspace_id, number, head_branch, title) in rows {
+    let mut current: Option<(String, bool)> = None;
+    for (url, workspace_id, number, head_branch, title, state) in rows {
+        // The newest snapshot decides whether the PR is still open; then the
+        // first attachment whose workspace still resolves is armed.
+        let open = match &current {
+            Some((seen, open)) if *seen == url => *open,
+            _ => {
+                let open = state.as_deref().unwrap_or("open") == "open";
+                current = Some((url.clone(), open));
+                open
+            }
+        };
+        if !open {
+            continue;
+        }
         let Ok(path) = core.workspace_path(&workspace_id) else { continue };
         core.github_poller.watch_attached(&workspace_id, std::path::PathBuf::from(path), number as u64, &head_branch, &title);
         watched += 1;
+        // Armed once; this PR's other rows are skipped.
+        current = Some((url, false));
     }
     watched
 }
@@ -440,5 +460,45 @@ esac
         core.trail_reads.backdate(url, crate::trails::issues::RETRY_AFTER + std::time::Duration::from_secs(1));
         let backdated = core.trail_reads.failed_at(url).unwrap();
         assert!(until(&|| core.trail_reads.failed_at(url).is_some_and(|at| at > backdated)), "the due read must be tried again without an event");
+    }
+    #[test]
+    fn arming_tries_every_attachment_of_a_trail_pr() {
+        // The same PR attached from two workspaces; archiving one leaves its
+        // link row behind. Whichever is archived, the live one is armed.
+        for archived in ["w1", "w2"] {
+            let dir = tempfile::tempdir().unwrap();
+            let core = Arc::new(BridgeCore::for_tests(dir.path()));
+            {
+                let db = core.db.lock().unwrap();
+                db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','P',?1,'now')", rusqlite::params![dir.path().to_str().unwrap()]).unwrap();
+                for (workspace, session) in [("w1", "s1"), ("w2", "s2")] {
+                    let path = dir.path().join(workspace);
+                    std::fs::create_dir_all(&path).unwrap();
+                    db.execute(
+                        "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,'p','c','t','main',?2,'idle','now')",
+                        rusqlite::params![workspace, path.to_str().unwrap()],
+                    )
+                    .unwrap();
+                    db.execute(
+                        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth,title) VALUES(?1,?2,'codex','Chat','idle','estimated','direct',0,'Chat')",
+                        rusqlite::params![session, workspace],
+                    )
+                    .unwrap();
+                    db.execute(
+                        "INSERT INTO session_pull_requests(session_id,workspace_id,repo_host,repo_owner,repo_name,number,url,title,head_branch,head_sha,attribution,created_at)
+                         VALUES(?1,?2,'github.com','o','r',12,'https://github.com/o/r/pull/12','PR','feat/pr','abc','manual','now')",
+                        rusqlite::params![session, workspace],
+                    )
+                    .unwrap();
+                }
+                let trail = crate::trails::store::create(&db, "T", None, "t0").unwrap();
+                crate::trails::store::add_member(&db, &trail.id, &TrailMemberRef { kind: TrailMemberKind::PullRequest, reference: "https://github.com/o/r/pull/12".into() }, TrailAddedBy::Person, "t0").unwrap();
+                crate::workspaces::archive_workspace_records(&db, archived, 0, || Ok(())).unwrap();
+            }
+            let live = if archived == "w1" { "w2" } else { "w1" };
+            assert_eq!(arm_trail_pulls(&core), 1, "archived {archived}");
+            assert!(core.github_poller.is_watching(live, 12), "archived {archived}: the PR is armed under {live}");
+            assert!(!core.github_poller.is_watching(archived, 12));
+        }
     }
 }
