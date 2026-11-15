@@ -10,10 +10,10 @@ provider sign-ins already on it. The bench is
 the provider process had not existed for any of it. The Claude launch ran two
 provider subprocesses before the spawn:
 
-| Command | Time |
-| --- | --- |
-| `claude mcp list` | 10.2, 10.4, 10.8 s |
-| `claude plugin list --json` | 0.67, 0.67, 0.72 s |
+| Command | Time | Peak RSS |
+| --- | --- | --- |
+| `claude mcp list` | 10.2, 10.4, 10.8 s | 218 MB |
+| `claude plugin list --json` | 0.67, 0.67, 0.72 s | not measured |
 
 A chat discards the `mcp list` answer: `sidecar_mcp_servers` hands a chat no
 explicit connector list, and `launch_configuration.connector_health` is filtered
