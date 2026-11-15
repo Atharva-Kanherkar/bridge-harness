@@ -313,7 +313,7 @@ mod landlock {
 /// task-level network without any pre-set environment. The single knob is
 /// `BRIDGE_READ_ONLY_NETWORK=deny`, which restores total denial for
 /// installations running fully local runtimes.
-fn runtime_network_denied() -> bool {
+pub(crate) fn runtime_network_denied() -> bool {
     runtime_network_policy_denies(std::env::var("BRIDGE_READ_ONLY_NETWORK").ok().as_deref())
 }
 

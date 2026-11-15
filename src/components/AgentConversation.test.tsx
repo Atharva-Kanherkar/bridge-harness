@@ -614,20 +614,67 @@ describe("AgentConversation", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "delegation.rejected", { role: "system", status: "failed", title: "Delegation rejected", text: "unknown variant `none`", data: { reason: "unknown variant `none`", willRetry: true, attempt: 1 } })
     ]}/>);
-    expect(html).toContain("Delegation rejected");
-    expect(html).toContain("no worker started");
-    expect(html).toContain("unknown variant");
-    expect(html).toContain("correct and re-emit");
+    expect(html).toContain("Delegation request rejected");
+    expect(html).toContain("Attempt 1");
+    expect(html).toContain("Unknown variant");
+    expect(html).toContain("Asked the orchestrator to fix and resend it.");
     expect(html).toContain('role="alert"');
-  });
-  it("shows launch failures and confirms that the orchestrator will not wait", () => {
-    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
-      event(1, "delegation.rejected", { role: "system", status: "failed", title: "Worker failed to start", text: "router schema mismatch", data: { launchFailed: true, phase: "routing", reason: "router schema mismatch", willRetry: false, orchestratorNotified: true } })
+    // A policy rejection never reached the launch, so there is no launch track.
+    expect(html).not.toContain("Launch progress");
+
+    const exhausted = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", text: "bad", data: { reason: "bad", willRetry: false, attempt: 3 } })
     ]}/>);
-    expect(html).toContain("Worker failed to start");
-    expect(html).toContain("router schema mismatch");
-    expect(html).toContain("orchestrator was notified");
-    expect(html).toContain("will not wait");
+    expect(exhausted).toContain("Correction limit reached");
+  });
+  it("shows launch failures in plain words, where the launch stopped, and that the orchestrator will not wait", () => {
+    const reason = "opencode cannot run a read_only worker, so this delegation was not started. Re-delegate with a compatible harness (claude, codex) or change the write mode.";
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", title: "Worker failed to start", text: reason, data: { launchFailed: true, phase: "routing", reason, willRetry: false, orchestratorNotified: true } })
+    ]}/>);
+    expect(html).toContain("Worker didn&#x27;t start");
+    expect(html).toContain("OpenCode cannot run a read-only worker.");
+    expect(html).toContain("Re-delegate with a compatible harness (Claude, Codex)");
+    expect(html).toContain("Orchestrator notified. It won&#x27;t wait for this worker.");
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const steps = [...doc.querySelectorAll('ol[aria-label="Launch progress"] li')].map(step => step.textContent);
+    expect(steps).toEqual(["Policy: passed", "Route: stopped", "Workspace: not reached", "Start: not reached"]);
+    expect(doc.querySelector('[aria-current="step"]')?.textContent).toBe("Route: stopped");
+    // The raw reason waits behind Details; the card itself shows no wire ids.
+    expect(doc.body.textContent).not.toContain("read_only");
+    expect(doc.querySelector('button[aria-expanded="false"]')?.textContent).toContain("Details");
+
+    const unknown = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", text: "x", data: { launchFailed: true, phase: "from_the_future", reason: "x", willRetry: false, orchestratorNotified: false } })
+    ]}/>);
+    expect(unknown).not.toContain("Launch progress");
+    expect(unknown).toContain("couldn&#x27;t be told");
+  });
+  it("reveals and copies the raw launch failure reason", async () => {
+    const reason = "opencode cannot run a read_only worker, so this delegation was not started.";
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", text: reason, data: { launchFailed: true, phase: "spawn", reason, willRetry: false, orchestratorNotified: true } })
+    ]}/>));
+    const details = [...host.querySelectorAll("button")].find(button => button.textContent?.includes("Details"))!;
+    expect(details.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector("code")).toBeNull();
+    await act(async () => details.click());
+    expect(details.getAttribute("aria-expanded")).toBe("true");
+    const panel = document.getElementById(details.getAttribute("aria-controls")!)!;
+    expect(panel.querySelector("code")?.textContent).toBe(reason);
+    const copy = panel.querySelector<HTMLButtonElement>('button[aria-label="Copy error"]')!;
+    await act(async () => copy.click());
+    expect(writeText).toHaveBeenCalledWith(reason);
+    expect(panel.querySelector("button")?.getAttribute("aria-label")).toBe("Copied");
+    await act(async () => details.click());
+    expect(host.querySelector("code")).toBeNull();
+    await act(async () => root.unmount());
+    host.remove();
   });
   it("offers adopt and discard for changes that never reached the workspace", () => {
     const binding = { sessionId: "child", parentSessionId: "s", workspaceId: "w", worktreePath: "/tmp/workers/child", worktreeBranch: "bridge/task-worker-child", taskWorktreePath: "/tmp/task", state: "pending_adoption", head: "2b43aaad", baseCommit: "90ce51c", baseBranch: "bridge/task", baselineDirtyPaths: [], changedPaths: ["src/components/Markdown.tsx"], diffstat: "1 file(s) changed, 12 insertion(s), 3 deletion(s)", dirty: false, detail: null, createdAt: "now", updatedAt: "now" };
@@ -684,8 +731,8 @@ describe("AgentConversation", () => {
     expect(blocked).toContain("idle until you do");
     expect(blocked).toContain('role="alert"');
     // A blocked child must never be presented as a failed launch.
-    expect(blocked).not.toContain("Worker failed to start");
-    expect(blocked).not.toContain("no worker started");
+    expect(blocked).not.toContain("Worker didn&#x27;t start");
+    expect(blocked).not.toContain("Delegation request rejected");
 
     const resolved = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "delegation.blocked", { role: "system", status: "accept", title: "Implementation · strong approval accept", data: { childBlocked: false, childSessionId: "child", label: "Implementation · strong", outcome: "accept" } })

@@ -1,12 +1,12 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, ArrowDown, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, PenLine, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectActiveProcesses, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
 import { isToolLive } from "../transcript/toolCall";
 import { reduceTranscript } from "../transcript/reducer";
 import type { TranscriptEvent } from "../transcript/events";
-import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
+import { LAUNCH_STEPS, humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeLaunchFailure, humanizeResolution, launchFailureStep } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
@@ -2320,16 +2320,7 @@ function DelegationRow({ item, onOpenSession, onOpenAgent, onRetryWorker }: { it
         : <p className="mt-1 text-muted-foreground">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
     </div>;
   }
-  if (facet === "rejected") {
-    const reason = String(item.data.reason ?? item.text ?? "");
-    const willRetry = item.data.willRetry === true;
-    const launchFailed = item.data.launchFailed === true;
-    return <div className="my-3 min-w-0 rounded-xl border border-border border-x-2 border-x-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
-      <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{launchFailed ? "Worker failed to start" : "Delegation rejected — no worker started"}</span></div>
-      {reason && <p className="mt-1 font-mono text-[11px] leading-relaxed break-words text-foreground">{reason}</p>}
-      <p className="mt-1 text-muted-foreground">{launchFailed ? (item.data.orchestratorNotified === true ? "The orchestrator was notified and will not wait for this worker." : "The orchestrator could not be notified; retry after fixing the launch failure.") : willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
-    </div>;
-  }
+  if (facet === "rejected") return <DelegationFailureCard item={item}/>;
   const isResult = facet === "result";
   const model = String(item.data.modelLabel ?? item.data.model ?? "");
   const effort = item.data.effort ? String(item.data.effort) : "";
@@ -2402,6 +2393,94 @@ function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSess
 /// The old card collapsed every outcome into "Subagent finished" and let the
 /// orchestrator silently retry. Naming the classified cause is what lets the
 /// person reading decide whether another attempt is worth anything.
+/// A delegation that never became a worker: the launch failed at some step, or
+/// policy rejected the request itself. It leads with the cause in plain words,
+/// shows how far the launch got, and says what the orchestrator now knows. The
+/// raw reason, which is what anyone debugging needs, waits behind Details.
+function DelegationFailureCard({ item }: { item: ConversationItem }) {
+  const [showDetails, setShowDetails] = useState(false);
+  const detailsId = useId();
+  const reason = String(item.data.reason ?? item.text ?? "").trim();
+  const { copied, copy } = useCopy(reason);
+  const launchFailed = item.data.launchFailed === true;
+  const { summary, hint } = humanizeLaunchFailure(reason);
+  const step = launchFailed ? launchFailureStep(String(item.data.phase ?? "")) : -1;
+  const attempt = !launchFailed && typeof item.data.attempt === "number" ? item.data.attempt : undefined;
+  const status: { icon: ReactNode; text: string } = launchFailed
+    ? item.data.orchestratorNotified === true
+      ? { icon: <Check size={12} aria-hidden="true"/>, text: "Orchestrator notified. It won't wait for this worker." }
+      : { icon: <AlertTriangle size={12} className="text-warning" aria-hidden="true"/>, text: "The orchestrator couldn't be told. Retry once the cause is fixed." }
+    : item.data.willRetry === true
+      ? { icon: <RotateCcw size={12} aria-hidden="true"/>, text: "Asked the orchestrator to fix and resend it." }
+      : { icon: <X size={12} aria-hidden="true"/>, text: "Correction limit reached. The orchestrator won't retry on its own." };
+  return <div role="alert" className={`${PANEL} my-3 border-x-warning`}>
+    <div className="flex gap-3 px-3.5 pt-3 sm:px-4">
+      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-warning/10 text-warning"><AlertTriangle size={13} aria-hidden="true"/></span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-0.5">
+          <b className="text-[13px] font-semibold text-foreground">{launchFailed ? "Worker didn't start" : "Delegation request rejected"}</b>
+          {attempt !== undefined && <span className="text-caption text-muted-foreground">Attempt {attempt}</span>}
+        </div>
+        {summary && <p className="mt-0.5 text-[13px] leading-relaxed break-words text-foreground"><WithInlineCode text={summary}/></p>}
+        {hint && <p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground"><WithInlineCode text={hint}/></p>}
+        {step >= 0 && <LaunchTrack failed={step}/>}
+      </div>
+    </div>
+    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3.5 py-1.5 sm:px-4">
+      <span className="inline-flex min-w-0 items-center gap-1.5 py-1 text-[12px] text-muted-foreground">{status.icon}<span className="min-w-0">{status.text}</span></span>
+      {reason && <button
+        type="button"
+        aria-expanded={showDetails}
+        aria-controls={detailsId}
+        onClick={() => setShowDetails(open => !open)}
+        className="ml-auto inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      ><ChevronRight size={12} className={`transition-transform ${showDetails ? "rotate-90" : ""}`} aria-hidden="true"/> Details</button>}
+    </div>
+    {reason && showDetails && <div id={detailsId} className="px-3.5 pb-3 sm:px-4">
+      <div className="relative">
+        <code className={`${WELL} pr-20`}>{reason}</code>
+        <button
+          type="button"
+          onClick={copy}
+          aria-label={copied ? "Copied" : "Copy error"}
+          className="absolute right-1.5 top-1.5 inline-flex min-h-6 items-center gap-1 rounded-md border border-border bg-card px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >{copied ? <Check size={11} aria-hidden="true"/> : <Copy size={11} aria-hidden="true"/>}{copied ? "Copied" : "Copy"}</button>
+      </div>
+    </div>}
+  </div>;
+}
+
+/// Prose with its backticked wire values set in mono, as the agent must write them.
+function WithInlineCode({ text }: { text: string }) {
+  return <>{text.split(/(`[^`]+`)/).map((part, index) => part.length > 2 && part.startsWith("`") && part.endsWith("`")
+    ? <code key={index} className="rounded border border-border bg-code px-1 py-px font-mono text-[0.92em]">{part.slice(1, -1)}</code>
+    : part)}</>;
+}
+
+/// How far a worker launch got: the steps it passed, the one it stopped at,
+/// and the ones it never reached.
+function LaunchTrack({ failed }: { failed: number }) {
+  return <ol aria-label="Launch progress" className="mt-2.5 flex min-w-0 items-center gap-1.5">
+    {LAUNCH_STEPS.map((step, index) => {
+      const state = index < failed ? "passed" : index === failed ? "stopped" : "not reached";
+      return <li key={step} aria-current={state === "stopped" ? "step" : undefined} className="flex min-w-0 items-center gap-1.5">
+        <span className={cn(
+          "grid size-4 shrink-0 place-items-center rounded-full border",
+          state === "passed" && "border-border bg-muted text-muted-foreground",
+          state === "stopped" && "border-warning bg-warning/10 text-warning",
+          state === "not reached" && "border-dashed border-border",
+        )}>{state === "passed" ? <Check size={9} strokeWidth={3} aria-hidden="true"/> : state === "stopped" ? <X size={9} strokeWidth={3} aria-hidden="true"/> : null}</span>
+        <span className={cn(
+          "truncate text-[11px]",
+          state === "stopped" ? "font-medium text-warning" : "text-muted-foreground",
+          state === "not reached" && "opacity-60",
+        )}>{step}<span className="sr-only">: {state}</span></span>
+        {index < LAUNCH_STEPS.length - 1 && <span aria-hidden="true" className={cn("h-px w-3 shrink-0 sm:w-6", index < failed ? "bg-muted-foreground" : "bg-border")}/>}
+      </li>;
+    })}
+  </ol>;
+}
+
 function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId, onOpenSession, onRetryWorker }: {
   title: string;
   summary: string;
