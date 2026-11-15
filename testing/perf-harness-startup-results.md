@@ -72,6 +72,10 @@ The window is short enough that a plugin installed through Claude Code takes
 effect without restarting Bridge, and settings/workflow surfaces still call the
 fresh, uncached probe.
 
+The same cached probe now backs `discover_harness_connectors`, which is what the
+connector pane reads. Opening that pane used to run `claude mcp list` and block
+for about eleven seconds before it could paint.
+
 ## Experiment 4: a model switch
 
 `claude-sonnet-5-5` to `claude-haiku-4-5` on a live chat:
