@@ -369,6 +369,48 @@ pub struct CarryTrailBriefResult {
     pub trail: TrailSummary,
 }
 
+/// Something a person can put on a trail by hand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrailCandidate {
+    pub member: TrailMemberRef,
+    pub title: String,
+    /// One line under the title: a pull request's state, a draft's state, a
+    /// note's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// A chat's harness, for its mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// When it last changed (RFC 3339); the list is newest first.
+    pub at: String,
+    /// The trail it already sits on. A record sits on at most one trail, so
+    /// the person takes it off that one first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_trail_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_trail_title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListTrailCandidatesParams {
+    pub trail_id: String,
+    /// `session`, `note`, `pullRequest` or `outgoing`. An issue is added by
+    /// its link, read from GitHub, so it has no list.
+    pub kind: TrailMemberKind,
+    /// Matched against the title, case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTrailCandidatesResult {
+    /// Newest first, at most 50, never a record already on this trail.
+    pub candidates: Vec<TrailCandidate>,
+}
+
 /// The `trails/changed` notification: refetch hint, plus what the automatic
 /// sweep added (empty for a plain change).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

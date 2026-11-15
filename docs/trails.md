@@ -51,8 +51,8 @@ run, 2 min otherwise) plus the 1.5 s debounce. A failed read stores nothing.
 ## Automatic adds
 
 `trails::auto::sweep` follows hard links from every chat on an open trail:
-a PR attached to it, a draft it wrote, a notes page linked to it, a chat
-forked from or spawned by it; and from its PRs and issues: an issue a member
+a PR attached to it, a draft it wrote, a notes page linked to it or written
+by it, a chat forked from or spawned by it; and from its PRs and issues: an issue a member
 PR closes, and a PR attached to any chat that closes a member issue. Rules
 repeat until nothing new joins. No model decides membership. After each
 sweep the loop reads, outside the database lock, issue members with no
@@ -62,6 +62,28 @@ Refresh on the page never waits. `trails::live` runs the sweep 1.5 s after a rel
 event and publishes `trails/changed` with each addition once; the app shows
 an "Added to a trail" toast whose Undo removes the member (and records the
 dismissal).
+
+A page counts as written by a chat when its `created_by` is
+`agent:<harness>:<sessionId>`. The notes tools record the calling chat only
+there, never in the page's linked chats, so this is how the plan and PR notes
+an agent writes reach its trail. It also covers pages written before the rule.
+
+## Adding by hand
+
+"Add" on a trail page opens one picker with a tab per kind. Note starts a new
+page on the trail (made in the trail's project, then opened in Notes) or puts
+an existing one on it; Chat, Pull request and Draft list what Bridge keeps;
+Issue takes a link as above. `trails/list_trail_candidates` serves the lists:
+newest first, at most 50, matched on the title (notes through the notes
+store's own search), never a record already on this trail. A record on
+another trail is listed with that trail's name and cannot be picked, since a
+record sits on at most one trail. Chats are the person's own: top level, not
+archived, not internal passes. Pull requests are the ones some chat attached,
+because the timeline reads a PR's state from that link.
+
+From the other side, "Add to trail…" sits in a chat's menu and in a notes
+page's "…" menu. Both open the same dialog: an open trail, or a new trail made
+from the record (in its project).
 
 ## Starting a chat on a trail
 
@@ -91,7 +113,8 @@ PRs, issues and closing references from GitHub), `create_trail`, `update_trail`,
 `remove_trail_member`, `preview_trail_brief`, `carry_trail_brief`, and the
 `trails/changed` notification. Protocol 1.35 adds the `issue` member and
 event kinds; a 1.35 daemon refuses 1.33 and 1.34 clients, which read trails
-but cannot draw an issue.
+but cannot draw an issue. Protocol 1.37 adds `list_trail_candidates`; a 1.36
+client still pairs with a 1.37 daemon.
 
 ## Measuring recall
 
@@ -104,5 +127,5 @@ is its deterministic half and runs with the normal suite.
 
 ## Not yet
 
-Model-suggested membership, sharing a trail, editing members inline on the
-page, and bulk import of a repository's issues.
+Model-suggested membership, sharing a trail, a pull request no chat
+attached, and bulk import of a repository's issues.

@@ -1248,6 +1248,13 @@
       "resultSchema": "carry-trail-brief-result.json"
     },
     {
+      "command": "list_trail_candidates",
+      "domain": "trails",
+      "method": "trails/list_trail_candidates",
+      "paramsSchema": "list-trail-candidates-params.json",
+      "resultSchema": "list-trail-candidates-result.json"
+    },
+    {
       "command": "list_outgoing",
       "domain": "outgoing",
       "method": "outgoing/list_outgoing",
@@ -2314,7 +2321,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 36
+    "minor": 37
   },
   "reserved": {
     "cancel": "$/cancel",

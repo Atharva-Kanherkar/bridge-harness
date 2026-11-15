@@ -24,7 +24,19 @@ pub struct NoteFacts {
     pub title: Option<String>,
     pub created_at: String,
     pub last_actor: String,
+    /// Who made the page: `person`, or `agent:<harness>:<sessionId>` when a
+    /// chat wrote it with the notes tools.
+    pub created_by: String,
     pub session_ids: Vec<String>,
+}
+
+impl NoteFacts {
+    /// The chats tied to this page: those linked to it, and the chat that
+    /// wrote it. The notes tools record their chat only as the author, so a
+    /// plan or PR note an agent writes is tied to its chat this way.
+    pub fn chats(&self) -> impl Iterator<Item = &str> {
+        self.session_ids.iter().map(String::as_str).chain(crate::notes::service::agent_session(&self.created_by))
+    }
 }
 
 /// Notes live in their own database behind `NotesService`; the trail reads
@@ -92,7 +104,14 @@ impl NoteSource for NoteSnapshot {
 }
 
 fn facts(note: bridge_protocol::messages::Note) -> NoteFacts {
-    NoteFacts { id: note.id, title: note.title, created_at: note.created_at, last_actor: note.last_actor, session_ids: note.session_ids }
+    NoteFacts {
+        id: note.id,
+        title: note.title,
+        created_at: note.created_at,
+        last_actor: note.last_actor,
+        created_by: note.created_by,
+        session_ids: note.session_ids,
+    }
 }
 
 /// A session row as the trail shows it.
@@ -190,7 +209,7 @@ pub fn harness_name(harness: &str) -> String {
 }
 
 /// Who last edited a page, as a person reads it.
-fn actor(last_actor: &str) -> String {
+pub(crate) fn actor(last_actor: &str) -> String {
     match last_actor.split(':').collect::<Vec<_>>().as_slice() {
         ["person"] => "you".into(),
         ["agent", harness, ..] => harness_name(harness),
@@ -584,11 +603,20 @@ pub(crate) mod tests {
                         title: Some(title.into()),
                         created_at: at.into(),
                         last_actor: "person".into(),
+                        created_by: "person".into(),
                         session_ids: sessions.iter().map(|s| s.to_string()).collect(),
                     },
                     body.into(),
                 ),
             );
+            self
+        }
+
+        /// The page `id` was written by `actor` (`agent:<harness>:<sessionId>`).
+        pub fn written_by(mut self, id: &str, actor: &str) -> Self {
+            if let Some((facts, _)) = self.0.get_mut(id) {
+                facts.created_by = actor.into();
+            }
             self
         }
     }

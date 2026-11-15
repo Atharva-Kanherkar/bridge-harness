@@ -842,6 +842,25 @@ pub fn add_trail_member(core: &Arc<BridgeCore>, trail_id: &str, member: &wire::T
     Ok(wire::AddTrailMemberResult { trail: trail_summary(core, trail_id)? })
 }
 
+/// What a person can put on a trail by hand, by kind. Notes are searched in
+/// their own store before the core database lock is taken.
+pub fn list_trail_candidates(core: &Arc<BridgeCore>, params: &wire::ListTrailCandidatesParams) -> Result<wire::ListTrailCandidatesResult, BridgeError> {
+    let notes = if params.kind == wire::TrailMemberKind::Note {
+        let filter = crate::notes::service::ListFilter {
+            query: params.query.clone(),
+            limit: Some(crate::trails::candidates::LIMIT * 2),
+            ..Default::default()
+        };
+        core.notes.list(&filter)?
+    } else {
+        Vec::new()
+    };
+    // A read: a lock poisoned elsewhere still lists.
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let candidates = crate::trails::candidates::list(&db, &params.trail_id, params.kind, params.query.as_deref(), &notes)?;
+    Ok(wire::ListTrailCandidatesResult { candidates })
+}
+
 /// Take a record off a trail. It never comes back on its own.
 pub fn remove_trail_member(core: &Arc<BridgeCore>, trail_id: &str, member: &wire::TrailMemberRef) -> Result<wire::RemoveTrailMemberResult, BridgeError> {
     {

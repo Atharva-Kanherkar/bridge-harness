@@ -82,6 +82,8 @@ export interface NotePageViewProps {
   onSaved: (page: NotePage) => void;
   onStart: (target: Note, choice: StartChoice) => Promise<boolean>;
   onOpenChat: (sessionId: string) => void;
+  /** "Add to trail…" in the page's menu. */
+  onAddToTrail?: (note: Note) => void;
   onDeleted: () => void;
   onError: (message: string) => void;
 }
@@ -103,7 +105,7 @@ function moveTargetsOf(notes: Note[] | undefined, self: string): Note[] {
 }
 
 export function NotePageView(props: NotePageViewProps) {
-  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, childPages = [], ancestors = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, notes, onOpenByTitle, onCreatePage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
+  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, childPages = [], ancestors = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, notes, onOpenByTitle, onCreatePage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onAddToTrail, onDeleted, onError } = props;
   const { note } = page;
   const draft = useNoteDraft(page, onSaved, onError);
   const editor = useRef<NoteEditorHandle>(null);
@@ -208,6 +210,7 @@ export function NotePageView(props: NotePageViewProps) {
         onPromote={note.state === "inbox" ? () => void update({ id: note.id, state: "open" }) : undefined}
         onMove={parentId => void update({ id: note.id, ...(parentId ? { parentId } : { clearParent: true }) })}
         onHistory={() => setHistoryOpen(true)}
+        onAddToTrail={onAddToTrail ? () => onAddToTrail(note) : undefined}
         onDelete={() => void remove()}
       />
     </header>
@@ -419,13 +422,14 @@ function Author({ note, chatTitle, onOpenChat }: { note: Note; chatTitle: (id: s
   </Property>;
 }
 
-function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, onDelete }: {
+function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, onAddToTrail, onDelete }: {
   note: Note;
   taskCount: number;
   moveTargets: Note[];
   onPromote?: () => void;
   onMove?: (parentId: string | null) => void;
   onHistory: () => void;
+  onAddToTrail?: () => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -458,6 +462,7 @@ function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, 
             {note.path && <MenuButton onClick={() => { void navigator.clipboard?.writeText(note.path!); close(); }}>Copy file path</MenuButton>}
             {onPromote && <MenuButton onClick={() => { onPromote(); close(); }}>Promote to page</MenuButton>}
             {onMove && <MenuButton onClick={() => setMoving(true)}>Move to…</MenuButton>}
+            {onAddToTrail && <MenuButton onClick={() => { close(); onAddToTrail(); }}>Add to trail…</MenuButton>}
             <MenuDivider />
             <MenuButton destructive onClick={() => setConfirming(true)}>Delete page</MenuButton>
           </>}

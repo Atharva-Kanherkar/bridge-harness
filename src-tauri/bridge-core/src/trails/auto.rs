@@ -4,7 +4,7 @@
 //! For each chat S on an open trail:
 //! 1. a pull request attached to S,
 //! 2. a message S drafted (not discarded),
-//! 3. a notes page linked to S,
+//! 3. a notes page linked to S, or written by S with the notes tools,
 //! 4. a chat forked from S or spawned by it,
 //!
 //! and for each pull request P and issue I on it (`trail_issue_links`, read
@@ -129,7 +129,7 @@ fn candidates(db: &Connection, sessions: &[String], notes: &[NoteFacts]) -> Resu
     }
     let members: HashSet<&str> = sessions.iter().map(String::as_str).collect();
     for note in notes {
-        if note.session_ids.iter().any(|id| members.contains(id.as_str())) {
+        if note.chats().any(|id| members.contains(id)) {
             push(TrailMemberKind::Note, note.id.clone());
         }
     }
@@ -224,6 +224,49 @@ mod tests {
         assert!(added.iter().all(|added| added.trail_title == "Archive"));
         let members = store::members(&db, &trail.id).unwrap();
         assert_eq!(members.iter().filter(|member| member.added_by == TrailAddedBy::Auto).count(), 5);
+    }
+
+    #[test]
+    fn a_note_a_member_chat_wrote_joins_and_its_child_too() {
+        // The notes tools record their chat only as the page's author, never
+        // in its linked chats: the plan and PR notes an agent writes.
+        let db = database();
+        add_session(&db, "s1", "claude", "Lint baseline", None);
+        add_session(&db, "other", "codex", "Unrelated", None);
+        let notes = FakeNotes::default()
+            .with("plan", "Plan: lint baseline", "t", &[], "")
+            .written_by("plan", "agent:claude:s1")
+            .with("pr-notes", "PR notes: lint baseline", "t", &[], "")
+            .written_by("pr-notes", "agent:claude:s1")
+            .with("elsewhere", "Other chat's plan", "t", &[], "")
+            .written_by("elsewhere", "agent:codex:other")
+            .with("mine", "My own page", "t", &[], "");
+        let trail = store::create(&db, "Lint", None, "t0").unwrap();
+        store::add_member(&db, &trail.id, &session("s1"), TrailAddedBy::Person, "t0").unwrap();
+
+        let added = sweep(&db, &notes, "t1").unwrap();
+        assert_eq!(refs(&added), vec![(TrailMemberKind::Note, "plan".into()), (TrailMemberKind::Note, "pr-notes".into())]);
+        assert_eq!(added[0].label, "Note “Plan: lint baseline”");
+
+        // Taken off by the person, it stays off.
+        let plan = TrailMemberRef { kind: TrailMemberKind::Note, reference: "plan".into() };
+        store::remove_member(&db, &trail.id, &plan, "t2").unwrap();
+        assert!(sweep(&db, &notes, "t3").unwrap().is_empty());
+        assert!(store::trail_of(&db, &plan).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_note_a_member_chat_wrote_stays_on_the_trail_it_is_on() {
+        let db = database();
+        add_session(&db, "s1", "claude", "Build", None);
+        let notes = FakeNotes::default().with("plan", "Plan", "t", &[], "").written_by("plan", "agent:claude:s1");
+        let first = store::create(&db, "First", None, "t0").unwrap();
+        let note = TrailMemberRef { kind: TrailMemberKind::Note, reference: "plan".into() };
+        store::add_member(&db, &first.id, &note, TrailAddedBy::Person, "t0").unwrap();
+        let second = store::create(&db, "Second", None, "t0").unwrap();
+        store::add_member(&db, &second.id, &session("s1"), TrailAddedBy::Person, "t0").unwrap();
+        assert!(sweep(&db, &notes, "t1").unwrap().is_empty());
+        assert_eq!(store::trail_of(&db, &note).unwrap().as_deref(), Some(first.id.as_str()));
     }
 
     #[test]

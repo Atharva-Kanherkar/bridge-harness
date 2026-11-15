@@ -296,6 +296,12 @@ async fn carry_trail_brief(trail_id: String, session_id: String, items: Vec<Stri
 }
 
 #[tauri::command]
+async fn list_trail_candidates(trail_id: String, kind: wire::TrailMemberKind, query: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListTrailCandidatesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("list trail candidates", move || api::list_trail_candidates(&core, &wire::ListTrailCandidatesParams { trail_id, kind, query })).await
+}
+
+#[tauri::command]
 async fn list_outgoing(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListOutgoingResult, BridgeError> {
     let core = state.inner().clone();
     blocking("drafted messages", move || api::list_outgoing(&core, &session_id)).await
@@ -3179,7 +3185,9 @@ fn deliver_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, launch: launch::
         let _ = app.run_on_main_thread(move || quick_prompt::toggle(&handle));
         return;
     }
-    let _ = app.emit(launch::LAUNCH_EVENT, launch);
+    if let Err(error) = app.emit(launch::LAUNCH_EVENT, launch) {
+        eprintln!("bridge: could not deliver a launch request ({error})");
+    }
 }
 
 /// Where Tauri keeps app data on Linux (`app_data_dir`), computed before
@@ -3510,6 +3518,7 @@ pub fn run() -> i32 {
             remove_trail_member,
             preview_trail_brief,
             carry_trail_brief,
+            list_trail_candidates,
             list_outgoing,
             update_outgoing,
             copy_outgoing,

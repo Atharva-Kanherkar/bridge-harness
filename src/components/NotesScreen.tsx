@@ -69,6 +69,8 @@ export interface NotesScreenProps {
   /** Start a Bridge chat with `message` as its first turn; resolves to its id. */
   onStartChat: (request: NoteChatRequest) => Promise<string | undefined>;
   onOpenChat: (sessionId: string) => void;
+  /** "Add to trail…" on a page's menu, when the host has trails. */
+  onAddToTrail?: (note: Note) => void;
   onError: (message: string) => void;
   copilot?: NotesCopilotHost;
   /** How often to re-read while a Structure or Tasks pass is queued. */
@@ -83,7 +85,7 @@ const allTab = (notes: Note[]) => notes.filter(note => note.state !== "archived"
 /** The harness that wrote a page, when an agent did. */
 const agentHarness = (note: Note) => /^agent:([^:]+):/.exec(note.lastActor)?.[1] ?? /^agent:([^:]+):/.exec(note.createdBy)?.[1];
 
-export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, openRequest, onOpenRequestHandled, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
+export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, openRequest, onOpenRequestHandled, onStartChat, onOpenChat, onAddToTrail, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
   const [list, setList] = useState<NotesList | null>(null);
   // Every note, search or not: links, moves and breadcrumbs resolve against
   // all pages, never just the ones a search shows.
@@ -584,6 +586,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         onSaved={saved => { if (selected.current === saved.note.id) setPage(saved); void refreshList(); }}
         onStart={start}
         onOpenChat={onOpenChat}
+        onAddToTrail={onAddToTrail}
         onDeleted={() => { select(null); void refreshList(); }}
         onError={onError}
       /> : <div className="flex h-full flex-col">

@@ -242,6 +242,7 @@ methods![
     (RemoveTrailMember, "trails", "remove_trail_member"),
     (PreviewTrailBrief, "trails", "preview_trail_brief"),
     (CarryTrailBrief, "trails", "carry_trail_brief"),
+    (ListTrailCandidates, "trails", "list_trail_candidates"),
     // outgoing: messages a chat drafts for a person or a place
     (ListOutgoing, "outgoing", "list_outgoing"),
     (UpdateOutgoing, "outgoing", "update_outgoing"),

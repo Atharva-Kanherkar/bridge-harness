@@ -6,11 +6,12 @@
  */
 
 import type {
-  AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailsResult, PreviewTrailBriefResult,
-  ReadTrailResult, RemoveTrailMemberResult, TrailBriefItem, TrailDetail, TrailEvent, TrailMember, TrailMemberRef,
-  TrailSummary, UpdateTrailResult,
+  AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailCandidatesResult, ListTrailsResult,
+  PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailBriefItem, TrailCandidate, TrailDetail,
+  TrailEvent, TrailEventKind, TrailMember, TrailMemberKind, TrailMemberRef, TrailSummary, UpdateTrailResult,
 } from "./protocol/generated/protocol";
 import type { TrailsChangedPayload } from "./trails";
+import { mockListNotes } from "./notesMock";
 
 type MockTrail = { detail: TrailDetail; brief: TrailBriefItem[] };
 
@@ -205,6 +206,55 @@ export function mockUpdateTrail(trailId: string, title?: string | null, archived
 
 const key = (trailId: string, ref: TrailMemberRef) => `${trailId}|${ref.kind}|${ref.ref}`;
 
+/** Records mock mode can put on a trail by hand, besides notes (read from the notes mock). */
+const CANDIDATES: Record<Exclude<TrailMemberKind, "issue" | "note">, Omit<TrailCandidate, "onTrailId" | "onTrailTitle">[]> = {
+  session: [
+    { member: { kind: "session", ref: "session-1" }, title: "Orchestrator", harness: "codex", at: iso(10, 11, 34) },
+    { member: { kind: "session", ref: "session-2" }, title: "Orchestrator", harness: "codex", at: iso(12, 15) },
+    { member: { kind: "session", ref: "session-3" }, title: "Fix the login redirect loop", harness: "claude", at: iso(13, 10, 5) },
+    { member: { kind: "session", ref: "session-4" }, title: "Tighten the trail sweep", harness: "opencode", at: iso(14, 16, 40) },
+  ],
+  pullRequest: [
+    { member: { kind: "pullRequest", ref: "https://github.com/acme/bridge/pull/1012" }, title: "#1012 feat(sidebar): archive a chat from its row", detail: "open", at: iso(10, 12, 50) },
+    { member: { kind: "pullRequest", ref: "https://github.com/acme/bridge/pull/979" }, title: "#979 Mission Control stage and queue", detail: "merged", at: iso(13, 8) },
+    { member: { kind: "pullRequest", ref: "https://github.com/acme/bridge/pull/1016" }, title: "#1016 fix(auth): keep the token across restarts", detail: "open · draft", at: iso(14, 9, 12) },
+  ],
+  outgoing: [
+    { member: { kind: "outgoing", ref: "outgoing-trail-1" }, title: "Message to Slack · @mika", detail: "copied to send", at: iso(10, 12, 58) },
+    { member: { kind: "outgoing", ref: "outgoing-trail-2" }, title: "Message to Slack · #dev", detail: "draft, not sent yet", at: iso(13, 9, 10) },
+    { member: { kind: "outgoing", ref: "outgoing-trail-3" }, title: "Message to GitHub · acme/bridge#1016", detail: "draft, not sent yet", at: iso(14, 9, 30) },
+  ],
+};
+
+function catalog(kind: TrailMemberKind, query: string): Omit<TrailCandidate, "onTrailId" | "onTrailTitle">[] {
+  if (kind === "issue") throw new Error("An issue is added by its link.");
+  if (kind === "note") {
+    return mockListNotes(query ? { query } : {}).notes.map(note => ({
+      member: { kind: "note" as const, ref: note.id },
+      title: note.title?.trim() || "Untitled",
+      detail: `last edited by ${note.lastActor === "person" ? "you" : note.lastActor.startsWith("agent:claude") ? "Claude" : "Bridge"}`,
+      at: note.updatedAt,
+    }));
+  }
+  const lower = query.toLowerCase();
+  return CANDIDATES[kind].filter(item => item.title.toLowerCase().includes(lower));
+}
+
+/** The core's `list_trail_candidates`: newest first, never one on this trail, naming the trail one sits on. */
+export function mockListTrailCandidates(trailId: string, kind: TrailMemberKind, query?: string | null): ListTrailCandidatesResult {
+  find(trailId);
+  const candidates = catalog(kind, query?.trim() ?? "")
+    .flatMap(item => {
+      const owner = store().find(trail => trail.detail.members.some(m => m.kind === item.member.kind && m.ref === item.member.ref));
+      if (owner?.detail.summary.id === trailId) return [];
+      return [{ ...item, ...(owner ? { onTrailId: owner.detail.summary.id, onTrailTitle: owner.detail.summary.title } : {}) }];
+    })
+    .sort((left, right) => right.at.localeCompare(left.at));
+  return { candidates: candidates.slice(0, 50) };
+}
+
+const EVENT_KIND: Record<Exclude<TrailMemberKind, "issue">, TrailEventKind> = { session: "chat", note: "note", pullRequest: "pullRequest", outgoing: "message" };
+
 export function mockAddTrailMember(trailId: string, given: TrailMemberRef): AddTrailMemberResult {
   const trail = find(trailId);
   const ref = given.kind === "issue" ? { kind: "issue" as const, ref: mockIssueUrl(given.ref, Boolean(trail.detail.summary.workspaceId)) } : given;
@@ -220,7 +270,9 @@ export function mockAddTrailMember(trailId: string, given: TrailMemberRef): AddT
       trail.detail.events.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
       if (trail.detail.summary.stage === 0) trail.detail.summary = { ...trail.detail.summary, stage: 1 };
     } else {
-      trail.detail.events.push(row(added, { kind: ref.kind === "session" ? "chat" : ref.kind === "outgoing" ? "message" : ref.kind, at: added.addedAt, title: ref.kind === "session" ? "A chat" : ref.ref, tone: "plain" }));
+      const known = catalog(ref.kind, "").find(item => item.member.ref === ref.ref);
+      const title = known?.title ?? (ref.kind === "session" ? "A chat" : ref.ref);
+      trail.detail.events.push(row(added, { kind: EVENT_KIND[ref.kind], at: added.addedAt, title, detail: known?.detail, harness: known?.harness, tone: "plain" }));
     }
     dismissed.delete(key(trailId, ref));
     touch(trail);

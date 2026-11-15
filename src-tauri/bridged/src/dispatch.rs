@@ -163,6 +163,10 @@ pub fn dispatch(
             let p: wire::CarryTrailBriefParams = decode(method, params)?;
             reply(api::carry_trail_brief(core, &p))
         }
+        MethodName::ListTrailCandidates => {
+            let p: wire::ListTrailCandidatesParams = decode(method, params)?;
+            reply(api::list_trail_candidates(core, &p))
+        }
         MethodName::ListOutgoing => {
             let p: wire::ListOutgoingParams = decode(method, params)?;
             reply(api::list_outgoing(core, &p.session_id))

@@ -185,6 +185,27 @@ describe("capture", () => {
   });
 });
 
+describe("trails", () => {
+  it("offers Add to trail… on a page's menu when the host has trails", async () => {
+    const onAddToTrail = vi.fn();
+    await render({ onAddToTrail });
+    await openNote("Local-first sync libraries");
+    await click(button("More"));
+    await click(button("Add to trail…"));
+    expect(onAddToTrail).toHaveBeenCalledWith(expect.objectContaining({ id: mockIdOf("Local-first sync libraries"), title: "Local-first sync libraries" }));
+    // The menu closed behind it.
+    expect(button("Add to trail…")).toBeUndefined();
+  });
+
+  it("leaves it out when the host has none", async () => {
+    await render();
+    await openNote("Local-first sync libraries");
+    await click(button("More"));
+    expect(button("History")).toBeDefined();
+    expect(button("Add to trail…")).toBeUndefined();
+  });
+});
+
 describe("open request", () => {
   it("opens the page an open request names", async () => {
     const first = await mockCreatePage({ title: "Linked from chat", content: "" });
