@@ -272,37 +272,35 @@ impl FrameSource for WsSource {
     }
 
     fn next(&mut self) -> std::io::Result<Frame> {
-        loop {
-            let message = self.link.socket.lock().unwrap().read();
-            match message {
-                Ok(Message::Text(text)) => return Ok(Frame::Line(text.as_bytes().to_vec())),
-                Ok(Message::Binary(_)) => {
-                    return Err(std::io::Error::new(
-                        ErrorKind::InvalidData,
-                        "binary WebSocket messages are not part of the protocol",
-                    ))
-                }
-                // Control frames: tungstenite queues the pong itself. Return
-                // to the caller instead of looping, so a peer flooding pings
-                // cannot keep this read from ever checking the handshake
-                // deadline or shutdown.
-                Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {
-                    return Ok(Frame::Idle)
-                }
-                Ok(Message::Close(_)) => return Ok(Frame::Eof),
-                Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => return Ok(Frame::Eof),
-                Err(WsError::Capacity(_)) => return Ok(Frame::TooLong),
-                Err(WsError::Io(error))
-                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                {
-                    // Lock released: give a waiting writer the chance to take
-                    // it before this reader polls again.
-                    std::thread::sleep(Duration::from_millis(2));
-                    return Ok(Frame::Idle);
-                }
-                Err(WsError::Io(error)) => return Err(error),
-                Err(other) => return Err(std::io::Error::new(ErrorKind::InvalidData, other)),
+        let message = self.link.socket.lock().unwrap().read();
+        match message {
+            Ok(Message::Text(text)) => return Ok(Frame::Line(text.as_bytes().to_vec())),
+            Ok(Message::Binary(_)) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "binary WebSocket messages are not part of the protocol",
+                ))
             }
+            // Control frames: tungstenite queues the pong itself. Return
+            // to the caller instead of looping, so a peer flooding pings
+            // cannot keep this read from ever checking the handshake
+            // deadline or shutdown.
+            Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {
+                return Ok(Frame::Idle)
+            }
+            Ok(Message::Close(_)) => return Ok(Frame::Eof),
+            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => return Ok(Frame::Eof),
+            Err(WsError::Capacity(_)) => return Ok(Frame::TooLong),
+            Err(WsError::Io(error))
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                // Lock released: give a waiting writer the chance to take
+                // it before this reader polls again.
+                std::thread::sleep(Duration::from_millis(2));
+                return Ok(Frame::Idle);
+            }
+            Err(WsError::Io(error)) => return Err(error),
+            Err(other) => return Err(std::io::Error::new(ErrorKind::InvalidData, other)),
         }
     }
 }

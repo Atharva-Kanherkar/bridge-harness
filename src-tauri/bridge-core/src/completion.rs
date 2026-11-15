@@ -390,6 +390,212 @@ pub struct PlanInput {
     pub acceptance_criteria: Vec<String>,
     pub changed_paths: Vec<String>,
     pub repository_commands: Vec<String>,
+    /// The exact checkout the proof will run in. Manifest and package-script
+    /// discovery reads this tree instead of assuming one repository layout.
+    pub repository_root: Option<std::path::PathBuf>,
+}
+
+/// The file-name extensions the planner actually treats as code. Matching the
+/// suffix, not a substring, is what keeps `.json` out of the JavaScript family.
+fn has_extension(path: &str, extension: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
+}
+
+fn file_name_is(path: &str, name: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(name))
+}
+
+fn is_rust_source(path: &str) -> bool {
+    has_extension(path, "rs") || file_name_is(path, "Cargo.toml")
+}
+
+fn is_javascript_source(path: &str) -> bool {
+    ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]
+        .iter()
+        .any(|extension| has_extension(path, extension))
+        || file_name_is(path, "package.json")
+}
+
+/// A changed path as a repository-relative candidate, or `None` when it points
+/// outside the root. The planner never walks to a manifest a worker named with
+/// `..` or an absolute path.
+fn repository_relative(root: &Path, path: &str) -> Option<std::path::PathBuf> {
+    let candidate = Path::new(path);
+    let relative = candidate
+        .strip_prefix(root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| candidate.to_path_buf());
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(relative)
+}
+
+/// The nearest manifest of `name` at or above each changed path, inside `root`.
+fn discover_manifest(
+    root: &Path,
+    changed_paths: &[String],
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    for changed in changed_paths {
+        let Some(relative) = repository_relative(root, changed) else {
+            continue;
+        };
+        let mut directory = relative.parent().map(Path::to_path_buf).unwrap_or_default();
+        loop {
+            let candidate = root.join(&directory).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if directory.as_os_str().is_empty() {
+                break;
+            }
+            directory = directory.parent().map(Path::to_path_buf).unwrap_or_default();
+        }
+    }
+    let root_manifest = root.join(name);
+    root_manifest.is_file().then_some(root_manifest)
+}
+
+fn relative_manifest_argument(root: &Path, manifest: &Path) -> Option<String> {
+    let relative = manifest.strip_prefix(root).ok()?;
+    Some(relative.to_string_lossy().replace('\\', "/"))
+}
+
+/// The package manager a JavaScript project actually uses, from its lockfile or
+/// its `packageManager` field. Never assumes Bun.
+fn package_manager(package_dir: &Path) -> &'static str {
+    let declared = std::fs::read_to_string(package_dir.join("package.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|json| json.get("packageManager").and_then(|value| value.as_str()).map(str::to_owned));
+    if let Some(declared) = declared {
+        let name = declared.split('@').next().unwrap_or_default();
+        return match name {
+            "pnpm" => "pnpm",
+            "yarn" => "yarn",
+            "npm" => "npm",
+            "bun" => "bun",
+            _ => "npm",
+        };
+    }
+    if package_dir.join("bun.lock").is_file() || package_dir.join("bun.lockb").is_file() {
+        "bun"
+    } else if package_dir.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if package_dir.join("yarn.lock").is_file() {
+        "yarn"
+    } else {
+        "npm"
+    }
+}
+
+/// The package scripts a repository really declares. An absent script is not a
+/// check that passed; it is a check that must not be planned at all.
+fn declared_scripts(package_dir: &Path) -> HashSet<String> {
+    let Ok(text) = std::fs::read_to_string(package_dir.join("package.json")) else {
+        return HashSet::new();
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|json| json.get("scripts").and_then(|scripts| scripts.as_object()).cloned())
+        .map(|scripts| scripts.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn script_command(manager: &str, directory: Option<&str>, script: &str) -> String {
+    let flag = match manager {
+        "npm" => "--prefix",
+        "pnpm" => "-C",
+        _ => "--cwd",
+    };
+    match directory.filter(|value| !value.is_empty()) {
+        Some(directory) => format!("{manager} {flag} {directory} run {script}"),
+        None => format!("{manager} run {script}"),
+    }
+}
+
+fn add_rust_commands(
+    root: Option<&Path>,
+    changed_paths: &[String],
+    commands: &mut BTreeSet<String>,
+) {
+    match root.and_then(|root| discover_manifest(root, changed_paths, "Cargo.toml")) {
+        Some(manifest) => {
+            let manifest_argument = root
+                .and_then(|root| relative_manifest_argument(root, &manifest))
+                .filter(|relative| relative != "Cargo.toml")
+                .map(|relative| format!(" --manifest-path {relative}"))
+                .unwrap_or_default();
+            commands.insert(format!("cargo check{manifest_argument} --workspace"));
+            commands.insert(format!("cargo test{manifest_argument} --workspace"));
+        }
+        // No discoverable manifest: a generic cargo invocation is still the
+        // honest check, and it runs in the attempt's own checkout.
+        None => {
+            commands.insert("cargo check --workspace".into());
+            commands.insert("cargo test --workspace".into());
+        }
+    }
+}
+
+fn add_javascript_commands(
+    root: &Path,
+    changed_paths: &[String],
+    commands: &mut BTreeSet<String>,
+) {
+    let Some(package_json) = discover_manifest(root, changed_paths, "package.json") else {
+        return;
+    };
+    let package_dir = package_json.parent().unwrap_or(root);
+    let manager = package_manager(package_dir);
+    let scripts = declared_scripts(package_dir);
+    let directory = package_dir
+        .strip_prefix(root)
+        .ok()
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .filter(|value| !value.is_empty());
+    if scripts.contains("build") {
+        commands.insert(script_command(manager, directory.as_deref(), "build"));
+    }
+    if scripts.contains("test") {
+        commands.insert(script_command(manager, directory.as_deref(), "test"));
+    }
+}
+
+/// The shell checks the plan carries, plus the verification prose that must be
+/// settled by a verifier instead. A string is a command only when the runner's
+/// own authorizer accepts it; prose never becomes a program named `Confirm`.
+fn planned_commands(input: &PlanInput) -> (BTreeSet<String>, Vec<String>) {
+    let mut commands = BTreeSet::new();
+    let mut semantic = Vec::new();
+    for instruction in &input.repository_commands {
+        if crate::check_runner::authorize(instruction).is_ok() {
+            commands.insert(instruction.clone());
+        } else {
+            semantic.push(instruction.clone());
+        }
+    }
+    if input.changed_paths.iter().any(|path| is_rust_source(path)) {
+        add_rust_commands(input.repository_root.as_deref(), &input.changed_paths, &mut commands);
+    }
+    if input.changed_paths.iter().any(|path| is_javascript_source(path)) {
+        if let Some(root) = input.repository_root.as_deref() {
+            add_javascript_commands(root, &input.changed_paths, &mut commands);
+        }
+    }
+    if commands.is_empty() {
+        commands.insert("git diff --check".into());
+    }
+    (commands, semantic)
 }
 
 pub fn plan(input: PlanInput) -> EvalPlan {
@@ -399,11 +605,6 @@ pub fn plan(input: PlanInput) -> EvalPlan {
         .map(|path| path.to_ascii_lowercase())
         .collect::<Vec<_>>();
     let joined_criteria = input.acceptance_criteria.join(" ").to_ascii_lowercase();
-    let touches = |needles: &[&str]| {
-        lower_paths
-            .iter()
-            .any(|path| needles.iter().any(|needle| path.contains(needle)))
-    };
     let high_risk = lower_paths.iter().any(|path| path_is_high_risk(path));
     let user_facing = lower_paths.iter().any(|path| path_is_user_facing(path))
         || ["browser", "screen", "dialog", "button", "user journey"]
@@ -417,19 +618,7 @@ pub fn plan(input: PlanInput) -> EvalPlan {
         RiskTier::Low
     };
     let mut checks = Vec::new();
-    let mut commands = BTreeSet::new();
-    commands.extend(input.repository_commands);
-    if touches(&[".rs", "cargo.toml"]) {
-        commands.insert("cargo test --manifest-path src-tauri/Cargo.toml --workspace".into());
-        commands.insert("cargo check --manifest-path src-tauri/Cargo.toml --workspace".into());
-    }
-    if touches(&[".ts", ".tsx", ".js", ".jsx", "package.json"]) {
-        commands.insert("bun run test".into());
-        commands.insert("bun run build".into());
-    }
-    if commands.is_empty() {
-        commands.insert("git diff --check".into());
-    }
+    let (commands, semantic_verification) = planned_commands(&input);
     for (index, command) in commands.into_iter().enumerate() {
         checks.push(EvalCheck {
             id: format!("deterministic-{index}"),
@@ -441,6 +630,22 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             required_capabilities: vec!["shell".into()],
             different_model_family: false,
             reason: "repository policy or changed file type requires this check".into(),
+        });
+    }
+    if !semantic_verification.is_empty() {
+        checks.push(EvalCheck {
+            id: "semantic-verification".into(),
+            label: format!(
+                "Verify the worker's instructions: {}",
+                semantic_verification.join("; ")
+            ),
+            kind: EvalKind::Scrutiny,
+            required: true,
+            executor: WORKER_EXECUTOR.into(),
+            command: None,
+            required_capabilities: vec!["code_review".into()],
+            different_model_family: false,
+            reason: "a natural-language verification instruction cannot be executed as a repository command".into(),
         });
     }
     if risk != RiskTier::Low {
@@ -1090,6 +1295,7 @@ pub fn create_from_worker_result(
             acceptance_criteria: request.acceptance_criteria,
             changed_paths: result.files_changed.clone(),
             repository_commands: request.verification,
+            repository_root: Some(std::path::PathBuf::from(&repository_path)),
         },
         &labels_for_paths(&result.files_changed),
         available_capabilities,
@@ -1261,6 +1467,7 @@ pub fn create_from_orchestrator_edits(
             acceptance_criteria: directive.acceptance_criteria.clone(),
             changed_paths: changed_paths.clone(),
             repository_commands: directive.verification.clone(),
+            repository_root: Some(std::path::PathBuf::from(repository_path)),
         },
         &labels_for_paths(&changed_paths),
         available_capabilities,
@@ -1968,6 +2175,13 @@ mod tests {
 
     #[test]
     fn planner_selects_independent_scrutiny_and_browser_journey() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repository.path().join("package.json"),
+            r#"{"scripts":{"build":"vite build","test":"vitest run"}}"#,
+        )
+        .unwrap();
+        std::fs::write(repository.path().join("bun.lock"), "{}").unwrap();
         let result = plan(PlanInput {
             contract_id: "c".into(),
             acceptance_criteria: vec!["User opens the dialog".into()],
@@ -1976,6 +2190,7 @@ mod tests {
                 "src-tauri/src/policy.rs".into(),
             ],
             repository_commands: vec![],
+            repository_root: Some(repository.path().to_path_buf()),
         });
         assert_eq!(result.risk, RiskTier::High);
         assert!(result
@@ -1997,16 +2212,136 @@ mod tests {
     fn rust_changes_verify_the_whole_cargo_workspace() {
         // Without --workspace, cargo at the workspace root only exercises the
         // bridge-deck shell and silently skips every bridge-core test.
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repository.path().join("src-tauri")).unwrap();
+        std::fs::write(
+            repository.path().join("src-tauri/Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )
+        .unwrap();
         let result = plan(PlanInput {
             contract_id: "c".into(),
             acceptance_criteria: vec!["Worker pool retries stalled workers".into()],
             changed_paths: vec!["src-tauri/bridge-core/src/worker_pool.rs".into()],
             repository_commands: vec![],
+            repository_root: Some(repository.path().to_path_buf()),
         });
         assert!(result.checks.iter().any(|check| check.command.as_deref()
             == Some("cargo test --manifest-path src-tauri/Cargo.toml --workspace")));
         assert!(result.checks.iter().any(|check| check.command.as_deref()
             == Some("cargo check --manifest-path src-tauri/Cargo.toml --workspace")));
+    }
+
+    #[test]
+    fn json_only_changes_do_not_invent_javascript_checks() {
+        let repository = tempfile::tempdir().unwrap();
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["Settings file stays valid".into()],
+            changed_paths: vec!["config/settings.json".into()],
+            repository_commands: vec![],
+            repository_root: Some(repository.path().to_path_buf()),
+        });
+        let commands = result
+            .checks
+            .iter()
+            .filter_map(|check| check.command.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(commands, vec!["git diff --check".to_string()]);
+    }
+
+    #[test]
+    fn javascript_checks_follow_the_repository_package_manager_and_scripts() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repository.path().join("package.json"),
+            r#"{"scripts":{"build":"vite build"}}"#,
+        )
+        .unwrap();
+        std::fs::write(repository.path().join("package-lock.json"), "{}").unwrap();
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["Build the page".into()],
+            changed_paths: vec!["web/src/page.ts".into(), "web/package.json".into()],
+            repository_commands: vec![],
+            repository_root: Some(repository.path().to_path_buf()),
+        });
+        let commands = result
+            .checks
+            .iter()
+            .filter_map(|check| check.command.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            commands.iter().any(|command| command.starts_with("npm ")),
+            "npm project must not be planned with Bun: {commands:?}"
+        );
+        assert!(commands.iter().any(|command| command.ends_with("run build")));
+        // No test script was declared, so no test command may be invented.
+        assert!(!commands.iter().any(|command| command.ends_with("run test")));
+    }
+
+    #[test]
+    fn root_cargo_package_is_checked_at_the_repository_root() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::write(repository.path().join("Cargo.toml"), "[package]\nname = \"probe\"\n").unwrap();
+        std::fs::create_dir_all(repository.path().join("src")).unwrap();
+        std::fs::write(repository.path().join("src/main.rs"), "fn main() {}").unwrap();
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["Probe compiles".into()],
+            changed_paths: vec!["Cargo.toml".into(), "src/main.rs".into()],
+            repository_commands: vec![],
+            repository_root: Some(repository.path().to_path_buf()),
+        });
+        let commands = result
+            .checks
+            .iter()
+            .filter_map(|check| check.command.clone())
+            .collect::<Vec<_>>();
+        assert!(commands.contains(&"cargo check --workspace".to_string()));
+        assert!(commands.contains(&"cargo test --workspace".to_string()));
+        assert!(commands
+            .iter()
+            .all(|command| !command.contains("src-tauri/Cargo.toml")));
+    }
+
+    #[test]
+    fn verification_prose_is_routed_to_a_verifier_not_a_shell_check() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repository.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest run"}}"#,
+        )
+        .unwrap();
+        std::fs::write(repository.path().join("bun.lock"), "{}").unwrap();
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["Marker changes".into()],
+            changed_paths: vec!["probe.mjs".into()],
+            repository_commands: vec![
+                "Confirm the probe.mjs string change by reading the file".into(),
+                "Record the cargo --version output or exact denial verbatim".into(),
+                "run the auth test suite".into(),
+                "bun run test".into(),
+            ],
+            repository_root: Some(repository.path().to_path_buf()),
+        });
+        let shell = result
+            .checks
+            .iter()
+            .filter(|check| check.kind == EvalKind::Deterministic)
+            .filter_map(|check| check.command.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(shell, vec!["bun run test".to_string()]);
+        let semantic = result
+            .checks
+            .iter()
+            .find(|check| check.id == "semantic-verification")
+            .expect("semantic verification check");
+        assert_eq!(semantic.executor, WORKER_EXECUTOR);
+        assert!(semantic.command.is_none());
+        assert!(semantic.label.contains("Confirm the probe.mjs string change"));
+        assert!(semantic.label.contains("run the auth test suite"));
     }
 
     #[test]
@@ -3005,6 +3340,7 @@ mod tests {
             acceptance_criteria: vec!["Render author".into()],
             changed_paths: vec!["src/author.rs".into()],
             repository_commands: vec![],
+            repository_root: None,
         });
         assert_eq!(result.risk, RiskTier::Low);
     }

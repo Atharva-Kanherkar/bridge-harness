@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { APP_VIEWS } from "../navigationHistory";
-import { appForView, appMatches, appsBadge, appById, badgeText, BUILTIN_APPS, isAppId, NON_APP_VIEWS } from "./registry";
+import { appForView, appMatches, appsBadge, appById, badgeText, BUILTIN_APPS, CARD_APPS, isAppId, NON_APP_VIEWS } from "./registry";
 
 describe("built-in apps", () => {
   // The launcher is the only way into these screens now. A new screen that
@@ -66,5 +66,13 @@ describe("badges", () => {
     expect(appsBadge({ workflows: { count: 0 }, memory: { count: 0 } })).toBeUndefined();
     expect(appsBadge({ workflows: { count: 2 }, memory: { count: 3 } })?.count).toBe("5");
     expect(appsBadge({ workflows: { count: 2 }, memory: { count: 50, capped: true } })?.count).toBe("52+");
+  });
+});
+
+describe("the mock and the frontend agree on the apps (core is pinned to both by apps::builtin::tests::frontend_and_mock_list_exactly_the_builtin_ids)", () => {
+  it("serves every app the frontend draws and draws every app it serves", async () => {
+    const { MOCK_APP_IDS } = await import("../appsMock");
+    const drawn = [...BUILTIN_APPS.map(app => app.id as string), ...CARD_APPS.map(app => app.id)];
+    expect([...MOCK_APP_IDS].sort()).toEqual([...drawn].sort());
   });
 });

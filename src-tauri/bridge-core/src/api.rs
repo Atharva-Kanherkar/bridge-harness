@@ -660,6 +660,45 @@ fn trail_brief_notes(core: &Arc<BridgeCore>, trail_id: &str) -> Result<crate::tr
     Ok(crate::trails::timeline::NoteSnapshot::default().with_markdown(core.notes.as_ref(), &ids))
 }
 
+/// Every app, with its state on this Mac and its badge.
+pub fn list_apps(core: &Arc<BridgeCore>) -> Result<wire::ListAppsResult, BridgeError> {
+    // The generation before anything is read: a trails hint that lands
+    // mid-read leaves the stored count older than the hint, so the next read
+    // derives again.
+    let trails_generation = core.events.trails_generation();
+    let cached = crate::apps::badges::Cached { cache: &core.app_badges, trails_generation };
+    // Notes first: the notes store takes its own lock, never under the
+    // core's. Only a trails count that must be derived again needs them.
+    let notes = if core.app_badges.trails(trails_generation).is_some() {
+        crate::trails::timeline::NoteSnapshot::default()
+    } else {
+        crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())
+    };
+    let apps = crate::apps::badges::summaries(&core.db.lock().unwrap(), &notes, Some(cached))?;
+    Ok(wire::ListAppsResult { apps })
+}
+
+/// Pin or unpin an app in the sidebar. Core holds the three-pin limit.
+pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams) -> Result<wire::ListAppsResult, BridgeError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = crate::apps::registry::set_pinned(&core.db.lock().unwrap(), &params.id, params.pinned, &now)?;
+    if changed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_apps(core)
+}
+
+/// Turn an app on or off. Off removes its tools from new chats, refuses
+/// their calls, drops its prompt text, its pin and its badge.
+pub fn set_app_enabled(core: &Arc<BridgeCore>, params: &wire::SetAppEnabledParams) -> Result<wire::ListAppsResult, BridgeError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = crate::apps::registry::set_enabled(&core.db.lock().unwrap(), &params.id, params.enabled, &now)?;
+    if changed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_apps(core)
+}
+
 /// Every trail, needs-you first. Follows new links before reading.
 pub fn list_trails(core: &Arc<BridgeCore>, include_archived: bool) -> Result<wire::ListTrailsResult, BridgeError> {
     crate::trails::live::sweep_and_publish(core, false);
@@ -1055,7 +1094,7 @@ pub fn github_review(
             session_id: None,
             message: format!("Review queued with {harness}; it will start when a worker slot frees up."),
         },
-        live_turn::WorkerLaunchOutcome::AwaitingApproval => wire::GithubReviewResult {
+        live_turn::WorkerLaunchOutcome::AwaitingApproval { .. } => wire::GithubReviewResult {
             status: "awaitingApproval".into(),
             session_id: None,
             message: if write_mode == delegation::WriteMode::Isolated {
@@ -2652,7 +2691,7 @@ fn resolve_legacy_approval(
             }
             // A different pending gate is not a failed launch. Resolved scope
             // cards are refused by policy rather than being reopened here.
-            live_turn::WorkerLaunchOutcome::AwaitingApproval => {
+            live_turn::WorkerLaunchOutcome::AwaitingApproval { .. } => {
                 core.events.publish(CoreEvent::StateChanged);
                 return Ok(());
             }
@@ -3905,6 +3944,7 @@ pub fn create_completion_plan(
     let available_capabilities = live_available_capabilities(core);
     let change_labels = completion::labels_for_paths(&changed_paths);
     let db = core.db.lock().unwrap();
+    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
     let plan = completion::plan_with_registered_manifests(
         &db,
         completion::PlanInput {
@@ -3912,11 +3952,11 @@ pub fn create_completion_plan(
             acceptance_criteria,
             changed_paths,
             repository_commands,
+            repository_root: Some(std::path::PathBuf::from(&repository_path)),
         },
         &change_labels,
         &available_capabilities,
     )?;
-    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
     let repository = completion_repository_stamp(&db, session_id)?;
     completion::create_flow(
         &db,
@@ -4644,7 +4684,7 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
 }
 
 pub fn get_limit_recovery_settings(core: &Arc<BridgeCore>) -> Result<wire::LimitRecoverySettings, BridgeError> {
-    crate::limit_recovery::load_settings(&core.db.lock().unwrap())
+    crate::limit_recovery::load_settings(&lock_db(core))
 }
 
 /// Store what a chat does when a usage limit stops it. A backup must name a
@@ -4669,7 +4709,7 @@ pub fn save_limit_recovery_settings(
             }
         }
     }
-    let saved = crate::limit_recovery::save_settings(&core.db.lock().unwrap(), settings, |harness| {
+    let saved = crate::limit_recovery::save_settings(&lock_db(core), settings, |harness| {
         descriptors.iter().any(|adapter| adapter.id == harness)
     })?;
     Ok(saved)
@@ -4685,11 +4725,11 @@ fn effort_wire_name(effort: wire::Effort) -> &'static str {
 }
 
 pub fn limit_recovery_status(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {
-    crate::limit_recovery::status(&core.db.lock().unwrap(), session_id)
+    crate::limit_recovery::status(&lock_db(core), session_id)
 }
 
 pub fn cancel_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {
-    let db = core.db.lock().unwrap();
+    let db = lock_db(core);
     crate::limit_recovery::cancel(&db, session_id, chrono::Utc::now())?;
     let status = crate::limit_recovery::status(&db, session_id)?;
     drop(db);
@@ -4701,7 +4741,7 @@ pub fn cancel_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result
 /// for its due time. Runs the same guarded pass the loop runs.
 pub fn resume_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::LimitRecoveryStatus, BridgeError> {
     let now = chrono::Utc::now();
-    if !crate::limit_recovery::make_due_now(&core.db.lock().unwrap(), session_id, now)? {
+    if !crate::limit_recovery::make_due_now(&lock_db(core), session_id, now)? {
         return Err(BridgeError::Invalid("This chat has no recovery waiting".into()));
     }
     let report = crate::limit_recovery::tick(&core.db, &crate::limit_recovery::LiveActions { core }, now)?;
@@ -4709,7 +4749,12 @@ pub fn resume_limit_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result
         return Err(BridgeError::Invalid(message.clone()));
     }
     core.events.publish(crate::events::CoreEvent::StateChanged);
-    crate::limit_recovery::status(&core.db.lock().unwrap(), session_id)
+    crate::limit_recovery::status(&lock_db(core), session_id)
+}
+
+/// The store lock for the limit-recovery methods, through a poisoned mutex.
+fn lock_db(core: &Arc<BridgeCore>) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Deliver a chat's queued input now, resuming its adapter if it is gone.
@@ -7458,11 +7503,13 @@ mod tests {
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         super::delete_memory_record(&core, &record.id).expect("forget tombstones");
         assert!(matches!(
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         // A refused save changes nothing, so it owes no hint.
         assert!(super::save_memory_record(&core, "   ", None, None).is_err());
         assert!(events.try_recv().is_err());
@@ -7475,11 +7522,13 @@ mod tests {
         let mut events = core.events.subscribe();
         let saved = super::save_memory_record(&core, "Prefers tabs", None, None).unwrap();
         events.try_recv().unwrap();
+        events.try_recv().unwrap();
         super::supersede_memory_record(&core, &saved.id, "Prefers spaces", None).unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         {
             let db = core.db.lock().unwrap();
             db.execute(
@@ -7496,6 +7545,7 @@ mod tests {
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { .. }
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged));
         super::reject_memory_record(&core, "p2").unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),
@@ -8196,4 +8246,41 @@ pub fn get_notes_settings(core: &Arc<BridgeCore>) -> Result<wire::NotesSettings,
 
 pub fn save_notes_settings(core: &Arc<BridgeCore>, params: &wire::SaveNotesSettingsParams) -> Result<wire::NotesSettings, BridgeError> {
     core.notes.save_settings(params.auto_structure, params.root.clone())
+}
+
+#[cfg(test)]
+mod apps_tests {
+    use super::*;
+
+    fn trails_badge(core: &Arc<BridgeCore>) -> Option<u32> {
+        list_apps(core).unwrap().apps.into_iter().find(|app| app.manifest.id == "trails").and_then(|app| app.badge).map(|badge| badge.count)
+    }
+
+    /// `apps/changed` follows every memory and workflow-run hint, and each
+    /// client rereads the list. Deriving every trail summary on each of
+    /// those reads would amplify a workflow run's status hints into
+    /// whole-trail derivations, so the trails count is cached and only a
+    /// `trails/changed` hint recomputes it, the freshness the frontend had.
+    #[test]
+    fn the_trails_badge_is_recomputed_only_after_trails_changed() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        assert_eq!(trails_badge(&core), Some(0));
+        {
+            let db = core.db.lock().unwrap();
+            crate::trails::timeline::tests::add_session(&db, "chat", "claude", "Ship apps", Some("t"));
+            let trail = crate::trails::store::create(&db, "Ship apps", None, "t").unwrap();
+            crate::trails::store::add_member(&db, &trail.id, &crate::trails::store::tests::session("chat"), wire::TrailAddedBy::Person, "t").unwrap();
+            db.execute(
+                "INSERT INTO attention_events(id, kind, severity, session_id, title, created_at) VALUES('a1','needs_you','actionable','chat','Approve the deploy','t')",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(trails_badge(&core), Some(0), "nothing said trails changed, so the cached count stands");
+        core.events.publish(CoreEvent::MemoryChanged { scope_key: "account:local".into() });
+        assert_eq!(trails_badge(&core), Some(0), "a memory hint does not derive trail summaries");
+        core.events.publish(CoreEvent::TrailsChanged(wire::TrailsChanged { trail_id: None, added: Vec::new() }));
+        assert_eq!(trails_badge(&core), Some(1), "trails/changed recomputes it");
+    }
 }

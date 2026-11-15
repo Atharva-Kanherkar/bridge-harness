@@ -34,6 +34,7 @@ use bridge_protocol::messages::{
 };
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 const SETTINGS_KIND: &str = "limit_recovery_settings";
 const SETTINGS_ID: &str = "global";
@@ -572,8 +573,7 @@ pub fn observe(
                     updated_at: now,
                 },
             )?;
-            let _ = crate::store::event(
-                db,
+            ledger(db,
                 "limit_recovery",
                 "limit_recovery.scheduled",
                 session_id,
@@ -581,14 +581,15 @@ pub fn observe(
             );
         }
         Decision::GiveUp { attempts } => {
-            let mut row = prior.clone().expect("a give-up always has a prior row");
+            // `plan` gives up only on a prior row's streak.
+            let Some(mut row) = prior.clone() else { return Ok(decision) };
             row.state = LimitRecoveryState::GaveUp;
             row.outcome = Some(format!("the limit came back {attempts} times in a row"));
             row.updated_at = now;
             row.signal = signal.to_owned();
             row.reset_at = reset_at;
             upsert(db, &row)?;
-            let _ = crate::store::event(db, "limit_recovery", "limit_recovery.gave_up", session_id, signal);
+            ledger(db, "limit_recovery", "limit_recovery.gave_up", session_id, signal);
         }
     }
     Ok(decision)
@@ -643,6 +644,20 @@ pub fn recover_interrupted(db: &Connection, now: DateTime<Utc>) -> Result<usize,
         "UPDATE limit_recoveries SET state='pending',updated_at=?1 WHERE state='acting'",
         [now.to_rfc3339()],
     )?)
+}
+
+/// The store lock, through a poisoned mutex too: a panic elsewhere must not
+/// stop recoveries for the rest of the process.
+fn lock(db: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
+    db.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One line in the reasons ledger. A failed ledger write is logged, never a
+/// reason to fail the recovery it describes.
+fn ledger(db: &Connection, source: &str, kind: &str, session_id: &str, body: &str) {
+    if let Err(error) = crate::store::event(db, source, kind, session_id, body) {
+        eprintln!("[limit-recovery] ledger write failed for {session_id}: {error}");
+    }
 }
 
 pub fn has_pending(db: &Connection) -> bool {
@@ -701,12 +716,12 @@ fn chat_facts(db: &Connection, session_id: &str) -> Result<ChatFacts, BridgeErro
 /// rows between states, never across an action: switching a model and
 /// starting a turn both take the lock themselves.
 pub fn tick(
-    db: &std::sync::Mutex<Connection>,
+    db: &Mutex<Connection>,
     actions: &dyn Actions,
     now: DateTime<Utc>,
 ) -> Result<TickReport, BridgeError> {
     let due: Vec<Recovery> = {
-        let db = db.lock().unwrap();
+        let db = lock(db);
         let mut statement = db.prepare(&format!(
             "SELECT {COLUMNS} FROM limit_recoveries WHERE state='pending' AND due_at<=?1 ORDER BY due_at"
         ))?;
@@ -716,7 +731,7 @@ pub fn tick(
     let mut report = TickReport::default();
     for row in due {
         let verdict = {
-            let db = db.lock().unwrap();
+            let db = lock(db);
             // Claim first: a cancel or a second tick racing this one loses.
             if !transition(&db, &row.session_id, &[LimitRecoveryState::Pending], LimitRecoveryState::Acting, None, now)? {
                 continue;
@@ -731,7 +746,7 @@ pub fn tick(
                         LimitRecoveryState::Cancelled
                     };
                     transition(&db, &row.session_id, &[LimitRecoveryState::Acting], state, Some(reason), now)?;
-                    let _ = crate::store::event(&db, "limit_recovery", "limit_recovery.cancelled", &row.session_id, reason);
+                    ledger(&db, "limit_recovery", "limit_recovery.cancelled", &row.session_id, reason);
                     Err(reason)
                 }
             }
@@ -750,18 +765,18 @@ pub fn tick(
             let prompt = if row.switches_model { CONTINUE_ON_BACKUP_PROMPT } else { CONTINUE_PROMPT };
             actions.send_continue(&row.session_id, prompt)
         })();
-        let db = db.lock().unwrap();
+        let db = lock(db);
         match result {
             Ok(()) => {
                 let outcome = if row.switches_model { "switched to the backup model and continued" } else { "continued after the reset" };
                 transition(&db, &row.session_id, &[LimitRecoveryState::Acting], LimitRecoveryState::Done, Some(outcome), now)?;
-                let _ = crate::store::event(&db, "limit_recovery", "limit_recovery.acted", &row.session_id, outcome);
+                ledger(&db, "limit_recovery", "limit_recovery.acted", &row.session_id, outcome);
                 report.acted.push(row.session_id.clone());
             }
             Err(error) => {
                 let message = error.to_string();
                 transition(&db, &row.session_id, &[LimitRecoveryState::Acting], LimitRecoveryState::Failed, Some(&message), now)?;
-                let _ = crate::store::event(&db, "limit_recovery", "limit_recovery.failed", &row.session_id, &message);
+                ledger(&db, "limit_recovery", "limit_recovery.failed", &row.session_id, &message);
                 report.failed.push((row.session_id.clone(), message));
             }
         }
@@ -801,8 +816,8 @@ fn tick_interval() -> std::time::Duration {
 /// Start the loop. Part of data-directory ownership: the daemon and the
 /// embedded host both call it, exactly once.
 pub fn start_limit_recovery_maintenance(core: std::sync::Arc<crate::runtime::BridgeCore>) {
-    let _ = std::thread::Builder::new().name("limit-recovery".into()).spawn(move || {
-        if let Err(error) = recover_interrupted(&core.db.lock().unwrap(), Utc::now()) {
+    let spawned = std::thread::Builder::new().name("limit-recovery".into()).spawn(move || {
+        if let Err(error) = recover_interrupted(&lock(&core.db), Utc::now()) {
             eprintln!("[limit-recovery] could not recover interrupted rows: {error}");
         }
         let mut power = PowerAssertion::default();
@@ -812,10 +827,13 @@ pub fn start_limit_recovery_maintenance(core: std::sync::Arc<crate::runtime::Bri
                 Ok(_) => {}
                 Err(error) => eprintln!("[limit-recovery] tick failed: {error}"),
             }
-            power.hold(has_pending(&core.db.lock().unwrap()));
+            power.hold(has_pending(&lock(&core.db)));
             std::thread::sleep(tick_interval());
         }
     });
+    if let Err(error) = spawned {
+        eprintln!("[limit-recovery] could not start the recovery loop: {error}");
+    }
 }
 
 /// Keeps the Mac from idle-sleeping while a recovery waits. A `caffeinate -i`
@@ -838,8 +856,10 @@ impl PowerAssertion {
             (true, false) => self.child = spawn_caffeinate(),
             (false, true) => {
                 if let Some(mut child) = self.child.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Already gone is the outcome we want either way.
+                    if child.kill().is_ok() {
+                        child.wait().ok();
+                    }
                 }
             }
             _ => {}

@@ -49,19 +49,21 @@ pub enum LimitKind {
 /// frames, which the provider wrote, never from worker prose: it is the
 /// provider's own account statement, so the wider reading is safe here.
 fn hit_your_limit(haystack: &str) -> bool {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
     PATTERN
-        .get_or_init(|| Regex::new(r"hit your [a-z0-9 -]{0,24}limit").expect("static pattern"))
-        .is_match(haystack)
+        .get_or_init(|| Regex::new(r"hit your [a-z0-9 -]{0,24}limit").ok())
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(haystack))
 }
 
 /// A bare "429" only counts as a whole number. As a substring it matches hex
 /// request ids and cf-ray headers in unrelated 401s.
 fn whole_429(haystack: &str) -> bool {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
     PATTERN
-        .get_or_init(|| Regex::new(r"(?:^|[^0-9a-z])429(?:[^0-9a-z]|$)").expect("static pattern"))
-        .is_match(haystack)
+        .get_or_init(|| Regex::new(r"(?:^|[^0-9a-z])429(?:[^0-9a-z]|$)").ok())
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(haystack))
 }
 
 /// The longest reset hint that is believable. A parsed timestamp beyond this

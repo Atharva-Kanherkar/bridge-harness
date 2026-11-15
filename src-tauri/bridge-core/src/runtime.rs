@@ -50,6 +50,8 @@ pub struct RuntimeSession {
 
 pub struct BridgeCore {
     pub db: Mutex<rusqlite::Connection>,
+    /// App badge counts worth keeping between reads of the app list.
+    pub(crate) app_badges: crate::apps::badges::BadgeCache,
     pub telemetry_db: Mutex<rusqlite::Connection>,
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub(crate) terminal_state: Mutex<Option<crate::terminal_workspace::StateSidecar>>,
@@ -256,6 +258,9 @@ pub struct DelegationState {
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
     pub read_only_sandboxes: HashMap<String, worker_sandbox::ReadOnlySandbox>,
+    /// Read-only worker session → the artifact paths its delegation declared.
+    /// Retained with the sandbox so the files can be persisted before cleanup.
+    pub read_only_output_paths: HashMap<String, Vec<String>>,
 }
 
 /// Host-provided configuration for [`BridgeCore::boot`]. The host resolves
@@ -337,6 +342,7 @@ impl BridgeCore {
         #[cfg(target_os = "macos")]
         let browser_clone_orchestrator = build_clone_orchestrator(Arc::clone(&browser_clones)).unwrap();
         BridgeCore {
+            app_badges: Default::default(),
             db: Mutex::new(store::open(std::path::Path::new(":memory:")).unwrap()),
             telemetry_db: Mutex::new(
                 store::open_telemetry(std::path::Path::new(":memory:")).unwrap(),
@@ -509,6 +515,7 @@ impl BridgeCore {
             config.data_dir.join("browser-site-metrics.json"),
         );
         Ok(Self {
+            app_badges: Default::default(),
             db: Mutex::new(connection),
             telemetry_db: Mutex::new(telemetry_connection),
             runtimes: Mutex::new(HashMap::new()),

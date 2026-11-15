@@ -8,6 +8,11 @@
 //! recovery loop does the acting; the test only moves a row's due time into
 //! the past to stand in for hours passing.
 
+// A test harness: a failed unwrap or expect in a helper is the test failing,
+// which is the behavior wanted. Clippy's in-tests allowances cover `#[test]`
+// fns but not this file's helpers.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use bridged::{Daemon, DaemonConfig};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};

@@ -4,5 +4,8 @@ version.workspace = true
 edition = "2021"
 description = "Bridge's isolated native macOS menu bar presentation"
 
+[lints]
+workspace = true
+
 [build-dependencies]
 serde_json.workspace = true

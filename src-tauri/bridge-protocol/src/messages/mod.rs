@@ -22,6 +22,7 @@
 //! tables fails the coverage test below.
 
 mod agents;
+mod apps;
 mod app_preferences;
 mod approvals;
 mod attention;
@@ -64,6 +65,7 @@ mod workspaces;
 mod worktrees;
 
 pub use agents::*;
+pub use apps::*;
 pub use app_preferences::*;
 pub use approvals::*;
 pub use attention::*;
@@ -352,6 +354,10 @@ typed_methods![
     (ScanDirectory, ScanDirectoryParams, DiskListing),
     (DeletePaths, DeletePathsParams, DiskDeleteResult),
     (EmptyTrash, _, EmptyTrashResult),
+    // apps: manifests in core, their state, pins and badges
+    (ListApps, _, ListAppsResult),
+    (SetAppPinned, SetAppPinnedParams, ListAppsResult),
+    (SetAppEnabled, SetAppEnabledParams, ListAppsResult),
     // trails: one page per piece of work
     (ListTrails, ListTrailsParams, ListTrailsResult),
     (ReadTrail, ReadTrailParams, ReadTrailResult),

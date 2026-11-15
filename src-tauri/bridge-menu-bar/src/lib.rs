@@ -47,28 +47,28 @@ pub fn run_on_main_thread(operation: impl FnOnce() + Send + 'static) {
 /// after NSApplication initialization. The callback must not unwind or block.
 #[cfg(target_os = "macos")]
 pub unsafe fn create(callback: ActionHandler) -> bool {
-    bridge_menu_bar_create(callback)
+    unsafe { bridge_menu_bar_create(callback) }
 }
 
 /// # Safety
 /// Must run on the AppKit main thread. Swift copies the bytes synchronously.
 #[cfg(target_os = "macos")]
 pub unsafe fn update(snapshot: &[u8]) -> bool {
-    bridge_menu_bar_update(snapshot.as_ptr(), snapshot.len())
+    unsafe { bridge_menu_bar_update(snapshot.as_ptr(), snapshot.len()) }
 }
 
 /// # Safety
 /// Must run on the AppKit main thread after create.
 #[cfg(target_os = "macos")]
 pub unsafe fn show() {
-    bridge_menu_bar_show()
+    unsafe { bridge_menu_bar_show() }
 }
 
 /// # Safety
 /// Must run on the AppKit main thread, before its event loop stops.
 #[cfg(target_os = "macos")]
 pub unsafe fn destroy() {
-    bridge_menu_bar_destroy()
+    unsafe { bridge_menu_bar_destroy() }
 }
 
 /// Install the native notification center: its delegate and the Allow once /
@@ -80,7 +80,7 @@ pub unsafe fn destroy() {
 /// unwind; it may be called on any thread.
 #[cfg(target_os = "macos")]
 pub unsafe fn notifications_install(handler: NotificationClickHandler) -> bool {
-    bridge_notifications_install(handler)
+    unsafe { bridge_notifications_install(handler) }
 }
 
 /// Post one banner from the webview's request JSON. False when the center is
@@ -90,5 +90,5 @@ pub unsafe fn notifications_install(handler: NotificationClickHandler) -> bool {
 /// Swift copies the bytes synchronously; any thread.
 #[cfg(target_os = "macos")]
 pub unsafe fn notifications_post(request: &[u8]) -> bool {
-    bridge_notifications_post(request.as_ptr(), request.len())
+    unsafe { bridge_notifications_post(request.as_ptr(), request.len()) }
 }

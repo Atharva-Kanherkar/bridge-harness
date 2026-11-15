@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 79;
+const LATEST_SCHEMA_VERSION: i64 = 80;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -779,9 +779,12 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // GitHub issues on trails: the last read of each issue, and the
             // hard links between issues and the pull requests that close them.
             78 => crate::trails::issues::install_store(&transaction)?,
+            // Apps: which built-ins are off, and the sidebar pins. Departures
+            // only; a missing row means the default.
+            79 => crate::apps::registry::install_store(&transaction)?,
             // One row per chat a usage limit stopped, while Bridge waits to
             // resume it or switch it to the backup model. See `limit_recovery`.
-            79 => crate::limit_recovery::install_store(&transaction)?,
+            80 => crate::limit_recovery::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -4148,6 +4151,24 @@ pub fn update_worker_queue(
     Ok(db.execute(
         "UPDATE worker_queue SET queue_status=?2,dispatched_session_id=COALESCE(?3,dispatched_session_id),updated_at=?4 WHERE id=?1",
         params![id, queue_status, dispatched_session_id, Utc::now().to_rfc3339()],
+    )? == 1)
+}
+
+/// Close a queue row whose launch is now owned by a live approval card.
+///
+/// It is `cancelled`, not `rejected`: `report_terminal_queue_outcomes` treats a
+/// cancellation as already explained, so the parent is never told both "no
+/// worker will start" and "approve this card to start it". The card remains the
+/// one path to the work; declining it produces the declaration notice.
+pub fn cancel_worker_queue_for_approval(
+    db: &Connection,
+    id: &str,
+    approval_id: &str,
+) -> Result<bool, BridgeError> {
+    let now = Utc::now().to_rfc3339();
+    Ok(db.execute(
+        "UPDATE worker_queue SET queue_status='cancelled',last_error=?2,updated_at=?3 WHERE id=?1 AND queue_status='dispatching'",
+        params![id, format!("awaiting_approval:{approval_id}"), now],
     )? == 1)
 }
 

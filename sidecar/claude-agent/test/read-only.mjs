@@ -104,3 +104,34 @@ test("a user allow rule cannot widen the Bridge hook decision", async () => {
     );
   }
 });
+
+test("an offline worker can write only inside its assigned output directory", async () => {
+  const { mkdtemp, writeFile, symlink, mkdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "bridge-read-only-output-"));
+  const output = join(root, "output");
+  await mkdir(output);
+  await writeFile(join(root, "secret.txt"), "host secret");
+  const outside = join(root, "escape");
+  await mkdir(outside);
+  await symlink(join(root, "secret.txt"), join(output, "linked.json"));
+
+  const options = readOnlyOptions({ networkAllowed: false, outputDir: output });
+  assert.ok(options.tools.includes("Write"), "the artifact contract needs a write tool");
+  assert.ok(!options.tools.includes("Bash"), "offline still means no shell");
+  assert.deepEqual(options.disallowedTools, ["Edit", "NotebookEdit", "Task"]);
+
+  const hook = makeReadOnlyHook({ networkAllowed: false, outputDir: output });
+  const write = (file_path) => hook({ tool_name: "Write", tool_input: { file_path } });
+  assert.equal((await write(join(output, "offline-proof.json"))).hookSpecificOutput.permissionDecision, "allow");
+  assert.equal((await write("offline-proof.json")).hookSpecificOutput.permissionDecision, "allow", "relative paths resolve inside the output root");
+  assert.equal((await write(join(root, "secret.txt"))).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal((await write(join(root, "escape", "report.json"))).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal((await write(join(output, "..", "secret.txt"))).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal((await write(join(output, "linked.json"))).hookSpecificOutput.permissionDecision, "deny", "a symlink must not redirect the write");
+  assert.equal((await hook({ tool_name: "Edit", tool_input: { file_path: join(output, "report.json") } })).hookSpecificOutput.permissionDecision, "deny");
+
+  const withoutOutput = makeReadOnlyHook({ networkAllowed: false });
+  assert.equal((await withoutOutput({ tool_name: "Write", tool_input: { file_path: join(output, "x") } })).hookSpecificOutput.permissionDecision, "deny");
+});

@@ -230,6 +230,24 @@ async fn github_connect(workspace_id: String, remote_url: String, state: State<'
 }
 
 #[tauri::command]
+async fn list_apps(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListAppsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("list apps", move || api::list_apps(&core)).await
+}
+
+#[tauri::command]
+async fn set_app_pinned(id: String, pinned: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListAppsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("pin an app", move || api::set_app_pinned(&core, &wire::SetAppPinnedParams { id, pinned })).await
+}
+
+#[tauri::command]
+async fn set_app_enabled(id: String, enabled: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListAppsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("turn an app on or off", move || api::set_app_enabled(&core, &wire::SetAppEnabledParams { id, enabled })).await
+}
+
+#[tauri::command]
 async fn list_trails(include_archived: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListTrailsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("list trails", move || api::list_trails(&core, include_archived)).await
@@ -3481,6 +3499,9 @@ pub fn run() -> i32 {
             github_session_prs,
             github_sidebar_prs,
             github_attach_pr,
+            list_apps,
+            set_app_pinned,
+            set_app_enabled,
             list_trails,
             read_trail,
             create_trail,
