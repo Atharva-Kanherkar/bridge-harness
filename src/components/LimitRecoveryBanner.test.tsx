@@ -35,7 +35,7 @@ it("resumes now and cancels through the API, and rereads when the chat's status 
   const resume = vi.spyOn(bridgeApi, "resumeLimitRecovery").mockResolvedValue({ recovery: { ...pending, state: "done" } });
   await act(async () => { button("Resume now")!.click(); });
   expect(resume).toHaveBeenCalledWith("s");
-  expect(host.innerHTML).toBe("", "a finished recovery hides the banner");
+  expect(host.innerHTML, "a finished recovery hides the banner").toBe("");
 
   await act(async () => { root.render(<LimitRecoveryBanner sessionId="s" sessionStatus="working" adapters={[]} />); });
   expect(status).toHaveBeenCalledTimes(2);
