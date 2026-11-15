@@ -117,6 +117,7 @@ fn build(spec: &Spec) -> BuiltinApp {
 
 /// Every built-in, validated once. A built-in that breaks a manifest rule is
 /// a bug in this file, so it fails loud.
+#[allow(clippy::panic, reason = "an invalid built-in is a bug in this file; tests and the first call catch it")]
 pub fn builtins() -> &'static [BuiltinApp] {
     static APPS: OnceLock<Vec<BuiltinApp>> = OnceLock::new();
     APPS.get_or_init(|| {
