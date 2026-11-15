@@ -1056,8 +1056,8 @@ pub(crate) struct ReviewerLaunchPlan {
 
 /// Precedence: the reviewer settings for this harness, then the Reviewer model
 /// profile, then the harness default. A harness whose adapter descriptor does
-/// not advertise `read_only` cannot run inside the offline read-only sandbox
-/// (refused at launch by design), so its reviewer runs isolated in its own
+/// not advertise `read_only` cannot run inside the read-only sandbox (refused
+/// at launch by design), so its reviewer runs isolated in its own
 /// worktree instead of failing to start; the policy engine still gates that
 /// with an approval.
 pub(crate) fn reviewer_launch_plan(
