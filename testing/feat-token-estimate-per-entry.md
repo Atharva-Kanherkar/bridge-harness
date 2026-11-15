@@ -88,11 +88,15 @@ reader treats `NULL` as unknown.
 - `usage::tests::opencode_step_without_input_leaves_context_used_null`.
 - `agent::tests::claude_result_carries_last_main_thread_request_usage` —
   subagent frames ignored; `message_delta` raises output.
+- `agent::tests::claude_request_usage_keeps_each_counters_largest_figure` —
+  a late, smaller snapshot never lowers a counter; a new message id starts a
+  new request.
 - `policy::tests::opencode_missing_window_is_logged_once_per_session`.
 
 ## Integration / Functional Tests
 
-- `agent::tests::claude_usage_window_fixture_reaches_the_ledger`: replays
+- `policy::tests::claude_usage_window_fixture_reaches_the_ledger` (in
+  `policy.rs`, where the ledger test database lives): replays
   `testing/fixtures/claude-usage-window.json` through
   `normalize_claude_message_with_state`, records each `usage.updated` with
   `policy::record_provider_usage`, and reads `usage_ledger`:
