@@ -2129,7 +2129,7 @@ mod tests {
     /// Several cold launches at once (a switch, a worker pool, two chats opened
     /// together) share one probe instead of starting one each.
     #[test]
-    fn concurrent_launches_share_one_discovery() {
+    fn discovery_cache_single_flight() {
         let cache = std::sync::Arc::new(std::sync::Mutex::new(DiscoveryCache::default()));
         let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let handles: Vec<_> = (0..8)
@@ -2157,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn a_discovery_expires() {
+    fn discovery_cache_expires() {
         let cache = std::sync::Mutex::new(DiscoveryCache::default());
         let probes = std::sync::atomic::AtomicUsize::new(0);
         let ttl = Duration::from_millis(5);

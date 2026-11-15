@@ -1702,7 +1702,7 @@ mod briefing_boundary_tests {
     /// natively, so probing their health is a subprocess whose answer is thrown
     /// away. This is the launch-time cost that made every cold send wait.
     #[test]
-    fn a_chat_launch_discovers_plugins_but_not_connectors() {
+    fn claude_mcp_discovery_is_skipped_for_a_chat_launch() {
         assert_eq!(
             super::launch_discovery(false, false, false, false),
             crate::marketplace::ClaudeDiscovery {
@@ -1712,10 +1712,29 @@ mod briefing_boundary_tests {
         );
     }
 
+    /// A launch that did not probe connectors must not report anything about
+    /// them: no servers, no health, and no failure it did not have.
+    #[test]
+    fn connector_health_is_empty_when_not_probed() {
+        let discovery = super::launch_discovery(false, false, false, false);
+        let configuration = super::sdk_configuration_for_launch(discovery, |_| {
+            crate::marketplace::ClaudeSdkConfiguration {
+                plugins: vec!["/plugins/one".into()],
+                ..Default::default()
+            }
+        });
+        assert!(configuration.mcp_servers.is_empty());
+        assert!(configuration.connector_health.is_empty());
+        assert!(configuration
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.stage != "mcp"));
+    }
+
     /// A briefing is handed connectors and no plugins, because `strictMcpConfig`
     /// makes the compiled list its only route to them.
     #[test]
-    fn a_briefing_launch_discovers_connectors_but_not_plugins() {
+    fn briefing_launch_keeps_connector_discovery() {
         assert_eq!(
             super::launch_discovery(true, true, false, false),
             crate::marketplace::ClaudeDiscovery {
