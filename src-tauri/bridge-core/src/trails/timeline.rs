@@ -31,47 +31,44 @@ pub struct NoteFacts {
 /// them through this seam so tests need no notes store.
 pub trait NoteSource {
     fn note(&self, id: &str) -> Option<NoteFacts>;
-    /// Every live page, for the "linked to a member chat" rule.
-    fn all_notes(&self) -> Vec<NoteFacts>;
+    /// Live pages linked to any of these chats, by id, for the "linked to a
+    /// member chat" rule.
+    fn linked_to(&self, sessions: &[String]) -> Vec<NoteFacts>;
     fn markdown(&self, id: &str) -> Option<String>;
 }
 
 impl NoteSource for crate::notes::service::NotesService {
     fn note(&self, id: &str) -> Option<NoteFacts> {
-        self.read(id).ok().map(|page| facts(page.note))
+        self.pages(&[id.to_owned()]).ok()?.into_iter().next().map(|(note, _)| facts(note))
     }
 
-    fn all_notes(&self) -> Vec<NoteFacts> {
-        let filter = crate::notes::service::ListFilter { include_archived: true, limit: Some(2000), ..Default::default() };
-        self.list(&filter).map(|notes| notes.into_iter().map(facts).collect()).unwrap_or_default()
+    fn linked_to(&self, sessions: &[String]) -> Vec<NoteFacts> {
+        crate::notes::service::NotesService::linked_to(self, sessions).map(|notes| notes.into_iter().map(facts).collect()).unwrap_or_default()
     }
 
     fn markdown(&self, id: &str) -> Option<String> {
-        self.read(id).ok().map(|page| page.markdown)
+        self.pages(&[id.to_owned()]).ok()?.into_iter().next().map(|(_, body)| body)
     }
 }
 
 /// Notes read up front, so no caller holds the core database lock while the
-/// notes store takes its own.
+/// notes store takes its own. It holds only what a read asked for: a trail's
+/// member pages, or the pages linked to its chats.
 #[derive(Debug, Default, Clone)]
 pub struct NoteSnapshot {
     notes: std::collections::HashMap<String, (NoteFacts, Option<String>)>,
 }
 
 impl NoteSnapshot {
-    /// Every live page's facts, without bodies.
-    pub fn all(source: &dyn NoteSource) -> Self {
-        Self { notes: source.all_notes().into_iter().map(|facts| (facts.id.clone(), (facts, None))).collect() }
+    /// These pages' facts, and their bodies when `bodies`. One query.
+    pub fn members(source: &crate::notes::service::NotesService, ids: &[String], bodies: bool) -> Self {
+        let pages = source.pages(ids).unwrap_or_default();
+        Self { notes: pages.into_iter().map(|(note, body)| (note.id.clone(), (facts(note), bodies.then_some(body)))).collect() }
     }
 
-    /// Add the bodies of `ids` (and their facts, archived or not).
-    pub fn with_markdown(mut self, source: &dyn NoteSource, ids: &[String]) -> Self {
-        for id in ids {
-            if let (Some(facts), Some(markdown)) = (source.note(id), source.markdown(id)) {
-                self.notes.insert(id.clone(), (facts, Some(markdown)));
-            }
-        }
-        self
+    /// Every page linked to these chats, without bodies. One query.
+    pub fn linked(source: &crate::notes::service::NotesService, sessions: &[String]) -> Self {
+        Self { notes: NoteSource::linked_to(source, sessions).into_iter().map(|facts| (facts.id.clone(), (facts, None))).collect() }
     }
 }
 
@@ -80,8 +77,14 @@ impl NoteSource for NoteSnapshot {
         self.notes.get(id).map(|(facts, _)| facts.clone())
     }
 
-    fn all_notes(&self) -> Vec<NoteFacts> {
-        let mut notes: Vec<NoteFacts> = self.notes.values().map(|(facts, _)| facts.clone()).collect();
+    fn linked_to(&self, sessions: &[String]) -> Vec<NoteFacts> {
+        let mut notes: Vec<NoteFacts> = self
+            .notes
+            .values()
+            .map(|(facts, _)| facts)
+            .filter(|facts| facts.session_ids.iter().any(|id| sessions.contains(id)))
+            .cloned()
+            .collect();
         notes.sort_by(|left, right| left.id.cmp(&right.id));
         notes
     }
@@ -89,6 +92,22 @@ impl NoteSource for NoteSnapshot {
     fn markdown(&self, id: &str) -> Option<String> {
         self.notes.get(id).and_then(|(_, markdown)| markdown.clone())
     }
+}
+
+/// The note pages on one trail, or on every trail.
+pub fn member_note_ids(db: &Connection, trail: Option<&str>) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare("SELECT ref FROM trail_members WHERE kind='note' AND (?1 IS NULL OR trail_id=?1) ORDER BY ref")?;
+    let ids = statement.query_map(params![trail], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+    Ok(ids)
+}
+
+/// The chats on open trails, whose linked notes the sweep follows.
+pub fn open_trail_sessions(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT m.ref FROM trail_members m JOIN trails t ON t.id=m.trail_id WHERE t.archived_at IS NULL AND m.kind='session' ORDER BY m.ref",
+    )?;
+    let sessions = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+    Ok(sessions)
 }
 
 fn facts(note: bridge_protocol::messages::Note) -> NoteFacts {
@@ -597,8 +616,8 @@ pub(crate) mod tests {
         fn note(&self, id: &str) -> Option<NoteFacts> {
             self.0.get(id).map(|(facts, _)| facts.clone())
         }
-        fn all_notes(&self) -> Vec<NoteFacts> {
-            let mut notes: Vec<_> = self.0.values().map(|(facts, _)| facts.clone()).collect();
+        fn linked_to(&self, sessions: &[String]) -> Vec<NoteFacts> {
+            let mut notes: Vec<_> = self.0.values().map(|(facts, _)| facts.clone()).filter(|facts| facts.session_ids.iter().any(|id| sessions.contains(id))).collect();
             notes.sort_by(|a, b| a.id.cmp(&b.id));
             notes
         }
@@ -774,6 +793,28 @@ pub(crate) mod tests {
         let summary = summary(&db, &notes, &trail).unwrap();
         assert_eq!(summary.stage, 3, "an unread PR is still a PR");
         assert_eq!(summary.state, TrailState::InProgress, "an unread PR never counts as shipped");
+    }
+
+    #[test]
+    fn snapshot_for_trails_reads_members_and_linked_notes_only() {
+        use crate::notes::service::{CreatePage, UpdateNote};
+        let (_dir, notes) = crate::notes::service::tests::service();
+        let page = |title: &str| notes.create(CreatePage { title: Some(title.into()), content: Some(format!("{title} body")), ..Default::default() }, "person").unwrap();
+        let (member, linked, unrelated) = (page("Member"), page("Linked"), page("Unrelated"));
+        for (id, session) in [(&linked.id, "s1"), (&unrelated.id, "s9")] {
+            notes.update(UpdateNote { id: id.clone(), add_session_id: Some(session.into()), ..Default::default() }, "person").unwrap();
+        }
+        let members = NoteSnapshot::members(&notes, &[member.id.clone()], true);
+        assert_eq!(members.note(&member.id).unwrap().title.as_deref(), Some("Member"));
+        assert_eq!(members.markdown(&member.id), NoteSource::markdown(&notes, &member.id));
+        assert!(members.note(&linked.id).is_none() && members.note(&unrelated.id).is_none());
+        assert!(NoteSnapshot::members(&notes, &[member.id.clone()], false).markdown(&member.id).is_none(), "no bodies unless asked");
+        let swept = NoteSnapshot::linked(&notes, &["s1".into()]);
+        assert_eq!(swept.linked_to(&["s1".into()]).into_iter().map(|facts| facts.id).collect::<Vec<_>>(), [linked.id.clone()]);
+        assert!(swept.note(&unrelated.id).is_none() && swept.note(&member.id).is_none());
+        // The service itself answers the same as a snapshot would.
+        assert_eq!(NoteSource::note(&notes, &member.id).unwrap().title.as_deref(), Some("Member"));
+        assert_eq!(NoteSource::linked_to(&notes, &["s1".into()]).len(), 1);
     }
 
     fn issue(url: &str) -> TrailMemberRef {

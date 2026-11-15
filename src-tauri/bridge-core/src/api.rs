@@ -639,8 +639,14 @@ fn trails_changed(core: &Arc<BridgeCore>, trail_id: &str) {
     core.events.publish(CoreEvent::TrailsChanged(wire::TrailsChanged { trail_id: Some(trail_id.to_owned()), added: Vec::new() }));
 }
 
+/// The member pages of one trail (or every trail), read before the core lock.
+fn trail_notes(core: &Arc<BridgeCore>, trail_id: Option<&str>, bodies: bool) -> Result<crate::trails::timeline::NoteSnapshot, BridgeError> {
+    let ids = crate::trails::timeline::member_note_ids(&core.db.lock().unwrap(), trail_id)?;
+    Ok(crate::trails::timeline::NoteSnapshot::members(core.notes.as_ref(), &ids, bodies))
+}
+
 fn trail_summary(core: &Arc<BridgeCore>, trail_id: &str) -> Result<wire::TrailSummary, BridgeError> {
-    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let notes = trail_notes(core, Some(trail_id), false)?;
     let db = core.db.lock().unwrap();
     let row = crate::trails::store::require(&db, trail_id)?;
     crate::trails::timeline::summary(&db, &notes, &row)
@@ -648,35 +654,41 @@ fn trail_summary(core: &Arc<BridgeCore>, trail_id: &str) -> Result<wire::TrailSu
 
 /// A snapshot with the bodies of the trail's notes, for the brief.
 fn trail_brief_notes(core: &Arc<BridgeCore>, trail_id: &str) -> Result<crate::trails::timeline::NoteSnapshot, BridgeError> {
-    let ids: Vec<String> = {
-        let db = core.db.lock().unwrap();
-        crate::trails::store::require(&db, trail_id)?;
-        crate::trails::store::members(&db, trail_id)?
-            .into_iter()
-            .filter(|member| member.kind == wire::TrailMemberKind::Note)
-            .map(|member| member.reference)
-            .collect()
-    };
-    Ok(crate::trails::timeline::NoteSnapshot::default().with_markdown(core.notes.as_ref(), &ids))
+    crate::trails::store::require(&core.db.lock().unwrap(), trail_id)?;
+    trail_notes(core, Some(trail_id), true)
 }
 
-/// Every trail, needs-you first. Follows new links before reading.
+/// The sweep a read runs first, skipped when nothing was written since the
+/// last sweep began. The maintenance loop always sweeps.
+fn sweep_before_read(core: &Arc<BridgeCore>) {
+    if !core.trails_cache.swept_at(crate::trails::cache::stamp(core)) {
+        crate::trails::live::sweep_and_publish(core, false);
+    }
+}
+
+/// Every trail, needs-you first. Follows new links before reading; served
+/// from the cache while nothing has been written since it was derived.
 pub fn list_trails(core: &Arc<BridgeCore>, include_archived: bool) -> Result<wire::ListTrailsResult, BridgeError> {
-    crate::trails::live::sweep_and_publish(core, false);
-    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    sweep_before_read(core);
+    let at = crate::trails::cache::stamp(core);
+    if let Some(trails) = core.trails_cache.list(at, include_archived) {
+        return Ok(wire::ListTrailsResult { trails });
+    }
+    let notes = trail_notes(core, None, false)?;
     let db = core.db.lock().unwrap();
     let mut trails = crate::trails::store::list(&db, include_archived)?
         .iter()
         .map(|row| crate::trails::timeline::summary(&db, &notes, row))
         .collect::<Result<Vec<_>, _>>()?;
     crate::trails::timeline::sort_summaries(&mut trails);
+    core.trails_cache.store_list(at, include_archived, &trails);
     Ok(wire::ListTrailsResult { trails })
 }
 
 /// One trail's page. `refresh` re-reads its pull requests from GitHub first
 /// (network: hosts run this off the UI thread).
 pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str, refresh: bool) -> Result<wire::ReadTrailResult, BridgeError> {
-    crate::trails::live::sweep_and_publish(core, false);
+    sweep_before_read(core);
     if refresh {
         let sessions: Vec<String> = {
             let db = core.db.lock().unwrap();
@@ -703,10 +715,18 @@ pub fn read_trail(core: &Arc<BridgeCore>, trail_id: &str, refresh: bool) -> Resu
             trails_changed(core, trail_id);
         }
     }
-    let notes = crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref());
+    let at = crate::trails::cache::stamp(core);
+    if !refresh {
+        if let Some(trail) = core.trails_cache.detail(at, trail_id) {
+            return Ok(wire::ReadTrailResult { trail });
+        }
+    }
+    let notes = trail_notes(core, Some(trail_id), false)?;
     let db = core.db.lock().unwrap();
     let row = crate::trails::store::require(&db, trail_id)?;
-    Ok(wire::ReadTrailResult { trail: crate::trails::timeline::detail(&db, &notes, &row)? })
+    let trail = crate::trails::timeline::detail(&db, &notes, &row)?;
+    core.trails_cache.store_detail(at, trail_id, &trail);
+    Ok(wire::ReadTrailResult { trail })
 }
 
 pub fn create_trail(core: &Arc<BridgeCore>, params: &wire::CreateTrailParams) -> Result<wire::CreateTrailResult, BridgeError> {
@@ -814,10 +834,16 @@ pub fn remove_trail_member(core: &Arc<BridgeCore>, trail_id: &str, member: &wire
 }
 
 pub fn preview_trail_brief(core: &Arc<BridgeCore>, trail_id: &str) -> Result<wire::PreviewTrailBriefResult, BridgeError> {
+    let at = crate::trails::cache::stamp(core);
+    if let Some(preview) = core.trails_cache.preview(at, trail_id) {
+        return Ok(preview);
+    }
     let notes = trail_brief_notes(core, trail_id)?;
     let db = core.db.lock().unwrap();
     let row = crate::trails::store::require(&db, trail_id)?;
-    crate::trails::brief::preview(&db, &notes, &row)
+    let preview = crate::trails::brief::preview(&db, &notes, &row)?;
+    core.trails_cache.store_preview(at, trail_id, &preview);
+    Ok(preview)
 }
 
 /// Start a new chat on a trail: write the chosen brief items into its history

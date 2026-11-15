@@ -1685,6 +1685,24 @@ export const mockWorkflowApi = {
   },
 };
 
+/**
+ * The sidebar badge and the Trails screen both re-list on every
+ * `trails/changed`. Calls made in the same task share one request, sent after
+ * the last of them; a call made after it was sent gets its own, so no caller
+ * is ever answered with data older than its call.
+ */
+const queuedTrailLists = new Map<boolean, Promise<ListTrailsResult>>();
+function listTrailsOnce(includeArchived: boolean): Promise<ListTrailsResult> {
+  const queued = queuedTrailLists.get(includeArchived);
+  if (queued) return queued;
+  const request = new Promise<void>(resolve => queueMicrotask(resolve)).then(() => {
+    queuedTrailLists.delete(includeArchived);
+    return call("trails/list_trails", { includeArchived });
+  });
+  queuedTrailLists.set(includeArchived, request);
+  return request;
+}
+
 export const bridgeApi = {
   /** The app preferences record (theme, skin, transcript display). The core
    *  keeps it so a chat or another window can change it; see `appPreferences.ts`. */
@@ -1860,7 +1878,7 @@ export const bridgeApi = {
   /** A chat's drafted messages, oldest first, discarded ones included. */
   // Trails: one page per piece of work. Mock mode serves demo trails.
   listTrails: (includeArchived = false): Promise<ListTrailsResult> =>
-    hasBackend() ? call("trails/list_trails", { includeArchived }) : Promise.resolve(mockListTrails(includeArchived)),
+    hasBackend() ? listTrailsOnce(includeArchived) : Promise.resolve(mockListTrails(includeArchived)),
   readTrail: (trailId: string, refresh = false): Promise<ReadTrailResult> =>
     hasBackend() ? call("trails/read_trail", { trailId, refresh }) : Promise.resolve().then(() => mockReadTrail(trailId)),
   createTrail: (title: string, workspaceId?: string | null, sessionId?: string | null): Promise<CreateTrailResult> =>
