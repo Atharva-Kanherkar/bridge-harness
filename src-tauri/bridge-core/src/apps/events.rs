@@ -148,6 +148,21 @@ mod tests {
     }
 
     #[test]
+    fn an_app_event_is_never_context_nor_a_recall_hit() {
+        let db = db();
+        let forest = crate::session_forest::SessionForest::new(&db);
+        forest.append("s1", crate::session_forest::EntryKind::UserMessage, json!({"text": "send the release notes"})).unwrap();
+        let id = record(&db, "outgoing", "outgoing.sent", "Sent a Slack message to #zebracrossing", json!({})).unwrap().unwrap();
+        let branch = forest.active_branch("s1").unwrap();
+        assert!(branch.iter().any(|entry| entry.id == id), "the event is on the branch");
+        let projection = crate::context::ContextProjector::project(&branch, 200_000).unwrap();
+        assert!(projection.render_entries.iter().all(|entry| entry.id != id), "never projected");
+        let indexed: i64 = db.query_row("SELECT count(*) FROM session_entry_fts WHERE entry_id=?1", [&id], |row| row.get(0)).unwrap();
+        assert_eq!(indexed, 0, "never a recall hit");
+        assert!(crate::session_recall::search(&db, "s1", "zebracrossing", None).unwrap().hits.is_empty());
+    }
+
+    #[test]
     fn refuses_undeclared_types_and_unknown_apps() {
         let db = db();
         let undeclared = record(&db, "outgoing", "outgoing.drafted", "Drafted", json!({})).unwrap_err();
