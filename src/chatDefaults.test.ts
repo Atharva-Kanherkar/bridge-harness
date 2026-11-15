@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultsFromSettings, layerChatDefaults, sameDefaultsRevision, settingSourceLabel } from "./chatDefaults";
+import { defaultsFromSettings, harnessLaunchOverrides, layerChatDefaults, sameDefaultsRevision, settingSourceLabel } from "./chatDefaults";
 import type { ChatDefaults, ResolvedChatSettings } from "./protocol/generated/protocol";
 
 const settings: ResolvedChatSettings = { workspaceId:"a",projectId:"p",revision:{application:2,project:4},target:{kind:"direct"},model:{harness:"codex",model:null},effort:null,access:"ask",createWorktree:false,activeTurnInput:"queue",sources:{model:"project"} };
@@ -32,5 +32,29 @@ describe("personal chat defaults",()=>{
       expect(JSON.stringify(app)).toBe(before);expect(b).toEqual(app);
       if(seed&4){expect(a.access).toBe("ask");expect(a.createWorktree).toBe(false);}
     }
+  });
+});
+
+describe("harnessLaunchOverrides", () => {
+  const claude = { id: "claude", defaultModel: "sonnet", models: [
+    { id: "sonnet", label: "Sonnet", tier: "standard" as const, defaultForTier: true, supportedEffortLevels: ["low", "high"] },
+    { id: "opus", label: "Opus", tier: "strong" as const, defaultForTier: true, supportedEffortLevels: ["low", "high", "xhigh"] },
+  ] };
+  const codex = { id: "codex", defaultModel: "gpt", models: [{ id: "gpt", label: "GPT", tier: "standard" as const, defaultForTier: true, supportedEffortLevels: ["medium"] }] };
+  const defaults = { model: { harness: "claude", model: "opus" } };
+
+  it("asks for nothing on the composer's harness, so the saved model and effort apply", () => {
+    expect(harnessLaunchOverrides("claude", defaults, [claude, codex], [])).toEqual({});
+  });
+  it("uses another harness's saved model and effort", () => {
+    expect(harnessLaunchOverrides("claude", { model: { harness: "codex", model: "gpt" } }, [claude, codex], [{ id: "claude", defaultModel: "opus", effort: "xhigh" }]))
+      .toEqual({ model: { harness: "claude", model: "opus" }, effort: { value: "xhigh" } });
+  });
+  it("falls back to the provider default and drops an effort that model lacks", () => {
+    expect(harnessLaunchOverrides("claude", { model: { harness: "codex", model: "gpt" } }, [claude, codex], [{ id: "claude", defaultModel: "gone", effort: "xhigh" }]))
+      .toEqual({ model: { harness: "claude", model: "sonnet" }, effort: { value: null } });
+  });
+  it("still names a harness when the defaults could not be resolved", () => {
+    expect(harnessLaunchOverrides("codex", null, [claude, codex], [])).toEqual({ model: { harness: "codex", model: "gpt" }, effort: { value: null } });
   });
 });
