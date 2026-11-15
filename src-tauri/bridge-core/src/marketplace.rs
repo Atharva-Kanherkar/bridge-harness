@@ -235,6 +235,11 @@ fn cached_in(
 
 /// The launch path's discovery: exactly the parts `discovery` asks for,
 /// reused for [`CLAUDE_DISCOVERY_TTL`].
+///
+/// For callers that can live with a minute of staleness: a launch, and the
+/// connector inventory a pane paints. Anything a person reads as current state
+/// and can act on — settings, workflow surfaces — asks
+/// [`claude_sdk_configuration`] instead.
 pub fn cached_claude_sdk_configuration(discovery: ClaudeDiscovery) -> ClaudeSdkConfiguration {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<DiscoveryCache>> =
         std::sync::OnceLock::new();

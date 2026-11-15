@@ -403,7 +403,13 @@ pub(crate) fn run_authorized(
 /// API — already reasons about "which harness owns this connector" rather than
 /// assuming, because the answer travels with the connector.
 pub fn discover_harness_connectors() -> Vec<HarnessConnectors> {
-    let claude = crate::marketplace::claude_sdk_configuration();
+    // The connector inventory is a snapshot, not a decision: a minute of
+    // staleness costs nothing here, while a fresh probe is `mcp list`
+    // connecting to every server before this pane can paint. An action that
+    // turns out to need a fresh answer reports its own failure.
+    let claude = crate::marketplace::cached_claude_sdk_configuration(
+        crate::marketplace::ClaudeDiscovery::ALL,
+    );
     vec![HarnessConnectors {
         harness: "claude".to_owned(),
         health: claude.connector_health,
