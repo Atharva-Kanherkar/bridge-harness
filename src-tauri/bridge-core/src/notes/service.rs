@@ -43,6 +43,12 @@ pub fn agent_actor(harness: &str, session_id: &str) -> String {
     format!("agent:{harness}:{session_id}")
 }
 
+/// The chat behind an `agent:<harness>:<sessionId>` actor, if it is one.
+pub fn agent_session(actor: &str) -> Option<&str> {
+    let (_, session) = actor.strip_prefix("agent:")?.split_once(':')?;
+    (!session.is_empty()).then_some(session)
+}
+
 pub fn model_actor(pass: &str, model: &str) -> String {
     format!("model:{pass}:{model}")
 }
@@ -2139,6 +2145,15 @@ pub(crate) mod tests {
 
     fn search(notes: &NotesService, query: &str) -> Vec<Note> {
         notes.list(&ListFilter { query: Some(query.into()), ..Default::default() }).unwrap()
+    }
+
+    #[test]
+    fn agent_session_reads_the_chat_behind_an_agent_actor() {
+        assert_eq!(agent_session(&agent_actor("claude", "s-1")), Some("s-1"));
+        assert_eq!(agent_session("person"), None);
+        assert_eq!(agent_session("model:structure:x"), None);
+        assert_eq!(agent_session("agent:claude:"), None);
+        assert_eq!(agent_session("agent:claude"), None);
     }
 
     #[test]
