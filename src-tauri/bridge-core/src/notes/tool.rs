@@ -142,6 +142,9 @@ impl Access {
                 .chain(crate::outgoing_tools::WRITE_TOOLS.iter())
                 .chain(std::iter::once(&NOTIFY_USER))
                 .chain(crate::settings_tools::TOOLS.iter())
+                // Another chat's history is the person's to share with the
+                // chat they are talking to, not with a worker it spawned.
+                .chain(crate::history_tools::TOOLS.iter())
                 .copied()
                 .collect(),
             Access::ReadOnly => READ_TOOLS.iter().chain(memory).copied().collect(),
@@ -518,6 +521,10 @@ fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) 
         let (status, value) = notify_user(&core, access, session_id, &args);
         return reply(status, value);
     }
+    if tool.starts_with(crate::history_tools::PREFIX) {
+        let (status, value) = history_call(&core, access, session_id, tool, &args);
+        return reply(status, value);
+    }
     if tool.starts_with("memory_") {
         let outcome = {
             let db = core.db.lock().unwrap();
@@ -560,6 +567,26 @@ fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) 
     match run(&core.notes, access, &actor, tool, &args) {
         Ok(result) => reply(200, result),
         Err(error) => reply(error.status, json!({"error": error.message})),
+    }
+}
+
+/// A `chats_*` call: only a top-level chat reads the person's other chats,
+/// within its rate limit, and never the chat it is.
+fn history_call(core: &BridgeCore, access: Access, session_id: &str, tool: &str, args: &Value) -> (u16, Value) {
+    if access != Access::Write {
+        return (403, json!({"error": "only a top-level chat reads the person's other chats"}));
+    }
+    if !crate::history_tools::admit(session_id, std::time::Instant::now()) {
+        let error = crate::history_tools::rate_limited();
+        return (error.status, json!({"error": error.message}));
+    }
+    let outcome = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::history_tools::run(&db, session_id, tool, args, chrono::Utc::now())
+    };
+    match outcome {
+        Ok(result) => (200, result),
+        Err(error) => (error.status, json!({"error": error.message})),
     }
 }
 
@@ -649,6 +676,38 @@ mod tests {
     }
 
     #[test]
+    fn history_calls_answer_top_level_chats_and_refuse_workers() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = crate::BridgeCore::for_tests(scratch.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat','claude','Chat','ready','direct','Asking');
+                 INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('old','codex','Chat','ready','direct','Staging proxy');",
+            )
+            .unwrap();
+        crate::store::append_session_entry(&core.db.lock().unwrap(), "old", None, "user.message", &json!({"text": "the staging proxy listens on 8443"}), None, "eligible", None).unwrap();
+        let (status, value) = history_call(&core, Access::Write, "chat", "chats_search", &json!({"query": "staging proxy"}));
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["chats"][0]["id"], "old");
+        let (status, value) = history_call(&core, Access::Write, "chat", "chats_read", &json!({"id": "old", "query": "8443"}));
+        assert_eq!(status, 200, "{value}");
+        assert!(value["windows"][0]["text"].as_str().unwrap().contains("8443"));
+        let (status, _) = history_call(&core, Access::Write, "chat", "chats_read", &json!({"id": "chat"}));
+        assert_eq!(status, 404, "a chat does not read itself through the tool");
+        let (status, value) = history_call(&core, Access::ReadOnly, "chat", "chats_search", &json!({"query": "staging"}));
+        assert_eq!(status, 403, "{value}");
+        let (status, _) = history_call(&core, Access::Write, "chat", "chats_search", &json!({"query": "x", "sql": "DROP TABLE sessions"}));
+        assert_eq!(status, 400);
+        // Spend the rest of this chat's window; the next call is refused.
+        let limited = (0..crate::history_tools::MAX_CALLS)
+            .map(|_| history_call(&core, Access::Write, "chat", "chats_search", &json!({"query": "staging"})).0)
+            .find(|status| *status == 429);
+        assert_eq!(limited, Some(429));
+    }
+
+    #[test]
     fn notify_user_posts_for_the_calling_chat_and_is_rate_limited() {
         let scratch = tempfile::tempdir().unwrap();
         let core = crate::BridgeCore::for_tests(scratch.path());
@@ -695,6 +754,10 @@ mod tests {
         let read = run(&notes, Access::ReadOnly, actor, "notes_read", &json!({"id": page.id})).unwrap();
         assert_eq!(read["markdown"], "keep me as I am");
         assert_eq!(Access::ReadOnly.tools(), vec!["notes_search", "notes_read", "memory_search"]);
+        for tool in crate::history_tools::TOOLS {
+            assert!(Access::Write.tools().contains(&tool), "{tool}");
+            assert!(!Access::ReadOnly.tools().contains(&tool), "a worker never reads other chats: {tool}");
+        }
         assert!(Access::Write.tools().contains(&"memory_propose"));
         assert!(Access::Write.tools().contains(&"outgoing_draft"));
         assert!(!Access::ReadOnly.tools().contains(&"outgoing_draft"));

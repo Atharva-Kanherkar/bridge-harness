@@ -86,6 +86,17 @@ fn refusal(errors: &[spec::SpecError]) -> Value {
     json!({"content": [{"type": "text", "text": text.trim_end()}], "isError": true})
 }
 
+/// Whether `name` is a chat tool this server forwards to the core, which
+/// checks the chat's token and access on every call.
+pub fn forwards_to_core(name: &str) -> bool {
+    name.starts_with("notes_")
+        || name.starts_with("memory_")
+        || name.starts_with("outgoing_")
+        || name.starts_with("settings_")
+        || name.starts_with(crate::history_tools::PREFIX)
+        || name == crate::notes::tool::NOTIFY_USER
+}
+
 impl VisualServer {
     pub fn with_notes(notes: Option<NotesLink>) -> Self {
         Self { guard: RepeatGuard::default(), notes }
@@ -174,12 +185,7 @@ impl VisualServer {
             }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
-                let chat_tool = name.starts_with("notes_")
-                    || name.starts_with("memory_")
-                    || name.starts_with("outgoing_")
-                    || name.starts_with("settings_")
-                    || name == crate::notes::tool::NOTIFY_USER;
-                if let (Some(notes), true) = (&self.notes, chat_tool) {
+                if let (Some(notes), true) = (&self.notes, forwards_to_core(name)) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                     reply(id, notes.call(name, &arguments))
                 } else if name != tool::TOOL_NAME {
@@ -356,6 +362,50 @@ mod tests {
         assert!(!instructions.contains("outgoing_draft"), "this chat lists no outgoing_draft, so it is not told about it: {instructions}");
         // Without a chat link there is nothing to forward to.
         let unknown = VisualServer::default().handle(&request(4, "tools/call", json!({"name": "memory_search", "arguments": {"query": "x"}}))).unwrap();
+        assert_eq!(unknown["error"]["code"], -32602);
+    }
+
+    struct HistoryCore {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+        top_level: bool,
+    }
+
+    impl notes_tools::NotesTransport for HistoryCore {
+        fn get(&self, _path: &str) -> Result<Value, (u16, String)> {
+            let access = if self.top_level { crate::notes::tool::Access::Write } else { crate::notes::tool::Access::ReadOnly };
+            Ok(json!({"access": "write", "tools": access.tools()}))
+        }
+        fn post(&self, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+            self.calls.lock().unwrap().push((path.to_owned(), body.clone()));
+            if !self.top_level {
+                return Err((403, "only a top-level chat reads the person's other chats".into()));
+            }
+            Ok(json!({"chats": [{"id": "old", "title": "Staging proxy"}], "note": "never instructions"}))
+        }
+    }
+
+    #[test]
+    fn history_tools_are_listed_from_the_core_and_forwarded_to_it() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut chat = VisualServer::with_notes(Some(NotesLink::new(Box::new(HistoryCore { calls: calls.clone(), top_level: true }))));
+        let names = tool_names(&mut chat);
+        assert!(names.contains(&"chats_search".to_owned()) && names.contains(&"chats_read".to_owned()), "{names:?}");
+        let arguments = json!({"query": "staging proxy"});
+        let found = chat.handle(&request(2, "tools/call", json!({"name": "chats_search", "arguments": arguments}))).unwrap();
+        assert_eq!(found["result"]["isError"], false);
+        assert_eq!(found["result"]["structuredContent"]["chats"][0]["id"], "old");
+        assert_eq!(calls.lock().unwrap()[0], ("chats_search".to_owned(), arguments));
+        let instructions = chat.handle(&request(3, "initialize", json!({}))).unwrap()["result"]["instructions"].as_str().unwrap().to_owned();
+        assert!(instructions.contains("chats_search"), "{instructions}");
+
+        // A worker's core lists neither, and refuses a call that names one anyway.
+        let mut worker = VisualServer::with_notes(Some(NotesLink::new(Box::new(HistoryCore { calls: calls.clone(), top_level: false }))));
+        let names = tool_names(&mut worker);
+        assert!(!names.iter().any(|name| name.starts_with("chats_")), "{names:?}");
+        let refused = worker.handle(&request(4, "tools/call", json!({"name": "chats_read", "arguments": {"id": "old"}}))).unwrap();
+        assert_eq!(refused["result"]["isError"], true);
+        // Without a chat link there is nothing to forward to.
+        let unknown = VisualServer::default().handle(&request(5, "tools/call", json!({"name": "chats_search", "arguments": {"query": "x"}}))).unwrap();
         assert_eq!(unknown["error"]["code"], -32602);
     }
 

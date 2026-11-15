@@ -986,9 +986,15 @@ fn permission_rules(write_mode: Option<WriteMode>) -> Value {
     // A memory proposal waits for the person's review in Bridge, and a change
     // to Bridge's own settings cannot widen authority, so Ask lets both run
     // like a read; a read-only session never proposes, never drafts a message
-    // for someone else, and never touches Bridge's settings.
+    // for someone else, never touches Bridge's settings, and never reads the
+    // person's other chats (the core refuses those too).
     if write_mode == Some(WriteMode::ReadOnly) {
-        for tool in crate::memory_tools::WRITE_TOOLS.iter().chain(crate::outgoing_tools::WRITE_TOOLS.iter()).chain(crate::settings_tools::TOOLS.iter()) {
+        for tool in crate::memory_tools::WRITE_TOOLS
+            .iter()
+            .chain(crate::outgoing_tools::WRITE_TOOLS.iter())
+            .chain(crate::settings_tools::TOOLS.iter())
+            .chain(crate::history_tools::TOOLS.iter())
+        {
             let permission = format!("{}_{tool}", crate::mcp_apps::tool::SERVER_NAME);
             rules.push(json!({"permission": permission, "pattern":"*", "action": "deny"}));
         }
@@ -3798,8 +3804,13 @@ mod tests {
                 assert_eq!(resolve_v2(&v2, tool), expected, "{tool} {mode:?} v2");
             }
         }
-        for tool in ["bridge_notes_search", "bridge_notes_read", "bridge_visualize", "bridge_memory_search"] {
+        for tool in ["bridge_notes_search", "bridge_notes_read", "bridge_visualize", "bridge_memory_search", "bridge_chats_search", "bridge_chats_read"] {
             assert_eq!(resolve_v1(&permission_rules(Some(WriteMode::Shared)), tool), "allow", "{tool} reads freely");
+        }
+        for tool in ["bridge_chats_search", "bridge_chats_read"] {
+            let v1 = permission_rules(Some(WriteMode::ReadOnly));
+            assert_eq!(resolve_v1(&v1, tool), "deny", "a read-only worker never reads other chats: {tool}");
+            assert_eq!(resolve_v2(&crate::opencode_v2::permission_rules(&v1), tool), "deny", "{tool} v2");
         }
         for (mode, expected) in [(Some(WriteMode::Shared), "allow"), (Some(WriteMode::Isolated), "allow"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
             let v1 = permission_rules(mode);
