@@ -2388,7 +2388,14 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
         .cloned()
         .unwrap_or(Value::Null);
     event.data["interactionKind"] = Value::String("permission".into());
-    event.data["actions"] = permission_actions(true);
+    // "Allow for session" is only honest when the provider offered something it
+    // can persist. The sidecar reports `allowSession: false` for a call with no
+    // scoped suggestion, and the button would otherwise be a one-shot in disguise.
+    let allow_session = request
+        .get("allowSession")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    event.data["actions"] = permission_actions(allow_session);
     Some(event)
 }
 
@@ -3820,6 +3827,55 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(file.title.as_deref(), Some("Edit these files?"));
+    }
+
+    #[test]
+    fn a_root_permission_card_offers_a_session_grant_only_when_one_can_persist() {
+        let root = normalize_claude_control_request(&json!({
+            "type":"control_request",
+            "request_id":"root-permission-1",
+            "request":{
+                "subtype":"can_use_tool",
+                "allowSession":true,
+                "tool_use_id":"tool-1",
+                "tool_name":"Bash",
+                "tool_input":{"command":"cargo --version"}
+            }
+        }))
+        .unwrap();
+        assert_eq!(root.kind, "permission.requested");
+        assert_eq!(root.data["requestId"], "root-permission-1");
+        assert_eq!(root.data["command"], "cargo --version");
+        let decisions = root.data["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action["decision"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(decisions, vec!["decline", "acceptForSession", "accept"]);
+
+        let one_shot = normalize_claude_control_request(&json!({
+            "type":"control_request",
+            "request_id":"root-permission-2",
+            "request":{
+                "subtype":"can_use_tool",
+                "allowSession":false,
+                "tool_name":"Bash",
+                "tool_input":{"command":"cargo --version"}
+            }
+        }))
+        .unwrap();
+        let decisions = one_shot.data["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action["decision"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decisions,
+            vec!["decline", "accept"],
+            "a grant with nothing to persist must not claim to be a session grant"
+        );
     }
 
     #[test]

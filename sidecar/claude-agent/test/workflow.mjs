@@ -87,7 +87,12 @@ test("worktree workflows retain user Bash allows and deny connectors and delegat
     options.env = { CLAUDE_CONFIG_DIR: user };
 
     // Exercise the options after the sidecar adds its child-permission wrapper.
-    withChildPermissions(options, childPermissions(async () => {}, "root"));
+    // This fixture is a host that denies every prompt, so a call that reaches
+    // the channel resolves instead of waiting for an answer nobody sends.
+    const permissions = childPermissions(async (frame) => {
+      permissions.respond({ response: { request_id: frame.request_id, response: { behavior: "deny" } } });
+    }, "root");
+    withChildPermissions(options, permissions);
     const hooks = options.hooks.PreToolUse.flatMap((entry) => entry.hooks);
     for (const agent_id of [undefined, "native-child"]) {
       for (const tool_name of [tool, "mcp__bridge__settings_change", "mcp__unknown__read", "Task", "Agent"]) {

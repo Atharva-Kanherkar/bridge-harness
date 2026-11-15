@@ -20,6 +20,10 @@ pub struct SessionSupervisor;
 /// like the other Bridge annotations so it is stripped before the payload is
 /// deserialized back into a typed `WorkerResult`.
 pub const REPOSITORY_EVIDENCE_KEY: &str = "_bridgeRepoEvidence";
+/// Durable artifacts a read-only worker produced. A sibling annotation, like the
+/// repository evidence: the typed `WorkerResult` stays exactly what the worker
+/// reported, and the delivery can still name a file the parent can open.
+pub const WORKER_ARTIFACTS_KEY: &str = "_bridgeArtifacts";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReportedWorkerResult {
@@ -33,6 +37,10 @@ pub(crate) struct WorkerResultDelivery {
     pub child_session_id: String,
     pub result: WorkerResult,
     pub repository: Option<serde_json::Value>,
+    /// Survives a daemon restart with the outbox row, so a pending delivery
+    /// still names the artifact after a reload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<crate::worker_artifacts::PersistedArtifact>,
 }
 
 impl SessionSupervisor {
@@ -262,6 +270,19 @@ impl SessionSupervisor {
         result: &WorkerResult,
         evidence: Option<&serde_json::Value>,
     ) -> Result<Option<ReportedWorkerResult>, BridgeError> {
+        Self::record_result_with_artifacts(db, session_id, result, evidence, &[])
+    }
+
+    /// As [`Self::record_result_with_evidence`], plus the durable artifacts the
+    /// parent is told about. Kept as a separate entry point so the existing
+    /// delivery tests and callers do not have to thread an empty slice.
+    pub fn record_result_with_artifacts(
+        db: &Connection,
+        session_id: &str,
+        result: &WorkerResult,
+        evidence: Option<&serde_json::Value>,
+        artifacts: &[crate::worker_artifacts::PersistedArtifact],
+    ) -> Result<Option<ReportedWorkerResult>, BridgeError> {
         result.validate().map_err(BridgeError::Invalid)?;
         let transaction = db.unchecked_transaction()?;
         let runtime: Option<(String, String)> = transaction
@@ -282,6 +303,10 @@ impl SessionSupervisor {
         payload["childSessionId"] = serde_json::Value::String(session_id.to_owned());
         if let Some(evidence) = evidence {
             payload[REPOSITORY_EVIDENCE_KEY] = evidence.clone();
+        }
+        if !artifacts.is_empty() {
+            payload[WORKER_ARTIFACTS_KEY] =
+                serde_json::to_value(artifacts).map_err(|error| BridgeError::Invalid(error.to_string()))?;
         }
         session_forest::append_in_transaction(
             &transaction,
@@ -330,6 +355,7 @@ impl SessionSupervisor {
                 child_session_id: session_id.to_owned(),
                 result: result.clone(),
                 repository: evidence.cloned(),
+                artifacts: artifacts.to_vec(),
             }).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             idempotency_key: format!("worker-result:{}", report.evidence_id),
             status: "pending".into(),
@@ -677,6 +703,65 @@ mod tests {
             "starting"
         );
         assert!(store::session_entries(&db, "child").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_reported_result_carries_its_durable_artifact_references() {
+        let db = database();
+        let result = WorkerResult {
+            schema_version: 1,
+            status: WorkerResultStatus::Completed,
+            summary: "Wrote the report".into(),
+            files_changed: vec![],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec![],
+            suggested_next_action: SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        let artifacts = vec![crate::worker_artifacts::PersistedArtifact {
+            relative_path: "report.json".into(),
+            path: "/data/worker-artifacts/child/report.json".into(),
+            bytes: 37,
+            sha256: "a".repeat(64),
+        }];
+        let reported = SessionSupervisor::record_result_with_artifacts(
+            &db,
+            "child",
+            &result,
+            None,
+            &artifacts,
+        )
+        .unwrap()
+        .unwrap();
+        // The delivery obligation survives a reload with the artifact list.
+        let payload: String = db
+            .query_row(
+                "SELECT payload FROM durable_outbox WHERE id=?1",
+                params![reported.evidence_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let delivery: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(delivery["artifacts"][0]["relativePath"], "report.json");
+        assert_eq!(
+            delivery["artifacts"][0]["path"],
+            "/data/worker-artifacts/child/report.json"
+        );
+        // The canonical parent-facing entry names the same file.
+        let entry_payload: String = db
+            .query_row(
+                "SELECT payload FROM session_entries WHERE session_id='parent' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let entry: serde_json::Value = serde_json::from_str(&entry_payload).unwrap();
+        assert_eq!(entry["_bridgeArtifacts"][0]["sha256"], "a".repeat(64));
+        // The typed result itself stays exactly what the worker reported.
+        assert!(entry.get("artifacts").is_none());
     }
 
     #[test]

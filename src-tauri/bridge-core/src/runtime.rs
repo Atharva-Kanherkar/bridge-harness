@@ -258,6 +258,9 @@ pub struct DelegationState {
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
     pub read_only_sandboxes: HashMap<String, worker_sandbox::ReadOnlySandbox>,
+    /// Read-only worker session → the artifact paths its delegation declared.
+    /// Retained with the sandbox so the files can be persisted before cleanup.
+    pub read_only_output_paths: HashMap<String, Vec<String>>,
 }
 
 /// Host-provided configuration for [`BridgeCore::boot`]. The host resolves
@@ -278,6 +281,15 @@ pub struct BootConfig {
 }
 
 impl BridgeCore {
+    /// The database, or an error instead of a panic when an earlier panic
+    /// poisoned its lock. Callers that answer a person report it; nothing
+    /// half-written is read back.
+    pub(crate) fn try_db(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, BridgeError> {
+        self.db
+            .lock()
+            .map_err(|_| BridgeError::Invalid("Bridge hit an internal error and needs a restart to read its data.".into()))
+    }
+
     /// The aggregate application snapshot the frontend renders.
     pub fn state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
         store::state(&self.db.lock().unwrap())
