@@ -157,7 +157,8 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
 /// - A chat is handed its plugin paths and no explicit connector list.
 /// - A briefing is handed connectors and no plugins (`strictMcpConfig` means
 ///   the compiled list is the only route it has).
-/// - A networked read-only worker is handed connectors, like a briefing.
+/// - A networked read-only worker is handed connectors, like a briefing; a
+///   non-networked one has no route to any server and is handed neither.
 /// - A briefing that can reach nothing (toolless, or a worktree workflow) is
 ///   handed neither, so nothing is probed for it.
 fn launch_discovery(
