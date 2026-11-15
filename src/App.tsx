@@ -40,7 +40,7 @@ import { taskRoute, type TaskAction } from "./components/workTasks";
 import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
 import { appById, appForView, appsBadge, badgeText, type AppId } from "./apps/registry";
-import { togglePin } from "./apps/pins";
+import { setPinned, togglePin } from "./apps/pins";
 import { badgesOf, enabledApps, pinsOf, useApps } from "./apps/store";
 import { splitDockPanes, useAddedPanes } from "./dockVisibility";
 import { SessionToolbar } from "./components/SessionToolbar";
@@ -3691,6 +3691,7 @@ function AppContent() {
       pinnedApps={pins.map(id => ({ id, badge: badgeText(appBadges[id]) }))}
       activeApp={activeApp}
       onOpenApp={openApp}
+      onUnpinApp={id => void setPinned(id, false).then(result => { if (!result.ok) setError(result.message); })}
       railTrailing={usageDot}
       onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}

@@ -407,4 +407,22 @@ describe("BridgeSidebar pinned Notes", () => {
     mount({ pinnedApps: [{ id: "notes" }], onOpenApp, activeApp: "notes" });
     expect(container.querySelector("button[aria-label='Notes']")?.getAttribute("aria-current")).toBe("page");
   });
+
+  it("unpins a pinned app from the button beside its row, without opening it", () => {
+    const onOpenApp = vi.fn();
+    const onUnpinApp = vi.fn();
+    mount({ pinnedApps: [{ id: "notes" }, { id: "pulls" }], onOpenApp, onUnpinApp });
+    expect(container.querySelector("button[aria-label='Unpin Apps']")).toBeNull();
+    const unpin = container.querySelector<HTMLButtonElement>("button[aria-label='Unpin Pulls']")!;
+    // A sibling of the row button, never nested inside it.
+    expect(unpin.closest("button[aria-label='Pulls']")).toBeNull();
+    click(unpin);
+    expect(onUnpinApp).toHaveBeenCalledWith("pulls");
+    expect(onOpenApp).not.toHaveBeenCalled();
+  });
+
+  it("shows no Unpin when the host cannot unpin", () => {
+    mount({ pinnedApps: [{ id: "notes" }] });
+    expect(container.querySelector("button[aria-label='Unpin Notes']")).toBeNull();
+  });
 });
