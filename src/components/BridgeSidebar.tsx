@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Archive, AtSign, Blocks, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
+import { Archive, AtSign, Blocks, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, PinOff, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { appById, type AppId, type BadgeText } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
@@ -445,6 +445,7 @@ function ActionRow({
   disabled = false,
   chord,
   badge,
+  unpinnable = false,
 }: {
   icon: LucideIcon;
   label: string;
@@ -456,6 +457,10 @@ function ActionRow({
   /** Advertise the row's binding in its tooltip, read from the keymap so the
    *  two cannot disagree. The accessible name stays the plain label. */
   chord?: CommandId;
+  /** A pinned app with an Unpin button beside it (a `group/pin` sibling):
+   *  the row keeps its hover look while the pointer is on that button, and
+   *  the badge steps aside for it. */
+  unpinnable?: boolean;
 }) {
   return (
     <button
@@ -469,11 +474,12 @@ function ActionRow({
         "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-[13px] tracking-[-0.008em] transition-colors",
         active ? "bg-selection font-medium text-selection-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
         disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
+        unpinnable && !active && "group-hover/pin:bg-accent group-hover/pin:text-foreground",
       )}
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       {label}
-      {badge && <span aria-hidden="true" className="ml-auto rounded-full bg-foreground/10 px-1.5 text-caption tabular-nums text-muted-foreground">{badge.count}</span>}
+      {badge && <span aria-hidden="true" className={cn("ml-auto rounded-full bg-foreground/10 px-1.5 text-caption tabular-nums text-muted-foreground", unpinnable && "group-hover/pin:opacity-0")}>{badge.count}</span>}
     </button>
   );
 }
@@ -517,6 +523,8 @@ export type BridgeSidebarProps = {
   /** The app on screen, so its pin reads as current. */
   activeApp?: AppId | null;
   onOpenApp: (id: AppId) => void;
+  /** Absent when the host cannot unpin: the pinned rows then show no Unpin. */
+  onUnpinApp?: (id: AppId) => void;
   /** Drawn at the end of the bottom rail, after Settings: the usage dot. */
   railTrailing?: React.ReactNode;
   onOpenSettings: () => void;
@@ -571,6 +579,7 @@ export function BridgeSidebar({
   pinnedApps = [],
   activeApp,
   onOpenApp,
+  onUnpinApp,
   railTrailing,
   onOpenSettings,
   onOpenSession,
@@ -884,7 +893,24 @@ export function BridgeSidebar({
           <ActionRow icon={Blocks} label="Apps" chord="open-launcher" onClick={onOpenApps} badge={appsBadge} />
           {pinnedApps.map(pin => {
             const app = appById(pin.id);
-            return <ActionRow key={app.id} icon={app.icon} label={app.name} onClick={() => onOpenApp(app.id)} active={activeApp === app.id} badge={pin.badge} />;
+            const row = <ActionRow icon={app.icon} label={app.name} onClick={() => onOpenApp(app.id)} active={activeApp === app.id} badge={pin.badge} unpinnable={Boolean(onUnpinApp)} />;
+            if (!onUnpinApp) return <div key={app.id}>{row}</div>;
+            // Unpin sits beside the row, never inside it: a <button> inside a
+            // <button> is invalid HTML. It shows on hover and keyboard focus.
+            return (
+              <div key={app.id} className="group/pin relative">
+                {row}
+                <button
+                  type="button"
+                  onClick={() => onUnpinApp(app.id)}
+                  title={`Unpin ${app.name}`}
+                  aria-label={`Unpin ${app.name}`}
+                  className="absolute right-1 top-1 grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover/pin:opacity-100"
+                >
+                  <PinOff size={12} strokeWidth={1.7} aria-hidden="true" />
+                </button>
+              </div>
+            );
           })}
         </nav>
 

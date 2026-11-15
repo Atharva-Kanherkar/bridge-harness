@@ -6,7 +6,7 @@
 // a grid for the eye and still a single step for the keys.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { MessageSquare, Pin, Search, TextSearch } from "lucide-react";
+import { MessageSquare, Pin, PinOff, Search, TextSearch } from "lucide-react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
@@ -107,7 +107,10 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
 
   const pin = (item: Item | undefined) => {
     if (!item || (item.kind !== "needs" && item.kind !== "app")) return;
-    const { app } = item;
+    pinApp(item.app);
+  };
+
+  const pinApp = (app: BuiltinApp) => {
     const wasPinned = pins.includes(app.id);
     void onTogglePin(app.id).then(result => {
       setStatus(!result.ok ? result.message : wasPinned ? `Unpinned ${app.name}.` : `Pinned ${app.name} to the sidebar.`);
@@ -179,7 +182,7 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
           <div key={section.id} role="group" aria-labelledby={`${baseId}-${section.id}`} data-launcher-section={section.id} className="border-b border-border px-2 py-2.5 last:border-b-0">
             <p id={`${baseId}-${section.id}`} className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">{section.label}</p>
             {section.id === "apps"
-              ? <div className="grid grid-cols-4 gap-1 sm:grid-cols-5">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.id)} badge={badgeText(badges[item.app.id])} active={item === current} {...optionProps(item)} />)}</div>
+              ? <div className="grid grid-cols-4 gap-1 sm:grid-cols-5">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.id)} badge={badgeText(badges[item.app.id])} active={item === current} onPin={() => pinApp(item.app)} {...optionProps(item)} />)}</div>
               : section.items.map(item => <Row key={item.key} item={item} active={item === current} {...optionProps(item)} />)}
           </div>
         ))}
@@ -201,16 +204,37 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
 
 type OptionProps = { id: string; role: "option"; "aria-selected": boolean; "data-active"?: string; onMouseMove: () => void; onClick: () => void };
 
-function AppTile({ app, pinned, badge, active, ...option }: { app: BuiltinApp; pinned: boolean; badge?: BadgeText; active: boolean } & OptionProps) {
+function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: BuiltinApp; pinned: boolean; badge?: BadgeText; active: boolean; onPin: () => void } & OptionProps) {
   const Icon = app.icon;
   return (
-    <div {...option} aria-label={`${app.name}${pinned ? ", pinned" : ""}${badge ? `, ${badge.label}` : ""}`} className={cn("relative flex cursor-default flex-col items-center gap-2 rounded-xl px-1 pb-2.5 pt-3 text-center", active ? "bg-selection text-selection-foreground" : "text-foreground/90")}>
+    <div {...option} aria-label={`${app.name}${pinned ? ", pinned" : ""}${badge ? `, ${badge.label}` : ""}`} className={cn("group/tile relative flex cursor-default flex-col items-center gap-2 rounded-xl px-1 pb-2.5 pt-3 text-center", active ? "bg-selection text-selection-foreground" : "text-foreground/90")}>
       <span className="relative flex size-11 items-center justify-center rounded-[12px] border border-border-card bg-card shadow-control">
         <Icon size={19} strokeWidth={1.5} aria-hidden="true" />
         {badge && <span aria-hidden="true" className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-foreground px-1 text-[10px] font-semibold leading-4 text-background tabular-nums">{badge.count}</span>}
       </span>
       <span className="text-[12px] leading-tight">{app.name}</span>
-      {pinned && <Pin size={10} aria-hidden="true" className="absolute right-2 top-2 fill-current text-muted-foreground" />}
+      {/* The pin for a pointer. The tile stays the listbox option and ⌘P the
+          keyboard path, so the button is no tab stop, keeps focus in the
+          search box, and never opens the app it sits on. */}
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label={pinned ? `Unpin ${app.name}` : `Pin ${app.name} to the sidebar`}
+        title={pinned ? `Unpin ${app.name}` : `Pin to sidebar  ${PIN_CHORD}`}
+        onMouseDown={event => event.preventDefault()}
+        onClick={event => { event.stopPropagation(); onPin(); }}
+        className={cn(
+          "group/pin absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md text-muted-foreground transition-opacity hover:bg-foreground/10 hover:text-foreground",
+          pinned || active ? "opacity-100" : "opacity-0 group-hover/tile:opacity-100",
+        )}
+      >
+        {pinned
+          ? <>
+              <Pin size={11} aria-hidden="true" className="fill-current group-hover/pin:hidden" />
+              <PinOff size={11} aria-hidden="true" className="hidden group-hover/pin:block" />
+            </>
+          : <Pin size={11} aria-hidden="true" />}
+      </button>
     </div>
   );
 }

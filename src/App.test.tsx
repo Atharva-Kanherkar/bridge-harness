@@ -439,6 +439,29 @@ describe("the dock in the session view", () => {
     resetAppsStore();
   });
 
+  // Contract: testing/feat-apps-pin-controls.md §Integration.
+  it("pins from a launcher tile's button and unpins from the sidebar", async () => {
+    resetMockApps();
+    resetAppsStore();
+    await mountApp();
+    await key({ key: "k", metaKey: true });
+    await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Pin Pulls to the sidebar"]')!);
+    await settle(2);
+    expect(document.body.querySelector('input[aria-label="Search apps and chats"]'), "the launcher stays open").not.toBeNull();
+    expect(pinsOf((await bridgeApi.listApps()).apps)).toEqual(["pulls"]);
+    await key({ key: "Escape" });
+    await settle(2);
+    const nav = () => container.querySelector('nav[aria-label="Main navigation"]')!;
+    expect(nav().querySelector('button[aria-label="Pulls"]'), "the pin is in the sidebar").not.toBeNull();
+
+    await click(nav().querySelector<HTMLButtonElement>('button[aria-label="Unpin Pulls"]')!);
+    await settle(2);
+    expect(pinsOf((await bridgeApi.listApps()).apps)).toEqual([]);
+    expect(nav().querySelector('button[aria-label="Pulls"]')).toBeNull();
+    resetMockApps();
+    resetAppsStore();
+  });
+
   // Contract: testing/feat-dock-code.md §4.
   it("turns a sent mention into a live link back into the editor", async () => {
     await mountApp();
