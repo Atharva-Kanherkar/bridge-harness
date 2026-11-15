@@ -113,8 +113,8 @@ PRs, issues and closing references from GitHub), `create_trail`, `update_trail`,
 `remove_trail_member`, `preview_trail_brief`, `carry_trail_brief`, and the
 `trails/changed` notification. Protocol 1.35 adds the `issue` member and
 event kinds; a 1.35 daemon refuses 1.33 and 1.34 clients, which read trails
-but cannot draw an issue. Protocol 1.36 adds `list_trail_candidates`; a 1.35
-client still pairs with a 1.36 daemon.
+but cannot draw an issue. Protocol 1.37 adds `list_trail_candidates`; a 1.36
+client still pairs with a 1.37 daemon.
 
 ## Measuring recall
 
