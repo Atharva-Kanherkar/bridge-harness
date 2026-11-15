@@ -332,6 +332,10 @@ fn the_sweep_catches_what_it_looks_for() {
         assert_eq!(sweep(&corpus, &[output.clone()], true).leaks.len(), 1, "{output}");
     }
     assert!(sweep(&corpus, &[r#"{"id":"staging-proxy","snippet":"[secret]"}"#.into()], true).leaks.is_empty());
+    for title in ["mcp__bridge__chats_read", "bridge_chats_search", "chats_search"] {
+        assert!(bridge_tool(title).starts_with("chats_"), "{title}");
+    }
+    assert!(!bridge_tool("mcp__claude_ai_Notion__notion-search-sessions").starts_with("chats_"));
     // Asked from another chat, the caller's chat is an ordinary past chat.
     assert!(sweep(&corpus, &[r#"{"id":"caller","snippet":"CALLERMARK"}"#.into()], false).leaks.is_empty());
 }
@@ -497,9 +501,16 @@ struct Tally {
     unrelated_lookups: usize,
 }
 
+/// A Bridge tool's own name from a tool card's title on any harness:
+/// `mcp__bridge__chats_search` (Claude), `bridge_chats_search` (OpenCode) or
+/// `chats_search` (Codex, which names the tool without its server).
+fn bridge_tool(title: &str) -> &str {
+    title.strip_prefix("mcp__bridge__").or_else(|| title.strip_prefix("bridge_")).unwrap_or(title)
+}
+
 /// Whether the chat behaved as `expect` asks, counting into `tally`.
 fn behaved(expect: &Expect, transcript: &Transcript, tally: &mut Tally) -> bool {
-    let looked_up = transcript.tools.iter().any(|tool| tool.starts_with("mcp__bridge__chats_"));
+    let looked_up = transcript.tools.iter().any(|tool| bridge_tool(tool).starts_with("chats_"));
     let wrote = transcript.tools.iter().any(|tool| WRITE_TOOLS.iter().any(|name| tool.contains(name)));
     let lower = transcript.reply.to_lowercase();
     match expect {
