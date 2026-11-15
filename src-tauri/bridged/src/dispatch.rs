@@ -122,6 +122,15 @@ pub fn dispatch(
             let p: wire::GithubSidebarPrsParams = decode(method, params)?;
             reply(api::github_sidebar_prs(core, p.refresh))
         }
+        MethodName::ListApps => reply(api::list_apps(core)),
+        MethodName::SetAppPinned => {
+            let p: wire::SetAppPinnedParams = decode(method, params)?;
+            reply(api::set_app_pinned(core, &p))
+        }
+        MethodName::SetAppEnabled => {
+            let p: wire::SetAppEnabledParams = decode(method, params)?;
+            reply(api::set_app_enabled(core, &p))
+        }
         MethodName::ListTrails => {
             let p: wire::ListTrailsParams = decode(method, params)?;
             reply(api::list_trails(core, p.include_archived))
@@ -1540,6 +1549,31 @@ mod tests {
         assert!(missing.is_err());
         let refused = dispatch(&core, MethodName::ListTrails, Some(json!({"bogus": true})));
         assert!(refused.is_err(), "unknown fields are refused");
+    }
+
+    #[test]
+    fn apps_answer_through_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let mut events = core.events.subscribe();
+        let listed = dispatch(&core, MethodName::ListApps, None).unwrap();
+        assert_eq!(listed["apps"].as_array().unwrap().len(), 12);
+        assert_eq!(listed["apps"][0]["manifest"]["id"], "notes");
+        assert_eq!(listed["apps"][0]["pinned"], Value::Null);
+        assert!(dispatch(&core, MethodName::ListApps, Some(json!({}))).is_err(), "list_apps takes no parameters");
+
+        let pinned = dispatch(&core, MethodName::SetAppPinned, Some(json!({"id": "pulls", "pinned": true}))).unwrap();
+        let pulls = pinned["apps"].as_array().unwrap().iter().find(|app| app["manifest"]["id"] == "pulls").unwrap().clone();
+        assert_eq!(pulls["pinned"], 0);
+        assert!(events.drain_pending(), "pinning publishes apps/changed");
+
+        let off = dispatch(&core, MethodName::SetAppEnabled, Some(json!({"id": "pulls", "enabled": false}))).unwrap();
+        let pulls = off["apps"].as_array().unwrap().iter().find(|app| app["manifest"]["id"] == "pulls").unwrap().clone();
+        assert_eq!((pulls["enabled"].clone(), pulls["pinned"].clone()), (json!(false), Value::Null));
+
+        let store = dispatch(&core, MethodName::SetAppEnabled, Some(json!({"id": "store", "enabled": false}))).unwrap_err();
+        assert!(store.message.contains("The Store cannot be turned off."), "{}", store.message);
+        assert!(dispatch(&core, MethodName::SetAppPinned, Some(json!({"id": "notes", "pinned": true, "x": 1}))).is_err());
     }
 
     #[test]

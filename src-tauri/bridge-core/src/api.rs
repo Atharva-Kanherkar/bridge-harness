@@ -660,6 +660,45 @@ fn trail_brief_notes(core: &Arc<BridgeCore>, trail_id: &str) -> Result<crate::tr
     Ok(crate::trails::timeline::NoteSnapshot::default().with_markdown(core.notes.as_ref(), &ids))
 }
 
+/// Every app, with its state on this Mac and its badge.
+pub fn list_apps(core: &Arc<BridgeCore>) -> Result<wire::ListAppsResult, BridgeError> {
+    // The generation before anything is read: a trails hint that lands
+    // mid-read leaves the stored count older than the hint, so the next read
+    // derives again.
+    let trails_generation = core.events.trails_generation();
+    let cached = crate::apps::badges::Cached { cache: &core.app_badges, trails_generation };
+    // Notes first: the notes store takes its own lock, never under the
+    // core's. Only a trails count that must be derived again needs them.
+    let notes = if core.app_badges.trails(trails_generation).is_some() {
+        crate::trails::timeline::NoteSnapshot::default()
+    } else {
+        crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())
+    };
+    let apps = crate::apps::badges::summaries(&core.db.lock().unwrap(), &notes, Some(cached))?;
+    Ok(wire::ListAppsResult { apps })
+}
+
+/// Pin or unpin an app in the sidebar. Core holds the three-pin limit.
+pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams) -> Result<wire::ListAppsResult, BridgeError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = crate::apps::registry::set_pinned(&core.db.lock().unwrap(), &params.id, params.pinned, &now)?;
+    if changed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_apps(core)
+}
+
+/// Turn an app on or off. Off removes its tools from new chats, refuses
+/// their calls, drops its prompt text, its pin and its badge.
+pub fn set_app_enabled(core: &Arc<BridgeCore>, params: &wire::SetAppEnabledParams) -> Result<wire::ListAppsResult, BridgeError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = crate::apps::registry::set_enabled(&core.db.lock().unwrap(), &params.id, params.enabled, &now)?;
+    if changed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_apps(core)
+}
+
 /// Every trail, needs-you first. Follows new links before reading.
 pub fn list_trails(core: &Arc<BridgeCore>, include_archived: bool) -> Result<wire::ListTrailsResult, BridgeError> {
     crate::trails::live::sweep_and_publish(core, false);
@@ -7389,11 +7428,13 @@ mod tests {
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         super::delete_memory_record(&core, &record.id).expect("forget tombstones");
         assert!(matches!(
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         // A refused save changes nothing, so it owes no hint.
         assert!(super::save_memory_record(&core, "   ", None, None).is_err());
         assert!(events.try_recv().is_err());
@@ -7406,11 +7447,13 @@ mod tests {
         let mut events = core.events.subscribe();
         let saved = super::save_memory_record(&core, "Prefers tabs", None, None).unwrap();
         events.try_recv().unwrap();
+        events.try_recv().unwrap();
         super::supersede_memory_record(&core, &saved.id, "Prefers spaces", None).unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged), "the Memory badge may have moved");
         {
             let db = core.db.lock().unwrap();
             db.execute(
@@ -7427,6 +7470,7 @@ mod tests {
             events.try_recv().unwrap(),
             crate::events::CoreEvent::MemoryChanged { .. }
         ));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::AppsChanged));
         super::reject_memory_record(&core, "p2").unwrap();
         assert!(matches!(
             events.try_recv().unwrap(),
@@ -8127,4 +8171,41 @@ pub fn get_notes_settings(core: &Arc<BridgeCore>) -> Result<wire::NotesSettings,
 
 pub fn save_notes_settings(core: &Arc<BridgeCore>, params: &wire::SaveNotesSettingsParams) -> Result<wire::NotesSettings, BridgeError> {
     core.notes.save_settings(params.auto_structure, params.root.clone())
+}
+
+#[cfg(test)]
+mod apps_tests {
+    use super::*;
+
+    fn trails_badge(core: &Arc<BridgeCore>) -> Option<u32> {
+        list_apps(core).unwrap().apps.into_iter().find(|app| app.manifest.id == "trails").and_then(|app| app.badge).map(|badge| badge.count)
+    }
+
+    /// `apps/changed` follows every memory and workflow-run hint, and each
+    /// client rereads the list. Deriving every trail summary on each of
+    /// those reads would amplify a workflow run's status hints into
+    /// whole-trail derivations, so the trails count is cached and only a
+    /// `trails/changed` hint recomputes it, the freshness the frontend had.
+    #[test]
+    fn the_trails_badge_is_recomputed_only_after_trails_changed() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        assert_eq!(trails_badge(&core), Some(0));
+        {
+            let db = core.db.lock().unwrap();
+            crate::trails::timeline::tests::add_session(&db, "chat", "claude", "Ship apps", Some("t"));
+            let trail = crate::trails::store::create(&db, "Ship apps", None, "t").unwrap();
+            crate::trails::store::add_member(&db, &trail.id, &crate::trails::store::tests::session("chat"), wire::TrailAddedBy::Person, "t").unwrap();
+            db.execute(
+                "INSERT INTO attention_events(id, kind, severity, session_id, title, created_at) VALUES('a1','needs_you','actionable','chat','Approve the deploy','t')",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(trails_badge(&core), Some(0), "nothing said trails changed, so the cached count stands");
+        core.events.publish(CoreEvent::MemoryChanged { scope_key: "account:local".into() });
+        assert_eq!(trails_badge(&core), Some(0), "a memory hint does not derive trail summaries");
+        core.events.publish(CoreEvent::TrailsChanged(wire::TrailsChanged { trail_id: None, added: Vec::new() }));
+        assert_eq!(trails_badge(&core), Some(1), "trails/changed recomputes it");
+    }
 }

@@ -11,7 +11,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
-import { needsYouCount, workflowNotification } from "./components/workflows/notify";
+import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
@@ -39,8 +39,9 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
-import { appById, appForView, appsBadge, badgeText, MEMORY_LIST_CAP, type AppBadges, type AppId } from "./apps/registry";
-import { togglePin, usePins } from "./apps/pins";
+import { appById, appForView, appsBadge, badgeText, type AppId } from "./apps/registry";
+import { togglePin } from "./apps/pins";
+import { badgesOf, enabledApps, pinsOf, useApps } from "./apps/store";
 import { splitDockPanes, useAddedPanes } from "./dockVisibility";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
@@ -69,7 +70,7 @@ import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
 import type { TrailStartRequest } from "./components/TrailsScreen";
 import type { TrailSummary } from "./protocol/generated/protocol";
-import { TrailStartError, needsYouCount as trailsNeedingYou, trailForSession } from "./trails";
+import { TrailStartError, trailForSession } from "./trails";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
@@ -3226,36 +3227,17 @@ function AppContent() {
 
   // Proposals waiting for review, for the sidebar badge. Re-read on every
   // memory-changed hint; a failed read leaves the last count rather than a toast.
-  const [memoryPending, setMemoryPending] = useState(0);
   const [launcherOpen, setLauncherOpen] = useState(false);
-  const pins = usePins();
-  const workflowsWaiting = needsYouCount(workflowRuns);
-  const trailsWaiting = trailsNeedingYou(trailSummaries);
-  const appBadges = useMemo<AppBadges>(() => ({
-    trails: { count: trailsWaiting },
-    workflows: { count: workflowsWaiting },
-    memory: { count: memoryPending, capped: memoryPending >= MEMORY_LIST_CAP },
-  }), [trailsWaiting, workflowsWaiting, memoryPending]);
+  // Core owns the apps: which are on, the pins and the badges.
+  const coreApps = useApps();
+  const launcherApps = useMemo(() => enabledApps(coreApps), [coreApps]);
+  const pins = useMemo(() => pinsOf(coreApps), [coreApps]);
+  const appBadges = useMemo(() => badgesOf(coreApps), [coreApps]);
   const launcherChats = useMemo(() => [...topSessions].sort(byRecency).slice(0, 20).map(chat => ({
     id: chat.id,
     title: chatName(chat),
     detail: state.workspaces.find(item => item.id === chat.workspaceId)?.title,
   })), [topSessions, state.workspaces]);
-  useEffect(() => {
-    let active = true;
-    let off: (() => void) | undefined;
-    const load = () => {
-      bridgeApi.listMemoryRecords("account:local", "proposed")
-        .then(result => { if (active) setMemoryPending(result.records.length); })
-        .catch(() => undefined);
-    };
-    load();
-    void bridgeApi.onMemoryChanged(load).then(fn => {
-      if (!active) { fn(); return; }
-      off = fn;
-    }).catch(() => undefined);
-    return () => { active = false; off?.(); };
-  }, []);
 
   // "Remember this" on an assistant message opens Memory with the reply as a
   // draft to cut down to the one thing worth keeping. It never saves the reply:
@@ -4427,6 +4409,7 @@ function AppContent() {
     <AppLauncher
       open={launcherOpen}
       onClose={() => setLauncherOpen(false)}
+      apps={launcherApps}
       badges={appBadges}
       pins={pins}
       chats={launcherChats}
@@ -4435,7 +4418,7 @@ function AppContent() {
       onOpenChat={openSession}
       onSearchThisChat={() => commandRef.current("open-recall")}
       onSearchChats={searchAllChats}
-      onTogglePin={togglePin}
+      onTogglePin={id => togglePin(id, pins)}
     />
     {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
