@@ -6028,23 +6028,19 @@ pub fn launch_worker_outcome(
                         }
                     }
                 }
-                state
-                    .delegations
-                    .lock()
-                    .unwrap()
-                    .read_only_sandboxes
-                    .insert(reservation.session_id.clone(), sandbox.clone());
-                // The declared artifact contract is what survives the sandbox;
-                // remember it before cleanup so the files can be copied out.
-                state
-                    .delegations
-                    .lock()
-                    .unwrap()
-                    .read_only_output_paths
-                    .insert(
+                {
+                    // The declared artifact contract is what survives the
+                    // sandbox; the boundary and that contract are retained
+                    // together until the worker exits.
+                    let mut delegations = state.delegations.lock().unwrap();
+                    delegations
+                        .read_only_sandboxes
+                        .insert(reservation.session_id.clone(), sandbox.clone());
+                    delegations.read_only_output_paths.insert(
                         reservation.session_id.clone(),
                         directive.writable_output_paths.clone(),
                     );
+                }
                 read_only_sandbox = Some(sandbox);
                 instructions.push_str(&format!("\n\nRead-only OS isolation is active. The workspace is immutable and network access is {}. Write artifacts only under BRIDGE_WORKER_OUTPUT_DIR: {output}", if directive.network_access { "authorized" } else { "denied" }));
                 let _ = store::event(
@@ -6258,25 +6254,19 @@ pub fn launch_worker_outcome(
     let (started, activation) = match activation {
         Ok(started) => started,
         Err(error) => {
-            state
-                .delegations
-                .lock()
-                .unwrap()
-                .read_only_baselines
-                .remove(&reservation.session_id);
-            state
-                .delegations
-                .lock()
-                .unwrap()
-                .read_only_output_paths
-                .remove(&reservation.session_id);
-            if let Some(sandbox) = state
-                .delegations
-                .lock()
-                .unwrap()
-                .read_only_sandboxes
-                .remove(&reservation.session_id)
-            {
+            let sandbox = {
+                let mut delegations = state.delegations.lock().unwrap();
+                delegations
+                    .read_only_baselines
+                    .remove(&reservation.session_id);
+                delegations
+                    .read_only_output_paths
+                    .remove(&reservation.session_id);
+                delegations
+                    .read_only_sandboxes
+                    .remove(&reservation.session_id)
+            };
+            if let Some(sandbox) = sandbox {
                 sandbox.cleanup();
             }
             fail_reserved_worker(
@@ -9889,19 +9879,16 @@ fn verify_read_only_worker(
             );
         }
     }
-    let declared = state
-        .delegations
-        .lock()
-        .unwrap()
-        .read_only_output_paths
-        .remove(child_session_id)
-        .unwrap_or_default();
-    let sandbox = state
-        .delegations
-        .lock()
-        .unwrap()
-        .read_only_sandboxes
-        .remove(child_session_id);
+    let (declared, sandbox) = {
+        let mut delegations = state.delegations.lock().unwrap();
+        (
+            delegations
+                .read_only_output_paths
+                .remove(child_session_id)
+                .unwrap_or_default(),
+            delegations.read_only_sandboxes.remove(child_session_id),
+        )
+    };
     let Some(sandbox) = sandbox else {
         return Vec::new();
     };
@@ -9919,22 +9906,25 @@ fn verify_read_only_worker(
             )
         })
         .unwrap_or_default();
-    if !artifacts.is_empty() {
-        let _ = store::event(
-            &state.db.lock().unwrap(),
+    {
+        let db = state.db.lock().unwrap();
+        if !artifacts.is_empty() {
+            drop(store::event(
+                &db,
+                "sandbox",
+                "worker.artifacts_persisted",
+                child_session_id,
+                &serde_json::to_string(&artifacts).unwrap_or_default(),
+            ));
+        }
+        drop(store::event(
+            &db,
             "sandbox",
-            "worker.artifacts_persisted",
+            "worker.read_only_isolation_cleaned",
             child_session_id,
-            &serde_json::to_string(&artifacts).unwrap_or_default(),
-        );
+            &format!("output_dir={}", sandbox.output_dir().display()),
+        ));
     }
-    let _ = store::event(
-        &state.db.lock().unwrap(),
-        "sandbox",
-        "worker.read_only_isolation_cleaned",
-        child_session_id,
-        &format!("output_dir={}", sandbox.output_dir().display()),
-    );
     sandbox.cleanup();
     artifacts
 }
@@ -10328,7 +10318,7 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
         WorkerLaunchOutcome::AwaitingApproval { approval_id } => {
             let cancelled = store::cancel_worker_queue_for_approval(&db, &queued.id, &approval_id)
                 .unwrap_or(false);
-            let _ = store::event(
+            drop(store::event(
                 &db,
                 "worker-pool",
                 "worker.queue.awaiting_approval",
@@ -10336,7 +10326,7 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
                 &format!(
                     "queue row closed in favour of live approval {approval_id} (cancelled={cancelled})"
                 ),
-            );
+            ));
         }
         _ => {
             let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);

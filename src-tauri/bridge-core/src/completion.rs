@@ -523,6 +523,81 @@ fn script_command(manager: &str, directory: Option<&str>, script: &str) -> Strin
     }
 }
 
+fn add_rust_commands(
+    root: Option<&Path>,
+    changed_paths: &[String],
+    commands: &mut BTreeSet<String>,
+) {
+    match root.and_then(|root| discover_manifest(root, changed_paths, "Cargo.toml")) {
+        Some(manifest) => {
+            let manifest_argument = root
+                .and_then(|root| relative_manifest_argument(root, &manifest))
+                .filter(|relative| relative != "Cargo.toml")
+                .map(|relative| format!(" --manifest-path {relative}"))
+                .unwrap_or_default();
+            commands.insert(format!("cargo check{manifest_argument} --workspace"));
+            commands.insert(format!("cargo test{manifest_argument} --workspace"));
+        }
+        // No discoverable manifest: a generic cargo invocation is still the
+        // honest check, and it runs in the attempt's own checkout.
+        None => {
+            commands.insert("cargo check --workspace".into());
+            commands.insert("cargo test --workspace".into());
+        }
+    }
+}
+
+fn add_javascript_commands(
+    root: &Path,
+    changed_paths: &[String],
+    commands: &mut BTreeSet<String>,
+) {
+    let Some(package_json) = discover_manifest(root, changed_paths, "package.json") else {
+        return;
+    };
+    let package_dir = package_json.parent().unwrap_or(root);
+    let manager = package_manager(package_dir);
+    let scripts = declared_scripts(package_dir);
+    let directory = package_dir
+        .strip_prefix(root)
+        .ok()
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .filter(|value| !value.is_empty());
+    if scripts.contains("build") {
+        commands.insert(script_command(manager, directory.as_deref(), "build"));
+    }
+    if scripts.contains("test") {
+        commands.insert(script_command(manager, directory.as_deref(), "test"));
+    }
+}
+
+/// The shell checks the plan carries, plus the verification prose that must be
+/// settled by a verifier instead. A string is a command only when the runner's
+/// own authorizer accepts it; prose never becomes a program named `Confirm`.
+fn planned_commands(input: &PlanInput) -> (BTreeSet<String>, Vec<String>) {
+    let mut commands = BTreeSet::new();
+    let mut semantic = Vec::new();
+    for instruction in &input.repository_commands {
+        if crate::check_runner::authorize(instruction).is_ok() {
+            commands.insert(instruction.clone());
+        } else {
+            semantic.push(instruction.clone());
+        }
+    }
+    if input.changed_paths.iter().any(|path| is_rust_source(path)) {
+        add_rust_commands(input.repository_root.as_deref(), &input.changed_paths, &mut commands);
+    }
+    if input.changed_paths.iter().any(|path| is_javascript_source(path)) {
+        if let Some(root) = input.repository_root.as_deref() {
+            add_javascript_commands(root, &input.changed_paths, &mut commands);
+        }
+    }
+    if commands.is_empty() {
+        commands.insert("git diff --check".into());
+    }
+    (commands, semantic)
+}
+
 pub fn plan(input: PlanInput) -> EvalPlan {
     let lower_paths = input
         .changed_paths
@@ -543,69 +618,7 @@ pub fn plan(input: PlanInput) -> EvalPlan {
         RiskTier::Low
     };
     let mut checks = Vec::new();
-    let mut commands = BTreeSet::new();
-    let mut semantic_verification = Vec::new();
-    // A verification string is a command only when the check runner would accept
-    // it. Prose ("confirm the marker by reading the file") is a semantic
-    // instruction for a verifier, never a shell program to invent.
-    for instruction in input.repository_commands {
-        match crate::check_runner::authorize(&instruction) {
-            Ok(_) => {
-                commands.insert(instruction);
-            }
-            Err(_) => {
-                semantic_verification.push(instruction);
-            }
-        }
-    }
-    if lower_paths.iter().any(|path| is_rust_source(path)) {
-        match input
-            .repository_root
-            .as_deref()
-            .and_then(|root| discover_manifest(root, &input.changed_paths, "Cargo.toml"))
-        {
-            Some(manifest) => {
-                let root = input.repository_root.as_deref().unwrap_or(Path::new(""));
-                let manifest_argument = relative_manifest_argument(root, &manifest)
-                    .filter(|relative| relative != "Cargo.toml")
-                    .map(|relative| format!(" --manifest-path {relative}"))
-                    .unwrap_or_default();
-                commands.insert(format!("cargo check{manifest_argument} --workspace"));
-                commands.insert(format!("cargo test{manifest_argument} --workspace"));
-            }
-            // No discoverable manifest: a generic cargo invocation is still the
-            // honest check, and it runs in the attempt's own checkout.
-            None => {
-                commands.insert("cargo check --workspace".into());
-                commands.insert("cargo test --workspace".into());
-            }
-        }
-    }
-    if lower_paths.iter().any(|path| is_javascript_source(path)) {
-        if let Some(root) = input.repository_root.as_deref() {
-            if let Some(package_json) =
-                discover_manifest(root, &input.changed_paths, "package.json")
-            {
-                let package_dir = package_json.parent().unwrap_or(root);
-                let manager = package_manager(package_dir);
-                let scripts = declared_scripts(package_dir);
-                let directory = package_dir
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|value| value.to_string_lossy().replace('\\', "/"))
-                    .filter(|value| !value.is_empty());
-                if scripts.contains("build") {
-                    commands.insert(script_command(manager, directory.as_deref(), "build"));
-                }
-                if scripts.contains("test") {
-                    commands.insert(script_command(manager, directory.as_deref(), "test"));
-                }
-            }
-        }
-    }
-    if commands.is_empty() {
-        commands.insert("git diff --check".into());
-    }
+    let (commands, semantic_verification) = planned_commands(&input);
     for (index, command) in commands.into_iter().enumerate() {
         checks.push(EvalCheck {
             id: format!("deterministic-{index}"),
