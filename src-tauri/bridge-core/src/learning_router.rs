@@ -736,6 +736,11 @@ fn tier_rank(tier: CapabilityTier) -> u8 {
     }
 }
 
+/// A sandbox mode as a person reads it: `read_only` is "read-only".
+fn sandbox_label(mode: crate::model::SandboxMode) -> String {
+    mode.as_str().replace('_', "-")
+}
+
 pub fn sandbox_mode_for(request: &DelegationRequest) -> crate::model::SandboxMode {
     use crate::model::SandboxMode;
     match request.write_mode {
@@ -1361,41 +1366,12 @@ pub fn route(
         let mut selected = candidate_for_key(&decision.candidates, &key)
             .cloned()
             .ok_or_else(|| BridgeError::Invalid(format!("router selected unknown candidate {key}")))?;
-        // A permission ceiling is a hard incompatibility, not a preference. A
-        // manual or pinned route must fail here with something the caller can
-        // act on rather than reserving a worker the adapter will refuse.
-        if selected
-            .exclusions
-            .contains(&CandidateExclusion::PermissionCeiling)
-        {
-            let sandbox = sandbox_mode_for(request);
-            let alternatives = descriptors
-                .iter()
-                .filter(|descriptor| {
-                    descriptor.available
-                        && !descriptor.models.is_empty()
-                        && descriptor.supports_sandbox(sandbox)
-                })
-                .map(|descriptor| descriptor.id.as_str())
-                .collect::<Vec<_>>();
-            persist_decision(db, &decision)?;
-            return Err(BridgeError::Invalid(format!(
-                "{} cannot run a {} worker, so this delegation was not started. {}",
-                selected.candidate.harness,
-                sandbox.as_str(),
-                if alternatives.is_empty() {
-                    "No installed harness supports this sandbox mode; change the write mode or install another harness.".to_owned()
-                } else {
-                    format!(
-                        "Re-delegate with a compatible harness ({}) or change the write mode.",
-                        alternatives.join(", ")
-                    )
-                }
-            )));
-        }
-        // Supply gaps and explicit user exclusions apply in every router mode.
-        // A default, manual override or locked profile cannot revive an excluded
-        // harness/model. Manual overrides and
+        // Supply gaps, explicit user exclusions and permission ceilings apply in
+        // every router mode. A default, manual override or locked profile cannot
+        // revive an excluded harness/model, nor start a harness in a sandbox
+        // mode it cannot hold. Substitution changes only the harness: the
+        // sandbox mode, write scope and approvals stay the request's own, so it
+        // never widens authority. Manual overrides and
         // locked profiles used to skip straight past this and reserve a
         // worker the adapter registry would refuse to start; substitute the
         // best eligible alternative this workspace has installed, and only
@@ -1409,6 +1385,7 @@ pub fn route(
                     | CandidateExclusion::ContextExhausted
                     | CandidateExclusion::UserExcludedHarness
                     | CandidateExclusion::UserExcludedModel
+                    | CandidateExclusion::PermissionCeiling
             )
         });
         if requires_substitution {
@@ -1441,6 +1418,16 @@ pub fn route(
                     selected.candidate.key(), selected.exclusions, alternative.candidate.key(),
                 ));
                 selected = alternative;
+            } else if selected
+                .exclusions
+                .contains(&CandidateExclusion::PermissionCeiling)
+            {
+                persist_decision(db, &decision)?;
+                return Err(BridgeError::Invalid(format!(
+                    "No installed harness can run a {mode} worker, so this delegation was not started: {} cannot, and no other installed harness is eligible either. Change the write mode or install a harness that supports {mode}.",
+                    selected.candidate.harness,
+                    mode = sandbox_label(sandbox_mode_for(request)),
+                )));
             } else {
                 persist_decision(db, &decision)?;
                 return Err(BridgeError::Invalid(format!(
@@ -1464,8 +1451,8 @@ pub fn route(
         persist_decision(db, &decision)?;
         return Err(BridgeError::Invalid(if sandbox_blocked_every_candidate {
             format!(
-                "no installed harness can run a {} worker, so this delegation was not started; change the write mode or install a compatible harness",
-                sandbox.as_str()
+                "No installed harness can run a {} worker, so this delegation was not started. Change the write mode or install a compatible harness.",
+                sandbox_label(sandbox)
             )
         } else {
             "learning router found no eligible route under the required constraints".into()
@@ -3097,10 +3084,11 @@ mod tests {
         assert_eq!(routed.request.harness.as_deref(), Some("claude"));
     }
 
-    /// A manual pin at an incompatible harness must return an actionable
-    /// incompatibility instead of reserving a doomed worker.
+    /// A pin at a harness that cannot hold the requested sandbox runs on a
+    /// compatible harness instead of failing the delegation, says so on the
+    /// decision, and keeps the request's own sandbox mode.
     #[test]
-    fn pinned_incompatible_harness_returns_an_actionable_incompatibility() {
+    fn pinned_incompatible_harness_is_substituted_with_a_compatible_one() {
         let db = routing_db();
         let mut descriptors = descriptors();
         descriptors[0].sandbox_modes =
@@ -3108,14 +3096,57 @@ mod tests {
         let mut pinned = request();
         pinned.harness = Some("codex".into());
         pinned.model = Some("codex-standard".into());
-        let error = route(&db, "parent", "turn-pinned", &pinned, &descriptors)
+        let routed = route(&db, "parent", "turn-pinned", &pinned, &descriptors).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+        assert_eq!(routed.request.write_mode, WriteMode::ReadOnly);
+        assert!(routed.decision.manual_override);
+        assert!(
+            routed
+                .decision
+                .executed_candidate
+                .as_deref()
+                .is_some_and(|key| key.starts_with("claude:")),
+            "{:?}",
+            routed.decision.executed_candidate
+        );
+        assert!(
+            routed.decision.explanation.contains("PermissionCeiling"),
+            "{}",
+            routed.decision.explanation
+        );
+        let substituted: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='router.harness_substituted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(substituted, 1);
+    }
+
+    /// With nothing installed that can hold the mode, a pinned route still
+    /// fails, and says which mode in plain words.
+    #[test]
+    fn pinned_incompatible_harness_without_any_alternative_names_the_mode() {
+        let db = routing_db();
+        let descriptors = descriptors()
+            .into_iter()
+            .map(|mut descriptor| {
+                descriptor.sandbox_modes = vec![SandboxMode::WorkspaceWrite];
+                descriptor
+            })
+            .collect::<Vec<_>>();
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        pinned.model = Some("codex-standard".into());
+        let error = route(&db, "parent", "turn-pinned-none", &pinned, &descriptors)
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("codex cannot run a read_only worker"),
+            error.contains("No installed harness can run a read-only worker"),
             "{error}"
         );
-        assert!(error.contains("claude"), "{error}");
+        assert!(error.contains("codex cannot"), "{error}");
     }
 
     #[test]
@@ -3133,7 +3164,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("no installed harness can run a read_only worker"),
+            error.contains("No installed harness can run a read-only worker"),
             "{error}"
         );
     }
