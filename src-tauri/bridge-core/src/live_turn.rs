@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -1716,9 +1716,59 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     start_chat_claimed(core, session_id)
 }
 
+/// Where one cold chat launch spent its time before the provider process
+/// existed, printed only when `BRIDGE_LAUNCH_TIMING=1`.
+///
+/// `SessionStartup` says when the provider was reached; this says what the
+/// invoke did before that, which is where a launch can actually be made
+/// faster. Each mark is a boundary this call crossed, and a normal launch pays
+/// one `Instant::now` per mark and nothing else.
+struct LaunchTiming {
+    enabled: bool,
+    started: Instant,
+    marks: Vec<(&'static str, u128)>,
+}
+
+impl LaunchTiming {
+    fn start() -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var("BRIDGE_LAUNCH_TIMING").as_deref() == Ok("1")
+        });
+        Self {
+            enabled,
+            started: Instant::now(),
+            marks: Vec::new(),
+        }
+    }
+
+    fn mark(&mut self, name: &'static str) {
+        if self.enabled {
+            self.marks.push((name, self.started.elapsed().as_millis()));
+        }
+    }
+
+    fn record(&self, session_id: &str, harness: &str) {
+        if !self.enabled {
+            return;
+        }
+        let mut line = format!(
+            "bridge: launch session={session_id} harness={harness} total_ms={}",
+            self.started.elapsed().as_millis()
+        );
+        let mut previous = 0;
+        for (name, at) in &self.marks {
+            line.push_str(&format!(" {name}_ms={} (+{})", at, at - previous));
+            previous = *at;
+        }
+        crate::diagnostics::record(&line);
+    }
+}
+
 /// The caller owns the session lifecycle across a cancellation and continuation.
 fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
     let state = core;
+    let mut timing = LaunchTiming::start();
     ensure_session_not_archived(core, &session_id)?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode, purpose): (
         String,
@@ -1889,6 +1939,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 .ok()
                 .map(|resolution| resolution.actual_model)
         }) };
+    timing.mark("resolve");
     let (configured_prompt, prompt_stack) = {
         let db = state.db.lock().unwrap();
         let target = if is_orchestrator {
@@ -1996,6 +2047,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
    // its own thread already holds, and a Fresh start that claims no projection
     // must not secretly carry one (the honesty rule `record_fidelity` reports
     // by). One compilation serves both, like start_session's base prompt.
+    timing.mark("prompt");
     let compiled_prompt = hot_check_prompt;
     let runtime_instructions = compiled_prompt.instructions().to_owned();
     // Past the hot return, like start_session: a hot process is never sent a
@@ -2012,6 +2064,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let chosen_effort = if scoped_settings { effort.clone() } else { effort
         .filter(|value| !value.is_empty())
         .or(configured_effort) };
+    timing.mark("context");
     let registry = state.adapter_registry.clone();
     let launch_adapter_id = dispatch_id.clone();
     let launch_cwd = cwd.clone();
@@ -2247,6 +2300,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         ),
         restoration::RestorationPlan::Hot => unreachable!("hot sessions returned above"),
     };
+    timing.mark("spawn");
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();
@@ -2403,8 +2457,12 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             warn_on_stale_base(&core, &session_id, "workspace_open", true, true);
         });
     }
+    timing.mark("persist");
     core.events.publish(CoreEvent::StateChanged);
-    store::state(&state.db.lock().unwrap())
+    let snapshot = store::state(&state.db.lock().unwrap());
+    timing.mark("state");
+    timing.record(&session_id, adapter_id);
+    snapshot
 }
 
 fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), BridgeError> {
