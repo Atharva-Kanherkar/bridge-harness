@@ -132,7 +132,7 @@
       "bridge-core/src/dependency_seed.rs": 1,
       "bridge-core/src/diagnostics.rs": 1,
       "bridge-core/src/disk_space.rs": 6,
-      "bridge-core/src/events.rs": 2,
+      "bridge-core/src/events.rs": 3,
       "bridge-core/src/frame_queue.rs": 1,
       "bridge-core/src/git.rs": 5,
       "bridge-core/src/github_surface.rs": 4,
@@ -225,7 +225,8 @@
       "bridge-protocol/src/messages/mod.rs": 3,
       "bridged/tests/remote.rs": 2,
       "bridged/tests/usage_summary.rs": 1,
-      "bridged/tests/workflows.rs": 1
+      "bridged/tests/workflows.rs": 1,
+      "bridge-core/src/apps/builtin.rs": 1
     },
     "clippy::too_many_lines": {
       "bridge-client/src/bin/bridge.rs": 1,
@@ -327,7 +328,7 @@
       "bridge-core/examples/notes_perf.rs": 21,
       "bridge-core/src/adapters.rs": 36,
       "bridge-core/src/agent.rs": 1,
-      "bridge-core/src/api.rs": 205,
+      "bridge-core/src/api.rs": 208,
       "bridge-core/src/attention_presence.rs": 1,
       "bridge-core/src/attention_wait.rs": 2,
       "bridge-core/src/binary.rs": 2,
@@ -352,7 +353,7 @@
       "bridge-core/src/git.rs": 4,
       "bridge-core/src/github_poll.rs": 9,
       "bridge-core/src/grok_adapter.rs": 15,
-      "bridge-core/src/live_turn.rs": 485,
+      "bridge-core/src/live_turn.rs": 484,
       "bridge-core/src/memory_consolidation_live.rs": 8,
       "bridge-core/src/memory_extraction_live.rs": 6,
       "bridge-core/src/memory_insights.rs": 3,
@@ -364,7 +365,7 @@
       "bridge-core/src/notes/live.rs": 2,
       "bridge-core/src/notes/service.rs": 12,
       "bridge-core/src/notes/tasks.rs": 1,
-      "bridge-core/src/notes/tool.rs": 4,
+      "bridge-core/src/notes/tool.rs": 6,
       "bridge-core/src/opencode_adapter.rs": 2,
       "bridge-core/src/opencode_v2.rs": 4,
       "bridge-core/src/outgoing/lint.rs": 2,
@@ -425,7 +426,8 @@
       "bridged/tests/workflows.rs": 24,
       "src/daemon_host.rs": 7,
       "src/lib.rs": 1,
-      "src/omarchy_setup.rs": 1
+      "src/omarchy_setup.rs": 1,
+      "bridge-core/src/apps/badges.rs": 2
     }
   },
   "macos": {
