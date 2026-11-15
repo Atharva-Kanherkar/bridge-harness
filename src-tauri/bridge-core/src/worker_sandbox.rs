@@ -492,6 +492,94 @@ mod tests {
         assert!(!root.exists());
     }
 
+    #[cfg(target_os = "macos")]
+    fn isolation_available() -> bool {
+        Path::new("/usr/bin/sandbox-exec").is_file()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn isolation_available() -> bool {
+        landlock::abi() >= 3
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn isolation_available() -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_artifact_is_readable_after_the_sandbox_is_cleaned() {
+        if !isolation_available() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let sandbox = ReadOnlySandbox::create("artifact", workspace.path(), &request()).unwrap();
+        let mut write = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        assert!(write
+            .args(["-c", "printf '%s' '{\"marker\":\"OK\"}' > \"$BRIDGE_WORKER_OUTPUT_DIR/report.json\""])
+            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        // The production order: persist first, then delete the transient tree.
+        let artifacts = crate::worker_artifacts::persist(
+            sandbox.output_dir(),
+            &["report.json".into()],
+            "artifact",
+            data.path(),
+        );
+        let output_dir = sandbox.output_dir().to_path_buf();
+        sandbox.cleanup();
+        assert!(!output_dir.exists(), "the transient sandbox must still be removed");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            fs::read_to_string(&artifacts[0].path).unwrap(),
+            "{\"marker\":\"OK\"}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_nested_seatbelt_cannot_start_which_is_why_codex_uses_one_layer() {
+        if !isolation_available() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(workspace.path().join("README.md"), "BRIDGE_AUDIT_READ_CONTROL").unwrap();
+        let sandbox = ReadOnlySandbox::create("nested", workspace.path(), &request()).unwrap();
+        // The direct control proves the file is readable under Bridge's profile.
+        let direct = command(Path::new("/bin/cat"), Some(&sandbox))
+            .unwrap()
+            .arg("README.md")
+            .current_dir(workspace.path())
+            .output()
+            .unwrap();
+        assert!(direct.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&direct.stdout).trim(),
+            "BRIDGE_AUDIT_READ_CONTROL"
+        );
+        // Applying another Seatbelt inside it is rejected before the command
+        // starts. This is the failure the Codex composition now prevents.
+        let nested = command(Path::new("/usr/bin/sandbox-exec"), Some(&sandbox))
+            .unwrap()
+            .args(["-p", "(version 1)(allow default)", "--", "/bin/cat", "README.md"])
+            .current_dir(workspace.path())
+            .output()
+            .unwrap();
+        assert!(!nested.status.success());
+        assert!(
+            String::from_utf8_lossy(&nested.stderr).contains("sandbox_apply"),
+            "stderr: {}",
+            String::from_utf8_lossy(&nested.stderr)
+        );
+        sandbox.cleanup();
+    }
+
     #[cfg(unix)]
     #[test]
     fn provider_commands_use_the_parent_death_watchdog_with_and_without_seatbelt() {
