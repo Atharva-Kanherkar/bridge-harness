@@ -461,6 +461,38 @@ mod tests {
 
 /// The orchestration seam is shared by the real provider and offline tests.
 /// Resolver has read authority only; executor is reached after a durable claim.
+/// Log a send that already happened: the `outgoing.sent` audit entry, and
+/// beside it in the same transaction the app event memory may learn from.
+fn log_sent(db: &Connection, item: &OutgoingMessage, id: &str, revision: u32, target: &Target) -> Result<(), BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let head: Option<String> = transaction
+        .query_row(
+            "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
+            [&item.session_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    crate::store::append_session_entry_tx(
+        &transaction,
+        &item.session_id,
+        head.as_deref(),
+        "outgoing.sent",
+        &serde_json::json!({"id":id,"revision":revision,"family":if matches!(target, Target::Slack { .. }) {"slack"} else {"github"},"remoteRef":item.remote_ref,"permalink":item.permalink}),
+        None,
+        "excluded",
+        Some(0),
+    )?;
+    // What memory may learn from: where the person sends, never what they
+    // wrote. Off or refused, the audit entry above still commits.
+    let (summary, payload) = target.app_event();
+    if let Err(error) = crate::apps::events::record_tx(&transaction, &item.session_id, "outgoing", "outgoing.sent", &summary, payload) {
+        eprintln!("[outgoing] sent, but the app event was refused: {error}");
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn run(
     core: &std::sync::Arc<crate::runtime::BridgeCore>,
     id: &str,
@@ -529,37 +561,7 @@ pub(crate) fn run(
             // forest transaction involved. Never execute the provider again.
             let item = saved.or_else(|_| finish(&db, id, revision, receipt, error, &now()))?;
             if receipt.is_some() {
-                let logged = (|| -> Result<(), BridgeError> {
-                    let transaction = db.unchecked_transaction()?;
-                    let head: Option<String> = transaction
-                        .query_row(
-                            "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
-                            [&item.session_id],
-                            |r| r.get(0),
-                        )
-                        .optional()?
-                        .flatten();
-                    crate::store::append_session_entry_tx(
-                        &transaction,
-                        &item.session_id,
-                        head.as_deref(),
-                        "outgoing.sent",
-                        &serde_json::json!({"id":id,"revision":revision,"family":if matches!(target, Target::Slack { .. }) {"slack"} else {"github"},"remoteRef":item.remote_ref,"permalink":item.permalink}),
-                        None,
-                        "excluded",
-                        Some(0),
-                    )?;
-                    // What memory may learn from: where the person sends, never
-                    // what they wrote. Off or refused, the receipt above still
-                    // commits.
-                    let (summary, payload) = target.app_event();
-                    if let Err(error) = crate::apps::events::record_tx(&transaction, &item.session_id, "outgoing", "outgoing.sent", &summary, payload) {
-                        eprintln!("[outgoing] sent, but the app event was refused: {error}");
-                    }
-                    transaction.commit()?;
-                    Ok(())
-                })();
-                if let Err(error) = logged {
+                if let Err(error) = log_sent(&db, &item, id, revision, &target) {
                     eprintln!("[outgoing] receipt saved, but transcript logging failed: {error}");
                 }
             }
