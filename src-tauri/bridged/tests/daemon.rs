@@ -1154,10 +1154,14 @@ fn app_preferences_merge_announce_and_survive_daemon_restart() {
     assert_eq!(merged["result"]["values"], json!({"theme": "light", "showThinking": false}), "a save merges");
     let (bad, _) = client.call(4, "config/save_app_preferences", Some(json!({"values": {"theme": "purple"}})));
     assert_eq!(bad["error"]["code"], -32602);
-    // The hint is fanned out after the reply; poll a few reads for it.
+    // The hint is fanned out after the reply; poll reads for it until a
+    // deadline. A fixed count of reads (about a second) raced the fan-out on
+    // a loaded CI runner: the same commit passed in one run and failed here
+    // in another.
     let mut id = 5;
+    let deadline = Instant::now() + Duration::from_secs(10);
     while !heard.iter().any(|frame| frame["method"] == json!("config/app_preferences_changed")) {
-        assert!(id < 50, "no config/app_preferences_changed hint arrived");
+        assert!(Instant::now() < deadline, "no config/app_preferences_changed hint arrived within 10 s");
         std::thread::sleep(Duration::from_millis(20));
         let (_, more) = client.call(id, "config/get_app_preferences", None);
         heard.extend(more);
