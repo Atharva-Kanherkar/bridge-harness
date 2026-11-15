@@ -150,6 +150,8 @@ pub struct BridgeCore {
     pub events: EventBus,
     /// Bridge Notes: its own `notes.db`, one write path for people and agents.
     pub notes: Arc<crate::notes::service::NotesService>,
+    /// Trail GitHub reads that failed, and when each is due again.
+    pub trail_reads: crate::trails::issues::ReadBackoff,
     /// Sessions with an exclusive lifecycle operation in flight (adapter
     /// start, model switch), mapped to the operation name for error messages.
     /// Lifecycle flows span host-run blocking steps, so this claim — not the
@@ -386,6 +388,7 @@ impl BridgeCore {
             steer_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
             notes: Arc::new(crate::notes::service::NotesService::open(scratch, Arc::new(|_: &str| false)).unwrap()),
+            trail_reads: Default::default(),
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
@@ -550,6 +553,7 @@ impl BridgeCore {
             steer_requested: Mutex::new(std::collections::HashSet::new()),
             events,
             notes,
+            trail_reads: Default::default(),
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),

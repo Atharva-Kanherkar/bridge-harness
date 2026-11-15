@@ -15,6 +15,8 @@ pub const MAX_TRAIL_TITLE_CHARS: usize = 120;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TrailMemberKind {
+    /// A GitHub issue, by its canonical URL.
+    Issue,
     /// A Bridge Notes page, by page id.
     Note,
     /// A chat, by session id.
@@ -28,6 +30,7 @@ pub enum TrailMemberKind {
 impl TrailMemberKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Issue => "issue",
             Self::Note => "note",
             Self::Session => "session",
             Self::PullRequest => "pullRequest",
@@ -37,6 +40,7 @@ impl TrailMemberKind {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "issue" => Some(Self::Issue),
             "note" => Some(Self::Note),
             "session" => Some(Self::Session),
             "pullRequest" => Some(Self::PullRequest),
@@ -133,6 +137,8 @@ pub struct TrailSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TrailEventKind {
+    /// A GitHub issue, at the time it was opened.
+    Issue,
     Note,
     Chat,
     PullRequest,

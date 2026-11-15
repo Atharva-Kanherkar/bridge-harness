@@ -27,6 +27,9 @@ use crate::BridgeError;
 
 /// The most of one note a brief carries.
 pub const NOTE_MAX_BYTES: usize = 12_000;
+/// The most of an issue's body a brief carries, and of each recent comment.
+pub const ISSUE_BODY_MAX_BYTES: usize = 8_000;
+pub const ISSUE_COMMENT_MAX_BYTES: usize = 1_200;
 /// The window a chat's history is projected at: about 12 KB, 3k tokens.
 pub const CHAT_WINDOW_TOKENS: i64 = 24_000;
 /// The share of the restoration budget a brief may take, leaving room for the
@@ -58,8 +61,8 @@ fn clip(text: &str, max: usize) -> String {
     format!("{}\n… (cut at {max} bytes)", &text[..end])
 }
 
-/// Every item a carry could write, in carry order: notes, pull requests,
-/// chats, messages. `exclude` is the chat being briefed.
+/// Every item a carry could write, in carry order: issues, notes, pull
+/// requests, chats, messages. `exclude` is the chat being briefed.
 pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude: Option<&str>) -> Result<Vec<BriefPart>, BridgeError> {
     let members = store::members(db, &trail.id)?;
     let of = |kind: TrailMemberKind| members.iter().filter(move |member| member.kind == kind);
@@ -69,6 +72,51 @@ pub fn parts(db: &Connection, notes: &dyn NoteSource, trail: &TrailRow, exclude:
         parts.push(BriefPart { item: TrailBriefItem { id, label, tokens: tokens(&text), default_on: true }, text });
     };
 
+    for member in of(TrailMemberKind::Issue) {
+        let (label, text) = match super::issues::get(db, &member.reference)? {
+            Some(issue) => {
+                let mut lines = vec![
+                    header(&format!("issue #{}", issue.number)),
+                    format!("#{} {}", issue.number, issue.title),
+                    issue.url.clone(),
+                    format!("State: {}", issue.state_words()),
+                ];
+                if !issue.labels.is_empty() {
+                    lines.push(format!("Labels: {}", issue.labels.join(", ")));
+                }
+                if let Some(author) = &issue.author {
+                    lines.push(format!("Opened by @{author} on {}", issue.created_at));
+                }
+                let body = issue.body.trim();
+                if !body.is_empty() {
+                    lines.push(String::new());
+                    lines.push(clip(body, ISSUE_BODY_MAX_BYTES));
+                }
+                if !issue.comments.is_empty() {
+                    lines.push(String::new());
+                    lines.push(if issue.comment_count > issue.comments.len() {
+                        format!("Last {} of {} comments:", issue.comments.len(), issue.comment_count)
+                    } else {
+                        "Comments:".to_owned()
+                    });
+                    for comment in &issue.comments {
+                        let who = comment.author.as_deref().map(|author| format!("@{author}")).unwrap_or_else(|| "someone".into());
+                        lines.push(format!("- {who} on {}: {}", comment.created_at, clip(comment.body.trim(), ISSUE_COMMENT_MAX_BYTES)));
+                    }
+                }
+                lines.push(format!("As of {}", issue.fetched_at));
+                (format!("Issue #{} {}", issue.number, issue.title), lines.join("\n"))
+            }
+            None => {
+                let number = super::issues::parse_url(&member.reference).map(|issue| issue.number).unwrap_or_default();
+                (
+                    format!("Issue #{number}"),
+                    [header(&format!("issue #{number}")), member.reference.clone(), "State: not read from GitHub yet".into()].join("\n"),
+                )
+            }
+        };
+        push(format!("issue:{}", member.reference), label, text);
+    }
     for member in of(TrailMemberKind::Note) {
         let (Some(note), Some(markdown)) = (notes.note(&member.reference), notes.markdown(&member.reference)) else { continue };
         let title = note.title.filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "Untitled".into());
@@ -314,7 +362,7 @@ mod tests {
         let (db, notes, trail) = fixture();
         let preview = preview(&db, &notes, &trail).unwrap();
         let ids: Vec<&str> = preview.items.iter().map(|item| item.id.split(':').next().unwrap()).collect();
-        assert_eq!(ids, vec!["note", "pr", "chat", "message"]);
+        assert_eq!(ids, vec!["note", "pr", "chat", "message"], "a trail with no issues starts at its notes");
         assert_eq!(preview.items[1].label, "PR #12 Archive a chat: 1 failing");
         assert_eq!(preview.items[2].label, "Chat “Build it” (Codex)");
         let texts = parts(&db, &notes, &trail, None).unwrap();
@@ -334,6 +382,34 @@ mod tests {
         // A discarded draft offers nothing.
         db.execute("UPDATE outgoing_messages SET state='discarded'", []).unwrap();
         assert_eq!(super::preview(&db, &notes, &trail).unwrap().items.len(), 2);
+    }
+
+    #[test]
+    fn issue_item_comes_first_and_is_clipped() {
+        use crate::trails::issues::{self, tests::snapshot, IssueComment};
+        let (db, notes, trail) = fixture();
+        let mut issue = snapshot(41, true, None, &[]);
+        issue.body = format!("Archived chats stay searchable for 90 days.\n{}", "x".repeat(ISSUE_BODY_MAX_BYTES * 2));
+        issue.comments = (0..5).map(|index| IssueComment { author: Some(format!("u{index}")), body: format!("note {index} {}", "y".repeat(ISSUE_COMMENT_MAX_BYTES * 2)), created_at: "2026-11-10T00:00:00Z".into() }).collect();
+        issue.comment_count = 9;
+        issues::save(&db, &issue).unwrap();
+        let member = |url: &str| TrailMemberRef { kind: TrailMemberKind::Issue, reference: url.into() };
+        store::add_member(&db, &trail.id, &member(&issue.url), TrailAddedBy::Person, "t9").unwrap();
+        store::add_member(&db, &trail.id, &member("https://github.com/o/r/issues/77"), TrailAddedBy::Auto, "t9").unwrap();
+        let parts = parts(&db, &notes, &trail, None).unwrap();
+        let ids: Vec<&str> = parts.iter().map(|part| part.item.id.split(':').next().unwrap()).collect();
+        assert_eq!(ids, vec!["issue", "issue", "note", "pr", "chat", "message"]);
+        let read = &parts[0];
+        assert_eq!(read.item.id, "issue:https://github.com/o/r/issues/41");
+        assert_eq!(read.item.label, "Issue #41 Archived chats stay searchable");
+        assert!(read.item.default_on);
+        for expected in ["#41 Archived chats stay searchable", "State: open", "Labels: ux", "Opened by @mika", "90 days", "Last 5 of 9 comments:", "- @u4 on 2026-11-10T00:00:00Z: note 4", "As of 2026-11-13T10:00:00Z"] {
+            assert!(read.text.contains(expected), "missing {expected:?}");
+        }
+        assert!(read.text.len() < ISSUE_BODY_MAX_BYTES + 5 * (ISSUE_COMMENT_MAX_BYTES + 80) + 600, "{} bytes", read.text.len());
+        let unread = &parts[1];
+        assert_eq!(unread.item.label, "Issue #77");
+        assert!(unread.text.contains("not read from GitHub yet"));
     }
 
     #[test]

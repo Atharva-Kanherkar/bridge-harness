@@ -60,8 +60,6 @@ pub struct BuiltInCompatibilityReport {
 }
 
 const ALL_SANDBOXES: &[SandboxMode] = &SandboxMode::ALL;
-const OPENCODE_SANDBOXES: &[SandboxMode] =
-    &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
 pub(crate) const CURSOR_SANDBOXES: &[SandboxMode] =
     &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
 
@@ -185,7 +183,7 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         credential_owner: CredentialOwner::Vendor,
         native_resume: NativeResumeContract::WhenCatalogDiscovered,
         capabilities: OPENCODE_CAPABILITIES,
-        sandbox_modes: OPENCODE_SANDBOXES,
+        sandbox_modes: ALL_SANDBOXES,
         model_source: ModelSource::RuntimeCatalog,
         model_ids: &[],
         default_model_id: None,

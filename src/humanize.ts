@@ -117,3 +117,61 @@ export function humanizeToken(token: string): string {
     .trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
+
+/** The steps a worker launch passes through, in order, as the failure card draws them. */
+export const LAUNCH_STEPS = ["Policy", "Route", "Workspace", "Start"] as const;
+
+/**
+ * The launch step a `delegation.rejected` phase stopped at, as an index into
+ * {@link LAUNCH_STEPS}, or -1 for a phase this build does not know (the card
+ * then draws no track rather than a wrong one).
+ */
+export function launchFailureStep(phase: string): number {
+  switch (phase) {
+    case "parent":
+    case "policy":
+    case "capability":
+    case "settlement":
+      return 0;
+    case "routing":
+    case "model_resolution":
+    case "verification_target":
+      return 1;
+    case "worktree":
+      return 2;
+    case "spawn":
+      return 3;
+    default:
+      return -1;
+  }
+}
+
+// Only ids that are never ordinary English words: "cursor" and "grok" are, so
+// they stay as written.
+const LAUNCH_HARNESS_IDS = /\b(claude|codex|opencode)\b/g;
+const LAUNCH_HARNESS_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
+const LAUNCH_SANDBOX_MODES = /\b(read_only|workspace_write|danger_full_access)\b/g;
+// The card's title already says no worker started.
+const NOT_STARTED = /,?\s*so this delegation was not started(?=[.;:]|$)/i;
+
+/**
+ * A worker launch failure reason → a sentence to lead with and the rest as
+ * guidance. Display only: wire ids become names (`opencode` → OpenCode,
+ * `read_only` → read-only) and the card keeps the raw reason to copy.
+ */
+export function humanizeLaunchFailure(reason: string): { summary: string; hint?: string } {
+  const firstLine = reason.trim().split(/\r?\n/, 1)[0] ?? "";
+  // Backticked spans are literal wire values ("expected one of `read_only`")
+  // and stay exactly as the agent must write them; only prose is humanized.
+  const readable = firstLine
+    .split(/(`[^`]*`)/)
+    .map(part => part.startsWith("`") ? part : part
+      .replace(LAUNCH_SANDBOX_MODES, mode => mode.replaceAll("_", "-"))
+      .replace(LAUNCH_HARNESS_IDS, id => LAUNCH_HARNESS_LABELS[id] ?? id))
+    .join("")
+    .replace(NOT_STARTED, "");
+  const sentence = /^(.+?[.!?])\s+(\S.*)$/.exec(readable);
+  const [summary, hint] = sentence ? [sentence[1], sentence[2]] : [readable, undefined];
+  const capitalized = summary.charAt(0).toUpperCase() + summary.slice(1);
+  return hint ? { summary: capitalized, hint } : { summary: capitalized };
+}

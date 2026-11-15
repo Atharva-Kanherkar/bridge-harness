@@ -112,8 +112,8 @@ memory) has its own contract.
 
 ### Protocol
 
-- Protocol 1.35. A 1.35 client refuses a 1.34 daemon; a 1.34 client pairs
-  with a 1.35 daemon.
+- Protocol 1.36 (1.35 went to trail issues on main). A 1.36 client refuses a 1.35 daemon; a 1.35 client pairs
+  with a 1.36 daemon. Migration 79 (78 went to trail issues).
 
 ## Unit Tests
 
@@ -150,7 +150,7 @@ Rust, bridge-protocol:
 - round trip for `AppManifest`, `AppSummary`, `ListAppsResult`,
   `SetAppPinnedParams`, `SetAppEnabledParams`
 - the existing schema drift and params naming gates
-- handshake test naming 1.34 and 1.35 in both directions
+- handshake test naming 1.35 and 1.36 in both directions
 
 Vitest:
 

@@ -7,6 +7,13 @@
       "description": "What kind of record a member points at.",
       "oneOf": [
         {
+          "description": "A GitHub issue, by its canonical URL.",
+          "enum": [
+            "issue"
+          ],
+          "type": "string"
+        },
+        {
           "description": "A Bridge Notes page, by page id.",
           "enum": [
             "note"

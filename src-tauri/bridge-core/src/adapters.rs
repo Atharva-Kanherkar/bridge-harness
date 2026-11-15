@@ -1475,11 +1475,10 @@ impl HarnessAdapter for OpenCodeAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            // OpenCode drives a localhost HTTP server; the read-only worker
-            // sandbox is offline, so a read-only OpenCode worker can never
-            // start. Declaring that here lets the router exclude the route
-            // before a worker session exists.
-            sandbox_modes: vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess],
+            // A read-only worker runs `opencode serve` inside the read-only
+            // sandbox; only `BRIDGE_READ_ONLY_NETWORK=deny`, which takes its
+            // loopback socket away, removes that mode.
+            sandbox_modes: crate::opencode_adapter::sandbox_modes(),
             unavailable_reason,
             models,
             default_model,
@@ -2495,19 +2494,28 @@ mod tests {
     }
 
     /// The descriptor is the router's only source of truth about what a harness
-    /// can start. OpenCode's read-only launch guard fails closed, so the
-    /// descriptor must not advertise a mode the adapter always rejects.
+    /// can start. OpenCode runs read-only workers inside the sandbox, and only
+    /// a deny-all network setting (no loopback for its own server) takes that
+    /// mode away, so the descriptor advertises exactly that.
     #[test]
-    fn opencode_never_advertises_the_read_only_sandbox_it_refuses_to_start() {
+    fn opencode_advertises_read_only_unless_runtime_network_is_denied() {
         let registry = AdapterRegistry::built_in().unwrap();
         let opencode = registry
             .descriptors()
             .into_iter()
             .find(|descriptor| descriptor.id == "opencode")
             .expect("opencode adapter is registered");
-        assert!(!opencode.supports_sandbox(SandboxMode::ReadOnly));
+        assert_eq!(
+            opencode.supports_sandbox(SandboxMode::ReadOnly),
+            !crate::worker_sandbox::runtime_network_denied()
+        );
         assert!(opencode.supports_sandbox(SandboxMode::WorkspaceWrite));
         assert!(opencode.supports_sandbox(SandboxMode::DangerFullAccess));
+        assert!(crate::opencode_adapter::sandbox_modes_for(false).contains(&SandboxMode::ReadOnly));
+        assert_eq!(
+            crate::opencode_adapter::sandbox_modes_for(true),
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess]
+        );
         for descriptor in registry.descriptors() {
             assert!(
                 !descriptor.sandbox_modes.is_empty(),

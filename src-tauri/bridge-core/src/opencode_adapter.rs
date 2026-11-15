@@ -173,8 +173,8 @@ pub fn start_with_settings(
 }
 
 /// A standalone draft completion, with every provider tool family denied.
-/// This does not claim the offline worker sandbox: OpenCode's HTTP transport
-/// remains local and the session has no authority to read, write or run tools.
+/// This does not claim the read-only worker sandbox: the session has no
+/// authority to read, write or run tools in the first place.
 pub fn start_completion_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
@@ -209,7 +209,7 @@ fn launch(
     settings: &OpenCodeSettings,
     completion_only: bool,
 ) -> Result<StartedOpenCode, BridgeError> {
-    ensure_read_only_transport_supported(request.read_only_sandbox.is_some())?;
+    ensure_read_only_transport_supported(request.read_only_sandbox)?;
     // OpenCode's permission rules are coarse families, so admitting one reviewed
     // connector read would admit its neighbours. Refused at the boundary with the
     // reason, never accepted-and-ignored.
@@ -230,11 +230,26 @@ fn launch(
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
     let port_argument = port.to_string();
-    let mut command = crate::adapters::supervised_command(
-        &binary,
-        &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
-    );
+    // A read-only worker's server runs inside the platform sandbox, the same
+    // boundary Claude and Codex workers get; without one this is the plain
+    // supervised command.
+    let mut command = crate::worker_sandbox::command(&binary, request.read_only_sandbox)?;
+    command.args(["serve", "--hostname", "127.0.0.1", "--port", &port_argument]);
     binary::hydrate_command_path(&mut command);
+    let sandbox_homes = request
+        .read_only_sandbox
+        .map(|sandbox| SandboxHomes::under(sandbox.output_dir()));
+    let host_data = host_opencode_data(request.account);
+    if let Some(homes) = &sandbox_homes {
+        homes.create()?;
+        // 1.x reads its logins from a file at startup; 2.x's live in the
+        // database its server creates, seeded once it is up (below).
+        if api == ServerApi::V1 {
+            if let Some(host) = &host_data {
+                seed_legacy_auth(host, &homes.opencode_data(), now_ms())?;
+            }
+        }
+    }
     // An interactive chat gets Bridge's `visualize` server, merged into
     // whatever inline config the user already passes OpenCode.
     let visualize = (!completion_only
@@ -256,9 +271,27 @@ fn launch(
         // Piped and tail-captured so a dead server reports its own error
         // instead of a generic exit.
         .stderr(Stdio::piped());
-    crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
-    // An extra account runs its own server on its own data folder.
+    // Shared per-repository build output is skipped for a read-only worker:
+    // its sandbox writes only under its own output folder (see `codex_adapter`).
+    if sandbox_homes.is_none() {
+        crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
+    }
+    // An extra account runs its own server on its own data folder. A read-only
+    // sandbox below moves every writable home into the sandbox instead, seeded
+    // from that account's logins.
     crate::provider_accounts::apply_account(&mut command, request.account);
+    if let (Some(homes), Some(sandbox)) = (&sandbox_homes, request.read_only_sandbox) {
+        for (name, value) in homes.environment() {
+            command.env(name, value);
+        }
+        // The sandbox cannot reach the keychain; a networked worker (e.g. a PR
+        // review) needs the host token or every `gh` call returns 401.
+        if sandbox.network_allowed() {
+            if let Some(token) = crate::worker_sandbox::github_cli_token() {
+                command.env("GH_TOKEN", token);
+            }
+        }
+    }
     crate::credential_broker::apply_proxy_pass(&mut command);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = request.on_progress {
@@ -278,12 +311,27 @@ fn launch(
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Handshake);
     }
-    if let Err(error) = wait_until_ready(&client, &base_url, &mut child, api) {
+    // A sandboxed server starts on an empty database and runs every OpenCode
+    // migration first, so it gets longer than a server on the user's own.
+    let deadline = if sandbox_homes.is_some() { SANDBOXED_STARTUP_DEADLINE } else { STARTUP_DEADLINE };
+    if let Err(error) = wait_until_ready(&client, &base_url, &mut child, api, deadline) {
         stop_child(&mut child);
         drop_client_safely(client);
         return Err(error);
     }
     crate::process_ledger::log_spawn_to_ready("opencode", "server_ready", spawned_at);
+    if let (Some(homes), Some(host), ServerApi::V2) = (&sandbox_homes, &host_data, api) {
+        let seeded = seed_stored_credentials(
+            &host.join("opencode.db"),
+            &homes.opencode_data().join("opencode.db"),
+            now_ms(),
+        );
+        if let Err(error) = seeded {
+            stop_child(&mut child);
+            drop_client_safely(client);
+            return Err(error);
+        }
+    }
 
     let model = request.model.and_then(parse_model);
     let variant = request
@@ -437,15 +485,254 @@ fn launch(
     })
 }
 
-fn ensure_read_only_transport_supported(enabled: bool) -> Result<(), BridgeError> {
-    if enabled {
-        Err(BridgeError::Invalid(
-            "OpenCode read-only workers are unsupported because its local HTTP transport cannot run inside the offline sandbox; refusing to start without isolation"
-                .into(),
-        ))
+/// The sandbox modes OpenCode can start in. A read-only worker runs its
+/// `opencode serve` inside the read-only sandbox like any other harness; the
+/// one thing that sandbox cannot give it is a loopback socket once runtime
+/// network is denied outright, so `read_only` is dropped exactly then.
+pub(crate) fn sandbox_modes() -> Vec<crate::model::SandboxMode> {
+    sandbox_modes_for(crate::worker_sandbox::runtime_network_denied())
+}
+
+pub(crate) fn sandbox_modes_for(runtime_network_denied: bool) -> Vec<crate::model::SandboxMode> {
+    use crate::model::SandboxMode;
+    if runtime_network_denied {
+        vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess]
     } else {
+        SandboxMode::ALL.to_vec()
+    }
+}
+
+fn read_only_refusal(runtime_network_denied: bool) -> Option<&'static str> {
+    runtime_network_denied.then_some(
+        "OpenCode cannot run a read-only worker while BRIDGE_READ_ONLY_NETWORK=deny: OpenCode serves its agent over a loopback HTTP server, and that setting blocks every socket. Unset it, or route this worker to Claude or Codex.",
+    )
+}
+
+fn ensure_read_only_transport_supported(
+    sandbox: Option<&crate::worker_sandbox::ReadOnlySandbox>,
+) -> Result<(), BridgeError> {
+    match sandbox.and_then(|sandbox| read_only_refusal(sandbox.runtime_network_denied())) {
+        Some(reason) => Err(BridgeError::Invalid(reason.into())),
+        None => Ok(()),
+    }
+}
+
+/// Where a read-only worker's OpenCode keeps its own state. OpenCode writes
+/// its log, database, snapshots and caches under its XDG homes, and the
+/// read-only sandbox denies every write outside the worker's output folder, so
+/// all of them move there. The user's config home is left alone: it is only
+/// read, and it carries their custom providers and MCP servers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SandboxHomes {
+    output: PathBuf,
+    data: PathBuf,
+    state: PathBuf,
+    cache: PathBuf,
+    tmp: PathBuf,
+}
+
+impl SandboxHomes {
+    fn under(output: &Path) -> Self {
+        let root = output.join(".opencode");
+        Self {
+            output: output.to_path_buf(),
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+            tmp: root.join("tmp"),
+        }
+    }
+
+    fn create(&self) -> Result<(), BridgeError> {
+        for dir in [&self.data.join("opencode"), &self.state, &self.cache, &self.tmp] {
+            std::fs::create_dir_all(dir)?;
+        }
         Ok(())
     }
+
+    /// OpenCode's own data folder inside the sandbox.
+    fn opencode_data(&self) -> PathBuf {
+        self.data.join("opencode")
+    }
+
+    fn environment(&self) -> Vec<(&'static str, &Path)> {
+        vec![
+            ("XDG_DATA_HOME", self.data.as_path()),
+            ("XDG_STATE_HOME", self.state.as_path()),
+            ("XDG_CACHE_HOME", self.cache.as_path()),
+            ("TMPDIR", self.tmp.as_path()),
+            ("BRIDGE_WORKER_OUTPUT_DIR", self.output.as_path()),
+        ]
+    }
+}
+
+/// The OpenCode data folder whose logins a sandboxed worker borrows: an extra
+/// account's own data home when the launch is for one, else the user's.
+fn host_opencode_data(account: Option<&crate::provider_accounts::AccountLaunch>) -> Option<PathBuf> {
+    account
+        .and_then(|account| account.value("XDG_DATA_HOME"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(PathBuf::from))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|base| base.join("opencode"))
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// One stored login as a sandboxed worker may hold it, or `None` to leave it
+/// out. An OAuth login keeps its access token but loses its refresh token:
+/// a refresh can rotate the token the user's own OpenCode depends on, and the
+/// rotated one would die with the sandbox. An already-expired OAuth login is
+/// useless without that refresh, so it is not copied at all. Keys pass as-is.
+fn sandboxed_credential(mut credential: Value, now_ms: i64) -> Option<Value> {
+    let object = credential.as_object_mut()?;
+    if object.get("type").and_then(Value::as_str) == Some("oauth") {
+        if object
+            .get("expires")
+            .and_then(Value::as_i64)
+            .is_some_and(|expires| expires <= now_ms)
+        {
+            return None;
+        }
+        if object.contains_key("refresh") {
+            object.insert("refresh".into(), json!(""));
+        }
+    }
+    Some(credential)
+}
+
+const MAX_AUTH_JSON_BYTES: u64 = 1_048_576;
+
+/// OpenCode 1.x keeps logins in `auth.json`: copy it into the sandbox's data
+/// folder, each entry passed through [`sandboxed_credential`]. Returns how
+/// many logins were copied; a missing file copies none.
+fn seed_legacy_auth(host: &Path, sandbox: &Path, now_ms: i64) -> Result<usize, BridgeError> {
+    let source = host.join("auth.json");
+    let Ok(metadata) = std::fs::metadata(&source) else {
+        return Ok(0);
+    };
+    if metadata.len() > MAX_AUTH_JSON_BYTES {
+        return Err(BridgeError::Invalid(
+            "OpenCode's auth.json is too large to hand to a read-only worker".into(),
+        ));
+    }
+    let text = zeroize::Zeroizing::new(std::fs::read_to_string(&source)?);
+    if text.trim().is_empty() {
+        return Ok(0);
+    }
+    let Value::Object(entries) = serde_json::from_str::<Value>(&text).map_err(|_| {
+        BridgeError::Invalid("OpenCode's auth.json is not valid JSON, so a read-only worker cannot sign in".into())
+    })?
+    else {
+        return Ok(0);
+    };
+    let sanitized = entries
+        .into_iter()
+        .filter_map(|(provider, credential)| {
+            sandboxed_credential(credential, now_ms).map(|credential| (provider, credential))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let copied = sanitized.len();
+    let body = zeroize::Zeroizing::new(serde_json::to_string(&Value::Object(sanitized))
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?);
+    write_private(&sandbox.join("auth.json"), body.as_bytes())?;
+    Ok(copied)
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), BridgeError> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)?;
+    Ok(())
+}
+
+fn table_columns(db: &rusqlite::Connection, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement = db.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns)
+}
+
+/// OpenCode 2.x keeps logins in its database's `credential` table. Copy the
+/// user's rows into the sandbox database that the worker's own server has just
+/// created, each value passed through [`sandboxed_credential`]. The user's
+/// database is opened read-only and never written. Returns how many logins
+/// were copied; a missing database or table copies none.
+fn seed_stored_credentials(host_db: &Path, sandbox_db: &Path, now_ms: i64) -> Result<usize, BridgeError> {
+    use rusqlite::types::Value as Sql;
+    if !host_db.exists() {
+        return Ok(0);
+    }
+    let unreadable = |_| {
+        BridgeError::Invalid(
+            "Could not read OpenCode's stored logins for a read-only worker. Check access to its database.".into(),
+        )
+    };
+    let host = crate::usage_import::opencode::open_read_only(host_db).map_err(unreadable)?;
+    let _ = host.busy_timeout(Duration::from_secs(2));
+    let host_columns = table_columns(&host, "credential").map_err(|error| unreadable(BridgeError::Db(error)))?;
+    if host_columns.is_empty() {
+        return Ok(0);
+    }
+    let sandbox = rusqlite::Connection::open(sandbox_db)?;
+    sandbox.busy_timeout(Duration::from_secs(5))?;
+    let sandbox_columns = table_columns(&sandbox, "credential")?;
+    if sandbox_columns.is_empty() {
+        return Err(BridgeError::Adapter(
+            "The read-only worker's OpenCode server started without a credential store".into(),
+        ));
+    }
+    // Columns both sides know, in the user's order. Same binary, so normally
+    // identical; a column only one side has is left to its default.
+    let columns = host_columns
+        .into_iter()
+        .filter(|column| sandbox_columns.contains(column))
+        .collect::<Vec<_>>();
+    let Some(value_index) = columns.iter().position(|column| column == "value") else {
+        return Err(BridgeError::Adapter(
+            "OpenCode's credential store has no value column; this OpenCode version is not supported for read-only workers".into(),
+        ));
+    };
+    let list = columns.iter().map(|column| format!("\"{column}\"")).collect::<Vec<_>>().join(", ");
+    let mut select = host
+        .prepare(&format!("SELECT {list} FROM credential"))
+        .map_err(|error| unreadable(BridgeError::Db(error)))?;
+    let rows = select
+        .query_map([], |row| {
+            (0..columns.len()).map(|index| row.get::<_, Sql>(index)).collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| unreadable(BridgeError::Db(error)))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| unreadable(BridgeError::Db(error)))?;
+    let placeholders = (1..=columns.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(", ");
+    let insert = format!("INSERT OR REPLACE INTO credential ({list}) VALUES ({placeholders})");
+    let transaction = sandbox.unchecked_transaction()?;
+    let mut copied = 0;
+    for mut row in rows {
+        let Sql::Text(text) = &row[value_index] else { continue };
+        let text = zeroize::Zeroizing::new(text.clone());
+        let Some(credential) = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|credential| sandboxed_credential(credential, now_ms))
+        else {
+            continue;
+        };
+        row[value_index] = Sql::Text(credential.to_string());
+        transaction.execute(&insert, rusqlite::params_from_iter(row.iter()))?;
+        copied += 1;
+    }
+    transaction.commit()?;
+    Ok(copied)
 }
 
 fn completion_session_body(model: Option<&ModelRef>, variant: Option<&str>) -> Value {
@@ -592,13 +879,17 @@ fn probe_backoff(attempt: usize) -> Duration {
     Duration::from_millis(RAMP_MS.get(attempt).copied().unwrap_or(100))
 }
 
+const STARTUP_DEADLINE: Duration = Duration::from_secs(8);
+const SANDBOXED_STARTUP_DEADLINE: Duration = Duration::from_secs(20);
+
 fn wait_until_ready(
     client: &Client,
     base_url: &str,
     child: &mut Child,
     api: ServerApi,
+    budget: Duration,
 ) -> Result<(), BridgeError> {
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + budget;
     let mut attempt = 0usize;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait()? {
@@ -2008,7 +2299,7 @@ fn with_control_server_for<T>(
     };
     match build_authenticated_client(api, &password, directory) {
         Ok(client) => {
-            let result = wait_until_ready(&client, &base_url, &mut server.child, api)
+            let result = wait_until_ready(&client, &base_url, &mut server.child, api, STARTUP_DEADLINE)
                 .and_then(|_| action(&client, &base_url));
             drop_client_safely(client);
             result
@@ -3130,16 +3421,6 @@ mod tests {
         assert_eq!(body["model"]["providerID"], "opencode-go");
         assert_eq!(body["model"]["id"], "test-model");
         assert!(permission_rules(Some(WriteMode::ReadOnly)).as_array().unwrap().iter().any(|rule| rule["action"] == "ask"));
-        assert!(ensure_read_only_transport_supported(true).is_err());
-    }
-
-    #[test]
-    fn read_only_transport_fails_closed_before_launch() {
-        let error = ensure_read_only_transport_supported(true).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("refusing to start without isolation"));
-        assert!(ensure_read_only_transport_supported(false).is_ok());
     }
 
     #[test]
@@ -3613,4 +3894,301 @@ mod model_variant_tests {
         assert_eq!(chat_config_content(None, Some(r#"{"theme":"system"}"#)), None);
     }
 
+}
+
+#[cfg(test)]
+mod read_only_sandbox_tests {
+    use super::*;
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    fn credential_store(path: &Path, rows: &[(&str, &str, Value)]) {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE credential (
+                id text PRIMARY KEY, integration_id text, label text NOT NULL,
+                value text NOT NULL, connector_id text, method_id text,
+                active integer, time_created integer NOT NULL, time_updated integer NOT NULL
+            );",
+        )
+        .unwrap();
+        for (id, integration, value) in rows {
+            db.execute(
+                "INSERT INTO credential (id, integration_id, label, value, active, time_created, time_updated)
+                 VALUES (?1, ?2, ?2, ?3, 1, 1, 2)",
+                rusqlite::params![id, integration, value.to_string()],
+            )
+            .unwrap();
+        }
+    }
+
+    fn stored(path: &Path) -> Vec<(String, Value)> {
+        let db = rusqlite::Connection::open(path).unwrap();
+        let mut statement = db.prepare("SELECT integration_id, value FROM credential ORDER BY id").unwrap();
+        statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .map(|row| {
+                let (integration, value) = row.unwrap();
+                (integration, serde_json::from_str(&value).unwrap())
+            })
+            .collect()
+    }
+
+    fn oauth(expires: i64) -> Value {
+        json!({"type":"oauth","access":"access-token","refresh":"refresh-token","expires":expires,"metadata":{"server":"https://opencode.ai"}})
+    }
+
+    #[test]
+    fn sandbox_environment_points_every_writable_home_into_the_output_dir() {
+        let output = Path::new("/tmp/bridge-read-only-workers/abc/output");
+        let homes = SandboxHomes::under(output);
+        let environment = homes.environment();
+        let names = environment.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR", "BRIDGE_WORKER_OUTPUT_DIR"]
+        );
+        for (name, value) in &environment {
+            assert!(value.starts_with(output), "{name} escapes the output dir: {}", value.display());
+        }
+        // The config home is only read: custom providers and MCP servers live there.
+        assert!(!names.contains(&"XDG_CONFIG_HOME"));
+        assert!(!names.contains(&"HOME"));
+        assert_eq!(homes.opencode_data(), output.join(".opencode/data/opencode"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let homes = SandboxHomes::under(dir.path());
+        homes.create().unwrap();
+        for (_, value) in homes.environment() {
+            assert!(value.is_dir(), "{} was not created", value.display());
+        }
+        assert!(homes.opencode_data().is_dir());
+    }
+
+    #[test]
+    fn seeding_copies_keys_and_strips_oauth_refresh_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host.db");
+        let sandbox = dir.path().join("sandbox.db");
+        credential_store(
+            &host,
+            &[
+                ("a", "openai", json!({"type":"key","key":"sk-not-a-real-key"})),
+                ("b", "opencode", oauth(NOW + 60_000)),
+            ],
+        );
+        credential_store(&sandbox, &[]);
+        assert_eq!(seed_stored_credentials(&host, &sandbox, NOW).unwrap(), 2);
+        let copied = stored(&sandbox);
+        assert_eq!(copied[0], ("openai".into(), json!({"type":"key","key":"sk-not-a-real-key"})));
+        assert_eq!(copied[1].0, "opencode");
+        assert_eq!(copied[1].1["access"], "access-token");
+        assert_eq!(copied[1].1["refresh"], "", "a sandboxed worker must never hold the refresh token");
+        assert_eq!(copied[1].1["metadata"]["server"], "https://opencode.ai");
+        // Seeding twice (a relaunch) replaces rather than duplicates.
+        assert_eq!(seed_stored_credentials(&host, &sandbox, NOW).unwrap(), 2);
+        assert_eq!(stored(&sandbox).len(), 2);
+    }
+
+    #[test]
+    fn seeding_skips_expired_oauth_and_never_writes_the_host_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host.db");
+        let sandbox = dir.path().join("sandbox.db");
+        credential_store(
+            &host,
+            &[
+                ("a", "opencode", oauth(NOW - 1)),
+                ("b", "opencode-go", json!({"type":"key","key":"go-not-a-real-key"})),
+            ],
+        );
+        let before = std::fs::read(&host).unwrap();
+        credential_store(&sandbox, &[]);
+        assert_eq!(seed_stored_credentials(&host, &sandbox, NOW).unwrap(), 1);
+        assert_eq!(stored(&sandbox).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["opencode-go"]);
+        assert_eq!(std::fs::read(&host).unwrap(), before, "the user's store was modified");
+        assert_eq!(stored(&host)[0].1["refresh"], "refresh-token");
+    }
+
+    #[test]
+    fn seeding_refuses_a_sandbox_database_without_a_credential_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host.db");
+        credential_store(&host, &[("a", "openai", json!({"type":"key","key":"k"}))]);
+        let sandbox = dir.path().join("sandbox.db");
+        rusqlite::Connection::open(&sandbox).unwrap();
+        let error = seed_stored_credentials(&host, &sandbox, NOW).unwrap_err().to_string();
+        assert!(error.contains("without a credential store"), "{error}");
+    }
+
+    #[test]
+    fn legacy_auth_json_is_sanitized_into_the_sandbox() {
+        let host = tempfile::tempdir().unwrap();
+        let sandbox = tempfile::tempdir().unwrap();
+        std::fs::write(
+            host.path().join("auth.json"),
+            json!({
+                "openai": {"type":"api","key":"sk-not-a-real-key"},
+                "anthropic": oauth(NOW + 60_000),
+                "github-copilot": oauth(NOW - 1),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(seed_legacy_auth(host.path(), sandbox.path(), NOW).unwrap(), 2);
+        let written = sandbox.path().join("auth.json");
+        let copied: Value = serde_json::from_str(&std::fs::read_to_string(&written).unwrap()).unwrap();
+        assert_eq!(copied["openai"]["key"], "sk-not-a-real-key");
+        assert_eq!(copied["anthropic"]["access"], "access-token");
+        assert_eq!(copied["anthropic"]["refresh"], "");
+        assert!(copied.get("github-copilot").is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&written).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        std::fs::write(host.path().join("auth.json"), "not json").unwrap();
+        assert!(seed_legacy_auth(host.path(), sandbox.path(), NOW)
+            .unwrap_err()
+            .to_string()
+            .contains("not valid JSON"));
+    }
+
+    #[test]
+    fn missing_host_store_seeds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = dir.path().join("sandbox.db");
+        credential_store(&sandbox, &[]);
+        assert_eq!(seed_stored_credentials(&dir.path().join("absent.db"), &sandbox, NOW).unwrap(), 0);
+        assert_eq!(seed_legacy_auth(&dir.path().join("absent"), dir.path(), NOW).unwrap(), 0);
+        assert!(!dir.path().join("auth.json").exists());
+        // A 1.x database (no credential table) is not an error either.
+        let old = dir.path().join("old.db");
+        rusqlite::Connection::open(&old).unwrap().execute_batch("CREATE TABLE session (id text);").unwrap();
+        assert_eq!(seed_stored_credentials(&old, &sandbox, NOW).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_only_refuses_only_when_runtime_network_is_denied() {
+        assert_eq!(read_only_refusal(false), None);
+        let reason = read_only_refusal(true).unwrap();
+        assert!(reason.contains("BRIDGE_READ_ONLY_NETWORK=deny"), "{reason}");
+        assert!(reason.contains("Claude or Codex"), "{reason}");
+        assert!(ensure_read_only_transport_supported(None).is_ok());
+    }
+
+    /// A real read-only OpenCode worker: its server runs under the platform
+    /// sandbox with its homes in the output folder and the user's logins
+    /// seeded, answers from a workspace file, and cannot write the workspace.
+    #[test]
+    #[ignore = "requires a signed-in OpenCode on PATH (or BRIDGE_OPENCODE_LIVE_BINARY); set BRIDGE_OPENCODE_LIVE_MODEL to pick the model"]
+    fn live_read_only_worker_answers_inside_the_sandbox() {
+        let executable = std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
+            .ok()
+            .or_else(|| which::which("opencode").ok().map(|path| path.to_string_lossy().into_owned()))
+            .expect("OpenCode is not installed");
+        let model = std::env::var("BRIDGE_OPENCODE_LIVE_MODEL")
+            .unwrap_or_else(|_| "opencode-go/minimax-m3.1-flash-free".into());
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("fact.txt"), "The secret word is MARMALADE.\n").unwrap();
+        let delegation = crate::delegation::DelegationRequest {
+            schema_version: 1,
+            role: crate::delegation::WorkerRole::Research,
+            objective: "read".into(),
+            acceptance_criteria: vec!["report".into()],
+            known_facts: vec![],
+            decisions: vec![],
+            evidence_ids: vec![],
+            relevant_files: vec![],
+            owned_paths: vec![],
+            write_mode: WriteMode::ReadOnly,
+            capability_tier: CapabilityTier::Fast,
+            effort: crate::delegation::Effort::Low,
+            network_access: false,
+            writable_output_paths: vec![],
+            verification: vec![],
+            output_contract: crate::delegation::OutputContract::ResearchResult,
+            harness: Some("opencode".into()),
+            model: Some(model.clone()),
+        };
+        let sandbox = crate::worker_sandbox::ReadOnlySandbox::create("live", workspace.path(), &delegation).unwrap();
+        let started = start_with_settings(
+            StartRequest {
+                session_id: None,
+                cwd: workspace.path().to_str().unwrap(),
+                model: Some(&model),
+                effort: None,
+                instructions: Some("Be brief. When asked to run a shell command, run it with your shell tool and paste its exact output."),
+                write_mode: Some(WriteMode::ReadOnly),
+                read_only_sandbox: Some(&sandbox),
+                briefing: None,
+                interactive: false,
+                account: None,
+                on_progress: None,
+            },
+            &OpenCodeSettings { executable_path: Some(executable), visible_models: Vec::new() },
+        )
+        .expect("a read-only OpenCode worker starts");
+        assert!(
+            sandbox.output_dir().join(".opencode/data/opencode").read_dir().unwrap().next().is_some(),
+            "OpenCode did not write its state into the sandbox"
+        );
+        let mut runtime = started.runtime;
+        let mut reader = started.reader;
+        let (sender, events) = mpsc::channel::<crate::agent::NormalizedEvent>();
+        thread::spawn(move || {
+            let mut state = crate::agent::OpenCodeStreamState::default();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or_default() == 0 {
+                    break;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+                for event in crate::agent::normalize_opencode_message_with_state(&value, &mut state) {
+                    if sender.send(event).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let run_turn = |runtime: &OpenCodeRuntime| {
+            let mut replies = String::new();
+            let mut kinds = Vec::new();
+            loop {
+                let event = events.recv_timeout(Duration::from_secs(180)).expect("OpenCode stalled mid-turn");
+                kinds.push(event.kind.clone());
+                match event.kind.as_str() {
+                    "message.completed" => replies.push_str(event.text.as_deref().unwrap_or_default()),
+                    "error" => replies.push_str(&format!("[error: {} {}]", event.text.as_deref().unwrap_or_default(), event.data)),
+                    // Approve everything: the OS sandbox, not the prompt, must stop the write.
+                    "permission.requested" => runtime.respond(event.data["requestId"].clone(), "accept").unwrap(),
+                    "turn.completed" => return (replies, kinds),
+                    _ => {}
+                }
+            }
+        };
+        runtime
+            .send_turn("Read the file fact.txt in the current directory and reply with only the secret word.")
+            .unwrap();
+        let (reply, kinds) = run_turn(&runtime);
+        assert!(reply.to_uppercase().contains("MARMALADE"), "{reply} {kinds:?}");
+
+        runtime
+            .send_turn("Use your shell tool to run exactly: `echo escaped > written.txt; echo exit=$?`. Paste the output verbatim.")
+            .unwrap();
+        let (reply, kinds) = run_turn(&runtime);
+        eprintln!("write attempt: {kinds:?}\n{reply}");
+        assert!(
+            kinds.iter().any(|kind| kind == "command.completed"),
+            "the write was never attempted, so this run proves nothing: {reply} {kinds:?}"
+        );
+        assert!(
+            !workspace.path().join("written.txt").exists(),
+            "the sandbox let a read-only worker write the workspace: {reply} {kinds:?}"
+        );
+        runtime.stop(crate::adapters::ShutdownReason::Completed);
+        sandbox.cleanup();
+    }
 }

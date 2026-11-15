@@ -143,8 +143,14 @@ pub fn route(
     } else {
         "working"
     };
-    // A late tool/progress frame cannot revive a terminal child.
+    // An idle child doing something is working again; a late tool/progress
+    // frame cannot revive a terminal one (the WHERE below keeps those).
+    let revived = status == "working" && event.kind != "usage.updated" && !created && {
+        let current: String = tx.query_row("SELECT status FROM sessions WHERE id=?1", [&child], |r| r.get(0))?;
+        current == "ready"
+    };
     if created
+        || revived
         || turn_started
         || terminal(event)
         || matches!(
@@ -209,6 +215,19 @@ pub fn stop_target(
         provider
     };
     Ok((parent, target, turn))
+}
+
+/// The chat's turn is over, so nothing it started can still be running under
+/// it. A child the provider never closed stays `working` forever otherwise,
+/// and every live count (the sidebar, Mission Control) reports it. It goes
+/// idle rather than terminal: a provider that really keeps a child running
+/// past the turn (a Claude background agent) revives it with its next frame.
+/// A child waiting on an approval keeps that state, since the card is real.
+pub fn idle_children(db: &Connection, parent: &str) -> Result<usize, BridgeError> {
+    Ok(db.execute(
+        "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE kind=?1 AND parent_session_id=?2 AND status IN ('working','starting')",
+        params![KIND, parent],
+    )?)
 }
 
 pub fn interrupt_orphans(db: &Connection) -> Result<usize, BridgeError> {
@@ -299,6 +318,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(parent, ("working".into(), "root-turn".into()));
+    }
+    #[test]
+    fn a_finished_turn_idles_unclosed_children_until_they_act_again() {
+        let db = db();
+        let status = |provider: &str| -> String {
+            db.query_row("SELECT status FROM sessions WHERE provider_session_id=?1 AND kind='harness_subagent'", [provider], |r| r.get(0)).unwrap()
+        };
+        for child in ["silent", "asking", "done"] {
+            route(&db, "parent", &event("subagent.started", child), &json!({})).unwrap();
+        }
+        route(&db, "parent", &event("permission.requested", "asking"), &json!({})).unwrap();
+        let mut done = event("subagent.completed", "done");
+        done.status = Some("completed".into());
+        route(&db, "parent", &done, &json!({})).unwrap();
+
+        assert_eq!(idle_children(&db, "parent").unwrap(), 1);
+        assert_eq!(status("silent"), "ready");
+        assert_eq!(status("asking"), "waiting");
+        assert_eq!(status("done"), "completed");
+
+        // usage alone is not activity; a real frame is.
+        route(&db, "parent", &event("usage.updated", "silent"), &json!({})).unwrap();
+        assert_eq!(status("silent"), "ready");
+        route(&db, "parent", &event("tool.started", "silent"), &json!({})).unwrap();
+        assert_eq!(status("silent"), "working");
+        route(&db, "parent", &event("tool.started", "done"), &json!({})).unwrap();
+        assert_eq!(status("done"), "completed");
     }
     #[test]
     fn processless_guards_and_orphan_recovery() {

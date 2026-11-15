@@ -442,6 +442,32 @@ fn record_snapshot(
     Ok(())
 }
 
+/// What the poller just read for one pull request, written to every chat row
+/// holding it, so screens that read stored snapshots (the Trails list, the
+/// chat list) see the poll without a live read of their own. Returns whether
+/// any row's stored snapshot said something different (state, draft, head or
+/// checks) or there was none: a first poll after a restart has no baselines
+/// of its own, so the store is what tells it this read is news.
+pub(crate) fn record_polled(db: &Connection, brief: &PullRequestBrief, checks: &[PullRequestCheck]) -> Result<bool, BridgeError> {
+    let (host, owner, name) = brief_repository(brief);
+    let rows = query_rows(
+        db,
+        "SELECT session_id,workspace_id,repo_host,repo_owner,repo_name,number,url,title,head_branch,head_sha,attribution,snapshot,fetched_at,created_at
+         FROM session_pull_requests WHERE repo_host=?1 AND repo_owner=?2 AND repo_name=?3 AND number=?4",
+        params![host, owner, name, brief.number],
+    )?;
+    let mut differed = false;
+    for row in &rows {
+        let view = build_view(brief, checks.to_vec(), &row.attribution, &row.created_at);
+        let stored = row.snapshot.as_deref().and_then(|snapshot| serde_json::from_str::<SessionPrView>(snapshot).ok());
+        differed |= stored.is_none_or(|stored| {
+            (stored.state, stored.is_draft, &stored.head_sha, &stored.check_details) != (view.state, view.is_draft, &view.head_sha, &view.check_details)
+        });
+        record_snapshot(db, &row.session_id, row, &view)?;
+    }
+    Ok(differed)
+}
+
 fn read_checks(
     core: &Arc<BridgeCore>,
     path: &std::path::Path,

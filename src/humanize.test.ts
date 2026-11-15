@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  LAUNCH_STEPS,
   humanizeApprovalReason,
   humanizeCheckKind,
   humanizeCheckStatus,
   humanizeForestBadge,
+  humanizeLaunchFailure,
   humanizeResolution,
   humanizeSteerOutcome,
   humanizeToken,
+  launchFailureStep,
   stripBridgeFences,
 } from "./humanize";
 
@@ -149,5 +152,36 @@ describe("stripBridgeFences", () => {
   it("collapses to empty when the whole message is one fence", () => {
     const text = "```bridge-worker-result\n{\"a\":1}\n```";
     expect(stripBridgeFences(text)).toBe("");
+  });
+});
+
+describe("worker launch failures", () => {
+  it("maps every backend phase onto a launch step and leaves unknown phases off the track", () => {
+    expect(LAUNCH_STEPS).toEqual(["Policy", "Route", "Workspace", "Start"]);
+    for (const phase of ["parent", "policy", "capability", "settlement"]) expect(launchFailureStep(phase)).toBe(0);
+    for (const phase of ["routing", "model_resolution", "verification_target"]) expect(launchFailureStep(phase)).toBe(1);
+    expect(launchFailureStep("worktree")).toBe(2);
+    expect(launchFailureStep("spawn")).toBe(3);
+    expect(launchFailureStep("something_new")).toBe(-1);
+    expect(launchFailureStep("")).toBe(-1);
+  });
+
+  it("leads with the cause in plain words and keeps the remedy as a hint", () => {
+    expect(humanizeLaunchFailure(
+      "opencode cannot run a read_only worker, so this delegation was not started. Re-delegate with a compatible harness (claude, codex) or change the write mode.",
+    )).toEqual({
+      summary: "OpenCode cannot run a read-only worker.",
+      hint: "Re-delegate with a compatible harness (Claude, Codex) or change the write mode.",
+    });
+    expect(humanizeLaunchFailure("router schema mismatch")).toEqual({ summary: "Router schema mismatch" });
+    expect(humanizeLaunchFailure("Could not create worktree: fatal: bad ref\n  at git worktree add")).toEqual({
+      summary: "Could not create worktree: fatal: bad ref",
+    });
+    // Ordinary words that happen to be harness ids elsewhere stay as written.
+    expect(humanizeLaunchFailure("the cursor moved").summary).toBe("The cursor moved");
+    expect(humanizeLaunchFailure("").summary).toBe("");
+    // Literal wire values in backticks are what the agent must write: untouched.
+    expect(humanizeLaunchFailure("unknown variant `none`, expected one of `read_only`, `shared` for codex").summary)
+      .toBe("Unknown variant `none`, expected one of `read_only`, `shared` for Codex");
   });
 });

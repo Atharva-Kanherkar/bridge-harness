@@ -315,7 +315,9 @@ mod tests {
         {
             let db = store::open(&path).unwrap();
             db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','ready','reported')", []).unwrap();
-            // History written before the index: no trigger, no table.
+            // History written before the index: no trigger, no table. Later
+            // migrations are forgotten too, since the store only applies
+            // versions above the newest one recorded; they are idempotent.
             db.execute_batch(
                 "DROP TRIGGER session_background_tasks_ai;
                  DROP TRIGGER session_background_tasks_ad;

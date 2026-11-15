@@ -367,6 +367,18 @@ impl EventReceiver {
         }
     }
 
+    /// The next event if one is already waiting; `Ok(None)` when none is.
+    /// Unlike `try_next`, a closed bus is an error, not an empty one, so a
+    /// loop that waits on a timer and events can tell the two apart.
+    pub fn poll(&mut self) -> Result<Option<CoreEvent>, ReceiveError> {
+        match self.receiver.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(broadcast::error::TryRecvError::Empty) => Ok(None),
+            Err(broadcast::error::TryRecvError::Lagged(missed)) => Err(ReceiveError::Lagged(missed)),
+            Err(broadcast::error::TryRecvError::Closed) => Err(ReceiveError::Closed),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn try_recv(&mut self) -> Result<CoreEvent, broadcast::error::TryRecvError> {
         self.receiver.try_recv()
