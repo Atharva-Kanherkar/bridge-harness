@@ -171,6 +171,28 @@ describe("AppLauncher", () => {
     expect(document.querySelector('[role="option"][aria-label="Usage, pinned"]')).not.toBeNull();
   });
 
+  it("pins from the tile's own button without opening the app or closing the launcher", async () => {
+    const value = await mount();
+    const button = document.querySelector<HTMLButtonElement>('button[aria-label="Pin Pulls to the sidebar"]')!;
+    expect(button.tabIndex).toBe(-1);
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    await act(async () => { button.dispatchEvent(down); });
+    expect(down.defaultPrevented).toBe(true);
+    await act(async () => { button.click(); });
+    expect(value.onTogglePin).toHaveBeenCalledWith("pulls");
+    expect(value.onOpenApp).not.toHaveBeenCalled();
+    expect(value.onClose).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="status"]')?.textContent).toBe("Pinned Pulls to the sidebar.");
+  });
+
+  it("offers Unpin on a pinned tile and shows a refusal from the tile", async () => {
+    const onTogglePin = vi.fn(async (): Promise<PinResult> => ({ ok: false, message: PIN_LIMIT_MESSAGE }));
+    await mount({ pins: ["usage"], onTogglePin });
+    expect(document.querySelector('button[aria-label="Unpin Usage"]')).not.toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Pin Notes to the sidebar"]')!.click(); });
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(PIN_LIMIT_MESSAGE);
+  });
+
   it("hands a long query to the sidebar's chat search", async () => {
     const value = await mount();
     await type("z");
