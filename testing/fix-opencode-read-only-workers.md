@@ -1,4 +1,4 @@
-# fix/opencode-read-only-workers — Test Contract
+# fix/opencode-read-only-workers: Test Contract
 
 Plan note: `bridge://p/01a1ddb3-48c8-7593-aa43-d7804992bae5`
 
