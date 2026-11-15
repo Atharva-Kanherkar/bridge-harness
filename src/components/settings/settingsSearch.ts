@@ -27,6 +27,7 @@ export type SearchGroup = {
 /** Every row a page shows regardless of what the user has configured. */
 export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "chatDefaults", label: "New chat defaults", description: "Project agent, model, effort, access, worktree and input defaults" },
+  { section: "chatDefaults", label: "When a usage limit stops a chat", description: "Resume automatically when the limit resets, or switch to a backup model and effort" },
   { section: "general", label: "Active-turn behavior", description: "Steer or Queue messages sent while an agent is working" },
   { section: "menuBar", label: "Menu Bar icon", description: "Show the icon, quota used or remaining, and today's spend" },
   { section: "menuBar", label: "Providers & accounts", description: "Codex account, plan, token and model breakdown, refresh interval" },
