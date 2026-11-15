@@ -227,6 +227,8 @@ struct ExtractionCase {
     #[serde(default)]
     pins: Vec<String>,
     messages: Vec<EvalMessage>,
+    #[serde(default, rename = "appEvents")]
+    app_events: Vec<EvalAppEvent>,
     expect: Vec<Expectation>,
     forbid: Vec<String>,
 }
@@ -235,6 +237,17 @@ struct ExtractionCase {
 struct EvalMessage {
     role: String,
     text: String,
+}
+
+/// Inserted as `apps::events` writes them. Written directly rather than
+/// through `record_tx`, so a case can also hold activity from an app that
+/// declares no events, which the digest must leave out.
+#[derive(Deserialize)]
+struct EvalAppEvent {
+    app: String,
+    #[serde(rename = "type")]
+    event_type: String,
+    summary: String,
 }
 
 #[derive(Deserialize)]
@@ -271,6 +284,55 @@ impl crate::memory_extraction::ExtractionModel for LiveExtraction {
     }
 }
 
+/// A fresh database holding one case: its pins, its messages, then its app
+/// activity.
+fn case_db(case: &ExtractionCase) -> (tempfile::TempDir, Connection) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('eval',NULL,'claude','eval','idle','reported','direct')",
+        [],
+    )
+    .unwrap();
+    for pin in &case.pins {
+        crate::memory_ledger::save(&db, pin, None, None).unwrap();
+    }
+    for (index, message) in case.messages.iter().enumerate() {
+        let kind = if message.role == "user" { "user.message" } else { "assistant.message" };
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES(?1,'eval',NULL,?2,?3,json_object('text',?4),'now')",
+            params![format!("e{}", index + 1), index as i64 + 1, kind, message.text],
+        )
+        .unwrap();
+    }
+    for (index, event) in case.app_events.iter().enumerate() {
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,context_visibility,created_at)
+             VALUES(?1,'eval',NULL,?2,'app.event',json_object('appId',?3,'type',?4,'summary',?5,'payload',json_object()),'hidden','now')",
+            params![format!("a{}", index + 1), (case.messages.len() + index) as i64 + 1, event.app, event.event_type, event.summary],
+        )
+        .unwrap();
+    }
+    (dir, db)
+}
+
+/// Offline: every case parses, and activity from an app with no memory scope
+/// never reaches the model, so that case cannot pass by luck.
+#[test]
+fn extraction_cases_reach_the_digest_only_within_scope() {
+    let cases = serde_json::from_str::<ExtractionFile>(EXTRACTION_CASES).expect("cases.json parses").cases;
+    assert!(cases.iter().any(|case| !case.app_events.is_empty()));
+    for case in &cases {
+        let (_dir, db) = case_db(case);
+        let digest = crate::memory_extraction::build_digest(&db, ACCOUNT_MEMORY_SCOPE, "eval").unwrap().expect("a digest").text;
+        for event in &case.app_events {
+            let scoped = crate::apps::builtin(&event.app).is_some_and(|app| !app.manifest.memory.is_empty());
+            assert_eq!(digest.contains(&event.summary), scoped, "{}: {}", case.name, event.summary);
+        }
+    }
+}
+
 #[test]
 #[ignore = "runs real provider turns"]
 fn live_extraction() {
@@ -279,25 +341,7 @@ fn live_extraction() {
     let mut model = LiveExtraction { registry: eval_registry(), scratch: std::env::temp_dir().join("bridge-memory-eval") };
     let (mut gold, mut found, mut proposals, mut correct, mut forbidden, mut spend) = (0usize, 0usize, 0usize, 0usize, 0usize, 0i64);
     for case in &cases {
-        let dir = tempfile::tempdir().unwrap();
-        let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
-        db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('eval',NULL,'claude','eval','idle','reported','direct')",
-            [],
-        )
-        .unwrap();
-        for pin in &case.pins {
-            crate::memory_ledger::save(&db, pin, None, None).unwrap();
-        }
-        for (index, message) in case.messages.iter().enumerate() {
-            let kind = if message.role == "user" { "user.message" } else { "assistant.message" };
-            db.execute(
-                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
-                 VALUES(?1,'eval',NULL,?2,?3,json_object('text',?4),'now')",
-                params![format!("e{}", index + 1), index as i64 + 1, kind, message.text],
-            )
-            .unwrap();
-        }
+        let (_dir, db) = case_db(case);
         let outcome = crate::memory_extraction::run_extraction(&db, &mut model, ACCOUNT_MEMORY_SCOPE, "eval");
         let bodies: Vec<String> = db
             .prepare("SELECT body FROM memory_records WHERE status='proposed'")

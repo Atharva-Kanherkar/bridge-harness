@@ -46,6 +46,31 @@ impl Target {
         }
     }
 
+    /// The `app.event` a successful send records: a summary naming the
+    /// destination and a payload of `{family, destination}`. The message text
+    /// is never part of it.
+    pub(crate) fn app_event(&self) -> (String, serde_json::Value) {
+        let (family, destination, summary) = match self {
+            Self::Slack { channel, thread, label, .. } => {
+                let label: String = label.trim().chars().take(200).collect();
+                let summary = if thread.is_some() {
+                    format!("Replied in a Slack thread in {label}")
+                } else if matches!(channel.as_bytes().first(), Some(b'U' | b'W')) {
+                    format!("Sent a Slack direct message to {label}")
+                } else {
+                    format!("Sent a Slack message to {label}")
+                };
+                ("slack", label, summary)
+            }
+            Self::Github { repo, number, .. } => {
+                let destination = format!("{repo}#{number}");
+                let summary = format!("Posted a GitHub comment on {destination}");
+                ("github", destination, summary)
+            }
+        };
+        (summary, serde_json::json!({"family": family, "destination": destination}))
+    }
+
     pub fn effect(&self, item: &OutgoingMessage) -> String {
         let destination = match self {
             Self::Slack {
@@ -436,6 +461,38 @@ mod tests {
 
 /// The orchestration seam is shared by the real provider and offline tests.
 /// Resolver has read authority only; executor is reached after a durable claim.
+/// Log a send that already happened: the `outgoing.sent` audit entry, and
+/// beside it in the same transaction the app event memory may learn from.
+fn log_sent(db: &Connection, item: &OutgoingMessage, id: &str, revision: u32, target: &Target) -> Result<(), BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let head: Option<String> = transaction
+        .query_row(
+            "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
+            [&item.session_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    crate::store::append_session_entry_tx(
+        &transaction,
+        &item.session_id,
+        head.as_deref(),
+        "outgoing.sent",
+        &serde_json::json!({"id":id,"revision":revision,"family":if matches!(target, Target::Slack { .. }) {"slack"} else {"github"},"remoteRef":item.remote_ref,"permalink":item.permalink}),
+        None,
+        "excluded",
+        Some(0),
+    )?;
+    // What memory may learn from: where the person sends, never what they
+    // wrote. Off or refused, the audit entry above still commits.
+    let (summary, payload) = target.app_event();
+    if let Err(error) = crate::apps::events::record_tx(&transaction, &item.session_id, "outgoing", "outgoing.sent", &summary, payload) {
+        eprintln!("[outgoing] sent, but the app event was refused: {error}");
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn run(
     core: &std::sync::Arc<crate::runtime::BridgeCore>,
     id: &str,
@@ -504,30 +561,7 @@ pub(crate) fn run(
             // forest transaction involved. Never execute the provider again.
             let item = saved.or_else(|_| finish(&db, id, revision, receipt, error, &now()))?;
             if receipt.is_some() {
-                let logged = (|| -> Result<(), BridgeError> {
-                    let transaction = db.unchecked_transaction()?;
-                    let head: Option<String> = transaction
-                        .query_row(
-                            "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
-                            [&item.session_id],
-                            |r| r.get(0),
-                        )
-                        .optional()?
-                        .flatten();
-                    crate::store::append_session_entry_tx(
-                        &transaction,
-                        &item.session_id,
-                        head.as_deref(),
-                        "outgoing.sent",
-                        &serde_json::json!({"id":id,"revision":revision,"family":if matches!(target, Target::Slack { .. }) {"slack"} else {"github"},"remoteRef":item.remote_ref,"permalink":item.permalink}),
-                        None,
-                        "excluded",
-                        Some(0),
-                    )?;
-                    transaction.commit()?;
-                    Ok(())
-                })();
-                if let Err(error) = logged {
+                if let Err(error) = log_sent(&db, &item, id, revision, &target) {
                     eprintln!("[outgoing] receipt saved, but transcript logging failed: {error}");
                 }
             }
@@ -879,14 +913,67 @@ mod orchestration_tests {
             crate::events::CoreEvent::OutgoingChanged { .. }
         ));
         let db = core.db.lock().unwrap();
-        let row: (String, String) = db
-            .query_row(
-                "SELECT kind,context_visibility FROM session_entries WHERE session_id='s'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(row, ("outgoing.sent".into(), "excluded".into()));
+        let rows = forest_rows(&db);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!((rows[0].1.as_str(), rows[0].2.as_str()), ("outgoing.sent", "excluded"));
+        let (_, kind, visibility, parent, payload) = &rows[1];
+        assert_eq!((kind.as_str(), visibility.as_str()), ("app.event", "hidden"));
+        assert_eq!(parent.as_deref(), Some(rows[0].0.as_str()));
+        assert_eq!(payload["appId"], "outgoing");
+        assert_eq!(payload["type"], "outgoing.sent");
+        assert_eq!(payload["summary"], "Posted a GitHub comment on o/r#1");
+        assert_eq!(payload["payload"], serde_json::json!({"family": "github", "destination": "o/r#1"}));
+        assert!(!payload.to_string().contains(&item.body), "the message text never enters the event");
+    }
+
+    type ForestRow = (String, String, String, Option<String>, serde_json::Value);
+
+    fn forest_rows(db: &rusqlite::Connection) -> Vec<ForestRow> {
+        db.prepare("SELECT id,kind,context_visibility,parent_entry_id,payload FROM session_entries WHERE session_id='s' ORDER BY sequence")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, serde_json::from_str(&r.get::<_, String>(4)?).unwrap())))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn sent_receipt(_: &OutgoingMessage, _: &Target) -> Result<(Receipt, Option<String>), String> {
+        Ok((
+            Receipt {
+                remote_ref: "42".into(),
+                permalink: "https://github.com/o/r/issues/1#issuecomment-42".into(),
+            },
+            None,
+        ))
+    }
+
+    #[test]
+    fn with_outgoing_off_a_send_logs_only_its_receipt() {
+        let (_scratch, core, item) = fixture();
+        let token = offered(&core, &item);
+        crate::apps::registry::set_enabled(&core.db.lock().unwrap(), "outgoing", false, "now").unwrap();
+        let result = run(&core, &item.id, 1, Some(true), Some(&token), target, sent_receipt).unwrap();
+        assert!(matches!(result, R::Sent { .. }));
+        let kinds: Vec<String> = forest_rows(&core.db.lock().unwrap()).into_iter().map(|row| row.1).collect();
+        assert_eq!(kinds, ["outgoing.sent"]);
+    }
+
+    #[test]
+    fn app_event_summaries_name_the_destination_only() {
+        let slack = |channel: &str, thread: Option<&str>| Target::Slack {
+            channel: channel.into(),
+            thread: thread.map(Into::into),
+            label: "#dev".into(),
+            server: "slack".into(),
+            harness: "claude".into(),
+            send_arguments: serde_json::json!({}),
+            upload_arguments: None,
+            complete_arguments: None,
+        };
+        assert_eq!(slack("C123", None).app_event().0, "Sent a Slack message to #dev");
+        assert_eq!(slack("C123", Some("1.2")).app_event().0, "Replied in a Slack thread in #dev");
+        assert_eq!(slack("U123", None).app_event().0, "Sent a Slack direct message to #dev");
+        assert_eq!(slack("C123", None).app_event().1, serde_json::json!({"family": "slack", "destination": "#dev"}));
     }
     #[test]
     fn forest_failure_cannot_erase_a_successful_send_receipt() {
