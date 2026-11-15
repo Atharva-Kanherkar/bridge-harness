@@ -98,6 +98,8 @@ pub mod github_policy;
 pub mod handoff;
 pub mod health;
 pub mod history_tools;
+#[cfg(test)]
+mod history_tools_eval;
 pub mod learning_job;
 pub mod learning_router;
 pub mod live_turn;
