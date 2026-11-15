@@ -96,6 +96,7 @@ export function mockSetAppPinned(id: string, pinned: boolean, counts?: MockBadge
   const current = state();
   let pins = current.pins.filter(pin => SPECS.some(item => item.id === pin));
   if (pinned && !pins.includes(id)) {
+    if (!app.slots.includes("screen") && !app.slots.includes("dock")) throw new Error(`${app.name} has no screen to pin to the sidebar.`);
     if (current.off.includes(id)) throw new Error(`Turn ${app.name} on before pinning it.`);
     if (pins.length >= MAX_PINS) throw new Error(`You can pin ${MAX_PINS} apps. Unpin one first.`);
     pins = [...pins, id];

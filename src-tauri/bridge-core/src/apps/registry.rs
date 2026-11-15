@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use bridge_protocol::messages::MAX_APP_PINS;
+use bridge_protocol::messages::{AppSlot, MAX_APP_PINS};
 use rusqlite::{params, Connection, Transaction};
 
 use super::builtin::{builtin, BuiltinApp};
@@ -81,6 +81,12 @@ pub fn set_pinned(db: &Connection, id: &str, pinned: bool, now: &str) -> Result<
         if current.iter().any(|pin| pin == id) {
             false
         } else {
+            // A pin is a sidebar row that opens the app. An app that only
+            // shows up as a chat card has nothing to open, so its pin would
+            // hold a slot no client can draw or undo.
+            if !app.manifest.views.iter().any(|view| matches!(view.slot, AppSlot::Screen | AppSlot::Dock)) {
+                return Err(BridgeError::Invalid(format!("{} has no screen to pin to the sidebar.", app.manifest.name)));
+            }
             if !is_enabled(&transaction, id)? {
                 return Err(BridgeError::Invalid(format!("Turn {} on before pinning it.", app.manifest.name)));
             }
@@ -207,6 +213,15 @@ mod tests {
         let error = set_pinned(&db, "notes", true, "t").unwrap_err();
         assert!(error.to_string().contains("Turn Notes on before pinning it."), "{error}");
         assert!(pins(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_app_without_a_screen_cannot_be_pinned() {
+        let db = database();
+        let error = set_pinned(&db, "outgoing", true, "t").unwrap_err();
+        assert!(error.to_string().contains("Outgoing has no screen to pin to the sidebar."), "{error}");
+        assert!(pins(&db).unwrap().is_empty(), "no hidden pin holds a slot");
+        assert!(!set_pinned(&db, "outgoing", false, "t").unwrap(), "unpinning it is a no-op");
     }
 
     #[test]
