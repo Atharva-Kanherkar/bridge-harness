@@ -51,12 +51,17 @@ pub fn guidance_applies(harness: &str, top_level_chat: bool, tools_served: bool)
 /// Whether `session_id` will be able to call `memory_search`: the same test
 /// [`SESSION_GUIDANCE`] and the packet's clipping both depend on.
 pub fn has_memory_search(db: &Connection, session_id: &str) -> bool {
+    let served = crate::notes::tool::listener_url().is_some() && crate::mcp_apps::helper_binary().is_some();
+    session_has_memory_search(db, session_id, served)
+}
+
+/// [`has_memory_search`] with whether this host serves the chat tools given.
+pub(crate) fn session_has_memory_search(db: &Connection, session_id: &str, tools_served: bool) -> bool {
     let Ok(harness) = db.query_row("SELECT harness FROM sessions WHERE id=?1", params![session_id], |row| row.get::<_, String>(0)) else {
         return false;
     };
     let top_level = crate::chat_defaults::is_top_level_chat(db, session_id).unwrap_or(false);
-    let served = crate::notes::tool::listener_url().is_some() && crate::mcp_apps::helper_binary().is_some();
-    memory_tools_reach(db, &harness, top_level, served)
+    memory_tools_reach(db, &harness, top_level, tools_served)
 }
 
 /// [`guidance_applies`], and the Memory app is on: with it off the chat gets
