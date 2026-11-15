@@ -855,7 +855,8 @@ pub fn list_trail_candidates(core: &Arc<BridgeCore>, params: &wire::ListTrailCan
     } else {
         Vec::new()
     };
-    let db = core.db.lock().unwrap();
+    // A read: a lock poisoned elsewhere still lists.
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let candidates = crate::trails::candidates::list(&db, &params.trail_id, params.kind, params.query.as_deref(), &notes)?;
     Ok(wire::ListTrailCandidatesResult { candidates })
 }

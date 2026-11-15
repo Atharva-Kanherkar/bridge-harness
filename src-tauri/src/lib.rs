@@ -3158,7 +3158,9 @@ fn deliver_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, launch: launch::
         let _ = app.run_on_main_thread(move || quick_prompt::toggle(&handle));
         return;
     }
-    let _ = app.emit(launch::LAUNCH_EVENT, launch);
+    if let Err(error) = app.emit(launch::LAUNCH_EVENT, launch) {
+        eprintln!("bridge: could not deliver a launch request ({error})");
+    }
 }
 
 /// Where Tauri keeps app data on Linux (`app_data_dir`), computed before
