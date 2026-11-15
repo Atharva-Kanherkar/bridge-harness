@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "about": "Labeled conversations for memory_evals::live_extraction. Each expect item is satisfied when one proposal body contains every term in `all` (case-insensitive). A proposal that contains a `forbid` phrase is a forbidden proposal. `pins` are already active before the run.",
+  "about": "Labeled conversations for memory_evals::live_extraction. Each expect item is satisfied when one proposal body contains every term in `all` (case-insensitive). A proposal that contains a `forbid` phrase is a forbidden proposal. `pins` are already active before the run. `appEvents` are app.event entries (hidden, as apps/events.rs writes them) added after the messages; the digest shows only those of apps that are on and declare a memory scope.",
   "cases": [
     {
       "name": "standing-constraint",
@@ -114,6 +114,62 @@
       ],
       "expect": [],
       "forbid": ["conventional commits"]
+    },
+    {
+      "name": "app-activity-repeated-destination",
+      "messages": [
+        {"role": "user", "text": "post this week's release notes"},
+        {"role": "assistant", "text": "Drafted them for Slack; they're waiting for you in the Outgoing card."}
+      ],
+      "appEvents": [
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #release-notes"},
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Posted a GitHub comment on acme/api#212"},
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #release-notes"},
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #release-notes"},
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #release-notes"}
+      ],
+      "expect": [{"all": ["release-notes"]}],
+      "forbid": ["acme/api#212", "this week"]
+    },
+    {
+      "name": "app-activity-one-off-send",
+      "messages": [
+        {"role": "user", "text": "send dana a quick thank-you for the review"},
+        {"role": "assistant", "text": "Drafted a short thank-you to Dana."}
+      ],
+      "appEvents": [
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack direct message to Dana Whitfield"}
+      ],
+      "expect": [],
+      "forbid": ["dana", "whitfield", "thank"]
+    },
+    {
+      "name": "app-activity-out-of-scope-detail",
+      "messages": [
+        {"role": "user", "text": "tell oncall the migration failed again"},
+        {"role": "assistant", "text": "Drafted an update for #oncall."}
+      ],
+      "appEvents": [
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #oncall about the Postgres 16 upgrade failing"},
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #oncall about the Postgres 16 upgrade failing again"},
+        {"app": "outgoing", "type": "outgoing.sent", "summary": "Sent a Slack message to #oncall about rolling back to Postgres 15"}
+      ],
+      "expect": [{"all": ["oncall"]}],
+      "forbid": ["postgres", "upgrade", "rolling back", "migration"]
+    },
+    {
+      "name": "app-activity-unscoped-app",
+      "messages": [
+        {"role": "user", "text": "open the PR for the login fix"},
+        {"role": "assistant", "text": "Opened it."}
+      ],
+      "appEvents": [
+        {"app": "pulls", "type": "pulls.opened", "summary": "Opened a pull request on acme/web-login"},
+        {"app": "pulls", "type": "pulls.opened", "summary": "Opened a pull request on acme/web-login"},
+        {"app": "pulls", "type": "pulls.opened", "summary": "Opened a pull request on acme/web-login"}
+      ],
+      "expect": [],
+      "forbid": ["acme/web-login", "web-login"]
     }
   ]
 }
