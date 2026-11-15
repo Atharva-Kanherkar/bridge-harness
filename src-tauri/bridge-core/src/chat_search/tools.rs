@@ -99,7 +99,7 @@ fn day(at: &str) -> &str {
 /// One entry's searchable text, whole. Redaction runs on this before any
 /// window is cut: a window cut first could split a secret into a fragment no
 /// detector recognises.
-fn entry_body(db: &Connection, entry_id: &str) -> Result<Option<String>, BridgeError> {
+pub(crate) fn entry_body(db: &Connection, entry_id: &str) -> Result<Option<String>, BridgeError> {
     let sql = format!(
         "SELECT {} FROM session_entries WHERE id = ?1",
         crate::session_recall::searchable_body_sql("payload")
@@ -107,7 +107,7 @@ fn entry_body(db: &Connection, entry_id: &str) -> Result<Option<String>, BridgeE
     Ok(db.prepare_cached(&sql)?.query_row(params![entry_id], |row| row.get(0)).optional()?)
 }
 
-fn digest_body(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
+pub(crate) fn digest_body(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
     Ok(db
         .prepare_cached("SELECT body FROM chat_digests WHERE session_id = ?1")?
         .query_row(params![session_id], |row| row.get(0))

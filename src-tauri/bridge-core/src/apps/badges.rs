@@ -5,7 +5,7 @@
 //! badge, and a count that cannot be read is no badge rather than a failed
 //! app list.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use bridge_protocol::messages::{AppBadge, AppSummary, TrailState};
 use rusqlite::Connection;
@@ -69,14 +69,14 @@ pub struct BadgeCache {
 impl BadgeCache {
     /// The cached count, when it was taken at `generation` or later.
     pub fn trails(&self, generation: u64) -> Option<u32> {
-        match *self.trails.lock().unwrap() {
+        match *self.trails.lock().unwrap_or_else(PoisonError::into_inner) {
             Some((counted_at, count)) if counted_at >= generation => Some(count),
             _ => None,
         }
     }
 
     fn store_trails(&self, generation: u64, count: u32) {
-        let mut slot = self.trails.lock().unwrap();
+        let mut slot = self.trails.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.is_none_or(|(counted_at, _)| counted_at <= generation) {
             *slot = Some((generation, count));
         }

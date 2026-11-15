@@ -281,6 +281,15 @@ pub struct BootConfig {
 }
 
 impl BridgeCore {
+    /// The database, or an error instead of a panic when an earlier panic
+    /// poisoned its lock. Callers that answer a person report it; nothing
+    /// half-written is read back.
+    pub(crate) fn try_db(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, BridgeError> {
+        self.db
+            .lock()
+            .map_err(|_| BridgeError::Invalid("Bridge hit an internal error and needs a restart to read its data.".into()))
+    }
+
     /// The aggregate application snapshot the frontend renders.
     pub fn state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
         store::state(&self.db.lock().unwrap())

@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, Transaction};
 
 /// Kinds whose `text` / `title` / `summary` are conversational enough to index.
 /// Raw provider events stay inspectable in the forest but are not recall hits.
-const INDEXABLE_KINDS: &str =
+pub(crate) const INDEXABLE_KINDS: &str =
     "'user.message','assistant.message','worker.result','compaction','checkpoint','branch.summary'";
 
 pub(crate) fn install_fts(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
