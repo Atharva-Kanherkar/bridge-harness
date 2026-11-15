@@ -1,4 +1,4 @@
-import { defaultsFromSettings, WORKER_EFFORTS } from "./chatDefaults";
+import { defaultsFromSettings, harnessLaunchOverrides, WORKER_EFFORTS } from "./chatDefaults";
 import { useResolvedChatDraft } from "./useChatDefaults";
 import { ChatOptionsControl } from "./components/ChatOptionsControl";
 import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings, SessionPullRequest } from "./protocol/generated/protocol";
@@ -27,7 +27,7 @@ import { parseNoteLink } from "./noteLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AttentionItem, BridgeState, Harness, HarnessConfig, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -308,6 +308,9 @@ function AppContent() {
   // Notes acts on a link's request once; a later visit to Notes must not replay it.
   const consumeNoteOpenRequest = useCallback(() => setNoteOpenRequest(undefined), []);
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
+  // Each harness's saved defaults (Settings, Coding agents), for chats started
+  // on a harness other than the composer's.
+  const [harnessConfigs, setHarnessConfigs] = useState<HarnessConfig[]>([]);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
@@ -694,6 +697,7 @@ function AppContent() {
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
     setProviderAccounts(accountChoices(config.harnesses));
+    setHarnessConfigs(config.harnesses);
   }), []);
   // The first reload can fail because a browser tab's daemon was not up yet.
   // When it attaches, load again and drop an error that only said so.
@@ -2302,14 +2306,17 @@ function AppContent() {
   // chat in the chosen project, on the chosen harness, with the brief as its
   // first message. Notes stays open; the row then offers Open chat.
   async function startChatFromNote({ message, workspaceId, harness }: NoteChatRequest): Promise<string | undefined> {
-    const adapter = adapters.find(candidate => candidate.id === harness);
-    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
-    const draft: NewChatDraft = workspaceId
-      ? { workspaceId, overrides: { model } }
-      // A direct chat has no repository to branch, whatever the saved defaults
-      // say about worktrees.
-      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false } };
-    return submitNewChatDraft(draft, message);
+    const scope = workspaceId ?? null;
+    return submitNewChatDraft({ workspaceId: scope, overrides: await launchOverrides(scope, harness) }, message);
+  }
+  // What a chat started from Notes or a trail asks for: the composer's own
+  // defaults for that scope, model and effort included, when it is on the
+  // composer's harness, else that harness's saved defaults. A direct chat has
+  // no repository to branch, whatever the saved defaults say about worktrees.
+  async function launchOverrides(workspaceId: string | null, harness: string): Promise<ChatDefaults> {
+    const base: ChatDefaults = workspaceId ? {} : { target: { kind: "direct" }, createWorktree: false };
+    const defaults = await bridgeApi.resolveChatSettings({ workspaceId, overrides: base }).catch(() => null);
+    return { ...base, ...harnessLaunchOverrides(harness, defaults, adapters, harnessConfigs) };
   }
   async function startChatOnTrail({ trail, text, harness, items }: TrailStartRequest): Promise<void> {
     // The selection was made against an earlier preview. Re-read it first, so
@@ -2318,12 +2325,8 @@ function AppContent() {
     if (items.some(id => !current.items.some(item => item.id === id))) {
       throw new TrailStartError("Something you picked is no longer on this trail.");
     }
-    const adapter = adapters.find(candidate => candidate.id === harness);
-    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
     const workspaceId = trail.workspaceId && state.workspaces.some(item => item.id === trail.workspaceId) ? trail.workspaceId : null;
-    const draft: NewChatDraft = workspaceId
-      ? { workspaceId, overrides: { model }, trailCarry: { trailId: trail.id, items } }
-      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false }, trailCarry: { trailId: trail.id, items } };
+    const draft: NewChatDraft = { workspaceId, overrides: await launchOverrides(workspaceId, harness), trailCarry: { trailId: trail.id, items } };
     const created = await submitNewChatDraft(draft, text);
     if (!created) throw new Error("Bridge could not start the chat. Check that an agent is signed in.");
     setView("workspace");
@@ -2334,6 +2337,14 @@ function AppContent() {
   // fall back to. With none saved, each picker starts on its first choice.
   const notesDefaultHarness = adapters.some(adapter => adapter.available && adapter.id === notesChatDefault) ? notesChatDefault : null;
 
+  // The model a Storage or Notes side chat starts on: the composer's default
+  // for a direct chat, effort included. If the host cannot resolve one, the
+  // last confirmed new-chat choice.
+  async function sideChatModel(): Promise<{ harness: Harness; model: string | null; effort: string | null }> {
+    const settings = await bridgeApi.resolveChatSettings({ workspaceId: null, overrides: { target: { kind: "direct" }, createWorktree: false } }).catch(() => null);
+    if (settings) return { harness: settings.model.harness as Harness, model: settings.model.model ?? null, effort: settings.effort ?? null };
+    return { ...resolveDraftHarnessModel(), effort: null };
+  }
   // The Storage page's standing chat: reuse it while it lives, else start a
   // direct chat (no project, a private scratch dir) and remember it.
   async function askStorage(prompt: string): Promise<void> {
@@ -2344,10 +2355,11 @@ function AppContent() {
     setStorageChatStarting(true);
     setError(undefined);
     try {
-      const { harness, model } = resolveDraftHarnessModel();
-      const next = await bridgeApi.createChat(harness, model, STORAGE_CHAT_TITLE, STORAGE_CHAT_PURPOSE);
+      const { harness, model, effort } = await sideChatModel();
+      let next = await bridgeApi.createChat(harness, model, STORAGE_CHAT_TITLE, STORAGE_CHAT_PURPOSE);
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the storage chat but did not return its session");
+      if (effort) next = await bridgeApi.updateChatModel(created.id, harness, model, effort).catch(() => next);
       setState(next);
       setStorageChatHistory(rememberStorageChat(created.id));
       setStorageChatId(created.id);
@@ -2432,10 +2444,11 @@ function AppContent() {
     setNotesChatStarting(true);
     setError(undefined);
     try {
-      const { harness, model } = resolveDraftHarnessModel();
-      const next = await bridgeApi.createChat(harness, model, NOTES_CHAT_TITLE, NOTES_CHAT_PURPOSE);
+      const { harness, model, effort } = await sideChatModel();
+      let next = await bridgeApi.createChat(harness, model, NOTES_CHAT_TITLE, NOTES_CHAT_PURPOSE);
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the notes chat but did not return its session");
+      if (effort) next = await bridgeApi.updateChatModel(created.id, harness, model, effort).catch(() => next);
       setState(next);
       writeNotesChatId(created.id);
       setNotesChatId(created.id);
