@@ -190,6 +190,7 @@ mod usage_dashboard;
 pub mod usage_history;
 pub mod verified_catalog;
 pub mod worker_adoption;
+pub mod worker_artifacts;
 pub mod worker_guard;
 pub mod worker_lifecycle;
 pub mod worker_pool;

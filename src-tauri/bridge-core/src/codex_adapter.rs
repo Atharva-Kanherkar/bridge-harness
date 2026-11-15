@@ -154,6 +154,31 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
     result
 }
 
+/// Which layer enforces a read-only Codex worker's OS boundary.
+///
+/// Two Seatbelts cannot nest: the inner `sandbox_apply` is rejected with EPERM
+/// on macOS, so the command never starts. Exactly one layer is chosen instead.
+/// `nested_provider_sandbox` means Codex's own `workspaceWrite` policy is the
+/// boundary; when it is false the outer Bridge profile is, and Codex must be
+/// told not to apply its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IsolationComposition {
+    outer_bridge_sandbox: bool,
+    nested_provider_sandbox: bool,
+}
+
+fn isolation_composition(macos: bool, runtime_network_denied: bool) -> IsolationComposition {
+    if macos && runtime_network_denied {
+        // Only the outer Seatbelt can deny all egress; Codex must not nest.
+        IsolationComposition { outer_bridge_sandbox: true, nested_provider_sandbox: false }
+    } else if macos {
+        IsolationComposition { outer_bridge_sandbox: false, nested_provider_sandbox: true }
+    } else {
+        // Landlock stacks; keep both layers on Linux.
+        IsolationComposition { outer_bridge_sandbox: true, nested_provider_sandbox: true }
+    }
+}
+
 fn launch(
     request: StartRequest<'_>,
     resume_thread_id: Option<&str>,
@@ -186,14 +211,30 @@ fn launch(
     let binary = resolve_runtime()
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
     ensure_supported_version(&binary)?;
-    let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
+    // macOS cannot apply a second Seatbelt inside Bridge's: the inner
+    // `sandbox_apply` is rejected with EPERM before the command starts. Compose
+    // exactly one OS boundary instead of two. Normally that boundary is Codex's
+    // own `workspaceWrite` policy, which enforces the same workspace immutability
+    // and the per-delegation network flag. When the opt-in total egress denial is
+    // on, only the outer Bridge profile can express "deny all network", so the
+    // outer layer is kept and Codex's own sandbox is turned off rather than nested.
+    let composition = isolation_composition(
+        cfg!(target_os = "macos"),
+        read_only_sandbox.is_some_and(|sandbox| sandbox.runtime_network_denied()),
+    );
+    let outer_sandbox = read_only_sandbox.filter(|_| composition.outer_bridge_sandbox);
+    let mut command = crate::worker_sandbox::command(&binary, outer_sandbox)?;
     binary::hydrate_command_path(&mut command);
     let sandbox_policy = read_only_sandbox.map(|sandbox| {
-        json!({
-            "type": "workspaceWrite",
-            "writableRoots": [sandbox.output_dir().to_string_lossy()],
-            "networkAccess": sandbox.network_allowed(),
-        })
+        if composition.nested_provider_sandbox {
+            json!({
+                "type": "workspaceWrite",
+                "writableRoots": [sandbox.output_dir().to_string_lossy()],
+                "networkAccess": sandbox.network_allowed(),
+            })
+        } else {
+            json!({ "type": "dangerFullAccess" })
+        }
     });
     // Root-level overrides, ahead of the subcommand: an interactive chat gets
     // Bridge's `visualize` server alongside the user's own servers.
@@ -1047,6 +1088,35 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_only_worker_gets_exactly_one_os_sandbox_layer() {
+        // macOS cannot apply a second Seatbelt inside Bridge's: the inner
+        // sandbox_apply is rejected and the tool never starts. The default
+        // composition therefore leaves Codex's own policy as the one boundary.
+        let macos = isolation_composition(true, false);
+        assert!(!macos.outer_bridge_sandbox);
+        assert!(macos.nested_provider_sandbox);
+
+        // The opt-in total egress denial can only be expressed by the outer
+        // profile, so Codex's own sandbox is turned off instead of nested.
+        let macos_hard_deny = isolation_composition(true, true);
+        assert!(macos_hard_deny.outer_bridge_sandbox);
+        assert!(!macos_hard_deny.nested_provider_sandbox);
+
+        // Landlock stacks, so Linux keeps both layers.
+        let linux = isolation_composition(false, false);
+        assert!(linux.outer_bridge_sandbox);
+        assert!(linux.nested_provider_sandbox);
+
+        // Whatever the composition, at least one OS boundary remains.
+        for composition in [macos, macos_hard_deny, linux] {
+            assert!(
+                composition.outer_bridge_sandbox || composition.nested_provider_sandbox,
+                "a read-only worker must never start without an OS boundary"
+            );
+        }
+    }
 
     #[test]
     fn native_steer_binds_the_existing_turn_without_starting_another() {

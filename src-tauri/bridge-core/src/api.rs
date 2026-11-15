@@ -1055,7 +1055,7 @@ pub fn github_review(
             session_id: None,
             message: format!("Review queued with {harness}; it will start when a worker slot frees up."),
         },
-        live_turn::WorkerLaunchOutcome::AwaitingApproval => wire::GithubReviewResult {
+        live_turn::WorkerLaunchOutcome::AwaitingApproval { .. } => wire::GithubReviewResult {
             status: "awaitingApproval".into(),
             session_id: None,
             message: if write_mode == delegation::WriteMode::Isolated {
@@ -2652,7 +2652,7 @@ fn resolve_legacy_approval(
             }
             // A different pending gate is not a failed launch. Resolved scope
             // cards are refused by policy rather than being reopened here.
-            live_turn::WorkerLaunchOutcome::AwaitingApproval => {
+            live_turn::WorkerLaunchOutcome::AwaitingApproval { .. } => {
                 core.events.publish(CoreEvent::StateChanged);
                 return Ok(());
             }
@@ -3905,6 +3905,7 @@ pub fn create_completion_plan(
     let available_capabilities = live_available_capabilities(core);
     let change_labels = completion::labels_for_paths(&changed_paths);
     let db = core.db.lock().unwrap();
+    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
     let plan = completion::plan_with_registered_manifests(
         &db,
         completion::PlanInput {
@@ -3912,11 +3913,11 @@ pub fn create_completion_plan(
             acceptance_criteria,
             changed_paths,
             repository_commands,
+            repository_root: Some(std::path::PathBuf::from(&repository_path)),
         },
         &change_labels,
         &available_capabilities,
     )?;
-    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
     let repository = completion_repository_stamp(&db, session_id)?;
     completion::create_flow(
         &db,

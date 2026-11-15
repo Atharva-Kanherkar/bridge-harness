@@ -4148,6 +4148,24 @@ pub fn update_worker_queue(
     )? == 1)
 }
 
+/// Close a queue row whose launch is now owned by a live approval card.
+///
+/// It is `cancelled`, not `rejected`: `report_terminal_queue_outcomes` treats a
+/// cancellation as already explained, so the parent is never told both "no
+/// worker will start" and "approve this card to start it". The card remains the
+/// one path to the work; declining it produces the declaration notice.
+pub fn cancel_worker_queue_for_approval(
+    db: &Connection,
+    id: &str,
+    approval_id: &str,
+) -> Result<bool, BridgeError> {
+    let now = Utc::now().to_rfc3339();
+    Ok(db.execute(
+        "UPDATE worker_queue SET queue_status='cancelled',last_error=?2,updated_at=?3 WHERE id=?1 AND queue_status='dispatching'",
+        params![id, format!("awaiting_approval:{approval_id}"), now],
+    )? == 1)
+}
+
 pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i64, BridgeError> {
     db.execute(
         "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd)

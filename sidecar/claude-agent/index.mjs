@@ -162,6 +162,7 @@ rl.on("line", (line) => {
 });
 rl.on("close", () => {
   asks.close();
+  permissions.close();
   input.close();
 });
 

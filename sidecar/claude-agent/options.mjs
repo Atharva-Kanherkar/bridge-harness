@@ -36,10 +36,10 @@ export function makeTopLevelOnlyHook() {
   };
 }
 
-export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
+export function permissionOptions(mode, networkAllowed = false, mcpServers = {}, outputDir = null) {
   switch (mode) {
     case "ReadOnly":
-      return readOnlyOptions({ networkAllowed, mcpServers });
+      return readOnlyOptions({ networkAllowed, mcpServers, outputDir });
     case "Shared":
     case "Isolated":
       // Bridge renders no Claude permission prompt, so anything that needs one
@@ -93,7 +93,7 @@ function worktreeWorkflowOptions() {
   };
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, outputDir = null, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -116,7 +116,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
         plugins: plugins.map(plugin => typeof plugin === "string"
           ? { type: "local", path: plugin, skipMcpDiscovery: true }
           : { type: "local", ...plugin }),
-        ...permissionOptions(writeMode, networkAllowed, mcpServers),
+        ...permissionOptions(writeMode, networkAllowed, mcpServers, outputDir),
       };
   if (!isBriefing({ briefing }) && mcpServers.bridge) {
     const existing = authority.hooks ?? {};

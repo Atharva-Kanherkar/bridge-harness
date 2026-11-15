@@ -676,6 +676,34 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_row_owned_by_a_live_approval_is_cancelled_not_rejected() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/approval-queue','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/approval-queue','waiting','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
+        let id = WorkerPool::enqueue(&db, "parent", "w", "turn", &request(), "model").unwrap();
+        // The dispatcher has claimed the row and then needs an approval.
+        db.execute("UPDATE worker_queue SET queue_status='dispatching' WHERE id=?1", [&id]).unwrap();
+        assert!(store::cancel_worker_queue_for_approval(&db, &id, "approval-1").unwrap());
+        let (status, error): (String, Option<String>) = db
+            .query_row(
+                "SELECT queue_status,last_error FROM worker_queue WHERE id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        assert_eq!(error.as_deref(), Some("awaiting_approval:approval-1"));
+        // A cancelled row is already explained by the live approval card, so no
+        // terminal "could not launch" notice is emitted beside it.
+        assert!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap().is_empty());
+        // A rejected row, by contrast, is still reported exactly once.
+        db.execute("UPDATE worker_queue SET queue_status='rejected' WHERE id=?1", [&id]).unwrap();
+        assert_eq!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap(), vec!["parent"]);
+        assert!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap().is_empty());
+    }
+
+    #[test]
     fn human_approval_pauses_transitive_queue_ttl_and_releases_with_time_restored() {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
         db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/human-queue','now')", []).unwrap();

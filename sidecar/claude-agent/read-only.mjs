@@ -2,6 +2,9 @@
 // conveniences, but this hook runs before each visible tool and can only narrow
 // the capability surface Bridge selected.
 
+import { realpathSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+
 const LOCAL_READ_TOOLS = ["Read", "Grep", "Glob", "Skill", "TodoWrite"];
 const NETWORK_CAPABLE_TOOLS = ["Bash", "WebFetch", "WebSearch"];
 const DIRECT_WRITE_TOOLS = ["Edit", "Write", "NotebookEdit", "Task"];
@@ -40,7 +43,34 @@ function decision(permissionDecision, permissionDecisionReason) {
   };
 }
 
-export function makeReadOnlyHook({ networkAllowed = false, mcpServers = {} } = {}) {
+/** Whether a Write target is inside the worker's assigned output directory.
+ * `..` traversal is resolved before the prefix test, and the deepest existing
+ * ancestor is realpath-checked so a symlink planted inside the output tree
+ * cannot redirect the write somewhere else. A target that does not exist yet
+ * is judged by its existing parent. */
+export function isInsideOutputDir(filePath, outputDir) {
+  if (typeof filePath !== "string" || !filePath.trim() || typeof outputDir !== "string" || !outputDir) return false;
+  const root = resolve(outputDir);
+  let realRoot = root;
+  try { realRoot = realpathSync(root); } catch { return false; }
+  const target = resolve(root, filePath);
+  const inside = (base) => target === base || target.startsWith(base.endsWith(sep) ? base : base + sep);
+  if (!inside(root) && !inside(realRoot)) return false;
+  let probe = target;
+  while (true) {
+    try {
+      const real = realpathSync(probe);
+      return real === realRoot || real.startsWith(realRoot.endsWith(sep) ? realRoot : realRoot + sep);
+    } catch {
+      if (probe === root) return false;
+      const parent = dirname(probe);
+      if (parent === probe) return false;
+      probe = parent;
+    }
+  }
+}
+
+export function makeReadOnlyHook({ networkAllowed = false, mcpServers = {}, outputDir = null } = {}) {
   const local = new Set(LOCAL_READ_TOOLS);
   const network = new Set(NETWORK_CAPABLE_TOOLS);
   // The servers Bridge actually connected and handed to this worker (see
@@ -52,6 +82,16 @@ export function makeReadOnlyHook({ networkAllowed = false, mcpServers = {} } = {
     const toolName = input.tool_name;
     if (local.has(toolName)) {
       return decision("allow", `Bridge read-only policy allows ${toolName}`);
+    }
+    // An offline read-only worker has no shell, so Write is its only route to
+    // the artifact its delegation accepted. It stays scoped to the assigned
+    // output directory; the workspace and every host path remain denied.
+    if (toolName === "Write" && outputDir) {
+      const filePath = input.tool_input?.file_path;
+      if (isInsideOutputDir(filePath, outputDir)) {
+        return decision("allow", `Bridge read-only policy allows the assigned artifact ${filePath}`);
+      }
+      return decision("deny", `Bridge read-only policy denied a write outside the assigned output directory: ${filePath ?? "<missing>"}`);
     }
     if (networkAllowed && network.has(toolName)) {
       return decision("allow", `Bridge read-only network policy allows ${toolName}`);
@@ -66,10 +106,13 @@ export function makeReadOnlyHook({ networkAllowed = false, mcpServers = {} } = {
   };
 }
 
-export function readOnlyOptions({ networkAllowed = false, mcpServers = {} } = {}) {
+export function readOnlyOptions({ networkAllowed = false, mcpServers = {}, outputDir = null } = {}) {
   const tools = networkAllowed
     ? [...LOCAL_READ_TOOLS, ...NETWORK_CAPABLE_TOOLS]
     : [...LOCAL_READ_TOOLS];
+  // Offline means no shell, not "no way to finish the task": the accepted
+  // artifact contract needs a write tool whose scope is the output directory.
+  if (outputDir) tools.push("Write");
   // Without network there is no route to any MCP server regardless of what
   // Bridge projected, so the map is dropped rather than merely left unused.
   const reviewedMcpServers = networkAllowed ? mcpServers : {};
@@ -84,9 +127,9 @@ export function readOnlyOptions({ networkAllowed = false, mcpServers = {} } = {}
     permissionMode: "default",
     permissionPrompts: "none",
     tools,
-    disallowedTools: [...DIRECT_WRITE_TOOLS],
+    disallowedTools: DIRECT_WRITE_TOOLS.filter((tool) => !(tool === "Write" && outputDir)),
     hooks: {
-      PreToolUse: [{ hooks: [makeReadOnlyHook({ networkAllowed, mcpServers: reviewedMcpServers })] }],
+      PreToolUse: [{ hooks: [makeReadOnlyHook({ networkAllowed, mcpServers: reviewedMcpServers, outputDir })] }],
     },
   };
 }
