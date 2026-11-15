@@ -2,7 +2,7 @@ import { briefingOptions, isBriefing } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
 /** The `bridge` server's tools that only read or display. */
-export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read"];
+export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read", "mcp__bridge__chats_search", "mcp__bridge__chats_read"];
 /** The `bridge` server's tools whose only effect waits for the person's review:
  *  a memory proposal changes nothing until they approve it in Bridge, and a
  *  drafted message is a card the person edits and sends themselves. */
@@ -17,7 +17,15 @@ export const BRIDGE_PREFERENCE_TOOLS = ["mcp__bridge__settings_change"];
 /** Bridge tools only the chat itself may call. A Claude-native subagent
  *  inherits the parent's MCP tools and the root chat's token, so the core
  *  cannot tell its calls apart; the sidecar can, by the hook input's agent_id. */
-export const BRIDGE_TOP_LEVEL_TOOLS = ["mcp__bridge__settings_read", "mcp__bridge__settings_change"];
+export const BRIDGE_TOP_LEVEL_TOOLS = ["mcp__bridge__settings_read", "mcp__bridge__settings_change", "mcp__bridge__chats_search", "mcp__bridge__chats_read"];
+
+/** Why a subagent is refused each top-level-only tool. */
+const TOP_LEVEL_REASONS = {
+  mcp__bridge__settings_read: "Only the chat itself changes Bridge's settings; report back to it instead.",
+  mcp__bridge__settings_change: "Only the chat itself changes Bridge's settings; report back to it instead.",
+  mcp__bridge__chats_search: "Only the chat itself reads the person's other chats; ask it for what you need from them.",
+  mcp__bridge__chats_read: "Only the chat itself reads the person's other chats; ask it for what you need from them.",
+};
 
 /** PreToolUse runs before the allowlist and before bypass mode, so this holds
  *  in every write mode. agent_id is present only on a subagent's calls. */
@@ -30,7 +38,7 @@ export function makeTopLevelOnlyHook() {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: "Only the chat itself changes Bridge's settings; report back to it instead.",
+        permissionDecisionReason: TOP_LEVEL_REASONS[input.tool_name],
       },
     };
   };
