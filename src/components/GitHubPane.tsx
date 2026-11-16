@@ -1,6 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ArrowLeft,
   Ban,
@@ -43,6 +43,7 @@ import { errorMessage } from "../errors";
 import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
 import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
+import { MergeBox, initialMergeState, mergeReducer, type MergeState, type OverflowItem } from "./github/MergeBox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Markdown } from "./Markdown";
@@ -333,7 +334,7 @@ function DetailSkeleton({ label }: { label: string }) {
 /** The check rollup as a bar rather than a number pair. Segments are widths,
  * so a re-read animates from the old proportions to the new ones and a reader
  * sees CI move without reading digits. */
-function RollupMeter({ checks, className }: { checks: PullRequestListItem["checks"]; className?: string }) {
+export function RollupMeter({ checks, className }: { checks: PullRequestListItem["checks"]; className?: string }) {
   if (!checks.total) return null;
   const running = checks.queued + checks.inProgress;
   const segments = [
@@ -1141,10 +1142,35 @@ const PRIMARY_ACTION = "inline-flex min-h-7 items-center gap-1.5 rounded-md bg-p
 /** Ending something is available but never loud until a pointer is on it. */
 const QUIET_ACTION = "ml-auto inline-flex min-h-7 items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-[0.98] disabled:opacity-50";
 
-function StatePill({ icon: Icon, label }: { icon: typeof GitPullRequest; label: string }) {
-  return <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5 text-[11px] font-medium capitalize text-foreground shadow-xs">
-    <Icon size={12} strokeWidth={1.9} aria-hidden="true" />{label}
-  </span>;
+const PILL_BASE = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize shadow-xs";
+const PILL_MERGED = "border-merged/45 bg-merged/15 text-merged";
+const PILL_NEUTRAL = "border-border bg-card text-foreground";
+
+/** The state pill. Between labels it tweens its width and cross-fades the
+ *  glyph — Open slides up and out, Merged slides up and in (320ms); the
+ *  merged verdict wears the one deliberate purple on this chrome. */
+function StatePill({ icon: Icon, label, merged = false }: { icon: typeof GitPullRequest; label: string; merged?: boolean }) {
+  const reduced = useReducedMotion();
+  if (reduced) {
+    return <span className={cn(PILL_BASE, merged ? PILL_MERGED : PILL_NEUTRAL)}>
+      <Icon size={12} strokeWidth={1.9} aria-hidden="true" />{label}
+    </span>;
+  }
+  return <motion.span layout className={cn(PILL_BASE, "overflow-hidden", merged ? PILL_MERGED : PILL_NEUTRAL)}>
+    <AnimatePresence mode="popLayout" initial={false}>
+      <motion.span
+        key={label}
+        layout
+        className="flex items-center gap-1 whitespace-nowrap"
+        initial={{ y: 8, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: -8, opacity: 0 }}
+        transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <Icon size={12} strokeWidth={1.9} aria-hidden="true" />{label}
+      </motion.span>
+    </AnimatePresence>
+  </motion.span>;
 }
 
 /** A comment composer. Posting still goes through the same confirmation gate
@@ -1236,9 +1262,11 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewNotice, setReviewNotice] = useState<{ tone: "success" | "error"; text: string }>();
   const [pendingBody, setPendingBody] = useState("");
-  const [mergeOpen, setMergeOpen] = useState(false);
+  // The merge flow's one state machine: idle | confirming | merging | merged
+  // | failed, in a reducer rather than five booleans (issue #1028). A detail
+  // that already reports merged renders the receipt without replaying it.
+  const [merge, dispatchMerge] = useReducer(mergeReducer, undefined, initialMergeState);
   const [mergeConfig, setMergeConfig] = useState<GithubMergeConfigResult>();
-  const [strategy, setStrategy] = useState<MergeStrategy>();
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkout, setCheckout] = useState<GithubCheckoutResult>();
   const [busy, setBusy] = useState(false);
@@ -1254,7 +1282,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [labelsOpen, setLabelsOpen] = useState(false);
 
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
-  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setMergeOpen(false); setMergeConfig(undefined); setStrategy(undefined); setCheckoutOpen(false); setLabelsOpen(false); setReviewOpen(false); };
+  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setCheckoutOpen(false); setLabelsOpen(false); setReviewOpen(false); };
 
   // Hand the PR to a read-only subagent that posts its review as a comment via
   // `gh`. Non-blocking: the notice reports how the launch was routed and the
@@ -1285,16 +1313,58 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     } finally { setBusy(false); }
   };
 
-  const openMerge = async () => {
-    setActionError(undefined); setMergeOpen(true); setMergeConfig(undefined); setStrategy(undefined);
+  // The merge box reads the repository's strategies when it mounts, not on
+  // click, so the split button already shows the repo default. A failed read
+  // leaves the button disabled rather than guessing at the repository rules.
+  const detailReady = detail?.result.pullRequest.summary;
+  const detailNumber = detailReady?.number;
+  useEffect(() => {
+    if (!detailReady || detailReady.state !== "open") return;
+    let cancelled = false;
+    void bridgeApi.githubMergeConfig(workspaceId)
+      .then(config => { if (!cancelled) setMergeConfig(config); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+    // Reload per pull request, not per render; the config is repository-level.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, detailNumber]);
+
+  // Reset the flow when another pull request opens in this detail.
+  useEffect(() => {
+    if (detailReady) dispatchMerge({ type: "reset", summary: detailReady });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailNumber]);
+
+  // The merge itself: one confirmed write; the animation only plays on a real
+  // `executed: true`, and a refusal keeps the form with the reason verbatim.
+  const runMerge = async () => {
+    if (merge.phase !== "confirming" && merge.phase !== "failed") return;
+    dispatchMerge({ type: "merging" });
+    setBusy(true); setActionError(undefined);
     try {
-      const config = await bridgeApi.githubMergeConfig(workspaceId);
-      setMergeConfig(config); setStrategy(config.defaultStrategy);
+      const outcome = await bridgeApi.githubAct(workspaceId, { kind: "merge", number, strategy: merge.strategy }, true);
+      if (!outcome.executed) { dispatchMerge({ type: "fail", message: outcome.message }); return; }
+      dispatchMerge({ type: "succeed" });
+      onActed();
     } catch (value) {
-      setMergeOpen(false);
-      setActionError(errorMessage(value));
-    }
+      dispatchMerge({ type: "fail", message: errorMessage(value) });
+    } finally { setBusy(false); }
   };
+
+  // The confirm step's own chords: ⌘↵ merges, Esc collapses back to idle.
+  const mergeOpenForKeys = merge.phase === "confirming" || merge.phase === "failed";
+  useEffect(() => {
+    if (!mergeOpenForKeys) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") dispatchMerge({ type: "collapse" });
+      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        void runMerge();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  });
 
   const runCheckout = async () => {
     setBusy(true); setActionError(undefined);
@@ -1323,7 +1393,55 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     check.conclusion === "failure" || check.conclusion === "timedOut" || check.conclusion === "startupFailure"
   );
   const checkedOutHere = workspaceBranch === summary.headBranch;
+  const mergedNow = summary.state === "merged" || merge.phase === "merged";
   const StateIcon = pullRequestStateIcon(summary);
+  // The merge box's overflow menu: everything that is not the merge itself,
+  // the review harness, or Approve (issue #1028 keeps at most three visible
+  // secondary actions plus this menu).
+  const overflowItems: OverflowItem[] = summary.state === "open" ? [
+    { label: "Request changes", icon: MessageSquare, onSelect: () => setPending({
+      title: `Request changes on #${number}`,
+      consequence: `Blocks the merge until ${summary.author?.login ?? "the author"} pushes a fix or you dismiss the review.`,
+      command: `gh pr review ${number} -R ${repoLabel} --request-changes --body …`,
+      tone: "neutral",
+      icon: MessageSquare,
+      requiresBody: true,
+      confirmLabel: "Request changes",
+      build: body => ({ kind: "review", number, event: "requestChanges", body }),
+    }) },
+    ...(summary.isDraft ? [{ label: "Ready for review", icon: Eye, onSelect: () => setPending({
+      title: `Mark #${number} ready for review`,
+      consequence: "Reviewers are notified that the pull request is ready.",
+      command: `gh pr ready ${number} -R ${repoLabel}`,
+      tone: "neutral",
+      icon: Eye,
+      requiresBody: false,
+      confirmLabel: "Ready for review",
+      build: () => ({ kind: "ready", number }),
+    }) }] : []),
+    ...(rerunnable ? [{ label: "Re-run failed", icon: RotateCcw, onSelect: () => setPending({
+      title: `Re-run failed checks on #${number}`,
+      consequence: "The failed runs are queued again.",
+      command: `gh run rerun <failed runs of #${number}> -R ${repoLabel}`,
+      tone: "neutral",
+      icon: RotateCcw,
+      requiresBody: false,
+      confirmLabel: "Re-run failed",
+      build: () => ({ kind: "rerun", number }),
+    }) }] : []),
+    ...(!checkedOutHere ? [{ label: "Check out", icon: FolderGit2, onSelect: () => { setActionError(undefined); setCheckoutOpen(true); } }] : []),
+    { label: "Close pull request", icon: Ban, destructive: true, onSelect: () => setPending({
+      title: `Close #${number} without merging`,
+      consequence: "The branch stays on GitHub. You can reopen it from this pane.",
+      command: `gh pr close ${number} -R ${repoLabel}`,
+      tone: "destructive",
+      icon: Ban,
+      requiresBody: false,
+      confirmLabel: "Close pull request",
+      destructive: true,
+      build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }),
+    }) },
+  ] : [];
   const tabs = [
     { value: "conversation" as const, label: "conversation" },
     { value: "changes" as const, label: `changes ${pullRequest.changedFiles}` },
@@ -1331,12 +1449,60 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     { value: "checks" as const, label: `checks ${detail.checks.checks.length}` },
   ];
 
+  // Secondary actions beyond Approve and Review ride the box's overflow menu
+  // (at most three visible secondaries plus the overflow, per the issue).
+  const overflow: OverflowItem[] = [];
+  if (summary.state === "open") {
+    overflow.push({ label: "Request changes", icon: MessageSquare, onSelect: () => setPending({
+      title: `Request changes on #${number}`,
+      consequence: `Blocks the merge until ${summary.author?.login ?? "the author"} pushes a fix or you dismiss the review.`,
+      command: `gh pr review ${number} -R ${repoLabel} --request-changes --body …`,
+      tone: "neutral",
+      icon: MessageSquare,
+      requiresBody: true,
+      confirmLabel: "Request changes",
+      build: body => ({ kind: "review", number, event: "requestChanges", body }),
+    }) });
+    if (summary.isDraft) overflow.push({ label: "Ready for review", icon: Eye, onSelect: () => setPending({
+      title: `Mark #${number} ready for review`,
+      consequence: "Reviewers are notified that the pull request is ready.",
+      command: `gh pr ready ${number} -R ${repoLabel}`,
+      tone: "neutral",
+      icon: Eye,
+      requiresBody: false,
+      confirmLabel: "Ready for review",
+      build: () => ({ kind: "ready", number }),
+    }) });
+    if (rerunnable) overflow.push({ label: "Re-run failed", icon: RotateCcw, onSelect: () => setPending({
+      title: `Re-run failed checks on #${number}`,
+      consequence: "The failed runs are queued again.",
+      command: `gh run rerun <failed runs of #${number}> -R ${repoLabel}`,
+      tone: "neutral",
+      icon: RotateCcw,
+      requiresBody: false,
+      confirmLabel: "Re-run failed",
+      build: () => ({ kind: "rerun", number }),
+    }) });
+    if (!checkedOutHere) overflow.push({ label: "Check out", icon: FolderGit2, onSelect: () => { setActionError(undefined); setCheckoutOpen(true); } });
+    overflow.push({ label: "Close", icon: Ban, destructive: true, onSelect: () => setPending({
+      title: `Close #${number} without merging`,
+      consequence: "The branch stays on GitHub. You can reopen it from this pane.",
+      command: `gh pr close ${number} -R ${repoLabel}`,
+      tone: "destructive",
+      icon: Ban,
+      requiresBody: false,
+      confirmLabel: "Close pull request",
+      destructive: true,
+      build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }),
+    }) });
+  }
+
   return <div className="relative flex min-h-0 flex-1 flex-col">
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="animate-page-mount border-b border-border px-5 pb-4 pt-4">
+      <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep merge-sweep-live")}>
         <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-          <StatePill icon={StateIcon} label={summary.isDraft ? "Draft" : summary.state} />
+          <StatePill icon={mergedNow ? GitMerge : StateIcon} label={mergedNow ? "merged" : summary.isDraft ? "draft" : summary.state} merged={mergedNow} />
           <span className="font-mono tabular-nums">#{summary.number}</span>
           <span className="flex min-w-0 items-center gap-1.5"><Monogram login={summary.author?.login} className="size-4 text-[9px]" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
@@ -1347,16 +1513,20 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           </span>
         </div>
         <h2 className="mt-2.5 font-display text-[19px] font-semibold leading-snug tracking-[-0.015em] text-foreground">{summary.title}</h2>
-        <p className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-          <BranchChip name={summary.headBranch} />{" "}<span aria-hidden="true" className="text-muted-foreground">→</span>{" "}<BranchChip name={pullRequest.baseBranch} />
-          <CopyButton value={summary.headBranch} label={`Copy the branch name ${summary.headBranch}`} />
-          {checkedOutHere && <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-[11px] text-foreground"><Check size={11} aria-hidden="true" />Checked out here</span>}
+        <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-muted-foreground">
+          <b className="font-medium text-foreground">{summary.author?.login ?? "ghost"}</b>
+          {mergedNow
+            ? <>merged <b className="font-medium text-foreground">{pullRequest.commits.length} commits</b> into <BranchChip name={pullRequest.baseBranch} />{merge.celebrate && <span>· just now</span>}</>
+            : <>wants to merge <b className="font-medium text-foreground">{pullRequest.commits.length} commits</b> into <BranchChip name={pullRequest.baseBranch} /> from <BranchChip name={summary.headBranch} />
+              <CopyButton value={summary.headBranch} label={`Copy the branch name ${summary.headBranch}`} />
+              {checkedOutHere && <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-[11px] text-foreground"><Check size={11} aria-hidden="true" />Checked out here</span>}
+            </>}
         </p>
-        {summary.mergeability === "conflicting" && <p className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
+        {summary.state === "closed" && summary.mergeability === "conflicting" && <p className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
           <TriangleAlert size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
           <span>This branch has conflicts with {pullRequest.baseBranch}. GitHub reports its merge state as <span className="font-mono">{summary.mergeStateStatus.toLowerCase()}</span>.</span>
         </p>}
-        {summary.checks.total > 0 && <div className="mt-3 flex items-center gap-3">
+        {summary.state === "closed" && summary.checks.total > 0 && <div className="mt-3 flex items-center gap-3">
           <ChecksCell pr={summary} />
         </div>}
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -1381,68 +1551,34 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           })}
         />}
 
-        {summary.state === "open" && <>
-          <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          <button type="button" onClick={() => void openMerge()} disabled={busy} className={PRIMARY_ACTION}><GitMerge size={12} aria-hidden="true" /> Merge</button>
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
-            title: `Approve pull request #${number}`,
-            consequence: `Your review is posted as an approval. ${summary.author?.login ?? "the author"} is notified.`,
-            command: `gh pr review ${number} -R ${repoLabel} --approve`,
-            tone: "success",
-            icon: ThumbsUp,
-            requiresBody: false,
-            confirmLabel: "Approve",
-            build: () => ({ kind: "review", number, event: "approve", body: "" }),
-          })}>Approve</button>
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
-            title: `Request changes on #${number}`,
-            consequence: `Blocks the merge until ${summary.author?.login ?? "the author"} pushes a fix or you dismiss the review.`,
-            command: `gh pr review ${number} -R ${repoLabel} --request-changes --body …`,
-            tone: "neutral",
-            icon: MessageSquare,
-            requiresBody: true,
-            confirmLabel: "Request changes",
-            build: body => ({ kind: "review", number, event: "requestChanges", body }),
-          })}>Request changes</button>
-          <button type="button" disabled={busy || reviewBusy} aria-haspopup="menu" aria-expanded={reviewOpen} className={ACTION_BUTTON} onClick={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}>
-            <Sparkles size={12} aria-hidden="true" /> {reviewBusy ? "Starting review…" : "Review"}
-          </button>
-          {summary.isDraft && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
-            title: `Mark #${number} ready for review`,
-            consequence: "Reviewers are notified that the pull request is ready.",
-            command: `gh pr ready ${number} -R ${repoLabel}`,
-            tone: "neutral",
-            icon: Eye,
-            requiresBody: false,
-            confirmLabel: "Ready for review",
-            build: () => ({ kind: "ready", number }),
-          })}>Ready for review</button>}
-          {rerunnable && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
-            title: `Re-run failed checks on #${number}`,
-            consequence: "The failed runs are queued again.",
-            command: `gh run rerun <failed runs of #${number}> -R ${repoLabel}`,
-            tone: "neutral",
-            icon: RotateCcw,
-            requiresBody: false,
-            confirmLabel: "Re-run failed",
-            build: () => ({ kind: "rerun", number }),
-          })}><RotateCcw size={11.5} aria-hidden="true" /> Re-run failed</button>}
-          {!checkedOutHere && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => { setActionError(undefined); setCheckoutOpen(true); }}>
-            <FolderGit2 size={12} aria-hidden="true" /> Check out
-          </button>}
-          <button type="button" disabled={busy} className={QUIET_ACTION} onClick={() => setPending({
-            title: `Close #${number} without merging`,
-            consequence: "The branch stays on GitHub. You can reopen it from this pane.",
-            command: `gh pr close ${number} -R ${repoLabel}`,
-            tone: "destructive",
-            icon: Ban,
-            requiresBody: false,
-            confirmLabel: "Close pull request",
-            destructive: true,
-            build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }),
-          })}><Ban size={11.5} aria-hidden="true" /> Close</button>
-          </div>
-          {reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
+        {(summary.state === "open" || summary.state === "merged") && <>
+          <MergeBox
+            summary={summary}
+            checks={detail.checks.checks}
+            commitCount={pullRequest.commits.length}
+            baseBranch={pullRequest.baseBranch}
+            headBranch={summary.headBranch}
+            prUrl={summary.url}
+            config={mergeConfig}
+            state={merge}
+            dispatch={dispatchMerge}
+            busy={busy}
+            reviewBusy={reviewBusy}
+            onToggleReview={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}
+            onApprove={() => setPending({
+              title: `Approve pull request #${number}`,
+              consequence: `Your review is posted as an approval. ${summary.author?.login ?? "the author"} is notified.`,
+              command: `gh pr review ${number} -R ${repoLabel} --approve`,
+              tone: "success",
+              icon: ThumbsUp,
+              requiresBody: false,
+              confirmLabel: "Approve",
+              build: () => ({ kind: "review", number, event: "approve", body: "" }),
+            })}
+            overflow={overflow}
+            onConfirm={() => void runMerge()}
+          />
+          {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-[11px] font-semibold tracking-[0.1em] text-muted-foreground">RUN REVIEW WITH</p>
             {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
@@ -1450,7 +1586,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
               {choice.note && <span className="shrink-0 text-[10.5px] text-muted-foreground">{choice.note}</span>}
             </button>)}
           </div>}
-          {reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
+          {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
         </>}
         {summary.state === "closed" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
@@ -1602,24 +1738,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       onConfirm={() => void runCheckout()}
     />}
 
-    {mergeOpen && <Dialog open onOpenChange={next => { if (!next && !busy) closeOverlays(); }}>
-      <DialogPopup showCloseButton={false} aria-label="Confirm merge" className="max-w-md p-5">
-        <h3 className="mb-2 font-display text-sm font-semibold">Merge pull request</h3>
-        {!mergeConfig ? <p className="flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" /> Reading repository settings…</p> : <>
-          <fieldset className="space-y-1.5">
-            {(["merge", "squash", "rebase"] as const).filter(name => mergeConfig.strategies[name]).map(name => <label key={name} className="flex items-center gap-2 text-xs">
-              <input type="radio" name="merge-strategy" value={name} checked={strategy === name} onChange={() => setStrategy(name)} />
-              {STRATEGY_LABEL[name]}
-            </label>)}
-          </fieldset>
-          <p className="mt-3 text-xs text-muted-foreground">This runs <code className="font-mono text-foreground/90">merge PR #{number} ({strategy}) on {repoLabel}</code>.</p>
-          <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={closeOverlays} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
-            <button type="button" onClick={() => strategy && void submit({ kind: "merge", number, strategy })} disabled={busy || !strategy} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Merge</button>
-          </div>
-        </>}
-      </DialogPopup>
-    </Dialog>}
+
   </div>;
 }
 

@@ -966,18 +966,12 @@ html[data-native-fullscreen] .u-traffic-inset {
   pointer-events: none;
 }
 
-/* The merged receipt graph. `merge-graph` carries the drawing;
-   `merge-graph-play` runs the choreography once; `merge-graph-final` paints
-   the settled state with no motion (a refetch that reports merged, and
-   reduced motion). The squash choreography from the mockup: the branch's
-   commits gather into one, one commit travels the purple curve into main,
-   lands with a ring, and the receipt text rises in behind it. */
-.merge-graph {
-  width: 100%;
-  height: auto;
-  display: block;
-}
 
+/* ── The merged receipt graph (issue #1028) ────────────────────────────────────
+   Two states: `.merge-graph-play` runs the full choreography once (gather,
+   curve draw, travelling commit, landing ring, receipt rise); everything else
+   renders `.merge-graph-final`, the choreography's last frame with no motion.
+   SVG-only properties: stroke-dashoffset and offset-distance. */
 .merge-graph .rail {
   stroke: var(--color-border-card);
   stroke-width: 2;
@@ -1002,10 +996,10 @@ html[data-native-fullscreen] .u-traffic-inset {
   stroke-width: 2;
 }
 
-.merge-graph .lbl {
-  font-size: 10px;
-  fill: var(--color-muted-foreground);
-  font-family: var(--font-mono);
+.merge-graph .landed {
+  fill: var(--color-merged);
+  stroke: none;
+  opacity: 0;
 }
 
 .merge-graph .traveller {
@@ -1022,13 +1016,18 @@ html[data-native-fullscreen] .u-traffic-inset {
   transform-box: view-box;
 }
 
-.merge-graph .landed {
-  fill: var(--color-merged);
-  opacity: 0;
+.merge-graph .lbl {
+  font-size: 10px;
+  fill: var(--color-muted-foreground);
+  font-family: var(--font-mono);
 }
 
-/* Final state: curve drawn, landed node present, transients gone. */
+.merge-graph-final .curve {
+  stroke-dashoffset: 0;
+}
+
 .merge-graph-final .traveller { opacity: 0; }
+.merge-graph-final .ring { opacity: 0; }
 .merge-graph-final .c-vanish { opacity: 0; }
 .merge-graph-final .landed { opacity: 1; }
 .merge-graph-final .lbl-old { opacity: 0; }
@@ -1036,250 +1035,6 @@ html[data-native-fullscreen] .u-traffic-inset {
 .merge-graph-final .badge-check { stroke-dashoffset: 0; }
 
 .merge-graph-play .curve {
-  stroke-dasharray: 160;
-  stroke-dashoffset: 160;
-  animation: merge-draw var(--duration-hero) var(--ease-out-bridge) 0.5s forwards;
-}
-
-.merge-graph-play .c-gather {
-  animation: merge-gather 420ms var(--ease-out-bridge) forwards;
-}
-
-.merge-graph-play .c-vanish {
-  animation: merge-fade 420ms var(--ease-out-bridge) forwards;
-}
-
-.merge-graph-play .traveller {
-  offset-rotate: 0deg;
-  animation: merge-travel var(--duration-hero) var(--ease-out-bridge) 0.5s forwards;
-}
-
-.merge-graph-play .ring {
-  transform-origin: var(--merge-land-x, 356px) 60px;
-  animation: merge-ring 520ms var(--ease-out-bridge) 1.06s forwards;
-}
-
-.merge-graph-play .landed {
-  animation: merge-appear 1ms linear 1.06s forwards;
-}
-
-.merge-graph-play .lbl-old {
-  animation: merge-fade 300ms var(--ease-out-bridge) 0.4s forwards;
-}
-
-.merge-graph-play .lbl-new {
-  opacity: 0;
-  animation: merge-appear 260ms var(--ease-out-bridge) 1.15s forwards;
-}
-
-.merge-graph-play .badge-check {
-  stroke-dasharray: 24;
-  stroke-dashoffset: 24;
-  animation: merge-draw 320ms var(--ease-out-bridge) 1.2s forwards;
-}
-
-.merge-graph-play .rise {
-  opacity: 0;
-  transform: translateY(6px);
-}
-
-.merge-graph-play .rise.d1 { animation: merge-rise var(--duration-slow) var(--ease-out-bridge) forwards; animation-delay: 1.2s; }
-.merge-graph-play .rise.d2 { animation: merge-rise var(--duration-slow) var(--ease-out-bridge) forwards; animation-delay: 1.32s; }
-
-@keyframes merge-draw { to { stroke-dashoffset: 0; } }
-@keyframes merge-gather { to { transform: translateX(var(--merge-gather-x, 0px)); } }
-@keyframes merge-fade { to { opacity: 0; } }
-@keyframes merge-travel {
-  0% { opacity: 1; offset-distance: 0%; }
-  100% { opacity: 1; offset-distance: 100%; }
-}
-@keyframes merge-ring {
-  0% { opacity: 0.8; transform: scale(0.6); }
-  100% { opacity: 0; transform: scale(2.6); }
-}
-@keyframes merge-appear { to { opacity: 1; } }
-@keyframes merge-rise { to { opacity: 1; transform: none; } }
-
-/* One quiet sweep across the header the moment the pill flips to merged. */
-.merge-sweep {
-  position: relative;
-}
-
-.merge-sweep::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--color-merged) 12%, transparent) 50%, transparent 70%);
-  background-size: 250% 100%;
-  background-position: 120% 0;
-  opacity: 0;
-}
-
-.merge-sweep-live::after { animation: merge-sweep 900ms var(--ease-out-bridge) 1.1s; }
-
-@keyframes merge-sweep {
-  0% { opacity: 1; background-position: 120% 0; }
-  100% { opacity: 1; background-position: -30% 0; }
-}
-
-/* ── GitHub pane merge flow (issue #1028) ────────────────────────────────────
-   The merge box and the sheet animate transform, opacity and grid-template-rows
-   only. Durations come from the tokens above; curves from the `--ease-out-*`
-   family. Under reduced motion the global rule at the bottom of this file
-   collapses everything to its final frame, and the components skip the play
-   choreography entirely. */
-
-/* A check that just went from running to passing: the row flashes once in a
-   14% wash of success while its glyph springs in. One-shot, both. */
-@keyframes github-check-settle {
-  0% { background: color-mix(in srgb, var(--color-success) 14%, transparent); }
-  100% { background: transparent; }
-}
-
-.github-check-settle {
-  animation: github-check-settle 700ms var(--ease-out-bridge, cubic-bezier(0.22, 1, 0.36, 1));
-}
-
-@keyframes check-glyph-settle {
-  0% { transform: scale(0.4); }
-  100% { transform: scale(1); }
-}
-
-.check-glyph-settle {
-  animation: check-glyph-settle 320ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-
-/* Collapsible regions tween their height without measuring: the 1fr→0fr grid
-   pattern, with the opacity following a beat shorter. */
-.u-collapse {
-  display: grid;
-  grid-template-rows: 1fr;
-  opacity: 1;
-  transition:
-    grid-template-rows var(--duration-slow) var(--ease-out-bridge),
-    opacity var(--duration-base) var(--ease-out-bridge);
-}
-
-.u-collapse > * {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.u-collapse.shut {
-  grid-template-rows: 0fr;
-  opacity: 0;
-}
-
-/* The indeterminate hairline under the merge box while the `gh` call is in
-   flight: one soft sweep of foreground ink. */
-@keyframes merge-hairline {
-  from { left: -40%; }
-  to { left: 100%; }
-}
-
-.merge-hairline {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  overflow: hidden;
-  opacity: 0;
-  transition: opacity var(--duration-base) var(--ease-out-bridge);
-}
-
-.merge-hairline::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 40%;
-  background: linear-gradient(90deg, transparent, var(--color-foreground), transparent);
-  animation: merge-hairline 1.1s var(--ease-out-bridge) infinite;
-}
-
-.merge-hairline.live {
-  opacity: 0.7;
-}
-
-/* The refusal: the confirm button shakes once (300ms, 4px) while the box
-   border tints destructive and the reason shows inline. */
-@keyframes merge-shake {
-  0%, 100% { transform: none; }
-  20% { transform: translateX(-4px); }
-  40% { transform: translateX(4px); }
-  60% { transform: translateX(-3px); }
-  80% { transform: translateX(2px); }
-}
-
-.merge-shake {
-  animation: merge-shake 300ms var(--ease-out-bridge);
-}
-
-/* The landing ring on the merge graph: an expanding pulse, drawn once. */
-@keyframes merge-ring {
-  0% { opacity: 0.8; transform: scale(0.6); }
-  100% { opacity: 0; transform: scale(2.6); }
-}
-
-.merge-ring {
-  fill: none;
-  stroke: var(--color-merged);
-  stroke-width: 2;
-  opacity: 0;
-  transform-box: view-box;
-}
-
-/* ── The merge graph (the receipt's SVG) ────────────────────────────────────
-   Two states: `.merge-graph-play` runs the full choreography once (gather,
-   curve draw, travelling commit, landing ring, receipt rise); everything else
-   renders `.merge-graph-final`, the choreography's last frame with no motion.
-   SVG-only properties: stroke-dashoffset and offset-distance. */
-.merge-graph .graph-rail {
-  stroke: var(--color-border-card);
-  stroke-width: 2;
-  fill: none;
-}
-
-.merge-graph .graph-main {
-  stroke: var(--color-muted-foreground);
-  stroke-width: 2;
-  fill: none;
-}
-
-.merge-graph .graph-curve {
-  stroke: var(--color-merged);
-  stroke-width: 2;
-  fill: none;
-}
-
-.merge-graph .graph-commit {
-  fill: var(--color-card);
-  stroke: var(--color-muted-foreground);
-  stroke-width: 2;
-}
-
-.merge-graph .graph-landed {
-  fill: var(--color-merged);
-  stroke: none;
-}
-
-.merge-graph .graph-label {
-  font-size: 10px;
-  fill: var(--color-muted-foreground);
-  font-family: var(--font-mono);
-}
-
-.merge-graph-final .graph-curve {
-  stroke-dashoffset: 0;
-}
-
-.merge-graph-final .graph-gathered {
-  display: none;
-}
-
-.merge-graph-play .graph-curve {
   stroke-dasharray: 160;
   stroke-dashoffset: 160;
   animation: merge-curve-draw var(--duration-hero) var(--ease-out-bridge) 0.5s forwards;
@@ -1303,22 +1058,19 @@ html[data-native-fullscreen] .u-traffic-inset {
   to { opacity: 1; }
 }
 
-.merge-graph-play .graph-gather {
+.merge-graph-play .c-gather {
   animation: merge-gather 420ms var(--ease-out-bridge) forwards;
 }
 
-.merge-graph-play .graph-fade-out {
+.merge-graph-play .c-vanish {
   animation: merge-fade-out 420ms var(--ease-out-bridge) forwards;
 }
 
 /* The travelling commit rides the curve itself via offset-path (Safari 16+
    supports motion paths; components probe and fall back to a rAF walk). */
-.merge-graph-play .graph-traveller {
-  offset-path: var(--merge-travel-path);
+.merge-graph-play .traveller {
   offset-rotate: 0deg;
-  offset-distance: 0%;
-  opacity: 1;
-  animation: merge-travel var(--duration-hero) var(--ease-out-bridge) 0.5s forwards;
+  animation: merge-travel var(--duration-hero) var(--ease-out-bridge) forwards;
 }
 
 @keyframes merge-travel {
@@ -1326,22 +1078,44 @@ html[data-native-fullscreen] .u-traffic-inset {
   100% { opacity: 1; offset-distance: 100%; }
 }
 
-.merge-graph-play .merge-ring {
+.merge-graph-play .ring {
   animation: merge-ring 520ms var(--ease-out-bridge) 1.06s forwards;
+  transform-box: view-box;
 }
 
-.merge-graph-play .graph-landed {
+.merge-graph-play .landed {
   opacity: 0;
   animation: merge-fade-in 1ms linear 1.06s forwards;
 }
 
-.merge-graph-play .graph-label.gone {
+.merge-graph-play .lbl-old {
   animation: merge-fade-out 300ms var(--ease-out-bridge) 0.4s forwards;
 }
 
-.merge-graph-play .graph-label.late {
+.merge-graph-play .lbl-new {
   opacity: 0;
   animation: merge-fade-in 260ms var(--ease-out-bridge) 1.15s forwards;
+}
+
+/* Rebase's second replay: its commit departs later and lands later. */
+.merge-graph-play .traveller.b { animation-delay: 0.85s; }
+.merge-graph-play .c-vanish.d1 { animation-delay: 0.5s; }
+.merge-graph-play .c-vanish.d2 { animation-delay: 0.85s; }
+.merge-graph-play .landed.b { animation-delay: 1.27s; }
+.merge-graph-play .ring.b { animation-delay: 1.27s; }
+
+/* The receipt's check badge draws its tick as it rises. */
+.merge-graph .badge-check {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+}
+
+.merge-graph-play .badge-check {
+  animation: merge-curve-draw 320ms var(--ease-out-bridge) 1.2s forwards;
+}
+
+.merge-graph-final .badge-check {
+  stroke-dashoffset: 0;
 }
 
 /* The receipt text and its actions rise in after the landing. */
@@ -1352,29 +1126,12 @@ html[data-native-fullscreen] .u-traffic-inset {
 .merge-rise {
   opacity: 0;
   transform: translateY(6px);
-}
-
-.merge-graph-play ~ * .merge-rise,
-.merge-graph-play .merge-rise {
   animation: merge-rise var(--duration-slow) var(--ease-out-bridge) forwards;
 }
 
-.merge-graph-play .merge-rise.d1 { animation-delay: 1.2s; }
-.merge-graph-play .merge-rise.d2 { animation-delay: 1.32s; }
+.merge-rise.d1 { animation-delay: 1.2s; }
+.merge-rise.d2 { animation-delay: 1.32s; }
 
-/* The receipt's check badge draws its tick as it rises. */
-.merge-graph .merge-check-path {
-  stroke-dasharray: 24;
-  stroke-dashoffset: 24;
-}
-
-.merge-graph-play .merge-check-path {
-  animation: merge-curve-draw 320ms var(--ease-out-bridge) 1.2s forwards;
-}
-
-.merge-graph-final .merge-check-path {
-  stroke-dashoffset: 0;
-}
 
 /* One quiet sweep across the header the moment the pill flips to merged. */
 .merge-sweep {

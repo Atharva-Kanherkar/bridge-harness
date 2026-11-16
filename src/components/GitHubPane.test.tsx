@@ -94,7 +94,7 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     expect(host!.textContent).toContain("Review threads");
     expect(host!.textContent).toContain("Main conversation comment");
-    expect(host!.textContent).toContain("feat/safe → main");
+    expect(host!.textContent).toContain("wants to merge 2 commits into main from feat/safe");
     expect(host!.querySelector("script")).toBeNull();
     expect(host!.innerHTML).toContain("&lt;script&gt;");
 
@@ -455,13 +455,15 @@ describe("GitHubPane", () => {
     await mount();
     await click(buttonByText("Safe GitHub surface"));
 
-    // Declining runs nothing.
+    // Check out rides the box's overflow menu now.
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Check out"));
     expect(document.body.textContent).toContain("Check out #1 (feat/safe)");
     expect(document.body.textContent).toContain("your current checkout is untouched");
     await click(buttonByText("Cancel"));
     expect(checkout).not.toHaveBeenCalled();
 
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Check out"));
     await click(confirmButton());
     expect(checkout).toHaveBeenCalledWith("w", 1);
@@ -469,6 +471,7 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("/w/github/pr-1-feat-safe");
 
     checkout.mockResolvedValue({ workspaceId: "ws2", path: "/w/github/pr-1-feat-safe", branch: "feat/safe", reused: true });
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Check out"));
     await click(confirmButton());
     expect(host!.textContent).toContain("Reusing the task worktree already on ");
@@ -716,6 +719,7 @@ describe("GitHubPane", () => {
     const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Closed PR #1." });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Close"));
     expect(document.body.textContent).toContain("Close #1 without merging");
     await click(confirmButton());
@@ -729,6 +733,7 @@ describe("GitHubPane", () => {
     });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Ready for review"));
     expect(document.body.textContent).toContain("Mark #1 ready for review");
     await click(confirmButton());
