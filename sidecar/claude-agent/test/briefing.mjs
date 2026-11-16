@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildOptions } from "../options.mjs";
-import { briefingOptions, makeBriefingGate } from "../briefing.mjs";
+import { briefingOptions, makeBriefingGate, wireServerName } from "../briefing.mjs";
 
 // What Bridge's Rust side hands down for a run that reviewed exactly one read.
 const briefing = {
@@ -381,4 +381,25 @@ test("outgoing exact action is forwarded from the adapter options", async () => 
   const options = buildOptions({ ...base, briefing: { ...briefing, exactAction: { tool, arguments: args } } });
   assert.equal((await options.canUseTool(tool, { ...args, message: "other" })).behavior, "deny");
   assert.equal((await options.canUseTool(tool, args)).behavior, "allow");
+});
+
+// Real connectors are configured as `claude.ai Slack`; Claude Code names their
+// tools `mcp__claude_ai_Slack__...`. Comparing the raw key denied every real
+// connector read and reply, while the `slack`-keyed tests above stayed green.
+test("connector scopes match claude.ai servers by their wire names", async () => {
+  const read = makeBriefingGate({ readScopeServers: ["claude.ai Slack"] });
+  assert.equal((await read("mcp__claude_ai_Slack__slack_read_channel", { channel_id: "C1" })).behavior, "allow");
+  assert.equal((await read("mcp__claude_ai_Notion__notion_read_page", {})).behavior, "deny");
+  assert.equal((await read("mcp__claude_ai_Slack__slack_send_message", {})).behavior, "deny");
+
+  const reply = makeBriefingGate({
+    actionScope: { server: "claude.ai Slack", permittedWords: ["send", "post", "reply"], forbiddenWords: ["delete"] },
+  });
+  assert.equal((await reply("mcp__claude_ai_Slack__slack_send_message", { channel_id: "C1", message: "hi" })).behavior, "allow");
+  assert.equal((await reply("mcp__claude_ai_Notion__notion_send_message", {})).behavior, "deny");
+});
+
+test("wireServerName mirrors the harness's tool-name segment", () => {
+  assert.equal(wireServerName("claude.ai Slack"), "claude_ai_Slack");
+  assert.equal(wireServerName("my-server_2"), "my-server_2");
 });

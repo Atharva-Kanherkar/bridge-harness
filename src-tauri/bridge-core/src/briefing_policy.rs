@@ -585,7 +585,9 @@ impl BriefingRuntimePolicy {
             return Err(BriefingUnsupported::MalformedPolicy { detail: "unsupported outgoing connector call".into() });
         }
         let mut policy = Self::compile_action(server.clone(), if tool == "slack_send_message" { ActionIntent::Post } else { ActionIntent::Upload }, limits)?;
-        policy.exact_action = Some((format!("mcp__{server}__{tool}"), arguments));
+        // The name the harness presents and `mcp_call` resolves: `claude.ai
+        // Slack` is `claude_ai_Slack` in tool names, never the raw key.
+        policy.exact_action = Some((format!("mcp__{}__{tool}", crate::workflows::wire_server_name(&server)), arguments));
         // No ancillary reads or writes are reachable from a sending turn.
         policy.read_scope_servers.clear();
         policy.max_argument_bytes = 64 * 1024;
@@ -644,14 +646,20 @@ impl BriefingRuntimePolicy {
         // name of the exact `mcp__<server>__<tool>` shape can reach this arm,
         // so a bare built-in like `Bash` never does.
         if let Some((server, bare)) = split_wire_name(tool) {
-            let scoped_read =
-                self.read_scope_servers.iter().any(|scoped| scoped == server) && is_read_verb_tool(bare);
+            // Scopes hold configuration keys (`claude.ai Slack`); tool names
+            // carry the wire segment (`claude_ai_Slack`). Compare wire forms.
+            let scoped_read = self
+                .read_scope_servers
+                .iter()
+                .any(|scoped| crate::workflows::wire_server_name(scoped) == server)
+                && is_read_verb_tool(bare);
             // The approved write, if this policy carries one. Same shape of
             // check as the read rule and just as fail-closed: the server must
             // match, the intent's word must be present, and no forbidden word
             // may be.
             let approved_write = self.action_scope.as_ref().is_some_and(|scope| {
-                scope.server == server && permits_action(bare, scope.intent)
+                crate::workflows::wire_server_name(&scope.server) == server
+                    && permits_action(bare, scope.intent)
             });
             if scoped_read || approved_write {
                 if argument_bytes > self.max_argument_bytes {
@@ -1270,6 +1278,30 @@ mod tests {
             max_output_tokens: Some(200),
             cost_ceiling_microusd: Some(5_000),
         }
+    }
+
+    // Real connectors are keyed `claude.ai Slack`, and the harness names their
+    // tools `mcp__claude_ai_Slack__...`. Every earlier test used a bare `slack`
+    // key, where the two spellings agree, so a scope that compared the raw key
+    // denied every real read, reply and send without any test noticing.
+    #[test]
+    fn claude_ai_connector_scopes_match_the_wire_tool_names() {
+        let server = "claude.ai Slack".to_owned();
+        let read = BriefingRuntimePolicy::compile_scoped(vec![server.clone()], action_limits()).unwrap();
+        assert!(matches!(read.decide("mcp__claude_ai_Slack__slack_read_channel", 100), ToolDecision::Allow));
+        assert!(!matches!(read.decide("mcp__claude_ai_Notion__notion_read_page", 100), ToolDecision::Allow));
+
+        let reply = BriefingRuntimePolicy::compile_action(server.clone(), ActionIntent::Reply, action_limits()).unwrap();
+        assert!(matches!(reply.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+
+        let arguments = serde_json::json!({"channel_id": "C123", "message": "hi"});
+        let exact = BriefingRuntimePolicy::compile_exact_action(server, "slack_send_message", arguments.clone(), action_limits()).unwrap();
+        assert_eq!(
+            exact.exact_action_config(),
+            Some(serde_json::json!({"tool": "mcp__claude_ai_Slack__slack_send_message", "arguments": arguments}))
+        );
+        assert!(matches!(exact.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+        assert!(!matches!(exact.decide("mcp__claude.ai Slack__slack_send_message", 100), ToolDecision::Allow));
     }
 
     #[test]

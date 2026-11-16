@@ -41,6 +41,15 @@ const MUTATION_WORDS = new Set([
   "set", "update", "upload", "write",
 ]);
 
+/**
+ * The segment the harness puts in tool names for a configured server: anything
+ * outside `[A-Za-z0-9_-]` becomes `_`, so `claude.ai Slack` is `claude_ai_Slack`.
+ * Mirrors `workflows::wire_server_name` in Rust.
+ */
+export function wireServerName(server) {
+  return String(server).replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
 /** Split `mcp__<server>__<tool>` into its parts, or null. */
 function splitWireName(toolName) {
   if (!toolName.startsWith("mcp__")) return null;
@@ -93,10 +102,12 @@ export function makeBriefingGate({
   // A Set, so matching is exact by construction rather than by a comparison
   // somebody might later relax into a prefix test.
   const reviewed = new Set(allowedTools);
-  const scoped = new Set(readScopeServers);
+  // Scopes arrive as configuration keys (`claude.ai Slack`) and tool names
+  // carry the wire segment (`claude_ai_Slack`), so both sides compare as wire.
+  const scoped = new Set(readScopeServers.map(wireServerName));
   const action = actionScope
     ? {
-        server: actionScope.server,
+        server: wireServerName(actionScope.server),
         permittedWords: new Set(actionScope.permittedWords ?? []),
         forbiddenWords: new Set(actionScope.forbiddenWords ?? []),
       }
