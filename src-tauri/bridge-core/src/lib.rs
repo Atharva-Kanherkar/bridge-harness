@@ -7,6 +7,7 @@
 //! in their own transport.
 
 pub mod account_secrets;
+pub(crate) mod account_usage;
 pub mod api_keys;
 pub mod acp_events;
 pub mod acp_registry;

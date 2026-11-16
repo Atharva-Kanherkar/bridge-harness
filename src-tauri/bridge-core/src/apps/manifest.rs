@@ -11,7 +11,7 @@ pub const MAX_ID_CHARS: usize = 40;
 pub const MAX_MEMORY_LINES: usize = 8;
 pub const MAX_MEMORY_LINE_CHARS: usize = 200;
 
-fn is_kebab(text: &str) -> bool {
+pub(crate) fn is_kebab(text: &str) -> bool {
     !text.is_empty()
         && !text.starts_with('-')
         && !text.ends_with('-')

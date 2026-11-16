@@ -139,9 +139,15 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.37 adds `trails/list_trail_candidates`.** A new client must not pair
 /// with an older daemon, whose Add picker on a trail would fail with
 /// `method_not_found`; a 1.36 client still pairs with a 1.37 daemon.
+///
+/// **1.38 adds personal apps** (`apps/list_personal_apps`,
+/// `apps/get_personal_app`, `apps/lock_personal_app`,
+/// `apps/delete_personal_app`). A new client must not pair with an older
+/// daemon, whose personal app calls would fail with `method_not_found`; a 1.37
+/// client still pairs with a 1.38 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 37,
+    minor: 38,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -452,6 +458,14 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn personal_apps_client_rejects_a_daemon_without_them() {
+        let before = ProtocolVersion { major: 1, minor: 37 };
+        let personal = ProtocolVersion { major: 1, minor: 38 };
+        assert!(!before.accepts(personal));
+        assert!(personal.accepts(before), "a 1.37 client still pairs with a 1.38 daemon");
     }
 
     #[test]

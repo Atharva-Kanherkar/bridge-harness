@@ -14,6 +14,11 @@ type Outcome = "signed-in" | "failed" | "unconfirmed";
 // exit itself carries no status, so this text is the only negative signal.
 const FAILED_LOGIN = /\b(?:login|sign-?in|authentication|oauth)\b.{0,40}\b(?:failed|error|cancel+ed|denied|timed out)\b|^error:/im;
 
+/** Whether a vendor CLI's own output says its login failed. */
+export function loginOutputFailed(output: string): boolean {
+  return FAILED_LOGIN.test(output);
+}
+
 /** Health's auth probe can lag a successful login (Claude reads it from the
  * Keychain), so only an explicit signed-out answer counts as a failure. A
  * provider that reports `unknown` after a clean exit is trusted; a manual

@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartProviderLoginParams {
     pub provider: String,
+    /// An extra provider account already stored in Settings. The host resolves
+    /// its folder itself, rather than accepting a client-supplied path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Abandon a provider's login flow. The vendor process is stopped so the next
@@ -20,6 +24,8 @@ pub struct StartProviderLoginParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelProviderLoginParams {
     pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Identifies the terminal pane hosting the vendor's login flow — the same
@@ -42,8 +48,14 @@ mod tests {
 
     #[test]
     fn start_provider_login_round_trips_with_camel_case_wire_names() {
-        let params = StartProviderLoginParams { provider: "claude".into() };
-        assert_eq!(serde_json::to_value(&params).unwrap(), json!({"provider": "claude"}));
+        let params = StartProviderLoginParams {
+            provider: "claude".into(),
+            account: Some("personal".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"provider": "claude", "account": "personal"})
+        );
         assert_eq!(round_trip(&params), params);
 
         let result = StartProviderLoginResult {
@@ -59,8 +71,14 @@ mod tests {
 
     #[test]
     fn cancel_provider_login_round_trips_with_camel_case_wire_names() {
-        let params = CancelProviderLoginParams { provider: "codex".into() };
-        assert_eq!(serde_json::to_value(&params).unwrap(), json!({"provider": "codex"}));
+        let params = CancelProviderLoginParams {
+            provider: "codex".into(),
+            account: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"provider": "codex"})
+        );
         assert_eq!(round_trip(&params), params);
         assert!(serde_json::from_value::<CancelProviderLoginParams>(json!({})).is_err());
     }

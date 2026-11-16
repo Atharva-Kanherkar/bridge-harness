@@ -688,6 +688,41 @@ pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams)
     list_apps(core)
 }
 
+/// Every personal app's latest version, most recently locked first.
+pub fn list_personal_apps(core: &Arc<BridgeCore>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    Ok(wire::ListPersonalAppsResult { apps: crate::apps::personal::list(&*core.try_db()?)? })
+}
+
+/// One personal app's latest version, with its view.
+pub fn get_personal_app(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppParams) -> Result<wire::PersonalApp, BridgeError> {
+    crate::apps::personal::get(&*core.try_db()?, &params.id)
+}
+
+/// Lock a previewed draft as a personal app version. A version that can do
+/// more than the last one is reported, and stored only with `allowWider`.
+pub fn lock_personal_app(core: &Arc<BridgeCore>, params: &wire::LockPersonalAppParams) -> Result<wire::LockPersonalAppResult, BridgeError> {
+    let result = crate::apps::personal::lock(
+        &*core.try_db()?,
+        &params.draft_id,
+        &params.content_hash,
+        params.allow_wider,
+        chrono::Utc::now(),
+    )?;
+    if matches!(result, wire::LockPersonalAppResult::Locked { .. }) {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    Ok(result)
+}
+
+/// Remove a personal app: every version and any draft waiting for it.
+pub fn delete_personal_app(core: &Arc<BridgeCore>, params: &wire::DeletePersonalAppParams) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    let removed = crate::apps::personal::delete(&*core.try_db()?, &params.id)?;
+    if removed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_personal_apps(core)
+}
+
 /// Turn an app on or off. Off removes its tools from new chats, refuses
 /// their calls, drops its prompt text, its pin and its badge.
 pub fn set_app_enabled(core: &Arc<BridgeCore>, params: &wire::SetAppEnabledParams) -> Result<wire::ListAppsResult, BridgeError> {
@@ -3537,6 +3572,67 @@ pub struct ProviderLogin {
     pub terminal_id: String,
 }
 
+/// Account logins run in their own PTY so two browser handoffs from one
+/// provider never share output or a cancellation handle.
+fn provider_login_terminal_id(provider: &str, account: Option<&str>) -> String {
+    account
+        .map(|account| format!("{provider}:account:{account}"))
+        .unwrap_or_else(|| provider.to_owned())
+}
+
+/// Resolve an account from persisted Settings before launching its CLI. The
+/// renderer supplies only an account id, never a filesystem path, so this is
+/// the same validated folder a chat will later use.
+fn provider_login_account(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+    account_id: Option<&str>,
+) -> Result<Option<crate::provider_accounts::AccountLaunch>, BridgeError> {
+    let Some(account_id) = account_id else { return Ok(None) };
+    let db = core.db.lock().unwrap();
+    let account = agent_config::account(&db, provider, account_id)?;
+    drop(db);
+    prepare_login_account(provider, &account, &crate::provider_accounts::HostHomes::from_env()).map(Some)
+}
+
+/// The launch an account's sign-in runs with, its folder created. Only a
+/// folder login has a CLI sign-in; an API-key account is refused before any
+/// process starts.
+fn prepare_login_account(
+    provider: &str,
+    account: &crate::provider_accounts::ProviderAccount,
+    homes: &crate::provider_accounts::HostHomes,
+) -> Result<crate::provider_accounts::AccountLaunch, BridgeError> {
+    let account_id = account.id.as_str();
+    let driver = crate::provider_accounts::driver(provider)
+        .ok_or_else(|| BridgeError::Invalid(format!("{provider} does not support extra accounts")))?;
+    let crate::provider_accounts::AccountLogin::Folder { variable, .. } = driver.login else {
+        return Err(BridgeError::Invalid(format!(
+            "{} accounts sign in with an API key, not a provider login command",
+            driver.label
+        )));
+    };
+    let launch = crate::provider_accounts::prepare_launch(provider, account, homes)?;
+    let folder = launch.value(variable).ok_or_else(|| {
+        BridgeError::Invalid(format!("account {account_id} has no {variable} folder"))
+    })?;
+    std::fs::create_dir_all(folder)?;
+    Ok(launch)
+}
+
+fn apply_provider_login_account(
+    command: &mut CommandBuilder,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) {
+    let Some(account) = account else { return };
+    for name in account.removed() {
+        command.env_remove(name);
+    }
+    for (name, value) in account.set() {
+        command.env(name, value);
+    }
+}
+
 /// The vendor's own documented login entry point for `provider`. Bridge only
 /// launches the process — any browser handoff is started by the vendor
 /// command itself, and Bridge never reads, stores, or logs the credential it
@@ -3615,16 +3711,22 @@ fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<Comm
 pub fn start_provider_login(
     core: &Arc<BridgeCore>,
     provider: &str,
+    account: Option<&str>,
 ) -> Result<ProviderLogin, BridgeError> {
-    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+    let terminal_id = provider_login_terminal_id(provider, account);
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "provider login")?;
     if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
         return Ok(ProviderLogin {
             workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
-            terminal_id: provider.into(),
+            terminal_id,
         });
     }
+    // This both creates a new account folder and materializes a Codex shadow
+    // home when required. It happens before the CLI starts, never in a shell.
+    let account_launch = provider_login_account(core, provider, account)?;
     let mut command = provider_login_command(core, provider)?;
+    apply_provider_login_account(&mut command, account_launch.as_ref());
     command.env("TERM", "xterm-256color");
     if let Some(path) = binary::hydrated_command_path() {
         command.env("PATH", path);
@@ -3665,7 +3767,8 @@ pub fn start_provider_login(
     );
     let core_reader = Arc::clone(core);
     let workspace_reader = PROVIDER_LOGIN_WORKSPACE_ID.to_owned();
-    let terminal_reader = provider.to_owned();
+    let terminal_reader = terminal_id.clone();
+    let provider_reader = provider.to_owned();
     let runtime_reader = runtime_id;
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -3699,12 +3802,12 @@ pub fn start_provider_login(
         // serving the pre-login one until restart. Unconditional — a cancelled
         // login re-probes to the same answer — and non-blocking: the fresh
         // result arrives as its own adapters-changed hint when it lands.
-        if terminal_reader == "github" {
+        if provider_reader == "github" {
             core_reader.github_surface.refresh_availability();
         } else {
             core_reader
                 .adapter_registry
-                .refresh_availability(&terminal_reader);
+                .refresh_availability(&provider_reader);
         }
         core_reader.events.publish(CoreEvent::TerminalExited {
             session_id: workspace_reader,
@@ -3713,7 +3816,7 @@ pub fn start_provider_login(
     });
     Ok(ProviderLogin {
         workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
-        terminal_id: provider.into(),
+        terminal_id,
     })
 }
 
@@ -3723,13 +3826,124 @@ pub fn start_provider_login(
 /// closed pane missed, so a surviving process would leave the next attempt
 /// staring at an empty terminal. The reader thread publishes the usual
 /// `TerminalExited` and re-probes availability as the process ends.
-pub fn cancel_provider_login(core: &Arc<BridgeCore>, provider: &str) -> Result<(), BridgeError> {
-    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+pub fn cancel_provider_login(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+    account: Option<&str>,
+) -> Result<(), BridgeError> {
+    let terminal_id = provider_login_terminal_id(provider, account);
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
     if let Some(mut runtime) = removed {
         let _ = runtime.child.kill();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_login_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn account_login_has_a_private_terminal_and_config_folder() {
+        let account = crate::provider_accounts::ProviderAccount {
+            id: "personal".into(),
+            label: "Personal".into(),
+            home_path: "/tmp/bridge-claude-personal".into(),
+            shadow_home_path: String::new(),
+        };
+        let homes = crate::provider_accounts::HostHomes {
+            home: PathBuf::from("/tmp/bridge-host"),
+            claude_config_dir: None,
+            codex_home: None,
+            xdg_data_home: None,
+        };
+        let launch = crate::provider_accounts::prepare_launch("claude", &account, &homes).unwrap();
+        let mut command = CommandBuilder::new("claude");
+        apply_provider_login_account(&mut command, Some(&launch));
+
+        assert_eq!(provider_login_terminal_id("claude", Some("personal")), "claude:account:personal");
+        assert_eq!(command.get_env("CLAUDE_CONFIG_DIR"), Some(OsStr::new("/tmp/bridge-claude-personal")));
+    }
+
+    fn homes(root: &std::path::Path) -> crate::provider_accounts::HostHomes {
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        crate::provider_accounts::HostHomes {
+            home: root.join("home"),
+            claude_config_dir: None,
+            codex_home: None,
+            xdg_data_home: None,
+        }
+    }
+
+    fn account(id: &str, home: &str, shadow: &str) -> crate::provider_accounts::ProviderAccount {
+        crate::provider_accounts::ProviderAccount { id: id.into(), label: id.into(), home_path: home.into(), shadow_home_path: shadow.into() }
+    }
+
+    /// Every provider with a CLI sign-in gets its own folder, created before
+    /// the CLI starts, in the variable that CLI reads. A provider without one
+    /// is refused before any process exists.
+    #[test]
+    fn each_provider_signs_an_account_in_to_its_own_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let homes = homes(root.path());
+        let cases = [
+            ("claude", account("work", "~/.claude_work", ""), "CLAUDE_CONFIG_DIR", "home/.claude_work"),
+            ("codex", account("personal", "", "~/.codex_personal"), "CODEX_HOME", "home/.codex_personal"),
+            ("codex", account("solo", "~/.codex_solo", ""), "CODEX_HOME", "home/.codex_solo"),
+            ("opencode", account("go", "~/.opencode_go", ""), "XDG_DATA_HOME", "home/.opencode_go"),
+        ];
+        for (provider, account, variable, folder) in cases {
+            let launch = prepare_login_account(provider, &account, &homes)
+                .unwrap_or_else(|error| panic!("{provider}/{}: {error}", account.id));
+            let expected = root.path().join(folder);
+            assert_eq!(launch.value(variable), Some(expected.to_str().unwrap()), "{provider}");
+            assert!(expected.is_dir(), "{provider} folder was not created");
+            let mut command = CommandBuilder::new(provider);
+            command.env("ANTHROPIC_API_KEY", "inherited");
+            command.env("OPENCODE_API_KEY", "inherited");
+            apply_provider_login_account(&mut command, Some(&launch));
+            assert_eq!(command.get_env(variable), Some(OsStr::new(expected.to_str().unwrap())));
+            for removed in launch.removed() {
+                assert_eq!(command.get_env(removed), None, "{provider} kept {removed}");
+            }
+        }
+        // A Codex shadow home links the shared one but keeps its own login.
+        assert!(root.path().join("home/.codex_personal/sessions").is_symlink());
+        assert!(!root.path().join("home/.codex_personal/auth.json").exists());
+        let refused = prepare_login_account("cursor", &account("team", "", ""), &homes).unwrap_err().to_string();
+        assert!(refused.contains("API key"), "{refused}");
+        assert!(prepare_login_account("grok", &account("x", "~/.x", ""), &homes).is_err());
+    }
+
+    /// Fuzz the ids a renderer can send: no two distinct (provider, account)
+    /// pairs share a sign-in terminal, and none collides with a default login.
+    #[test]
+    fn login_terminals_never_collide() {
+        let mut seed: u64 = 0xdead_beef_cafe_f00d;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let alphabet: Vec<char> = "abcAB09-_:/. ".chars().collect();
+        let providers = ["claude", "codex", "opencode", "cursor", "github", "grok"];
+        let mut seen = std::collections::HashMap::new();
+        for provider in providers {
+            seen.insert(provider_login_terminal_id(provider, None), (provider.to_owned(), None));
+        }
+        for _ in 0..20_000 {
+            let provider = providers[(next() % providers.len() as u64) as usize];
+            let mut id = String::from("a");
+            for _ in 0..(next() % 6) {
+                id.push(alphabet[(next() % alphabet.len() as u64) as usize]);
+            }
+            // Only ids Settings would accept reach a sign-in.
+            if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { continue; }
+            let terminal = provider_login_terminal_id(provider, Some(&id));
+            let entry = (provider.to_owned(), Some(id.clone()));
+            if let Some(previous) = seen.insert(terminal.clone(), entry.clone()) {
+                assert_eq!(previous, entry, "{terminal} shared");
+            }
+        }
+    }
 }
 
 // --- slash commands ------------------------------------------------------------

@@ -34,43 +34,90 @@ async function mount(config: HarnessConfig) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("ProviderAccountsSettings", () => {
-  it("adds a Claude account with its sign-in command and keeps other advanced keys", async () => {
+  it("adds a Claude account, starts Bridge-managed sign-in, and keeps other advanced keys", async () => {
+    const start = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: "claude:account:work-plan" });
     const view = await mount(harness("claude", { workerCredentialSource: "auto" }));
     expect(view.container.textContent).toContain("Your own login");
     await act(async () => view.button("Add account")!.click());
     await view.type("Account name", "Work Plan");
     expect(view.input("Account folder").value).toBe("~/.claude_work_plan");
-    expect(view.container.querySelector('[aria-label="Sign-in command"]')!.textContent)
-      .toBe("mkdir -p ~/.claude_work_plan && CLAUDE_CONFIG_DIR=~/.claude_work_plan claude auth login");
+    expect(view.container.textContent).toContain("Bridge will create this folder");
+    expect(view.container.querySelector('[aria-label="Sign-in command"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Share chats with your main Codex");
-    const add = [...view.container.querySelectorAll<HTMLButtonElement>("button")].filter(item => item.textContent === "Add account").at(-1)!;
+    const add = [...view.container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Add & sign in")!;
     await act(async () => add.click());
     expect(view.onSave).toHaveBeenCalledWith(expect.objectContaining({
       id: "claude",
       advanced: { workerCredentialSource: "auto", accounts: [{ id: "work-plan", label: "Work Plan", homePath: "~/.claude_work_plan" }] },
     }));
+    expect(start).toHaveBeenCalledWith("claude", "work-plan");
     await view.unmount();
   });
 
   it("adds a Codex account as a shadow home by default, or a separate home", async () => {
+    const start = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: "codex:account:personal" });
     const view = await mount(harness("codex"));
     await act(async () => view.button("Add account")!.click());
-    expect(view.container.querySelector('[aria-label="Sign-in command"]')!.textContent).toContain("CODEX_HOME=~/.codex_personal codex login");
-    const submit = () => [...view.container.querySelectorAll<HTMLButtonElement>("button")].filter(item => item.textContent === "Add account").at(-1)!;
+    expect(view.container.textContent).toContain("Bridge will create this folder");
+    const submit = () => [...view.container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Add & sign in")!;
     await act(async () => submit().click());
     expect(view.onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       advanced: { accounts: [{ id: "personal", label: "Personal", shadowHomePath: "~/.codex_personal" }] },
     }));
+    expect(start).toHaveBeenCalledWith("codex", "personal");
     await view.unmount();
 
     const separate = await mount(harness("codex"));
     await act(async () => separate.button("Add account")!.click());
     await act(async () => separate.container.querySelector<HTMLButtonElement>('[aria-label="Share chats with your main Codex"]')!.click());
-    await act(async () => [...separate.container.querySelectorAll<HTMLButtonElement>("button")].filter(item => item.textContent === "Add account").at(-1)!.click());
+    await act(async () => [...separate.container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Add & sign in")!.click());
     expect(separate.onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       advanced: { accounts: [{ id: "personal", label: "Personal", homePath: "~/.codex_personal" }] },
     }));
     await separate.unmount();
+  });
+
+  it.each([
+    ["claude", { id: "work", label: "Work", homePath: "~/.claude_work" }],
+    ["codex", { id: "work", label: "Work", shadowHomePath: "~/.codex_work" }],
+  ] as const)("tells the person how a %s account's sign-in ended, and refreshes its limits", async (id, stored) => {
+    let exit: (event: { sessionId: string; terminalId: string }) => void = () => undefined;
+    let output: (chunk: { sessionId: string; terminalId: string; data: string }) => void = () => undefined;
+    vi.spyOn(bridgeApi, "onTerminalExited").mockImplementation(async handler => { exit = handler; return () => undefined; });
+    vi.spyOn(bridgeApi, "onTerminal").mockImplementation(async handler => { output = handler as typeof output; return () => undefined; });
+    const start = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: `${id}:account:work` });
+    const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews").mockResolvedValue(null);
+    const view = await mount(harness(id, { accounts: [stored] }));
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Sign in to Work"]')!.click());
+    expect(start).toHaveBeenCalledWith(id, "work");
+    expect(view.container.querySelector("[data-stage]")).not.toBeNull();
+
+    // Another account's exit leaves this sign-in running.
+    await act(async () => exit({ sessionId: "provider-login", terminalId: `${id}:account:other` }));
+    expect(view.container.querySelector("[data-stage]")).not.toBeNull();
+
+    await act(async () => exit({ sessionId: "provider-login", terminalId: `${id}:account:work` }));
+    expect(view.container.querySelector("[data-stage]")).toBeNull();
+    expect(view.container.textContent).toContain("Work is signed in");
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // A failed login says so and offers the retry.
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Sign in to Work"]')!.click());
+    await act(async () => output({ sessionId: "provider-login", terminalId: `${id}:account:work`, data: "Error: login failed: access denied\n" }));
+    await act(async () => exit({ sessionId: "provider-login", terminalId: `${id}:account:work` }));
+    expect(view.container.textContent).toContain("Work's sign-in didn't finish");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => view.button("Try again")!.click());
+    expect(start).toHaveBeenCalledTimes(3);
+    await view.unmount();
+  });
+
+  it("offers no CLI sign-in for API-key or key-only accounts", async () => {
+    for (const [id, stored] of [["cursor", { id: "team", label: "Team" }], ["opencode", { id: "go", label: "Go", homePath: "~/.oc_go" }]] as const) {
+      const view = await mount(harness(id, { accounts: [stored] }));
+      expect(view.container.querySelector(`[aria-label="Sign in to ${stored.label}"]`)).toBeNull();
+      await view.unmount();
+    }
   });
 
   it("refuses a relative folder before saving", async () => {
@@ -78,7 +125,7 @@ describe("ProviderAccountsSettings", () => {
     await act(async () => view.button("Add account")!.click());
     await view.type("Account folder", "relative/dir");
     expect(view.container.querySelector('[role="alert"]')!.textContent).toContain("starts with / or ~/");
-    const add = [...view.container.querySelectorAll<HTMLButtonElement>("button")].filter(item => item.textContent === "Add account").at(-1)!;
+    const add = [...view.container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Add & sign in")!;
     expect(add.disabled).toBe(true);
     await view.unmount();
   });

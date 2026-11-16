@@ -53,6 +53,7 @@ import type {
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
 import { accountsOf, normalizeAccount, supportsAccounts } from "./providerAccounts";
+import { providerLoginTerminalId } from "./providerLoginPresentation";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
@@ -159,6 +160,15 @@ function mockProviderUsageOverviews(): ProviderUsageOverviews {
           { id: "weekly", label: "Weekly", usedPercent: { value: mockResetsRedeemed ? 0 : 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
         ],
         resetCredits: mockResetCredits(now),
+        today: empty, month: empty, error: null,
+      },
+      {
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "personal@example.com", plan: "pro", observedAt: now - 30, coverage: "Mock data",
+        accountId: "personal", accountLabel: "Personal",
+        windows: [
+          { id: "session", label: "5-hour", usedPercent: { value: 27, source: "reported", status: "current" }, resetsAt: now + 2 * 3600, windowMinutes: 300 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: 41, source: "reported", status: "current" }, resetsAt: now + 5 * 86400, windowMinutes: 10080 },
+        ],
         today: empty, month: empty, error: null,
       },
       { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
@@ -3659,10 +3669,10 @@ export const bridgeApi = {
     emitState();
     return { disposition: "resolved", interactionKind: "question", status: action === "answer" ? "answered" : action, resolvedBy: "human", decision: action };
   },
-  startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
-    hasBackend() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
-  cancelProviderLogin: (provider: string): Promise<void> =>
-    hasBackend() ? unit(call("auth/cancel_provider_login", { provider })) : Promise.resolve(),
+  startProviderLogin: (provider: string, account?: string): Promise<{ workspaceId: string; terminalId: string }> =>
+    hasBackend() ? call("auth/start_provider_login", { provider, ...(account ? { account } : {}) }) : Promise.resolve({ workspaceId: "provider-login", terminalId: providerLoginTerminalId(provider, account) }),
+  cancelProviderLogin: (provider: string, account?: string): Promise<void> =>
+    hasBackend() ? unit(call("auth/cancel_provider_login", { provider, ...(account ? { account } : {}) })) : Promise.resolve(),
   createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => hasBackend() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
   terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => hasBackend() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
   terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => hasBackend() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),

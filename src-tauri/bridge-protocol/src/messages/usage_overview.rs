@@ -111,6 +111,13 @@ pub struct UsageOverviewSnapshot {
     /// The ledger currently covers this device, not an entire billing account.
     pub coverage: String,
     pub error: Option<String>,
+    /// An extra account from Settings this reading belongs to. Absent for the
+    /// user's own login, which every older client assumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// The name the user gave that account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

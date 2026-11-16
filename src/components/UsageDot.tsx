@@ -71,25 +71,45 @@ export function liveUsedPercent(window: UsageQuotaWindow, nowSeconds: number): n
 /** The single number the ring colours itself by: the highest live usage of
  *  any window on any provider. Providers without a live reading stay out of
  *  the computation rather than counting as 0% used. */
-export function worstLiveUsage(overviews: ProviderUsageOverviews | null, nowSeconds: number): { provider: UsageProvider; window: UsageQuotaWindow; used: number } | null {
-  let worst: { provider: UsageProvider; window: UsageQuotaWindow; used: number } | null = null;
+export function worstLiveUsage(overviews: ProviderUsageOverviews | null, nowSeconds: number): { provider: UsageProvider; accountLabel: string | null; window: UsageQuotaWindow; used: number } | null {
+  let worst: { provider: UsageProvider; accountLabel: string | null; window: UsageQuotaWindow; used: number } | null = null;
   for (const snapshot of overviews?.providers ?? []) {
     if (!snapshotFresh(snapshot, nowSeconds)) continue;
     for (const window of snapshot.windows) {
       const used = liveUsedPercent(window, nowSeconds);
       if (used == null) continue;
-      if (worst == null || used > worst.used) worst = { provider: snapshot.provider as UsageProvider, window, used };
+      if (worst == null || used > worst.used) worst = { provider: snapshot.provider as UsageProvider, accountLabel: snapshot.accountLabel ?? null, window, used };
     }
   }
   return worst;
 }
 
+/** Providers in card order, each followed by its extra accounts in the
+ *  order Settings lists them. The user's own login always leads its group,
+ *  and a repeated row (same provider and account) is shown once. */
 export function orderedSnapshots(overviews: ProviderUsageOverviews | null): UsageOverviewSnapshot[] {
-  const byProvider = new Map((overviews?.providers ?? []).map(snapshot => [snapshot.provider, snapshot]));
-  return PROVIDER_ORDER.flatMap(provider => {
-    const snapshot = byProvider.get(provider);
-    return snapshot ? [snapshot] : [];
+  const seen = new Set<string>();
+  const rows = (overviews?.providers ?? []).filter(snapshot => {
+    const key = snapshotKey(snapshot);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
+  return PROVIDER_ORDER.flatMap(provider => {
+    const group = rows.filter(snapshot => snapshot.provider === provider);
+    return [...group.filter(snapshot => !snapshot.accountId), ...group.filter(snapshot => !!snapshot.accountId)];
+  });
+}
+
+/** One row's identity: the provider, plus the account for an extra login. */
+export function snapshotKey(snapshot: Pick<UsageOverviewSnapshot, "provider" | "accountId">): string {
+  return snapshot.accountId ? `${snapshot.provider}:account:${snapshot.accountId}` : snapshot.provider;
+}
+
+/** The name a row goes by: the agent, then the account's own name. */
+export function snapshotTitle(snapshot: Pick<UsageOverviewSnapshot, "provider" | "accountId" | "accountLabel">): string {
+  const agent = harnessLabel(snapshot.provider as UsageProvider);
+  return snapshot.accountId ? `${agent} · ${snapshot.accountLabel || snapshot.accountId}` : agent;
 }
 
 /** The compact trigger: one ring sized to sit beside the composer's send
@@ -177,12 +197,16 @@ function ProviderError({ message, refreshing, onRefresh }: { message: string; re
 function ProviderSection({ snapshot, adapter, nowSeconds, refreshing, onSignIn, onRefresh }: { snapshot: UsageOverviewSnapshot; adapter?: AdapterDescriptor; nowSeconds: number; refreshing: boolean; onSignIn?: (provider: UsageProvider) => void; onRefresh?: () => void }) {
   const provider = snapshot.provider as UsageProvider;
   const fresh = snapshotFresh(snapshot, nowSeconds);
-  const state = adapterState(adapter);
+  // The adapter speaks for the user's own login only; an extra account's
+  // health is its own read, reported through `error`.
+  const isAccount = !!snapshot.accountId;
+  const state = isAccount ? "normal" : adapterState(adapter);
   const meta = [snapshot.account, snapshot.plan].filter((value): value is string => !!value).join(" · ");
-  return <section aria-label={`${harnessLabel(provider)} usage`} className="border-b border-border py-2.5 last:border-0">
+  const title = snapshotTitle(snapshot);
+  return <section aria-label={`${title} usage`} data-account={snapshot.accountId ?? undefined} className="border-b border-border py-2.5 last:border-0">
     <div className="flex min-w-0 items-center gap-1.5 text-ui">
       <HarnessMark harness={provider} size={12} />
-      <span className="font-medium text-foreground">{harnessLabel(provider)}</span>
+      <span className="min-w-0 truncate font-medium text-foreground">{title}</span>
       <span className="ml-auto min-w-0 truncate text-[11px] text-muted-foreground">
         {state === "not_installed" ? "Not installed"
           : state === "signed_out" ? <button type="button" onClick={() => onSignIn?.(provider)} className="min-h-6 rounded-md border border-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent">Sign in</button>
@@ -192,7 +216,7 @@ function ProviderSection({ snapshot, adapter, nowSeconds, refreshing, onSignIn, 
     {snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} fresh={fresh} nowSeconds={nowSeconds} />)}
     {snapshot.error ? <ProviderError message={snapshot.error} refreshing={refreshing} onRefresh={onRefresh} />
       : !snapshot.windows.length && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet."}</p>}
-    <UsageResetRow snapshot={snapshot} onUpdated={onRefresh} compact />
+    {!isAccount && <UsageResetRow snapshot={snapshot} onUpdated={onRefresh} compact />}
   </section>;
 }
 
@@ -288,7 +312,8 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
 
   const worst = worstLiveUsage(overviews, now);
   const tier = usageTier(worst?.used ?? null);
-  const stateLabel = worst == null ? "no live usage yet" : `${TIER_LABEL[tier]}, ${percentLabel(worst.used)} of ${harnessLabel(worst.provider)} ${worst.window.label} used`;
+  const worstName = worst == null ? "" : worst.accountLabel ? `${harnessLabel(worst.provider)} · ${worst.accountLabel}` : harnessLabel(worst.provider);
+  const stateLabel = worst == null ? "no live usage yet" : `${TIER_LABEL[tier]}, ${percentLabel(worst.used)} of ${worstName} ${worst.window.label} used`;
   const snapshots = orderedSnapshots(overviews);
   const adapterFor = (provider: string) => adapters?.find(item => item.id === provider);
 
@@ -311,7 +336,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
       <div style={rail && railAnchor ? { maxHeight: railAnchor.maxHeight } : compact && availableHeight !== undefined ? { maxHeight: availableHeight } : undefined} className="u-glass-popover flex max-h-[70dvh] w-full flex-col overflow-hidden rounded-2xl">
         <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
           <h2 className="font-display text-sm font-semibold text-foreground">Usage</h2>
-          <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${harnessLabel(worst.provider)} ${worst.window.label}`}</span>
+          <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${worstName} ${worst.window.label}`}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
             {onOpenUsage && <button type="button" onClick={() => { setOpen(false); onOpenUsage(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><BarChart3 size={11} aria-hidden="true" />Open Usage</button>}
             {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh usage" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" /></button>}
@@ -321,7 +346,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
           {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] leading-relaxed text-destructive">{error}</p>}
           {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} rowClassName="px-0 py-3" />}
-          {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
+          {snapshots.map(snapshot => <ProviderSection key={snapshotKey(snapshot)} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>
       </div>

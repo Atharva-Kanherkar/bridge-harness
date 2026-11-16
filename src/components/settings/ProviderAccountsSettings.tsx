@@ -7,8 +7,10 @@
 
 import { useState } from "react";
 import { bridgeApi } from "../../api";
+import { ProviderLoginPane } from "../ProviderLoginPane";
+import { loginOutputFailed } from "../ProviderSignInDialog";
 import {
-  ACCOUNT_PROVIDERS, accountIdFromLabel, folderError, loginCommand, suggestedFolder,
+  ACCOUNT_PROVIDERS, accountIdFromLabel, folderError, suggestedFolder,
   type AccountHarness, type ProviderAccount,
 } from "../../providerAccounts";
 import {
@@ -42,6 +44,10 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
   const [keyFor, setKeyFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [loginAccount, setLoginAccount] = useState<ProviderAccount | null>(null);
+  // The last account sign-in's verdict, so the pane closing is never silent.
+  const [loginResult, setLoginResult] = useState<{ account: ProviderAccount; ok: boolean } | null>(null);
+  const startLogin = (account: ProviderAccount) => { setLoginResult(null); setLoginAccount(account); };
   const busy = disabled || saving;
 
   const save = async (next: ProviderAccount[]) => {
@@ -80,6 +86,8 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
           mono
           saved={savedKey === account.id}
           control={<span className="flex items-center gap-1">
+            {provider.signIn === "cli" && <TextButton disabled={busy} ariaLabel={`Sign in to ${account.label}`}
+              onClick={() => startLogin(account)}>Sign in</TextButton>}
             {provider.key && <TextButton disabled={busy} ariaLabel={`Set ${provider.key.label} for ${account.label}`}
               onClick={() => { setSavedKey(null); setKeyFor(account.id); }}>Set key</TextButton>}
             <TextButton tone="destructive" disabled={busy} ariaLabel={`Remove ${account.label}`}
@@ -94,12 +102,39 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
             if (!(await save([...accounts, account]))) return;
             setAdding(false);
             if (key) await storeKey(account, key);
+            if (provider.signIn === "cli") startLogin(account);
           }} />
       : <SettingsRow
           label="Add an account"
           description={`Sign a second ${label} subscription in once, then pick it from the model picker in any chat.`}
           control={<GhostButton disabled={busy} onClick={() => setAdding(true)}>Add account</GhostButton>}
         />}
+    {loginAccount && <ProviderLoginPane
+      provider={harness}
+      label={`${label} · ${loginAccount.label}`}
+      account={loginAccount.id}
+      onClose={() => setLoginAccount(null)}
+      onExited={output => {
+        const ok = !loginOutputFailed(output);
+        setLoginResult({ account: loginAccount, ok });
+        setLoginAccount(null);
+        // A new login has limits of its own; read them now rather than at
+        // the next background tick.
+        if (ok) void bridgeApi.refreshProviderUsageOverviews().catch(() => undefined);
+      }}
+    />}
+    {!loginAccount && loginResult && <SettingsBlockRow>
+      <div role="status" className="flex items-center justify-between gap-3">
+        <p className={loginResult.ok ? "text-[12px] text-foreground" : "text-[12px] text-destructive"}>
+          {loginResult.ok
+            ? `${loginResult.account.label} is signed in. Pick it from the model picker in any chat.`
+            : `${loginResult.account.label}'s sign-in didn't finish.`}
+        </p>
+        {loginResult.ok
+          ? <TextButton onClick={() => setLoginResult(null)}>Done</TextButton>
+          : <TextButton disabled={busy} onClick={() => startLogin(loginResult.account)}>Try again</TextButton>}
+      </div>
+    </SettingsBlockRow>}
   </SettingsGroup>;
 }
 
@@ -150,14 +185,12 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
   // A required key starts empty; say so only once the field has been used,
   // while Add stays disabled either way.
   const [keyTouched, setKeyTouched] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const account: ProviderAccount = !usesFolder
     ? { id, label: name.trim() }
     : provider.sharedHome && shared
       ? { id, label: name.trim(), shadowHomePath: folder.trim() }
       : { id, label: name.trim(), homePath: folder.trim() };
-  const command = loginCommand(harness, account);
   const missingKey = !!provider.key?.required && !key.trim();
   const error = (name.trim() ? null : "Give the account a name.")
     ?? (usesFolder ? folderError(folder) : null)
@@ -192,20 +225,14 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
         </div>
         <span className="text-[11px] text-muted-foreground">{provider.key.help}</span>
       </div>}
-      {command && <div className="grid gap-1.5">
-        <span className="text-[12px] text-muted-foreground">Sign in once in a terminal, choosing the other account in the browser:</span>
-        <div className="flex items-start gap-2 rounded-lg border border-border-card bg-popover px-3 py-2">
-          <code className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground select-all" aria-label="Sign-in command">{command}</code>
-          <TextButton ariaLabel="Copy sign-in command" onClick={() => {
-            void navigator.clipboard?.writeText(command).then(() => setCopied(true), () => setCopied(false));
-          }}>{copied ? "Copied" : "Copy"}</TextButton>
-        </div>
-      </div>}
+      {provider.signIn === "cli" && <p className="text-[12px] leading-relaxed text-muted-foreground">
+        Bridge will create this folder, start {label}'s sign-in, then ask you to finish in your browser.
+      </p>}
       {provider.loginNote && <span className="text-[11px] text-muted-foreground">{provider.loginNote}</span>}
       {error && <p role="alert" className="text-[12px] text-destructive">{error}</p>}
       <div className="flex items-center justify-end gap-2">
         <TextButton disabled={disabled} onClick={onCancel}>Cancel</TextButton>
-        <PrimaryButton disabled={disabled || !!error || missingKey} onClick={() => void onAdd(account, key.trim())}>Add account</PrimaryButton>
+        <PrimaryButton disabled={disabled || !!error || missingKey} onClick={() => void onAdd(account, key.trim())}>{provider.signIn === "cli" ? "Add & sign in" : "Add account"}</PrimaryButton>
       </div>
     </div>
   </SettingsBlockRow>;

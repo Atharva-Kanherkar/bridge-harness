@@ -1,5 +1,11 @@
 import { isExternalUrl } from "./externalLinks";
 
+/** The stable PTY id for a provider sign-in. Extra accounts need a separate
+ * PTY, so their browser handoff cannot be confused with the default login. */
+export function providerLoginTerminalId(provider: string, account?: string): string {
+  return account ? `${provider}:account:${account}` : provider;
+}
+
 // Vendor login commands write terminal control sequences because they believe
 // they own a full terminal. The onboarding surface does not: remove the common
 // CSI/OSC forms before showing troubleshooting text or searching for a URL.
