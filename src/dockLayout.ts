@@ -29,7 +29,9 @@ export type DockAction =
 export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox"];
 
 export const MIN_DOCK_WIDTH = 320;
-export const MAX_DOCK_WIDTH = 760;
+/** Generous enough for a browser pane on a large window; the conversation's
+ * own minimum still wins via clampDockWidth, and Expand fills the window. */
+export const MAX_DOCK_WIDTH = 1080;
 export const MIN_CONVERSATION_WIDTH = 440;
 export const DEFAULT_DOCK_WIDTH = 440;
 /** Below this section width a split starves one side or the other, so an
