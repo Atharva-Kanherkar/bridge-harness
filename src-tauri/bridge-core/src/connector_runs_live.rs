@@ -450,7 +450,6 @@ pub(crate) fn bounded_turn_output(
 ) -> Result<TurnOutput, String> {
     let server = connection.server.as_deref().unwrap_or_default();
     let limits = connector_runs::run_limits(kind);
-    let wall = limits.max_wall_seconds.max(1) as u64;
     // Scoped to this one server. Ingress and render get the read-only policy —
     // its verb rule is what keeps them from reaching a different connector or a
     // write tool on this one. An action gets the same policy plus exactly one
@@ -472,7 +471,42 @@ pub(crate) fn bounded_turn_output(
     if let Some((tool, arguments)) = exact_call {
         policy = BriefingRuntimePolicy::compile_exact_action(server.to_owned(), tool, arguments, limits).map_err(|e| e.reason())?;
     }
-    let run = launch_run(core, connection, &policy)?;
+    turn_with_policy(core, connection, &policy, kind, prompt, exact)
+}
+
+/// The read-only run that resolves an Outgoing destination before any approval
+/// exists. It must reach the harness's own signed-in connector, since an
+/// explicit copy of a claude.ai connector comes up needing authentication and
+/// a fresh draft could then never be offered for approval. So it loads
+/// connectors natively; its gate stays the read-only scope on this one server.
+pub(crate) fn outgoing_resolution_policy(server: &str) -> Result<BriefingRuntimePolicy, String> {
+    BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], connector_runs::run_limits(RunKind::Ingress))
+        .map(BriefingRuntimePolicy::with_native_connectors)
+        .map_err(|unsupported| format!("policy: {}", unsupported.reason()))
+}
+
+/// Run the Outgoing resolver's turn under [`outgoing_resolution_policy`].
+pub(crate) fn outgoing_resolution_turn(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    prompt: &str,
+) -> Result<TurnOutput, String> {
+    let policy = outgoing_resolution_policy(connection.server.as_deref().unwrap_or_default())?;
+    turn_with_policy(core, connection, &policy, RunKind::Ingress, prompt, false)
+}
+
+/// One bounded model turn under an already compiled policy: launch, send the
+/// prompt, read to the result frame under the policy's wall clock, settle.
+fn turn_with_policy(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    policy: &BriefingRuntimePolicy,
+    kind: RunKind,
+    prompt: &str,
+    exact: bool,
+) -> Result<TurnOutput, String> {
+    let wall = policy.limits().max_wall_seconds.max(1) as u64;
+    let run = launch_run(core, connection, policy)?;
     if let Err(error) = run.runtime.send_turn(prompt) {
         run.finish(core, false);
         return Err(format!("send: {error}"));
@@ -1198,6 +1232,22 @@ mod tests {
     }
 
     // ── Direct exact calls ──────────────────────────────────────────────────
+
+    #[test]
+    fn the_outgoing_resolver_reads_through_the_signed_in_connector_and_nothing_else() {
+        let policy = outgoing_resolution_policy("claude.ai Slack").unwrap();
+        assert!(policy.native_connectors(), "an explicit claude.ai copy cannot sign in");
+        assert!(!policy.direct_call());
+        assert_eq!(policy.exact_action_config(), None);
+        assert_eq!(policy.action_scope_config(), None);
+        assert_eq!(policy.read_scope_servers(), ["claude.ai Slack".to_owned()]);
+        use crate::briefing_policy::ToolDecision;
+        assert_eq!(policy.decide("mcp__claude_ai_Slack__slack_search_channels", 100), ToolDecision::Allow);
+        assert_eq!(policy.decide("mcp__claude_ai_Slack__slack_search_users", 100), ToolDecision::Allow);
+        assert_ne!(policy.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow);
+        assert_ne!(policy.decide("mcp__claude_ai_Notion__notion_search", 100), ToolDecision::Allow);
+        assert_eq!(policy.limits(), &connector_runs::run_limits(RunKind::Ingress));
+    }
 
     #[test]
     fn only_claude_with_a_capable_sdk_takes_the_direct_path() {

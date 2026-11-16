@@ -663,6 +663,27 @@ pub fn resolve_target(
     }
 }
 
+/// The approved Slack post as the connector layer's authorized action. Only
+/// reached after `claim` matched the user's approval token for this exact text
+/// and destination.
+pub(crate) fn authorize_slack_post(
+    item: &OutgoingMessage,
+    target: &Target,
+) -> Result<crate::connector_runs::AuthorizedAction, String> {
+    let action = crate::connector_runs::ConnectorAction::Post {
+        family: crate::work_connectors::ConnectorFamily::Slack,
+        target: target.clone(),
+        text: item.rendered.clone(),
+    };
+    crate::connector_runs::authorize(
+        action,
+        Some(crate::connector_runs::ApprovalDecision::Approved),
+        false,
+        Ok(()),
+    )
+    .map_err(|e| e.detail())
+}
+
 pub fn execute_target(
     core: &std::sync::Arc<crate::runtime::BridgeCore>,
     item: &OutgoingMessage,
@@ -670,18 +691,7 @@ pub fn execute_target(
 ) -> Result<(Receipt, Option<String>), String> {
     match target {
         Target::Slack { .. } => {
-            let action = crate::connector_runs::ConnectorAction::Post {
-                family: crate::work_connectors::ConnectorFamily::Slack,
-                target: target.clone(),
-                text: item.rendered.clone(),
-            };
-            let authorized = crate::connector_runs::authorize(
-                action,
-                Some(crate::connector_runs::ApprovalDecision::Approved),
-                false,
-                Ok(()),
-            )
-            .map_err(|e| e.detail())?;
+            let authorized = authorize_slack_post(item, target)?;
             super::slack::execute_outgoing(core, &authorized, item)
         }
         Target::Github {

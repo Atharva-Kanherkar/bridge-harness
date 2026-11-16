@@ -197,6 +197,14 @@ export function isDirectCall(briefing) {
 }
 
 /**
+ * A launch whose claude.ai connectors Claude Code loads itself, signed in: a
+ * direct call, or a run Rust marked `nativeConnectors` (the Outgoing resolver).
+ */
+export function loadsConnectorsNatively(briefing) {
+  return briefing?.nativeConnectors === true || isDirectCall(briefing);
+}
+
+/**
  * The SDK options a briefing run uses, replacing the write-mode permission
  * options entirely rather than layering on top of them.
  *
@@ -213,14 +221,15 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     ...(briefing?.readScopeServers ?? []),
     ...(briefing?.actionScope ? [briefing.actionScope.server] : []),
   ]);
-  // A direct call (mcp-call.mjs) runs no model. Claude Code loads its connector
-  // itself, with the account's own sign-in: an explicit copy of a claude.ai
-  // connector never shares that sign-in and comes up needing authentication,
-  // so the call could never reach it. The gate below and the deep-equality
-  // check in mcp-call.mjs still allow exactly the one approved call.
-  const direct = isDirectCall(briefing);
+  // Native connectors: Claude Code loads its claude.ai connectors itself, with
+  // the account's own sign-in. An explicit copy never shares that sign-in and
+  // comes up needing authentication, so a run handed one can reach nothing.
+  // This changes the route only: the gate below decides every call exactly as
+  // before, and a direct call is further held to its one approved call by
+  // mcp-call.mjs.
+  const native = loadsConnectorsNatively(briefing);
   const scopedMcpServers = Object.fromEntries(
-    Object.entries(mcpServers).filter(([name]) => allowedServers.has(name) && !(direct && name.startsWith("claude.ai "))),
+    Object.entries(mcpServers).filter(([name]) => allowedServers.has(name) && !(native && name.startsWith("claude.ai "))),
   );
   return {
     // `default` rather than `dontAsk` or `bypassPermissions`: the gate below is
@@ -236,9 +245,9 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
       exactAction: briefing?.exactAction ?? null,
       maxArgumentBytes: briefing?.maxArgumentBytes,
     }),
-    // Only the reviewed connectors, and only as declared here. A direct call
-    // is the exception above: its connector is the harness's own.
-    strictMcpConfig: !direct,
+    // Only the reviewed connectors, and only as declared here, unless the run
+    // uses the harness's own signed-in connectors (above).
+    strictMcpConfig: !native,
     mcpServers: scopedMcpServers,
     // Nothing inherited. A project's settings can carry permissions and hooks,
     // and a briefing run must not gain authority from where it happens to be run.

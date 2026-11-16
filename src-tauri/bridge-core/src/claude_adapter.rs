@@ -174,10 +174,11 @@ fn launch_discovery(
 }
 
 /// A briefing launch with no connector to discover or hand over: a toolless run
-/// or a worktree workflow reaches none, and a direct call's connector is loaded
-/// natively by Claude Code with the account's own sign-in.
+/// or a worktree workflow reaches none, and a launch with native connectors
+/// (a direct call, the Outgoing resolver) has Claude Code load them itself with
+/// the account's own sign-in.
 fn skips_connector_discovery(policy: &crate::briefing_policy::BriefingRuntimePolicy) -> bool {
-    policy.toolless() || policy.workflow_worktree() || policy.direct_call()
+    policy.toolless() || policy.workflow_worktree() || policy.native_connectors()
 }
 
 fn sdk_configuration_for_launch(
@@ -269,6 +270,9 @@ fn launch(
                 // No model turn: the sidecar honours one `mcp_call` frame for
                 // the exact action, and Claude Code loads the connector itself.
                 "directCall": policy.direct_call(),
+                // Claude Code loads claude.ai connectors itself, signed in;
+                // the explicit copies below would come up needing auth.
+                "nativeConnectors": policy.native_connectors(),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
                 // No tool definitions and no coding preset. Present only for a
@@ -1871,6 +1875,10 @@ mod briefing_boundary_tests {
             super::launch_discovery(true, true, super::skips_connector_discovery(&direct), false),
             crate::marketplace::ClaudeDiscovery { plugins: false, connectors: false }
         );
+        // The Outgoing resolver is a read-only turn with native connectors.
+        let read = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], limits).unwrap();
+        assert!(!super::skips_connector_discovery(&read));
+        assert!(super::skips_connector_discovery(&read.with_native_connectors()));
     }
 
     #[test]

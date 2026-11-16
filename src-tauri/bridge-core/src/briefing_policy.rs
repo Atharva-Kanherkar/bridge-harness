@@ -266,6 +266,10 @@ pub struct BriefingRuntimePolicy {
     /// The exact action runs through the harness's own MCP client with no
     /// model turn. Only `into_direct_call` sets it.
     direct_call: bool,
+    /// The harness loads its claude.ai connectors itself, with the account's
+    /// own sign-in, instead of receiving explicit copies. Changes how a server
+    /// is reached, never what the gate allows.
+    native_connectors: bool,
 }
 
 /// One connector server a workflow run may reach.
@@ -457,6 +461,7 @@ impl BriefingRuntimePolicy {
             workflow_worktree: false,
             exact_action: None,
             direct_call: false,
+            native_connectors: false,
         })
     }
 
@@ -499,6 +504,7 @@ impl BriefingRuntimePolicy {
             workflow_worktree: false,
             exact_action: None,
             direct_call: false,
+            native_connectors: false,
         })
     }
 
@@ -611,11 +617,29 @@ impl BriefingRuntimePolicy {
             });
         }
         self.direct_call = true;
+        self.native_connectors = true;
         Ok(self)
     }
 
     pub fn direct_call(&self) -> bool {
         self.direct_call
+    }
+
+    /// Reach claude.ai connectors through the harness's own signed-in instance.
+    ///
+    /// An explicit copy of a claude.ai connector handed to the SDK never shares
+    /// the account's sign-in: it comes up `needs-auth` with no tools, so a run
+    /// that depends on it can reach nothing. Native loading fixes the route and
+    /// leaves the authority alone: `decide` and the adapter's gate are the same
+    /// rules over the same scope, and the harness may now merely *list* tools
+    /// the gate will refuse.
+    pub fn with_native_connectors(mut self) -> Self {
+        self.native_connectors = true;
+        self
+    }
+
+    pub fn native_connectors(&self) -> bool {
+        self.native_connectors
     }
 
     pub fn exact_action_config(&self) -> Option<serde_json::Value> {
@@ -1340,6 +1364,28 @@ mod tests {
         assert!(reply.into_direct_call().is_err());
         let read = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], action_limits()).unwrap();
         assert!(read.into_direct_call().is_err());
+        assert!(direct.native_connectors(), "a direct call reaches the harness's own connector");
+        assert!(!exact.native_connectors());
+    }
+
+    #[test]
+    fn native_connectors_change_the_route_and_not_the_rules() {
+        let scoped = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], action_limits()).unwrap();
+        let native = scoped.clone().with_native_connectors();
+        assert!(native.native_connectors());
+        assert!(!native.direct_call());
+        for tool in [
+            "mcp__claude_ai_Slack__slack_read_channel",
+            "mcp__claude_ai_Slack__slack_search_users",
+            "mcp__claude_ai_Slack__slack_send_message",
+            "mcp__claude_ai_Notion__notion_search",
+            "Bash",
+        ] {
+            assert_eq!(native.decide(tool, 100), scoped.decide(tool, 100), "{tool}");
+        }
+        assert!(matches!(native.decide("mcp__claude_ai_Slack__slack_read_channel", 100), ToolDecision::Allow));
+        assert!(!matches!(native.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+        assert!(!matches!(native.decide("mcp__claude_ai_Notion__notion_search", 100), ToolDecision::Allow));
     }
 
     #[test]
