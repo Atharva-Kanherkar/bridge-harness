@@ -3,9 +3,9 @@ import type { GetPersonalAppDraftParams, LockPersonalAppParams, LockPersonalAppR
 export const MOCK_APP_DRAFT_ID = "personal-app-demo";
 export const MOCK_APP_HASH = `sha256:${"a".repeat(64)}`;
 const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-body{margin:0;padding:20px;font:13px system-ui;color:var(--color-text-primary,#282828);background:var(--color-background-primary,#fff)}
+body{margin:0;padding:20px;font:13px system-ui;color:var(--color-text-primary,CanvasText);background:var(--color-background-primary,Canvas)}
 h2{font-size:17px;margin:0 0 6px}p{margin:0 0 18px;opacity:.65}label{display:block;margin:12px 0 6px}
-input,textarea,button{font:inherit;color:inherit;border:1px solid var(--color-border-primary,#ccc);border-radius:8px;padding:9px 11px;background:transparent}
+input,textarea,button{font:inherit;color:inherit;border:1px solid var(--color-border-primary,GrayText);border-radius:8px;padding:9px 11px;background:transparent}
 input,textarea{box-sizing:border-box;width:100%}textarea{resize:vertical;min-height:68px}button{cursor:pointer;margin:10px 8px 0 0}
 pre{font:12px ui-monospace;white-space:pre-wrap;word-break:break-word;margin:14px 0 0}
 </style></head><body><h2>Message a teammate</h2><p>Find someone, then preview your message.</p>
