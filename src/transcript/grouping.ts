@@ -19,6 +19,7 @@
 import type { ConversationItem, ConversationItemType } from "./item";
 import { isVisualItem } from "./visual";
 import { isOutgoingItem } from "./outgoing";
+import { isPersonalAppItem } from "./personalApp";
 
 /** One top-level entry of the transcript. */
 export type Rendered =
@@ -170,7 +171,7 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
 
     // A visual or a drafted message is something to read, like prose: it
     // closes the run and stands on its own, whatever state it is in.
-    if (isVisualItem(item) || isOutgoingItem(item)) {
+    if (isVisualItem(item) || isOutgoingItem(item) || isPersonalAppItem(item)) {
       closeGroup();
       pushItem(item);
       continue;

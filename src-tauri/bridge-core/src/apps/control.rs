@@ -18,7 +18,10 @@ fn pending() -> &'static Mutex<HashMap<String, Pending>> {
 struct Registration(String);
 impl Drop for Registration {
     fn drop(&mut self) {
-        pending().lock().unwrap().remove(&self.0);
+        pending()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
     }
 }
 
@@ -30,7 +33,9 @@ pub fn request(
     let id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = mpsc::sync_channel(1);
     {
-        let mut all = pending().lock().unwrap();
+        let mut all = pending()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if all.len() >= 64 || all.values().filter(|p| p.session == session).count() >= 4 {
             return Err(BridgeError::Invalid(
                 "Too many app preview requests; try again shortly".into(),
@@ -46,7 +51,10 @@ pub fn request(
     }
     let _registration = Registration(id.clone());
     {
-        let adapters = core.adapters.lock().unwrap();
+        let adapters = core
+            .adapters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let runtime = adapters.get(session).ok_or_else(|| {
             BridgeError::Invalid("Resume this Claude chat to reconnect its MCP servers".into())
         })?;
@@ -70,7 +78,9 @@ pub fn deliver(session: &str, frame: &Value) -> bool {
     let Some(id) = frame["id"].as_str() else {
         return true;
     };
-    let mut all = pending().lock().unwrap();
+    let mut all = pending()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if all.get(id).is_none_or(|p| p.session != session) {
         return true;
     }
@@ -85,7 +95,7 @@ pub fn deliver(session: &str, frame: &Value) -> bool {
         } else {
             Err("The MCP preview request failed; check the connection in this chat".into())
         };
-        let _ = p.sender.try_send(result);
+        drop(p.sender.try_send(result));
     }
     true
 }
