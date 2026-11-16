@@ -166,21 +166,22 @@ fn slug(name: &str) -> String {
             out.push('-');
         }
     }
-    let mut out: String = out.chars().take(super::manifest::MAX_ID_CHARS - 3).collect();
+    let mut out: String = out.chars().take(super::manifest::MAX_ID_CHARS - 4).collect();
     while out.ends_with('-') {
         out.pop();
     }
     if out.is_empty() { "app".into() } else { out }
 }
 
-/// An id for a new app: its name's slug, numbered past any personal or
-/// built-in app that already has it.
+/// An id for a new app: its name's slug, numbered past any locked app,
+/// pending draft or built-in app that already has it.
 fn fresh_id(db: &Connection, name: &str) -> Result<String, BridgeError> {
     let base = slug(name);
     for n in 1..1000 {
         let id = if n == 1 { base.clone() } else { format!("{base}-{n}") };
         let taken: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM personal_app_versions WHERE app_id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM personal_app_versions WHERE app_id=?1
+             UNION ALL SELECT 1 FROM personal_app_drafts WHERE app_id=?1)",
             [&id],
             |row| row.get(0),
         )?;
@@ -494,6 +495,33 @@ mod tests {
         assert_eq!((second.id.as_str(), second.version), ("slack-dm-2", 1));
         let drafts: i64 = db.query_row("SELECT COUNT(*) FROM personal_app_drafts", [], |row| row.get(0)).unwrap();
         assert_eq!(drafts, 0, "a lock consumes its draft");
+    }
+
+    #[test]
+    fn new_drafts_with_the_same_name_reserve_separate_ids() {
+        let db = db();
+        let first = create_draft(&db, None, &manifest(), now()).unwrap();
+        let mut changed = manifest();
+        changed.view_html = "<p>Another app</p>".into();
+        let second = create_draft(&db, None, &changed, now()).unwrap();
+        assert_eq!(first.app_id, "slack-dm");
+        assert_eq!(second.app_id, "slack-dm-2");
+        lock(&db, &second.id, &second.content_hash, false, now()).unwrap();
+        lock(&db, &first.id, &first.content_hash, false, now()).unwrap();
+        assert_eq!(get(&db, &first.app_id).unwrap().view_html, manifest().view_html);
+        assert_eq!(get(&db, &second.app_id).unwrap().view_html, changed.view_html);
+        assert_eq!(list(&db).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn numbered_ids_stay_within_the_length_limit() {
+        let db = db();
+        let mut long = manifest();
+        long.name = "a".repeat(MAX_NAME_CHARS);
+        for _ in 0..101 {
+            let draft = create_draft(&db, None, &long, now()).unwrap();
+            assert!(validate_id(&draft.app_id).is_ok(), "{}", draft.app_id);
+        }
     }
 
     #[test]

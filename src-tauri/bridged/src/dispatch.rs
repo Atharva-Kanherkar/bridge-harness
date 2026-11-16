@@ -1589,6 +1589,7 @@ mod tests {
     fn personal_apps_answer_through_dispatch() {
         let fixture = tempfile::tempdir().unwrap();
         let core = core(fixture.path());
+        let mut events = core.events.subscribe();
         let manifest = bridge_core::apps::personal::Manifest {
             name: "Slack DM".into(),
             intent: "Message a teammate".into(),
@@ -1607,6 +1608,7 @@ mod tests {
         assert_eq!(locked["kind"], "locked");
         assert_eq!(locked["app"]["id"], "slack-dm");
         assert_eq!(locked["app"]["version"], 1);
+        assert!(events.drain_pending(), "locking publishes apps/changed");
 
         let listed = dispatch(&core, MethodName::ListPersonalApps, None).unwrap();
         assert_eq!(listed["apps"][0]["contentHash"], draft.content_hash);
@@ -1617,6 +1619,7 @@ mod tests {
 
         let after = dispatch(&core, MethodName::DeletePersonalApp, Some(json!({"id": "slack-dm"}))).unwrap();
         assert_eq!(after, json!({"apps": []}));
+        assert!(events.drain_pending(), "deleting publishes apps/changed");
         assert!(dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm"}))).is_err());
     }
 
