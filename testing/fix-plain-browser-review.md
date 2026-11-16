@@ -10,6 +10,9 @@
 - Tauri resolves the profile output directory under both Cargo build layouts,
   using the upstream fix in `tauri-build` 2.7 or newer. Sidecars are staged beside
   app binaries, never into Cargo's `build/<package>` directories.
+- The title workflow matches the protected default branch policy, using its
+  existing `pull_request_target` trigger and validating text as data without
+  checking out or running code from the PR.
 
 ## Unit tests
 
@@ -18,6 +21,8 @@
 - `BrowserPage.test.tsx`: matching frontend intersection and hidden bounds cases.
 - `external_bin_staging`: every configured sidecar exists as a file in the Cargo
   profile output directory, in addition to its target-suffixed source file.
+- Compare the policy workflow byte-for-byte with the current protected default
+  branch, and verify the PR policy checks run successfully after pushing.
 
 ## Integration and smoke tests
 
