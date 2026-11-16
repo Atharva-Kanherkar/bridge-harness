@@ -1083,6 +1083,11 @@ html[data-native-fullscreen] .u-traffic-inset {
   transform-box: view-box;
 }
 
+@keyframes merge-ring {
+  0% { opacity: 0.8; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(2.6); }
+}
+
 .merge-graph-play .landed {
   opacity: 0;
   animation: merge-fade-in 1ms linear 1.06s forwards;
