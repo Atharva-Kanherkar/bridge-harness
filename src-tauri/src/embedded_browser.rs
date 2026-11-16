@@ -16,6 +16,12 @@ use tauri::{
 const PAGE_SCRIPT: &str = include_str!("browser_page.js");
 const MAX_TABS: usize = 64;
 const MAX_URL: usize = 8192;
+/// A WKWebView without an explicit agent sends its bare default UA, which has
+/// no `Version/` or `Safari/` token. Sites treat that unknown agent as a
+/// legacy client and serve degraded basic-HTML pages (Google's no-JS
+/// homepage, stripped layouts). Claim the Safari identity WebKit actually is,
+/// so pages render as they do in Safari.
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 type TabKey = (String, String);
 type Result<T> = std::result::Result<T, String>;
 
@@ -253,6 +259,7 @@ async fn create(caller: Webview, session_id: String, tab_id: String, url: String
         let popup = state.clone();
         let builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
             .initialization_script(PAGE_SCRIPT)
+            .user_agent(BROWSER_USER_AGENT)
             .on_navigation(allowed_url)
             .on_document_title_changed(move |_, title| {
                 if let Ok(mut state) = titled.lock() {
@@ -480,8 +487,23 @@ async fn layout(
     let registry = caller.state::<Registry>().inner().clone();
     let app = caller.app_handle().clone();
     worker(move || {
+        // The Bridge window is the only coordinate space a child view may
+        // paint in. Clamp to it so a stale or corrupt frontend rect can never
+        // push the page over app chrome or off the window edge.
+        let window = app
+            .get_window("main")
+            .ok_or_else(|| "Bridge window is unavailable".to_string())?;
+        let scale = window
+            .scale_factor()
+            .map_err(|error| error.to_string())?;
+        let inner = window
+            .inner_size()
+            .map_err(|error| error.to_string())?
+            .to_logical::<f64>(scale);
+        let (x, y, width, height, paintable) =
+            clamp_layout_bounds(x, y, width, height, inner.width, inner.height);
         let (_, view) = get_tab(&registry, &key, &app)?;
-        if !visible || width < 1.0 || height < 1.0 {
+        if !visible || !paintable {
             return view.hide().map_err(|error| error.to_string());
         }
         view.set_bounds(tauri::Rect {
@@ -492,6 +514,24 @@ async fn layout(
         view.show().map_err(|error| error.to_string())
     })
     .await
+}
+
+/// Clamp a viewport rect into the Bridge window. Returns the position and
+/// size the child view may paint at; a size that collapses below a pixel is
+/// reported via `paintable` so the caller hides the view instead.
+fn clamp_layout_bounds(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    window_width: f64,
+    window_height: f64,
+) -> (f64, f64, f64, f64, bool) {
+    let width = width.min(window_width.max(0.0));
+    let height = height.min(window_height.max(0.0));
+    let x = x.clamp(0.0, (window_width - width).max(0.0));
+    let y = y.clamp(0.0, (window_height - height).max(0.0));
+    (x, y, width, height, width >= 1.0 && height >= 1.0)
 }
 
 fn valid_selection(selection: &Selection) -> bool {
@@ -776,6 +816,39 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_layout_bounds_are_refused_instead_of_painting_over_chrome() {
+        // A stale 1266-wide rect on a 854-wide window: shrink to the window,
+        // never paint past its edge.
+        let (x, y, width, height, paintable) =
+            clamp_layout_bounds(95.0, 15.0, 759.0, 990.0, 854.0, 1005.0);
+        assert!(paintable);
+        assert_eq!(x, 95.0);
+        assert_eq!(y, 15.0);
+        assert_eq!(width, 759.0);
+        assert_eq!(height, 990.0);
+        let (.., height, paintable) =
+            clamp_layout_bounds(95.0, 15.0, 759.0, 990.0, 854.0, 100.0);
+        assert!(paintable);
+        assert_eq!(height, 100.0);
+        let (x, y, width, height, paintable) =
+            clamp_layout_bounds(-50.0, -50.0, 1266.0, 1131.0, 854.0, 1005.0);
+        assert!(paintable);
+        assert_eq!((x, y, width, height), (0.0, 0.0, 854.0, 1005.0));
+        // Collapsed to nothing: report unpaintable so the caller hides.
+        let (_, _, _, _, paintable) =
+            clamp_layout_bounds(0.0, 0.0, 440.0, 0.5, 854.0, 1005.0);
+        assert!(!paintable);
+    }
+    #[test]
+    fn browser_user_agent_matches_webkit_safari_identity() {
+        // The tokens sites gate on: a WebKit build, a Safari version, and the
+        // Safari marker. Without them, unknown agents get legacy basic HTML.
+        for token in ["AppleWebKit/605.1.15", "Version/26.0", "Safari/605.1.15", "(KHTML, like Gecko)"] {
+            assert!(BROWSER_USER_AGENT.contains(token), "{token}");
+        }
+        assert!(BROWSER_USER_AGENT.starts_with("Mozilla/5.0 (Macintosh;"));
+    }
     #[test]
     fn failed_old_creation_cannot_remove_a_replacement_tab() {
         let registry = Registry::default();
