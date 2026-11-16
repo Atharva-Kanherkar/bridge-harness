@@ -7,16 +7,17 @@
   offscreen and subpixel rectangles hide the native page.
 - Only macOS WKWebView receives the Safari user agent. Other engines retain their
   native identity.
-- CI recovers from cached directories occupying Tauri sidecar output paths,
-  while preserving the dependency cache and actual sidecar files.
+- Tauri resolves the profile output directory under both Cargo build layouts,
+  using the upstream fix in `tauri-build` 2.7 or newer. Sidecars are staged beside
+  app binaries, never into Cargo's `build/<package>` directories.
 
 ## Unit tests
 
 - `embedded_browser::tests`: unchanged in-window bounds, partial overflow on each
   edge, complete exclusion on each edge, collapsed/subpixel window and host sizes.
 - `BrowserPage.test.tsx`: matching frontend intersection and hidden bounds cases.
-- Regression fixture for the CI cache repair: replace only directory-shaped
-  sidecar outputs, preserve unrelated artifacts, regular files, and source trees.
+- `external_bin_staging`: every configured sidecar exists as a file in the Cargo
+  profile output directory, in addition to its target-suffixed source file.
 
 ## Integration and smoke tests
 
