@@ -4964,6 +4964,7 @@ export interface DeliverQueuedInputResult {
 }
 
 export interface StartProviderLoginParams {
+  account?: string | null;
   provider: string;
 }
 
@@ -4973,6 +4974,7 @@ export interface StartProviderLoginResult {
 }
 
 export interface CancelProviderLoginParams {
+  account?: string | null;
   provider: string;
 }
 

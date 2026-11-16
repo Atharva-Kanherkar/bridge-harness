@@ -2373,11 +2373,12 @@ async fn start_chat(
 #[tauri::command]
 async fn start_provider_login(
     provider: String,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<api::ProviderLogin, BridgeError> {
     let core = state.inner().clone();
     blocking("Provider login", move || {
-        api::start_provider_login(&core, &provider)
+        api::start_provider_login(&core, &provider, account.as_deref())
     })
     .await
 }
@@ -2385,11 +2386,12 @@ async fn start_provider_login(
 #[tauri::command]
 async fn cancel_provider_login(
     provider: String,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
     let core = state.inner().clone();
     blocking("Provider login cancel", move || {
-        api::cancel_provider_login(&core, &provider)
+        api::cancel_provider_login(&core, &provider, account.as_deref())
     })
     .await
 }
