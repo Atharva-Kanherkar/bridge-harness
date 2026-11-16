@@ -156,7 +156,7 @@ fn refresh_one(core: &BridgeCore, provider: MenuBarProvider, account: &ProviderA
     }
     // Never hold the database across the provider process or network.
     let cache = cache_result(read(core, provider, account, interactive));
-    core.db.lock().unwrap().execute(
+    core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner).execute(
         "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview',?1,?2,?3,?3) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
         params![id, serde_json::to_string(&cache).map_err(|e| BridgeError::Invalid(e.to_string()))?, Utc::now().to_rfc3339()],
     )?;
@@ -184,16 +184,23 @@ fn forget_removed(db: &Connection, keep: &[String]) -> Result<(), BridgeError> {
 /// up another. Failures are cached per account, never returned.
 pub(crate) fn refresh_all(core: &BridgeCore, settings: &MenuBarSettings, interactive: bool) {
     let accounts = {
-        let db = core.db.lock().unwrap();
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let accounts = configured_in(&db);
         let keep: Vec<_> = accounts.iter().map(|(provider, account)| cache_id(provider.id(), &account.id)).collect();
-        let _ = forget_removed(&db, &keep);
+        // A failed cleanup only leaves rows nothing lists; the refresh goes on.
+        if forget_removed(&db, &keep).is_err() {
+            eprintln!("bridge: could not drop cached limits for removed accounts");
+        }
         accounts
     };
     std::thread::scope(|scope| {
         for (provider, account) in accounts.iter().filter(|(provider, _)| settings.provider_enabled(*provider)) {
             scope.spawn(move || {
-                let _ = refresh_one(core, *provider, account, interactive);
+                // Read failures are cached on the row; only a database write
+                // can fail here, and the next refresh retries it.
+                if refresh_one(core, *provider, account, interactive).is_err() {
+                    eprintln!("bridge: could not store limits for {} account {}", provider.id(), account.id);
+                }
             });
         }
     });
