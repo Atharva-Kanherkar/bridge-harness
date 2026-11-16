@@ -29,6 +29,11 @@ fn declared_external_bins() -> Vec<String> {
 fn every_declared_external_bin_is_staged_for_this_target() {
     let target = env!("TAURI_ENV_TARGET_TRIPLE");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let executable = std::env::current_exe().expect("test executable is available");
+    let profile = executable
+        .parent()
+        .and_then(Path::parent)
+        .expect("test executable lives in the profile's deps directory");
     let declared = declared_external_bins();
     assert!(
         declared.len() > 1,
@@ -37,10 +42,16 @@ fn every_declared_external_bin_is_staged_for_this_target() {
     for entry in declared {
         let staged = root.join(format!("{entry}-{target}"));
         assert!(
-            staged.exists(),
+            staged.is_file(),
             "{} was declared in externalBin but nothing staged {}",
             entry,
             staged.display()
+        );
+        let copied = profile.join(Path::new(&entry).file_name().expect("sidecar has a filename"));
+        assert!(
+            copied.is_file(),
+            "Tauri must copy {entry} beside app binaries at {}, not inside Cargo's build directory",
+            copied.display()
         );
     }
 }
