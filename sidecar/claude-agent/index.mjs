@@ -26,6 +26,7 @@ import { probeUsage, readContextUsage } from "./usage.mjs";
 import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
 import { createDirectCall } from "./mcp-call.mjs";
+import { createAppControl } from "./app-control.mjs";
 import { isDirectCall } from "./briefing.mjs";
 
 // Which copy of the Agent SDK to load.
@@ -132,6 +133,13 @@ const directCall = createDirectCall({
   writeFrame,
 });
 
+const appControl = createAppControl({
+  enabled: Boolean(config.mcpServers?.bridge) && !config.briefing && !config.workflow && config.catalog !== true,
+  status: () => run.mcpServerStatus(),
+  request: (request) => run.request(request),
+  writeFrame,
+});
+
 // Catalogue discovery is a short-lived control-plane request. It uses the
 // installed SDK/CLI itself, so new provider releases appear without a Bridge
 // code change. No user turn is submitted and the normal stream pump is skipped.
@@ -166,6 +174,8 @@ rl.on("line", (line) => {
     if (!asks.resolve(frame)) permissions.respond(frame);
   } else if (frame.type === "mcp_call") {
     void directCall(frame).catch(() => {});
+  } else if (frame.type === "app_control") {
+    void appControl(frame).catch(() => {});
   } else if (frame.type === "stop_task") {
     void stopTaskFrame(run, frame).catch(error => writeFrame({ type: "system", subtype: "subagent_stop_failed", task_id: frame.task_id, error: String(error) }));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
