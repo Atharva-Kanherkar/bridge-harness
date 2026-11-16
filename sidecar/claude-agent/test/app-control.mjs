@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAppControl } from "../app-control.mjs";
+import { connectorReadPolicy } from "../options.mjs";
 
 function setup(overrides = {}) {
   const replies = [], calls = [];
@@ -12,7 +13,7 @@ function setup(overrides = {}) {
     { name: "read_write", annotations: { readOnly: false } },
     { name: "get_writable", annotations: { readOnly: false } },
   ] };
-  const handler = createAppControl({ enabled: true, status: async () => [server], request: async input => { calls.push(input); return { response: { content: [{ type: "text", text: "found" }] } }; }, writeFrame: frame => replies.push(frame), ...overrides });
+  const handler = createAppControl({ enabled: true, status: async () => [server], request: async input => { calls.push(input); return { response: { content: [{ type: "text", text: "found" }] } }; }, writeFrame: frame => replies.push(frame), mayRead: () => true, ...overrides });
   const send = async request => { await handler({ type: "app_control", id: "id", request }); return replies.at(-1); };
   return { send, handler, replies, calls, server };
 }
@@ -63,4 +64,24 @@ test("concurrent requests are capped and released after errors", async () => {
   release([]);
   await Promise.all(requests);
   assert.equal(replies.length, 5);
+});
+test("a chat whose mode refuses the model connector reads refuses preview reads too", async () => {
+  for (const config of [{ writeMode: "Shared" }, { writeMode: "Isolated" }, { writeMode: "ReadOnly", networkAllowed: false, mcpServers: { claude_ai_Slack: {} } }, { writeMode: "ReadOnly", networkAllowed: true, mcpServers: { bridge: {} } }]) {
+    const { send, calls } = setup({ mayRead: connectorReadPolicy(config) });
+    const reply = await send(read("slack_search_users"));
+    assert.equal(reply.ok, false, JSON.stringify(config));
+    assert.match(reply.error, /access mode/);
+    assert.equal(calls.length, 0);
+    assert.equal((await send({ kind: "inventory", server: "claude.ai Slack" })).ok, true, "inventory calls no tool");
+  }
+  for (const config of [{ writeMode: "Full" }, {}, { writeMode: "ReadOnly", networkAllowed: true, mcpServers: { claude_ai_Slack: {} } }]) {
+    const { send, calls } = setup({ mayRead: connectorReadPolicy(config) });
+    assert.equal((await send(read("slack_search_users"))).ok, true, JSON.stringify(config));
+    assert.equal(calls.length, 1);
+  }
+});
+test("a launch without a read policy refuses reads", async () => {
+  const { send, calls } = setup({ mayRead: undefined });
+  assert.equal((await send(read("slack_search_users"))).ok, false);
+  assert.equal(calls.length, 0);
 });

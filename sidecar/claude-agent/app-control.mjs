@@ -4,7 +4,9 @@ import { isReadToolName, wireServerName } from "./briefing.mjs";
 const bytes = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
-export function createAppControl({ enabled, status, request, writeFrame }) {
+// `mayRead(serverName)` is the launch's own connector policy (see
+// connectorReadPolicy in options.mjs). It defaults to refusing.
+export function createAppControl({ enabled, status, request, writeFrame, mayRead = () => false }) {
   let active = 0;
   return async (frame) => {
     const id = typeof frame?.id === "string" && frame.id.length <= 100 ? frame.id : null;
@@ -32,6 +34,9 @@ export function createAppControl({ enabled, status, request, writeFrame }) {
         if (bytes(result) > 256 * 1024) return reply(false, "server inventory exceeds the preview limit");
         return reply(true, result);
       }
+      // The SDK call below skips permission checks, so the chat's own mode
+      // decides first: a preview never reads where the model would be refused.
+      if (!mayRead(server.name)) return reply(false, "this chat's access mode does not allow connector reads; switch the chat to Full access to preview live reads");
       const tool = tools.find(tool => tool.name === input.tool);
       if (!tool || !isReadToolName(input.tool) || tool.readOnly === false || tool.destructive === true) return reply(false, "this tool is not a safe preview read");
       if (!object(input.arguments) || bytes(input.arguments) > 64 * 1024) return reply(false, "preview arguments must be an object within 64 KiB");
@@ -39,7 +44,8 @@ export function createAppControl({ enabled, status, request, writeFrame }) {
         subtype: "mcp_call",
         tool: `mcp__${wireServerName(server.name)}__${input.tool}`,
         arguments: input.arguments,
-        // Both core and this gate permit only reads. No SDK dialog can hang a view.
+        // Core and this gate permit only reads, and only where this launch's mode
+        // lets the model read the server. No SDK dialog can hang a view.
         check_permissions: false,
         result_not_for_model: true,
       });

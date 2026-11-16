@@ -20,7 +20,7 @@ import { stopTaskFrame, childPermissions, withChildPermissions } from "./subagen
 
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { buildOptions, catalogOptions } from "./options.mjs";
+import { buildOptions, catalogOptions, connectorReadPolicy } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
 import { probeUsage, readContextUsage } from "./usage.mjs";
 import { createAskRelay } from "./ask.mjs";
@@ -138,6 +138,7 @@ const appControl = createAppControl({
   status: () => run.mcpServerStatus(),
   request: (request) => run.request(request),
   writeFrame,
+  mayRead: connectorReadPolicy(config),
 });
 
 // Catalogue discovery is a short-lived control-plane request. It uses the

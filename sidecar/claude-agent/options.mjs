@@ -1,4 +1,4 @@
-import { briefingOptions, isBriefing } from "./briefing.mjs";
+import { briefingOptions, isBriefing, wireServerName } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
 /** The `bridge` server's tools that only read or display. */
@@ -43,6 +43,29 @@ export function makeTopLevelOnlyHook() {
       },
     };
   };
+}
+
+/**
+ * Whether this launch lets the model itself call a read on `server`, decided
+ * exactly as `permissionOptions` decides it. Personal-app previews call MCP
+ * with no permission check, so they ask this first: a preview must never read
+ * where the person's chosen mode would refuse the model.
+ */
+export function connectorReadPolicy({ writeMode, networkAllowed = false, mcpServers = {} } = {}) {
+  switch (writeMode) {
+    case "ReadOnly": {
+      // Mirrors makeReadOnlyHook: network authority, and only projected servers.
+      const projected = new Set(Object.keys(mcpServers ?? {}));
+      return (server) => Boolean(networkAllowed) && projected.has(wireServerName(server));
+    }
+    case "Shared":
+    case "Isolated":
+      // No Claude prompt is ever shown, so a third-party MCP call is refused.
+      return () => false;
+    case "Full":
+    default:
+      return () => true;
+  }
 }
 
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}, outputDir = null) {
