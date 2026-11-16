@@ -688,6 +688,41 @@ pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams)
     list_apps(core)
 }
 
+/// Every personal app's latest version, most recently locked first.
+pub fn list_personal_apps(core: &Arc<BridgeCore>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    Ok(wire::ListPersonalAppsResult { apps: crate::apps::personal::list(&*core.try_db()?)? })
+}
+
+/// One personal app's latest version, with its view.
+pub fn get_personal_app(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppParams) -> Result<wire::PersonalApp, BridgeError> {
+    crate::apps::personal::get(&*core.try_db()?, &params.id)
+}
+
+/// Lock a previewed draft as a personal app version. A version that can do
+/// more than the last one is reported, and stored only with `allowWider`.
+pub fn lock_personal_app(core: &Arc<BridgeCore>, params: &wire::LockPersonalAppParams) -> Result<wire::LockPersonalAppResult, BridgeError> {
+    let result = crate::apps::personal::lock(
+        &*core.try_db()?,
+        &params.draft_id,
+        &params.content_hash,
+        params.allow_wider,
+        chrono::Utc::now(),
+    )?;
+    if matches!(result, wire::LockPersonalAppResult::Locked { .. }) {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    Ok(result)
+}
+
+/// Remove a personal app: every version and any draft waiting for it.
+pub fn delete_personal_app(core: &Arc<BridgeCore>, params: &wire::DeletePersonalAppParams) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    let removed = crate::apps::personal::delete(&*core.try_db()?, &params.id)?;
+    if removed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_personal_apps(core)
+}
+
 /// Turn an app on or off. Off removes its tools from new chats, refuses
 /// their calls, drops its prompt text, its pin and its badge.
 pub fn set_app_enabled(core: &Arc<BridgeCore>, params: &wire::SetAppEnabledParams) -> Result<wire::ListAppsResult, BridgeError> {

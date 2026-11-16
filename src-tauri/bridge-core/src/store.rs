@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 80;
+const LATEST_SCHEMA_VERSION: i64 = 81;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -785,6 +785,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // One row per chat a usage limit stopped, while Bridge waits to
             // resume it or switch it to the backup model. See `limit_recovery`.
             80 => crate::limit_recovery::install_store(&transaction)?,
+            // Personal apps: drafts waiting for their lock, and every locked
+            // version. See `apps::personal`.
+            81 => crate::apps::personal::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -6981,6 +6984,19 @@ mod tests {
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
         // Later migrations may follow; this one must have run.
         assert!(current_schema_version(&db).unwrap() >= 73);
+    }
+
+    #[test]
+    fn migration_81_adds_the_personal_app_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        for table in ["personal_app_drafts", "personal_app_versions"] {
+            let found: i64 = db
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", params![table], |row| row.get(0))
+                .unwrap();
+            assert_eq!(found, 1, "{table}");
+        }
+        assert!(current_schema_version(&db).unwrap() >= 81);
     }
 
     #[test]
