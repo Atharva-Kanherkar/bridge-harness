@@ -177,10 +177,12 @@ fn value_bytes(value: &Value) -> usize {
 /// input as JSON, so its serialized size is the size it reads.
 fn json_bytes(value: &Value) -> usize {
     let mut counter = ByteCounter(0);
-    // Writing to a counter cannot fail; a serialization error would leave a
-    // partial count, which is still a lower bound.
-    let _ = serde_json::to_writer(&mut counter, value);
-    counter.0
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        // Writing to a counter cannot fail and a `Value` always serializes;
+        // if it ever did, the count so far is still a lower bound.
+        Err(_) => counter.0,
+    }
 }
 
 struct ByteCounter(usize);

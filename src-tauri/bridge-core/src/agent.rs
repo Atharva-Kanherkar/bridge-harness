@@ -1427,7 +1427,7 @@ fn observe_claude_request(
     if last.model.is_none() {
         last.model = model.map(str::to_owned);
     }
-    let mut raise = |slot: &mut i64, key: &str| {
+    let raise = |slot: &mut i64, key: &str| {
         if let Some(value) = usage.get(key).and_then(Value::as_i64) {
             *slot = (*slot).max(value.max(0));
         }
