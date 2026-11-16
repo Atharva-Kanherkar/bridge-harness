@@ -124,15 +124,27 @@ reader treats `NULL` as unknown.
 ## Manual / SQL Tests
 
 Per-kind report for one session, from the stored column only (no payload
-parsed, served by `idx_session_entries_session_kind`):
+parsed, served by `idx_session_entries_session_kind`).
+
+One provider item can be written several times: OpenCode stores each tool
+part update (`pending`, `running`, a metadata-only `running`) as its own
+`command.started`, and Claude writes a `preparing` and a `running` start.
+Measured on the live database since 2026-11-12: 2.75 start rows per OpenCode
+call, 1.93 per Claude call. Each row's estimate is right for that row, so the
+report counts each item once, with its largest estimate. Deduplicating at
+write time would need a query per frame, which the issue rules out.
 
 ```sql
 SELECT kind,
-       COUNT(*)               AS entries,
-       COUNT(token_estimate)  AS estimated,
-       SUM(token_estimate)    AS tokens
-FROM session_entries
-WHERE session_id = :session
+       COUNT(*)       AS items,
+       COUNT(tokens)  AS estimated,
+       SUM(tokens)    AS tokens
+FROM (
+  SELECT kind, MAX(token_estimate) AS tokens
+  FROM session_entries
+  WHERE session_id = :session
+  GROUP BY kind, COALESCE(provider_event_id, id)
+)
 GROUP BY kind
 ORDER BY tokens DESC;
 ```
