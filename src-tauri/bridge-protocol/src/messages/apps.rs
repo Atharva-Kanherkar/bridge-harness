@@ -122,6 +122,104 @@ pub struct SetAppEnabledParams {
     pub enabled: bool,
 }
 
+// ── Personal apps ──────────────────────────────────────────────────────────
+//
+// An app the person's own harness built for one MCP server: a view, the tools
+// it reads with and the tools it writes with. Bridge never holds the server's
+// credential; the harness that owns the connection makes every call. The
+// person locks each version, and the lock binds to the exact content they
+// previewed (its draft id and content hash).
+
+/// One locked version of a personal app, without its view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalAppSummary {
+    /// Kebab-case, at most 40 characters, never a built-in app's id.
+    pub id: String,
+    /// 1 for the first lock, one more for each lock that changed the content.
+    pub version: u32,
+    pub name: String,
+    /// What the app is for, in the person's words. Agents read it to decide
+    /// when to open the app.
+    pub intent: String,
+    /// The harness whose MCP connection the app uses.
+    pub harness: String,
+    /// The MCP server as that harness configures it (`claude.ai Slack`).
+    pub server: String,
+    /// Tools the view may call without asking. Each is a read by Bridge's
+    /// read vocabulary.
+    pub reads: Vec<String>,
+    /// Tools the view may call only after the person approves the exact call.
+    pub writes: Vec<String>,
+    /// `sha256:` over the app's canonical content.
+    pub content_hash: String,
+    pub view_bytes: u32,
+    pub locked_at: String,
+}
+
+/// One locked version of a personal app, with its view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalApp {
+    pub app: PersonalAppSummary,
+    /// The HTML the app renders in Bridge's sandboxed frame.
+    pub view_html: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPersonalAppsResult {
+    /// The latest version of each app, most recently locked first.
+    pub apps: Vec<PersonalAppSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetPersonalAppParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LockPersonalAppParams {
+    pub draft_id: String,
+    /// The hash the person saw in the preview. A draft whose content no longer
+    /// hashes to it is refused.
+    pub content_hash: String,
+    /// Lock even though this version can do more than the last one. Without
+    /// it, a widening version is reported and nothing is stored.
+    #[serde(default)]
+    pub allow_wider: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LockPersonalAppResult {
+    /// A new version was stored.
+    #[serde(rename_all = "camelCase")]
+    Locked { app: PersonalAppSummary },
+    /// The latest version already has this content; nothing was stored.
+    #[serde(rename_all = "camelCase")]
+    Unchanged { app: PersonalAppSummary },
+    /// This version can do more than the locked one. Nothing was stored; lock
+    /// again with `allowWider` to accept it.
+    #[serde(rename_all = "camelCase")]
+    Widens {
+        /// Tools that were not reads before and are now.
+        added_reads: Vec<String>,
+        /// Tools the app could not call before and now may, with approval.
+        added_writes: Vec<String>,
+        /// The app now uses another harness or server.
+        target_changed: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeletePersonalAppParams {
+    pub id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +262,53 @@ mod tests {
         assert_eq!(value["pinned"], serde_json::Value::Null);
         assert_eq!(value["manifest"]["tools"][0]["asksFirst"], false);
         assert_eq!(value["manifest"]["views"][0], json!({"slot": "card"}));
+    }
+
+    fn personal() -> PersonalAppSummary {
+        PersonalAppSummary {
+            id: "slack-dm".into(),
+            version: 2,
+            name: "Slack DM".into(),
+            intent: "message a teammate on Slack".into(),
+            harness: "claude".into(),
+            server: "claude.ai Slack".into(),
+            reads: vec!["slack_search_users".into()],
+            writes: vec!["slack_send_message".into()],
+            content_hash: "sha256:00".into(),
+            view_bytes: 12,
+            locked_at: "2026-11-16T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn personal_app_types_round_trip_in_camel_case() {
+        round_trip(PersonalApp { app: personal(), view_html: "<p>hi</p>".into() });
+        round_trip(ListPersonalAppsResult { apps: vec![personal()] });
+        round_trip(GetPersonalAppParams { id: "slack-dm".into() });
+        round_trip(DeletePersonalAppParams { id: "slack-dm".into() });
+        round_trip(LockPersonalAppParams { draft_id: "d".into(), content_hash: "sha256:00".into(), allow_wider: true });
+        for result in [
+            LockPersonalAppResult::Locked { app: personal() },
+            LockPersonalAppResult::Unchanged { app: personal() },
+            LockPersonalAppResult::Widens { added_reads: vec!["a_read".into()], added_writes: vec![], target_changed: true },
+        ] {
+            round_trip(result);
+        }
+        let app = serde_json::to_value(PersonalApp { app: personal(), view_html: "<p>hi</p>".into() }).unwrap();
+        assert_eq!(app["viewHtml"], "<p>hi</p>");
+        assert_eq!(app["app"]["contentHash"], "sha256:00");
+        assert_eq!(app["app"]["lockedAt"], "2026-11-16T00:00:00Z");
+        let widens = serde_json::to_value(LockPersonalAppResult::Widens { added_reads: vec![], added_writes: vec!["x".into()], target_changed: false }).unwrap();
+        assert_eq!(widens, json!({"kind": "widens", "addedReads": [], "addedWrites": ["x"], "targetChanged": false}));
+        let params: LockPersonalAppParams = serde_json::from_value(json!({"draftId": "d", "contentHash": "h"})).unwrap();
+        assert!(!params.allow_wider, "allowWider defaults to false");
+    }
+
+    #[test]
+    fn personal_app_params_refuse_unknown_fields() {
+        assert!(serde_json::from_value::<GetPersonalAppParams>(json!({"id": "a", "x": 1})).is_err());
+        assert!(serde_json::from_value::<DeletePersonalAppParams>(json!({"id": "a", "x": 1})).is_err());
+        assert!(serde_json::from_value::<LockPersonalAppParams>(json!({"draftId": "d", "contentHash": "h", "x": 1})).is_err());
     }
 
     #[test]

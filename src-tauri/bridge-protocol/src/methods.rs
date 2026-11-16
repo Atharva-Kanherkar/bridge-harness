@@ -233,6 +233,11 @@ methods![
     (ListApps, "apps", "list_apps"),
     (SetAppPinned, "apps", "set_app_pinned"),
     (SetAppEnabled, "apps", "set_app_enabled"),
+    // personal apps: views the person's harness built for one MCP server
+    (ListPersonalApps, "apps", "list_personal_apps"),
+    (GetPersonalApp, "apps", "get_personal_app"),
+    (LockPersonalApp, "apps", "lock_personal_app"),
+    (DeletePersonalApp, "apps", "delete_personal_app"),
     // trails: one page per piece of work, joining chats, notes, PRs and drafts
     (ListTrails, "trails", "list_trails"),
     (ReadTrail, "trails", "read_trail"),

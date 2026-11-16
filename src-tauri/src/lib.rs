@@ -242,6 +242,33 @@ async fn set_app_pinned(id: String, pinned: bool, state: State<'_, Arc<BridgeCor
 }
 
 #[tauri::command]
+async fn list_personal_apps(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("list personal apps", move || api::list_personal_apps(&core)).await
+}
+
+#[tauri::command]
+async fn get_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::PersonalApp, BridgeError> {
+    let core = state.inner().clone();
+    blocking("read a personal app", move || api::get_personal_app(&core, &wire::GetPersonalAppParams { id })).await
+}
+
+#[tauri::command]
+async fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::LockPersonalAppResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("lock a personal app", move || {
+        api::lock_personal_app(&core, &wire::LockPersonalAppParams { draft_id, content_hash, allow_wider })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("delete a personal app", move || api::delete_personal_app(&core, &wire::DeletePersonalAppParams { id })).await
+}
+
+#[tauri::command]
 async fn set_app_enabled(id: String, enabled: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListAppsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("turn an app on or off", move || api::set_app_enabled(&core, &wire::SetAppEnabledParams { id, enabled })).await
@@ -3510,6 +3537,10 @@ pub fn run() -> i32 {
             list_apps,
             set_app_pinned,
             set_app_enabled,
+            list_personal_apps,
+            get_personal_app,
+            lock_personal_app,
+            delete_personal_app,
             list_trails,
             read_trail,
             create_trail,

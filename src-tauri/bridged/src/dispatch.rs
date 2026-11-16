@@ -123,6 +123,19 @@ pub fn dispatch(
             reply(api::github_sidebar_prs(core, p.refresh))
         }
         MethodName::ListApps => reply(api::list_apps(core)),
+        MethodName::ListPersonalApps => reply(api::list_personal_apps(core)),
+        MethodName::GetPersonalApp => {
+            let p: wire::GetPersonalAppParams = decode(method, params)?;
+            reply(api::get_personal_app(core, &p))
+        }
+        MethodName::LockPersonalApp => {
+            let p: wire::LockPersonalAppParams = decode(method, params)?;
+            reply(api::lock_personal_app(core, &p))
+        }
+        MethodName::DeletePersonalApp => {
+            let p: wire::DeletePersonalAppParams = decode(method, params)?;
+            reply(api::delete_personal_app(core, &p))
+        }
         MethodName::SetAppPinned => {
             let p: wire::SetAppPinnedParams = decode(method, params)?;
             reply(api::set_app_pinned(core, &p))
@@ -1570,6 +1583,41 @@ mod tests {
         assert!(missing.is_err());
         let refused = dispatch(&core, MethodName::ListTrails, Some(json!({"bogus": true})));
         assert!(refused.is_err(), "unknown fields are refused");
+    }
+
+    #[test]
+    fn personal_apps_answer_through_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let manifest = bridge_core::apps::personal::Manifest {
+            name: "Slack DM".into(),
+            intent: "Message a teammate".into(),
+            harness: "claude".into(),
+            server: "claude.ai Slack".into(),
+            reads: vec!["slack_search_users".into()],
+            writes: vec!["slack_send_message".into()],
+            view_html: "<button>Send</button>".into(),
+        };
+        let draft = bridge_core::apps::personal::create_draft(&core.db.lock().unwrap(), None, &manifest, chrono::Utc::now()).unwrap();
+
+        assert_eq!(dispatch(&core, MethodName::ListPersonalApps, None).unwrap(), json!({"apps": []}));
+        assert!(dispatch(&core, MethodName::ListPersonalApps, Some(json!({}))).is_err(), "list takes no parameters");
+        assert!(dispatch(&core, MethodName::LockPersonalApp, Some(json!({"draftId": draft.id, "contentHash": "sha256:wrong"}))).is_err());
+        let locked = dispatch(&core, MethodName::LockPersonalApp, Some(json!({"draftId": draft.id, "contentHash": draft.content_hash}))).unwrap();
+        assert_eq!(locked["kind"], "locked");
+        assert_eq!(locked["app"]["id"], "slack-dm");
+        assert_eq!(locked["app"]["version"], 1);
+
+        let listed = dispatch(&core, MethodName::ListPersonalApps, None).unwrap();
+        assert_eq!(listed["apps"][0]["contentHash"], draft.content_hash);
+        assert!(listed["apps"][0].get("viewHtml").is_none(), "the list carries no views");
+        let got = dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm"}))).unwrap();
+        assert_eq!(got["viewHtml"], "<button>Send</button>");
+        assert!(dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm", "x": 1}))).is_err());
+
+        let after = dispatch(&core, MethodName::DeletePersonalApp, Some(json!({"id": "slack-dm"}))).unwrap();
+        assert_eq!(after, json!({"apps": []}));
+        assert!(dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm"}))).is_err());
     }
 
     #[test]

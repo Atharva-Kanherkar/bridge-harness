@@ -358,6 +358,10 @@ typed_methods![
     (ListApps, _, ListAppsResult),
     (SetAppPinned, SetAppPinnedParams, ListAppsResult),
     (SetAppEnabled, SetAppEnabledParams, ListAppsResult),
+    (ListPersonalApps, _, ListPersonalAppsResult),
+    (GetPersonalApp, GetPersonalAppParams, PersonalApp),
+    (LockPersonalApp, LockPersonalAppParams, LockPersonalAppResult),
+    (DeletePersonalApp, DeletePersonalAppParams, ListPersonalAppsResult),
     // trails: one page per piece of work
     (ListTrails, ListTrailsParams, ListTrailsResult),
     (ReadTrail, ReadTrailParams, ReadTrailResult),
