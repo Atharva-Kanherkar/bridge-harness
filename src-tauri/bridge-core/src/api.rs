@@ -3592,6 +3592,18 @@ fn provider_login_account(
     let db = core.db.lock().unwrap();
     let account = agent_config::account(&db, provider, account_id)?;
     drop(db);
+    prepare_login_account(provider, &account, &crate::provider_accounts::HostHomes::from_env()).map(Some)
+}
+
+/// The launch an account's sign-in runs with, its folder created. Only a
+/// folder login has a CLI sign-in; an API-key account is refused before any
+/// process starts.
+fn prepare_login_account(
+    provider: &str,
+    account: &crate::provider_accounts::ProviderAccount,
+    homes: &crate::provider_accounts::HostHomes,
+) -> Result<crate::provider_accounts::AccountLaunch, BridgeError> {
+    let account_id = account.id.as_str();
     let driver = crate::provider_accounts::driver(provider)
         .ok_or_else(|| BridgeError::Invalid(format!("{provider} does not support extra accounts")))?;
     let crate::provider_accounts::AccountLogin::Folder { variable, .. } = driver.login else {
@@ -3600,16 +3612,12 @@ fn provider_login_account(
             driver.label
         )));
     };
-    let launch = crate::provider_accounts::prepare_launch(
-        provider,
-        &account,
-        &crate::provider_accounts::HostHomes::from_env(),
-    )?;
+    let launch = crate::provider_accounts::prepare_launch(provider, account, homes)?;
     let folder = launch.value(variable).ok_or_else(|| {
         BridgeError::Invalid(format!("account {account_id} has no {variable} folder"))
     })?;
     std::fs::create_dir_all(folder)?;
-    Ok(Some(launch))
+    Ok(launch)
 }
 
 fn apply_provider_login_account(
@@ -3857,6 +3865,84 @@ mod provider_login_tests {
 
         assert_eq!(provider_login_terminal_id("claude", Some("personal")), "claude:account:personal");
         assert_eq!(command.get_env("CLAUDE_CONFIG_DIR"), Some(OsStr::new("/tmp/bridge-claude-personal")));
+    }
+
+    fn homes(root: &std::path::Path) -> crate::provider_accounts::HostHomes {
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        crate::provider_accounts::HostHomes {
+            home: root.join("home"),
+            claude_config_dir: None,
+            codex_home: None,
+            xdg_data_home: None,
+        }
+    }
+
+    fn account(id: &str, home: &str, shadow: &str) -> crate::provider_accounts::ProviderAccount {
+        crate::provider_accounts::ProviderAccount { id: id.into(), label: id.into(), home_path: home.into(), shadow_home_path: shadow.into() }
+    }
+
+    /// Every provider with a CLI sign-in gets its own folder, created before
+    /// the CLI starts, in the variable that CLI reads. A provider without one
+    /// is refused before any process exists.
+    #[test]
+    fn each_provider_signs_an_account_in_to_its_own_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let homes = homes(root.path());
+        let cases = [
+            ("claude", account("work", "~/.claude_work", ""), "CLAUDE_CONFIG_DIR", "home/.claude_work"),
+            ("codex", account("personal", "", "~/.codex_personal"), "CODEX_HOME", "home/.codex_personal"),
+            ("codex", account("solo", "~/.codex_solo", ""), "CODEX_HOME", "home/.codex_solo"),
+            ("opencode", account("go", "~/.opencode_go", ""), "XDG_DATA_HOME", "home/.opencode_go"),
+        ];
+        for (provider, account, variable, folder) in cases {
+            let launch = prepare_login_account(provider, &account, &homes)
+                .unwrap_or_else(|error| panic!("{provider}/{}: {error}", account.id));
+            let expected = root.path().join(folder);
+            assert_eq!(launch.value(variable), Some(expected.to_str().unwrap()), "{provider}");
+            assert!(expected.is_dir(), "{provider} folder was not created");
+            let mut command = CommandBuilder::new(provider);
+            command.env("ANTHROPIC_API_KEY", "inherited");
+            command.env("OPENCODE_API_KEY", "inherited");
+            apply_provider_login_account(&mut command, Some(&launch));
+            assert_eq!(command.get_env(variable), Some(OsStr::new(expected.to_str().unwrap())));
+            for removed in launch.removed() {
+                assert_eq!(command.get_env(removed), None, "{provider} kept {removed}");
+            }
+        }
+        // A Codex shadow home links the shared one but keeps its own login.
+        assert!(root.path().join("home/.codex_personal/sessions").is_symlink());
+        assert!(!root.path().join("home/.codex_personal/auth.json").exists());
+        let refused = prepare_login_account("cursor", &account("team", "", ""), &homes).unwrap_err().to_string();
+        assert!(refused.contains("API key"), "{refused}");
+        assert!(prepare_login_account("grok", &account("x", "~/.x", ""), &homes).is_err());
+    }
+
+    /// Fuzz the ids a renderer can send: no two distinct (provider, account)
+    /// pairs share a sign-in terminal, and none collides with a default login.
+    #[test]
+    fn login_terminals_never_collide() {
+        let mut seed: u64 = 0xdead_beef_cafe_f00d;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let alphabet: Vec<char> = "abcAB09-_:/. ".chars().collect();
+        let providers = ["claude", "codex", "opencode", "cursor", "github", "grok"];
+        let mut seen = std::collections::HashMap::new();
+        for provider in providers {
+            seen.insert(provider_login_terminal_id(provider, None), (provider.to_owned(), None));
+        }
+        for _ in 0..20_000 {
+            let provider = providers[(next() % providers.len() as u64) as usize];
+            let mut id = String::from("a");
+            for _ in 0..(next() % 6) {
+                id.push(alphabet[(next() % alphabet.len() as u64) as usize]);
+            }
+            // Only ids Settings would accept reach a sign-in.
+            if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { continue; }
+            let terminal = provider_login_terminal_id(provider, Some(&id));
+            let entry = (provider.to_owned(), Some(id.clone()));
+            if let Some(previous) = seen.insert(terminal.clone(), entry.clone()) {
+                assert_eq!(previous, entry, "{terminal} shared");
+            }
+        }
     }
 }
 

@@ -13,6 +13,15 @@ const TIMEOUT: Duration = Duration::from_secs(35);
 const OUTPUT_LIMIT: u64 = 128 * 1024;
 
 pub(super) fn read(core: &crate::BridgeCore) -> Result<AccountUsage, String> {
+    read_as(core, None)
+}
+
+/// The same probe pointed at an extra account: its own `CLAUDE_CONFIG_DIR`,
+/// with inherited credentials that would outrank that folder removed.
+pub(super) fn read_as(
+    core: &crate::BridgeCore,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) -> Result<AccountUsage, String> {
     let node =
         crate::binary::resolve("node").ok_or_else(|| format!("{UNAVAILABLE} Install Node.js."))?;
     let sidecar = crate::claude_adapter::sidecar_entry().map_err(|_| UNAVAILABLE.to_string())?;
@@ -33,6 +42,7 @@ pub(super) fn read(core: &crate::BridgeCore) -> Result<AccountUsage, String> {
     let mut command = Command::new(node);
     crate::binary::hydrate_command_path(&mut command);
     crate::claude_adapter::configure_sdk_environment(&mut command);
+    crate::provider_accounts::apply_account(&mut command, account);
     command
         .arg(sidecar)
         .arg(json!({"usage":true,"cwd":directory,"executablePath":binary}).to_string())

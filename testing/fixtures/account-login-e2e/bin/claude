@@ -1,0 +1,18 @@
+#!/usr/bin/env node
+// Fake Claude Code: `auth login` signs the account in CLAUDE_CONFIG_DIR.
+import fs from "node:fs"; import path from "node:path";
+const args = process.argv.slice(2).join(" ");
+if (args === "--version") { console.log("2.1.261 (Claude Code)"); process.exit(0); }
+if (args === "auth login") {
+  const dir = process.env.CLAUDE_CONFIG_DIR;
+  if (!dir || !fs.existsSync(dir)) { console.error("error: config folder missing"); process.exit(1); }
+  console.log("Opening browser to sign in…\nhttps://claude.ai/oauth/authorize?code=true&state=e2e");
+  setTimeout(() => {
+    fs.writeFileSync(path.join(dir, ".e2e-login.json"), JSON.stringify({
+      email: `${path.basename(dir)}@claude.e2e`,
+      inheritedKey: !!process.env.ANTHROPIC_API_KEY,
+    }));
+    console.log("Login successful.");
+    process.exit(0);
+  }, 300);
+} else process.exit(1);

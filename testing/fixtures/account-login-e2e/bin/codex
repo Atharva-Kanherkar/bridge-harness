@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// Fake Codex: `login` writes auth.json into CODEX_HOME; `app-server` answers
+// the account and rate-limit reads from that same file.
+import fs from "node:fs"; import path from "node:path"; import readline from "node:readline";
+const args = process.argv.slice(2);
+const home = process.env.CODEX_HOME || path.join(process.env.HOME, ".codex");
+if (args[0] === "--version") { console.log("codex-cli 0.200.0"); process.exit(0); }
+if (args[0] === "login") {
+  console.log("Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to this URL to authenticate:\n\nhttps://auth.openai.com/oauth/authorize?state=e2e");
+  setTimeout(() => {
+    fs.writeFileSync(path.join(home, "auth.json"), JSON.stringify({ email: `${path.basename(home)}@codex.e2e` }));
+    console.log("Successfully logged in");
+    process.exit(0);
+  }, 300);
+} else if (args[0] === "app-server") {
+  const auth = (() => { try { return JSON.parse(fs.readFileSync(path.join(home, "auth.json"), "utf8")); } catch { return null; } })();
+  const used = auth ? (auth.email.length * 7) % 90 : 0;
+  readline.createInterface({ input: process.stdin }).on("line", line => {
+    const msg = JSON.parse(line);
+    if (msg.id === undefined) return;
+    let result;
+    if (msg.method === "initialize") result = {};
+    else if (msg.method === "account/read") result = auth ? { account: { type: "chatgpt", email: auth.email, planType: "plus" } } : { account: null };
+    else if (msg.method === "account/rateLimits/read") result = { rateLimits: { primary: { usedPercent: used, windowDurationMins: 300, resetsAt: 4102444800 }, secondary: { usedPercent: used / 2, windowDurationMins: 10080, resetsAt: 4102444800 } } };
+    else { console.log(JSON.stringify({ id: msg.id, error: { message: "unknown" } })); return; }
+    console.log(JSON.stringify({ id: msg.id, result }));
+  });
+} else process.exit(1);

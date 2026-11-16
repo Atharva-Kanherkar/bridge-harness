@@ -952,6 +952,29 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: connector-approval-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Provider sign-in progress. A vendor CLI can sit silent for seconds while it
+   boots, so the pane shows that work is happening without a spinner: a halo
+   that blooms from the agent's mark, and a light that travels along the
+   active step's rail. Transform and opacity only; the reduced-motion rule at
+   the bottom of this file freezes both on a readable frame. */
+@keyframes signin-halo {
+  0% { opacity: 0.5; transform: scale(0.75); }
+  70%, 100% { opacity: 0; transform: scale(1.55); }
+}
+
+.signin-halo {
+  animation: signin-halo 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes signin-rail {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.signin-rail-light {
+  animation: signin-rail 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 /* The live accent bar on a working Agent Fleet tile. */
 @keyframes mission-pulse {
   0%, 100% { opacity: 0.45; }

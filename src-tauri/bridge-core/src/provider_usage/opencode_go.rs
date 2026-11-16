@@ -10,6 +10,17 @@ use zeroize::Zeroizing;
 
 const MAX_AUTH_BYTES: usize = 1_048_576;
 
+/// An extra account's tokens: only what OpenCode stored in that account's own
+/// data folder. Inherited keys and the browser session belong to the user's
+/// own login, so they are never read here.
+pub(super) fn account_credentials(data_home: &Path) -> Result<Vec<Zeroizing<String>>, String> {
+    let data = data_home.join("opencode");
+    if let Some(stored) = stored_credentials(&data.join("opencode.db"), chrono::Utc::now().timestamp_millis())? {
+        return Ok(stored);
+    }
+    Ok(key_from_sources(None, Some(data.join("auth.json")), None)?.into_iter().collect())
+}
+
 /// Bearer tokens to try in order. The environment override and OpenCode 2.x's
 /// own store are each authoritative; 1.x's `auth.json` is read only without them.
 pub(super) fn credentials() -> Result<Vec<Zeroizing<String>>, String> {

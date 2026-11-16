@@ -77,6 +77,49 @@ describe("ProviderAccountsSettings", () => {
     await separate.unmount();
   });
 
+  it.each([
+    ["claude", { id: "work", label: "Work", homePath: "~/.claude_work" }],
+    ["codex", { id: "work", label: "Work", shadowHomePath: "~/.codex_work" }],
+  ] as const)("tells the person how a %s account's sign-in ended, and refreshes its limits", async (id, stored) => {
+    let exit: (event: { sessionId: string; terminalId: string }) => void = () => undefined;
+    let output: (chunk: { sessionId: string; terminalId: string; data: string }) => void = () => undefined;
+    vi.spyOn(bridgeApi, "onTerminalExited").mockImplementation(async handler => { exit = handler; return () => undefined; });
+    vi.spyOn(bridgeApi, "onTerminal").mockImplementation(async handler => { output = handler as typeof output; return () => undefined; });
+    const start = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: `${id}:account:work` });
+    const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews").mockResolvedValue(null);
+    const view = await mount(harness(id, { accounts: [stored] }));
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Sign in to Work"]')!.click());
+    expect(start).toHaveBeenCalledWith(id, "work");
+    expect(view.container.querySelector("[data-stage]")).not.toBeNull();
+
+    // Another account's exit leaves this sign-in running.
+    await act(async () => exit({ sessionId: "provider-login", terminalId: `${id}:account:other` }));
+    expect(view.container.querySelector("[data-stage]")).not.toBeNull();
+
+    await act(async () => exit({ sessionId: "provider-login", terminalId: `${id}:account:work` }));
+    expect(view.container.querySelector("[data-stage]")).toBeNull();
+    expect(view.container.textContent).toContain("Work is signed in");
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // A failed login says so and offers the retry.
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Sign in to Work"]')!.click());
+    await act(async () => output({ sessionId: "provider-login", terminalId: `${id}:account:work`, data: "Error: login failed: access denied\n" }));
+    await act(async () => exit({ sessionId: "provider-login", terminalId: `${id}:account:work` }));
+    expect(view.container.textContent).toContain("Work's sign-in didn't finish");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => view.button("Try again")!.click());
+    expect(start).toHaveBeenCalledTimes(3);
+    await view.unmount();
+  });
+
+  it("offers no CLI sign-in for API-key or key-only accounts", async () => {
+    for (const [id, stored] of [["cursor", { id: "team", label: "Team" }], ["opencode", { id: "go", label: "Go", homePath: "~/.oc_go" }]] as const) {
+      const view = await mount(harness(id, { accounts: [stored] }));
+      expect(view.container.querySelector(`[aria-label="Sign in to ${stored.label}"]`)).toBeNull();
+      await view.unmount();
+    }
+  });
+
   it("refuses a relative folder before saving", async () => {
     const view = await mount(harness("claude"));
     await act(async () => view.button("Add account")!.click());
