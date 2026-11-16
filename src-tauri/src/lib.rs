@@ -241,31 +241,32 @@ async fn set_app_pinned(id: String, pinned: bool, state: State<'_, Arc<BridgeCor
     blocking("pin an app", move || api::set_app_pinned(&core, &wire::SetAppPinnedParams { id, pinned })).await
 }
 
-#[tauri::command]
-async fn list_personal_apps(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+// Return owned futures: Tauri keeps these commands asynchronous without its
+// generated unused-Result assertion for borrowed async arguments.
+#[tauri::command(async)]
+fn list_personal_apps(state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ListPersonalAppsResult, BridgeError>> {
     let core = state.inner().clone();
-    blocking("list personal apps", move || api::list_personal_apps(&core)).await
+    blocking("list personal apps", move || api::list_personal_apps(&core))
 }
 
-#[tauri::command]
-async fn get_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::PersonalApp, BridgeError> {
+#[tauri::command(async)]
+fn get_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalApp, BridgeError>> {
     let core = state.inner().clone();
-    blocking("read a personal app", move || api::get_personal_app(&core, &wire::GetPersonalAppParams { id })).await
+    blocking("read a personal app", move || api::get_personal_app(&core, &wire::GetPersonalAppParams { id }))
 }
 
-#[tauri::command]
-async fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::LockPersonalAppResult, BridgeError> {
+#[tauri::command(async)]
+fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: bool, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::LockPersonalAppResult, BridgeError>> {
     let core = state.inner().clone();
     blocking("lock a personal app", move || {
         api::lock_personal_app(&core, &wire::LockPersonalAppParams { draft_id, content_hash, allow_wider })
     })
-    .await
 }
 
-#[tauri::command]
-async fn delete_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+#[tauri::command(async)]
+fn delete_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ListPersonalAppsResult, BridgeError>> {
     let core = state.inner().clone();
-    blocking("delete a personal app", move || api::delete_personal_app(&core, &wire::DeletePersonalAppParams { id })).await
+    blocking("delete a personal app", move || api::delete_personal_app(&core, &wire::DeletePersonalAppParams { id }))
 }
 
 #[tauri::command]
