@@ -34,6 +34,10 @@ reader treats `NULL` as unknown.
   changes, `artifact.*`, unknown kinds) stores `NULL`.
 - An allowlisted kind whose recognised fields are all absent stores `NULL`
   (shape unknown), not `0`. A present but empty string stores `0`.
+- A Claude tool start in phase `preparing` (`content_block_start`, the model
+  still writing the arguments, input `{}`) stores `NULL`. The `running` start
+  for the same call carries the input, so it is counted once. Found in the
+  manual E2E: each Claude tool call wrote both rows.
 - `compaction_controller` keeps estimating from the full payload and ignores
   the stored column, so the switch-summary floor and `tokensBefore` do not
   move.
@@ -72,6 +76,7 @@ reader treats `NULL` as unknown.
 - `entry_tokens::tests::output_falls_back_through_adapter_shapes` — Codex
   `aggregatedOutput`, OpenCode `state.output`, Claude content blocks.
 - `entry_tokens::tests::bookkeeping_and_unknown_kinds_are_null`.
+- `entry_tokens::tests::a_preparing_tool_start_is_not_counted`.
 - `entry_tokens::tests::recognised_kind_with_no_fields_is_null_and_empty_text_is_zero`.
 - `entry_tokens::tests::typed_summaries_count_their_fields`.
 - `entry_tokens::tests::json_input_size_matches_compact_serialization`.
