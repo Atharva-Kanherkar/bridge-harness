@@ -17,7 +17,9 @@ hash-locked manifests. A person locks a draft by its id and content hash.
   tool lists sorted, so the same app always hashes the same and any change to
   name, intent, harness, server, tools or view changes it.
 - `create_draft` stores a validated draft (for slice 3) and returns its id and
-  hash. Drafts older than 24 hours are refused and pruned.
+  hash. New apps reserve distinct ids across both locked apps and pending
+  drafts, even when their names match. Drafts older than 24 hours are refused
+  and pruned.
 - `apps/lock_personal_app {draftId, contentHash, allowWider}`:
   - refuses an unknown or expired draft, and a hash that does not match the
     stored draft (the person locks only what they previewed);
@@ -25,8 +27,9 @@ hash-locked manifests. A person locks a draft by its id and content hash.
   - for an existing app whose latest version has the same hash, stores nothing
     and reports `unchanged`;
   - for an existing app, stores version n+1 when every read and write was
-    already in version n; when the draft adds any tool or moves a read to a
-    write or back, it reports `widens` with the added tools and stores nothing
+    already callable in version n; moving a read to a write narrows access
+    because it adds approval. When the draft adds a tool or moves a write to
+    a read, it reports `widens` with the added tools and stores nothing
     unless `allowWider` is true;
   - a harness or server change counts as widening;
   - consumes the draft on `locked` and `unchanged`, keeps it on `widens`.
@@ -45,6 +48,7 @@ hash-locked manifests. A person locks a draft by its id and content hash.
 - Lock: new, unchanged, narrowed, widened refused, widened allowed, server
   change, harness change, hash mismatch, expired draft, draft consumed.
 - List order, get not found, delete idempotent and removes drafts.
+- Two new drafts with the same name reserve separate ids and lock separately.
 - Migration 81 adds both tables.
 - Wire types round-trip, params refuse unknown fields, camelCase names.
 - Dispatch: each method reaches core; list takes no params.
