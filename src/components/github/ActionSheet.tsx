@@ -102,6 +102,12 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
     const onKeyDown = (event: KeyboardEvent) => {
       const sheet = sheetRef.current;
       if (!sheet) return;
+      // The scrim covers this pane only; keys typed elsewhere in the app
+      // (the chat composer, other panes) are not the sheet's.
+      const pane = sheet.closest("[data-gh-pane-root]") ?? sheet.parentElement;
+      const target = event.target;
+      const inPane = target === document.body || (target instanceof Node && pane?.contains(target));
+      if (!inPane) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -110,10 +116,10 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
       }
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         const ready = !requiresBody || (body ?? "").trim().length > 0;
-        if (ready && !busy) {
-          event.preventDefault();
-          onConfirm();
-        }
+        // The chord is the sheet's alone; the merge box behind never sees it.
+        event.preventDefault();
+        event.stopPropagation();
+        if (ready && !busy) onConfirm();
         return;
       }
       if (event.key === "Tab") {

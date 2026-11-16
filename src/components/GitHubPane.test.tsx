@@ -728,6 +728,43 @@ describe("GitHubPane", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("does not merge when the chord confirms an action sheet over an open merge step", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Done." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Squash and merge"));
+    expect(document.body.querySelector("[data-merge-go]")).toBeTruthy();
+    await click(buttonByText("Manage labels"));
+    await click(buttonByText("enhancement"));
+    const confirm = confirmButton();
+    await act(async () => {
+      confirm.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action.mock.calls[0][1]).toMatchObject({ kind: "label" });
+  });
+
+  it("picking a strategy from the menu writes that strategy's commit subject", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(document.querySelector('button[aria-label="Choose a merge strategy"]') as HTMLButtonElement);
+    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Merge strategy"] button, [role="menu"][aria-label="Merge strategy"] [role="menuitemradio"], [role="menu"][aria-label="Merge strategy"] [role="menuitem"]')]
+      .find(button => button.textContent?.includes("Create a merge commit"))!;
+    await click(item);
+    const subject = document.querySelector<HTMLInputElement>('input[aria-label="Commit message"]')!;
+    expect(subject.value).toMatch(/^Merge pull request #1 from /);
+  });
+
   it("shows a refused merge verbatim with Try again and keeps the form", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
@@ -754,7 +791,6 @@ describe("GitHubPane", () => {
     });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
-    console.log("DEBUG box buttons:", [...document.querySelectorAll("button")].map(b => b.textContent?.trim()).filter(t => t && t.length < 30).join(" | "));
     await click(document.querySelector('button[aria-label="Choose a merge strategy"]') as HTMLButtonElement);
     const menu = document.querySelector('[role="menu"][aria-label="Merge strategy"]')!;
     expect(menu.textContent).toContain("Create a merge commit");

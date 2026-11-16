@@ -680,6 +680,8 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     </PaneNotice>;
   } else if (surfaceTab === "pulls" && selected !== undefined) {
     body = <PullRequestDetail
+      // A new PR is a new detail: no merge state or in-flight result carries over.
+      key={selected}
       workspaceId={workspaceId}
       workspaceBranch={workspaceBranch}
       sessionId={sessionId}
@@ -1468,7 +1470,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         number,
         strategy: merge.strategy,
         // The confirm form's fields; empty means `gh`'s own default.
-        subject: merge.subject.trim() || undefined,
+        // Rebase writes no commit of its own; the hidden field is not sent.
+        subject: merge.strategy === "rebase" ? undefined : merge.subject.trim() || undefined,
         body: undefined,
         deleteBranch: merge.deleteBranch || undefined,
       }, true);
@@ -1485,8 +1488,14 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   useEffect(() => {
     if (!mergeOpenForKeys) return;
     const onKey = (event: KeyboardEvent) => {
+      // Only keys meant for this pane: not one a sheet already took, not a
+      // chord typed elsewhere in the app, not while a write is running.
+      if (event.defaultPrevented || pending || checkoutOpen || busy) return;
+      const target = event.target;
+      const inPane = target === document.body || (target instanceof Element && target.closest("[data-gh-pane-root]") !== null);
+      if (!inPane) return;
       if (event.key === "Escape") dispatchMerge({ type: "collapse" });
-      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
         event.preventDefault();
         void runMerge();
       }
@@ -1524,53 +1533,6 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const checkedOutHere = workspaceBranch === summary.headBranch;
   const mergedNow = summary.state === "merged" || merge.phase === "merged";
   const StateIcon = pullRequestStateIcon(summary);
-  // The merge box's overflow menu: everything that is not the merge itself,
-  // the review harness, or Approve (issue #1028 keeps at most three visible
-  // secondary actions plus this menu).
-  const overflowItems: OverflowItem[] = summary.state === "open" ? [
-    { label: "Request changes", icon: MessageSquare, onSelect: () => setPending({
-      title: `Request changes on #${number}`,
-      consequence: `Blocks the merge until ${summary.author?.login ?? "the author"} pushes a fix or you dismiss the review.`,
-      command: `gh pr review ${number} -R ${repoLabel} --request-changes --body …`,
-      tone: "neutral",
-      icon: MessageSquare,
-      requiresBody: true,
-      confirmLabel: "Request changes",
-      build: body => ({ kind: "review", number, event: "requestChanges", body }),
-    }) },
-    ...(summary.isDraft ? [{ label: "Ready for review", icon: Eye, onSelect: () => setPending({
-      title: `Mark #${number} ready for review`,
-      consequence: "Reviewers are notified that the pull request is ready.",
-      command: `gh pr ready ${number} -R ${repoLabel}`,
-      tone: "neutral",
-      icon: Eye,
-      requiresBody: false,
-      confirmLabel: "Ready for review",
-      build: () => ({ kind: "ready", number }),
-    }) }] : []),
-    ...(rerunnable ? [{ label: "Re-run failed", icon: RotateCcw, onSelect: () => setPending({
-      title: `Re-run failed checks on #${number}`,
-      consequence: "The failed runs are queued again.",
-      command: `gh run rerun <failed runs of #${number}> -R ${repoLabel}`,
-      tone: "neutral",
-      icon: RotateCcw,
-      requiresBody: false,
-      confirmLabel: "Re-run failed",
-      build: () => ({ kind: "rerun", number }),
-    }) }] : []),
-    ...(!checkedOutHere ? [{ label: "Check out", icon: FolderGit2, onSelect: () => { setActionError(undefined); setCheckoutOpen(true); } }] : []),
-    { label: "Close pull request", icon: Ban, destructive: true, onSelect: () => setPending({
-      title: `Close #${number} without merging`,
-      consequence: "The branch stays on GitHub. You can reopen it from this pane.",
-      command: `gh pr close ${number} -R ${repoLabel}`,
-      tone: "destructive",
-      icon: Ban,
-      requiresBody: false,
-      confirmLabel: "Close pull request",
-      destructive: true,
-      build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }),
-    }) },
-  ] : [];
   const tabs = [
     { value: "conversation" as const, label: "conversation" },
     { value: "changes" as const, label: `changes ${pullRequest.changedFiles}` },
@@ -1629,7 +1591,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   return <div className="relative flex min-h-0 flex-1 flex-col">
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep merge-sweep-live")}>
+      <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep play")}>
         <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
           <StatePill icon={mergedNow ? GitMerge : StateIcon} label={mergedNow ? "merged" : summary.isDraft ? "draft" : summary.state} merged={mergedNow} />
           <span className="font-mono tabular-nums">#{summary.number}</span>
@@ -1858,36 +1820,41 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       </div>
     </div>
 
-    {pending && <ActionSheet
-      icon={pending.icon}
-      tone={pending.tone}
-      title={pending.title}
-      consequence={pending.consequence}
-      command={pending.command}
-      requiresBody={pending.requiresBody}
-      body={pending.body ?? pendingBody}
-      onBody={setPendingBody}
-      readOnlyBody={pending.body !== undefined}
-      confirmLabel={pending.confirmLabel}
-      destructive={pending.destructive}
-      busy={busy}
-      onCancel={closeOverlays}
-      onConfirm={() => void submit(pending.build(pending.body ?? pendingBody))}
-    />}
+    {/* The host keeps each sheet mounted for its exit motion. */}
+    <ActionSheetHost>
+      {pending && <ActionSheet
+        key="pending"
+        icon={pending.icon}
+        tone={pending.tone}
+        title={pending.title}
+        consequence={pending.consequence}
+        command={pending.command}
+        requiresBody={pending.requiresBody}
+        body={pending.body ?? pendingBody}
+        onBody={setPendingBody}
+        readOnlyBody={pending.body !== undefined}
+        confirmLabel={pending.confirmLabel}
+        destructive={pending.destructive}
+        busy={busy}
+        onCancel={closeOverlays}
+        onConfirm={() => void submit(pending.build(pending.body ?? pendingBody))}
+      />}
 
-    {checkoutOpen && <ActionSheet
-      icon={FolderGit2}
-      tone="neutral"
-      title={`Check out #${number} (${summary.headBranch})`}
-      consequence="Creates an isolated worktree beside this one — your current checkout is untouched. Repeating it reuses the same worktree."
-      requiresBody={false}
-      body=""
-      onBody={() => undefined}
-      busy={busy}
-      confirmLabel="Check out"
-      onCancel={closeOverlays}
-      onConfirm={() => void runCheckout()}
-    />}
+      {checkoutOpen && <ActionSheet
+        key="checkout"
+        icon={FolderGit2}
+        tone="neutral"
+        title={`Check out #${number} (${summary.headBranch})`}
+        consequence="Creates an isolated worktree beside this one — your current checkout is untouched. Repeating it reuses the same worktree."
+        requiresBody={false}
+        body=""
+        onBody={() => undefined}
+        busy={busy}
+        confirmLabel="Check out"
+        onCancel={closeOverlays}
+        onConfirm={() => void runCheckout()}
+      />}
+    </ActionSheetHost>
 
 
   </div>;

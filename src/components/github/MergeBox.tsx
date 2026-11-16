@@ -47,6 +47,8 @@ export type MergeState = {
   message?: string;
   /** The landing choreography plays once, on a real `executed: true`. */
   celebrate: boolean;
+  /** False when the PR was already merged on load: the strategy is unknown. */
+  strategyKnown?: boolean;
 };
 
 export type MergeEvent =
@@ -60,6 +62,9 @@ export type MergeEvent =
   | { type: "merging" }
   | { type: "succeed" }
   | { type: "fail"; message: string };
+
+/** Collapsed regions leave the tab order too, not just the pointer. */
+const inertWhen = (shut: boolean) => (shut ? ({ inert: "" } as Record<string, string>) : {});
 
 /** The default commit subject for a strategy, as `gh` would write it. */
 export function defaultMergeSubject(summary: PullRequestSummary, strategy: MergeStrategy): string {
@@ -81,7 +86,9 @@ export function mergeReducer(state: MergeState, event: MergeEvent): MergeState {
         ? { ...state, phase: "confirming", subject: event.subject, message: undefined }
         : state;
     case "pick":
-      return { ...state, phase: "confirming", strategy: event.strategy, message: undefined };
+      // A merge in flight or done is not reopened by a stale menu.
+      if (state.phase === "merging" || state.phase === "merged") return state;
+      return { ...state, phase: "confirming", strategy: event.strategy, subject: event.subject, message: undefined };
     case "collapse":
       return state.phase === "merging" ? state : { ...state, phase: "idle", message: undefined, celebrate: false };
     case "subject":
@@ -100,7 +107,7 @@ export function mergeReducer(state: MergeState, event: MergeEvent): MergeState {
 /** A detail that already reports merged renders the receipt, never a replay. */
 export function initialMergeState(summary?: PullRequestSummary): MergeState {
   if (summary?.state === "merged") {
-    return { phase: "merged", strategy: "squash", subject: "", deleteBranch: false, celebrate: false };
+    return { phase: "merged", strategy: "squash", subject: "", deleteBranch: false, celebrate: false, strategyKnown: false };
   }
   return { phase: "idle", strategy: "squash", subject: "", deleteBranch: false, celebrate: false };
 }
@@ -252,7 +259,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
       ? <>Replays <b className="font-medium text-foreground">{commitCount} commit{commitCount === 1 ? "" : "s"}</b> onto <b className="font-medium text-foreground">{baseBranch}</b>, no merge commit</>
       : <>Merges <b className="font-medium text-foreground">{commitCount} commit{commitCount === 1 ? "" : "s"}</b> into <b className="font-medium text-foreground">{baseBranch}</b> with a merge commit</>;
 
-  const receiptLine = `${state.strategy === "squash"
+  const receiptLine = state.strategyKnown === false ? `Merged into ${baseBranch}` : `${state.strategy === "squash"
     ? `Squashed ${commitCount} commit${commitCount === 1 ? "" : "s"} into ${baseBranch}`
     : state.strategy === "rebase"
       ? `Replayed ${commitCount} commit${commitCount === 1 ? "" : "s"} onto ${baseBranch}`
@@ -265,7 +272,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
         failed ? "border-destructive/55" : merged ? "border-merged/40" : "border-border-card",
       )}>
         {/* Readiness */}
-        <div className={cn("u-collapse", !open && "shut")} aria-hidden={!open}>
+        <div className={cn("u-collapse", !open && "shut")} aria-hidden={!open} {...inertWhen(!open)}>
           <div>
             {rollup.total > 0 && (() => {
               const verdict = rollup.failed > 0 ? "failing" : rollup.queued + rollup.inProgress > 0 ? "running" : rollup.passed > 0 ? "passing" : "none";
@@ -315,7 +322,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
         </div>
 
         {/* Actions */}
-        <div className={cn("u-collapse", !open && "shut")} aria-hidden={!open}>
+        <div className={cn("u-collapse", !open && "shut")} aria-hidden={!open} {...inertWhen(!open)}>
           <div className="flex items-center gap-1.5 px-3.5 py-3">
             <span className="inline-flex shrink-0 overflow-hidden rounded-lg bg-primary text-primary-foreground">
               <button
@@ -395,7 +402,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
         </div>
 
         {/* Confirm step */}
-        <div className={cn("u-collapse", !showConfirm && "shut")} aria-hidden={!showConfirm}>
+        <div className={cn("u-collapse", !showConfirm && "shut")} aria-hidden={!showConfirm} {...inertWhen(!showConfirm)}>
           <div className="px-3.5 pb-3.5 pt-2">
             <div className="flex items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-[11.5px] text-muted-foreground">
               <FileDiff size={13} className="shrink-0" aria-hidden="true" />
@@ -474,7 +481,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
         </div>
 
         {/* Receipt */}
-        <div className={cn("u-collapse", !merged && "shut")} aria-hidden={!merged}>
+        <div className={cn("u-collapse", !merged && "shut")} aria-hidden={!merged} {...inertWhen(!merged)}>
           <div className={cn("px-3.5 pb-3.5 pt-3", celebrate ? "merge-graph-play" : "merge-graph-final")}>
             <MergeGraph strategy={state.strategy} commits={commitCount} baseBranch={baseBranch} headBranch={headBranch} celebrate={celebrate} />
             <div className={cn("mt-1.5 flex items-start gap-2.5", celebrate && "merge-rise d1")}>
