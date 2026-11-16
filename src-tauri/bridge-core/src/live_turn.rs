@@ -11563,6 +11563,18 @@ impl DeliveryMode {
     }
 }
 
+
+/// Whether agents are offered a throwaway signed-in browser clone. Off for
+/// now: the clone code stays, but no turn advertises it or mints its request
+/// tool, and the app does not surface it. Turn it on together with the
+/// frontend surfaces (`BrowserPane`, `CloneRequestInbox`, the Clones settings
+/// page).
+const OFFER_BROWSER_CLONES: bool = false;
+
+/// What an agent is told about browsers while clones are off. It names no tool
+/// because Bridge provides none: the agent brings its own automation.
+const PLAIN_BROWSER_CONTEXT: &str = "Browser access: when a task needs a browser (local app QA, UI tests, screenshots, extension tests, public pages), use ordinary browser automation such as Playwright with a fresh profile that is not signed in, or the available web/fetch tools. This includes localhost, 127.0.0.1, and [::1]. That is the only browser there is, apart from a browser tab the person attached to this chat, which is described separately when one exists. Bridge has no signed-in browser, no browser clone and no cookie import, so do not offer, request or wait for one. If a task needs the person's signed-in session, say that it cannot be done from here and ask how they want to proceed, for example with a test account. If automation is missing or fails, use another available tool, set it up within the task's permissions, or explain the limitation.";
+
 /// Hand prepared text to the live provider and record it in the conversation.
 fn deliver_prepared_input(
     core: &Arc<BridgeCore>,
@@ -11585,12 +11597,16 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let browser_context = supports_context.then(|| state.browser_bridge.capability_context(session_id, runtime.process_id())).flatten();
-    // Two clone capabilities. The "ask for a clone" one is offered every turn so
-    // the agent can request a signed-in browser; the drive tool is added only
-    // once a clone exists (after the person approved), the same way the attached
-    // tab works.
+    // Signed-in browser clones are switched off (`OFFER_BROWSER_CLONES`): the
+    // agent is told an ordinary, not signed in browser is the only one, and no
+    // clone tool is minted. With the switch on there are two clone
+    // capabilities: the "ask for a clone" one is offered every turn, and the
+    // drive tool is added only once a clone exists (after the person approved),
+    // the same way the attached tab works.
     #[cfg(target_os = "macos")]
-    let clone_context: Option<String> = if supports_context {
+    let clone_context: Option<String> = if !supports_context {
+        None
+    } else if OFFER_BROWSER_CLONES {
         let request = state
             .browser_clone_orchestrator
             .request_capability_context(session_id, runtime.process_id());
@@ -11601,9 +11617,11 @@ fn deliver_prepared_input(
             (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
             (request, drive) => request.or(drive),
         }
-    } else { None };
+    } else {
+        Some(PLAIN_BROWSER_CONTEXT.to_owned())
+    };
     #[cfg(not(target_os = "macos"))]
-    let clone_context: Option<String> = None;
+    let clone_context: Option<String> = supports_context.then(|| PLAIN_BROWSER_CONTEXT.to_owned());
     let application_context = [credential_context, browser_context, clone_context]
         .into_iter()
         .flatten()
@@ -15162,7 +15180,7 @@ mod submit_input_tests {
         let owner = Arc::get_mut(&mut core).unwrap();
         owner.browser_clones = supervisor;
         owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
-        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        let (runtime, _handles) = FakeRuntime::build(false, false, std::process::id());
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
         let extension = browser.path().join("extension");
@@ -15170,11 +15188,10 @@ mod submit_input_tests {
         std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
         for _ in 0..2 {
             submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
-            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text|
-                text.contains("clone-request-chat")
-                    && text.contains("For local app QA")
-                    && text.contains("user's existing signed-in browser state")
-            ));
+            // Clones are not offered on a turn (`OFFER_BROWSER_CLONES`), so the
+            // request capability is minted here the way a turn would mint it.
+            let offered = core.browser_clone_orchestrator.request_capability_context("chat", std::process::id()).unwrap();
+            assert!(offered.contains("clone-request-chat") && offered.contains("user's existing signed-in browser state"));
             let request_tool = directory.join("clone-request-chat");
             let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension,"additionalDomains":["cdn.example.test"]}));
             assert!(ok);
@@ -15225,6 +15242,44 @@ mod submit_input_tests {
         }
         let commands = std::fs::read_to_string(browser.path().join("commands.jsonl")).unwrap();
         assert_eq!(commands.lines().filter(|line| line.contains("Extensions.loadUnpacked")).count(), 2);
+    }
+
+    /// Clones are switched off: a turn tells the agent about the ordinary
+    /// browser only, and mints no clone request tool.
+    #[test]
+    fn turn_offers_only_the_plain_browser() {
+        let (_fixture, mut core, _managed_root) = core_with_chat("ready");
+        let browser = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = browser.path().join("tool");
+        #[cfg(target_os = "macos")]
+        {
+            let supervisor = crate::browser_clone::tests::synthetic_supervisor(browser.path(), true);
+            let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), directory.clone()).unwrap();
+            let owner = Arc::get_mut(&mut core).unwrap();
+            owner.browser_clones = supervisor;
+            owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = &mut core;
+        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        for message in ["Test my local app in a browser", "Now sign in to my account"] {
+            submit_input(&core, "chat".into(), message.into()).unwrap();
+            let contexts = handles.contexts.lock().unwrap().last().unwrap().clone();
+            assert_eq!(contexts.iter().filter(|text| text.contains(PLAIN_BROWSER_CONTEXT)).count(), 1, "every turn carries the plain browser note once");
+            assert!(!contexts.iter().any(|text| text.contains("clone-request-") || text.contains("clone-browser-") || text.contains("Request a Bridge browser clone")));
+            assert!(!directory.join("clone-request-chat").exists(), "no clone request tool is minted");
+            handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+        }
+    }
+
+    #[test]
+    fn plain_browser_note_names_no_clone_tool() {
+        assert!(!OFFER_BROWSER_CLONES);
+        for needle in ["not signed in", "only browser there is", "no signed-in browser, no browser clone and no cookie import", "Playwright"] {
+            assert!(PLAIN_BROWSER_CONTEXT.contains(needle), "missing: {needle}");
+        }
+        assert!(!PLAIN_BROWSER_CONTEXT.contains("clone-request") && !PLAIN_BROWSER_CONTEXT.contains('\u{2014}'));
     }
 
     // -- session-context frame (#528) ---------------------------------------
