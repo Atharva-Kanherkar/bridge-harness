@@ -1,4 +1,4 @@
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Ban,
   Check,
@@ -21,6 +21,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 import { modKey } from "@/lib/platform";
+import { usePrefersReducedMotion } from "@/motion";
 import type {
   GithubChecksResult,
   GithubMergeConfigResult,
@@ -201,7 +202,7 @@ export type MergeBoxProps = {
 };
 
 export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch, prUrl, config, state, dispatch, busy, reviewBusy, onToggleReview, onApprove, overflow, onConfirm, onRestore }: MergeBoxProps) {
-  const reduced = useReducedMotion();
+  const reduced = usePrefersReducedMotion();
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [shaking, setShaking] = useState(false);
@@ -212,7 +213,8 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
   const failed = state.phase === "failed";
   const merging = state.phase === "merging";
   const showConfirm = state.phase === "confirming" || merging || failed;
-  const celebrate = merged && state.celebrate;
+  // Reduced motion never plays: the receipt renders its settled frame.
+  const celebrate = merged && state.celebrate && !reduced;
 
   // The refusal shakes the button once; it re-arms for the next "Try again".
   useEffect(() => {

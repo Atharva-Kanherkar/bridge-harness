@@ -762,6 +762,41 @@ describe("GitHubPane", () => {
     expect(menu.textContent).not.toContain("Rebase and merge");
   });
 
+  it("renders the merged receipt in its final state under reduced motion", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const matchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes("prefers-reduced-motion"),
+        media: query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    });
+    vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Merge requested for PR #1 (squash)." });
+    try {
+      await mount();
+      await click(buttonByText("Safe GitHub surface"));
+      await click(buttonByText("Squash and merge"));
+      await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+      // Reduced motion: no choreography, the settled frame right away.
+      expect(document.querySelector(".merge-graph-final")).toBeTruthy();
+      expect(document.querySelector(".merge-graph-play")).toBeNull();
+      expect(host!.textContent).toContain("Merged into main");
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMedia });
+    }
+  });
+
   it("restores a deleted branch behind the confirmation gate", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
