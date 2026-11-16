@@ -263,6 +263,9 @@ pub struct BriefingRuntimePolicy {
     /// refuse writable workspaces.
     workflow_worktree: bool,
     exact_action: Option<(String, serde_json::Value)>,
+    /// The exact action runs through the harness's own MCP client with no
+    /// model turn. Only `into_direct_call` sets it.
+    direct_call: bool,
 }
 
 /// One connector server a workflow run may reach.
@@ -453,6 +456,7 @@ impl BriefingRuntimePolicy {
             workflow_servers: None,
             workflow_worktree: false,
             exact_action: None,
+            direct_call: false,
         })
     }
 
@@ -494,6 +498,7 @@ impl BriefingRuntimePolicy {
             workflow_servers: None,
             workflow_worktree: false,
             exact_action: None,
+            direct_call: false,
         })
     }
 
@@ -592,6 +597,25 @@ impl BriefingRuntimePolicy {
         policy.read_scope_servers.clear();
         policy.max_argument_bytes = 64 * 1024;
         Ok(policy)
+    }
+
+    /// The same exact action, run by the harness's own MCP client with no model
+    /// turn. Such a launch loads its connector natively, with the account's own
+    /// sign-in, because an explicit copy of a claude.ai connector never shares
+    /// it and comes up needing authentication. The authority is unchanged: one
+    /// call, deep-equal to the approved one, through the same gate.
+    pub fn into_direct_call(mut self) -> Result<Self, BriefingUnsupported> {
+        if self.exact_action.is_none() {
+            return Err(BriefingUnsupported::MalformedPolicy {
+                detail: "a direct call needs one exact approved action".into(),
+            });
+        }
+        self.direct_call = true;
+        Ok(self)
+    }
+
+    pub fn direct_call(&self) -> bool {
+        self.direct_call
     }
 
     pub fn exact_action_config(&self) -> Option<serde_json::Value> {
@@ -1302,6 +1326,20 @@ mod tests {
         );
         assert!(matches!(exact.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
         assert!(!matches!(exact.decide("mcp__claude.ai Slack__slack_send_message", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn only_an_exact_action_can_become_a_direct_call() {
+        let arguments = serde_json::json!({"channel_id": "C123", "message": "hi"});
+        let exact = BriefingRuntimePolicy::compile_exact_action("claude.ai Slack".into(), "slack_send_message", arguments, action_limits()).unwrap();
+        assert!(!exact.direct_call());
+        let direct = exact.clone().into_direct_call().unwrap();
+        assert!(direct.direct_call());
+        assert_eq!(direct.exact_action_config(), exact.exact_action_config());
+        let reply = BriefingRuntimePolicy::compile_action("claude.ai Slack".into(), ActionIntent::Reply, action_limits()).unwrap();
+        assert!(reply.into_direct_call().is_err());
+        let read = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], action_limits()).unwrap();
+        assert!(read.into_direct_call().is_err());
     }
 
     #[test]

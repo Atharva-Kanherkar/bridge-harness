@@ -10,6 +10,7 @@ import { stopTaskFrame, childPermissions, withChildPermissions } from "./subagen
 //   stdin  (Rust → sidecar): control frames
 //     {"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}
 //     {"type":"control_request","request":{"subtype":"interrupt"}}
+//     {"type":"mcp_call","id":"…","tool":"mcp__…","arguments":{…}}  (mcp-call.mjs)
 //   stdout (sidecar → Rust): raw SDK messages (system/assistant/stream_event/
 //     user/result), one JSON object per line — the exact shapes Bridge's
 //     normalize_claude_message_with_state already understands.
@@ -24,6 +25,8 @@ import { userContentBlocks } from "./input.mjs";
 import { probeUsage, readContextUsage } from "./usage.mjs";
 import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
+import { createDirectCall } from "./mcp-call.mjs";
+import { isDirectCall } from "./briefing.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -121,6 +124,14 @@ const permissions = childPermissions(writeFrame, sessionId);
 if (config.catalog !== true) withChildPermissions(options, permissions);
 const run = query({ prompt: input, options });
 
+// The one approved tool call a connector action launch may make without a
+// model turn. Inert unless the briefing carries an exact action.
+const directCall = createDirectCall({
+  exactAction: isDirectCall(config.briefing) ? config.briefing.exactAction : null,
+  request: (request) => run.request(request),
+  writeFrame,
+});
+
 // Catalogue discovery is a short-lived control-plane request. It uses the
 // installed SDK/CLI itself, so new provider releases appear without a Bridge
 // code change. No user turn is submitted and the normal stream pump is skipped.
@@ -153,6 +164,8 @@ rl.on("line", (line) => {
     // One channel, two askers with their own request ids: a workflow run's
     // write (`wf-N`, ask.mjs) and a subagent's prompt (`child-permission-N`).
     if (!asks.resolve(frame)) permissions.respond(frame);
+  } else if (frame.type === "mcp_call") {
+    void directCall(frame).catch(() => {});
   } else if (frame.type === "stop_task") {
     void stopTaskFrame(run, frame).catch(error => writeFrame({ type: "system", subtype: "subagent_stop_failed", task_id: frame.task_id, error: String(error) }));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {

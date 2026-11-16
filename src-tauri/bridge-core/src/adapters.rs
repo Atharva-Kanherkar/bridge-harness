@@ -169,6 +169,17 @@ pub trait AdapterRuntime: Send {
             "This provider does not accept image attachments".into(),
         ))
     }
+    /// Call one MCP tool through the provider's own MCP client, with no model
+    /// turn. The answer arrives on the output stream as an `mcp_call_result`
+    /// frame carrying `id`. Only a launch whose briefing carries an exact
+    /// approved action honours it, and only for that action. The default
+    /// refuses, so a provider without the capability fails at this seam and
+    /// never on the wire.
+    fn call_tool(&self, _id: &str, _tool: &str, _arguments: &Value) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider cannot call a tool without a model turn".into(),
+        ))
+    }
     /// Whether this provider can take a user message while one of its own
     /// turns is still running, and fold it into that turn.
     ///
@@ -2119,6 +2130,9 @@ mod tests {
         assert!(!bare.native_compaction().accepts_focus());
         assert!(bare.compact_native(None).is_err());
         assert!(bare.compact_native(Some("the failing test")).is_err());
+        // Same rule for a direct tool call: a provider without one refuses at
+        // the seam rather than writing a frame nothing will ever answer.
+        assert!(bare.call_tool("c1", "mcp__s__t", &serde_json::json!({})).is_err());
     }
 
     #[test]

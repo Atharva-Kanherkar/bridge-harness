@@ -488,6 +488,20 @@ mod outgoing_tests {
             results,
         }
     }
+    // A direct call's result frame must prove a send exactly as the same tool
+    // result inside a turn does: same receipt, same refusals.
+    #[test]
+    fn a_direct_call_result_proves_a_send_like_a_turn_tool_result() {
+        let text = json!({"message_link":"https://acme.slack.com/archives/C123/p1794571200000001","message_context":{"channel_id":"C123","message_ts":"1794571200.000001"}}).to_string();
+        let frame = json!({"type":"mcp_call_result","id":"c1","ok":true,"result":{"content":[{"type":"text","text":text}]}});
+        let direct = crate::connector_runs_live::call_result_output(&frame).unwrap();
+        let turn = receipt("C123", "1794571200.000001");
+        assert_eq!(direct.results, turn.results);
+        let stored = outgoing_receipt(&direct, "C123", None).unwrap();
+        assert_eq!(stored.remote_ref, "1794571200.000001");
+        assert!(outgoing_receipt(&direct, "C456", None).is_err());
+    }
+
     #[test]
     fn only_actual_tool_results_can_prove_a_send() {
         let output = receipt("C123", "1794571200.000001");

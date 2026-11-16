@@ -173,6 +173,13 @@ fn launch_discovery(
     }
 }
 
+/// A briefing launch with no connector to discover or hand over: a toolless run
+/// or a worktree workflow reaches none, and a direct call's connector is loaded
+/// natively by Claude Code with the account's own sign-in.
+fn skips_connector_discovery(policy: &crate::briefing_policy::BriefingRuntimePolicy) -> bool {
+    policy.toolless() || policy.workflow_worktree() || policy.direct_call()
+}
+
 fn sdk_configuration_for_launch(
     discovery: crate::marketplace::ClaudeDiscovery,
     discover: impl FnOnce(crate::marketplace::ClaudeDiscovery) -> crate::marketplace::ClaudeSdkConfiguration,
@@ -259,6 +266,9 @@ fn launch(
                     "forbiddenWords": crate::briefing_policy::BriefingRuntimePolicy::action_forbidden_words(),
                 })),
                 "exactAction": policy.exact_action_config(),
+                // No model turn: the sidecar honours one `mcp_call` frame for
+                // the exact action, and Claude Code loads the connector itself.
+                "directCall": policy.direct_call(),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
                 // No tool definitions and no coding preset. Present only for a
@@ -277,7 +287,7 @@ fn launch(
         launch_discovery(
             briefing_config.is_some() || read_only_sandbox.is_some(),
             briefing_config.is_some(),
-            briefing.is_some_and(|policy| policy.toolless() || policy.workflow_worktree()),
+            briefing.is_some_and(skips_connector_discovery),
             read_only_sandbox.is_some_and(|sandbox| sandbox.network_allowed()),
         ),
         |discovery| crate::marketplace::cached_claude_sdk_configuration(discovery),
@@ -921,6 +931,11 @@ impl AdapterRuntime for ClaudeRuntime {
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text, TurnContext::default())
     }
+    /// See `sidecar/claude-agent/mcp-call.mjs`: the sidecar sends the SDK's
+    /// `mcp_call` control request, with the briefing gate applied.
+    fn call_tool(&self, id: &str, tool: &str, arguments: &Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &mcp_call_frame(id, tool, arguments))
+    }
     /// The streaming-input frame is an array of content blocks, so Bridge's
     /// trusted context rides as its own blocks ahead of the user's text —
     /// the tail channel that keeps `systemPrompt.append` byte-stable.
@@ -1138,6 +1153,43 @@ fn sdk_version_from_manifest(manifest: &Path) -> Option<String> {
     let parsed: Value = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
     let version = parsed.get("version")?.as_str()?.trim();
     (!version.is_empty()).then(|| version.to_owned())
+}
+
+/// The first Agent SDK whose `mcp_call` takes `check_permissions` (Claude Code
+/// runs the briefing gate on the call, as for a model's own call) and
+/// `result_not_for_model`. 0.3.284 has `mcp_call` without either.
+const DIRECT_TOOL_CALL_MIN_SDK: (u64, u64, u64) = (0, 3, 322);
+
+/// Whether the installed SDK can run an approved tool call with no model turn.
+/// Decided before anything is sent; an older payload keeps the hidden turn.
+pub(crate) fn supports_direct_tool_calls() -> bool {
+    sdk_supports_direct_tool_calls(installed_sdk_version().as_deref())
+}
+
+fn sdk_supports_direct_tool_calls(version: Option<&str>) -> bool {
+    version
+        .and_then(release_version)
+        .is_some_and(|version| version >= DIRECT_TOOL_CALL_MIN_SDK)
+}
+
+/// `major.minor.patch`, ignoring build metadata. A pre-release is refused: it
+/// may predate the feature its release number promises.
+fn release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version.trim().split('+').next()?;
+    if version.contains('-') {
+        return None;
+    }
+    let mut parts = version.split('.');
+    let parsed = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(parsed)
+}
+
+fn mcp_call_frame(id: &str, tool: &str, arguments: &Value) -> Value {
+    json!({"type": "mcp_call", "id": id, "tool": tool, "arguments": arguments})
 }
 
 /// The managed Claude SDK module to import, if a managed payload is installed.
@@ -1473,6 +1525,41 @@ mod tests {
     }
 
     #[test]
+    fn direct_tool_calls_need_the_sdk_whose_mcp_call_runs_the_gate() {
+        for (version, supported) in [
+            (Some("0.3.322"), true),
+            (Some("0.3.400"), true),
+            (Some("0.4.0"), true),
+            (Some("1.0.0+build.7"), true),
+            (Some(" 0.3.322 "), true),
+            (Some("0.3.321"), false),
+            (Some("0.3.284"), false),
+            (Some("0.3.322-beta.1"), false),
+            (Some("0.3"), false),
+            (Some("0.3.322.1"), false),
+            (Some("latest"), false),
+            (Some(""), false),
+            (None, false),
+        ] {
+            assert_eq!(sdk_supports_direct_tool_calls(version), supported, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn a_direct_call_is_one_mcp_call_frame_with_its_id() {
+        let arguments = json!({"channel_id": "C1", "message": "hi"});
+        assert_eq!(
+            mcp_call_frame("call-1", "mcp__claude_ai_Slack__slack_send_message", &arguments),
+            json!({
+                "type": "mcp_call",
+                "id": "call-1",
+                "tool": "mcp__claude_ai_Slack__slack_send_message",
+                "arguments": {"channel_id": "C1", "message": "hi"}
+            })
+        );
+    }
+
+    #[test]
     fn interrupt_control_request_is_structured() {
         let value = json!({
             "type": "control_request",
@@ -1761,6 +1848,28 @@ mod briefing_boundary_tests {
                 plugins: false,
                 connectors: false
             }
+        );
+    }
+
+    #[test]
+    fn a_direct_call_skips_discovery_but_the_same_send_as_a_turn_keeps_it() {
+        let limits = wire::WorkBriefLimits {
+            max_wall_seconds: 60, max_turns: 2, max_tool_calls: 2,
+            max_output_tokens: None, cost_ceiling_microusd: None,
+        };
+        let turn = BriefingRuntimePolicy::compile_exact_action(
+            "claude.ai Slack".into(),
+            "slack_send_message",
+            serde_json::json!({"channel_id": "C1", "message": "hi"}),
+            limits,
+        )
+        .unwrap();
+        let direct = turn.clone().into_direct_call().unwrap();
+        assert!(!super::skips_connector_discovery(&turn));
+        assert!(super::skips_connector_discovery(&direct));
+        assert_eq!(
+            super::launch_discovery(true, true, super::skips_connector_discovery(&direct), false),
+            crate::marketplace::ClaudeDiscovery { plugins: false, connectors: false }
         );
     }
 
