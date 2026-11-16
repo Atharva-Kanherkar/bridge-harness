@@ -940,6 +940,9 @@ impl AdapterRuntime for ClaudeRuntime {
     fn call_tool(&self, id: &str, tool: &str, arguments: &Value) -> Result<(), BridgeError> {
         write_value(&self.writer, &mcp_call_frame(id, tool, arguments))
     }
+    fn app_control(&self, id: &str, request: &Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &serde_json::json!({"type": "app_control", "id": id, "request": request}))
+    }
     /// The streaming-input frame is an array of content blocks, so Bridge's
     /// trusted context rides as its own blocks ahead of the user's text —
     /// the tail channel that keeps `systemPrompt.append` byte-stable.

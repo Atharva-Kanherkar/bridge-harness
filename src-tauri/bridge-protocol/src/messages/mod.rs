@@ -360,6 +360,8 @@ typed_methods![
     (SetAppEnabled, SetAppEnabledParams, ListAppsResult),
     (ListPersonalApps, _, ListPersonalAppsResult),
     (GetPersonalApp, GetPersonalAppParams, PersonalApp),
+    (GetPersonalAppDraft, GetPersonalAppDraftParams, PersonalAppDraft),
+    (PreviewPersonalAppTool, PreviewPersonalAppToolParams, Value),
     (LockPersonalApp, LockPersonalAppParams, LockPersonalAppResult),
     (DeletePersonalApp, DeletePersonalAppParams, ListPersonalAppsResult),
     // trails: one page per piece of work

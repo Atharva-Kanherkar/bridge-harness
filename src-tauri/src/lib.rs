@@ -264,6 +264,18 @@ fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: Option
 }
 
 #[tauri::command(async)]
+fn get_personal_app_draft(session_id: String, draft_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppDraft, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("read an app draft", move || api::get_personal_app_draft(&core, &wire::GetPersonalAppDraftParams { session_id, draft_id, content_hash }))
+}
+
+#[tauri::command(async)]
+fn preview_personal_app_tool(session_id: String, draft_id: String, content_hash: String, tool: String, arguments: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<serde_json::Value, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("preview an app tool", move || api::preview_personal_app_tool(&core, &wire::PreviewPersonalAppToolParams { session_id, draft_id, content_hash, tool, arguments }))
+}
+
+#[tauri::command(async)]
 fn delete_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ListPersonalAppsResult, BridgeError>> {
     let core = state.inner().clone();
     blocking("delete a personal app", move || api::delete_personal_app(&core, &wire::DeletePersonalAppParams { id }))
@@ -3540,6 +3552,8 @@ pub fn run() -> i32 {
             set_app_enabled,
             list_personal_apps,
             get_personal_app,
+            get_personal_app_draft,
+            preview_personal_app_tool,
             lock_personal_app,
             delete_personal_app,
             list_trails,

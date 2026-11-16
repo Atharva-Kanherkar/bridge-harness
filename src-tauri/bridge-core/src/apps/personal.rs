@@ -64,6 +64,8 @@ pub struct Manifest {
     pub reads: Vec<String>,
     pub writes: Vec<String>,
     pub view_html: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_args: Option<serde_json::Value>,
 }
 
 impl Manifest {
@@ -144,6 +146,9 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
     }
     if manifest.view_html.trim().is_empty() || manifest.view_html.len() > MAX_VIEW_BYTES {
         return Err(format!("an app view must be 1 byte to {} KiB of HTML", MAX_VIEW_BYTES / 1024));
+    }
+    if manifest.sample_args.as_ref().is_some_and(|args| !args.is_object() || args.to_string().len() > 32 * 1024) {
+        return Err("sample arguments must be an object within 32 KiB".into());
     }
     Ok(())
 }
@@ -382,6 +387,7 @@ pub fn delete(db: &Connection, app_id: &str) -> Result<bool, BridgeError> {
     let transaction = db.unchecked_transaction()?;
     let versions = transaction.execute("DELETE FROM personal_app_versions WHERE app_id=?1", [app_id])?;
     let drafts = transaction.execute("DELETE FROM personal_app_drafts WHERE app_id=?1", [app_id])?;
+    transaction.execute("DELETE FROM personal_app_draft_sessions WHERE app_id=?1", [app_id])?;
     transaction.commit()?;
     Ok(versions + drafts > 0)
 }
@@ -394,6 +400,7 @@ mod tests {
         let mut db = Connection::open_in_memory().unwrap();
         let transaction = db.transaction().unwrap();
         install_store(&transaction).unwrap();
+        super::super::draft::install_store(&transaction).unwrap();
         transaction.commit().unwrap();
         db
     }
@@ -411,6 +418,7 @@ mod tests {
             reads: vec!["slack_search_users".into(), "slack_read_channel".into()],
             writes: vec!["slack_send_message".into()],
             view_html: "<form><button>Send</button></form>".into(),
+            sample_args: None,
         }
     }
 

@@ -180,6 +180,10 @@ pub trait AdapterRuntime: Send {
             "This provider cannot call a tool without a model turn".into(),
         ))
     }
+    /// Inventory or a preview read on this chat's existing MCP connection.
+    fn app_control(&self, _id: &str, _request: &Value) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This provider cannot preview personal apps".into()))
+    }
     /// Whether this provider can take a user message while one of its own
     /// turns is still running, and fold it into that turn.
     ///
