@@ -256,10 +256,10 @@ fn get_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::
 }
 
 #[tauri::command(async)]
-fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: bool, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::LockPersonalAppResult, BridgeError>> {
+fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::LockPersonalAppResult, BridgeError>> {
     let core = state.inner().clone();
     blocking("lock a personal app", move || {
-        api::lock_personal_app(&core, &wire::LockPersonalAppParams { draft_id, content_hash, allow_wider })
+        api::lock_personal_app(&core, &wire::LockPersonalAppParams { draft_id, content_hash, allow_wider: allow_wider.unwrap_or(false) })
     })
 }
 
@@ -4250,7 +4250,7 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("lib.rs has a test module");
-        let attribute = format!("#[tauri::{}]", "command"); // dodge this literal
+        let attribute = format!("#[tauri::{}", "command"); // includes command(async) too
         let stray: Vec<&str> = command_region
             .split(&attribute)
             .skip(1)
@@ -4418,10 +4418,10 @@ mod tests {
     /// camelCase wire names. Whitespace is removed from Rust types so multiline
     /// signatures compare consistently.
     fn command_arguments(source: &str, command: &str) -> Option<Vec<CommandArgument>> {
-        let needle = format!("async fn {command}(");
+        let needle = format!("fn {command}(");
         let start = source
             .find(&needle)
-            .unwrap_or_else(|| panic!("no async fn named {command} in the shell"))
+            .unwrap_or_else(|| panic!("no fn named {command} in the shell"))
             + needle.len();
         // Split the parameter list on top-level commas: generic arguments
         // (`State<'_, Arc<BridgeCore>>`) carry commas of their own.
