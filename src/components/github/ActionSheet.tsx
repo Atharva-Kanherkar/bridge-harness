@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, type LucideIcon } from "lucide-react";
+import { modKey } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 
@@ -211,7 +212,7 @@ function SheetSurface({ icon: Icon, tone = "neutral", title, consequence, comman
         </button>
         <Kbd className="border border-border bg-transparent text-[10.5px]">esc</Kbd>
         <span className="ml-auto" />
-        <Kbd className="border border-border bg-transparent text-[10.5px]">⌘ ↵</Kbd>
+        <Kbd className="border border-border bg-transparent text-[10.5px]">{modKey("↵")}</Kbd>
         <button
           type="button"
           data-confirm=""
