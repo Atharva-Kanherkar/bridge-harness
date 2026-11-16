@@ -59,7 +59,15 @@ export const BrowserPage = forwardRef<BrowserPageHandle, BrowserPageProps>(funct
         const layout = createCoalescedRefresh(async () => {
           if (disposed) return;
           const rect = host.getBoundingClientRect();
-          const bounds = { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: Math.max(1, rect.width), height: Math.max(1, rect.height), visible: browserViewportVisible(host, current.current.visible) };
+          // The native child paints above the DOM, so its frame must stay
+          // inside the app window: clamp the host rect to the viewport and
+          // never round a collapsed pane up to a visible one-pixel view.
+          const left = Math.max(0, Math.min(rect.left, window.innerWidth));
+          const top = Math.max(0, Math.min(rect.top, window.innerHeight));
+          const width = Math.max(0, Math.min(rect.right, window.innerWidth) - left);
+          const height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - top);
+          const paintable = width >= 1 && height >= 1;
+          const bounds = { x: left, y: top, width, height, visible: paintable && browserViewportVisible(host, current.current.visible) };
           const signature = JSON.stringify(bounds);
           if (signature === lastLayout) return;
           lastLayout = signature;
