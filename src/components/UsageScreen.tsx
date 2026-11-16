@@ -308,7 +308,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       />
 
       {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
-      {providerUsage.overviews?.providers.map(snapshot =>
+      {providerUsage.overviews?.providers.filter(snapshot => !snapshot.accountId).map(snapshot =>
         <div key={snapshot.provider} className="mb-3 empty:hidden"><UsageResetRow snapshot={snapshot} onUpdated={providerUsage.refresh} /></div>)}
       <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />

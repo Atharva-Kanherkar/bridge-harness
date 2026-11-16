@@ -162,6 +162,15 @@ function mockProviderUsageOverviews(): ProviderUsageOverviews {
         resetCredits: mockResetCredits(now),
         today: empty, month: empty, error: null,
       },
+      {
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "personal@example.com", plan: "pro", observedAt: now - 30, coverage: "Mock data",
+        accountId: "personal", accountLabel: "Personal",
+        windows: [
+          { id: "session", label: "5-hour", usedPercent: { value: 27, source: "reported", status: "current" }, resetsAt: now + 2 * 3600, windowMinutes: 300 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: 41, source: "reported", status: "current" }, resetsAt: now + 5 * 86400, windowMinutes: 10080 },
+        ],
+        today: empty, month: empty, error: null,
+      },
       { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
     ],
   };

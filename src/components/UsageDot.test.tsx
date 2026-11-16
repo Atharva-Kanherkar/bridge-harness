@@ -4,7 +4,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { ProviderUsageOverviews, UsageOverviewSnapshot, UsageQuotaWindow } from "../protocol/generated/protocol";
-import { UsageDot, liveUsedPercent, usageTier, worstLiveUsage } from "./UsageDot";
+import { UsageDot, liveUsedPercent, orderedSnapshots, snapshotKey, usageTier, worstLiveUsage } from "./UsageDot";
 
 const NOW = 1_800_000_000;
 const NOW_MS = NOW * 1000;
@@ -116,5 +116,58 @@ describe("UsageDot", () => {
     expect(html).toContain("Sign in");
     expect(html).toContain("Open Usage");
     expect(html).toContain("Refresh usage");
+  });
+});
+
+describe("extra accounts", () => {
+  const work = (windows: UsageQuotaWindow[], overrides: Partial<UsageOverviewSnapshot> = {}) =>
+    snapshot("claude", windows, { account: "work@example.com", plan: "Max", accountId: "work", accountLabel: "Work", ...overrides });
+
+  it("lists every signed-in account under its agent, own login first", () => {
+    const own = snapshot("claude", [window("weekly", "Weekly", 12)]);
+    const personal = snapshot("codex", [window("weekly", "Weekly", 30)], { account: "me@example.com", accountId: "personal", accountLabel: "Personal" });
+    const codex = snapshot("codex", [window("weekly", "Weekly", 5)]);
+    const html = renderToStaticMarkup(<UsageDot overviews={overviews(work([window("session", "5-hour", 81)]), personal, own, codex)} nowMs={NOW_MS} />);
+    const order = ["Codex usage", "Codex · Personal usage", "Claude usage", "Claude · Work usage"].map(label => html.indexOf(`aria-label="${label}"`));
+    expect(order.every(index => index >= 0), html).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(html).toContain("work@example.com · Max");
+    expect(html).toContain("81% used");
+    // The tightest window may belong to an account; the ring names it.
+    expect(html).toContain("81% of Claude · Work 5-hour used");
+  });
+
+  it("never shows the own login's Sign in or reset offer on an account row", () => {
+    const adapters = [{ id: "claude", label: "Claude", available: true, authState: "signed_out", version: "mock", capabilities: [], unavailableReason: null, models: [] }] as never;
+    const html = renderToStaticMarkup(<UsageDot overviews={overviews(work([], { observedAt: null, account: null, error: "Not read yet. Refresh to load this account's limits." }))} adapters={adapters} onRefresh={() => {}} nowMs={NOW_MS} />);
+    expect(html).toContain("Claude · Work usage");
+    expect(html).not.toContain(">Sign in<");
+    expect(html).toContain("Refresh to load this account");
+  });
+
+  /** Fuzz the card's ordering against arbitrary backend lists: rows are
+   *  never dropped or duplicated, each agent's own login leads its group,
+   *  and agents keep the menu bar's order. */
+  it("orders any mix of rows without losing or repeating one", () => {
+    let seed = 0x2f6e2b1;
+    const rand = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    const providers = ["codex", "claude", "cursor", "opencode"];
+    for (let run = 0; run < 2_000; run += 1) {
+      const rows = Array.from({ length: rand(9) }, () => {
+        const account = rand(3) === 0 ? null : ["work", "personal", "x-1"][rand(3)];
+        return snapshot(providers[rand(4)], [], account ? { accountId: account, accountLabel: account.toUpperCase() } : {});
+      });
+      const out = orderedSnapshots(overviews(...rows));
+      const keys = out.map(snapshotKey);
+      expect(new Set(keys).size).toBe(keys.length);
+      expect(new Set(keys)).toEqual(new Set(rows.map(snapshotKey)));
+      const providerIndex = out.map(row => providers.indexOf(row.provider));
+      expect([...providerIndex].sort((a, b) => a - b)).toEqual(providerIndex);
+      for (const provider of providers) {
+        const group = out.filter(row => row.provider === provider);
+        const firstAccount = group.findIndex(row => !!row.accountId);
+        if (firstAccount >= 0) expect(group.slice(firstAccount).every(row => !!row.accountId)).toBe(true);
+      }
+    }
   });
 });

@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { bridgeApi } from "../../api";
 import { ProviderLoginPane } from "../ProviderLoginPane";
+import { loginOutputFailed } from "../ProviderSignInDialog";
 import {
   ACCOUNT_PROVIDERS, accountIdFromLabel, folderError, suggestedFolder,
   type AccountHarness, type ProviderAccount,
@@ -44,6 +45,9 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
   const [error, setError] = useState<string | null>(null);
   const [savedKey, setSavedKey] = useState<string | null>(null);
   const [loginAccount, setLoginAccount] = useState<ProviderAccount | null>(null);
+  // The last account sign-in's verdict, so the pane closing is never silent.
+  const [loginResult, setLoginResult] = useState<{ account: ProviderAccount; ok: boolean } | null>(null);
+  const startLogin = (account: ProviderAccount) => { setLoginResult(null); setLoginAccount(account); };
   const busy = disabled || saving;
 
   const save = async (next: ProviderAccount[]) => {
@@ -83,7 +87,7 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
           saved={savedKey === account.id}
           control={<span className="flex items-center gap-1">
             {provider.signIn === "cli" && <TextButton disabled={busy} ariaLabel={`Sign in to ${account.label}`}
-              onClick={() => setLoginAccount(account)}>Sign in</TextButton>}
+              onClick={() => startLogin(account)}>Sign in</TextButton>}
             {provider.key && <TextButton disabled={busy} ariaLabel={`Set ${provider.key.label} for ${account.label}`}
               onClick={() => { setSavedKey(null); setKeyFor(account.id); }}>Set key</TextButton>}
             <TextButton tone="destructive" disabled={busy} ariaLabel={`Remove ${account.label}`}
@@ -98,7 +102,7 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
             if (!(await save([...accounts, account]))) return;
             setAdding(false);
             if (key) await storeKey(account, key);
-            if (provider.signIn === "cli") setLoginAccount(account);
+            if (provider.signIn === "cli") startLogin(account);
           }} />
       : <SettingsRow
           label="Add an account"
@@ -110,7 +114,27 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
       label={`${label} · ${loginAccount.label}`}
       account={loginAccount.id}
       onClose={() => setLoginAccount(null)}
+      onExited={output => {
+        const ok = !loginOutputFailed(output);
+        setLoginResult({ account: loginAccount, ok });
+        setLoginAccount(null);
+        // A new login has limits of its own; read them now rather than at
+        // the next background tick.
+        if (ok) void bridgeApi.refreshProviderUsageOverviews().catch(() => undefined);
+      }}
     />}
+    {!loginAccount && loginResult && <SettingsBlockRow>
+      <div role="status" className="flex items-center justify-between gap-3">
+        <p className={loginResult.ok ? "text-[12px] text-foreground" : "text-[12px] text-destructive"}>
+          {loginResult.ok
+            ? `${loginResult.account.label} is signed in. Pick it from the model picker in any chat.`
+            : `${loginResult.account.label}'s sign-in didn't finish.`}
+        </p>
+        {loginResult.ok
+          ? <TextButton onClick={() => setLoginResult(null)}>Done</TextButton>
+          : <TextButton disabled={busy} onClick={() => startLogin(loginResult.account)}>Try again</TextButton>}
+      </div>
+    </SettingsBlockRow>}
   </SettingsGroup>;
 }
 

@@ -3506,6 +3506,8 @@ export interface UsageModelOverview {
 
 export interface UsageOverviewSnapshot {
   account?: string | null;
+  accountId?: string | null;
+  accountLabel?: string | null;
   accountMetrics?: UsageAccountMetric[];
   coverage: string;
   daily?: UsageDailyOverview[];
