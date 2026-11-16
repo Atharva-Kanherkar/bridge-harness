@@ -385,7 +385,20 @@ pub enum StateOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum GithubAction {
-    Merge { number: u64, strategy: MergeStrategy },
+    Merge {
+        number: u64,
+        strategy: MergeStrategy,
+        /// The squash/merge commit subject; `gh`'s default when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subject: Option<String>,
+        /// The commit body; `gh`'s default when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+        /// Delete the head branch after the merge (slice 5 of issue #1028).
+        // `rename_all` does not reach struct-variant fields; name it explicitly.
+        #[serde(rename = "deleteBranch", skip_serializing_if = "Option::is_none")]
+        delete_branch: Option<bool>,
+    },
     Review { number: u64, event: ReviewEvent, body: String },
     Reply {
         number: u64,
@@ -413,6 +426,13 @@ pub enum GithubAction {
         operation: StateOperation,
     },
     Ready { number: u64 },
+    /// Recreate a deleted pull-request head branch at its merge SHA (the
+    /// receipt's "Restore branch"; issue #1028 slice 5).
+    RestoreBranch {
+        number: u64,
+        /// The branch name to recreate.
+        branch: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -701,14 +721,28 @@ mod tests {
             action: GithubAction::Merge {
                 number: 328,
                 strategy: MergeStrategy::Squash,
+                subject: None,
+                body: None,
+                delete_branch: Some(true),
             },
             confirmed: true,
         };
+        // Optional merge fields ride the same camelCase wire; absent options
+        // serialize away so an old payload still round-trips.
         assert_eq!(
             serde_json::to_value(&params).unwrap(),
             json!({
                 "workspaceId": "workspace-1",
-                "action": {"kind": "merge", "number": 328, "strategy": "squash"},
+                "action": {"kind": "merge", "number": 328, "strategy": "squash", "deleteBranch": true},
+                "confirmed": true,
+            })
+        );
+        assert_eq!(round_trip(&params), params);
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({
+                "workspaceId": "workspace-1",
+                "action": {"kind": "merge", "number": 328, "strategy": "squash", "deleteBranch": true},
                 "confirmed": true,
             })
         );

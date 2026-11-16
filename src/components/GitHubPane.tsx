@@ -1,6 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer-motion";
 import {
   ArrowLeft,
   Ban,
@@ -13,6 +13,7 @@ import {
   CircleX,
   Copy,
   ExternalLink,
+  Eye,
   FileDiff,
   FolderGit2,
   GitBranch,
@@ -31,6 +32,7 @@ import {
   Sparkles,
   SquareArrowOutUpRight,
   Tag,
+  ThumbsUp,
   TriangleAlert,
   X,
   MessageSquarePlus,
@@ -40,6 +42,8 @@ import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
+import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
+import { MergeBox, initialMergeState, mergeReducer, type MergeState, type OverflowItem } from "./github/MergeBox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Markdown } from "./Markdown";
@@ -58,6 +62,7 @@ import {
   type RollupState,
 } from "../githubSurface";
 import type { GithubLinkView, PullRequestView } from "../githubLinks";
+import type { LucideIcon } from "lucide-react";
 import type {
   GithubAction,
   GithubCheckoutResult,
@@ -329,7 +334,7 @@ function DetailSkeleton({ label }: { label: string }) {
 /** The check rollup as a bar rather than a number pair. Segments are widths,
  * so a re-read animates from the old proportions to the new ones and a reader
  * sees CI move without reading digits. */
-function RollupMeter({ checks, className }: { checks: PullRequestListItem["checks"]; className?: string }) {
+export function RollupMeter({ checks, className }: { checks: PullRequestListItem["checks"]; className?: string }) {
   if (!checks.total) return null;
   const running = checks.queued + checks.inProgress;
   const segments = [
@@ -412,6 +417,10 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [facet, setFacet] = useState<PullRequestFacet>("all");
+  // The dock's push direction: opening a detail pushes forward, back and the
+  // surface switch step the other way or cross-fade (issue #1028).
+  const reducedMotion = useReducedMotion();
+  const [pushDirection, setPushDirection] = useState<"forward" | "back" | "none">("none");
 
   const [selected, setSelected] = useState<number>();
   const [detail, setDetail] = useState<Detail>();
@@ -493,6 +502,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [workspaceId]);
 
   const openDetail = useCallback(async (number: number, retain = false) => {
+    setPushDirection("forward");
     setSurfaceTab("pulls");
     setSelected(number);
     if (!retain) setDetail(undefined);
@@ -509,6 +519,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [workspaceId]);
 
   const openIssue = useCallback(async (number: number, retain = false) => {
+    setPushDirection("forward");
     setSurfaceTab("issues");
     setSelectedIssue(number);
     if (!retain) setIssueDetail(undefined);
@@ -600,6 +611,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     seenIntent.current = intent.nonce;
     const view = intent.view;
     const showSurface = (tab: SurfaceTab) => {
+      setPushDirection("none");
       setSurfaceTab(tab);
       setSelected(undefined); setDetail(undefined); setDetailError(undefined);
       setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
@@ -668,6 +680,8 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     </PaneNotice>;
   } else if (surfaceTab === "pulls" && selected !== undefined) {
     body = <PullRequestDetail
+      // A new PR is a new detail: no merge state or in-flight result carries over.
+      key={selected}
       workspaceId={workspaceId}
       workspaceBranch={workspaceBranch}
       sessionId={sessionId}
@@ -678,7 +692,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       error={detailError}
       focus={pullRequestFocus}
       availableLabels={repositoryOverview?.labels ?? []}
-      onBack={() => { setSelected(undefined); setDetail(undefined); setDetailError(undefined); }}
+      onBack={() => { setPushDirection("back"); setSelected(undefined); setDetail(undefined); setDetailError(undefined); }}
       onActed={() => { void loadSurface(); void openDetail(selected, true); }}
       onJumpToFile={onJumpToFile}
     />;
@@ -701,7 +715,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       detail={issueDetail}
       error={issueError}
       availableLabels={repositoryOverview?.labels ?? []}
-      onBack={() => { setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined); }}
+      onBack={() => { setPushDirection("back"); setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined); }}
       onActed={() => { void loadSurface(); void openIssue(selectedIssue, true); }}
     />;
   } else if (surfaceTab === "issues" && tabErrors.issues && !issues) {
@@ -722,18 +736,25 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     body = <RepositoryOverview overview={repositoryOverview} />;
   }
 
+  // What the pane's single column shows right now — the push key.
+  const viewKey = surfaceTab === "pulls"
+    ? (selected !== undefined ? `pull-${selected}` : "pulls")
+    : surfaceTab === "issues"
+      ? (selectedIssue !== undefined ? `issue-${selectedIssue}` : "issues")
+      : "repository";
+
   const surfaces = [
     ["pulls", "Pull requests", GitPullRequest, prs?.length],
     ["issues", "Issues", ListTodo, issues?.length],
     ["repository", "Repository", Info, undefined],
   ] as const;
-  const pickSurface = (id: SurfaceTab) => { setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
+  const pickSurface = (id: SurfaceTab) => { setPushDirection("back"); setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
   const refresh = () => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); };
   const refreshButton = <button type="button" onClick={refresh} aria-label="Refresh GitHub" title="Refresh" className={HEADER_ICON}>
     <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
   </button>;
 
-  return <section className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
+  return <section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
     {page ? <header className="flex shrink-0 flex-col border-b border-border bg-background px-5">
       <div className="flex h-11 items-end gap-3">
         {/* Labelled tabs with live counts: at full width there is room to say
@@ -827,7 +848,19 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           <div data-pulls-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">{body}</div>
         </div>
-      : body}
+      : <div className="relative flex min-h-0 flex-1 flex-col">
+          <AnimatePresence initial={false} custom={pushDirection} mode="popLayout">
+            <motion.div
+              key={viewKey}
+              custom={pushDirection}
+              variants={reducedMotion ? PUSH_REDUCED_VARIANTS : PUSH_VARIANTS}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              className="flex min-h-0 w-full flex-1 flex-col"
+            >{body}</motion.div>
+          </AnimatePresence>
+        </div>}
   </section>;
 }
 
@@ -842,7 +875,7 @@ function ChecksCell({ pr }: { pr: PullRequestListItem }) {
   return <span className="flex min-w-0 flex-col gap-1.5" title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
     <span className={cn("inline-flex items-center gap-1.5 text-[11.5px] tabular-nums", rollup.className)}>
       <RollupIcon size={13} aria-hidden="true" className={cn(rollup.live && "github-check-live")} />
-      <span className="font-medium">{rollup.label}</span>
+      <span className="font-medium"><RollLabel value={rollup.label} /></span>
       <span className="font-mono text-[11px] text-muted-foreground">{pr.checks.passed}/{pr.checks.total}</span>
     </span>
     <RollupMeter checks={pr.checks} className="w-full max-w-28" />
@@ -980,6 +1013,7 @@ function CommentList({ comments, repositoryUrl }: {
  * own tally so a red workflow is findable without reading every row. */
 function ChecksList({ checks, rollup }: { checks: GithubChecksResult["checks"]; rollup?: PullRequestListItem["checks"] }) {
   const groups = useMemo(() => groupChecksByWorkflow(checks), [checks]);
+  const settled = useCheckSettle(checks);
   return <section aria-label="Checks" className="space-y-3">
     {rollup && rollup.total > 0 && <div className="rounded-lg border border-border bg-card px-3 py-2.5">
       <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -996,8 +1030,10 @@ function ChecksList({ checks, rollup }: { checks: GithubChecksResult["checks"]; 
         {group.checks.map(check => {
           const tone = checkTone(check.conclusion, check.status);
           const ToneIcon = tone.icon;
-          return <div key={`${check.workflow}-${check.name}`} className="flex items-center gap-2.5 px-3 py-2">
-            <ToneIcon size={13.5} className={cn("shrink-0", tone.className, tone.live && "github-check-live")} aria-hidden="true" />
+          const key = `${check.workflow}·${check.name}`;
+          const justSettled = settled.has(key);
+          return <div key={key} className={cn("flex items-center gap-2.5 px-3 py-2", justSettled && "github-check-settle")}>
+            <ToneIcon size={13.5} className={cn("shrink-0", tone.className, tone.live && "github-check-live", justSettled && "check-glyph-settle")} aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{check.name}</span>
             <span className="shrink-0 text-[11px] text-muted-foreground">{check.conclusion ?? check.status}</span>
             {check.logUrl && <OpenOnGithub url={check.logUrl} what={`logs for ${check.name}`} />}
@@ -1100,7 +1136,23 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
 
 // ── Detail ───────────────────────────────────────────────────────────────────
 
-type PendingAction = { statement: string; requiresBody: boolean; body?: string; build: (body: string) => GithubAction };
+type PendingAction = {
+  icon: LucideIcon;
+  tone: "neutral" | "success" | "destructive";
+  /** What the sheet is called: "Approve pull request #341". */
+  title: string;
+  /** The consequence in one sentence. */
+  consequence: string;
+  /** The exact `gh` command behind the sheet's disclosure; actions that are
+   *  not one gh invocation (checkout) omit it. */
+  command?: string;
+  requiresBody: boolean;
+  body?: string;
+  build: (body: string) => GithubAction;
+  /** The verb the confirm button wears. */
+  confirmLabel: string;
+  destructive?: boolean;
+};
 
 /** The harnesses a subagent review can run under. Model, effort and
  * instructions come from Settings → Workers → Pull request reviewer, so the
@@ -1121,10 +1173,35 @@ const PRIMARY_ACTION = "inline-flex min-h-7 items-center gap-1.5 rounded-md bg-p
 /** Ending something is available but never loud until a pointer is on it. */
 const QUIET_ACTION = "ml-auto inline-flex min-h-7 items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive active:scale-[0.98] disabled:opacity-50";
 
-function StatePill({ icon: Icon, label }: { icon: typeof GitPullRequest; label: string }) {
-  return <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5 text-[11px] font-medium capitalize text-foreground shadow-xs">
-    <Icon size={12} strokeWidth={1.9} aria-hidden="true" />{label}
-  </span>;
+const PILL_BASE = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize shadow-xs";
+const PILL_MERGED = "border-merged/45 bg-merged/15 text-merged";
+const PILL_NEUTRAL = "border-border bg-card text-foreground";
+
+/** The state pill. Between labels it tweens its width and cross-fades the
+ *  glyph — Open slides up and out, Merged slides up and in (320ms); the
+ *  merged verdict wears the one deliberate purple on this chrome. */
+function StatePill({ icon: Icon, label, merged = false }: { icon: typeof GitPullRequest; label: string; merged?: boolean }) {
+  const reduced = useReducedMotion();
+  if (reduced) {
+    return <span className={cn(PILL_BASE, merged ? PILL_MERGED : PILL_NEUTRAL)}>
+      <Icon size={12} strokeWidth={1.9} aria-hidden="true" />{label}
+    </span>;
+  }
+  return <motion.span layout className={cn(PILL_BASE, "overflow-hidden", merged ? PILL_MERGED : PILL_NEUTRAL)}>
+    <AnimatePresence mode="popLayout" initial={false}>
+      <motion.span
+        key={label}
+        layout
+        className="flex items-center gap-1 whitespace-nowrap"
+        initial={{ y: 8, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: -8, opacity: 0 }}
+        transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <Icon size={12} strokeWidth={1.9} aria-hidden="true" />{label}
+      </motion.span>
+    </AnimatePresence>
+  </motion.span>;
 }
 
 /** A comment composer. Posting still goes through the same confirmation gate
@@ -1151,6 +1228,86 @@ function CommentComposer({ disabled, onSubmit }: { disabled: boolean; onSubmit: 
       ><Send size={11} aria-hidden="true" /> Comment</button>
     </div>
   </div>;
+}
+
+const TAB_ORDER: ReadonlyArray<PullRequestTab> = ["conversation", "changes", "commits", "checks"];
+
+/** The tab panel slides in from the direction of travel (issue #1028); the
+ *  underline beneath the strip glides via its layoutId. */
+const TAB_PANEL_VARIANTS: Variants = {
+  enter: (direction: number) => ({ x: direction >= 0 ? 18 : -18, opacity: 0 }),
+  center: { x: 0, opacity: 1, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } },
+  exit: (direction: number) => ({ x: direction >= 0 ? -18 : 18, opacity: 0, transition: { duration: 0.2, ease: "easeIn" } }),
+};
+
+const TAB_PANEL_REDUCED_VARIANTS: Variants = {
+  enter: () => ({ opacity: 0 }),
+  center: { opacity: 1, transition: { duration: 0.12 } },
+  exit: () => ({ opacity: 0, transition: { duration: 0.12 } }),
+};
+
+/** List → detail push (issue #1028): the list exits left while the detail
+ *  slides in from the right (320ms); back reverses; a plain surface switch
+ *  cross-fades. Reduced motion fades only. */
+const PUSH_VARIANTS: Variants = {
+  enter: (direction: string) => direction === "forward"
+    ? { x: 24, opacity: 0 }
+    : direction === "back" ? { x: -24, opacity: 0 } : { opacity: 0 },
+  center: { x: 0, opacity: 1, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } },
+  exit: (direction: string) => {
+    if (direction === "back") return { x: "30%", opacity: 0, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } };
+    if (direction === "none") return { opacity: 0, transition: { duration: 0 } };
+    return { x: "-30%", opacity: 0, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } };
+  },
+};
+
+const PUSH_REDUCED_VARIANTS: Variants = {
+  enter: () => ({ opacity: 0 }),
+  center: { opacity: 1, transition: { duration: 0.12 } },
+  exit: () => ({ opacity: 0, transition: { duration: 0.12 } }),
+};
+
+/** A label that rolls up to its new value when the verdict changes
+ *  (Running → Passing), the mockup's vertical roll. */
+function RollLabel({ value }: { value: string }) {
+  const previous = useRef(value);
+  const [roll, setRoll] = useState<{ from: string; to: string } | null>(null);
+  useEffect(() => {
+    if (previous.current === value) return;
+    const from = previous.current;
+    previous.current = value;
+    setRoll({ from, to: value });
+    const timer = window.setTimeout(() => setRoll(null), 450);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+  if (!roll) return <span>{value}</span>;
+  return <span className="relative inline-block h-[15px] overflow-hidden align-baseline" role="status" aria-label={roll.to}>
+    <span aria-hidden="true" className="github-roll-up absolute inset-x-0 top-0 block">
+      <span className="block h-[15px] leading-[15px]">{roll.from}</span>
+      <span className="block h-[15px] leading-[15px]">{roll.to}</span>
+    </span>
+  </span>;
+}
+
+/** A check that settles between two reads: one row flash, one glyph spring,
+ *  then both sit still (issue #1028's check-settle). */
+function useCheckSettle(checks: GithubChecksResult["checks"]): ReadonlySet<string> {
+  const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
+  const previousStatuses = useRef(new Map<string, string>());
+  useEffect(() => {
+    const next = new Set<string>();
+    for (const check of checks) {
+      const key = `${check.workflow}·${check.name}`;
+      const was = previousStatuses.current.get(key);
+      if (check.status === "completed" && check.conclusion === "success" && was !== undefined && was !== "completed") next.add(key);
+      previousStatuses.current.set(key, check.status);
+    }
+    if (!next.size) return;
+    setSettled(next);
+    const timer = window.setTimeout(() => setSettled(new Set()), 750);
+    return () => window.clearTimeout(timer);
+  }, [checks]);
+  return settled;
 }
 
 /** The detail tab strip, with an underline that slides between tabs rather
@@ -1216,14 +1373,23 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewNotice, setReviewNotice] = useState<{ tone: "success" | "error"; text: string }>();
   const [pendingBody, setPendingBody] = useState("");
-  const [mergeOpen, setMergeOpen] = useState(false);
+  // The merge flow's one state machine: idle | confirming | merging | merged
+  // | failed, in a reducer rather than five booleans (issue #1028). A detail
+  // that already reports merged renders the receipt without replaying it.
+  const [merge, dispatchMerge] = useReducer(mergeReducer, undefined, initialMergeState);
   const [mergeConfig, setMergeConfig] = useState<GithubMergeConfigResult>();
-  const [strategy, setStrategy] = useState<MergeStrategy>();
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkout, setCheckout] = useState<GithubCheckoutResult>();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [tab, setTab] = useState<PullRequestTab>("conversation");
+  // The panel slides in from the direction of travel (issue #1028).
+  const reducedMotion = useReducedMotion();
+  const tabDirection = useRef(1);
+  const selectTab = useCallback((next: PullRequestTab) => {
+    tabDirection.current = Math.sign(TAB_ORDER.indexOf(next) - TAB_ORDER.indexOf(tab));
+    setTab(next);
+  }, [tab]);
   const seenFocus = useRef(0);
   useEffect(() => {
     if (!focus || focus.nonce === seenFocus.current) return;
@@ -1234,7 +1400,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [labelsOpen, setLabelsOpen] = useState(false);
 
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
-  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setMergeOpen(false); setMergeConfig(undefined); setStrategy(undefined); setCheckoutOpen(false); setLabelsOpen(false); setReviewOpen(false); };
+  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setCheckoutOpen(false); setLabelsOpen(false); setReviewOpen(false); };
 
   // Hand the PR to a read-only subagent that posts its review as a comment via
   // `gh`. Non-blocking: the notice reports how the launch was routed and the
@@ -1265,16 +1431,78 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     } finally { setBusy(false); }
   };
 
-  const openMerge = async () => {
-    setActionError(undefined); setMergeOpen(true); setMergeConfig(undefined); setStrategy(undefined);
+  // The merge box reads the repository's strategies when it mounts, not on
+  // click, so the split button already shows the repo default. A failed read
+  // leaves the button disabled rather than guessing at the repository rules.
+  const detailReady = detail?.result.pullRequest.summary;
+  const detailNumber = detailReady?.number;
+  useEffect(() => {
+    if (!detailReady || detailReady.state !== "open") return;
+    let cancelled = false;
+    void bridgeApi.githubMergeConfig(workspaceId)
+      .then(config => {
+        if (cancelled) return;
+        setMergeConfig(config);
+        // The split button already shows the repo default.
+        dispatchMerge({ type: "config", strategy: config.defaultStrategy });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+    // Reload per pull request, not per render; the config is repository-level.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, detailNumber]);
+
+  // Reset the flow when another pull request opens in this detail.
+  useEffect(() => {
+    if (detailReady) dispatchMerge({ type: "reset", summary: detailReady });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailNumber]);
+
+  // The merge itself: one confirmed write; the animation only plays on a real
+  // `executed: true`, and a refusal keeps the form with the reason verbatim.
+  const runMerge = async () => {
+    if (merge.phase !== "confirming" && merge.phase !== "failed") return;
+    dispatchMerge({ type: "merging" });
+    setBusy(true); setActionError(undefined);
     try {
-      const config = await bridgeApi.githubMergeConfig(workspaceId);
-      setMergeConfig(config); setStrategy(config.defaultStrategy);
+      const outcome = await bridgeApi.githubAct(workspaceId, {
+        kind: "merge",
+        number,
+        strategy: merge.strategy,
+        // The confirm form's fields; empty means `gh`'s own default.
+        // Rebase writes no commit of its own; the hidden field is not sent.
+        subject: merge.strategy === "rebase" ? undefined : merge.subject.trim() || undefined,
+        body: undefined,
+        deleteBranch: merge.deleteBranch || undefined,
+      }, true);
+      if (!outcome.executed) { dispatchMerge({ type: "fail", message: outcome.message }); return; }
+      dispatchMerge({ type: "succeed" });
+      onActed();
     } catch (value) {
-      setMergeOpen(false);
-      setActionError(errorMessage(value));
-    }
+      dispatchMerge({ type: "fail", message: errorMessage(value) });
+    } finally { setBusy(false); }
   };
+
+  // The confirm step's own chords: ⌘↵ merges, Esc collapses back to idle.
+  const mergeOpenForKeys = merge.phase === "confirming" || merge.phase === "failed";
+  useEffect(() => {
+    if (!mergeOpenForKeys) return;
+    const onKey = (event: KeyboardEvent) => {
+      // Only keys meant for this pane: not one a sheet already took, not a
+      // chord typed elsewhere in the app, not while a write is running.
+      if (event.defaultPrevented || pending || checkoutOpen || busy) return;
+      const target = event.target;
+      const inPane = target === document.body || (target instanceof Element && target.closest("[data-gh-pane-root]") !== null);
+      if (!inPane) return;
+      if (event.key === "Escape") dispatchMerge({ type: "collapse" });
+      else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        void runMerge();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  });
 
   const runCheckout = async () => {
     setBusy(true); setActionError(undefined);
@@ -1303,6 +1531,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     check.conclusion === "failure" || check.conclusion === "timedOut" || check.conclusion === "startupFailure"
   );
   const checkedOutHere = workspaceBranch === summary.headBranch;
+  const mergedNow = summary.state === "merged" || merge.phase === "merged";
   const StateIcon = pullRequestStateIcon(summary);
   const tabs = [
     { value: "conversation" as const, label: "conversation" },
@@ -1311,12 +1540,60 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     { value: "checks" as const, label: `checks ${detail.checks.checks.length}` },
   ];
 
+  // Secondary actions beyond Approve and Review ride the box's overflow menu
+  // (at most three visible secondaries plus the overflow, per the issue).
+  const overflow: OverflowItem[] = [];
+  if (summary.state === "open") {
+    overflow.push({ label: "Request changes", icon: MessageSquare, onSelect: () => setPending({
+      title: `Request changes on #${number}`,
+      consequence: `Blocks the merge until ${summary.author?.login ?? "the author"} pushes a fix or you dismiss the review.`,
+      command: `gh pr review ${number} -R ${repoLabel} --request-changes --body …`,
+      tone: "neutral",
+      icon: MessageSquare,
+      requiresBody: true,
+      confirmLabel: "Request changes",
+      build: body => ({ kind: "review", number, event: "requestChanges", body }),
+    }) });
+    if (summary.isDraft) overflow.push({ label: "Ready for review", icon: Eye, onSelect: () => setPending({
+      title: `Mark #${number} ready for review`,
+      consequence: "Reviewers are notified that the pull request is ready.",
+      command: `gh pr ready ${number} -R ${repoLabel}`,
+      tone: "neutral",
+      icon: Eye,
+      requiresBody: false,
+      confirmLabel: "Ready for review",
+      build: () => ({ kind: "ready", number }),
+    }) });
+    if (rerunnable) overflow.push({ label: "Re-run failed", icon: RotateCcw, onSelect: () => setPending({
+      title: `Re-run failed checks on #${number}`,
+      consequence: "The failed runs are queued again.",
+      command: `gh run rerun <failed runs of #${number}> -R ${repoLabel}`,
+      tone: "neutral",
+      icon: RotateCcw,
+      requiresBody: false,
+      confirmLabel: "Re-run failed",
+      build: () => ({ kind: "rerun", number }),
+    }) });
+    if (!checkedOutHere) overflow.push({ label: "Check out", icon: FolderGit2, onSelect: () => { setActionError(undefined); setCheckoutOpen(true); } });
+    overflow.push({ label: "Close", icon: Ban, destructive: true, onSelect: () => setPending({
+      title: `Close #${number} without merging`,
+      consequence: "The branch stays on GitHub. You can reopen it from this pane.",
+      command: `gh pr close ${number} -R ${repoLabel}`,
+      tone: "destructive",
+      icon: Ban,
+      requiresBody: false,
+      confirmLabel: "Close pull request",
+      destructive: true,
+      build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }),
+    }) });
+  }
+
   return <div className="relative flex min-h-0 flex-1 flex-col">
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="animate-page-mount border-b border-border px-5 pb-4 pt-4">
+      <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep play")}>
         <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-          <StatePill icon={StateIcon} label={summary.isDraft ? "Draft" : summary.state} />
+          <StatePill icon={mergedNow ? GitMerge : StateIcon} label={mergedNow ? "merged" : summary.isDraft ? "draft" : summary.state} merged={mergedNow} />
           <span className="font-mono tabular-nums">#{summary.number}</span>
           <span className="flex min-w-0 items-center gap-1.5"><Monogram login={summary.author?.login} className="size-4 text-[9px]" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
@@ -1327,16 +1604,20 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           </span>
         </div>
         <h2 className="mt-2.5 font-display text-[19px] font-semibold leading-snug tracking-[-0.015em] text-foreground">{summary.title}</h2>
-        <p className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-          <BranchChip name={summary.headBranch} />{" "}<span aria-hidden="true" className="text-muted-foreground">→</span>{" "}<BranchChip name={pullRequest.baseBranch} />
-          <CopyButton value={summary.headBranch} label={`Copy the branch name ${summary.headBranch}`} />
-          {checkedOutHere && <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-[11px] text-foreground"><Check size={11} aria-hidden="true" />Checked out here</span>}
+        <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-muted-foreground">
+          <b className="font-medium text-foreground">{summary.author?.login ?? "ghost"}</b>
+          {mergedNow
+            ? <>merged <b className="font-medium text-foreground">{pullRequest.commits.length} commits</b> into <BranchChip name={pullRequest.baseBranch} />{merge.celebrate && <span>· just now</span>}</>
+            : <>wants to merge <b className="font-medium text-foreground">{pullRequest.commits.length} commits</b> into <BranchChip name={pullRequest.baseBranch} /> from <BranchChip name={summary.headBranch} />
+              <CopyButton value={summary.headBranch} label={`Copy the branch name ${summary.headBranch}`} />
+              {checkedOutHere && <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-[11px] text-foreground"><Check size={11} aria-hidden="true" />Checked out here</span>}
+            </>}
         </p>
-        {summary.mergeability === "conflicting" && <p className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
+        {summary.state === "closed" && summary.mergeability === "conflicting" && <p className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">
           <TriangleAlert size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
           <span>This branch has conflicts with {pullRequest.baseBranch}. GitHub reports its merge state as <span className="font-mono">{summary.mergeStateStatus.toLowerCase()}</span>.</span>
         </p>}
-        {summary.checks.total > 0 && <div className="mt-3 flex items-center gap-3">
+        {summary.state === "closed" && summary.checks.total > 0 && <div className="mt-3 flex items-center gap-3">
           <ChecksCell pr={summary} />
         </div>}
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -1350,28 +1631,55 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           current={pullRequest.labels}
           disabled={busy}
           onChange={(label, operation) => setPending({
-            statement: `${operation === "add" ? "add" : "remove"} label ${JSON.stringify(label)} ${operation === "add" ? "to" : "from"} PR #${number} on ${repoLabel}`,
+            title: `${operation === "add" ? "Add" : "Remove"} label “${label}”`,
+            consequence: `The pull request is edited on ${repoLabel}.`,
+            command: `gh pr edit ${number} -R ${repoLabel} ${operation === "add" ? "--add-label" : "--remove-label"} ${JSON.stringify(label)}`,
+            tone: "neutral",
+            icon: Tag,
             requiresBody: false,
+            confirmLabel: operation === "add" ? "Add label" : "Remove label",
             build: () => ({ kind: "label", target: "pullRequest", number, label, operation }),
           })}
         />}
 
-        {summary.state === "open" && <>
-          <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          <button type="button" onClick={() => void openMerge()} disabled={busy} className={PRIMARY_ACTION}><GitMerge size={12} aria-hidden="true" /> Merge</button>
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `submit approval on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "review", number, event: "approve", body: "" }) })}>Approve</button>
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `submit requested changes on PR #${number} on ${repoLabel}`, requiresBody: true, build: body => ({ kind: "review", number, event: "requestChanges", body }) })}>Request changes</button>
-          <button type="button" disabled={busy || reviewBusy} aria-haspopup="menu" aria-expanded={reviewOpen} className={ACTION_BUTTON} onClick={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}>
-            <Sparkles size={12} aria-hidden="true" /> {reviewBusy ? "Starting review…" : "Review"}
-          </button>
-          {summary.isDraft && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `mark PR #${number} ready for review on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "ready", number }) })}>Ready for review</button>}
-          {rerunnable && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `re-run failed checks on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "rerun", number }) })}><RotateCcw size={11.5} aria-hidden="true" /> Re-run failed</button>}
-          {!checkedOutHere && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => { setActionError(undefined); setCheckoutOpen(true); }}>
-            <FolderGit2 size={12} aria-hidden="true" /> Check out
-          </button>}
-          <button type="button" disabled={busy} className={QUIET_ACTION} onClick={() => setPending({ statement: `close PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }) })}><Ban size={11.5} aria-hidden="true" /> Close</button>
-          </div>
-          {reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
+        {(summary.state === "open" || summary.state === "merged") && <>
+          <MergeBox
+            summary={summary}
+            checks={detail.checks.checks}
+            commitCount={pullRequest.commits.length}
+            baseBranch={pullRequest.baseBranch}
+            headBranch={summary.headBranch}
+            prUrl={summary.url}
+            config={mergeConfig}
+            state={merge}
+            dispatch={dispatchMerge}
+            busy={busy}
+            reviewBusy={reviewBusy}
+            onToggleReview={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}
+            onApprove={() => setPending({
+              title: `Approve pull request #${number}`,
+              consequence: `Your review is posted as an approval. ${summary.author?.login ?? "the author"} is notified.`,
+              command: `gh pr review ${number} -R ${repoLabel} --approve`,
+              tone: "success",
+              icon: ThumbsUp,
+              requiresBody: false,
+              confirmLabel: "Approve",
+              build: () => ({ kind: "review", number, event: "approve", body: "" }),
+            })}
+            overflow={overflow}
+            onConfirm={() => void runMerge()}
+            onRestore={() => setPending({
+              title: `Restore ${summary.headBranch}`,
+              consequence: "Recreates the deleted head branch at its merge commit. Nothing is merged or changed.",
+              command: `gh api repos/${repoLabel}/git/refs --method POST -f ref=refs/heads/${summary.headBranch} -f sha=…`,
+              tone: "neutral",
+              icon: RotateCcw,
+              requiresBody: false,
+              confirmLabel: "Restore branch",
+              build: () => ({ kind: "restoreBranch", number, branch: summary.headBranch }),
+            })}
+          />
+          {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-[11px] font-semibold tracking-[0.1em] text-muted-foreground">RUN REVIEW WITH</p>
             {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
@@ -1379,10 +1687,19 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
               {choice.note && <span className="shrink-0 text-[10.5px] text-muted-foreground">{choice.note}</span>}
             </button>)}
           </div>}
-          {reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
+          {summary.state === "open" && reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
         </>}
         {summary.state === "closed" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `reopen PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "setState", target: "pullRequest", number, operation: "reopen" }) })}><RotateCcw size={11.5} aria-hidden="true" /> Reopen</button>
+          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+            title: `Reopen #${number}`,
+            consequence: "The pull request is open again for review and comments.",
+            command: `gh pr reopen ${number} -R ${repoLabel}`,
+            tone: "neutral",
+            icon: RotateCcw,
+            requiresBody: false,
+            confirmLabel: "Reopen",
+            build: () => ({ kind: "setState", target: "pullRequest", number, operation: "reopen" }),
+          })}><RotateCcw size={11.5} aria-hidden="true" /> Reopen</button>
         </div>}
       </div>
 
@@ -1394,9 +1711,19 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         <span className="block truncate font-mono text-[11px] text-success/80" title={checkout.path}>{checkout.path}</span>
       </p>}
 
-      <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={setTab} label="Pull request detail" />
+      <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={selectTab} label="Pull request detail" />
 
-      <div id={`${detailId}-panel`} role="tabpanel" aria-labelledby={`${detailId}-${tab}`} tabIndex={0} className="space-y-6 px-5 py-5">
+      <div id={`${detailId}-panel`} role="tabpanel" aria-labelledby={`${detailId}-${tab}`} tabIndex={0} className="relative min-h-0">
+        <AnimatePresence mode="popLayout" initial={false} custom={tabDirection.current}>
+          <motion.div
+            key={tab}
+            custom={tabDirection.current}
+            variants={reducedMotion ? TAB_PANEL_REDUCED_VARIANTS : TAB_PANEL_VARIANTS}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            className="space-y-6 px-5 py-5"
+          >
         {tab === "checks" && <ChecksList checks={detail.checks.checks} rollup={summary.checks} />}
 
         {tab === "commits" && <CommitList commits={pullRequest.commits} prUrl={summary.url} />}
@@ -1422,9 +1749,14 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           {pullRequest.comments.length ? <CommentList comments={pullRequest.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No conversation comments.</p>}
           <div className="mt-2.5">
             <CommentComposer disabled={busy} onSubmit={body => setPending({
-              statement: `post a comment on PR #${number} on ${repoLabel}`,
+              title: `Post a comment on #${number}`,
+              consequence: "Posted as you, visible to everyone on the repository.",
+              command: `gh api repos/${repoLabel}/issues/${number}/comments --method POST -f body=…`,
+              tone: "neutral",
+              icon: MessageSquare,
               requiresBody: true,
               body,
+              confirmLabel: "Post comment",
               build: value => ({ kind: "comment", target: "pullRequest", number, body: value }),
             })} />
           </div>
@@ -1463,7 +1795,16 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
                   {rootId !== null && <button
                     type="button"
                     disabled={busy}
-                    onClick={() => setPending({ statement: `reply to a review comment on PR #${number} on ${repoLabel}`, requiresBody: true, build: body => ({ kind: "reply", number, commentId: rootId, body }) })}
+                    onClick={() => setPending({
+                      title: "Reply to the review comment",
+                      consequence: "Posted as you, visible to everyone on the repository.",
+                      command: `gh api repos/${repoLabel}/pulls/${number}/comments/${rootId}/replies --method POST -f body=…`,
+                      tone: "neutral",
+                      icon: MessageSquare,
+                      requiresBody: true,
+                      confirmLabel: "Reply",
+                      build: body => ({ kind: "reply", number, commentId: rootId, body }),
+                    })}
                     className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                   >
                     <MessageSquare size={11} aria-hidden="true" /> Reply
@@ -1474,50 +1815,48 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           </div> : <p className="text-[12px] text-muted-foreground">No review threads.</p>}
         </section>
         </>}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
 
-    {pending && <ConfirmOverlay
-      statement={pending.statement}
-      requiresBody={pending.requiresBody}
-      body={pending.body ?? pendingBody}
-      onBody={setPendingBody}
-      readOnlyBody={pending.body !== undefined}
-      busy={busy}
-      onCancel={closeOverlays}
-      onConfirm={() => void submit(pending.build(pending.body ?? pendingBody))}
-    />}
+    {/* The host keeps each sheet mounted for its exit motion. */}
+    <ActionSheetHost>
+      {pending && <ActionSheet
+        key="pending"
+        icon={pending.icon}
+        tone={pending.tone}
+        title={pending.title}
+        consequence={pending.consequence}
+        command={pending.command}
+        requiresBody={pending.requiresBody}
+        body={pending.body ?? pendingBody}
+        onBody={setPendingBody}
+        readOnlyBody={pending.body !== undefined}
+        confirmLabel={pending.confirmLabel}
+        destructive={pending.destructive}
+        busy={busy}
+        onCancel={closeOverlays}
+        onConfirm={() => void submit(pending.build(pending.body ?? pendingBody))}
+      />}
 
-    {checkoutOpen && <ConfirmOverlay
-      statement={`check out PR #${number} (${summary.headBranch}) into a task worktree`}
-      note="Creates an isolated worktree beside this one — your current checkout is untouched. Repeating it reuses the same worktree."
-      requiresBody={false}
-      body=""
-      onBody={() => undefined}
-      busy={busy}
-      confirmLabel="Check out"
-      onCancel={closeOverlays}
-      onConfirm={() => void runCheckout()}
-    />}
+      {checkoutOpen && <ActionSheet
+        key="checkout"
+        icon={FolderGit2}
+        tone="neutral"
+        title={`Check out #${number} (${summary.headBranch})`}
+        consequence="Creates an isolated worktree beside this one — your current checkout is untouched. Repeating it reuses the same worktree."
+        requiresBody={false}
+        body=""
+        onBody={() => undefined}
+        busy={busy}
+        confirmLabel="Check out"
+        onCancel={closeOverlays}
+        onConfirm={() => void runCheckout()}
+      />}
+    </ActionSheetHost>
 
-    {mergeOpen && <Dialog open onOpenChange={next => { if (!next && !busy) closeOverlays(); }}>
-      <DialogPopup showCloseButton={false} aria-label="Confirm merge" className="max-w-md p-5">
-        <h3 className="mb-2 font-display text-sm font-semibold">Merge pull request</h3>
-        {!mergeConfig ? <p className="flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" /> Reading repository settings…</p> : <>
-          <fieldset className="space-y-1.5">
-            {(["merge", "squash", "rebase"] as const).filter(name => mergeConfig.strategies[name]).map(name => <label key={name} className="flex items-center gap-2 text-xs">
-              <input type="radio" name="merge-strategy" value={name} checked={strategy === name} onChange={() => setStrategy(name)} />
-              {STRATEGY_LABEL[name]}
-            </label>)}
-          </fieldset>
-          <p className="mt-3 text-xs text-muted-foreground">This runs <code className="font-mono text-foreground/90">merge PR #{number} ({strategy}) on {repoLabel}</code>.</p>
-          <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={closeOverlays} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
-            <button type="button" onClick={() => strategy && void submit({ kind: "merge", number, strategy })} disabled={busy || !strategy} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Merge</button>
-          </div>
-        </>}
-      </DialogPopup>
-    </Dialog>}
+
   </div>;
 }
 
@@ -1571,14 +1910,27 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
         <p className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-muted-foreground"><Monogram login={issue.summary.author?.login} className="size-4 text-[9px]" />Opened by {issue.summary.author?.login ?? "ghost"}</p>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"><Tag size={10.5} aria-hidden="true" /> Manage labels</button></div>
         {labelsOpen && <LabelControls available={availableLabels} current={issue.summary.labels} disabled={busy} onChange={(label, operation) => setPending({
-          statement: `${operation === "add" ? "add" : "remove"} label ${JSON.stringify(label)} ${operation === "add" ? "to" : "from"} issue #${number} on ${repoLabel}`,
+          title: `${operation === "add" ? "Add" : "Remove"} label “${label}”`,
+          consequence: `The issue is edited on ${repoLabel}.`,
+          command: `gh issue edit ${number} -R ${repoLabel} ${operation === "add" ? "--add-label" : "--remove-label"} ${JSON.stringify(label)}`,
+          tone: "neutral",
+          icon: Tag,
           requiresBody: false,
+          confirmLabel: operation === "add" ? "Add label" : "Remove label",
           build: () => ({ kind: "label", target: "issue", number, label, operation }),
         })} />}
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
-            statement: `${open ? "close" : "reopen"} issue #${number} on ${repoLabel}`,
+            title: open ? `Close #${number}` : `Reopen #${number}`,
+            consequence: open
+              ? "Comments stay, and you can reopen it from this pane."
+              : "The issue is open again for comments and triage.",
+            command: open ? `gh issue close ${number} -R ${repoLabel}` : `gh issue reopen ${number} -R ${repoLabel}`,
+            tone: open ? "destructive" : "neutral",
+            icon: open ? Ban : RotateCcw,
             requiresBody: false,
+            confirmLabel: open ? "Close issue" : "Reopen issue",
+            destructive: open,
             build: () => ({ kind: "setState", target: "issue", number, operation: open ? "close" : "reopen" }),
           })}>
             {open ? <><Ban size={11.5} aria-hidden="true" /> Close</> : <><RotateCcw size={11.5} aria-hidden="true" /> Reopen</>}
@@ -1593,41 +1945,40 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
           {issue.comments.length ? <CommentList comments={issue.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No comments.</p>}
           <div className="mt-2.5">
             <CommentComposer disabled={busy} onSubmit={body => setPending({
-              statement: `post a comment on issue #${number} on ${repoLabel}`,
+              title: `Post a comment on #${number}`,
+              consequence: "Posted as you, visible to everyone on the repository.",
+              command: `gh api repos/${repoLabel}/issues/${number}/comments --method POST -f body=…`,
+              tone: "neutral",
+              icon: MessageSquare,
               requiresBody: true,
               body,
+              confirmLabel: "Post comment",
               build: value => ({ kind: "comment", target: "issue", number, body: value }),
             })} />
           </div>
         </section>
       </div>
     </div>
-    {pending && <ConfirmOverlay
-      statement={pending.statement}
-      requiresBody={pending.requiresBody}
-      body={pending.body ?? ""}
-      onBody={() => undefined}
-      readOnlyBody={pending.body !== undefined}
-      busy={busy}
-      onCancel={() => setPending(undefined)}
-      onConfirm={() => void submit(pending.build(pending.body ?? ""))}
-    />}
+    <ActionSheetHost>
+      {pending && <ActionSheet
+        icon={pending.icon}
+        tone={pending.tone}
+        title={pending.title}
+        consequence={pending.consequence}
+        command={pending.command}
+        requiresBody={pending.requiresBody}
+        body={pending.body ?? ""}
+        onBody={() => undefined}
+        readOnlyBody={pending.body !== undefined}
+        confirmLabel={pending.confirmLabel}
+        destructive={pending.destructive}
+        busy={busy}
+        onCancel={() => setPending(undefined)}
+        onConfirm={() => void submit(pending.build(pending.body ?? ""))}
+      />}
+    </ActionSheetHost>
   </div>;
 }
-
-type ConfirmOverlayProps = {
-  statement: string;
-  note?: string;
-  requiresBody: boolean;
-  body: string;
-  onBody: (value: string) => void;
-  /** The body was already composed elsewhere — show it, don't ask for it again. */
-  readOnlyBody?: boolean;
-  busy: boolean;
-  confirmLabel?: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-};
 
 /** Connect a workspace folder to a GitHub repository.
  *
@@ -1715,24 +2066,6 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
         <button type="button" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Connect</button>
-      </div>
-    </DialogPopup>
-  </Dialog>;
-}
-
-function ConfirmOverlay({ statement, note, requiresBody, body, onBody, readOnlyBody, busy, confirmLabel = "Confirm", onCancel, onConfirm }: ConfirmOverlayProps) {
-  const ready = !requiresBody || body.trim().length > 0;
-  return <Dialog open onOpenChange={next => { if (!next && !busy) onCancel(); }}>
-    <DialogPopup showCloseButton={false} aria-label="Confirm action" className="max-w-md p-5">
-      <p className="text-xs text-muted-foreground">This runs</p>
-      <p className="mt-1 font-mono text-xs text-foreground/90">{statement}</p>
-      {note && <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{note}</p>}
-      {requiresBody && (readOnlyBody
-        ? <p className="mt-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-card p-3 text-[12.5px] leading-relaxed text-foreground" aria-label="Comment body">{body}</p>
-        : <textarea value={body} onChange={event => onBody(event.target.value)} aria-label="Comment body" placeholder="Write a comment…" className="mt-4 min-h-28 w-full resize-y rounded-lg border border-input bg-card p-3 text-[13px] leading-relaxed" />)}
-      <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
-        <button type="button" onClick={onConfirm} disabled={busy || !ready} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{confirmLabel}</button>
       </div>
     </DialogPopup>
   </Dialog>;

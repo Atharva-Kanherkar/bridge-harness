@@ -44,6 +44,7 @@ const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefNa
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
 const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url,mergeable";
 const PR_HEAD_FIELDS: &str = "headRefOid";
+const PR_RESTORE_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
 /// What a trail keeps of an issue: the detail, how and when it closed, and
@@ -409,6 +410,11 @@ pub enum GithubAction {
     Merge {
         number: u64,
         strategy: MergeStrategy,
+        // Optional squash/merge commit text; `gh`'s defaults when absent.
+        subject: Option<String>,
+        body: Option<String>,
+        #[serde(rename = "deleteBranch")]
+        delete_branch: Option<bool>,
     },
     Review {
         number: u64,
@@ -444,6 +450,10 @@ pub enum GithubAction {
     Ready {
         number: u64,
     },
+    RestoreBranch {
+        number: u64,
+        branch: String,
+    },
 }
 
 impl GithubAction {
@@ -457,7 +467,8 @@ impl GithubAction {
             | GithubAction::Label { number, .. }
             | GithubAction::Comment { number, .. }
             | GithubAction::SetState { number, .. }
-            | GithubAction::Ready { number } => *number,
+            | GithubAction::Ready { number }
+            | GithubAction::RestoreBranch { number, .. } => *number,
         }
     }
 }
@@ -1415,20 +1426,35 @@ impl GithubSurface {
         let repository = self.resolve_repository_fresh(workspace)?;
         let selector = repository.selector();
         let result = match action {
-            GithubAction::Merge { number, strategy } => {
-                self.run_gh(
-                    workspace,
-                    "pr merge",
-                    &[
-                        "pr".into(),
-                        "merge".into(),
-                        number.to_string(),
-                        "--repo".into(),
-                        selector.clone(),
-                        strategy.flag().into(),
-                    ],
-                    false,
-                )?;
+            GithubAction::Merge {
+                number,
+                strategy,
+                subject,
+                body,
+                delete_branch,
+            } => {
+                // Optional commit text rides `--subject`/`--body`; the branch
+                // cleanup rides `--delete-branch` (issue #1028 slice 5).
+                let mut args = vec![
+                    "pr".into(),
+                    "merge".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    selector.clone(),
+                    strategy.flag().into(),
+                ];
+                if let Some(subject) = subject.as_deref().filter(|value| !value.is_empty()) {
+                    args.push("--subject".into());
+                    args.push(subject.into());
+                }
+                if let Some(body) = body.as_deref().filter(|value| !value.is_empty()) {
+                    args.push("--body".into());
+                    args.push(body.into());
+                }
+                if *delete_branch == Some(true) {
+                    args.push("--delete-branch".into());
+                }
+                self.run_gh(workspace, "pr merge", &args, false)?;
                 Ok(format!("Merge requested for PR #{number} ({}).", strategy_label(*strategy)))
             }
             GithubAction::Review {
@@ -1551,6 +1577,44 @@ impl GithubSurface {
                     false,
                 )?;
                 Ok(format!("Marked PR #{number} ready for review."))
+            }
+            GithubAction::RestoreBranch { number, branch } => {
+                // Recreate the head branch at its head SHA, the same call
+                // GitHub's own "Restore branch" button makes. Only the PR's own
+                // same-repository head branch may be recreated: the name comes
+                // from the client, so it is checked against what GitHub reports.
+                let head = self.pr_restorable_head(workspace, &selector, *number)?;
+                if head.is_cross_repository {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "restore branch",
+                        stderr: format!("PR #{number} comes from a fork; its branch lives in the fork."),
+                    });
+                }
+                if head.head_ref_name != *branch {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "restore branch",
+                        stderr: format!("{branch} is not the head branch of PR #{number}."),
+                    });
+                }
+                let head_sha = head.head_ref_oid;
+                self.run_gh(
+                    workspace,
+                    "restore branch",
+                    &[
+                        "api".into(),
+                        "--hostname".into(),
+                        repository.host.clone(),
+                        "--method".into(),
+                        "POST".into(),
+                        format!("repos/{}/{}/git/refs", repository.owner, repository.name),
+                        "-f".into(),
+                        format!("ref=refs/heads/{branch}"),
+                        "-f".into(),
+                        format!("sha={head_sha}"),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Restored branch {branch}."))
             }
         };
         if result.is_ok() {
@@ -1866,6 +1930,33 @@ impl GithubSurface {
         Ok(head.head_ref_oid)
     }
 
+    fn pr_restorable_head(
+        &self,
+        workspace: &Path,
+        selector: &str,
+        number: u64,
+    ) -> Result<RawRestorableHead, GithubSurfaceError> {
+        let bytes = self.run_gh(
+            workspace,
+            "pr head branch",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                selector.into(),
+                "--json".into(),
+                PR_RESTORE_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let head: RawRestorableHead = parse_json("pull-request head", &bytes)?;
+        if head.head_ref_oid.is_empty() || head.head_ref_name.is_empty() {
+            return Err(malformed("pull-request head", "headRefName or headRefOid was empty"));
+        }
+        Ok(head)
+    }
+
     #[cfg(test)]
     pub(crate) fn discover_on_path(path: &Path) -> Self {
         let binary = which::which_in("gh", Some(std::ffi::OsString::from(path)), ".").ok();
@@ -2116,6 +2207,15 @@ struct RawRepositoryOverview {
 #[serde(rename_all = "camelCase")]
 struct RawPullRequestHead {
     head_ref_oid: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRestorableHead {
+    head_ref_name: String,
+    head_ref_oid: String,
+    #[serde(default)]
+    is_cross_repository: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3738,7 +3838,7 @@ mod tests {
         let complete_old_read = defer_resolution_completion(&surface, repository.path());
         git(repository.path(), &["remote", "set-url", "origin", "https://github.com/fixture/other.git"]);
 
-        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash }).unwrap();
+        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash, subject: None, body: None, delete_branch: None }).unwrap();
         complete_old_read();
         assert_eq!(surface.resolve_repository(repository.path()).unwrap(), expected("fixture", "other"));
         assert!(invocations(&fake).contains("pr merge 103 --repo fixture/other --squash"));
@@ -3795,7 +3895,7 @@ mod tests {
             let message = surface
                 .act(
                     repository.path(),
-                    &GithubAction::Merge { number: 103, strategy },
+                    &GithubAction::Merge { number: 103, strategy, subject: None, body: None, delete_branch: None },
                 )
                 .unwrap();
             assert!(message.contains("Merge requested for PR #103"));
@@ -3819,6 +3919,9 @@ mod tests {
                 &GithubAction::Merge {
                     number: 103,
                     strategy: MergeStrategy::Squash,
+                    subject: None,
+                    body: None,
+                    delete_branch: None,
                 },
             )
             .unwrap_err();
@@ -4107,6 +4210,32 @@ mod tests {
         assert_eq!(invocation_count(&fake, "pr view"), 2);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);
+    }
+
+    #[test]
+    fn restore_branch_only_recreates_the_pull_requests_own_head_branch() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let refused = surface
+            .act(
+                repository.path(),
+                &GithubAction::RestoreBranch { number: 103, branch: "main".into() },
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("not the head branch of PR #103"), "{refused}");
+        assert!(!invocations(&fake).contains("git/refs"), "a mismatched name never reaches the API");
+
+        let message = surface
+            .act(
+                repository.path(),
+                &GithubAction::RestoreBranch { number: 103, branch: "fix/review".into() },
+            )
+            .unwrap();
+        assert_eq!(message, "Restored branch fix/review.");
+        let log = invocations(&fake);
+        assert!(log.contains("pr view 103 --repo fixture/project --json headRefName,headRefOid,isCrossRepository"));
+        assert!(log.contains("repos/fixture/project/git/refs -f ref=refs/heads/fix/review -f sha=current-head-sha"), "{log}");
     }
 
     #[test]

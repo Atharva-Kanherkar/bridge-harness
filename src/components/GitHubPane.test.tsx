@@ -71,6 +71,8 @@ const type = async (field: HTMLInputElement | HTMLTextAreaElement, value: string
   await act(async () => { field.dispatchEvent(new Event("input", { bubbles: true })); await flush(); });
 };
 const exactButton = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === text) as HTMLButtonElement;
+/** The sheet's verb button (the one write the sheet gates). */
+const confirmButton = () => document.querySelector<HTMLButtonElement>("button[data-confirm]")!;
 const buttonByText = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
 
 afterEach(async () => {
@@ -92,7 +94,7 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     expect(host!.textContent).toContain("Review threads");
     expect(host!.textContent).toContain("Main conversation comment");
-    expect(host!.textContent).toContain("feat/safe → main");
+    expect(host!.textContent).toContain("wants to merge 2 commits into main from feat/safe");
     expect(host!.querySelector("script")).toBeNull();
     expect(host!.innerHTML).toContain("&lt;script&gt;");
 
@@ -176,9 +178,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Manage labels"));
     await click(buttonByText("enhancement"));
-    expect(document.body.textContent).toContain('add label "enhancement" to PR #1');
+    expect(document.body.textContent).toContain("Add label “enhancement”");
+    expect(document.body.textContent).toContain('gh pr edit 1 -R bridge/harness --add-label "enhancement"');
     expect(act).not.toHaveBeenCalled();
-    await click(buttonByText("Confirm"));
+    await click(confirmButton());
     expect(act).toHaveBeenCalledWith("w", { kind: "label", target: "pullRequest", number: 1, label: "enhancement", operation: "add" }, true);
   });
 
@@ -452,21 +455,25 @@ describe("GitHubPane", () => {
     await mount();
     await click(buttonByText("Safe GitHub surface"));
 
-    // Declining runs nothing.
+    // Check out rides the box's overflow menu now.
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Check out"));
-    expect(document.body.textContent).toContain("check out PR #1 (feat/safe) into a task worktree");
+    expect(document.body.textContent).toContain("Check out #1 (feat/safe)");
+    expect(document.body.textContent).toContain("your current checkout is untouched");
     await click(buttonByText("Cancel"));
     expect(checkout).not.toHaveBeenCalled();
 
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Check out"));
-    await click([...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
+    await click(confirmButton());
     expect(checkout).toHaveBeenCalledWith("w", 1);
     expect(host!.textContent).toContain("Checked out into a task worktree on ");
     expect(host!.textContent).toContain("/w/github/pr-1-feat-safe");
 
     checkout.mockResolvedValue({ workspaceId: "ws2", path: "/w/github/pr-1-feat-safe", branch: "feat/safe", reused: true });
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Check out"));
-    await click([...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
+    await click(confirmButton());
     expect(host!.textContent).toContain("Reusing the task worktree already on ");
   });
 
@@ -689,6 +696,164 @@ describe("GitHubPane", () => {
     expect(checks.querySelector(".github-check-live")).not.toBeNull();
   });
 
+  it("opens the merge box confirm in place and merges through the typed action", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Merge requested for PR #1 (squash)." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+
+    // The split button reads the repo default from the config read.
+    expect(buttonByText("Squash and merge")).toBeTruthy();
+    // Confirm expands in place — no dialog anywhere in the DOM.
+    await click(buttonByText("Squash and merge"));
+    expect(document.body.querySelector("[data-merge-go]")).toBeTruthy();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.textContent).toContain("Squashes 2 commits into one commit on main");
+
+    // The commit subject is editable; the branch cleanup defaults to off.
+    const subject = document.querySelector<HTMLInputElement>('input[aria-label="Commit message"]')!;
+    expect(subject.value).toBe("Safe GitHub surface (#1)");
+
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action).toHaveBeenCalledWith("w", {
+      kind: "merge", number: 1, strategy: "squash", subject: "Safe GitHub surface (#1)", body: undefined, deleteBranch: undefined,
+    }, true);
+    // A second click during the flight cannot submit again.
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not merge when the chord confirms an action sheet over an open merge step", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Done." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Squash and merge"));
+    expect(document.body.querySelector("[data-merge-go]")).toBeTruthy();
+    await click(buttonByText("Manage labels"));
+    await click(buttonByText("enhancement"));
+    const confirm = confirmButton();
+    await act(async () => {
+      confirm.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action.mock.calls[0][1]).toMatchObject({ kind: "label" });
+  });
+
+  it("picking a strategy from the menu writes that strategy's commit subject", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(document.querySelector('button[aria-label="Choose a merge strategy"]') as HTMLButtonElement);
+    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Merge strategy"] button, [role="menu"][aria-label="Merge strategy"] [role="menuitemradio"], [role="menu"][aria-label="Merge strategy"] [role="menuitem"]')]
+      .find(button => button.textContent?.includes("Create a merge commit"))!;
+    await click(item);
+    const subject = document.querySelector<HTMLInputElement>('input[aria-label="Commit message"]')!;
+    expect(subject.value).toMatch(/^Merge pull request #1 from /);
+  });
+
+  it("shows a refused merge verbatim with Try again and keeps the form", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Squash and merge"));
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    expect(document.body.textContent).toContain('Required status check "build" is expected.');
+    expect(document.body.textContent).toContain("Try again");
+    expect((document.querySelector<HTMLInputElement>('input[aria-label="Commit message"]')!).value).toBe("Safe GitHub surface (#1)");
+    // The refusal tints the box and shows the reason inline, not a dialog.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("offers only the strategies the repository allows", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "merge" as const,
+      strategies: { merge: true, squash: false, rebase: false },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(document.querySelector('button[aria-label="Choose a merge strategy"]') as HTMLButtonElement);
+    const menu = document.querySelector('[role="menu"][aria-label="Merge strategy"]')!;
+    expect(menu.textContent).toContain("Create a merge commit");
+    expect(menu.textContent).not.toContain("Squash and merge");
+    expect(menu.textContent).not.toContain("Rebase and merge");
+  });
+
+  it("renders the merged receipt in its final state under reduced motion", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const matchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes("prefers-reduced-motion"),
+        media: query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    });
+    vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Merge requested for PR #1 (squash)." });
+    try {
+      await mount();
+      await click(buttonByText("Safe GitHub surface"));
+      await click(buttonByText("Squash and merge"));
+      await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+      // Reduced motion: no choreography, the settled frame right away.
+      expect(document.querySelector(".merge-graph-final")).toBeTruthy();
+      expect(document.querySelector(".merge-graph-play")).toBeNull();
+      expect(host!.textContent).toContain("Merged into main");
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMedia });
+    }
+  });
+
+  it("restores a deleted branch behind the confirmation gate", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct")
+      .mockResolvedValueOnce({ executed: true, message: "Merge requested for PR #1 (squash)." })
+      .mockResolvedValueOnce({ executed: true, message: "Restored branch feat/safe." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Squash and merge"));
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    // The receipt rises in; Restore branch rides the sheet like every write.
+    expect(host!.textContent).toContain("Merged into main");
+    await click(buttonByText("Restore branch"));
+    expect(document.body.textContent).toContain("Recreates the deleted head branch");
+    await click(confirmButton());
+    expect(action).toHaveBeenLastCalledWith("w", { kind: "restoreBranch", number: 1, branch: "feat/safe" }, true);
+  });
+
   it("posts a comment through the same confirmation gate as every other write", async () => {
     mockReads();
     const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Commented on PR #1." });
@@ -700,10 +865,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Comment"));
 
     // The draft is shown back, not re-requested, and nothing has run yet.
-    expect(document.body.textContent).toContain("post a comment on PR #1");
+    expect(document.body.textContent).toContain("Post a comment on #1");
     expect(document.body.textContent).toContain("This reads well now.");
     expect(action).not.toHaveBeenCalled();
-    await click(buttonByText("Confirm"));
+    await click(confirmButton());
     expect(action).toHaveBeenCalledWith("w", { kind: "comment", target: "pullRequest", number: 1, body: "This reads well now." }, true);
   });
 
@@ -712,9 +877,10 @@ describe("GitHubPane", () => {
     const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Closed PR #1." });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Close"));
-    expect(document.body.textContent).toContain("close PR #1 on bridge/harness");
-    await click(buttonByText("Confirm"));
+    expect(document.body.textContent).toContain("Close #1 without merging");
+    await click(confirmButton());
     expect(action).toHaveBeenCalledWith("w", { kind: "setState", target: "pullRequest", number: 1, operation: "close" }, true);
 
     // A draft offers the undraft transition instead.
@@ -725,8 +891,10 @@ describe("GitHubPane", () => {
     });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[aria-label="More pull request actions"]') as HTMLButtonElement);
     await click(buttonByText("Ready for review"));
-    await click(buttonByText("Confirm"));
+    expect(document.body.textContent).toContain("Mark #1 ready for review");
+    await click(confirmButton());
     expect(action).toHaveBeenLastCalledWith("w", { kind: "ready", number: 1 }, true);
   });
 
@@ -746,17 +914,18 @@ describe("GitHubPane", () => {
     await click(buttonByText("Stay inside Bridge"));
 
     await click(buttonByText("Close"));
-    expect(document.body.textContent).toContain("close issue #17 on bridge/harness");
-    await click(buttonByText("Confirm"));
+    expect(document.body.textContent).toContain("Close #17");
+    expect(document.body.textContent).toContain("gh issue close 17 -R bridge/harness");
+    await click(confirmButton());
     expect(action).toHaveBeenCalledWith("w", { kind: "setState", target: "issue", number: 17, operation: "close" }, true);
 
     const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
     await type(composer, "On it.");
     await click(buttonByText("Comment"));
     // The drafted text is shown back before it posts, exactly as on a PR.
-    expect(document.body.textContent).toContain("post a comment on issue #17");
+    expect(document.body.textContent).toContain("Post a comment on #17");
     expect(document.querySelector('[role="dialog"] [aria-label="Comment body"]')?.textContent).toBe("On it.");
-    await click(buttonByText("Confirm"));
+    await click(confirmButton());
     expect(action).toHaveBeenLastCalledWith("w", { kind: "comment", target: "issue", number: 17, body: "On it." }, true);
 
     // A closed issue offers Reopen rather than Close.
@@ -919,6 +1088,9 @@ describe("GitHubPane deep links", () => {
 
     await render({ kind: "pulls" }, 4);
     expect(host!.querySelector('button[aria-label="Pull requests"]')?.getAttribute("aria-pressed")).toBe("true");
+    // The pushed-out detail is still mid-exit when the flush resolves; let
+    // the transition's frames run out under act before asserting it's gone.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); await flush(); });
     expect(host!.textContent).not.toContain("Main conversation comment");
   });
 
