@@ -59,6 +59,12 @@ pub fn model_readable_bytes(kind: &str, payload: &Value) -> Option<usize> {
         // where it completes, so neither is counted twice. Claude reattaches
         // the command to the completion; that copy is ignored.
         "tool.started" | "command.started" | "file_change.started" => {
+            // Claude writes a start at `content_block_start`, while the model
+            // is still writing the arguments (`{}` so far), and another when
+            // they are complete. Only the second carries the input.
+            if payload.pointer("/data/phase").and_then(Value::as_str) == Some("preparing") {
+                return None;
+            }
             first_value(payload, &INPUT_FIELDS)
         }
         "tool.completed" | "command.completed" | "file_change.completed" => tool_output(payload),
@@ -279,6 +285,16 @@ mod tests {
         ] {
             assert_eq!(estimate(kind, &loud), None, "{kind}");
         }
+    }
+
+    #[test]
+    fn a_preparing_tool_start_is_not_counted() {
+        // The two rows Claude writes for one call, as stored in a live run.
+        let preparing = json!({"status": "inProgress", "data": {"id": "toolu_1", "name": "Bash", "phase": "preparing", "input": {}}});
+        let running = json!({"status": "inProgress", "data": {"id": "toolu_1", "name": "Bash", "phase": "running", "input": {"command": "ls"}}});
+        assert_eq!(estimate("command.started", &preparing), None);
+        assert_eq!(estimate("tool.started", &preparing), None);
+        assert_eq!(estimate("command.started", &running), tokens(r#"{"command":"ls"}"#.len()));
     }
 
     #[test]
