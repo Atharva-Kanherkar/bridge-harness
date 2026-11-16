@@ -7,12 +7,14 @@ import { bridgeApi } from "../api";
 import { MOCK_APP_DRAFT_ID, MOCK_APP_HASH, mockGetPersonalAppDraft } from "../personalAppMock";
 import { PersonalAppDraftCall } from "./PersonalAppDraftCall";
 import { VisualActionsContext } from "./VisualCall";
-vi.mock("../mcp-apps/McpAppFrame", () => ({ McpAppFrame: ({ personalView }: { personalView: { html: string } }) => <div data-testid="preview">{personalView.html.length} bytes</div>, useNearViewport: () => [{ current: null }, true] }));
+type ToolCall = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
+const frame: { onToolCall?: ToolCall } = {};
+vi.mock("../mcp-apps/McpAppFrame", () => ({ McpAppFrame: ({ personalView, onToolCall }: { personalView: { html: string }; onToolCall: ToolCall }) => { frame.onToolCall = onToolCall; return <div data-testid="preview">{personalView.html.length} bytes</div>; }, useNearViewport: () => [{ current: null }, true] }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement, root: Root;
 const item: ConversationItem = { key: "k", type: "activity", eventId: 1, sequence: 1, turn: 1, text: "", status: "completed", data: { name: "mcp__bridge__apps_draft", input: { view_html: "untrusted streamed HTML" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } };
 const draft = () => ({ ...mockGetPersonalAppDraft({ sessionId: "session-1", draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }), locked: false });
-beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); vi.spyOn(bridgeApi, "getPersonalAppDraft").mockResolvedValue(draft()); });
+beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); vi.spyOn(bridgeApi, "getPersonalAppDraft").mockResolvedValue(draft()); vi.spyOn(bridgeApi, "isolateAppPreviews").mockResolvedValue(true); frame.onToolCall = undefined; });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.restoreAllMocks(); });
 const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 async function render(readOnly = false, ask = vi.fn()) { act(() => root.render(<VisualActionsContext.Provider value={{ ask }}><PersonalAppDraftCall item={item} sessionId="session-1" readOnly={readOnly} /></VisualActionsContext.Provider>)); await settle(); return ask; }
@@ -50,4 +52,30 @@ it("reports unavailable previews without rendering a frame", async () => {
 it("reports failed locks and allows a retry without changing the hash", async () => {
   vi.spyOn(bridgeApi, "lockPersonalApp").mockRejectedValueOnce(new Error("draft changed"));
   await render();await click("Lock version");expect(container.querySelector('[role="alert"]')?.textContent).toContain("draft changed");expect(button("Lock version").disabled).toBe(false);
+});
+it("mounts the view only after isolation settles, and refuses live reads when it is not isolated", async () => {
+  let settleIsolation!: (value: boolean) => void;
+  vi.mocked(bridgeApi.isolateAppPreviews).mockReturnValueOnce(new Promise(resolve => { settleIsolation = resolve; }));
+  const preview = vi.spyOn(bridgeApi, "previewPersonalAppTool").mockResolvedValue({ content: [] });
+  await render();
+  expect(container.querySelector('[data-testid="preview"]')).toBeNull();
+  await act(async () => { settleIsolation(false); });await settle();
+  expect(container.querySelector('[data-testid="preview"]')).not.toBeNull();
+  expect(container.textContent).toContain("Live reads run only in the Bridge Mac app");
+  await expect(frame.onToolCall!("slack_search_users", { query: "Ada" })).rejects.toThrow("Bridge Mac app");
+  expect(preview).not.toHaveBeenCalled();
+  await frame.onToolCall!("slack_send_message", { text: "hi" });
+  expect(preview).toHaveBeenCalledWith(expect.objectContaining({ tool: "slack_send_message" }));
+});
+it("allows live reads once the host confirms isolation", async () => {
+  const preview = vi.spyOn(bridgeApi, "previewPersonalAppTool").mockResolvedValue({ content: [] });
+  await render();
+  expect(container.textContent).not.toContain("Bridge Mac app");
+  await frame.onToolCall!("slack_search_users", { query: "Ada" });
+  expect(preview).toHaveBeenCalledWith(expect.objectContaining({ tool: "slack_search_users" }));
+});
+it("treats a failed isolation check as not isolated", async () => {
+  vi.mocked(bridgeApi.isolateAppPreviews).mockRejectedValueOnce(new Error("no webview"));
+  await render();
+  await expect(frame.onToolCall!("slack_search_users", {})).rejects.toThrow("Bridge Mac app");
 });

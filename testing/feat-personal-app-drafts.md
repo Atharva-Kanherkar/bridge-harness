@@ -10,15 +10,17 @@
 - Correlated control replies bind to the originating session, never enter transcript/model context, and never broaden the separate approved Outgoing call path.
 - Render a standalone transcript card from a successful tool result, fetching canonical stored HTML. Show target, read/write access and preview-only status outside the frame. Lock uses exactly the displayed hash; widening requires an explicit native second confirmation listing changes. Revise fills the composer, never sends. History is read-only.
 - Personal HTML runs under injected CSP in nested opaque-origin sandbox frames with a trusted relay. No external links, network, self-navigation, popups, forms, child frames or parent DOM access. Only the mounted frame's messages are accepted. Clamp reported height to 48–1200 px. Preserve existing visual behavior.
+- A preview reads a server only where the chat's own access mode lets the model read it: Full yes; Shared and Isolated no; read-only only with network authority and a projected server. Inventory stays available.
+- CSP cannot block WebRTC. Live reads run only once the host confirms WebRTC is off in the calling webview (the Mac app turns it off and reads it back). The view mounts only after that check. Web mode, other platforms and a failed check refuse reads; writes still preview.
 - Saved-app routing, real writes and non-Claude providers remain later slices.
 
 ## Unit Tests
 
-- Sidecar app-control: disabled/restricted launches; selected-server sanitization; ambiguous aliases; nonexistent/disconnected tools; mutation vocabulary and unsafe annotations; payload/result limits; read request flags; errors contain no configuration; writes never accepted.
+- Sidecar app-control: access-mode read policy per write mode, and refusal when no policy is given; disabled/restricted launches; selected-server sanitization; ambiguous aliases; nonexistent/disconnected tools; mutation vocabulary and unsafe annotations; payload/result limits; read request flags; errors contain no configuration; writes never accepted.
 - Core control: reply correlation/session isolation, stale/unknown replies, concurrency and timeout cleanup.
 - Personal drafts: legacy hash compatibility, sample bounds/hash, binding persistence, wrong owner/hash, expiry, tampering, consumed locked version reload, deletion, write stub and allowlist refusal.
 - Wire round trips, method registrations, daemon and Tauri dispatch signatures stay consistent with generated protocol 1.39.
-- Transcript recognition/grouping excludes unrelated tools and incomplete results. Card loading/error/locked/widening/revise/history states. Frame CSP injection precedes arbitrary markup, tool routing and source checks.
+- Transcript recognition/grouping excludes unrelated tools and incomplete results. Card loading/error/locked/widening/revise/history states; the view waits for the isolation check, and reads refuse unless it succeeded. Frame CSP injection precedes arbitrary markup, tool routing and source checks.
 
 ## Integration / Functional Tests
 
@@ -32,6 +34,7 @@
 ## E2E Tests
 
 - Real browser security probe attempts fetch, image/CSS loads, forms, nested frames and self-navigation. No attempted external request reaches the network. Trusted wrapper relay carries normal MCP Apps messages.
+- WebRTC exfiltration (STUN to a local UDP listener, including via a child frame) in a WKWebView: packets arrive with `_peerConnectionEnabled` on and none once it is off, including frames created after it is switched off on a loaded page.
 - A real authenticated Claude account is not required for automated checks; sidecar tests inject the SDK control sender. Record any account-dependent live testing not performed.
 
 ## Manual / cURL Tests

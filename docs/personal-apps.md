@@ -18,7 +18,9 @@ The sidecar asks the existing Claude query for inventory and calls safe reads
 without a model turn. Only sanitized tool names and safety annotations cross
 the inventory channel. Replies are chat-bound and consumed before transcript
 handling. Both core and sidecar enforce read classification; writes stop in core
-at a stub. Another tool, chat, expired draft or changed hash refuses. Drafts last
+at a stub. The sidecar also applies the chat's own access mode: a preview reads a
+server only where that mode would let the model read it, so Shared and Isolated
+chats, and offline read-only chats, refuse live reads. Another tool, chat, expired draft or changed hash refuses. Drafts last
 24 hours. A locked card reloads its original version and remains a preview.
 If a chat's runtime has stopped, resume the chat to reconnect its MCP servers.
 
@@ -27,6 +29,14 @@ The outer CSP also governs inner-frame navigation: a view cannot navigate itself
 to send read data out. The relay forwards only between the mounted inner frame
 and its parent. Personal frames have no message-to-composer or open-link
 capability. Live tools and native changes are disabled in history.
+
+CSP does not cover WebRTC in any engine, so a view could still send read data
+out through STUN/TURN traffic. The Mac app turns WebRTC off in its own webview
+(`src-tauri/src/preview_isolation.rs`, WKPreferences `_peerConnectionEnabled`)
+and reads the setting back. The card mounts a view only after that check, and
+allows live reads only when it succeeded. A browser tab (web mode) and other
+platforms cannot switch WebRTC off, so they refuse live reads; writes still
+preview there.
 
 Migration 82 adds draft/chat bindings; optional sample arguments are omitted
 from old manifests so existing hashes remain unchanged. Protocol 1.39 adds
@@ -47,7 +57,8 @@ BRIDGE_PREVIEW_BROWSER=webkit BRIDGE_PLAYWRIGHT_MODULE=/tmp/bridge-preview-smoke
 ```
 
 This checks samples, read replies, dry-run writes, native Lock/Revise, both
-themes, and actual CSP blocking of network/navigation attempts. Screenshots
+themes, and actual CSP blocking of network/navigation attempts. A browser
+cannot exercise the WebRTC switch, which needs the Mac app's webview. Screenshots
 are written under `docs/design/personal-apps/`.
 
 With a real Claude account, ask a chat to build an app for a connected server,

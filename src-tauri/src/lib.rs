@@ -19,6 +19,7 @@ pub mod notifications;
 pub mod quick_prompt;
 mod diagnostics;
 mod nightly_updater;
+mod preview_isolation;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -3965,6 +3966,9 @@ pub fn run() -> i32 {
             }
             if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update" | "ensure_update_installable") {
                 return nightly_updater::commands(invoke);
+            }
+            if invoke.message.command() == "isolate_app_previews" {
+                return preview_isolation::commands(invoke);
             }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {

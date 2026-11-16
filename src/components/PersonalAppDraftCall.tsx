@@ -10,6 +10,8 @@ import { useDarkTheme } from "./Markdown";
 import { VisualActionsContext } from "./VisualCall";
 import { Button } from "./ui/button";
 
+const LIVE_READS_UNAVAILABLE = "Live reads run only in the Bridge Mac app, where a preview cannot reach the network. Writes still show what would be sent.";
+
 function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: string; draftId: string; contentHash: string; readOnly: boolean }) {
   const [draft, setDraft] = useState<PersonalAppDraft>();
   const [error, setError] = useState("");
@@ -19,6 +21,14 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
   const dark = useDarkTheme();
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const [height, setHeight] = useState(320);
+  // Settled before the frame mounts: WebRTC must already be off when the view's
+  // document is created, or it keeps the constructor it started with.
+  const [isolated, setIsolated] = useState<boolean>();
+  useEffect(() => {
+    let current = true;
+    void bridgeApi.isolateAppPreviews().then(value => value === true, () => false).then(value => { if (current) setIsolated(value); });
+    return () => { current = false; };
+  }, []);
   useEffect(() => {
     let current = true;
     void bridgeApi.getPersonalAppDraft({ sessionId, draftId, contentHash }).then(value => { if (current) setDraft(value); }, reason => { if (current) setError(String(reason)); });
@@ -38,6 +48,9 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
   if (!draft) return <div ref={ref} role="status" className="rounded-2xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">{error || "Loading app preview…"}</div>;
   const callTool = async (tool: string, args: Record<string, unknown>): Promise<CallToolResult> => {
     if (readOnly) throw new Error("Live tools are unavailable in history");
+    // A write is a dry-run stub that echoes the view's own arguments. A read
+    // returns real data, so it needs a view that cannot reach the network.
+    if (!draft.writes.includes(tool) && isolated !== true) throw new Error(LIVE_READS_UNAVAILABLE);
     const result = await bridgeApi.previewPersonalAppTool({ sessionId, draftId, contentHash, tool, arguments: args });
     if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) throw new Error("Invalid MCP preview result");
     return result as CallToolResult;
@@ -52,11 +65,12 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
       <p>{draft.intent}</p>
       <p className="text-foreground">Preview only. Write actions show what would be sent.</p>
       {readOnly && <p>History preview. Live tools and changes are disabled.</p>}
+      {!readOnly && isolated === false && <p>{LIVE_READS_UNAVAILABLE}</p>}
       <details><summary className="cursor-pointer">Access · {draft.reads.length} {draft.reads.length === 1 ? "read" : "reads"} · {draft.writes.length} {draft.writes.length === 1 ? "write" : "writes"}</summary>
         <div className="mt-2 space-y-1 break-words"><p>Reads: {draft.reads.join(", ") || "None"}</p><p>Writes: {draft.writes.join(", ") || "None"}</p><p className="break-all font-mono text-[10px]">{contentHash}</p></div>
       </details>
     </div>
-    {near ? <McpAppFrame title={`${draft.name} preview`} input={(draft.sampleArgs ?? {}) as Record<string, unknown>} theme={dark ? "dark" : "light"}
+    {near && isolated !== undefined ? <McpAppFrame title={`${draft.name} preview`} input={(draft.sampleArgs ?? {}) as Record<string, unknown>} theme={dark ? "dark" : "light"}
       personalView={{ html: draft.viewHtml, resourceUri: `ui://bridge/personal/${draft.appId}@${contentHash}` }}
       onToolCall={callTool} initialHeight={height} onHeight={setHeight} /> : <div aria-hidden="true" style={{ height }} />}
     <div className="space-y-3 border-t border-border px-4 py-3">

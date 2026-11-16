@@ -1882,6 +1882,14 @@ export const bridgeApi = {
     hasBackend() ? call("apps/get_personal_app_draft", params) : mockGetPersonalAppDraft(params),
   previewPersonalAppTool: async (params: PreviewPersonalAppToolParams): Promise<unknown> =>
     hasBackend() ? call("apps/preview_personal_app_tool", params) : mockPreviewPersonalAppTool(params),
+  /** Whether a live app preview is isolated from the network, WebRTC
+   *  included, which CSP cannot block. Only the Mac app can switch WebRTC off
+   *  (see preview_isolation.rs); a browser tab cannot, so it is refused live
+   *  reads. Mock mode has only fake data. */
+  isolateAppPreviews: async (): Promise<boolean> => {
+    if (isTauri()) return invoke<boolean>("isolate_app_previews").then(value => value === true, () => false);
+    return !hasBackend();
+  },
   lockPersonalApp: async (params: LockPersonalAppParams): Promise<LockPersonalAppResult> =>
     hasBackend() ? call("apps/lock_personal_app", params) : mockLockPersonalApp(params),
   setAppPinned: async (id: string, pinned: boolean): Promise<ListAppsResult> =>
