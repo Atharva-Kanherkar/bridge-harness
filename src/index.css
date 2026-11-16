@@ -884,9 +884,29 @@ html[data-native-fullscreen] .u-traffic-inset {
    the bottom of this file (the JS side renders the graph in its final state
    instead of playing). */
 
+/* The verdict label rolling up to its new word (Running → Passing). */
+@keyframes github-roll-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(-100%); }
+}
+
+.github-roll-up {
+  animation: github-roll-up 320ms var(--ease-out-bridge) both;
+}
+
 /* A check that just finished: the glyph springs from 40% while the row
    flashes one wash of success. One-shot by construction — the class is
    removed after the flash. */
+/* The verdict label rolling up to its new word (Running → Passing). */
+@keyframes github-roll-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(-100%); }
+}
+
+.github-roll-up {
+  animation: github-roll-up 320ms var(--ease-out-bridge) both;
+}
+
 @keyframes github-check-settle-flash {
   0% { background-color: color-mix(in srgb, var(--color-success) 14%, transparent); }
   100% { background-color: transparent; }
@@ -1032,6 +1052,7 @@ html[data-native-fullscreen] .u-traffic-inset {
 .merge-graph-final .landed { opacity: 1; }
 .merge-graph-final .lbl-old { opacity: 0; }
 .merge-graph-final .rise { opacity: 1; transform: none; }
+.merge-graph-final .merge-rise { opacity: 1; transform: none; animation: none; }
 .merge-graph-final .badge-check { stroke-dashoffset: 0; }
 
 .merge-graph-play .curve {

@@ -32,7 +32,7 @@ export function MergeGraph({ strategy, commits, baseBranch, headBranch, celebrat
 
   return (
     <svg
-      className={cn("merge-graph", play && "merge-graph-play", !play && "merge-graph-final")}
+      className="merge-graph"
       viewBox="0 0 460 84"
       role="img"
       aria-label={`The commits merged into ${baseBranch}`}

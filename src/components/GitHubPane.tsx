@@ -1,6 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer-motion";
 import {
   ArrowLeft,
   Ban,
@@ -417,6 +417,10 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [facet, setFacet] = useState<PullRequestFacet>("all");
+  // The dock's push direction: opening a detail pushes forward, back and the
+  // surface switch step the other way or cross-fade (issue #1028).
+  const reducedMotion = useReducedMotion();
+  const [pushDirection, setPushDirection] = useState<"forward" | "back" | "none">("none");
 
   const [selected, setSelected] = useState<number>();
   const [detail, setDetail] = useState<Detail>();
@@ -498,6 +502,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [workspaceId]);
 
   const openDetail = useCallback(async (number: number, retain = false) => {
+    setPushDirection("forward");
     setSurfaceTab("pulls");
     setSelected(number);
     if (!retain) setDetail(undefined);
@@ -514,6 +519,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [workspaceId]);
 
   const openIssue = useCallback(async (number: number, retain = false) => {
+    setPushDirection("forward");
     setSurfaceTab("issues");
     setSelectedIssue(number);
     if (!retain) setIssueDetail(undefined);
@@ -605,6 +611,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     seenIntent.current = intent.nonce;
     const view = intent.view;
     const showSurface = (tab: SurfaceTab) => {
+      setPushDirection("none");
       setSurfaceTab(tab);
       setSelected(undefined); setDetail(undefined); setDetailError(undefined);
       setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
@@ -683,7 +690,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       error={detailError}
       focus={pullRequestFocus}
       availableLabels={repositoryOverview?.labels ?? []}
-      onBack={() => { setSelected(undefined); setDetail(undefined); setDetailError(undefined); }}
+      onBack={() => { setPushDirection("back"); setSelected(undefined); setDetail(undefined); setDetailError(undefined); }}
       onActed={() => { void loadSurface(); void openDetail(selected, true); }}
       onJumpToFile={onJumpToFile}
     />;
@@ -706,7 +713,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       detail={issueDetail}
       error={issueError}
       availableLabels={repositoryOverview?.labels ?? []}
-      onBack={() => { setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined); }}
+      onBack={() => { setPushDirection("back"); setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined); }}
       onActed={() => { void loadSurface(); void openIssue(selectedIssue, true); }}
     />;
   } else if (surfaceTab === "issues" && tabErrors.issues && !issues) {
@@ -727,12 +734,19 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     body = <RepositoryOverview overview={repositoryOverview} />;
   }
 
+  // What the pane's single column shows right now — the push key.
+  const viewKey = surfaceTab === "pulls"
+    ? (selected !== undefined ? `pull-${selected}` : "pulls")
+    : surfaceTab === "issues"
+      ? (selectedIssue !== undefined ? `issue-${selectedIssue}` : "issues")
+      : "repository";
+
   const surfaces = [
     ["pulls", "Pull requests", GitPullRequest, prs?.length],
     ["issues", "Issues", ListTodo, issues?.length],
     ["repository", "Repository", Info, undefined],
   ] as const;
-  const pickSurface = (id: SurfaceTab) => { setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
+  const pickSurface = (id: SurfaceTab) => { setPushDirection("back"); setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); };
   const refresh = () => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); };
   const refreshButton = <button type="button" onClick={refresh} aria-label="Refresh GitHub" title="Refresh" className={HEADER_ICON}>
     <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
@@ -832,7 +846,19 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           <div data-pulls-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">{body}</div>
         </div>
-      : body}
+      : <div className="relative flex min-h-0 flex-1 flex-col">
+          <AnimatePresence initial={false} custom={pushDirection} mode="popLayout">
+            <motion.div
+              key={viewKey}
+              custom={pushDirection}
+              variants={reducedMotion ? PUSH_REDUCED_VARIANTS : PUSH_VARIANTS}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              className="flex min-h-0 w-full flex-1 flex-col"
+            >{body}</motion.div>
+          </AnimatePresence>
+        </div>}
   </section>;
 }
 
@@ -847,7 +873,7 @@ function ChecksCell({ pr }: { pr: PullRequestListItem }) {
   return <span className="flex min-w-0 flex-col gap-1.5" title={`${rollup.label} — ${pr.checks.passed}/${pr.checks.total} checks passed`}>
     <span className={cn("inline-flex items-center gap-1.5 text-[11.5px] tabular-nums", rollup.className)}>
       <RollupIcon size={13} aria-hidden="true" className={cn(rollup.live && "github-check-live")} />
-      <span className="font-medium">{rollup.label}</span>
+      <span className="font-medium"><RollLabel value={rollup.label} /></span>
       <span className="font-mono text-[11px] text-muted-foreground">{pr.checks.passed}/{pr.checks.total}</span>
     </span>
     <RollupMeter checks={pr.checks} className="w-full max-w-28" />
@@ -985,6 +1011,7 @@ function CommentList({ comments, repositoryUrl }: {
  * own tally so a red workflow is findable without reading every row. */
 function ChecksList({ checks, rollup }: { checks: GithubChecksResult["checks"]; rollup?: PullRequestListItem["checks"] }) {
   const groups = useMemo(() => groupChecksByWorkflow(checks), [checks]);
+  const settled = useCheckSettle(checks);
   return <section aria-label="Checks" className="space-y-3">
     {rollup && rollup.total > 0 && <div className="rounded-lg border border-border bg-card px-3 py-2.5">
       <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -1001,8 +1028,10 @@ function ChecksList({ checks, rollup }: { checks: GithubChecksResult["checks"]; 
         {group.checks.map(check => {
           const tone = checkTone(check.conclusion, check.status);
           const ToneIcon = tone.icon;
-          return <div key={`${check.workflow}-${check.name}`} className="flex items-center gap-2.5 px-3 py-2">
-            <ToneIcon size={13.5} className={cn("shrink-0", tone.className, tone.live && "github-check-live")} aria-hidden="true" />
+          const key = `${check.workflow}·${check.name}`;
+          const justSettled = settled.has(key);
+          return <div key={key} className={cn("flex items-center gap-2.5 px-3 py-2", justSettled && "github-check-settle")}>
+            <ToneIcon size={13.5} className={cn("shrink-0", tone.className, tone.live && "github-check-live", justSettled && "check-glyph-settle")} aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{check.name}</span>
             <span className="shrink-0 text-[11px] text-muted-foreground">{check.conclusion ?? check.status}</span>
             {check.logUrl && <OpenOnGithub url={check.logUrl} what={`logs for ${check.name}`} />}
@@ -1199,6 +1228,86 @@ function CommentComposer({ disabled, onSubmit }: { disabled: boolean; onSubmit: 
   </div>;
 }
 
+const TAB_ORDER: ReadonlyArray<PullRequestTab> = ["conversation", "changes", "commits", "checks"];
+
+/** The tab panel slides in from the direction of travel (issue #1028); the
+ *  underline beneath the strip glides via its layoutId. */
+const TAB_PANEL_VARIANTS: Variants = {
+  enter: (direction: number) => ({ x: direction >= 0 ? 18 : -18, opacity: 0 }),
+  center: { x: 0, opacity: 1, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } },
+  exit: (direction: number) => ({ x: direction >= 0 ? -18 : 18, opacity: 0, transition: { duration: 0.2, ease: "easeIn" } }),
+};
+
+const TAB_PANEL_REDUCED_VARIANTS: Variants = {
+  enter: () => ({ opacity: 0 }),
+  center: { opacity: 1, transition: { duration: 0.12 } },
+  exit: () => ({ opacity: 0, transition: { duration: 0.12 } }),
+};
+
+/** List → detail push (issue #1028): the list exits left while the detail
+ *  slides in from the right (320ms); back reverses; a plain surface switch
+ *  cross-fades. Reduced motion fades only. */
+const PUSH_VARIANTS: Variants = {
+  enter: (direction: string) => direction === "forward"
+    ? { x: 24, opacity: 0 }
+    : direction === "back" ? { x: -24, opacity: 0 } : { opacity: 0 },
+  center: { x: 0, opacity: 1, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } },
+  exit: (direction: string) => {
+    if (direction === "back") return { x: "30%", opacity: 0, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } };
+    if (direction === "none") return { opacity: 0, transition: { duration: 0 } };
+    return { x: "-30%", opacity: 0, transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] } };
+  },
+};
+
+const PUSH_REDUCED_VARIANTS: Variants = {
+  enter: () => ({ opacity: 0 }),
+  center: { opacity: 1, transition: { duration: 0.12 } },
+  exit: () => ({ opacity: 0, transition: { duration: 0.12 } }),
+};
+
+/** A label that rolls up to its new value when the verdict changes
+ *  (Running → Passing), the mockup's vertical roll. */
+function RollLabel({ value }: { value: string }) {
+  const previous = useRef(value);
+  const [roll, setRoll] = useState<{ from: string; to: string } | null>(null);
+  useEffect(() => {
+    if (previous.current === value) return;
+    const from = previous.current;
+    previous.current = value;
+    setRoll({ from, to: value });
+    const timer = window.setTimeout(() => setRoll(null), 450);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+  if (!roll) return <span>{value}</span>;
+  return <span className="relative inline-block h-[15px] overflow-hidden align-baseline" role="status" aria-label={roll.to}>
+    <span aria-hidden="true" className="github-roll-up absolute inset-x-0 top-0 block">
+      <span className="block h-[15px] leading-[15px]">{roll.from}</span>
+      <span className="block h-[15px] leading-[15px]">{roll.to}</span>
+    </span>
+  </span>;
+}
+
+/** A check that settles between two reads: one row flash, one glyph spring,
+ *  then both sit still (issue #1028's check-settle). */
+function useCheckSettle(checks: GithubChecksResult["checks"]): ReadonlySet<string> {
+  const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
+  const previousStatuses = useRef(new Map<string, string>());
+  useEffect(() => {
+    const next = new Set<string>();
+    for (const check of checks) {
+      const key = `${check.workflow}·${check.name}`;
+      const was = previousStatuses.current.get(key);
+      if (check.status === "completed" && check.conclusion === "success" && was !== undefined && was !== "completed") next.add(key);
+      previousStatuses.current.set(key, check.status);
+    }
+    if (!next.size) return;
+    setSettled(next);
+    const timer = window.setTimeout(() => setSettled(new Set()), 750);
+    return () => window.clearTimeout(timer);
+  }, [checks]);
+  return settled;
+}
+
 /** The detail tab strip, with an underline that slides between tabs rather
  * than cutting. */
 function DetailTabs<T extends string>({ id, tabs, active, onSelect, label }: {
@@ -1272,6 +1381,13 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [tab, setTab] = useState<PullRequestTab>("conversation");
+  // The panel slides in from the direction of travel (issue #1028).
+  const reducedMotion = useReducedMotion();
+  const tabDirection = useRef(1);
+  const selectTab = useCallback((next: PullRequestTab) => {
+    tabDirection.current = Math.sign(TAB_ORDER.indexOf(next) - TAB_ORDER.indexOf(tab));
+    setTab(next);
+  }, [tab]);
   const seenFocus = useRef(0);
   useEffect(() => {
     if (!focus || focus.nonce === seenFocus.current) return;
@@ -1610,9 +1726,19 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         <span className="block truncate font-mono text-[11px] text-success/80" title={checkout.path}>{checkout.path}</span>
       </p>}
 
-      <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={setTab} label="Pull request detail" />
+      <DetailTabs id={detailId} tabs={tabs} active={tab} onSelect={selectTab} label="Pull request detail" />
 
-      <div id={`${detailId}-panel`} role="tabpanel" aria-labelledby={`${detailId}-${tab}`} tabIndex={0} className="space-y-6 px-5 py-5">
+      <div id={`${detailId}-panel`} role="tabpanel" aria-labelledby={`${detailId}-${tab}`} tabIndex={0} className="relative min-h-0">
+        <AnimatePresence mode="popLayout" initial={false} custom={tabDirection.current}>
+          <motion.div
+            key={tab}
+            custom={tabDirection.current}
+            variants={reducedMotion ? TAB_PANEL_REDUCED_VARIANTS : TAB_PANEL_VARIANTS}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            className="space-y-6 px-5 py-5"
+          >
         {tab === "checks" && <ChecksList checks={detail.checks.checks} rollup={summary.checks} />}
 
         {tab === "commits" && <CommitList commits={pullRequest.commits} prUrl={summary.url} />}
@@ -1704,6 +1830,8 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           </div> : <p className="text-[12px] text-muted-foreground">No review threads.</p>}
         </section>
         </>}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
 

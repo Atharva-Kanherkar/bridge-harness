@@ -930,6 +930,9 @@ describe("GitHubPane deep links", () => {
 
     await render({ kind: "pulls" }, 4);
     expect(host!.querySelector('button[aria-label="Pull requests"]')?.getAttribute("aria-pressed")).toBe("true");
+    // The pushed-out detail is still mid-exit when the flush resolves; let
+    // the transition's frames run out under act before asserting it's gone.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); await flush(); });
     expect(host!.textContent).not.toContain("Main conversation comment");
   });
 

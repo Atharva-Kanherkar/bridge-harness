@@ -470,7 +470,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
 
         {/* Receipt */}
         <div className={cn("u-collapse", !merged && "shut")} aria-hidden={!merged}>
-          <div className={cn("px-3.5 pb-3.5 pt-3", celebrate && "merge-scope-play", !celebrate && "merge-scope-final")}>
+          <div className={cn("px-3.5 pb-3.5 pt-3", celebrate ? "merge-graph-play" : "merge-graph-final")}>
             <MergeGraph strategy={state.strategy} commits={commitCount} baseBranch={baseBranch} headBranch={headBranch} celebrate={celebrate} />
             <div className={cn("mt-1.5 flex items-start gap-2.5", celebrate && "merge-rise d1")}>
               <span className="grid size-6 shrink-0 place-items-center rounded-full bg-merged/15 text-merged">
