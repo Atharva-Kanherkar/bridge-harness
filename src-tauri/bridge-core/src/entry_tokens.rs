@@ -12,6 +12,12 @@
 //! not. Every adapter shapes its payload differently, so each kind lists the
 //! fields it reads in order and takes the first one present.
 //!
+//! Each row is estimated on its own. One provider item can be written more
+//! than once (OpenCode stores every tool-part update as a start, Claude a
+//! `preparing` and a `running` start), so a report summing a kind counts each
+//! `provider_event_id` once, with its largest estimate. Deduplicating here
+//! would cost a query per frame.
+//!
 //! `None` means "no model-readable text known for this entry": either the
 //! kind is bookkeeping (turn boundaries, usage, status, streaming deltas whose
 //! terminal event carries the whole text) or none of the kind's fields were
