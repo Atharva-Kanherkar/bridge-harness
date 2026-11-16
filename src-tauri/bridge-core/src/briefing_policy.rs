@@ -263,6 +263,13 @@ pub struct BriefingRuntimePolicy {
     /// refuse writable workspaces.
     workflow_worktree: bool,
     exact_action: Option<(String, serde_json::Value)>,
+    /// The exact action runs through the harness's own MCP client with no
+    /// model turn. Only `into_direct_call` sets it.
+    direct_call: bool,
+    /// The harness loads its claude.ai connectors itself, with the account's
+    /// own sign-in, instead of receiving explicit copies. Changes how a server
+    /// is reached, never what the gate allows.
+    native_connectors: bool,
 }
 
 /// One connector server a workflow run may reach.
@@ -453,6 +460,8 @@ impl BriefingRuntimePolicy {
             workflow_servers: None,
             workflow_worktree: false,
             exact_action: None,
+            direct_call: false,
+            native_connectors: false,
         })
     }
 
@@ -494,6 +503,8 @@ impl BriefingRuntimePolicy {
             workflow_servers: None,
             workflow_worktree: false,
             exact_action: None,
+            direct_call: false,
+            native_connectors: false,
         })
     }
 
@@ -585,11 +596,50 @@ impl BriefingRuntimePolicy {
             return Err(BriefingUnsupported::MalformedPolicy { detail: "unsupported outgoing connector call".into() });
         }
         let mut policy = Self::compile_action(server.clone(), if tool == "slack_send_message" { ActionIntent::Post } else { ActionIntent::Upload }, limits)?;
-        policy.exact_action = Some((format!("mcp__{server}__{tool}"), arguments));
+        // The name the harness presents and `mcp_call` resolves: `claude.ai
+        // Slack` is `claude_ai_Slack` in tool names, never the raw key.
+        policy.exact_action = Some((format!("mcp__{}__{tool}", crate::workflows::wire_server_name(&server)), arguments));
         // No ancillary reads or writes are reachable from a sending turn.
         policy.read_scope_servers.clear();
         policy.max_argument_bytes = 64 * 1024;
         Ok(policy)
+    }
+
+    /// The same exact action, run by the harness's own MCP client with no model
+    /// turn. Such a launch loads its connector natively, with the account's own
+    /// sign-in, because an explicit copy of a claude.ai connector never shares
+    /// it and comes up needing authentication. The authority is unchanged: one
+    /// call, deep-equal to the approved one, through the same gate.
+    pub fn into_direct_call(mut self) -> Result<Self, BriefingUnsupported> {
+        if self.exact_action.is_none() {
+            return Err(BriefingUnsupported::MalformedPolicy {
+                detail: "a direct call needs one exact approved action".into(),
+            });
+        }
+        self.direct_call = true;
+        self.native_connectors = true;
+        Ok(self)
+    }
+
+    pub fn direct_call(&self) -> bool {
+        self.direct_call
+    }
+
+    /// Reach claude.ai connectors through the harness's own signed-in instance.
+    ///
+    /// An explicit copy of a claude.ai connector handed to the SDK never shares
+    /// the account's sign-in: it comes up `needs-auth` with no tools, so a run
+    /// that depends on it can reach nothing. Native loading fixes the route and
+    /// leaves the authority alone: `decide` and the adapter's gate are the same
+    /// rules over the same scope, and the harness may now merely *list* tools
+    /// the gate will refuse.
+    pub fn with_native_connectors(mut self) -> Self {
+        self.native_connectors = true;
+        self
+    }
+
+    pub fn native_connectors(&self) -> bool {
+        self.native_connectors
     }
 
     pub fn exact_action_config(&self) -> Option<serde_json::Value> {
@@ -644,14 +694,20 @@ impl BriefingRuntimePolicy {
         // name of the exact `mcp__<server>__<tool>` shape can reach this arm,
         // so a bare built-in like `Bash` never does.
         if let Some((server, bare)) = split_wire_name(tool) {
-            let scoped_read =
-                self.read_scope_servers.iter().any(|scoped| scoped == server) && is_read_verb_tool(bare);
+            // Scopes hold configuration keys (`claude.ai Slack`); tool names
+            // carry the wire segment (`claude_ai_Slack`). Compare wire forms.
+            let scoped_read = self
+                .read_scope_servers
+                .iter()
+                .any(|scoped| crate::workflows::wire_server_name(scoped) == server)
+                && is_read_verb_tool(bare);
             // The approved write, if this policy carries one. Same shape of
             // check as the read rule and just as fail-closed: the server must
             // match, the intent's word must be present, and no forbidden word
             // may be.
             let approved_write = self.action_scope.as_ref().is_some_and(|scope| {
-                scope.server == server && permits_action(bare, scope.intent)
+                crate::workflows::wire_server_name(&scope.server) == server
+                    && permits_action(bare, scope.intent)
             });
             if scoped_read || approved_write {
                 if argument_bytes > self.max_argument_bytes {
@@ -1270,6 +1326,66 @@ mod tests {
             max_output_tokens: Some(200),
             cost_ceiling_microusd: Some(5_000),
         }
+    }
+
+    // Real connectors are keyed `claude.ai Slack`, and the harness names their
+    // tools `mcp__claude_ai_Slack__...`. Every earlier test used a bare `slack`
+    // key, where the two spellings agree, so a scope that compared the raw key
+    // denied every real read, reply and send without any test noticing.
+    #[test]
+    fn claude_ai_connector_scopes_match_the_wire_tool_names() {
+        let server = "claude.ai Slack".to_owned();
+        let read = BriefingRuntimePolicy::compile_scoped(vec![server.clone()], action_limits()).unwrap();
+        assert!(matches!(read.decide("mcp__claude_ai_Slack__slack_read_channel", 100), ToolDecision::Allow));
+        assert!(!matches!(read.decide("mcp__claude_ai_Notion__notion_read_page", 100), ToolDecision::Allow));
+
+        let reply = BriefingRuntimePolicy::compile_action(server.clone(), ActionIntent::Reply, action_limits()).unwrap();
+        assert!(matches!(reply.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+
+        let arguments = serde_json::json!({"channel_id": "C123", "message": "hi"});
+        let exact = BriefingRuntimePolicy::compile_exact_action(server, "slack_send_message", arguments.clone(), action_limits()).unwrap();
+        assert_eq!(
+            exact.exact_action_config(),
+            Some(serde_json::json!({"tool": "mcp__claude_ai_Slack__slack_send_message", "arguments": arguments}))
+        );
+        assert!(matches!(exact.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+        assert!(!matches!(exact.decide("mcp__claude.ai Slack__slack_send_message", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn only_an_exact_action_can_become_a_direct_call() {
+        let arguments = serde_json::json!({"channel_id": "C123", "message": "hi"});
+        let exact = BriefingRuntimePolicy::compile_exact_action("claude.ai Slack".into(), "slack_send_message", arguments, action_limits()).unwrap();
+        assert!(!exact.direct_call());
+        let direct = exact.clone().into_direct_call().unwrap();
+        assert!(direct.direct_call());
+        assert_eq!(direct.exact_action_config(), exact.exact_action_config());
+        let reply = BriefingRuntimePolicy::compile_action("claude.ai Slack".into(), ActionIntent::Reply, action_limits()).unwrap();
+        assert!(reply.into_direct_call().is_err());
+        let read = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], action_limits()).unwrap();
+        assert!(read.into_direct_call().is_err());
+        assert!(direct.native_connectors(), "a direct call reaches the harness's own connector");
+        assert!(!exact.native_connectors());
+    }
+
+    #[test]
+    fn native_connectors_change_the_route_and_not_the_rules() {
+        let scoped = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], action_limits()).unwrap();
+        let native = scoped.clone().with_native_connectors();
+        assert!(native.native_connectors());
+        assert!(!native.direct_call());
+        for tool in [
+            "mcp__claude_ai_Slack__slack_read_channel",
+            "mcp__claude_ai_Slack__slack_search_users",
+            "mcp__claude_ai_Slack__slack_send_message",
+            "mcp__claude_ai_Notion__notion_search",
+            "Bash",
+        ] {
+            assert_eq!(native.decide(tool, 100), scoped.decide(tool, 100), "{tool}");
+        }
+        assert!(matches!(native.decide("mcp__claude_ai_Slack__slack_read_channel", 100), ToolDecision::Allow));
+        assert!(!matches!(native.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+        assert!(!matches!(native.decide("mcp__claude_ai_Notion__notion_search", 100), ToolDecision::Allow));
     }
 
     #[test]

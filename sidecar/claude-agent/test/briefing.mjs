@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildOptions } from "../options.mjs";
-import { briefingOptions, makeBriefingGate } from "../briefing.mjs";
+import { briefingOptions, isDirectCall, loadsConnectorsNatively, makeBriefingGate, wireServerName } from "../briefing.mjs";
 
 // What Bridge's Rust side hands down for a run that reviewed exactly one read.
 const briefing = {
@@ -381,4 +381,101 @@ test("outgoing exact action is forwarded from the adapter options", async () => 
   const options = buildOptions({ ...base, briefing: { ...briefing, exactAction: { tool, arguments: args } } });
   assert.equal((await options.canUseTool(tool, { ...args, message: "other" })).behavior, "deny");
   assert.equal((await options.canUseTool(tool, args)).behavior, "allow");
+});
+
+// Real connectors are configured as `claude.ai Slack`; Claude Code names their
+// tools `mcp__claude_ai_Slack__...`. Comparing the raw key denied every real
+// connector read and reply, while the `slack`-keyed tests above stayed green.
+test("connector scopes match claude.ai servers by their wire names", async () => {
+  const read = makeBriefingGate({ readScopeServers: ["claude.ai Slack"] });
+  assert.equal((await read("mcp__claude_ai_Slack__slack_read_channel", { channel_id: "C1" })).behavior, "allow");
+  assert.equal((await read("mcp__claude_ai_Notion__notion_read_page", {})).behavior, "deny");
+  assert.equal((await read("mcp__claude_ai_Slack__slack_send_message", {})).behavior, "deny");
+
+  const reply = makeBriefingGate({
+    actionScope: { server: "claude.ai Slack", permittedWords: ["send", "post", "reply"], forbiddenWords: ["delete"] },
+  });
+  assert.equal((await reply("mcp__claude_ai_Slack__slack_send_message", { channel_id: "C1", message: "hi" })).behavior, "allow");
+  assert.equal((await reply("mcp__claude_ai_Notion__notion_send_message", {})).behavior, "deny");
+});
+
+test("wireServerName mirrors the harness's tool-name segment", () => {
+  assert.equal(wireServerName("claude.ai Slack"), "claude_ai_Slack");
+  assert.equal(wireServerName("my-server_2"), "my-server_2");
+});
+
+test("a direct call loads its claude.ai connector natively and stays exact", async () => {
+  const exactAction = { tool: "mcp__claude_ai_Slack__slack_send_message", arguments: { channel_id: "C1", message: "hi" } };
+  const briefing = {
+    allowedTools: [],
+    allowedServers: [],
+    readScopeServers: [],
+    actionScope: { server: "claude.ai Slack", permittedWords: ["send"], forbiddenWords: ["delete"] },
+    exactAction,
+  };
+  const servers = {
+    "claude.ai Slack": { type: "http", url: "https://mcp.slack.com/mcp" },
+    "claude.ai Notion": { type: "http", url: "https://mcp.notion.com/mcp" },
+  };
+
+  const turn = briefingOptions(briefing, servers);
+  assert.equal(turn.strictMcpConfig, true);
+  assert.deepEqual(Object.keys(turn.mcpServers), ["claude.ai Slack"]);
+
+  const direct = briefingOptions({ ...briefing, directCall: true }, servers);
+  assert.equal(direct.strictMcpConfig, false, "the harness's own signed-in connector must be reachable");
+  assert.deepEqual(direct.mcpServers, {}, "an explicit claude.ai copy never shares the sign-in");
+  assert.deepEqual(direct.settingSources, []);
+  assert.deepEqual(direct.plugins, []);
+  assert.equal((await direct.canUseTool(exactAction.tool, exactAction.arguments)).behavior, "allow");
+  assert.equal((await direct.canUseTool(exactAction.tool, exactAction.arguments)).behavior, "deny", "one use");
+
+  const other = briefingOptions({ ...briefing, directCall: true }, servers);
+  assert.equal((await other.canUseTool("mcp__claude_ai_Notion__notion_create_page", {})).behavior, "deny");
+});
+
+test("only a launch with an exact action can be a direct call", () => {
+  assert.equal(isDirectCall({ directCall: true, exactAction: { tool: "t", arguments: {} } }), true);
+  assert.equal(isDirectCall({ directCall: true }), false);
+  assert.equal(isDirectCall({ exactAction: { tool: "t", arguments: {} } }), false);
+  assert.equal(isDirectCall({ directCall: "true", exactAction: { tool: "t", arguments: {} } }), false);
+  assert.equal(isDirectCall(null), false);
+});
+
+// The Outgoing resolver is a model turn that must reach the signed-in Slack
+// connector before any approval exists, with only its read-only scope.
+test("a native read launch reaches the signed-in connector and stays read-only", async () => {
+  const briefing = {
+    allowedTools: [],
+    allowedServers: ["claude.ai Slack"],
+    readScopeServers: ["claude.ai Slack"],
+    nativeConnectors: true,
+  };
+  const servers = {
+    "claude.ai Slack": { type: "http", url: "https://mcp.slack.com/mcp" },
+    "claude.ai Notion": { type: "http", url: "https://mcp.notion.com/mcp" },
+  };
+  const strict = briefingOptions({ ...briefing, nativeConnectors: false }, servers);
+  assert.equal(strict.strictMcpConfig, true);
+  assert.deepEqual(Object.keys(strict.mcpServers), ["claude.ai Slack"]);
+
+  const options = briefingOptions(briefing, servers);
+  assert.equal(options.strictMcpConfig, false);
+  assert.deepEqual(options.mcpServers, {});
+  assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.plugins, []);
+  assert.equal((await options.canUseTool("mcp__claude_ai_Slack__slack_search_channels", { query: "dev" })).behavior, "allow");
+  assert.equal((await options.canUseTool("mcp__claude_ai_Slack__slack_read_user_profile", {})).behavior, "allow");
+  assert.equal((await options.canUseTool("mcp__claude_ai_Slack__slack_send_message", { channel_id: "C1", message: "x" })).behavior, "deny");
+  assert.equal((await options.canUseTool("mcp__claude_ai_Notion__notion_search", {})).behavior, "deny");
+  assert.equal((await options.canUseTool("Bash", { command: "ls" })).behavior, "deny");
+});
+
+test("native loading is opt-in, and implied only by a direct call", () => {
+  assert.equal(loadsConnectorsNatively({ nativeConnectors: true }), true);
+  assert.equal(loadsConnectorsNatively({ directCall: true, exactAction: { tool: "t", arguments: {} } }), true);
+  assert.equal(loadsConnectorsNatively({ directCall: true }), false);
+  assert.equal(loadsConnectorsNatively({ nativeConnectors: "true" }), false);
+  assert.equal(loadsConnectorsNatively({ readScopeServers: ["claude.ai Slack"] }), false);
+  assert.equal(loadsConnectorsNatively(null), false);
 });
