@@ -2,18 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ExternalLink, LoaderCircle, ShieldCheck, Terminal } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { UsageProvider } from "../usage";
-import { plainProviderLoginOutput, providerLoginCode, providerLoginUrl } from "../providerLoginPresentation";
+import { plainProviderLoginOutput, providerLoginCode, providerLoginTerminalId, providerLoginUrl } from "../providerLoginPresentation";
 
 // `bare` drops the card and header for hosts that supply their own (the
 // sign-in dialog). `onExited` lets that host judge the result instead of
 // closing the moment the vendor process ends.
-export function ProviderLoginPane({ provider, label, onClose, onExited, bare = false }: {
+export function ProviderLoginPane({ provider, label, account, onClose, onExited, bare = false }: {
   provider: UsageProvider | "github" | "grok";
   label: string;
+  /** An account stored in Settings, whose isolated folder Bridge resolves. */
+  account?: string;
   onClose: () => void;
   onExited?: (output: string) => void;
   bare?: boolean;
 }) {
+  const terminalId = providerLoginTerminalId(provider, account);
   const [output, setOutput] = useState("");
   const outputTextRef = useRef("");
   const [entry, setEntry] = useState("");
@@ -34,21 +37,21 @@ export function ProviderLoginPane({ provider, label, onClose, onExited, bare = f
     let exited = false;
     void (async () => {
       unlistenOutput = await bridgeApi.onTerminal(chunk => {
-        if (!alive || chunk.sessionId !== "provider-login" || chunk.terminalId !== provider) return;
+        if (!alive || chunk.sessionId !== "provider-login" || chunk.terminalId !== terminalId) return;
         outputTextRef.current = (outputTextRef.current + chunk.data).slice(-8000);
         setOutput(outputTextRef.current);
       });
       unlistenExit = await bridgeApi.onTerminalExited(exit => {
-        if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== provider) return;
+        if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== terminalId) return;
         exited = true;
         if (exitedRef.current) exitedRef.current(plainProviderLoginOutput(outputTextRef.current));
         else closeRef.current();
       });
       if (!alive) { unlistenOutput?.(); unlistenExit?.(); return; }
       try {
-        await bridgeApi.startProviderLogin(provider);
+        await (account ? bridgeApi.startProviderLogin(provider, account) : bridgeApi.startProviderLogin(provider));
         launched = true;
-        if (!alive && !exited) void bridgeApi.cancelProviderLogin(provider).catch(() => undefined);
+        if (!alive && !exited) void (account ? bridgeApi.cancelProviderLogin(provider, account) : bridgeApi.cancelProviderLogin(provider)).catch(() => undefined);
       } catch {
         if (alive) setError(`${label}'s sign-in flow could not be started. Check that the CLI is installed.`);
       }
@@ -57,13 +60,13 @@ export function ProviderLoginPane({ provider, label, onClose, onExited, bare = f
       alive = false;
       unlistenOutput?.();
       unlistenExit?.();
-      if (launched && !exited) void bridgeApi.cancelProviderLogin(provider).catch(() => undefined);
+      if (launched && !exited) void (account ? bridgeApi.cancelProviderLogin(provider, account) : bridgeApi.cancelProviderLogin(provider)).catch(() => undefined);
     };
-  }, [provider, label]);
+  }, [provider, account, terminalId, label]);
   useEffect(() => {
     outputRef.current?.scrollTo?.({ top: outputRef.current.scrollHeight });
   }, [output]);
-  const writeReply = (data: string) => bridgeApi.writeTerminal("provider-login", provider, data).catch(() => {
+  const writeReply = (data: string) => bridgeApi.writeTerminal("provider-login", terminalId, data).catch(() => {
     setError(`Bridge could not send your response to ${label}. Close sign-in and try again.`);
   });
   const send = () => {
@@ -76,7 +79,7 @@ export function ProviderLoginPane({ provider, label, onClose, onExited, bare = f
   // URL and prompts this pane already dropped, so leaving it running would
   // hand the next attempt an empty terminal.
   const cancel = () => {
-    void bridgeApi.cancelProviderLogin(provider).catch(() => undefined);
+    void (account ? bridgeApi.cancelProviderLogin(provider, account) : bridgeApi.cancelProviderLogin(provider)).catch(() => undefined);
     onClose();
   };
   const cleanOutput = plainProviderLoginOutput(output);

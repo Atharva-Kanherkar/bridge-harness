@@ -3572,6 +3572,59 @@ pub struct ProviderLogin {
     pub terminal_id: String,
 }
 
+/// Account logins run in their own PTY so two browser handoffs from one
+/// provider never share output or a cancellation handle.
+fn provider_login_terminal_id(provider: &str, account: Option<&str>) -> String {
+    account
+        .map(|account| format!("{provider}:account:{account}"))
+        .unwrap_or_else(|| provider.to_owned())
+}
+
+/// Resolve an account from persisted Settings before launching its CLI. The
+/// renderer supplies only an account id, never a filesystem path, so this is
+/// the same validated folder a chat will later use.
+fn provider_login_account(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+    account_id: Option<&str>,
+) -> Result<Option<crate::provider_accounts::AccountLaunch>, BridgeError> {
+    let Some(account_id) = account_id else { return Ok(None) };
+    let db = core.db.lock().unwrap();
+    let account = agent_config::account(&db, provider, account_id)?;
+    drop(db);
+    let driver = crate::provider_accounts::driver(provider)
+        .ok_or_else(|| BridgeError::Invalid(format!("{provider} does not support extra accounts")))?;
+    let crate::provider_accounts::AccountLogin::Folder { variable, .. } = driver.login else {
+        return Err(BridgeError::Invalid(format!(
+            "{} accounts sign in with an API key, not a provider login command",
+            driver.label
+        )));
+    };
+    let launch = crate::provider_accounts::prepare_launch(
+        provider,
+        &account,
+        &crate::provider_accounts::HostHomes::from_env(),
+    )?;
+    let folder = launch.value(variable).ok_or_else(|| {
+        BridgeError::Invalid(format!("account {account_id} has no {variable} folder"))
+    })?;
+    std::fs::create_dir_all(folder)?;
+    Ok(Some(launch))
+}
+
+fn apply_provider_login_account(
+    command: &mut CommandBuilder,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) {
+    let Some(account) = account else { return };
+    for name in account.removed() {
+        command.env_remove(name);
+    }
+    for (name, value) in account.set() {
+        command.env(name, value);
+    }
+}
+
 /// The vendor's own documented login entry point for `provider`. Bridge only
 /// launches the process — any browser handoff is started by the vendor
 /// command itself, and Bridge never reads, stores, or logs the credential it
@@ -3650,16 +3703,22 @@ fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<Comm
 pub fn start_provider_login(
     core: &Arc<BridgeCore>,
     provider: &str,
+    account: Option<&str>,
 ) -> Result<ProviderLogin, BridgeError> {
-    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+    let terminal_id = provider_login_terminal_id(provider, account);
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "provider login")?;
     if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
         return Ok(ProviderLogin {
             workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
-            terminal_id: provider.into(),
+            terminal_id,
         });
     }
+    // This both creates a new account folder and materializes a Codex shadow
+    // home when required. It happens before the CLI starts, never in a shell.
+    let account_launch = provider_login_account(core, provider, account)?;
     let mut command = provider_login_command(core, provider)?;
+    apply_provider_login_account(&mut command, account_launch.as_ref());
     command.env("TERM", "xterm-256color");
     if let Some(path) = binary::hydrated_command_path() {
         command.env("PATH", path);
@@ -3700,7 +3759,8 @@ pub fn start_provider_login(
     );
     let core_reader = Arc::clone(core);
     let workspace_reader = PROVIDER_LOGIN_WORKSPACE_ID.to_owned();
-    let terminal_reader = provider.to_owned();
+    let terminal_reader = terminal_id.clone();
+    let provider_reader = provider.to_owned();
     let runtime_reader = runtime_id;
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -3734,12 +3794,12 @@ pub fn start_provider_login(
         // serving the pre-login one until restart. Unconditional — a cancelled
         // login re-probes to the same answer — and non-blocking: the fresh
         // result arrives as its own adapters-changed hint when it lands.
-        if terminal_reader == "github" {
+        if provider_reader == "github" {
             core_reader.github_surface.refresh_availability();
         } else {
             core_reader
                 .adapter_registry
-                .refresh_availability(&terminal_reader);
+                .refresh_availability(&provider_reader);
         }
         core_reader.events.publish(CoreEvent::TerminalExited {
             session_id: workspace_reader,
@@ -3748,7 +3808,7 @@ pub fn start_provider_login(
     });
     Ok(ProviderLogin {
         workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
-        terminal_id: provider.into(),
+        terminal_id,
     })
 }
 
@@ -3758,13 +3818,46 @@ pub fn start_provider_login(
 /// closed pane missed, so a surviving process would leave the next attempt
 /// staring at an empty terminal. The reader thread publishes the usual
 /// `TerminalExited` and re-probes availability as the process ends.
-pub fn cancel_provider_login(core: &Arc<BridgeCore>, provider: &str) -> Result<(), BridgeError> {
-    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+pub fn cancel_provider_login(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+    account: Option<&str>,
+) -> Result<(), BridgeError> {
+    let terminal_id = provider_login_terminal_id(provider, account);
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
     if let Some(mut runtime) = removed {
         let _ = runtime.child.kill();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_login_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn account_login_has_a_private_terminal_and_config_folder() {
+        let account = crate::provider_accounts::ProviderAccount {
+            id: "personal".into(),
+            label: "Personal".into(),
+            home_path: "/tmp/bridge-claude-personal".into(),
+            shadow_home_path: String::new(),
+        };
+        let homes = crate::provider_accounts::HostHomes {
+            home: PathBuf::from("/tmp/bridge-host"),
+            claude_config_dir: None,
+            codex_home: None,
+            xdg_data_home: None,
+        };
+        let launch = crate::provider_accounts::prepare_launch("claude", &account, &homes).unwrap();
+        let mut command = CommandBuilder::new("claude");
+        apply_provider_login_account(&mut command, Some(&launch));
+
+        assert_eq!(provider_login_terminal_id("claude", Some("personal")), "claude:account:personal");
+        assert_eq!(command.get_env("CLAUDE_CONFIG_DIR"), Some(OsStr::new("/tmp/bridge-claude-personal")));
+    }
 }
 
 // --- slash commands ------------------------------------------------------------

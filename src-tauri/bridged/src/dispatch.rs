@@ -569,11 +569,11 @@ pub fn dispatch(
 
         MethodName::StartProviderLogin => {
             let p: wire::StartProviderLoginParams = decode(method, params)?;
-            reply(api::start_provider_login(core, &p.provider))
+            reply(api::start_provider_login(core, &p.provider, p.account.as_deref()))
         }
         MethodName::CancelProviderLogin => {
             let p: wire::CancelProviderLoginParams = decode(method, params)?;
-            reply(api::cancel_provider_login(core, &p.provider))
+            reply(api::cancel_provider_login(core, &p.provider, p.account.as_deref()))
         }
 
         MethodName::CreateTerminal => {

@@ -53,6 +53,7 @@ import type {
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
 import { accountsOf, normalizeAccount, supportsAccounts } from "./providerAccounts";
+import { providerLoginTerminalId } from "./providerLoginPresentation";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
@@ -3659,10 +3660,10 @@ export const bridgeApi = {
     emitState();
     return { disposition: "resolved", interactionKind: "question", status: action === "answer" ? "answered" : action, resolvedBy: "human", decision: action };
   },
-  startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
-    hasBackend() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
-  cancelProviderLogin: (provider: string): Promise<void> =>
-    hasBackend() ? unit(call("auth/cancel_provider_login", { provider })) : Promise.resolve(),
+  startProviderLogin: (provider: string, account?: string): Promise<{ workspaceId: string; terminalId: string }> =>
+    hasBackend() ? call("auth/start_provider_login", { provider, ...(account ? { account } : {}) }) : Promise.resolve({ workspaceId: "provider-login", terminalId: providerLoginTerminalId(provider, account) }),
+  cancelProviderLogin: (provider: string, account?: string): Promise<void> =>
+    hasBackend() ? unit(call("auth/cancel_provider_login", { provider, ...(account ? { account } : {}) })) : Promise.resolve(),
   createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => hasBackend() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
   terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => hasBackend() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
   terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => hasBackend() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),

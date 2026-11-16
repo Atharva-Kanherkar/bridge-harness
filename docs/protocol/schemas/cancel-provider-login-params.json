@@ -4,6 +4,12 @@
   "additionalProperties": false,
   "description": "Abandon a provider's login flow. The vendor process is stopped so the next `start_provider_login` spawns a fresh one and replays its browser handoff, rather than reattaching to a runtime whose output the pane has already lost.",
   "properties": {
+    "account": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "provider": {
       "type": "string"
     }
