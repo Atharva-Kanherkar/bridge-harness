@@ -732,9 +732,11 @@ pub(crate) fn exact_outgoing_call(
         ExactCallPath::Direct => direct_exact_call(core, connection, tool, arguments),
         ExactCallPath::Turn => turn_exact_call(core, connection, tool, arguments),
     };
-    {
-        let db = core.db.lock().unwrap();
-        record_exact_call(&db, path, connection.harness.as_deref(), tool, outcome.is_ok(), started.elapsed());
+    // Bookkeeping only: the call has already run, so a ledger problem is
+    // reported and never changes the outcome the caller acts on.
+    match core.db.lock() {
+        Ok(db) => record_exact_call(&db, path, connection.harness.as_deref(), tool, outcome.is_ok(), started.elapsed()),
+        Err(_) => crate::diagnostics::record("connector ledger: database lock poisoned; an exact call was not recorded"),
     }
     outcome
 }
@@ -867,10 +869,12 @@ fn record_exact_call(
         "ok": succeeded,
         "elapsedMs": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
     });
-    let _ = db.execute(
+    if let Err(error) = db.execute(
         "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('connector',?1,?2,?3,?4)",
         params![path.ledger_kind(), tool, body.to_string(), Utc::now().to_rfc3339()],
-    );
+    ) {
+        crate::diagnostics::record(&format!("connector ledger: an exact call was not recorded: {error}"));
+    }
 }
 
 /// Tool results the provider marked as errors.
@@ -1295,6 +1299,11 @@ mod tests {
         assert_eq!(rows[1].1, "connector.action.turn");
         let body: Value = serde_json::from_str(&rows[0].3).unwrap();
         assert_eq!(body, serde_json::json!({"harness":"claude","tool":"slack_send_message","ok":true,"elapsedMs":1234}));
+
+        // A ledger that cannot be written is reported, never a panic or an
+        // error the caller would mistake for the call failing.
+        let broken = rusqlite::Connection::open_in_memory().unwrap();
+        record_exact_call(&broken, ExactCallPath::Direct, Some("claude"), "slack_send_message", true, StdDuration::ZERO);
     }
 
     #[test]
