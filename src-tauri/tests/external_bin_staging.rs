@@ -6,7 +6,7 @@
 //! `bridged` placeholder is the one that is missing.
 
 use serde_json::Value;
-use std::path::Path;
+use std::{ffi::OsStr, path::Path};
 
 fn declared_external_bins() -> Vec<String> {
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
@@ -29,11 +29,13 @@ fn declared_external_bins() -> Vec<String> {
 fn every_declared_external_bin_is_staged_for_this_target() {
     let target = env!("TAURI_ENV_TARGET_TRIPLE");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let executable = std::env::current_exe().expect("test executable is available");
-    let profile = executable
-        .parent()
+    // Cargo 1.100 also relocates test executables under build/<package>/...,
+    // so their location no longer identifies the profile via two parents.
+    let profile = Path::new(env!("OUT_DIR"))
+        .ancestors()
+        .find(|path| path.file_name() == Some(OsStr::new("build")))
         .and_then(Path::parent)
-        .expect("test executable lives in the profile's deps directory");
+        .expect("Cargo OUT_DIR lives under the profile's build directory");
     let declared = declared_external_bins();
     assert!(
         declared.len() > 1,
