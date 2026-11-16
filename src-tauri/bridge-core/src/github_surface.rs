@@ -44,6 +44,7 @@ const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefNa
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
 const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url,mergeable";
 const PR_HEAD_FIELDS: &str = "headRefOid";
+const PR_RESTORE_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
 /// What a trail keeps of an issue: the detail, how and when it closed, and
@@ -1578,9 +1579,24 @@ impl GithubSurface {
                 Ok(format!("Marked PR #{number} ready for review."))
             }
             GithubAction::RestoreBranch { number, branch } => {
-                // Recreate the head branch at its merge SHA — the same call
-                // GitHub's own "Restore branch" button makes.
-                let head_sha = self.pr_head_sha(workspace, &selector, *number)?;
+                // Recreate the head branch at its head SHA, the same call
+                // GitHub's own "Restore branch" button makes. Only the PR's own
+                // same-repository head branch may be recreated: the name comes
+                // from the client, so it is checked against what GitHub reports.
+                let head = self.pr_restorable_head(workspace, &selector, *number)?;
+                if head.is_cross_repository {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "restore branch",
+                        stderr: format!("PR #{number} comes from a fork; its branch lives in the fork."),
+                    });
+                }
+                if head.head_ref_name != *branch {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "restore branch",
+                        stderr: format!("{branch} is not the head branch of PR #{number}."),
+                    });
+                }
+                let head_sha = head.head_ref_oid;
                 self.run_gh(
                     workspace,
                     "restore branch",
@@ -1914,6 +1930,33 @@ impl GithubSurface {
         Ok(head.head_ref_oid)
     }
 
+    fn pr_restorable_head(
+        &self,
+        workspace: &Path,
+        selector: &str,
+        number: u64,
+    ) -> Result<RawRestorableHead, GithubSurfaceError> {
+        let bytes = self.run_gh(
+            workspace,
+            "pr head branch",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                selector.into(),
+                "--json".into(),
+                PR_RESTORE_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let head: RawRestorableHead = parse_json("pull-request head", &bytes)?;
+        if head.head_ref_oid.is_empty() || head.head_ref_name.is_empty() {
+            return Err(malformed("pull-request head", "headRefName or headRefOid was empty"));
+        }
+        Ok(head)
+    }
+
     #[cfg(test)]
     pub(crate) fn discover_on_path(path: &Path) -> Self {
         let binary = which::which_in("gh", Some(std::ffi::OsString::from(path)), ".").ok();
@@ -2164,6 +2207,15 @@ struct RawRepositoryOverview {
 #[serde(rename_all = "camelCase")]
 struct RawPullRequestHead {
     head_ref_oid: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRestorableHead {
+    head_ref_name: String,
+    head_ref_oid: String,
+    #[serde(default)]
+    is_cross_repository: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4158,6 +4210,32 @@ mod tests {
         assert_eq!(invocation_count(&fake, "pr view"), 2);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);
+    }
+
+    #[test]
+    fn restore_branch_only_recreates_the_pull_requests_own_head_branch() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let refused = surface
+            .act(
+                repository.path(),
+                &GithubAction::RestoreBranch { number: 103, branch: "main".into() },
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("not the head branch of PR #103"), "{refused}");
+        assert!(!invocations(&fake).contains("git/refs"), "a mismatched name never reaches the API");
+
+        let message = surface
+            .act(
+                repository.path(),
+                &GithubAction::RestoreBranch { number: 103, branch: "fix/review".into() },
+            )
+            .unwrap();
+        assert_eq!(message, "Restored branch fix/review.");
+        let log = invocations(&fake);
+        assert!(log.contains("pr view 103 --repo fixture/project --json headRefName,headRefOid,isCrossRepository"));
+        assert!(log.contains("repos/fixture/project/git/refs -f ref=refs/heads/fix/review -f sha=current-head-sha"), "{log}");
     }
 
     #[test]
