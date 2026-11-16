@@ -71,6 +71,8 @@ const type = async (field: HTMLInputElement | HTMLTextAreaElement, value: string
   await act(async () => { field.dispatchEvent(new Event("input", { bubbles: true })); await flush(); });
 };
 const exactButton = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === text) as HTMLButtonElement;
+/** The sheet's verb button (the one write the sheet gates). */
+const confirmButton = () => document.querySelector<HTMLButtonElement>("button[data-confirm]")!;
 const buttonByText = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
 
 afterEach(async () => {
@@ -176,9 +178,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Manage labels"));
     await click(buttonByText("enhancement"));
-    expect(document.body.textContent).toContain('add label "enhancement" to PR #1');
+    expect(document.body.textContent).toContain("Add label “enhancement”");
+    expect(document.body.textContent).toContain('gh pr edit 1 -R bridge/harness --add-label "enhancement"');
     expect(act).not.toHaveBeenCalled();
-    await click(buttonByText("Confirm"));
+    await click(confirmButton());
     expect(act).toHaveBeenCalledWith("w", { kind: "label", target: "pullRequest", number: 1, label: "enhancement", operation: "add" }, true);
   });
 
@@ -454,19 +457,20 @@ describe("GitHubPane", () => {
 
     // Declining runs nothing.
     await click(buttonByText("Check out"));
-    expect(document.body.textContent).toContain("check out PR #1 (feat/safe) into a task worktree");
+    expect(document.body.textContent).toContain("Check out #1 (feat/safe)");
+    expect(document.body.textContent).toContain("your current checkout is untouched");
     await click(buttonByText("Cancel"));
     expect(checkout).not.toHaveBeenCalled();
 
     await click(buttonByText("Check out"));
-    await click([...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
+    await click(confirmButton());
     expect(checkout).toHaveBeenCalledWith("w", 1);
     expect(host!.textContent).toContain("Checked out into a task worktree on ");
     expect(host!.textContent).toContain("/w/github/pr-1-feat-safe");
 
     checkout.mockResolvedValue({ workspaceId: "ws2", path: "/w/github/pr-1-feat-safe", branch: "feat/safe", reused: true });
     await click(buttonByText("Check out"));
-    await click([...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
+    await click(confirmButton());
     expect(host!.textContent).toContain("Reusing the task worktree already on ");
   });
 
@@ -700,10 +704,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Comment"));
 
     // The draft is shown back, not re-requested, and nothing has run yet.
-    expect(document.body.textContent).toContain("post a comment on PR #1");
+    expect(document.body.textContent).toContain("Post a comment on #1");
     expect(document.body.textContent).toContain("This reads well now.");
     expect(action).not.toHaveBeenCalled();
-    await click(buttonByText("Confirm"));
+    await click(confirmButton());
     expect(action).toHaveBeenCalledWith("w", { kind: "comment", target: "pullRequest", number: 1, body: "This reads well now." }, true);
   });
 
@@ -713,8 +717,8 @@ describe("GitHubPane", () => {
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Close"));
-    expect(document.body.textContent).toContain("close PR #1 on bridge/harness");
-    await click(buttonByText("Confirm"));
+    expect(document.body.textContent).toContain("Close #1 without merging");
+    await click(confirmButton());
     expect(action).toHaveBeenCalledWith("w", { kind: "setState", target: "pullRequest", number: 1, operation: "close" }, true);
 
     // A draft offers the undraft transition instead.
@@ -726,7 +730,8 @@ describe("GitHubPane", () => {
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Ready for review"));
-    await click(buttonByText("Confirm"));
+    expect(document.body.textContent).toContain("Mark #1 ready for review");
+    await click(confirmButton());
     expect(action).toHaveBeenLastCalledWith("w", { kind: "ready", number: 1 }, true);
   });
 
@@ -746,17 +751,18 @@ describe("GitHubPane", () => {
     await click(buttonByText("Stay inside Bridge"));
 
     await click(buttonByText("Close"));
-    expect(document.body.textContent).toContain("close issue #17 on bridge/harness");
-    await click(buttonByText("Confirm"));
+    expect(document.body.textContent).toContain("Close #17");
+    expect(document.body.textContent).toContain("gh issue close 17 -R bridge/harness");
+    await click(confirmButton());
     expect(action).toHaveBeenCalledWith("w", { kind: "setState", target: "issue", number: 17, operation: "close" }, true);
 
     const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
     await type(composer, "On it.");
     await click(buttonByText("Comment"));
     // The drafted text is shown back before it posts, exactly as on a PR.
-    expect(document.body.textContent).toContain("post a comment on issue #17");
+    expect(document.body.textContent).toContain("Post a comment on #17");
     expect(document.querySelector('[role="dialog"] [aria-label="Comment body"]')?.textContent).toBe("On it.");
-    await click(buttonByText("Confirm"));
+    await click(confirmButton());
     expect(action).toHaveBeenLastCalledWith("w", { kind: "comment", target: "issue", number: 17, body: "On it." }, true);
 
     // A closed issue offers Reopen rather than Close.

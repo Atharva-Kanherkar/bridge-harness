@@ -13,6 +13,7 @@ import {
   CircleX,
   Copy,
   ExternalLink,
+  Eye,
   FileDiff,
   FolderGit2,
   GitBranch,
@@ -31,6 +32,7 @@ import {
   Sparkles,
   SquareArrowOutUpRight,
   Tag,
+  ThumbsUp,
   TriangleAlert,
   X,
   MessageSquarePlus,
@@ -40,6 +42,7 @@ import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { rememberSurface, surfaceSnapshot } from "../githubSurfaceCache";
 import { cn } from "@/lib/utils";
+import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
 import { Markdown } from "./Markdown";
@@ -58,6 +61,7 @@ import {
   type RollupState,
 } from "../githubSurface";
 import type { GithubLinkView, PullRequestView } from "../githubLinks";
+import type { LucideIcon } from "lucide-react";
 import type {
   GithubAction,
   GithubCheckoutResult,
@@ -733,7 +737,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
   </button>;
 
-  return <section className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
+  return <section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
     {page ? <header className="flex shrink-0 flex-col border-b border-border bg-background px-5">
       <div className="flex h-11 items-end gap-3">
         {/* Labelled tabs with live counts: at full width there is room to say
@@ -1100,7 +1104,23 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
 
 // ── Detail ───────────────────────────────────────────────────────────────────
 
-type PendingAction = { statement: string; requiresBody: boolean; body?: string; build: (body: string) => GithubAction };
+type PendingAction = {
+  icon: LucideIcon;
+  tone: "neutral" | "success" | "destructive";
+  /** What the sheet is called: "Approve pull request #341". */
+  title: string;
+  /** The consequence in one sentence. */
+  consequence: string;
+  /** The exact `gh` command behind the sheet's disclosure; actions that are
+   *  not one gh invocation (checkout) omit it. */
+  command?: string;
+  requiresBody: boolean;
+  body?: string;
+  build: (body: string) => GithubAction;
+  /** The verb the confirm button wears. */
+  confirmLabel: string;
+  destructive?: boolean;
+};
 
 /** The harnesses a subagent review can run under. Model, effort and
  * instructions come from Settings → Workers → Pull request reviewer, so the
@@ -1350,8 +1370,13 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           current={pullRequest.labels}
           disabled={busy}
           onChange={(label, operation) => setPending({
-            statement: `${operation === "add" ? "add" : "remove"} label ${JSON.stringify(label)} ${operation === "add" ? "to" : "from"} PR #${number} on ${repoLabel}`,
+            title: `${operation === "add" ? "Add" : "Remove"} label “${label}”`,
+            consequence: `The pull request is edited on ${repoLabel}.`,
+            command: `gh pr edit ${number} -R ${repoLabel} ${operation === "add" ? "--add-label" : "--remove-label"} ${JSON.stringify(label)}`,
+            tone: "neutral",
+            icon: Tag,
             requiresBody: false,
+            confirmLabel: operation === "add" ? "Add label" : "Remove label",
             build: () => ({ kind: "label", target: "pullRequest", number, label, operation }),
           })}
         />}
@@ -1359,17 +1384,63 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         {summary.state === "open" && <>
           <div className="mt-4 flex flex-wrap items-center gap-1.5">
           <button type="button" onClick={() => void openMerge()} disabled={busy} className={PRIMARY_ACTION}><GitMerge size={12} aria-hidden="true" /> Merge</button>
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `submit approval on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "review", number, event: "approve", body: "" }) })}>Approve</button>
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `submit requested changes on PR #${number} on ${repoLabel}`, requiresBody: true, build: body => ({ kind: "review", number, event: "requestChanges", body }) })}>Request changes</button>
+          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+            title: `Approve pull request #${number}`,
+            consequence: `Your review is posted as an approval. ${summary.author?.login ?? "the author"} is notified.`,
+            command: `gh pr review ${number} -R ${repoLabel} --approve`,
+            tone: "success",
+            icon: ThumbsUp,
+            requiresBody: false,
+            confirmLabel: "Approve",
+            build: () => ({ kind: "review", number, event: "approve", body: "" }),
+          })}>Approve</button>
+          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+            title: `Request changes on #${number}`,
+            consequence: `Blocks the merge until ${summary.author?.login ?? "the author"} pushes a fix or you dismiss the review.`,
+            command: `gh pr review ${number} -R ${repoLabel} --request-changes --body …`,
+            tone: "neutral",
+            icon: MessageSquare,
+            requiresBody: true,
+            confirmLabel: "Request changes",
+            build: body => ({ kind: "review", number, event: "requestChanges", body }),
+          })}>Request changes</button>
           <button type="button" disabled={busy || reviewBusy} aria-haspopup="menu" aria-expanded={reviewOpen} className={ACTION_BUTTON} onClick={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}>
             <Sparkles size={12} aria-hidden="true" /> {reviewBusy ? "Starting review…" : "Review"}
           </button>
-          {summary.isDraft && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `mark PR #${number} ready for review on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "ready", number }) })}>Ready for review</button>}
-          {rerunnable && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `re-run failed checks on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "rerun", number }) })}><RotateCcw size={11.5} aria-hidden="true" /> Re-run failed</button>}
+          {summary.isDraft && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+            title: `Mark #${number} ready for review`,
+            consequence: "Reviewers are notified that the pull request is ready.",
+            command: `gh pr ready ${number} -R ${repoLabel}`,
+            tone: "neutral",
+            icon: Eye,
+            requiresBody: false,
+            confirmLabel: "Ready for review",
+            build: () => ({ kind: "ready", number }),
+          })}>Ready for review</button>}
+          {rerunnable && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+            title: `Re-run failed checks on #${number}`,
+            consequence: "The failed runs are queued again.",
+            command: `gh run rerun <failed runs of #${number}> -R ${repoLabel}`,
+            tone: "neutral",
+            icon: RotateCcw,
+            requiresBody: false,
+            confirmLabel: "Re-run failed",
+            build: () => ({ kind: "rerun", number }),
+          })}><RotateCcw size={11.5} aria-hidden="true" /> Re-run failed</button>}
           {!checkedOutHere && <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => { setActionError(undefined); setCheckoutOpen(true); }}>
             <FolderGit2 size={12} aria-hidden="true" /> Check out
           </button>}
-          <button type="button" disabled={busy} className={QUIET_ACTION} onClick={() => setPending({ statement: `close PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }) })}><Ban size={11.5} aria-hidden="true" /> Close</button>
+          <button type="button" disabled={busy} className={QUIET_ACTION} onClick={() => setPending({
+            title: `Close #${number} without merging`,
+            consequence: "The branch stays on GitHub. You can reopen it from this pane.",
+            command: `gh pr close ${number} -R ${repoLabel}`,
+            tone: "destructive",
+            icon: Ban,
+            requiresBody: false,
+            confirmLabel: "Close pull request",
+            destructive: true,
+            build: () => ({ kind: "setState", target: "pullRequest", number, operation: "close" }),
+          })}><Ban size={11.5} aria-hidden="true" /> Close</button>
           </div>
           {reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-[11px] font-semibold tracking-[0.1em] text-muted-foreground">RUN REVIEW WITH</p>
@@ -1382,7 +1453,16 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           {reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
         </>}
         {summary.state === "closed" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({ statement: `reopen PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "setState", target: "pullRequest", number, operation: "reopen" }) })}><RotateCcw size={11.5} aria-hidden="true" /> Reopen</button>
+          <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
+            title: `Reopen #${number}`,
+            consequence: "The pull request is open again for review and comments.",
+            command: `gh pr reopen ${number} -R ${repoLabel}`,
+            tone: "neutral",
+            icon: RotateCcw,
+            requiresBody: false,
+            confirmLabel: "Reopen",
+            build: () => ({ kind: "setState", target: "pullRequest", number, operation: "reopen" }),
+          })}><RotateCcw size={11.5} aria-hidden="true" /> Reopen</button>
         </div>}
       </div>
 
@@ -1422,9 +1502,14 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           {pullRequest.comments.length ? <CommentList comments={pullRequest.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No conversation comments.</p>}
           <div className="mt-2.5">
             <CommentComposer disabled={busy} onSubmit={body => setPending({
-              statement: `post a comment on PR #${number} on ${repoLabel}`,
+              title: `Post a comment on #${number}`,
+              consequence: "Posted as you, visible to everyone on the repository.",
+              command: `gh api repos/${repoLabel}/issues/${number}/comments --method POST -f body=…`,
+              tone: "neutral",
+              icon: MessageSquare,
               requiresBody: true,
               body,
+              confirmLabel: "Post comment",
               build: value => ({ kind: "comment", target: "pullRequest", number, body: value }),
             })} />
           </div>
@@ -1463,7 +1548,16 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
                   {rootId !== null && <button
                     type="button"
                     disabled={busy}
-                    onClick={() => setPending({ statement: `reply to a review comment on PR #${number} on ${repoLabel}`, requiresBody: true, build: body => ({ kind: "reply", number, commentId: rootId, body }) })}
+                    onClick={() => setPending({
+                      title: "Reply to the review comment",
+                      consequence: "Posted as you, visible to everyone on the repository.",
+                      command: `gh api repos/${repoLabel}/pulls/${number}/comments/${rootId}/replies --method POST -f body=…`,
+                      tone: "neutral",
+                      icon: MessageSquare,
+                      requiresBody: true,
+                      confirmLabel: "Reply",
+                      build: body => ({ kind: "reply", number, commentId: rootId, body }),
+                    })}
                     className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                   >
                     <MessageSquare size={11} aria-hidden="true" /> Reply
@@ -1477,20 +1571,28 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       </div>
     </div>
 
-    {pending && <ConfirmOverlay
-      statement={pending.statement}
+    {pending && <ActionSheet
+      icon={pending.icon}
+      tone={pending.tone}
+      title={pending.title}
+      consequence={pending.consequence}
+      command={pending.command}
       requiresBody={pending.requiresBody}
       body={pending.body ?? pendingBody}
       onBody={setPendingBody}
       readOnlyBody={pending.body !== undefined}
+      confirmLabel={pending.confirmLabel}
+      destructive={pending.destructive}
       busy={busy}
       onCancel={closeOverlays}
       onConfirm={() => void submit(pending.build(pending.body ?? pendingBody))}
     />}
 
-    {checkoutOpen && <ConfirmOverlay
-      statement={`check out PR #${number} (${summary.headBranch}) into a task worktree`}
-      note="Creates an isolated worktree beside this one — your current checkout is untouched. Repeating it reuses the same worktree."
+    {checkoutOpen && <ActionSheet
+      icon={FolderGit2}
+      tone="neutral"
+      title={`Check out #${number} (${summary.headBranch})`}
+      consequence="Creates an isolated worktree beside this one — your current checkout is untouched. Repeating it reuses the same worktree."
       requiresBody={false}
       body=""
       onBody={() => undefined}
@@ -1571,14 +1673,27 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
         <p className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-muted-foreground"><Monogram login={issue.summary.author?.login} className="size-4 text-[9px]" />Opened by {issue.summary.author?.login ?? "ghost"}</p>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"><Tag size={10.5} aria-hidden="true" /> Manage labels</button></div>
         {labelsOpen && <LabelControls available={availableLabels} current={issue.summary.labels} disabled={busy} onChange={(label, operation) => setPending({
-          statement: `${operation === "add" ? "add" : "remove"} label ${JSON.stringify(label)} ${operation === "add" ? "to" : "from"} issue #${number} on ${repoLabel}`,
+          title: `${operation === "add" ? "Add" : "Remove"} label “${label}”`,
+          consequence: `The issue is edited on ${repoLabel}.`,
+          command: `gh issue edit ${number} -R ${repoLabel} ${operation === "add" ? "--add-label" : "--remove-label"} ${JSON.stringify(label)}`,
+          tone: "neutral",
+          icon: Tag,
           requiresBody: false,
+          confirmLabel: operation === "add" ? "Add label" : "Remove label",
           build: () => ({ kind: "label", target: "issue", number, label, operation }),
         })} />}
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" disabled={busy} className={ACTION_BUTTON} onClick={() => setPending({
-            statement: `${open ? "close" : "reopen"} issue #${number} on ${repoLabel}`,
+            title: open ? `Close #${number}` : `Reopen #${number}`,
+            consequence: open
+              ? "Comments stay, and you can reopen it from this pane."
+              : "The issue is open again for comments and triage.",
+            command: open ? `gh issue close ${number} -R ${repoLabel}` : `gh issue reopen ${number} -R ${repoLabel}`,
+            tone: open ? "destructive" : "neutral",
+            icon: open ? Ban : RotateCcw,
             requiresBody: false,
+            confirmLabel: open ? "Close issue" : "Reopen issue",
+            destructive: open,
             build: () => ({ kind: "setState", target: "issue", number, operation: open ? "close" : "reopen" }),
           })}>
             {open ? <><Ban size={11.5} aria-hidden="true" /> Close</> : <><RotateCcw size={11.5} aria-hidden="true" /> Reopen</>}
@@ -1593,41 +1708,40 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
           {issue.comments.length ? <CommentList comments={issue.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No comments.</p>}
           <div className="mt-2.5">
             <CommentComposer disabled={busy} onSubmit={body => setPending({
-              statement: `post a comment on issue #${number} on ${repoLabel}`,
+              title: `Post a comment on #${number}`,
+              consequence: "Posted as you, visible to everyone on the repository.",
+              command: `gh api repos/${repoLabel}/issues/${number}/comments --method POST -f body=…`,
+              tone: "neutral",
+              icon: MessageSquare,
               requiresBody: true,
               body,
+              confirmLabel: "Post comment",
               build: value => ({ kind: "comment", target: "issue", number, body: value }),
             })} />
           </div>
         </section>
       </div>
     </div>
-    {pending && <ConfirmOverlay
-      statement={pending.statement}
-      requiresBody={pending.requiresBody}
-      body={pending.body ?? ""}
-      onBody={() => undefined}
-      readOnlyBody={pending.body !== undefined}
-      busy={busy}
-      onCancel={() => setPending(undefined)}
-      onConfirm={() => void submit(pending.build(pending.body ?? ""))}
-    />}
+    <ActionSheetHost>
+      {pending && <ActionSheet
+        icon={pending.icon}
+        tone={pending.tone}
+        title={pending.title}
+        consequence={pending.consequence}
+        command={pending.command}
+        requiresBody={pending.requiresBody}
+        body={pending.body ?? ""}
+        onBody={() => undefined}
+        readOnlyBody={pending.body !== undefined}
+        confirmLabel={pending.confirmLabel}
+        destructive={pending.destructive}
+        busy={busy}
+        onCancel={() => setPending(undefined)}
+        onConfirm={() => void submit(pending.build(pending.body ?? ""))}
+      />}
+    </ActionSheetHost>
   </div>;
 }
-
-type ConfirmOverlayProps = {
-  statement: string;
-  note?: string;
-  requiresBody: boolean;
-  body: string;
-  onBody: (value: string) => void;
-  /** The body was already composed elsewhere — show it, don't ask for it again. */
-  readOnlyBody?: boolean;
-  busy: boolean;
-  confirmLabel?: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-};
 
 /** Connect a workspace folder to a GitHub repository.
  *
@@ -1715,24 +1829,6 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
         <button type="button" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Connect</button>
-      </div>
-    </DialogPopup>
-  </Dialog>;
-}
-
-function ConfirmOverlay({ statement, note, requiresBody, body, onBody, readOnlyBody, busy, confirmLabel = "Confirm", onCancel, onConfirm }: ConfirmOverlayProps) {
-  const ready = !requiresBody || body.trim().length > 0;
-  return <Dialog open onOpenChange={next => { if (!next && !busy) onCancel(); }}>
-    <DialogPopup showCloseButton={false} aria-label="Confirm action" className="max-w-md p-5">
-      <p className="text-xs text-muted-foreground">This runs</p>
-      <p className="mt-1 font-mono text-xs text-foreground/90">{statement}</p>
-      {note && <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{note}</p>}
-      {requiresBody && (readOnlyBody
-        ? <p className="mt-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-card p-3 text-[12.5px] leading-relaxed text-foreground" aria-label="Comment body">{body}</p>
-        : <textarea value={body} onChange={event => onBody(event.target.value)} aria-label="Comment body" placeholder="Write a comment…" className="mt-4 min-h-28 w-full resize-y rounded-lg border border-input bg-card p-3 text-[13px] leading-relaxed" />)}
-      <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
-        <button type="button" onClick={onConfirm} disabled={busy || !ready} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{confirmLabel}</button>
       </div>
     </DialogPopup>
   </Dialog>;
