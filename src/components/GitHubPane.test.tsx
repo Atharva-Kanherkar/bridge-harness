@@ -696,6 +696,93 @@ describe("GitHubPane", () => {
     expect(checks.querySelector(".github-check-live")).not.toBeNull();
   });
 
+  it("opens the merge box confirm in place and merges through the typed action", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Merge requested for PR #1 (squash)." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+
+    // The split button reads the repo default from the config read.
+    expect(buttonByText("Squash and merge")).toBeTruthy();
+    // Confirm expands in place — no dialog anywhere in the DOM.
+    await click(buttonByText("Squash and merge"));
+    expect(document.body.querySelector("[data-merge-go]")).toBeTruthy();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.textContent).toContain("Squashes 2 commits into one commit on main");
+
+    // The commit subject is editable; the branch cleanup defaults to off.
+    const subject = document.querySelector<HTMLInputElement>('input[aria-label="Commit message"]')!;
+    expect(subject.value).toBe("Safe GitHub surface (#1)");
+
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action).toHaveBeenCalledWith("w", {
+      kind: "merge", number: 1, strategy: "squash", subject: "Safe GitHub surface (#1)", body: undefined, deleteBranch: undefined,
+    }, true);
+    // A second click during the flight cannot submit again.
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a refused merge verbatim with Try again and keeps the form", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: false, message: 'Required status check "build" is expected.' });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Squash and merge"));
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    expect(document.body.textContent).toContain('Required status check "build" is expected.');
+    expect(document.body.textContent).toContain("Try again");
+    expect((document.querySelector<HTMLInputElement>('input[aria-label="Commit message"]')!).value).toBe("Safe GitHub surface (#1)");
+    // The refusal tints the box and shows the reason inline, not a dialog.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("offers only the strategies the repository allows", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "merge" as const,
+      strategies: { merge: true, squash: false, rebase: false },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    console.log("DEBUG box buttons:", [...document.querySelectorAll("button")].map(b => b.textContent?.trim()).filter(t => t && t.length < 30).join(" | "));
+    await click(document.querySelector('button[aria-label="Choose a merge strategy"]') as HTMLButtonElement);
+    const menu = document.querySelector('[role="menu"][aria-label="Merge strategy"]')!;
+    expect(menu.textContent).toContain("Create a merge commit");
+    expect(menu.textContent).not.toContain("Squash and merge");
+    expect(menu.textContent).not.toContain("Rebase and merge");
+  });
+
+  it("restores a deleted branch behind the confirmation gate", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubMergeConfig").mockResolvedValue({
+      defaultStrategy: "squash" as const,
+      strategies: { merge: true, squash: true, rebase: false },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct")
+      .mockResolvedValueOnce({ executed: true, message: "Merge requested for PR #1 (squash)." })
+      .mockResolvedValueOnce({ executed: true, message: "Restored branch feat/safe." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Squash and merge"));
+    await click(document.querySelector("button[data-merge-go]") as HTMLButtonElement);
+    // The receipt rises in; Restore branch rides the sheet like every write.
+    expect(host!.textContent).toContain("Merged into main");
+    await click(buttonByText("Restore branch"));
+    expect(document.body.textContent).toContain("Recreates the deleted head branch");
+    await click(confirmButton());
+    expect(action).toHaveBeenLastCalledWith("w", { kind: "restoreBranch", number: 1, branch: "feat/safe" }, true);
+  });
+
   it("posts a comment through the same confirmation gate as every other write", async () => {
     mockReads();
     const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Commented on PR #1." });

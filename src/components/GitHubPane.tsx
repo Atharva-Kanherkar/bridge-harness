@@ -1438,7 +1438,12 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     if (!detailReady || detailReady.state !== "open") return;
     let cancelled = false;
     void bridgeApi.githubMergeConfig(workspaceId)
-      .then(config => { if (!cancelled) setMergeConfig(config); })
+      .then(config => {
+        if (cancelled) return;
+        setMergeConfig(config);
+        // The split button already shows the repo default.
+        dispatchMerge({ type: "config", strategy: config.defaultStrategy });
+      })
       .catch(() => undefined);
     return () => { cancelled = true; };
     // Reload per pull request, not per render; the config is repository-level.
@@ -1458,7 +1463,15 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     dispatchMerge({ type: "merging" });
     setBusy(true); setActionError(undefined);
     try {
-      const outcome = await bridgeApi.githubAct(workspaceId, { kind: "merge", number, strategy: merge.strategy }, true);
+      const outcome = await bridgeApi.githubAct(workspaceId, {
+        kind: "merge",
+        number,
+        strategy: merge.strategy,
+        // The confirm form's fields; empty means `gh`'s own default.
+        subject: merge.subject.trim() || undefined,
+        body: undefined,
+        deleteBranch: merge.deleteBranch || undefined,
+      }, true);
       if (!outcome.executed) { dispatchMerge({ type: "fail", message: outcome.message }); return; }
       dispatchMerge({ type: "succeed" });
       onActed();
@@ -1693,6 +1706,16 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             })}
             overflow={overflow}
             onConfirm={() => void runMerge()}
+            onRestore={() => setPending({
+              title: `Restore ${summary.headBranch}`,
+              consequence: "Recreates the deleted head branch at its merge commit. Nothing is merged or changed.",
+              command: `gh api repos/${repoLabel}/git/refs --method POST -f ref=refs/heads/${summary.headBranch} -f sha=…`,
+              tone: "neutral",
+              icon: RotateCcw,
+              requiresBody: false,
+              confirmLabel: "Restore branch",
+              build: () => ({ kind: "restoreBranch", number, branch: summary.headBranch }),
+            })}
           />
           {summary.state === "open" && reviewOpen && <div className="animate-page-mount mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
             <p className="px-2 pb-0.5 pt-1 text-[11px] font-semibold tracking-[0.1em] text-muted-foreground">RUN REVIEW WITH</p>

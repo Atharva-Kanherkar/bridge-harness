@@ -409,6 +409,11 @@ pub enum GithubAction {
     Merge {
         number: u64,
         strategy: MergeStrategy,
+        // Optional squash/merge commit text; `gh`'s defaults when absent.
+        subject: Option<String>,
+        body: Option<String>,
+        #[serde(rename = "deleteBranch")]
+        delete_branch: Option<bool>,
     },
     Review {
         number: u64,
@@ -444,6 +449,10 @@ pub enum GithubAction {
     Ready {
         number: u64,
     },
+    RestoreBranch {
+        number: u64,
+        branch: String,
+    },
 }
 
 impl GithubAction {
@@ -457,7 +466,8 @@ impl GithubAction {
             | GithubAction::Label { number, .. }
             | GithubAction::Comment { number, .. }
             | GithubAction::SetState { number, .. }
-            | GithubAction::Ready { number } => *number,
+            | GithubAction::Ready { number }
+            | GithubAction::RestoreBranch { number, .. } => *number,
         }
     }
 }
@@ -1415,20 +1425,35 @@ impl GithubSurface {
         let repository = self.resolve_repository_fresh(workspace)?;
         let selector = repository.selector();
         let result = match action {
-            GithubAction::Merge { number, strategy } => {
-                self.run_gh(
-                    workspace,
-                    "pr merge",
-                    &[
-                        "pr".into(),
-                        "merge".into(),
-                        number.to_string(),
-                        "--repo".into(),
-                        selector.clone(),
-                        strategy.flag().into(),
-                    ],
-                    false,
-                )?;
+            GithubAction::Merge {
+                number,
+                strategy,
+                subject,
+                body,
+                delete_branch,
+            } => {
+                // Optional commit text rides `--subject`/`--body`; the branch
+                // cleanup rides `--delete-branch` (issue #1028 slice 5).
+                let mut args = vec![
+                    "pr".into(),
+                    "merge".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    selector.clone(),
+                    strategy.flag().into(),
+                ];
+                if let Some(subject) = subject.as_deref().filter(|value| !value.is_empty()) {
+                    args.push("--subject".into());
+                    args.push(subject.into());
+                }
+                if let Some(body) = body.as_deref().filter(|value| !value.is_empty()) {
+                    args.push("--body".into());
+                    args.push(body.into());
+                }
+                if *delete_branch == Some(true) {
+                    args.push("--delete-branch".into());
+                }
+                self.run_gh(workspace, "pr merge", &args, false)?;
                 Ok(format!("Merge requested for PR #{number} ({}).", strategy_label(*strategy)))
             }
             GithubAction::Review {
@@ -1551,6 +1576,29 @@ impl GithubSurface {
                     false,
                 )?;
                 Ok(format!("Marked PR #{number} ready for review."))
+            }
+            GithubAction::RestoreBranch { number, branch } => {
+                // Recreate the head branch at its merge SHA — the same call
+                // GitHub's own "Restore branch" button makes.
+                let head_sha = self.pr_head_sha(workspace, &selector, *number)?;
+                self.run_gh(
+                    workspace,
+                    "restore branch",
+                    &[
+                        "api".into(),
+                        "--hostname".into(),
+                        repository.host.clone(),
+                        "--method".into(),
+                        "POST".into(),
+                        format!("repos/{}/{}/git/refs", repository.owner, repository.name),
+                        "-f".into(),
+                        format!("ref=refs/heads/{branch}"),
+                        "-f".into(),
+                        format!("sha={head_sha}"),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Restored branch {branch}."))
             }
         };
         if result.is_ok() {
@@ -3738,7 +3786,7 @@ mod tests {
         let complete_old_read = defer_resolution_completion(&surface, repository.path());
         git(repository.path(), &["remote", "set-url", "origin", "https://github.com/fixture/other.git"]);
 
-        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash }).unwrap();
+        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash, subject: None, body: None, delete_branch: None }).unwrap();
         complete_old_read();
         assert_eq!(surface.resolve_repository(repository.path()).unwrap(), expected("fixture", "other"));
         assert!(invocations(&fake).contains("pr merge 103 --repo fixture/other --squash"));
@@ -3795,7 +3843,7 @@ mod tests {
             let message = surface
                 .act(
                     repository.path(),
-                    &GithubAction::Merge { number: 103, strategy },
+                    &GithubAction::Merge { number: 103, strategy, subject: None, body: None, delete_branch: None },
                 )
                 .unwrap();
             assert!(message.contains("Merge requested for PR #103"));
@@ -3819,6 +3867,9 @@ mod tests {
                 &GithubAction::Merge {
                     number: 103,
                     strategy: MergeStrategy::Squash,
+                    subject: None,
+                    body: None,
+                    delete_branch: None,
                 },
             )
             .unwrap_err();

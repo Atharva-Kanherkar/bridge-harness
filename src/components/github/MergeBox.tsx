@@ -12,6 +12,7 @@ import {
   GitMerge,
   GitPullRequestDraft,
   MessageSquare,
+  RotateCcw,
   Sparkles,
   ThumbsUp,
   type LucideIcon,
@@ -71,12 +72,12 @@ export function mergeReducer(state: MergeState, event: MergeEvent): MergeState {
     case "reset":
       return initialMergeState(event.summary);
     case "config":
-      return state.phase === "idle" && state.strategy !== event.strategy
-        ? { ...state, strategy: event.strategy }
-        : state;
+      if (state.phase !== "idle" || state.strategy === event.strategy) return state;
+      // The repo default arrives late; a re-open recomputes the subject.
+      return { ...state, strategy: event.strategy };
     case "open":
       return state.phase === "idle"
-        ? { ...state, phase: "confirming", message: undefined }
+        ? { ...state, phase: "confirming", subject: event.subject, message: undefined }
         : state;
     case "pick":
       return { ...state, phase: "confirming", strategy: event.strategy, message: undefined };
@@ -195,9 +196,11 @@ export type MergeBoxProps = {
   onApprove: () => void;
   overflow: OverflowItem[];
   onConfirm: () => void;
+  /** The receipt's Restore branch (a confirmed write; slice 5). */
+  onRestore: () => void;
 };
 
-export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch, prUrl, config, state, dispatch, busy, reviewBusy, onToggleReview, onApprove, overflow, onConfirm }: MergeBoxProps) {
+export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch, prUrl, config, state, dispatch, busy, reviewBusy, onToggleReview, onApprove, overflow, onConfirm, onRestore }: MergeBoxProps) {
   const reduced = useReducedMotion();
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -247,11 +250,11 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
       ? <>Replays <b className="font-medium text-foreground">{commitCount} commit{commitCount === 1 ? "" : "s"}</b> onto <b className="font-medium text-foreground">{baseBranch}</b>, no merge commit</>
       : <>Merges <b className="font-medium text-foreground">{commitCount} commit{commitCount === 1 ? "" : "s"}</b> into <b className="font-medium text-foreground">{baseBranch}</b> with a merge commit</>;
 
-  const receiptLine = state.strategy === "squash"
+  const receiptLine = `${state.strategy === "squash"
     ? `Squashed ${commitCount} commit${commitCount === 1 ? "" : "s"} into ${baseBranch}`
     : state.strategy === "rebase"
       ? `Replayed ${commitCount} commit${commitCount === 1 ? "" : "s"} onto ${baseBranch}`
-      : `Merged ${commitCount} commit${commitCount === 1 ? "" : "s"} into ${baseBranch}`;
+      : `Merged ${commitCount} commit${commitCount === 1 ? "" : "s"} into ${baseBranch}`}${state.deleteBranch ? " · branch deleted" : ""}`;
 
   return (
     <div ref={boxRef} className="relative mt-4" aria-label="Merge pull request">
@@ -490,7 +493,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 aria-label="Open the revert flow on GitHub"
                 title="Revert on GitHub"
                 className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
-              ><GitPullRequestDraft size={12} aria-hidden="true" /> Revert</a>
+              ><RotateCcw size={12} aria-hidden="true" /> Revert</a>
               <a
                 href={`${prUrl}/commits`}
                 data-system-browser
@@ -498,6 +501,12 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 title="View commit on GitHub"
                 className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
               ><Eye size={12} aria-hidden="true" /> View commit</a>
+              <button
+                type="button"
+                onClick={onRestore}
+                disabled={busy}
+                className="inline-flex min-h-7 items-center rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >Restore branch</button>
             </div>
           </div>
         </div>

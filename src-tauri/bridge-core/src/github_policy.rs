@@ -73,6 +73,7 @@ pub fn summary(action: &GithubAction) -> String {
             target.label(),
         ),
         GithubAction::Ready { .. } => format!("mark PR #{number} ready for review"),
+        GithubAction::RestoreBranch { branch, .. } => format!("restore branch {branch}"),
     }
 }
 
@@ -106,6 +107,9 @@ mod tests {
         let merge = GithubAction::Merge {
             number: 328,
             strategy: MergeStrategy::Squash,
+            subject: None,
+            body: None,
+            delete_branch: None,
         };
         assert_eq!(describe(&merge, "owner/repo"), "merge PR #328 (squash) on owner/repo");
 
@@ -157,5 +161,11 @@ mod tests {
 
         let ready = GithubAction::Ready { number: 341 };
         assert_eq!(describe(&ready, "owner/repo"), "mark PR #341 ready for review on owner/repo");
+
+        let restore = GithubAction::RestoreBranch {
+            number: 341,
+            branch: "feat/safe".into(),
+        };
+        assert_eq!(describe(&restore, "owner/repo"), "restore branch feat/safe on owner/repo");
     }
 }

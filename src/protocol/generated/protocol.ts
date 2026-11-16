@@ -2098,7 +2098,7 @@ export type ExternalImportStability = "stable" | "version_gated" | "experimental
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
 
-export type GithubAction = { kind: "merge"; number: number; strategy: MergeStrategy } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: GithubTarget } | { body: string; kind: "comment"; number: number; target: GithubTarget } | { kind: "setState"; number: number; operation: StateOperation; target: GithubTarget } | { kind: "ready"; number: number };
+export type GithubAction = { body?: string | null; deleteBranch?: boolean | null; kind: "merge"; number: number; strategy: MergeStrategy; subject?: string | null } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: GithubTarget } | { body: string; kind: "comment"; number: number; target: GithubTarget } | { kind: "setState"; number: number; operation: StateOperation; target: GithubTarget } | { kind: "ready"; number: number } | { branch: string; kind: "restoreBranch"; number: number };
 
 export interface GithubActor {
   login: string;
