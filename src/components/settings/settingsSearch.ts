@@ -69,9 +69,6 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "harnesses", label: "Installed", description: "Coding agents Bridge can start right now" },
   { section: "harnesses", label: "Available", description: "Coding agents Bridge can install for you" },
 
-  { section: "clones", label: "Default sign-in path", description: "Import cookies from your browser, or sign in inside a new browser clone" },
-  { section: "clones", label: "Time to live", description: "How long a browser clone lives before it destroys itself" },
-
   { section: "keys", label: "Saved keys", description: "API keys agents can use on the sites you allow, without seeing them" },
   { section: "keys", label: "Add a key", description: "Save an API key or token in the Keychain for every chat" },
   { section: "keys", label: "Pasted in chats", description: "Keys you pasted into a chat, and where each may be sent" },

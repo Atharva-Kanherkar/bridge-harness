@@ -49,8 +49,6 @@ import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effort
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { BrowserPane } from "./components/BrowserPane";
-import { CloneRequestInbox } from "./components/CloneRequestInbox";
-import type { CloneSupervision } from "./components/CloneSurface";
 import { sanitizeBrowserSelection, serializeBrowserSelections, type BrowserSelectionContext } from "./browserSelection";
 import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
@@ -1081,25 +1079,10 @@ function AppContent() {
   const [connectorUnread, setConnectorUnread] = useState(0);
   const [connectorFocus, setConnectorFocus] = useState<string>();
   const connectorAttention = connectorToasts.some(toast => !toast.settled);
-  // The clone surface reports whether it needs the person (waiting_for_you or a
-  // pending approval). Only a mounted surface is polling, so the mark is drawn
-  // only while the pane has been visited: an unmounted surface cannot vouch for
-  // a state it is no longer watching.
-  const [cloneAttention, setCloneAttention] = useState(false);
-  const reportCloneSupervision = useCallback((state: CloneSupervision) => setCloneAttention(state.attention), []);
-  useEffect(() => setCloneAttention(false), [selectedSessionId]);
-  const cloneAlert = cloneAttention;
-  const [cloneFocus, setCloneFocus] = useState<string>();
   // The composer ring opens the Context lens over the chat it belongs to.
   // Switching chats closes it, so a stale chat's windows are never shown.
   const [contextLensFor, setContextLensFor] = useState<string | null>(null);
   useEffect(() => setContextLensFor(null), [selectedSessionId]);
-  useEffect(() => {
-    if (cloneFocus && selectedSessionId === cloneFocus) {
-      dispatchDock({ type: "open-pane", pane: "browser" });
-      setCloneFocus(undefined);
-    }
-  }, [cloneFocus, selectedSessionId, dispatchDock]);
 
   // The PRs this chat opened (or had attached), kept live after the turn ends.
   // The shelf above the composer and the Work pane in the dock say how those
@@ -1121,8 +1104,8 @@ function AppContent() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
-    // One browser: your own pages, and the throwaway copy an agent asks for.
-    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: cloneAlert || undefined },
+    // One browser: your own pages.
+    { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Agents", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
@@ -3592,7 +3575,6 @@ function AppContent() {
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   const codexUpdateOverlays = <>
-    <CloneRequestInbox sessionLabels={Object.fromEntries(state.sessions.map(item => [item.id, item.label]))} onOpen={id => { openSession(id); setCloneFocus(id); }} onError={setError} />
     {!error && codexUpdateSuccess && <TransientAlert title="Codex updated" message="Bridge refreshed the Codex runtime." variant="success" onDismiss={() => setCodexUpdateSuccess(false)} />}
     {!error && !codexUpdateSuccess && codexUpdateNotice && latestCodex && codexVersion && <TransientAlert
       title="Codex update available"
@@ -4207,9 +4189,6 @@ function AppContent() {
               if (pane === "browser") return <BrowserPane
                 key={session.id}
                 sessionId={session.id}
-                agentLabel={harnessLabel(session.harness)}
-                onSupervisionChange={reportCloneSupervision}
-                onError={setError}
                 visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !contextLensFor && !githubLinkChoice && !recallOpen && !navOpen}
                 onAttachSelection={attachBrowserSelection}
                 onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
