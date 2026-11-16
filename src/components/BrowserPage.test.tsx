@@ -6,7 +6,6 @@ import { BrowserPage } from "./BrowserPage";
 
 const harness = vi.hoisted(() => ({
   commands: [] as Array<{ command: string; args: Record<string, unknown> }>,
-  observers: { resize: [] as Array<() => void> },
 }));
 vi.mock("../browserRuntime", () => ({
   hasNativeBrowser: () => true,
@@ -45,11 +44,6 @@ const render = (initialUrl = "https://example.com/") => {
   act(() => { root.render(page); });
 };
 /** Point the rendered viewport host at a fake DOM rect and fire the observer. */
-/** Point the rendered viewport host at a fake DOM rect and fire the observer.
- * The coalesced layout task settles in microtasks plus a timer, so flush hard. */
-const flushLayout = async () => {
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-};
 const reportHostRect = async (rect: { left: number; top: number; right: number; bottom: number }) => {
   const host = container.querySelector<HTMLElement>("[data-browser-viewport]");
   if (!host) throw new Error("Missing browser viewport host");
@@ -59,7 +53,6 @@ const reportHostRect = async (rect: { left: number; top: number; right: number; 
   const observer = ResizeObserverStub.instances.at(-1);
   if (!observer) throw new Error("Missing resize observer");
   await act(async () => { observer.callback([], observer as unknown as ResizeObserver); });
-  await flushLayout();
 };
 const lastLayout = () => {
   const layout = [...harness.commands].reverse().find(entry => entry.command === "layout");
@@ -67,7 +60,8 @@ const lastLayout = () => {
   return layout.args;
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   vi.stubGlobal("MutationObserver", MutationObserverStub);
   vi.stubGlobal("innerWidth", 800);
@@ -77,7 +71,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  render();
+  await act(async () => render());
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -102,5 +96,25 @@ describe("BrowserPage native viewport bounds", () => {
   it("reports a collapsed pane as invisible instead of a one-pixel view", async () => {
     await reportHostRect({ left: 0, top: 0, right: 0, bottom: 0 });
     expect(lastLayout()).toMatchObject({ x: 0, y: 0, width: 0, height: 0, visible: false });
+  });
+
+  it("keeps the page below its toolbar when the window shrinks", async () => {
+    await reportHostRect({ left: 400, top: 120, right: 800, bottom: 500 });
+    vi.stubGlobal("innerWidth", 600);
+    vi.stubGlobal("innerHeight", 300);
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(lastLayout()).toMatchObject({ x: 400, y: 120, width: 200, height: 180, visible: true });
+  });
+
+  it.each([
+    { left: 850, top: 120, right: 1000, bottom: 500 },
+    { left: 400, top: 650, right: 800, bottom: 900 },
+    { left: -200, top: 120, right: -50, bottom: 500 },
+    { left: 400, top: -200, right: 800, bottom: -50 },
+    { left: 400, top: 120, right: 400.5, bottom: 500 },
+    { left: 400, top: 120, right: 800, bottom: 120.5 },
+  ])("hides fully offscreen or subpixel bounds: %j", async rect => {
+    await reportHostRect(rect);
+    expect(lastLayout().visible).toBe(false);
   });
 });

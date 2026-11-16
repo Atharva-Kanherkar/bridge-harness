@@ -21,6 +21,7 @@ const MAX_URL: usize = 8192;
 /// legacy client and serve degraded basic-HTML pages (Google's no-JS
 /// homepage, stripped layouts). Claim the Safari identity WebKit actually is,
 /// so pages render as they do in Safari.
+#[cfg(target_os = "macos")]
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 type TabKey = (String, String);
 type Result<T> = std::result::Result<T, String>;
@@ -259,7 +260,6 @@ async fn create(caller: Webview, session_id: String, tab_id: String, url: String
         let popup = state.clone();
         let builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
             .initialization_script(PAGE_SCRIPT)
-            .user_agent(BROWSER_USER_AGENT)
             .on_navigation(allowed_url)
             .on_document_title_changed(move |_, title| {
                 if let Ok(mut state) = titled.lock() {
@@ -324,6 +324,8 @@ async fn create(caller: Webview, session_id: String, tab_id: String, url: String
             // Downloads have no destination chooser in this surface yet. Never
             // allow a page to write an unsolicited download to a default path.
             .on_download(|_, _| false);
+        #[cfg(target_os = "macos")]
+        let builder = builder.user_agent(BROWSER_USER_AGENT);
         let result = app
             .get_window("main")
             .ok_or_else(|| "Bridge window is unavailable".to_string())
@@ -487,9 +489,8 @@ async fn layout(
     let registry = caller.state::<Registry>().inner().clone();
     let app = caller.app_handle().clone();
     worker(move || {
-        // The Bridge window is the only coordinate space a child view may
-        // paint in. Clamp to it so a stale or corrupt frontend rect can never
-        // push the page over app chrome or off the window edge.
+        // The window may have shrunk since the DOM measured the host. Clip
+        // overflow without moving the page left/up over app chrome.
         let window = app
             .get_window("main")
             .ok_or_else(|| "Bridge window is unavailable".to_string())?;
@@ -516,9 +517,9 @@ async fn layout(
     .await
 }
 
-/// Clamp a viewport rect into the Bridge window. Returns the position and
-/// size the child view may paint at; a size that collapses below a pixel is
-/// reported via `paintable` so the caller hides the view instead.
+/// Intersect a viewport rect with the Bridge window. A stale rect must never
+/// move inward over chrome or bring a fully offscreen page back into view.
+/// Intersections below a pixel are unpaintable, so the caller hides the view.
 fn clamp_layout_bounds(
     x: f64,
     y: f64,
@@ -527,11 +528,13 @@ fn clamp_layout_bounds(
     window_width: f64,
     window_height: f64,
 ) -> (f64, f64, f64, f64, bool) {
-    let width = width.min(window_width.max(0.0));
-    let height = height.min(window_height.max(0.0));
-    let x = x.clamp(0.0, (window_width - width).max(0.0));
-    let y = y.clamp(0.0, (window_height - height).max(0.0));
-    (x, y, width, height, width >= 1.0 && height >= 1.0)
+    let left = x.clamp(0.0, window_width.max(0.0));
+    let top = y.clamp(0.0, window_height.max(0.0));
+    let right = (x + width).clamp(0.0, window_width.max(0.0));
+    let bottom = (y + height).clamp(0.0, window_height.max(0.0));
+    let width = (right - left).max(0.0);
+    let height = (bottom - top).max(0.0);
+    (left, top, width, height, width >= 1.0 && height >= 1.0)
 }
 
 fn valid_selection(selection: &Selection) -> bool {
@@ -817,30 +820,52 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 mod tests {
     use super::*;
     #[test]
-    fn oversized_layout_bounds_are_refused_instead_of_painting_over_chrome() {
-        // A stale 1266-wide rect on a 854-wide window: shrink to the window,
-        // never paint past its edge.
-        let (x, y, width, height, paintable) =
-            clamp_layout_bounds(95.0, 15.0, 759.0, 990.0, 854.0, 1005.0);
-        assert!(paintable);
-        assert_eq!(x, 95.0);
-        assert_eq!(y, 15.0);
-        assert_eq!(width, 759.0);
-        assert_eq!(height, 990.0);
-        let (.., height, paintable) =
-            clamp_layout_bounds(95.0, 15.0, 759.0, 990.0, 854.0, 100.0);
-        assert!(paintable);
-        assert_eq!(height, 100.0);
-        let (x, y, width, height, paintable) =
-            clamp_layout_bounds(-50.0, -50.0, 1266.0, 1131.0, 854.0, 1005.0);
-        assert!(paintable);
-        assert_eq!((x, y, width, height), (0.0, 0.0, 854.0, 1005.0));
-        // Collapsed to nothing: report unpaintable so the caller hides.
-        let (_, _, _, _, paintable) =
-            clamp_layout_bounds(0.0, 0.0, 440.0, 0.5, 854.0, 1005.0);
-        assert!(!paintable);
+    fn layout_bounds_clip_overflow_without_moving_the_page_over_chrome() {
+        let cases = [
+            ((95.0, 15.0, 759.0, 990.0), (95.0, 15.0, 759.0, 990.0)),
+            ((800.0, 100.0, 440.0, 500.0), (800.0, 100.0, 54.0, 500.0)),
+            ((3.0, 115.0, 1378.0, 747.0), (3.0, 115.0, 851.0, 747.0)),
+            ((95.0, 900.0, 759.0, 990.0), (95.0, 900.0, 759.0, 105.0)),
+            ((-50.0, 15.0, 200.0, 100.0), (0.0, 15.0, 150.0, 100.0)),
+            ((95.0, -50.0, 200.0, 100.0), (95.0, 0.0, 200.0, 50.0)),
+            ((-50.0, -50.0, 1266.0, 1131.0), (0.0, 0.0, 854.0, 1005.0)),
+        ];
+        for ((x, y, width, height), expected) in cases {
+            let (left, top, width, height, paintable) =
+                clamp_layout_bounds(x, y, width, height, 854.0, 1005.0);
+            assert!(paintable);
+            assert_eq!((left, top, width, height), expected);
+        }
+        // A window shrink between DOM measurement and native execution must
+        // leave the native page below the existing toolbar, never move it up.
+        assert_eq!(
+            clamp_layout_bounds(3.0, 115.0, 1378.0, 747.0, 1000.0, 600.0),
+            (3.0, 115.0, 997.0, 485.0, true)
+        );
     }
     #[test]
+    fn offscreen_and_subpixel_layout_bounds_stay_hidden() {
+        for (x, y, width, height) in [
+            (900.0, 100.0, 440.0, 500.0),
+            (100.0, 1100.0, 440.0, 500.0),
+            (-500.0, 100.0, 440.0, 500.0),
+            (100.0, -600.0, 440.0, 500.0),
+            (854.0, 100.0, 440.0, 500.0),
+            (100.0, 1005.0, 440.0, 500.0),
+            (0.0, 0.0, 440.0, 0.5),
+            (0.0, 0.0, 0.5, 500.0),
+            (0.0, 0.0, 0.0, 0.0),
+        ] {
+            let (.., paintable) = clamp_layout_bounds(x, y, width, height, 854.0, 1005.0);
+            assert!(!paintable, "{x}, {y}, {width}, {height}");
+        }
+        for (width, height) in [(0.0, 600.0), (800.0, 0.0), (0.5, 600.0), (800.0, 0.5)] {
+            let (.., paintable) = clamp_layout_bounds(0.0, 0.0, 440.0, 500.0, width, height);
+            assert!(!paintable);
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
     fn browser_user_agent_matches_webkit_safari_identity() {
         // The tokens sites gate on: a WebKit build, a Safari version, and the
         // Safari marker. Without them, unknown agents get legacy basic HTML.
