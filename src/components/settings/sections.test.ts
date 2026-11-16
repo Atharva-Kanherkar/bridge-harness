@@ -10,7 +10,8 @@ describe("settings destinations", () => {
     expect(primarySection("menuBar")).toBe("general");
     expect(primarySection("notifications")).toBe("general");
     expect(primarySection("prompts")).toBe("codingAgents");
-    expect(primarySection("clones")).toBe("permissions");
+    // Browser clones are off, so they are not a settings destination.
+    expect(ALL_SECTIONS as string[]).not.toContain("clones");
     expect(primarySection("keys")).toBe("permissions");
     expect(primarySection("import")).toBe("data");
   });

@@ -583,8 +583,8 @@ describe("the dock in the session view", () => {
     expect(dockAside()!.querySelector('[aria-label="Browser pages"]')).not.toBeNull();
   });
 
-  // Contract: testing/feat-unify-browser-pane.md §2.
-  it("shows a requested clone inside the one Browser pane and keeps it across pane switches", async () => {
+  // Contract: testing/feat-plain-browser-only.md. Browser clones are off.
+  it("shows the plain browser in the Browser pane and keeps it across pane switches", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(container.querySelector('button[aria-label="Session actions"]')!);
@@ -594,19 +594,20 @@ describe("the dock in the session view", () => {
 
     const browserTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Browser")!;
     expect(browserTab.getAttribute("aria-selected")).toBe("true");
-    const surface = () => dockAside()!.querySelector("[data-clone-viewport]");
-    const before = surface();
+    const pages = () => dockAside()!.querySelector('[aria-label="Browser pages"]');
+    const before = pages();
     expect(before).not.toBeNull();
+    expect(dockAside()!.querySelector("[data-clone-viewport]")).toBeNull();
+    expect(dockAside()!.querySelector('button[aria-label="Open a throwaway copy of a site"]')).toBeNull();
 
     await key({ ...chord, code: "Digit1", key: "1" });
-    expect(surface()).toBe(before);
-    expect(before!.closest(".hidden")).not.toBeNull();
+    expect(pages()).toBe(before);
     await key({ ...chord, code: "Digit4", key: "4" });
-    expect(surface()).toBe(before);
-    expect(before!.closest(".hidden")).toBeNull();
+    expect(pages()).toBe(before);
+    expect(dockAside()!.querySelector("[data-clone-viewport]")).toBeNull();
   });
 
-  it("gives direct chats the same Browser pane, clone included", async () => {
+  it("gives direct chats the same plain Browser pane", async () => {
     await mountApp();
     await act(async () => {
       await bridgeApi.createChat("codex", null, "Browser scratch");
@@ -616,22 +617,19 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.querySelector("[data-clone-viewport]")).not.toBeNull();
+    expect(dockAside()!.querySelector('[aria-label="Browser pages"]')).not.toBeNull();
+    expect(dockAside()!.querySelector("[data-clone-viewport]")).toBeNull();
   });
 
-  it("shows the attention dot on the Browser tab once it is opened, while another pane is active", async () => {
+  it("never marks the Browser tab for attention and mounts no clone request card", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
-    // A pane that was never opened is not polling, so it cannot claim attention.
-    expect(container.querySelector('[data-testid="dock-alert-browser"]')).toBeNull();
-
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(3);
     await key({ ...chord, code: "Digit1", key: "1" });
-    // The mock clone starts on a login wall, i.e. waiting_for_you.
-    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="dock-alert-overflow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/throwaway|browser clone|Browser copies/i);
   });
 
   // Contract: testing/feat-dock-terminal.md §4.

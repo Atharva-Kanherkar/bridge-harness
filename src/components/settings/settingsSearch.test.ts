@@ -47,9 +47,15 @@ describe("STATIC_SETTINGS_ROWS", () => {
   // nine pages, so every page has to contribute at least one row to it.
   it("covers every page that has a fixed row", () => {
     const covered = new Set(STATIC_SETTINGS_ROWS.map(row => row.section));
-    for (const section of ["appearance", "permissions", "composer", "agents", "models", "prompts", "harnesses", "clones", "work", "import"] as const) {
+    for (const section of ["appearance", "permissions", "composer", "agents", "models", "prompts", "harnesses", "work", "import"] as const) {
       expect(covered.has(section)).toBe(true);
     }
+  });
+
+  // Contract: testing/feat-plain-browser-only.md. Browser clones are off.
+  it("offers no browser clone rows", () => {
+    expect(STATIC_SETTINGS_ROWS.some(row => (row.section as string) === "clones")).toBe(false);
+    for (const query of ["clone", "cookies", "browser copies"]) expect(filterSettingsRows(query, STATIC_SETTINGS_ROWS)).toEqual([]);
   });
 
   it("finds the inline suggestion model on Composer, not on Models", () => {
