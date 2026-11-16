@@ -74,3 +74,26 @@ the harness's own MCP client with `mcp_call`, not through a hidden model turn.
 - `bun run build` and `bun run test` before the PR.
 - Live Slack send through the running app is a manual check; report it as not
   run if no Slack connector is available.
+
+## Review fixes
+
+- **P1, the Outgoing resolver must reach the signed-in connector.** A fresh
+  Slack draft is resolved by a read-only model turn (`slack::resolve_outgoing`)
+  before any approval exists. That launch loads claude.ai connectors natively
+  (no explicit copy, not `strictMcpConfig`, no discovery), exactly like a
+  direct call, while its gate stays the read-only scope on the one Slack
+  server: reads allowed, every write and every other server denied. Inbox
+  ingress, render and reply launches are unchanged.
+  Tests: a native read policy keeps the read-only decisions; the resolver's
+  policy is native, read-only, scoped to the Slack server, carries no action
+  and is not a direct call; sidecar options for a native read launch (not
+  strict, no claude.ai copy, read allowed, send and other servers denied);
+  launch discovery is skipped for it; a flow test drives `send::run` from a
+  Slack draft through the real resolution parser, approval, claim, Slack
+  authorization, the direct-call policy, the result decoder and the receipt
+  check to a sent message, and a failed resolution never offers approval or
+  executes. Live and read-only: the resolver's launch reaches the real Slack
+  connector through a model turn.
+- **P2, the Clippy ratchet does not rise.** The ledger write handles a poisoned
+  lock and a failed insert explicitly; neither changes the outcome of a call
+  that already ran. Verified with `node scripts/clippy-ratchet.mjs`.
