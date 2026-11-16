@@ -29,7 +29,8 @@ name = "bridge_deck_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+# 2.7 resolves sidecar output paths for both Cargo build directory layouts.
+tauri-build = { version = "2.7", features = [] }
 serde_json = { workspace = true }
 
 [dependencies]

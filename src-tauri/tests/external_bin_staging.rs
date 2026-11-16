@@ -6,7 +6,7 @@
 //! `bridged` placeholder is the one that is missing.
 
 use serde_json::Value;
-use std::path::Path;
+use std::{ffi::OsStr, path::Path};
 
 fn declared_external_bins() -> Vec<String> {
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
@@ -29,6 +29,13 @@ fn declared_external_bins() -> Vec<String> {
 fn every_declared_external_bin_is_staged_for_this_target() {
     let target = env!("TAURI_ENV_TARGET_TRIPLE");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Cargo 1.100 also relocates test executables under build/<package>/...,
+    // so their location no longer identifies the profile via two parents.
+    let profile = Path::new(env!("OUT_DIR"))
+        .ancestors()
+        .find(|path| path.file_name() == Some(OsStr::new("build")))
+        .and_then(Path::parent)
+        .expect("Cargo OUT_DIR lives under the profile's build directory");
     let declared = declared_external_bins();
     assert!(
         declared.len() > 1,
@@ -37,10 +44,16 @@ fn every_declared_external_bin_is_staged_for_this_target() {
     for entry in declared {
         let staged = root.join(format!("{entry}-{target}"));
         assert!(
-            staged.exists(),
+            staged.is_file(),
             "{} was declared in externalBin but nothing staged {}",
             entry,
             staged.display()
+        );
+        let copied = profile.join(Path::new(&entry).file_name().expect("sidecar has a filename"));
+        assert!(
+            copied.is_file(),
+            "Tauri must copy {entry} beside app binaries at {}, not inside Cargo's build directory",
+            copied.display()
         );
     }
 }
