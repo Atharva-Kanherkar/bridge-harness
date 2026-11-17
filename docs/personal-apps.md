@@ -61,6 +61,31 @@ Migration 82 adds draft/chat bindings; optional sample arguments are omitted
 from old manifests so existing hashes remain unchanged. Protocol 1.39 adds
 `apps/get_personal_app_draft` and `apps/preview_personal_app_tool`.
 
+## Opening and using a locked app
+
+A top-level chat on any of the four agents opens a locked app with
+`bridge.apps_open({app_id, prefill?})`. The tool's description lists the
+person's locked apps (name, id and intent, at most 20) as of the chat's launch.
+Opening binds the chat to the app's latest locked version and content hash
+(migration 83) after checking the connection has the server connected.
+
+The card shows the stored, hash-checked view with the prefill as its input.
+Every call from the view comes back to core, which rechecks the chat, the open
+and the hash:
+
+- **Allowlisted read:** goes through the router: access mode and current annotations.
+- **Allowlisted write:** never runs on its first call.
+  - Core canonicalizes the arguments once and returns them with a single-use token (600 s, one pending per open).
+  - The card shows that exact JSON in the approval sheet.
+  - Send claims the token, and core sends the arguments it stored, so the view cannot change them after approval.
+  - Claude connections send through a one-shot exact-action launch, whose sidecar and SDK gate each check deep equality. Codex connections use `mcpServer/tool/call`.
+- **Anything else:** refused.
+
+Writes always ask, in every access mode, as Outgoing does. Each call leaves an
+`events` row (`personal_app.call.read|write|refused`) without arguments or
+results. Protocol 1.41 adds `apps/get_personal_app_open` and
+`apps/call_personal_app_tool`.
+
 ## Verification
 
 Focused tests are listed in `testing/feat-personal-app-drafts.md`. The real-browser

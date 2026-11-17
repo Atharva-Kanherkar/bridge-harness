@@ -225,6 +225,12 @@ pub fn launcher(core: &Arc<BridgeCore>) -> impl Fn(&Key) -> Result<Launched, Bri
 }
 
 fn launch(core: &Arc<BridgeCore>, key: &Key) -> Result<Launched, BridgeError> {
+    launch_with(core, key, None)
+}
+
+/// A launch of `key`'s connection under `policy` instead of the app runtime's
+/// own: a Claude one-shot approved write. Same account, folder and settings.
+pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRuntimePolicy>) -> Result<Launched, BridgeError> {
     let account = {
         let db = core.try_db()?;
         key.account
@@ -258,16 +264,17 @@ fn launch(core: &Arc<BridgeCore>, key: &Key) -> Result<Launched, BridgeError> {
             scratch.to_string_lossy().to_string()
         }
     };
-    let policy = match key.harness.as_str() {
-        "claude" => Some(
+    let policy = match (key.harness.as_str(), policy) {
+        ("claude", Some(policy)) => Some(policy),
+        ("claude", None) => Some(
             BriefingRuntimePolicy::compile_app_runtime(
                 key.server.clone(),
                 crate::connector_runs::run_limits(crate::connector_runs::RunKind::Ingress),
             )
             .map_err(|error| BridgeError::Invalid(error.reason()))?,
         ),
-        "codex" => None,
-        other => {
+        ("codex", None) => None,
+        (other, _) => {
             return Err(BridgeError::Invalid(format!(
                 "{} cannot run personal apps directly",
                 super::router::agent_label(other)

@@ -702,6 +702,14 @@ pub fn get_personal_app_draft(core: &Arc<BridgeCore>, params: &wire::GetPersonal
     crate::apps::draft::get(&*core.try_db()?, params, chrono::Utc::now())
 }
 
+pub fn get_personal_app_open(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppOpenParams) -> Result<wire::PersonalAppOpen, BridgeError> {
+    crate::apps::open::get(&*core.try_db()?, params)
+}
+
+pub fn call_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::CallPersonalAppToolParams) -> Result<wire::PersonalAppCallResult, BridgeError> {
+    crate::apps::open::call(core, params)
+}
+
 pub fn preview_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::PreviewPersonalAppToolParams) -> Result<Value, BridgeError> {
     crate::apps::draft::preview(core, params)
 }

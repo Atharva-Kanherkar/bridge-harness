@@ -145,7 +145,7 @@ impl Access {
                 // Another chat's history is the person's to share with the
                 // chat they are talking to, not with a worker it spawned.
                 .chain(crate::history_tools::TOOLS.iter())
-                .chain(std::iter::once(&"apps_draft"))
+                .chain(["apps_draft", "apps_open"].iter())
                 .copied()
                 .collect(),
             Access::ReadOnly => READ_TOOLS.iter().chain(memory).copied().collect(),
@@ -497,13 +497,17 @@ fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) 
         let label = if access == Access::Write { "write" } else { "read" };
         let tools = match core.try_db().and_then(|db| {
             let mut tools = access.tools();
-            if !crate::apps::draft::eligible(&db, session_id)? { tools.retain(|name| *name != "apps_draft"); }
-            crate::apps::filter_tools(&db, tools)
+            if !crate::apps::draft::eligible(&db, session_id)? { tools.retain(|name| !name.starts_with("apps_")); }
+            let tools = crate::apps::filter_tools(&db, tools)?;
+            // The locked apps `apps_open` can open, for its description.
+            let apps = if tools.contains(&"apps_open") { crate::apps::open::listing(&db)? } else { Vec::new() };
+            Ok((tools, apps))
         }) {
-            Ok(tools) => tools,
+            Ok(listed) => listed,
             Err(error) => return reply(500, json!({"error": error.to_string()})),
         };
-        return reply(200, json!({"access": label, "tools": tools}));
+        let (tools, apps) = tools;
+        return reply(200, json!({"access": label, "tools": tools, "personalApps": apps}));
     }
     // An app that is off refuses its tools at once, even in a chat that
     // listed them before the switch: the list is read when a chat launches.
@@ -525,6 +529,12 @@ fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) 
     if tool == NOTIFY_USER {
         let (status, value) = notify_user(&core, access, session_id, &args);
         return reply(status, value);
+    }
+    if tool == "apps_open" {
+        return match crate::apps::open::create(core, session_id, args) {
+            Ok(result) => reply(200, result),
+            Err(error) => reply(400, json!({"error":error.to_string()})),
+        };
     }
     if tool == "apps_draft" {
         return match crate::apps::draft::create(core, session_id, args) {
@@ -908,6 +918,10 @@ mod tests {
             let (status,body)=serve_for(&core,session,"tools",b"");assert_eq!(status,200);
             let tools:Value=serde_json::from_str(&body).unwrap();
             assert_eq!(tools["tools"].as_array().unwrap().iter().any(|tool| tool=="apps_draft"),listed,"{session}");
+            assert_eq!(tools["tools"].as_array().unwrap().iter().any(|tool| tool=="apps_open"),listed,"{session}");
+            assert!(tools["personalApps"].is_array());
+            let (status,body)=serve_for(&core,session,"apps_open",br#"{"app_id":"nothing-here"}"#);assert_eq!(status,400);
+            assert!(body.contains(if listed {"no personal app"} else {"top-level chat"}),"{session}: {body}");
             let (status,body)=serve_for(&core,session,"apps_draft",b"{}");assert_eq!(status,400);
             assert!(body.contains(if listed {"Invalid app draft arguments"} else {"top-level chat in Claude Code, Codex, OpenCode or Cursor"}),"{session}: {body}");
         }

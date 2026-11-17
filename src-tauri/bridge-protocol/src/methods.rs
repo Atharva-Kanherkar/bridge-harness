@@ -239,6 +239,8 @@ methods![
     (GetPersonalApp, "apps", "get_personal_app"),
     (GetPersonalAppDraft, "apps", "get_personal_app_draft"),
     (PreviewPersonalAppTool, "apps", "preview_personal_app_tool"),
+    (GetPersonalAppOpen, "apps", "get_personal_app_open"),
+    (CallPersonalAppTool, "apps", "call_personal_app_tool"),
     (LockPersonalApp, "apps", "lock_personal_app"),
     (DeletePersonalApp, "apps", "delete_personal_app"),
     // trails: one page per piece of work, joining chats, notes, PRs and drafts

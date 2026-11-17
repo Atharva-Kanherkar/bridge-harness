@@ -1731,7 +1731,7 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
-/// Schema 83: one row per imported native session, so the same Claude or
+/// Schema 84: one row per imported native session, so the same Claude or
 /// Codex session reached through several tools lands once, and every tool
 /// that pointed at an imported chat.
 pub(crate) fn install_import_native_identity(
