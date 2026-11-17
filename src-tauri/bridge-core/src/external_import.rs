@@ -1143,6 +1143,42 @@ fn entry_token_estimate(message: &Value) -> Option<i64> {
     (chars > 0).then(|| (chars as i64 + 3) / 4)
 }
 
+/// The Bridge chat an imported child belongs under: the parent written in
+/// this import, or, when the parent was skipped as already imported or
+/// changed, the chat that parent's native session already became.
+fn imported_parent(
+    transaction: &Transaction<'_>,
+    payload: &Value,
+) -> Result<Option<(String, i64)>, BridgeError> {
+    let lookup = |id: &str| {
+        transaction
+            .query_row(
+                "SELECT id, COALESCE(depth,0) FROM sessions WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+    };
+    if let Some(found) = payload_str(payload, "parentCandidateId")
+        .map(lookup)
+        .transpose()?
+        .flatten()
+    {
+        return Ok(Some(found));
+    }
+    let Some(native_key) = payload_str(payload, "parentNativeKey") else {
+        return Ok(None);
+    };
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT session_id FROM import_native_sessions WHERE native_key=?1",
+            params![native_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(existing.as_deref().map(lookup).transpose()?.flatten())
+}
+
 fn write_conversation(
     transaction: &Transaction<'_>,
     import_id: &str,
@@ -1174,16 +1210,7 @@ fn write_conversation(
             .optional()?,
         None => None,
     };
-    let parent: Option<(String, i64)> = match payload_str(payload, "parentCandidateId") {
-        Some(parent_id) => transaction
-            .query_row(
-                "SELECT id, COALESCE(depth,0) FROM sessions WHERE id=?1",
-                params![parent_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?,
-        None => None,
-    };
+    let parent = imported_parent(transaction, payload)?;
     let archived_at = payload
         .get("archived")
         .and_then(Value::as_bool)

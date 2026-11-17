@@ -810,3 +810,44 @@ fn archiving_a_workspace_keeps_its_imported_chats_as_history() {
     assert_eq!(count(&db, "SELECT COUNT(*) FROM session_entries"), rich_entries().len() as i64, "its history is untouched");
     assert_eq!(count(&db, "SELECT COUNT(*) FROM import_project_hints WHERE matched_workspace_id IS NOT NULL"), 0);
 }
+
+fn parent_of(db: &Connection, title: &str) -> (Option<String>, i64) {
+    db.query_row("SELECT parent_session_id, COALESCE(depth,0) FROM sessions WHERE title=?1", params![title], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+}
+
+#[test]
+fn a_child_of_a_skipped_parent_attaches_to_the_existing_parent() {
+    // (a) The parent came over through Claude Code; Conductor later brings the
+    // same parent (a duplicate) and a new child.
+    let db = database();
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("main", "claude", Some("main-session"), rich_entries()));
+    assert_eq!(import(&db, vec![claude]).imported, 1);
+    let existing: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let mut conductor = TransferBundle::new(source("conductor"));
+    conductor.chats.push(chat("ws-main", "claude", Some("main-session"), rich_entries()));
+    let mut child = chat("kid", "claude", Some("main-session/agent-1"), vec![entry("k", BundleEntryKind::UserMessage, "late child")]);
+    child.parent_chat_key = Some("ws-main".into());
+    conductor.chats.push(child);
+    let commit = import(&db, vec![conductor]);
+    assert_eq!((commit.imported, commit.skipped), (1, 1));
+    assert_eq!(parent_of(&db, "late child"), (Some(existing.clone()), 1));
+
+    // (b) The parent grew, so it is a changed source and skipped by default,
+    // and a new child arrives with it.
+    let db = database();
+    let mut first = TransferBundle::new(source("claude_code"));
+    first.chats.push(chat("main", "claude", Some("grown"), rich_entries()));
+    import(&db, vec![first]);
+    let existing: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let mut grown = TransferBundle::new(source("claude_code"));
+    let mut entries = rich_entries();
+    entries.push(entry("more", BundleEntryKind::UserMessage, "one more turn"));
+    grown.chats.push(chat("main", "claude", Some("grown"), entries));
+    let mut child = chat("kid", "claude", Some("grown/agent-2"), vec![entry("k", BundleEntryKind::UserMessage, "child of a grown parent")]);
+    child.parent_chat_key = Some("main".into());
+    grown.chats.push(child);
+    let commit = import(&db, vec![grown]);
+    assert_eq!((commit.imported, commit.changed), (1, 1));
+    assert_eq!(parent_of(&db, "child of a grown parent"), (Some(existing), 1));
+}

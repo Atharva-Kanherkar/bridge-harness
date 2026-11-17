@@ -1071,6 +1071,9 @@ fn lower_chat(
         "effort": chat.effort,
         "agentRole": chat.agent_role,
         "parentCandidateId": parent_candidate,
+        // When the parent is skipped (already imported, or changed), the
+        // writer finds its existing chat through its native identity.
+        "parentNativeKey": resolved_chat.parent_identity,
         "pullRequests": chat.pull_requests,
         "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|(tool, source_ref)| json!({
             "tool": tool,
