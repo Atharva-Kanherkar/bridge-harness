@@ -648,3 +648,96 @@ fn a_native_chat_with_no_entries_does_not_beat_a_tool_copy_with_some() {
     b.chats.push(chat("w", "claude", Some("y"), rich_entries()));
     assert_eq!(resolve(vec![a, b]).unwrap().chats[0].chat.entries.len(), rich_entries().len());
 }
+
+#[test]
+fn a_merged_chat_keeps_the_earliest_start_the_latest_update_and_any_flag() {
+    let mut a = TransferBundle::new(source("claude_code"));
+    let mut first = chat("s", "claude", Some("same"), rich_entries());
+    first.created_at = Some("2026-11-02T00:00:00Z".into());
+    first.updated_at = Some("2026-11-05T00:00:00Z".into());
+    first.cwd = None;
+    first.model = None;
+    a.chats.push(first);
+    let mut b = TransferBundle::new(source("conductor"));
+    let mut second = chat("w", "claude", Some("same"), Vec::new());
+    second.entries_source = EntriesSource::None;
+    second.created_at = Some("2026-11-01T00:00:00Z".into());
+    second.updated_at = Some("2026-11-04T00:00:00Z".into());
+    second.archived = true;
+    second.cwd = Some("/from/conductor".into());
+    second.model = Some("from-conductor".into());
+    second.effort = Some("high".into());
+    second.agent_role = Some(AgentRole::Worker);
+    second.pull_requests = vec!["https://github.com/o/r/pull/1".into()];
+    b.chats.push(second);
+    let mut c = TransferBundle::new(source("t3code"));
+    let mut third = chat("t", "claude", Some("same"), Vec::new());
+    third.entries_source = EntriesSource::None;
+    third.created_at = Some("2026-11-03T00:00:00Z".into());
+    third.updated_at = Some("2026-11-09T00:00:00Z".into());
+    third.pinned = true;
+    third.pull_requests = vec!["https://github.com/o/r/pull/1".into(), "https://github.com/o/r/pull/2".into()];
+    c.chats.push(third);
+    let merged = resolve(vec![a, b, c]).unwrap().chats.remove(0).chat;
+    assert_eq!(merged.created_at.as_deref(), Some("2026-11-01T00:00:00Z"));
+    assert_eq!(merged.updated_at.as_deref(), Some("2026-11-09T00:00:00Z"));
+    assert!(merged.archived && merged.pinned);
+    assert_eq!(merged.cwd.as_deref(), Some("/from/conductor"));
+    assert_eq!(merged.model.as_deref(), Some("from-conductor"));
+    assert_eq!(merged.effort.as_deref(), Some("high"));
+    assert_eq!(merged.agent_role, Some(AgentRole::Worker));
+    assert_eq!(merged.pull_requests.len(), 2, "pull requests are unioned without repeats");
+    assert_eq!(merged.entries.len(), rich_entries().len(), "chats with no transcript never replace one that has it");
+    // Flags that are already set stay set.
+    let mut d = TransferBundle::new(source("claude_code"));
+    let mut set = chat("x", "claude", Some("flags"), rich_entries());
+    set.archived = true;
+    set.pinned = true;
+    d.chats.push(set);
+    let mut e = TransferBundle::new(source("conductor"));
+    e.chats.push(chat("y", "claude", Some("flags"), Vec::new()));
+    let kept = resolve(vec![d, e]).unwrap().chats.remove(0).chat;
+    assert!(kept.archived && kept.pinned);
+}
+
+#[test]
+fn a_weaker_title_never_replaces_a_stronger_one_and_a_blank_title_is_ignored() {
+    let titled = |tool: &str, key: &str, title: &str, from: TitleSource| {
+        let mut bundle = TransferBundle::new(source(tool));
+        let mut c = chat(key, "claude", Some("t"), rich_entries());
+        c.title = Some(title.into());
+        c.title_source = from;
+        bundle.chats.push(c);
+        bundle
+    };
+    let first_user = resolve(vec![titled("t3code", "a", "Mine", TitleSource::User), titled("claude_code", "b", "Generated", TitleSource::Native)]).unwrap();
+    assert_eq!(first_user.chats[0].chat.title.as_deref(), Some("Mine"));
+    let user_later = resolve(vec![titled("claude_code", "b", "Generated", TitleSource::Native), titled("t3code", "a", "Mine", TitleSource::User)]).unwrap();
+    assert_eq!(user_later.chats[0].chat.title.as_deref(), Some("Mine"));
+    assert_eq!(user_later.chats[0].chat.title_source, TitleSource::User);
+    let blank = resolve(vec![titled("claude_code", "b", "Generated", TitleSource::Native), titled("t3code", "a", "   ", TitleSource::User)]).unwrap();
+    assert_eq!(blank.chats[0].chat.title.as_deref(), Some("Generated"));
+    let same_rank = resolve(vec![titled("conductor", "c", "First tool", TitleSource::Tool), titled("t3code", "d", "Second tool", TitleSource::Tool)]).unwrap();
+    assert_eq!(same_rank.chats[0].chat.title.as_deref(), Some("First tool"), "on a tie the first source keeps its title");
+}
+
+#[test]
+fn workspaces_and_projects_keep_their_fields_and_link_chats_through_them() {
+    let mut bundle = TransferBundle::new(source("conductor"));
+    bundle.projects.push(BundleProject { key: "repo".into(), name: "billing".into(), repo_root: "/nonexistent/billing".into(), remote_url: Some("git@github.com:o/billing.git".into()) });
+    bundle.workspaces.push(BundleWorkspace { key: "tokyo".into(), project_key: Some("repo".into()), path: "/nonexistent/billing/tokyo".into(), branch: Some("feat/x".into()), base_branch: Some("main".into()), title: Some("Tokyo".into()), archived: false, created_at: None });
+    let mut c = chat("c", "claude", Some("c"), rich_entries());
+    c.workspace_key = Some("tokyo".into());
+    bundle.chats.push(c);
+    let resolved = resolve(vec![bundle]).unwrap();
+    let project = &resolved.projects[0];
+    assert_eq!((project.key.as_str(), project.repo_root.as_str(), project.name.as_str()), ("project:/nonexistent/billing", "/nonexistent/billing", "billing"));
+    let workspace = &resolved.workspaces[0];
+    assert_eq!(workspace.key, "workspace:/nonexistent/billing/tokyo");
+    assert_eq!(workspace.path, "/nonexistent/billing/tokyo");
+    assert_eq!(workspace.project_key.as_deref(), Some("project:/nonexistent/billing"));
+    assert_eq!(workspace.base_branch.as_deref(), Some("main"));
+    assert_eq!(resolved.chats[0].chat.workspace_key.as_deref(), Some("workspace:/nonexistent/billing/tokyo"));
+    let lowered = lower(&resolved);
+    assert_eq!(lowered.candidates[0].normalized_payload["workspacePath"], "/nonexistent/billing/tokyo");
+}
