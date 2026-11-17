@@ -15,7 +15,7 @@ fn disable(webview: &tauri::Webview) -> bool {
     let sent = webview.with_webview(move |platform| {
         // Tauri runs this on the main thread. The pointer belongs to the live
         // webview and is never retained or sent across threads.
-        drop(tx.send(unsafe { disable_peer_connections(platform.inner().cast()) }));
+        tx.send(unsafe { disable_peer_connections(platform.inner().cast()) }).ok();
     });
     sent.is_ok() && rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
 }
