@@ -4,17 +4,14 @@ import type { CallToolResult } from "@modelcontextprotocol/client";
 import { bridgeApi } from "../api";
 import type { ConversationItem } from "../conversation";
 import type { LockPersonalAppResult, PersonalAppDraft } from "../protocol/generated/protocol";
-import { personalAppReference } from "../transcript/personalApp";
+import { personalAppReference, personalAppTool } from "../transcript/personalApp";
+import { connectionLabel, LIVE_READS_UNAVAILABLE } from "./personalAppShared";
+import { PersonalAppOpenCard } from "./PersonalAppOpenCall";
 import { McpAppFrame, useNearViewport } from "../mcp-apps/McpAppFrame";
 import { useDarkTheme } from "./Markdown";
 import { VisualActionsContext } from "./VisualCall";
 import { Button } from "./ui/button";
 
-/** The agent whose MCP connection the app uses, as the person knows it. */
-const CONNECTION_LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", cursor: "Cursor" };
-const connectionLabel = (harness: string) => CONNECTION_LABELS[harness] ?? harness;
-
-const LIVE_READS_UNAVAILABLE = "Live reads run only in the Bridge Mac app, where a preview cannot reach the network. Writes still show what would be sent.";
 
 function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: string; draftId: string; contentHash: string; readOnly: boolean }) {
   const [draft, setDraft] = useState<PersonalAppDraft>();
@@ -96,9 +93,16 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
   </div>;
 }
 
+/** A personal-app call in the transcript: a draft's preview or an opened app. */
 export function PersonalAppDraftCall({ item, sessionId, readOnly = false }: { item: ConversationItem; sessionId?: string; readOnly?: boolean }) {
+  const opening = personalAppTool(item) === "open";
   const reference = personalAppReference(item);
-  if (!sessionId) return <p className="py-2 text-xs text-muted-foreground">Open the original chat to view this app preview.</p>;
-  if (!reference) return <div className="px-1.5 py-2 text-xs text-muted-foreground">{item.status === "inProgress" ? "Drafting an app…" : "App not drafted. The reason went back to the chat."}</div>;
-  return <DraftCard key={`${sessionId}:${reference.draftId}:${reference.contentHash}`} sessionId={sessionId} {...reference} readOnly={readOnly} />;
+  if (!sessionId) return <p className="py-2 text-xs text-muted-foreground">Open the original chat to view this app.</p>;
+  if (!reference) {
+    const waiting = opening ? "Opening an app…" : "Drafting an app…";
+    const failed = opening ? "App not opened. The reason went back to the chat." : "App not drafted. The reason went back to the chat.";
+    return <div className="px-1.5 py-2 text-xs text-muted-foreground">{item.status === "inProgress" ? waiting : failed}</div>;
+  }
+  if (reference.kind === "open") return <PersonalAppOpenCard key={`${sessionId}:${reference.openId}:${reference.contentHash}`} sessionId={sessionId} openId={reference.openId} contentHash={reference.contentHash} readOnly={readOnly} />;
+  return <DraftCard key={`${sessionId}:${reference.draftId}:${reference.contentHash}`} sessionId={sessionId} draftId={reference.draftId} contentHash={reference.contentHash} readOnly={readOnly} />;
 }

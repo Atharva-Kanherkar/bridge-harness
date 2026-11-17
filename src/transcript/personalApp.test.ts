@@ -8,6 +8,7 @@ import { asWireKind } from "./wire";
 import type { AgentEvent } from "../types";
 const hash = `sha256:${"b".repeat(64)}`;
 const answer = { draftId: "draft", contentHash: hash };
+const reference = { kind: "draft", ...answer };
 const row = (data: Record<string, unknown>, status = "completed"): ConversationItem => ({ key: JSON.stringify(data), type: "activity", eventId: 1, sequence: 1, turn: 1, text: "", status, data });
 
 describe("personal app draft transcript", () => {
@@ -16,13 +17,13 @@ describe("personal app draft transcript", () => {
       { name: "mcp__bridge__apps_draft", aggregatedOutput: JSON.stringify(answer) },
       { type: "mcpToolCall", server: "bridge", tool: "apps_draft", result: { structuredContent: answer } },
       { tool: "bridge_apps_draft", state: { output: JSON.stringify(answer) } },
-    ]) { expect(personalAppReference(row(data))).toEqual(answer); }
+    ]) { expect(personalAppReference(row(data))).toEqual(reference); }
     const acp = (title: string, update: Record<string, unknown>): ConversationItem => ({ ...row({ update }), title });
     for (const update of [
       { sessionUpdate: "tool_call_update", status: "completed", rawOutput: answer },
       { sessionUpdate: "tool_call_update", status: "completed", content: [{ type: "content", content: { type: "text", text: JSON.stringify(answer) } }] },
       { sessionUpdate: "tool_call_update", rawOutput: { content: [{ type: "text", text: JSON.stringify(answer) }] } },
-    ]) { expect(personalAppReference(acp("bridge: apps_draft", update))).toEqual(answer); }
+    ]) { expect(personalAppReference(acp("bridge: apps_draft", update))).toEqual(reference); }
     expect(isPersonalAppItem(acp("bridge: apps_draft", {}))).toBe(true);
     expect(isPersonalAppItem(acp("railway: apps_draft", {}))).toBe(false);
     expect(isPersonalAppItem(acp("Run apps_draft", {}))).toBe(false);
@@ -58,9 +59,24 @@ describe("personal app draft transcript", () => {
       const done = live(2, "tool.completed", { status: "completed", data: completion });
       const [item] = reduceTranscript([start, done].map(normalizeAgentEvent));
       expect(isPersonalAppItem(item)).toBe(true);
-      expect(personalAppReference(item)).toEqual(answer);
+      expect(personalAppReference(item)).toEqual(reference);
     }
     const [unfinished] = reduceTranscript([start].map(normalizeAgentEvent));
     expect(personalAppReference(unfinished)).toBeUndefined();
+  });
+  it("recognizes apps_open in every agent's shape and reads only the open's identity", () => {
+    const opened = { openId: "open-1", contentHash: hash, appId: "slack-dm" };
+    const expected = { kind: "open", openId: "open-1", contentHash: hash };
+    for (const data of [
+      { name: "mcp__bridge__apps_open", aggregatedOutput: JSON.stringify(opened) },
+      { type: "mcpToolCall", server: "bridge", tool: "apps_open", result: { structuredContent: opened } },
+      { tool: "bridge_apps_open", state: { output: JSON.stringify(opened) } },
+    ]) { expect(personalAppReference(row(data))).toEqual(expected); }
+    const acp: ConversationItem = { ...row({ update: { sessionUpdate: "tool_call" }, rawOutput: opened }), title: "bridge: apps_open" };
+    expect(personalAppReference(acp)).toEqual(expected);
+    expect(personalAppReference(row({ name: "mcp__bridge__apps_open", aggregatedOutput: JSON.stringify(answer) }))).toBeUndefined();
+    expect(personalAppReference(row({ name: "mcp__bridge__apps_draft", aggregatedOutput: JSON.stringify(opened) }))).toBeUndefined();
+    expect(personalAppReference(row({ name: "mcp__bridge__apps_open", input: opened }))).toBeUndefined();
+    expect(isPersonalAppItem(row({ name: "mcp__other__apps_open" }))).toBe(false);
   });
 });
