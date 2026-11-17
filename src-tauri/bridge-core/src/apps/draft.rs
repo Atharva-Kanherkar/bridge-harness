@@ -1,14 +1,14 @@
 //! Build/preview authority. The model can draft; only the native client locks.
 use super::{
-    control,
     personal::{self, Manifest},
+    router::{self, Connection},
 };
 use crate::{runtime::BridgeCore, BridgeError};
 use bridge_protocol::messages::{
     GetPersonalAppDraftParams, PersonalAppDraft, PreviewPersonalAppToolParams,
 };
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection as Db, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -25,21 +25,21 @@ pub fn install_store(tx: &Transaction<'_>) -> Result<(), BridgeError> {
     Ok(())
 }
 
-pub fn eligible(db: &Connection, session: &str) -> Result<bool, BridgeError> {
+pub fn eligible(db: &Db, session: &str) -> Result<bool, BridgeError> {
     let harness: Option<String> = db
         .query_row("SELECT harness FROM sessions WHERE id=?1", [session], |r| {
             r.get(0)
         })
         .optional()?;
-    Ok(harness.as_deref() == Some("claude")
+    Ok(harness.as_deref().is_some_and(|harness| router::CHAT_HARNESSES.contains(&harness))
         && crate::chat_defaults::is_top_level_chat(db, session)?)
 }
-fn require_session(db: &Connection, session: &str) -> Result<(), BridgeError> {
+fn require_session(db: &Db, session: &str) -> Result<(), BridgeError> {
     if eligible(db, session)? {
         Ok(())
     } else {
         Err(invalid(
-            "Personal app previews require a top-level Claude chat",
+            "Personal apps need a top-level chat in Claude Code, Codex, OpenCode or Cursor",
         ))
     }
 }
@@ -89,7 +89,9 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
     let mut manifest = Manifest {
         name: input.name,
         intent: input.intent,
+        // Replaced below by the connection the router finds the server on.
         harness: "claude".into(),
+        account: None,
         server: input.server,
         reads: input.reads,
         writes: input.writes,
@@ -100,12 +102,12 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
     if let Some(id) = &input.app_id {
         personal::validate_id(id).map_err(invalid)?;
     }
-    let inventory = control::request(
-        core,
-        session,
-        &json!({"kind":"inventory","server":manifest.server}),
-    )?;
+    // The chat's own agent first, then the person's Claude Code and Codex
+    // logins: the app is bound to whichever has the server connected.
+    let (connection, inventory) = router::choose(core, session, &manifest.server)?;
     check_inventory(&manifest, &inventory)?;
+    manifest.harness = connection.harness;
+    manifest.account = connection.account;
     manifest.server = inventory["name"]
         .as_str()
         .ok_or_else(|| invalid("Missing MCP server name"))?
@@ -122,7 +124,7 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
 }
 
 fn store(
-    db: &Connection,
+    db: &Db,
     session: &str,
     app_id: Option<&str>,
     manifest: &Manifest,
@@ -140,10 +142,19 @@ fn store(
 }
 
 pub fn get(
-    db: &Connection,
+    db: &Db,
     p: &GetPersonalAppDraftParams,
     now: DateTime<Utc>,
 ) -> Result<PersonalAppDraft, BridgeError> {
+    load(db, p, now).map(|(draft, _)| draft)
+}
+
+/// The draft card's content and the connection it reads through.
+fn load(
+    db: &Db,
+    p: &GetPersonalAppDraftParams,
+    now: DateTime<Utc>,
+) -> Result<(PersonalAppDraft, Connection), BridgeError> {
     require_session(db, &p.session_id)?;
     let app_id: Option<String> = db.query_row("SELECT app_id FROM personal_app_draft_sessions WHERE draft_id=?1 AND session_id=?2 AND content_hash=?3",
         params![p.draft_id, p.session_id, p.content_hash], |r| r.get(0)).optional()?;
@@ -172,7 +183,12 @@ pub fn get(
     if hash != p.content_hash || personal::content_hash(&manifest) != p.content_hash {
         return Err(invalid("The app draft changed; ask for a new preview"));
     }
-    Ok(PersonalAppDraft {
+    let connection = Connection {
+        harness: manifest.harness.clone(),
+        account: manifest.account.clone(),
+        server: manifest.server.clone(),
+    };
+    Ok((PersonalAppDraft {
         draft_id: p.draft_id.clone(),
         app_id,
         content_hash: hash,
@@ -185,7 +201,7 @@ pub fn get(
         writes: manifest.writes,
         view_html: manifest.view_html,
         sample_args: manifest.sample_args,
-    })
+    }, connection))
 }
 
 fn preview_kind(
@@ -216,7 +232,7 @@ pub fn preview(
     core: &Arc<BridgeCore>,
     p: &PreviewPersonalAppToolParams,
 ) -> Result<Value, BridgeError> {
-    let draft = get(
+    let (draft, connection) = load(
         &*core.try_db()?,
         &GetPersonalAppDraftParams {
             session_id: p.session_id.clone(),
@@ -228,16 +244,13 @@ pub fn preview(
     if let Some(stub) = preview_kind(&draft, &p.tool, &p.arguments)? {
         return Ok(stub);
     }
-    control::request(
-        core,
-        &p.session_id,
-        &json!({"kind":"read","server":draft.server,"tool":p.tool,"arguments":p.arguments}),
-    )
+    router::read(core, &p.session_id, &connection, &p.tool, &p.arguments)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apps::control;
     struct Query {
         calls: Arc<std::sync::Mutex<Vec<Value>>>,
     }
@@ -278,7 +291,7 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, Arc<BridgeCore>) {
         let dir = tempfile::tempdir().unwrap();
         let core = Arc::new(BridgeCore::for_tests(dir.path()));
-        core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','claude','Chat','ready'),('other','claude','Other','ready'),('codex','codex','Codex','ready'); INSERT INTO sessions(id,harness,label,status,parent_session_id) VALUES('worker','claude','Worker','ready','chat');").unwrap();
+        core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','claude','Chat','ready'),('other','claude','Other','ready'),('codex','codex','Codex','ready'),('grok','grok','Grok','ready'); INSERT INTO sessions(id,harness,label,status,parent_session_id) VALUES('worker','claude','Worker','ready','chat');").unwrap();
         (dir, core)
     }
     fn manifest() -> Manifest {
@@ -286,6 +299,7 @@ mod tests {
             name: "Slack DM".into(),
             intent: "Message a teammate".into(),
             harness: "claude".into(),
+            account: None,
             server: "claude.ai Slack".into(),
             reads: vec!["slack_search_users".into()],
             writes: vec!["slack_send_message".into()],
@@ -379,7 +393,8 @@ mod tests {
         let (_dir, core) = fixture();
         let db = core.db.lock().unwrap();
         assert!(eligible(&db, "chat").unwrap());
-        for session in ["worker", "codex", "missing"] {
+        assert!(eligible(&db, "codex").unwrap(), "any supported agent's top-level chat drafts");
+        for session in ["worker", "grok", "missing"] {
             assert!(!eligible(&db, session).unwrap());
         }
         let mut inventory = json!({"status":"connected","tools":[{"name":"slack_search_users","readOnly":true},{"name":"slack_send_message"}]});
@@ -416,11 +431,10 @@ mod tests {
             preview(&core, &p).unwrap()["structuredContent"]["preview"],
             true
         );
+        // With no live chat a read needs a warm runtime, which the test core
+        // cannot start: it fails cleanly instead of running a model turn.
         p.tool = "slack_search_users".into();
-        assert!(preview(&core, &p)
-            .unwrap_err()
-            .to_string()
-            .contains("Resume"));
+        assert!(preview(&core, &p).is_err());
     }
 
     #[test]

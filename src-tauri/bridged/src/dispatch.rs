@@ -1626,6 +1626,7 @@ mod tests {
             name: "Slack DM".into(),
             intent: "Message a teammate".into(),
             harness: "claude".into(),
+            account: None,
             server: "claude.ai Slack".into(),
             reads: vec!["slack_search_users".into()],
             writes: vec!["slack_send_message".into()],

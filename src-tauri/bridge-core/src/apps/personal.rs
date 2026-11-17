@@ -29,8 +29,10 @@ pub const MAX_TOOL_CHARS: usize = 64;
 pub const MAX_VIEW_BYTES: usize = 256 * 1024;
 /// How long a draft can wait for its lock.
 pub const DRAFT_TTL_HOURS: i64 = 24;
-/// Harnesses an app may name: the ones Bridge can make a direct tool call on.
-pub const HARNESSES: &[&str] = &["claude"];
+/// Harnesses an app's connection may name: the ones Bridge can make a direct
+/// tool call on. The chat that drafts or opens an app can be any agent; see
+/// [`super::router`].
+pub const HARNESSES: &[&str] = &["claude", "codex"];
 
 pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -59,7 +61,12 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
 pub struct Manifest {
     pub name: String,
     pub intent: String,
+    /// The connection's agent, which owns the server's sign-in.
     pub harness: String,
+    /// The connection's account on that agent; absent for the person's own
+    /// login, so manifests from before accounts hash the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub server: String,
     pub reads: Vec<String>,
     pub writes: Vec<String>,
@@ -121,6 +128,14 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
     }
     if !HARNESSES.contains(&manifest.harness.as_str()) {
         return Err(format!("personal apps run on {} only, not \"{}\"", HARNESSES.join(", "), manifest.harness));
+    }
+    if let Some(account) = &manifest.account {
+        let mut chars = account.chars();
+        let well_formed = chars.next().is_some_and(|first| first.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if !well_formed || account.chars().count() > 64 {
+            return Err("an app account must be a configured account id".into());
+        }
     }
     let server = manifest.server.trim();
     if server.is_empty() || server.chars().count() > MAX_SERVER_CHARS || server != manifest.server {
@@ -293,7 +308,7 @@ fn widening(before: &Manifest, after: &Manifest) -> Option<LockPersonalAppResult
     // A read that becomes a write starts asking: that narrows.
     let added_reads: Vec<String> = after.reads.iter().filter(|tool| !reads.contains(tool)).cloned().collect();
     let added_writes: Vec<String> = after.writes.iter().filter(|tool| !callable.contains(tool)).cloned().collect();
-    let target_changed = before.harness != after.harness || before.server != after.server;
+    let target_changed = before.harness != after.harness || before.account != after.account || before.server != after.server;
     (!added_reads.is_empty() || !added_writes.is_empty() || target_changed)
         .then_some(LockPersonalAppResult::Widens { added_reads, added_writes, target_changed })
 }
@@ -414,6 +429,7 @@ mod tests {
             name: "Slack DM".into(),
             intent: "Message a teammate on Slack".into(),
             harness: "claude".into(),
+            account: None,
             server: "claude.ai Slack".into(),
             reads: vec!["slack_search_users".into(), "slack_read_channel".into()],
             writes: vec!["slack_send_message".into()],
@@ -428,6 +444,25 @@ mod tests {
     }
 
     #[test]
+    fn an_account_is_optional_bounded_and_part_of_the_target() {
+        let mut m = manifest();
+        let legacy = serde_json::to_value(&m).unwrap();
+        assert!(legacy.get("account").is_none(), "the default login leaves old hashes alone");
+        let before = content_hash(&m);
+        m.harness = "codex".into();
+        m.account = Some("work".into());
+        assert!(validate(&m).is_ok());
+        assert_ne!(before, content_hash(&m));
+        for bad in ["", "1work", "w o", &"a".repeat(65)] {
+            m.account = Some(bad.into());
+            assert!(validate(&m).is_err(), "{bad:?}");
+        }
+        let mut after = manifest();
+        after.account = Some("work".into());
+        assert!(matches!(widening(&manifest(), &after), Some(LockPersonalAppResult::Widens { target_changed: true, .. })), "another account is another target");
+    }
+
+    #[test]
     fn a_valid_manifest_passes_and_each_rule_refuses() {
         assert_eq!(validate(&manifest()), Ok(()));
         let cases: Vec<(&str, Box<dyn Fn(&mut Manifest)>)> = vec![
@@ -435,7 +470,7 @@ mod tests {
             ("name", Box::new(|m| m.name = "n".repeat(61))),
             ("intent", Box::new(|m| m.intent = String::new())),
             ("intent", Box::new(|m| m.intent = "i".repeat(301))),
-            ("claude", Box::new(|m| m.harness = "codex".into())),
+            ("claude", Box::new(|m| m.harness = "opencode".into())),
             ("server", Box::new(|m| m.server = String::new())),
             ("server", Box::new(|m| m.server = " claude.ai Slack".into())),
             ("tools", Box::new(|m| { m.reads.clear(); m.writes.clear(); })),

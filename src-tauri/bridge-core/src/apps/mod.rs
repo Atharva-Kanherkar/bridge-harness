@@ -20,6 +20,8 @@ pub mod draft;
 pub mod events;
 pub mod manifest;
 pub mod personal;
+pub mod router;
+pub mod runtimes;
 pub mod registry;
 
 use rusqlite::Connection;

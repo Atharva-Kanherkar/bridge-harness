@@ -479,3 +479,15 @@ test("native loading is opt-in, and implied only by a direct call", () => {
   assert.equal(loadsConnectorsNatively({ readScopeServers: ["claude.ai Slack"] }), false);
   assert.equal(loadsConnectorsNatively(null), false);
 });
+
+test("an app runtime loads connectors natively and reaches only its server", async () => {
+  const { briefingOptions, isAppRuntime, loadsConnectorsNatively } = await import("../briefing.mjs");
+  const briefing = { appRuntime: { server: "Linear" }, allowedTools: [], allowedServers: [] };
+  assert.equal(isAppRuntime(briefing), true);
+  assert.equal(isAppRuntime({ appRuntime: { server: "" } }), false);
+  assert.equal(loadsConnectorsNatively(briefing), true);
+  const options = briefingOptions(briefing, { Linear: { command: "x" }, Other: { command: "y" } });
+  assert.deepEqual(Object.keys(options.mcpServers), ["Linear"]);
+  assert.equal(options.strictMcpConfig, false);
+  assert.deepEqual(options.settingSources, []);
+});

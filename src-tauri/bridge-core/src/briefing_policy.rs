@@ -1394,6 +1394,19 @@ mod tests {
     }
 
     #[test]
+    fn an_app_runtime_allows_the_model_nothing_and_names_one_server() {
+        let runtime = BriefingRuntimePolicy::compile_app_runtime("claude.ai Slack".into(), action_limits()).unwrap();
+        assert_eq!(runtime.app_runtime(), Some("claude.ai Slack"));
+        assert!(runtime.native_connectors(), "reads use the account's own signed-in connector");
+        assert!(runtime.exact_action_config().is_none() && !runtime.direct_call());
+        for tool in ["mcp__claude_ai_Slack__slack_search_users", "mcp__claude_ai_Slack__slack_send_message", "Bash", "Write"] {
+            assert!(!matches!(runtime.decide(tool, 10), ToolDecision::Allow), "{tool}");
+        }
+        assert!(BriefingRuntimePolicy::compile_app_runtime(" ".into(), action_limits()).is_err());
+        assert!(BriefingRuntimePolicy::compile_scoped(vec![], action_limits()).unwrap().app_runtime().is_none());
+    }
+
+    #[test]
     fn native_connectors_change_the_route_and_not_the_rules() {
         let scoped = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], action_limits()).unwrap();
         let native = scoped.clone().with_native_connectors();
