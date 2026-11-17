@@ -690,6 +690,7 @@ fn validate_selected_candidates<'a>(
         validate_candidate_integrity(candidate)?;
         selected.push(candidate);
     }
+    let selected = parents_first(selected);
     if selected
         .iter()
         .any(|candidate| candidate.candidate.kind == CandidateKind::Memory)
@@ -700,6 +701,42 @@ fn validate_selected_candidates<'a>(
         crate::memory_ledger::parse_scope_key(scope)?;
     }
     Ok(selected)
+}
+
+/// A chat that names a parent in the same import is written after it, so the
+/// writer can link them whatever order the caller listed them in.
+fn parents_first(selected: Vec<&NormalizedImportCandidate>) -> Vec<&NormalizedImportCandidate> {
+    let ids: HashSet<&str> = selected
+        .iter()
+        .map(|candidate| candidate.candidate.candidate_id.as_str())
+        .collect();
+    let parent_of = |candidate: &NormalizedImportCandidate| -> Option<String> {
+        candidate
+            .candidate
+            .normalized_payload
+            .get("parentCandidateId")
+            .and_then(Value::as_str)
+            .filter(|parent| ids.contains(parent))
+            .map(str::to_owned)
+    };
+    let mut placed: HashSet<String> = HashSet::new();
+    let mut ordered = Vec::with_capacity(selected.len());
+    let mut remaining = selected;
+    while !remaining.is_empty() {
+        let before = remaining.len();
+        let (ready, rest): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|candidate| {
+            parent_of(candidate).is_none_or(|parent| placed.contains(&parent))
+        });
+        for candidate in ready {
+            placed.insert(candidate.candidate.candidate_id.clone());
+            ordered.push(candidate);
+        }
+        remaining = rest;
+        if remaining.len() == before {
+            ordered.append(&mut remaining);
+        }
+    }
+    ordered
 }
 
 fn validate_candidate_integrity(normalized: &NormalizedImportCandidate) -> Result<(), BridgeError> {

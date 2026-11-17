@@ -1,6 +1,6 @@
 use super::*;
 use crate::external_import::{
-    commit_import, ConflictPolicy, ImportCandidateStatus, ImportPlan, NormalizedImportCandidate,
+    commit_import, ConflictPolicy, ImportPlan, NormalizedImportCandidate,
     SetupActivationPolicy,
 };
 use proptest::prelude::*;
@@ -266,6 +266,22 @@ fn subagent_chats_import_as_children_of_their_parent() {
     let parent_title: String = db.query_row("SELECT title FROM sessions WHERE id=?1", params![parent.unwrap()], |row| row.get(0)).unwrap();
     assert_eq!(parent_title, "Fix the failing login test");
     assert_eq!(depth, 1);
+}
+
+#[test]
+fn a_child_listed_before_its_parent_is_still_linked() {
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    let mut child = chat("kid", "claude", Some("kid"), vec![entry("c", BundleEntryKind::UserMessage, "child task")]);
+    child.parent_chat_key = Some("main".into());
+    bundle.chats.push(chat("main", "claude", Some("main"), rich_entries()));
+    bundle.chats.push(child);
+    let lowered = lower(&resolve(vec![bundle]).unwrap());
+    let mut normalized = normalize(&lowered.candidates);
+    normalized.reverse();
+    let db = database();
+    let commit = commit_import(&db, &normalized, &plan_for(&lowered.candidates, ConflictPolicy::Skip)).unwrap();
+    assert_eq!(commit.imported, 2);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions WHERE title='child task' AND parent_session_id IS NOT NULL"), 1);
 }
 
 #[test]
