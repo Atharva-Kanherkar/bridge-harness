@@ -12292,7 +12292,11 @@ fn answer_pending_question(
     // refused an ordinary message whenever another operation held the
     // session (a limit recovery switching models, a launch), with a wrong
     // "already being answered" even though nothing was being asked.
-    if latest_unresolved_approval(&core.db.lock().unwrap(), session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD).is_none() {
+    let pending = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        latest_unresolved_approval(&db, session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD).is_some()
+    };
+    if !pending {
         return Ok(None);
     }
     let _claim = core
