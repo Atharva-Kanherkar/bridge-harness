@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ConversationItem } from "./item";
 import { groupItems } from "./grouping";
 import { isPersonalAppItem, personalAppReference } from "./personalApp";
+import { normalizeAgentEvent } from "./codec";
+import { reduceTranscript } from "./reducer";
+import { asWireKind } from "./wire";
+import type { AgentEvent } from "../types";
 const hash = `sha256:${"b".repeat(64)}`;
 const answer = { draftId: "draft", contentHash: hash };
 const row = (data: Record<string, unknown>, status = "completed"): ConversationItem => ({ key: JSON.stringify(data), type: "activity", eventId: 1, sequence: 1, turn: 1, text: "", status, data });
@@ -36,5 +40,27 @@ describe("personal app draft transcript", () => {
       const draft = row({ name: "mcp__bridge__apps_draft", aggregatedOutput: JSON.stringify(answer) }, status);
       expect(groupItems([before, draft, after]).map(entry => entry.kind)).toEqual(["group", "item", "group"]);
     }
+  });
+  it("reads a Cursor draft through the real start-to-completion reducer flow", () => {
+    const live = (id: number, kind: string, overrides: Partial<AgentEvent>): AgentEvent => ({
+      id, sessionId: "s", sequence: id, protocolVersion: 1, kind: asWireKind(kind),
+      itemId: "call-1", role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides,
+    });
+    const start = live(1, "tool.started", { title: "bridge: apps_draft", status: "inProgress", data: { kind: "other", update: {
+      sessionUpdate: "tool_call", toolCallId: "call-1", title: "bridge: apps_draft", kind: "other", status: "in_progress",
+      rawInput: { draftId: "spoofed", contentHash: `sha256:${"c".repeat(64)}` },
+    } } });
+    for (const completion of [
+      { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed", rawOutput: answer },
+      { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed", content: [{ type: "content", content: { type: "text", text: JSON.stringify(answer) } }] },
+      { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed", rawOutput: { content: [{ type: "text", text: JSON.stringify(answer) }] } },
+    ]) {
+      const done = live(2, "tool.completed", { status: "completed", data: completion });
+      const [item] = reduceTranscript([start, done].map(normalizeAgentEvent));
+      expect(isPersonalAppItem(item)).toBe(true);
+      expect(personalAppReference(item)).toEqual(answer);
+    }
+    const [unfinished] = reduceTranscript([start].map(normalizeAgentEvent));
+    expect(personalAppReference(unfinished)).toBeUndefined();
   });
 });

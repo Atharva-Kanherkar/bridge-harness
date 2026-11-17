@@ -22,13 +22,17 @@ export function personalAppReference(item: ConversationItem): { draftId: string;
   const result = object(item.data.result);
   if (result?.isError === true) return undefined;
   const texts = (value: unknown) => typeof value === "string" ? [value] : Array.isArray(value) ? value.map(part => object(part)?.text) : [];
-  // ACP keeps the session/update frame: the answer is its rawOutput or text content.
-  const acp = object(item.data.update);
-  const acpUpdate = object(acp?.update) ?? acp;
-  const acpTexts = Array.isArray(acpUpdate?.content) ? acpUpdate.content.map(part => object(object(part)?.content)?.text) : [];
+  // ACP (Cursor): the start frame stays under `update`, and the completion's
+  // fields are merged into the item's root. The answer is a rawOutput or an
+  // ACP text content block; tool input (`rawInput`) is never read.
+  const acpNested = (value: unknown) => Array.isArray(value) ? value.map(part => object(object(part)?.content)?.text) : [];
+  const fromAcp = (frame: Record<string, unknown> | undefined) => frame ? [
+    frame.rawOutput, object(frame.rawOutput)?.structuredContent, ...texts(object(frame.rawOutput)?.content), ...acpNested(frame.content),
+  ] : [];
+  const start = object(item.data.update);
   const candidates = [result?.structuredContent, item.data.structuredContent, ...texts(result?.content),
     item.data.aggregatedOutput, ...texts(item.data.content), object(item.data.state)?.output,
-    acpUpdate?.rawOutput, object(acpUpdate?.rawOutput)?.structuredContent, ...texts(object(acpUpdate?.rawOutput)?.content), ...acpTexts];
+    ...fromAcp(item.data), ...fromAcp(object(start?.update) ?? start)];
   for (const value of candidates) {
     let parsed = value;
     if (typeof value === "string") { try { parsed = JSON.parse(value); } catch { continue; } }
