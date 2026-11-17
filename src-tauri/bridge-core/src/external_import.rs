@@ -895,8 +895,9 @@ fn classify_native_session(
     let harness = payload.pointer("/nativeRef/harness").and_then(Value::as_str);
     let bridge_own: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE provider_session_id=?1
-            AND (?2 IS NULL OR harness=?2) AND COALESCE(kind,'') <> 'imported')",
-        params![session_id, harness],
+            AND (?2 IS NULL OR harness=?2) AND COALESCE(kind,'') <> 'imported')
+         OR EXISTS(SELECT 1 FROM bridge_native_sessions WHERE native_key=?3)",
+        params![session_id, harness, native_key],
         |row| row.get(0),
     )?;
     if bridge_own {
@@ -1799,7 +1800,37 @@ pub(crate) fn install_import_native_identity(
             import_id TEXT NOT NULL REFERENCES import_commits(id),
             created_at TEXT NOT NULL,
             PRIMARY KEY(session_id,tool,source_path_fingerprint)
-        );",
+        );
+        -- Every native session a Bridge chat has run, kept when the chat
+        -- later switches harness and its provider_session_id is cleared, so an
+        -- import never brings Bridge's own conversation back as a second chat.
+        CREATE TABLE IF NOT EXISTS bridge_native_sessions (
+            native_key TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS bridge_native_sessions_on_insert
+        AFTER INSERT ON sessions
+        WHEN NEW.provider_session_id IS NOT NULL AND COALESCE(NEW.kind,'') <> 'imported'
+        BEGIN
+            INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            VALUES(NEW.harness || ':' || NEW.provider_session_id, NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+        END;
+        CREATE TRIGGER IF NOT EXISTS bridge_native_sessions_on_update
+        AFTER UPDATE OF provider_session_id, harness ON sessions
+        WHEN NEW.provider_session_id IS NOT NULL AND COALESCE(NEW.kind,'') <> 'imported'
+        BEGIN
+            INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            VALUES(NEW.harness || ':' || NEW.provider_session_id, NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+        END;
+        INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            SELECT harness || ':' || provider_session_id, id, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM sessions
+            WHERE provider_session_id IS NOT NULL AND COALESCE(kind,'') <> 'imported';
+        INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            SELECT s.harness || ':' || h.native_provider_session_id, s.id, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM session_heads h JOIN sessions s ON s.id = h.session_id
+            WHERE h.native_provider_session_id IS NOT NULL AND COALESCE(s.kind,'') <> 'imported';",
     )?;
     Ok(())
 }

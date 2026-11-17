@@ -851,3 +851,49 @@ fn a_child_of_a_skipped_parent_attaches_to_the_existing_parent() {
     assert_eq!((commit.imported, commit.changed), (1, 1));
     assert_eq!(parent_of(&db, "child of a grown parent"), (Some(existing), 1));
 }
+
+#[test]
+fn a_session_bridge_ran_stays_bridges_after_a_harness_switch() {
+    let db = database();
+    db.execute(
+        "INSERT INTO sessions(id,harness,label,status,metric_source,provider_session_id,kind,model)
+         VALUES('direct','claude','Claude','idle','reported','claude-native-1','direct','sonnet')",
+        [],
+    )
+    .unwrap();
+    // The person switches the chat to Codex: the real routine clears the old id.
+    let switched = crate::sessions::persist_chat_model_selection(
+        &db,
+        "direct",
+        "codex",
+        Some("gpt-5"),
+        crate::model::CapabilityTier::Standard,
+        ("claude", Some("sonnet")),
+        false,
+    )
+    .unwrap();
+    assert_eq!(switched, 1);
+    let provider: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id='direct'", [], |row| row.get(0)).unwrap();
+    assert_eq!(provider, None);
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("s", "claude", Some("claude-native-1"), rich_entries()));
+    let commit = import(&db, vec![claude]);
+    assert_eq!((commit.imported, commit.skipped), (0, 1));
+    assert_eq!(commit.candidate_results[0].diagnostics[0].code, "bridge_own_session");
+}
+
+#[test]
+fn the_migration_backfills_native_sessions_bridge_ran_before_it() {
+    let mut db = database();
+    db.execute_batch(
+        "DROP TRIGGER bridge_native_sessions_on_insert; DROP TRIGGER bridge_native_sessions_on_update; DROP TABLE bridge_native_sessions;
+         INSERT INTO sessions(id,harness,label,status,metric_source,provider_session_id,kind) VALUES('old','codex','Codex','idle','reported','thread-9','direct');
+         INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('switched','codex','Codex','idle','reported','direct');
+         INSERT INTO session_heads(session_id,native_provider_session_id,restoration_mode,updated_at) VALUES('switched','thread-8','native','now');",
+    )
+    .unwrap();
+    let transaction = db.transaction().unwrap();
+    crate::external_import::install_import_native_identity(&transaction).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM bridge_native_sessions WHERE native_key IN ('codex:thread-9','codex:thread-8')"), 2);
+}
