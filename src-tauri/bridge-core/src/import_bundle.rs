@@ -458,7 +458,8 @@ struct Resolver {
     project_by_root: HashMap<String, usize>,
     project_key_map: HashMap<(String, String), String>,
     memory_seen: HashSet<(String, Option<String>, String)>,
-    setup_seen: HashSet<(String, String, String)>,
+    /// (kind, name, scope, project, body hash): one item per project.
+    setup_seen: HashSet<(String, String, String, Option<String>, String)>,
     preference_seen: HashSet<String>,
 }
 
@@ -621,7 +622,10 @@ impl Resolver {
                 self.out.memories.push((source.clone(), memory));
             }
         }
-        for item in setup {
+        for mut item in setup {
+            item.project_key = item
+                .project_key
+                .and_then(|key| self.project_key_map.get(&(tool.to_owned(), key)).cloned());
             let body = item
                 .body
                 .clone()
@@ -630,6 +634,8 @@ impl Resolver {
             let key = (
                 item.kind.as_str().to_owned(),
                 item.name.clone(),
+                item.scope.clone(),
+                item.project_key.clone(),
                 crate::external_import::sha256_hex(body.as_bytes()),
             );
             if self.setup_seen.insert(key) {
@@ -1133,9 +1139,18 @@ fn lower_items(resolved: &ResolvedImport, out: &mut LoweredImport) {
             push_exclusion(&mut out.excluded, "setup", &setup.source_label, 1, "not a setup kind Bridge stores");
             continue;
         }
+        let project_root = setup.project_key.as_deref().and_then(|key| {
+            resolved
+                .projects
+                .iter()
+                .find(|project| project.key == key)
+                .map(|project| project.repo_root.clone())
+        });
         let payload = json!({
             "name": setup.name,
             "scope": setup.scope,
+            "projectKey": setup.project_key,
+            "projectRoot": project_root,
             "body": setup.body,
             "config": setup.config,
             "sourceTool": source.tool,

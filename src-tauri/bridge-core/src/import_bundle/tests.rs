@@ -897,3 +897,21 @@ fn the_migration_backfills_native_sessions_bridge_ran_before_it() {
     transaction.commit().unwrap();
     assert_eq!(count(&db, "SELECT COUNT(*) FROM bridge_native_sessions WHERE native_key IN ('codex:thread-9','codex:thread-8')"), 2);
 }
+
+#[test]
+fn setup_is_deduplicated_per_project_and_keeps_its_project() {
+    let mut bundle = TransferBundle::new(source("conductor"));
+    for (key, root) in [("a", "/nonexistent/api"), ("b", "/nonexistent/web")] {
+        bundle.projects.push(BundleProject { key: key.into(), name: key.into(), repo_root: root.into(), remote_url: None });
+        bundle.setup.push(BundleSetup { key: format!("setup-{key}"), kind: CandidateKind::Script, scope: "project".into(), project_key: Some(key.into()), name: "setup".into(), body: Some("bun install".into()), config: None, source_ref: format!("{root}/conductor.json"), source_label: format!("{key}/conductor.json") });
+    }
+    // The same script at global scope is a third, separate item.
+    bundle.setup.push(BundleSetup { key: "setup-global".into(), kind: CandidateKind::Script, scope: "global".into(), project_key: None, name: "setup".into(), body: Some("bun install".into()), config: None, source_ref: "/home/conductor.json".into(), source_label: "conductor.json".into() });
+    let resolved = resolve(vec![bundle]).unwrap();
+    assert_eq!(resolved.setup.len(), 3);
+    let projects: Vec<Option<String>> = resolved.setup.iter().map(|(_, item)| item.project_key.clone()).collect();
+    assert_eq!(projects, vec![Some("project:/nonexistent/api".into()), Some("project:/nonexistent/web".into()), None]);
+    let lowered = lower(&resolved);
+    assert_eq!(lowered.candidates[0].normalized_payload["projectKey"], "project:/nonexistent/api");
+    assert_eq!(lowered.candidates[0].normalized_payload["projectRoot"], "/nonexistent/api");
+}
