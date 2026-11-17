@@ -70,6 +70,16 @@ struct UsageOverview: Decodable {
     var daily: [UsageDay]? = nil
     var coverage: String
     var error: String?
+    /// Set on an extra account from Bridge's Settings; absent on the user's
+    /// own login. A host that predates accounts sends neither.
+    var accountId: String? = nil
+    var accountLabel: String? = nil
+
+    /// The row's name: the provider, then the account's own name.
+    var title: String {
+        guard accountId != nil else { return providerName(provider) }
+        return "\(providerName(provider)) · \(accountLabel ?? accountId ?? "")"
+    }
 
     func menuWindow(_ preference: String, now: Int64) -> QuotaWindow? {
         if preference == "fiveHour" { return windows.first { $0.windowMinutes == 300 } }
@@ -138,11 +148,24 @@ struct Presentation: Decodable {
     var usage: ProviderOverviews?
     var selectedUsage: UsageOverview? {
         guard let provider = settings.activeProvider, settings.isProviderEnabled(provider) else { return nil }
-        return usage?.providers.first { $0.provider == provider }
+        return ownUsage(provider)
     }
     var statusUsage: UsageOverview? {
         guard let provider = settings.statusProvider, settings.isProviderEnabled(provider) else { return nil }
-        return usage?.providers.first { $0.provider == provider }
+        return ownUsage(provider)
+    }
+    /// The user's own login for `provider`. An extra account's row never
+    /// stands in for it, whatever order the host sends them in.
+    func ownUsage(_ provider: String) -> UsageOverview? {
+        usage?.providers.first { $0.provider == provider && $0.accountId == nil }
+    }
+    /// Extra accounts for `provider`, in the order Settings lists them.
+    func accountUsages(_ provider: String) -> [UsageOverview] {
+        var seen = Set<String>()
+        return (usage?.providers ?? []).filter { row in
+            guard row.provider == provider, let id = row.accountId else { return false }
+            return seen.insert(id).inserted
+        }
     }
     var refreshing: Bool
     var error: String?
