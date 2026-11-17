@@ -503,7 +503,10 @@ export function foldWorkerDelegations(items: ConversationItem[]): ConversationIt
  * able to break the transcript row it rides on.
  */
 export function attachmentUris(data: Record<string, unknown>): string[] {
-  const attachments = data.attachments;
+  // A live event carries them at the top; a stored forest entry keeps the
+  // event's `data` object, so after a reload they sit one level down.
+  const nested = data.data && typeof data.data === "object" ? (data.data as Record<string, unknown>).attachments : undefined;
+  const attachments = data.attachments ?? nested;
   if (!Array.isArray(attachments)) return [];
   return attachments.flatMap((attachment) => {
     const dataUri = (attachment as { dataUri?: unknown } | null)?.dataUri;
