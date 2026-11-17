@@ -1731,6 +1731,26 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
+/// Imported history outlives the workspace it was filed under. Archiving a
+/// workspace deletes its live chats' history, which immutable imported
+/// entries refuse, so the imported chats leave the workspace first and keep
+/// their folder (`cwd`), and project hints stop pointing at it.
+pub(crate) fn detach_imported_from_workspace(
+    transaction: &Transaction<'_>,
+    workspace_id: &str,
+) -> Result<(), BridgeError> {
+    transaction.execute(
+        "UPDATE sessions SET workspace_id=NULL WHERE workspace_id=?1 AND kind='imported'",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "UPDATE import_project_hints SET matched_workspace_id=NULL, match_state='unconfirmed'
+         WHERE matched_workspace_id=?1",
+        params![workspace_id],
+    )?;
+    Ok(())
+}
+
 /// Schema 84: one row per imported native session, so the same Claude or
 /// Codex session reached through several tools lands once, and every tool
 /// that pointed at an imported chat.

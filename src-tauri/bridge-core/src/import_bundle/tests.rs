@@ -794,3 +794,19 @@ fn a_secret_cut_by_the_output_cap_is_redacted_before_cutting() {
     import(&db, vec![bundle]);
     assert_eq!(count(&db, &format!("SELECT COUNT(*) FROM session_entries WHERE payload LIKE '%{body}%'")), 0);
 }
+
+#[test]
+fn archiving_a_workspace_keeps_its_imported_chats_as_history() {
+    let db = database();
+    db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/bridge-import-fixture','now')", []).unwrap();
+    db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','main','/tmp/bridge-import-fixture/project','idle','now')", []).unwrap();
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("archived-later"), rich_entries()));
+    assert_eq!(import(&db, vec![bundle]).imported, 1);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions WHERE kind='imported' AND workspace_id='w'"), 1);
+    crate::workspaces::archive_workspace_records(&db, "w", 0, || Ok(())).unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM workspaces WHERE id='w'"), 0, "the workspace is archived");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions WHERE kind='imported' AND workspace_id IS NULL AND cwd='/tmp/bridge-import-fixture/project'"), 1, "the imported chat stays, filed by its folder");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM session_entries"), rich_entries().len() as i64, "its history is untouched");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM import_project_hints WHERE matched_workspace_id IS NOT NULL"), 0);
+}
