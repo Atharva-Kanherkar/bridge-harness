@@ -308,6 +308,31 @@ describe("serializing the level", () => {
   });
 });
 
+describe("the level a DOM rect is scaled by", () => {
+  it("reports the confirmed level, and the kept one after a failed apply", async () => {
+    vi.resetModules();
+    installStorage();
+    vi.doMock("@tauri-apps/api/core", () => ({
+      invoke: async (_command: string, args: { value: number }) => {
+        if (args.value === 1.5) throw new Error("no webview");
+        return null;
+      },
+    }));
+    const zoom = await import("./zoom");
+    const heard: number[] = [];
+    const stop = zoom.onZoomChange(level => heard.push(level));
+
+    expect(zoom.appliedZoom()).toBe(1);
+    await zoom.setZoomLevel(1.25);
+    expect(zoom.appliedZoom()).toBe(1.25);
+    await zoom.setZoomLevel(1.5);
+    expect(zoom.appliedZoom()).toBe(1.25);
+    stop();
+    await zoom.setZoomLevel(1);
+    expect(heard).toEqual([1.25, 1.25]);
+  });
+});
+
 describe("in a browser tab", () => {
   it("leaves ctrl+wheel to the browser's own zoom", () => {
     expect(ownsZoom()).toBe(false);

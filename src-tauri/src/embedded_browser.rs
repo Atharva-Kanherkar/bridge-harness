@@ -16,6 +16,13 @@ use tauri::{
 const PAGE_SCRIPT: &str = include_str!("browser_page.js");
 const MAX_TABS: usize = 64;
 const MAX_URL: usize = 8192;
+/// A WKWebView without an explicit agent sends its bare default UA, which has
+/// no `Version/` or `Safari/` token. Sites treat that unknown agent as a
+/// legacy client and serve degraded basic-HTML pages (Google's no-JS
+/// homepage, stripped layouts). Claim the Safari identity WebKit actually is,
+/// so pages render as they do in Safari.
+#[cfg(target_os = "macos")]
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 type TabKey = (String, String);
 type Result<T> = std::result::Result<T, String>;
 
@@ -317,6 +324,8 @@ async fn create(caller: Webview, session_id: String, tab_id: String, url: String
             // Downloads have no destination chooser in this surface yet. Never
             // allow a page to write an unsolicited download to a default path.
             .on_download(|_, _| false);
+        #[cfg(target_os = "macos")]
+        let builder = builder.user_agent(BROWSER_USER_AGENT);
         let result = app
             .get_window("main")
             .ok_or_else(|| "Bridge window is unavailable".to_string())
@@ -480,8 +489,22 @@ async fn layout(
     let registry = caller.state::<Registry>().inner().clone();
     let app = caller.app_handle().clone();
     worker(move || {
+        // The window may have shrunk since the DOM measured the host. Clip
+        // overflow without moving the page left/up over app chrome.
+        let window = app
+            .get_window("main")
+            .ok_or_else(|| "Bridge window is unavailable".to_string())?;
+        let scale = window
+            .scale_factor()
+            .map_err(|error| error.to_string())?;
+        let inner = window
+            .inner_size()
+            .map_err(|error| error.to_string())?
+            .to_logical::<f64>(scale);
+        let (x, y, width, height, paintable) =
+            clamp_layout_bounds(x, y, width, height, inner.width, inner.height);
         let (_, view) = get_tab(&registry, &key, &app)?;
-        if !visible || width < 1.0 || height < 1.0 {
+        if !visible || !paintable {
             return view.hide().map_err(|error| error.to_string());
         }
         view.set_bounds(tauri::Rect {
@@ -492,6 +515,26 @@ async fn layout(
         view.show().map_err(|error| error.to_string())
     })
     .await
+}
+
+/// Intersect a viewport rect with the Bridge window. A stale rect must never
+/// move inward over chrome or bring a fully offscreen page back into view.
+/// Intersections below a pixel are unpaintable, so the caller hides the view.
+fn clamp_layout_bounds(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    window_width: f64,
+    window_height: f64,
+) -> (f64, f64, f64, f64, bool) {
+    let left = x.clamp(0.0, window_width.max(0.0));
+    let top = y.clamp(0.0, window_height.max(0.0));
+    let right = (x + width).clamp(0.0, window_width.max(0.0));
+    let bottom = (y + height).clamp(0.0, window_height.max(0.0));
+    let width = (right - left).max(0.0);
+    let height = (bottom - top).max(0.0);
+    (left, top, width, height, width >= 1.0 && height >= 1.0)
 }
 
 fn valid_selection(selection: &Selection) -> bool {
@@ -776,6 +819,61 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layout_bounds_clip_overflow_without_moving_the_page_over_chrome() {
+        let cases = [
+            ((95.0, 15.0, 759.0, 990.0), (95.0, 15.0, 759.0, 990.0)),
+            ((800.0, 100.0, 440.0, 500.0), (800.0, 100.0, 54.0, 500.0)),
+            ((3.0, 115.0, 1378.0, 747.0), (3.0, 115.0, 851.0, 747.0)),
+            ((95.0, 900.0, 759.0, 990.0), (95.0, 900.0, 759.0, 105.0)),
+            ((-50.0, 15.0, 200.0, 100.0), (0.0, 15.0, 150.0, 100.0)),
+            ((95.0, -50.0, 200.0, 100.0), (95.0, 0.0, 200.0, 50.0)),
+            ((-50.0, -50.0, 1266.0, 1131.0), (0.0, 0.0, 854.0, 1005.0)),
+        ];
+        for ((x, y, width, height), expected) in cases {
+            let (left, top, width, height, paintable) =
+                clamp_layout_bounds(x, y, width, height, 854.0, 1005.0);
+            assert!(paintable);
+            assert_eq!((left, top, width, height), expected);
+        }
+        // A window shrink between DOM measurement and native execution must
+        // leave the native page below the existing toolbar, never move it up.
+        assert_eq!(
+            clamp_layout_bounds(3.0, 115.0, 1378.0, 747.0, 1000.0, 600.0),
+            (3.0, 115.0, 997.0, 485.0, true)
+        );
+    }
+    #[test]
+    fn offscreen_and_subpixel_layout_bounds_stay_hidden() {
+        for (x, y, width, height) in [
+            (900.0, 100.0, 440.0, 500.0),
+            (100.0, 1100.0, 440.0, 500.0),
+            (-500.0, 100.0, 440.0, 500.0),
+            (100.0, -600.0, 440.0, 500.0),
+            (854.0, 100.0, 440.0, 500.0),
+            (100.0, 1005.0, 440.0, 500.0),
+            (0.0, 0.0, 440.0, 0.5),
+            (0.0, 0.0, 0.5, 500.0),
+            (0.0, 0.0, 0.0, 0.0),
+        ] {
+            let (.., paintable) = clamp_layout_bounds(x, y, width, height, 854.0, 1005.0);
+            assert!(!paintable, "{x}, {y}, {width}, {height}");
+        }
+        for (width, height) in [(0.0, 600.0), (800.0, 0.0), (0.5, 600.0), (800.0, 0.5)] {
+            let (.., paintable) = clamp_layout_bounds(0.0, 0.0, 440.0, 500.0, width, height);
+            assert!(!paintable);
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn browser_user_agent_matches_webkit_safari_identity() {
+        // The tokens sites gate on: a WebKit build, a Safari version, and the
+        // Safari marker. Without them, unknown agents get legacy basic HTML.
+        for token in ["AppleWebKit/605.1.15", "Version/26.0", "Safari/605.1.15", "(KHTML, like Gecko)"] {
+            assert!(BROWSER_USER_AGENT.contains(token), "{token}");
+        }
+        assert!(BROWSER_USER_AGENT.starts_with("Mozilla/5.0 (Macintosh;"));
+    }
     #[test]
     fn failed_old_creation_cannot_remove_a_replacement_tab() {
         let registry = Registry::default();
