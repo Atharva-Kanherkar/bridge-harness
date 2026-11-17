@@ -986,3 +986,21 @@ fn an_imported_compaction_is_native_not_a_bridge_checkpoint() {
     );
     assert!(entries.is_ok(), "{entries:?}");
 }
+
+#[test]
+fn independent_memories_import_alongside_each_other_and_existing_ones() {
+    let db = database();
+    let memory = |key: &str, body: &str| BundleMemory { key: key.into(), scope: "project".into(), project_key: None, kind: "fact".into(), body: body.into(), source_ref: format!("/c/projects/{key}/memory/MEMORY.md"), source_label: format!("{key}/MEMORY.md") };
+    let mut first = TransferBundle::new(source("claude_code"));
+    first.memories.push(memory("a", "billing uses pnpm"));
+    assert_eq!(import(&db, vec![first]).imported, 1);
+    // Under the quick flow's policy two more, unrelated, both come over too.
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.memories.push(memory("b", "docs build with astro"));
+    bundle.memories.push(memory("c", "deploys go through fly"));
+    let lowered = lower(&resolve(vec![bundle]).unwrap());
+    let normalized = normalize(&lowered.candidates);
+    let commit = commit_import(&db, &normalized, &plan_for(&lowered.candidates, ConflictPolicy::ImportAlongside)).unwrap();
+    assert_eq!((commit.imported, commit.conflicted), (2, 0));
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM memory_records WHERE status='active'"), 3);
+}

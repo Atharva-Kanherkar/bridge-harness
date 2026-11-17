@@ -81,6 +81,8 @@ export function importableIds(candidates: ExternalImportCandidate[]): string[] {
 
 export type ImportReport = {
   imported: number;
+  /** Memories among the imported, which land alongside existing ones. */
+  memories: number;
   alreadyInBridge: number;
   changed: number;
   failed: number;
@@ -90,7 +92,7 @@ export type ImportReport = {
 };
 
 export function emptyReport(): ImportReport {
-  return { imported: 0, alreadyInBridge: 0, changed: 0, failed: 0, notCarried: [], errors: [] };
+  return { imported: 0, memories: 0, alreadyInBridge: 0, changed: 0, failed: 0, notCarried: [], errors: [] };
 }
 
 const NUMBER_PREFIX = /^(\d+)\s+/;
@@ -100,6 +102,8 @@ export function addBatch(report: ImportReport, candidates: ExternalImportCandida
   const next: ImportReport = { ...report, notCarried: [...report.notCarried], errors: [...report.errors] };
   if (commit) {
     next.imported += commit.imported;
+    const imported = new Set(commit.candidateResults.filter(result => result.status === "imported").map(result => result.candidateId));
+    next.memories += candidates.filter(candidate => candidate.kind === "memory" && imported.has(candidate.candidateId)).length;
     next.alreadyInBridge += commit.skipped;
     next.changed += commit.changed;
     next.failed += commit.rejected + commit.conflicted;

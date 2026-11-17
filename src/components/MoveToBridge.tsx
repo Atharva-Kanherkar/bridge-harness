@@ -82,7 +82,11 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
         const memorySelected = preview.candidates.some(candidate => candidate.kind === "memory" && candidateIds.includes(candidate.candidateId));
         const commit = candidateIds.length === 0 ? null : await bridgeApi.commitExternalImport(discovery.discoveryId, preview.candidates, {
           selectedCandidateIds: candidateIds,
-          conflictPolicy: "skip",
+          // Selected memories are independent notes: import them alongside
+          // each other and existing ones (grouped for review in Memory)
+          // rather than letting the first block the rest. Chats still treat
+          // a changed history as a decision, whatever the policy.
+          conflictPolicy: "import_alongside",
           setupActivationPolicy: "disabled",
           memoryScope: memorySelected ? "account:local" : null,
           dryRun: false,
@@ -202,6 +206,7 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
       description="Imported chats are in the sidebar, filed under their project when Bridge knows the folder."
       control={<span data-import-result="imported" className="font-mono text-[11px]">{report.imported}</span>}
     />
+    {report.memories > 0 && <SettingsRow label="Memories" description="Imported alongside the memories you already have. Review overlaps in Memory." control={<span className="font-mono text-[11px] text-muted-foreground">{report.memories}</span>} />}
     <SettingsRow label="Already in Bridge" description="Imported before, or chats Bridge ran itself." control={<span data-import-result="skipped" className="font-mono text-[11px] text-muted-foreground">{report.alreadyInBridge}</span>} />
     {report.changed > 0 && <SettingsRow label="Changed since the last import" description="Left as they were. Import again with a new revision to bring the changes." control={<span className="font-mono text-[11px] text-muted-foreground">{report.changed}</span>} />}
     {report.failed > 0 && <SettingsRow label="Could not be imported" control={<span className="font-mono text-[11px] text-warning">{report.failed}</span>} />}

@@ -93,6 +93,20 @@ describe("MoveToBridge", () => {
     expect(container.textContent).toContain("Found on this Mac");
   });
 
+  it("imports independent memories alongside each other instead of letting the first block the rest", async () => {
+    const memory = (id: string): ExternalImportArtifact => ({ ...artifact(0), artifactId: id, kind: "memory", sourceLabel: `projects/${id}/memory/MEMORY.md`, title: null, projectPath: null });
+    vi.spyOn(bridgeApi, "discoverExternalImport").mockResolvedValue({ discoveryId: "d", provider: "claude_code", approvedRoots: [], sourceVersion: null, formatVersions: {}, artifacts: [artifact(1), memory("m1"), memory("m2")], diagnostics: [], discoveredAt: "now" });
+    vi.spyOn(bridgeApi, "previewExternalImport").mockImplementation(async (_, ids) => ({ candidates: ids.map(id => ({ ...candidateFor(id), kind: id.startsWith("m") ? "memory" as const : "conversation" as const })) }));
+    const commit = vi.spyOn(bridgeApi, "commitExternalImport").mockResolvedValue({ importId: "i", candidateResults: [], createdBridgeIds: [], imported: 3, skipped: 0, changed: 0, conflicted: 0, rejected: 0, unsupported: 0, rollbackState: "committed", diagnostics: [], createdAt: "now" });
+    await act(async () => { root.render(<MoveToBridge onError={error => { throw new Error(error); }} />); await flush(); });
+    await act(async () => { button(container, "Review").click(); await flush(); });
+    await act(async () => { button(container, "Import 3 selected").click(); await flush(); });
+    const plan = commit.mock.calls[0][2];
+    expect(plan.selectedCandidateIds).toHaveLength(3);
+    expect(plan.memoryScope).toBe("account:local");
+    expect(plan.conflictPolicy).toBe("import_alongside");
+  });
+
   it("keeps going after a batch fails and says so", async () => {
     const artifacts = Array.from({ length: 26 }, (_, index) => artifact(index));
     vi.spyOn(bridgeApi, "discoverExternalImport").mockResolvedValue({ discoveryId: "d", provider: "claude_code", approvedRoots: [], sourceVersion: null, formatVersions: {}, artifacts, diagnostics: [], discoveredAt: "now" });
