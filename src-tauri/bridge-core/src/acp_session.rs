@@ -59,7 +59,7 @@ use agent_client_protocol::{
     schema::{
         v1::{
             CancelNotification, ContentBlock, ImageContent, InitializeRequest, InitializeResponse,
-            LoadSessionRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
+            LoadSessionRequest, McpServer, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
             RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
             SelectedPermissionOutcome, SessionConfigOption, SessionConfigOptionValue, SessionId,
             SessionModeState, SessionNotification, SetSessionConfigOptionRequest, TextContent,
@@ -164,6 +164,10 @@ pub struct AcpLaunch {
     /// Durable ownership category written before the child can outlive Bridge.
     pub ledger_kind: &'static str,
     pub handshake_timeout: Duration,
+    /// MCP servers the agent attaches for this session, sent in
+    /// `session/new`: Bridge's own tools for an interactive chat. Their
+    /// environment travels over the protocol pipe, never in an argv.
+    pub mcp_servers: Vec<McpServer>,
 }
 
 impl AcpLaunch {
@@ -183,7 +187,14 @@ impl AcpLaunch {
             client_name: "bridge".into(),
             ledger_kind: "acp.session",
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            mcp_servers: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn mcp_server(mut self, server: McpServer) -> Self {
+        self.mcp_servers.push(server);
+        self
     }
 
     #[must_use]
@@ -1682,7 +1693,7 @@ async fn open_session(
         });
     }
     let open = cx
-        .send_request(NewSessionRequest::new(launch.cwd.clone()))
+        .send_request(NewSessionRequest::new(launch.cwd.clone()).mcp_servers(launch.mcp_servers.clone()))
         .block_task();
     let opened = match select(std::pin::pin!(open), deadline).await {
         Either::Left((opened, _)) => opened,
@@ -3016,6 +3027,35 @@ mod tests {
                 .and_then(Value::as_str),
             Some("vendor/heartbeat")
         );
+    }
+
+    #[test]
+    fn session_new_carries_the_launch_mcp_servers() {
+        let server = crate::mcp_apps::ServerLaunch {
+            command: PathBuf::from("/opt/bridged"),
+            args: vec!["--visualize-mcp".into()],
+            env: vec![("BRIDGE_NOTES_TOKEN".into(), "secret".into())],
+        };
+        let launch = test_launch().mcp_server(server.acp_entry());
+        let (session, agent) = try_connect_scripted(launch, |message, wire| {
+            answer_handshake(message, wire, &json!({}));
+        });
+        let _session = session.expect("handshake");
+        let opened = agent
+            .messages()
+            .into_iter()
+            .find(|message| message.get("method").and_then(Value::as_str) == Some("session/new"))
+            .expect("session/new was sent");
+        let servers = opened.pointer("/params/mcpServers").and_then(Value::as_array).expect("mcpServers");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0]["name"], "bridge");
+        assert_eq!(servers[0]["command"], "/opt/bridged");
+        assert_eq!(servers[0]["args"], json!(["--visualize-mcp"]));
+        assert_eq!(servers[0]["env"], json!([{"name": "BRIDGE_NOTES_TOKEN", "value": "secret"}]));
+        let plain = try_connect_scripted(test_launch(), |message, wire| { answer_handshake(message, wire, &json!({})); });
+        let _plain = plain.0.expect("handshake");
+        let opened = plain.1.messages().into_iter().find(|m| m.get("method").and_then(Value::as_str) == Some("session/new")).unwrap();
+        assert_eq!(opened.pointer("/params/mcpServers"), Some(&json!([])));
     }
 
     #[test]

@@ -207,7 +207,15 @@ export function isDirectCall(briefing) {
  * direct call, or a run Rust marked `nativeConnectors` (the Outgoing resolver).
  */
 export function loadsConnectorsNatively(briefing) {
-  return briefing?.nativeConnectors === true || isDirectCall(briefing);
+  return briefing?.nativeConnectors === true || isDirectCall(briefing) || isAppRuntime(briefing);
+}
+
+/**
+ * A personal-app connection runtime: no model turn and no tools, only app
+ * control (inventory and reads) on `appRuntime.server`. See app-control.mjs.
+ */
+export function isAppRuntime(briefing) {
+  return typeof briefing?.appRuntime?.server === "string" && briefing.appRuntime.server.length > 0;
 }
 
 /**
@@ -217,7 +225,7 @@ export function loadsConnectorsNatively(briefing) {
  * `mcpServers` is filtered to the connector instances the reviewed tools belong
  * to: a server nobody reviewed a tool from has no reason to be reachable.
  */
-export function briefingOptions(briefing, mcpServers = {}, ask = null) {
+export function briefingOptions(briefing, mcpServers = {}, ask = null, projectTrusted = false) {
   if (briefing?.workflow) return workflowOptions(briefing, mcpServers, ask);
   // `allowedServers` already carries the read-scope servers on the Rust side,
   // but the union is restated here so the reachable-server set and the gate's
@@ -226,6 +234,7 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     ...(briefing?.allowedServers ?? []),
     ...(briefing?.readScopeServers ?? []),
     ...(briefing?.actionScope ? [briefing.actionScope.server] : []),
+    ...(isAppRuntime(briefing) ? [briefing.appRuntime.server] : []),
   ]);
   // Native connectors: Claude Code loads its claude.ai connectors itself, with
   // the account's own sign-in. An explicit copy never shares that sign-in and
@@ -257,7 +266,14 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     mcpServers: scopedMcpServers,
     // Nothing inherited. A project's settings can carry permissions and hooks,
     // and a briefing run must not gain authority from where it happens to be run.
-    settingSources: [],
+    // A personal-app runtime is the one exception: it loads the person's own
+    // user settings, as their chats do, so their configured MCP servers come
+    // up with their sign-in. It gains nothing to act with: the gate above
+    // denies every model tool and the runtime is never sent a turn.
+    // In a trusted project folder it loads that project's settings too,
+    // exactly as a chat opened there would, so a server the project
+    // configures under a user-wide name resolves to the project's server.
+    settingSources: isAppRuntime(briefing) ? (projectTrusted ? ["user", "project", "local"] : ["user"]) : [],
     plugins: [],
     // No dialog kinds are declared and no dialog callback is wired, so the CLI
     // emits none and every flow behind one degrades to its no-dialog behaviour.

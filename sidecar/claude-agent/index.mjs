@@ -28,7 +28,7 @@ import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
 import { createDirectCall } from "./mcp-call.mjs";
 import { createAppControl } from "./app-control.mjs";
-import { isDirectCall } from "./briefing.mjs";
+import { isAppRuntime, isDirectCall, wireServerName } from "./briefing.mjs";
 import { createTurnTiming } from "./timing.mjs";
 
 // Which copy of the Agent SDK to load.
@@ -148,12 +148,19 @@ const directCall = createDirectCall({
   writeFrame,
 });
 
+// A chat serves any of its servers under its own access mode. A personal-app
+// connection runtime (a turnless briefing) serves its one server; Rust has
+// already applied the requesting chat's access mode before sending.
+const appRuntimeServer = isAppRuntime(config.briefing) ? config.briefing.appRuntime.server : null;
+const servesAppRuntime = (name) => wireServerName(name) === wireServerName(appRuntimeServer);
 const appControl = createAppControl({
-  enabled: Boolean(config.mcpServers?.bridge) && !config.briefing && !config.workflow && config.catalog !== true,
+  enabled: appRuntimeServer !== null
+    || (Boolean(config.mcpServers?.bridge) && !config.briefing && !config.workflow && config.catalog !== true),
   status: () => run.mcpServerStatus(),
   request: (request) => run.request(request),
   writeFrame,
-  mayRead: connectorReadPolicy(config),
+  mayRead: appRuntimeServer !== null ? servesAppRuntime : connectorReadPolicy(config),
+  serverAllowed: appRuntimeServer !== null ? servesAppRuntime : () => true,
 });
 
 // Catalogue discovery is a short-lived control-plane request. It uses the

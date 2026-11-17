@@ -900,16 +900,16 @@ mod tests {
     }
 
     #[test]
-    fn apps_draft_is_listed_and_callable_only_for_top_level_claude() {
+    fn apps_draft_is_listed_for_top_level_chats_on_every_supported_agent() {
         let dir = tempfile::tempdir().unwrap();
         let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
-        core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('claude','claude','Chat','ready'),('codex','codex','Chat','ready'); INSERT INTO sessions(id,harness,label,status,parent_session_id) VALUES('worker','claude','Worker','ready','claude');").unwrap();
-        for (session, listed) in [("claude",true),("codex",false),("worker",false)] {
+        core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('claude','claude','Chat','ready'),('codex','codex','Chat','ready'),('opencode','opencode','Chat','ready'),('cursor','cursor','Chat','ready'),('grok','grok','Chat','ready'); INSERT INTO sessions(id,harness,label,status,parent_session_id) VALUES('worker','claude','Worker','ready','claude');").unwrap();
+        for (session, listed) in [("claude",true),("codex",true),("opencode",true),("cursor",true),("grok",false),("worker",false)] {
             let (status,body)=serve_for(&core,session,"tools",b"");assert_eq!(status,200);
             let tools:Value=serde_json::from_str(&body).unwrap();
-            assert_eq!(tools["tools"].as_array().unwrap().iter().any(|tool| tool=="apps_draft"),listed);
+            assert_eq!(tools["tools"].as_array().unwrap().iter().any(|tool| tool=="apps_draft"),listed,"{session}");
             let (status,body)=serve_for(&core,session,"apps_draft",b"{}");assert_eq!(status,400);
-            assert!(body.contains(if listed {"Invalid app draft arguments"} else {"top-level Claude"}));
+            assert!(body.contains(if listed {"Invalid app draft arguments"} else {"top-level chat in Claude Code, Codex, OpenCode or Cursor"}),"{session}: {body}");
         }
     }
 

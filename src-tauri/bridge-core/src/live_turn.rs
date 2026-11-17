@@ -2610,6 +2610,9 @@ fn spawn_reader_thread(
                         break;
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        // Codex answers app control as JSON-RPC responses in
+                        // Bridge's id namespace; they become the same frame.
+                        let value = crate::apps::codex::translate(&value).unwrap_or(value);
                         if crate::apps::control::deliver(&session_id, &value) {
                             continue;
                         }

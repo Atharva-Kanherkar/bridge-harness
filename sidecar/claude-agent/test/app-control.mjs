@@ -85,3 +85,28 @@ test("a launch without a read policy refuses reads", async () => {
   assert.equal((await send(read("slack_search_users"))).ok, false);
   assert.equal(calls.length, 0);
 });
+test("an app runtime serves its one server: inventory and reads elsewhere refuse", async () => {
+  const serves = name => name === "claude.ai Slack";
+  const other = { name: "claude.ai Linear", status: "connected", tools: [{ name: "linear_list_issues", annotations: { readOnly: true } }] };
+  const { send, calls } = setup({ mayRead: serves, serverAllowed: serves, status: async () => [setup().server, other] });
+  assert.equal((await send({ kind: "inventory", server: "claude.ai Slack" })).ok, true);
+  assert.equal((await send({ kind: "inventory", server: "claude.ai Linear" })).ok, false);
+  assert.equal((await send({ kind: "read", server: "claude.ai Linear", tool: "linear_list_issues", arguments: {} })).ok, false);
+  assert.equal(calls.length, 0);
+  assert.equal((await send(read("slack_search_users"))).ok, true);
+  assert.equal((await send({ ...read("slack_send_message") })).ok, false, "never a write");
+});
+test("a server not yet started is asked for once, then listed", async () => {
+  const listed = setup().server;
+  let started = false;
+  const calls = [];
+  const { send } = setup({
+    status: async () => (started ? [listed] : []),
+    request: async input => { calls.push(input.subtype); if (input.subtype === "mcp_reconnect") started = true; return { response: { content: [] } }; },
+  });
+  assert.equal((await send({ kind: "inventory", server: "claude.ai Slack" })).ok, true);
+  assert.deepEqual(calls, ["mcp_reconnect"]);
+  const never = setup({ status: async () => [], serverAllowed: () => false, request: async input => { calls.push(input.subtype); return {}; } });
+  assert.equal((await never.send({ kind: "inventory", server: "claude.ai Slack" })).ok, false);
+  assert.deepEqual(calls, ["mcp_reconnect"], "a server this launch does not serve is never started");
+});

@@ -30,13 +30,33 @@ pub fn request(
     session: &str,
     request: &Value,
 ) -> Result<Value, BridgeError> {
+    request_with(session, |id| {
+        let adapters = core
+            .adapters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = adapters.get(session).ok_or_else(|| {
+            BridgeError::Invalid("Resume this chat to reconnect its MCP servers".into())
+        })?;
+        runtime.app_control(id, request)
+    })
+}
+
+/// One correlated request to whatever process `owner` names: a chat's live
+/// runtime or a warm connection runtime. `send` writes the request carrying
+/// the id; the owner's reader hands the reply to [`deliver`] under the same
+/// owner, so a reply can never cross from one process to another.
+pub fn request_with(
+    owner: &str,
+    send: impl FnOnce(&str) -> Result<(), BridgeError>,
+) -> Result<Value, BridgeError> {
     let id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = mpsc::sync_channel(1);
     {
         let mut all = pending()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if all.len() >= 64 || all.values().filter(|p| p.session == session).count() >= 4 {
+        if all.len() >= 64 || all.values().filter(|p| p.session == owner).count() >= 4 {
             return Err(BridgeError::Invalid(
                 "Too many app preview requests; try again shortly".into(),
             ));
@@ -44,22 +64,13 @@ pub fn request(
         all.insert(
             id.clone(),
             Pending {
-                session: session.into(),
+                session: owner.into(),
                 sender,
             },
         );
     }
     let _registration = Registration(id.clone());
-    {
-        let adapters = core
-            .adapters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let runtime = adapters.get(session).ok_or_else(|| {
-            BridgeError::Invalid("Resume this Claude chat to reconnect its MCP servers".into())
-        })?;
-        runtime.app_control(&id, request)?;
-    }
+    send(&id)?;
     receiver
         .recv_timeout(Duration::from_secs(30))
         .map_err(|_| {

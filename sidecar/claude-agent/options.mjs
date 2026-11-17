@@ -132,7 +132,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   const authority = briefing?.workflow?.worktree === true
     ? worktreeWorkflowOptions()
     : isBriefing({ briefing })
-    ? briefingOptions(briefing, mcpServers, ask)
+    ? briefingOptions(briefing, mcpServers, ask, projectTrusted)
     : {
         // User settings are required for user skills, commands, agents, and native
         // connector sign-in. Bridge's PreToolUse hook remains authoritative for
