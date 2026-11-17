@@ -16,6 +16,7 @@ import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, typ
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
+import { importedChatBadge } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -1035,10 +1036,15 @@ function AppContent() {
   // condition that decides whether the pane is available at all.
   const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
-  const importedSourceFingerprint = useMemo(() => {
+  const importedSource = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
-    const value = forest?.entries.find(entry => entry.sessionId === session.id)?.payload.sourcePathFingerprint;
-    return typeof value === "string" ? value : undefined;
+    const payload = forest?.entries.find(entry => entry.sessionId === session.id)?.payload;
+    const fingerprint = payload?.sourcePathFingerprint;
+    const tool = payload?.importSource;
+    return {
+      fingerprint: typeof fingerprint === "string" ? fingerprint : undefined,
+      tool: typeof tool === "string" ? tool : undefined,
+    };
   }, [forest?.entries, session?.id, session?.kind]);
   useEffect(() => { setAgentDispatchNotice(undefined); }, [session?.id]);
 
@@ -3814,7 +3820,7 @@ function AppContent() {
           onOpenTrail={() => { const trail = trailForSession(trailSummaries, session.id); if (trail) openTrail(trail.id); }}
           onAddToTrail={!session.parentSessionId ? () => setAddToTrail({ member: { kind: "session", ref: session.id }, title: chatName(session), workspaceId: session.workspaceId ?? null }) : undefined}
           projectName={workspace?.title}
-          sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
+          sourceBadge={session.kind === "imported" ? importedChatBadge(importedSource?.tool, importedSource?.fingerprint) : undefined}
           leading={sidebarNav}
           sidebarHidden={sidebarCollapsed}
           navOpen={navOpen}
