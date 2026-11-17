@@ -258,6 +258,60 @@ pub struct PersonalAppDraft {
     pub sample_args: Option<serde_json::Value>,
 }
 
+/// A locked app opened in a chat, bound to that chat and the exact version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetPersonalAppOpenParams {
+    pub session_id: String,
+    pub open_id: String,
+    pub content_hash: String,
+}
+
+/// Trusted stored content for an opened app's card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalAppOpen {
+    pub open_id: String,
+    pub app_id: String,
+    pub version: u32,
+    pub content_hash: String,
+    pub name: String,
+    pub intent: String,
+    pub harness: String,
+    pub server: String,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub view_html: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<serde_json::Value>,
+}
+
+/// One tool call from an opened app's view. A write needs a second call that
+/// carries the approval token the first one returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallPersonalAppToolParams {
+    pub session_id: String,
+    pub open_id: String,
+    pub content_hash: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PersonalAppCallResult {
+    /// The tool ran; its MCP result.
+    #[serde(rename_all = "camelCase")]
+    Result { result: serde_json::Value },
+    /// A write that waits for the person. `arguments_json` is the exact
+    /// canonical JSON that approving `token` sends, byte for byte.
+    #[serde(rename_all = "camelCase")]
+    ApprovalRequired { token: String, harness: String, server: String, tool: String, arguments_json: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +401,14 @@ mod tests {
         assert!(serde_json::from_value::<GetPersonalAppParams>(json!({"id": "a", "x": 1})).is_err());
         assert!(serde_json::from_value::<DeletePersonalAppParams>(json!({"id": "a", "x": 1})).is_err());
         assert!(serde_json::from_value::<LockPersonalAppParams>(json!({"draftId": "d", "contentHash": "h", "x": 1})).is_err());
+    }
+
+    #[test]
+    fn open_and_call_params_round_trip_and_refuse_unknown_fields() {
+        round_trip(GetPersonalAppOpenParams { session_id:"s".into(),open_id:"o".into(),content_hash:"h".into() });
+        round_trip(CallPersonalAppToolParams { session_id:"s".into(),open_id:"o".into(),content_hash:"h".into(),tool:"send".into(),arguments:json!({"to":"Ada"}),approval_token:Some("t".into()) });
+        assert!(serde_json::from_value::<CallPersonalAppToolParams>(json!({"sessionId":"s","openId":"o","contentHash":"h","tool":"send","arguments":{},"approved":true})).is_err());
+        assert_eq!(serde_json::to_value(PersonalAppCallResult::ApprovalRequired { token:"t".into(),harness:"codex".into(),server:"s".into(),tool:"send".into(),arguments_json:"{}".into() }).unwrap()["kind"], "approvalRequired");
     }
 
     #[test]

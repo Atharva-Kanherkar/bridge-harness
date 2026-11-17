@@ -22,6 +22,8 @@ pub mod manifest;
 pub mod personal;
 pub mod router;
 pub mod runtimes;
+pub mod write;
+pub mod open;
 pub mod registry;
 
 use rusqlite::Connection;
