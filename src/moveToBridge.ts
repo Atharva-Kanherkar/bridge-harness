@@ -96,6 +96,38 @@ export function emptyReport(): ImportReport {
 }
 
 const NUMBER_PREFIX = /^(\d+)\s+/;
+const SKIPPED_RECORD = /^Skipped (\d+) '(.+)' record/;
+
+/** What a skipped-record reason means to a person; null when nothing was lost. */
+export function skippedRecordText(reason: string): string | null {
+  const fixed: Record<string, string | null> = {
+    duplicate_source_id: null,
+    "content:document": "documents or PDFs inside messages",
+    "content:redacted_thinking": "thinking Claude Code kept hidden",
+    tool_result_without_call: "tool results with no matching call",
+    malformed_line: "unreadable lines",
+    oversized_line: "lines over 64 MB",
+    non_object_line: "unreadable records",
+    untyped_record: "unreadable records",
+    invalid_timestamp: "records with an unreadable time",
+    missing_uuid: "records without an id",
+    missing_message_payload: "records with no message",
+    unsupported_content_shape: "messages in a shape Bridge cannot read",
+    untyped_content_block: "message parts in a shape Bridge cannot read",
+  };
+  if (reason in fixed) return fixed[reason];
+  if (reason.startsWith("record:")) return `records of a kind Bridge does not know (${reason.slice(7)})`;
+  if (reason.startsWith("system:")) return `system records of a kind Bridge does not know (${reason.slice(7)})`;
+  if (reason.startsWith("content:")) return `message parts of a kind Bridge does not show (${reason.slice(8)})`;
+  return reason.replaceAll("_", " ");
+}
+
+function skippedRecord(message: string): { text: string; count: number } | null {
+  const match = SKIPPED_RECORD.exec(message);
+  if (!match) return null;
+  const text = skippedRecordText(match[2]);
+  return text ? { text, count: Number(match[1]) } : null;
+}
 
 /** Fold one batch's preview and commit into the running report. */
 export function addBatch(report: ImportReport, candidates: ExternalImportCandidate[], commit: ExternalImportCommit | null, error?: string): ImportReport {
@@ -118,6 +150,11 @@ export function addBatch(report: ImportReport, candidates: ExternalImportCandida
       continue;
     }
     for (const diagnostic of candidate.diagnostics) {
+      if (diagnostic.code === "transcript_record_skipped") {
+        const skipped = skippedRecord(diagnostic.message);
+        if (skipped) add(next, skipped.text, skipped.count);
+        continue;
+      }
       if (!diagnostic.code.startsWith("excluded_")) continue;
       const match = NUMBER_PREFIX.exec(diagnostic.message);
       add(next, match ? diagnostic.message.slice(match[0].length) : diagnostic.message, match ? Number(match[1]) : 1);

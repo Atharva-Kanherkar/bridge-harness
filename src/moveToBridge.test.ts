@@ -70,6 +70,21 @@ describe("Move to Bridge logic", () => {
     expect(importableIds([kept, candidate("unsupported")])).toEqual([kept.candidateId]);
   });
 
+  it("reports skipped transcript records in what did not come over, but not removed repeats", () => {
+    const skipped = (reason: string, count: number) => ({ code: "transcript_record_skipped", severity: "info", classification: "documented" as const, message: `Skipped ${count} '${reason}' record(s) Bridge has no place for`, recovery: null, sourceLabel: "projects/p/s.jsonl" });
+    const report = addBatch(emptyReport(), [
+      candidate("conversation", [skipped("content:document", 1), skipped("tool_result_without_call", 2), skipped("malformed_line", 3), skipped("record:brand-new", 1), skipped("duplicate_source_id", 5)]),
+      candidate("conversation", [skipped("content:document", 2)]),
+    ], commit({ imported: 2 }));
+    expect(report.imported).toBe(2);
+    expect(report.notCarried).toEqual([
+      { text: "documents or PDFs inside messages", count: 3 },
+      { text: "tool results with no matching call", count: 2 },
+      { text: "unreadable lines", count: 3 },
+      { text: "records of a kind Bridge does not know (brand-new)", count: 1 },
+    ]);
+  });
+
   it("adds up batches: counts, unreadable chats, and what did not come over by reason", () => {
     let report = emptyReport();
     report = addBatch(report, [
@@ -79,7 +94,7 @@ describe("Move to Bridge logic", () => {
     report = addBatch(report, [
       candidate("conversation", [
         { code: "excluded_attachment", severity: "warning", classification: "documented", message: "1 attachment: image too large", recovery: null, sourceLabel: "c" },
-        { code: "transcript_record_skipped", severity: "info", classification: "documented", message: "Skipped 3 'x' record(s)", recovery: null, sourceLabel: "c" },
+        { code: "transcript_record_skipped", severity: "info", classification: "documented", message: "Skipped 3 'content:document' record(s) Bridge has no place for", recovery: null, sourceLabel: "c" },
       ]),
     ], commit({ imported: 2, changed: 1, rejected: 1, diagnostics: [{ code: "batch_failed", severity: "error", classification: "documented", message: "Batch 2 rolled back", recovery: null, sourceLabel: null }] }));
     report = addBatch(report, [], null, "The Bridge daemon connection was lost");
@@ -90,6 +105,7 @@ describe("Move to Bridge logic", () => {
     expect(report.notCarried).toEqual([
       { text: "attachment: image too large", count: 3 },
       { text: "A chat could not be read: transcript is unreadable", count: 1 },
+      { text: "documents or PDFs inside messages", count: 3 },
     ]);
     expect(report.errors).toEqual(["Batch 2 rolled back", "The Bridge daemon connection was lost"]);
   });
