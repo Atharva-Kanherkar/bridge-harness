@@ -35,6 +35,12 @@ pub enum CandidateKind {
     Hook,
     McpServer,
     Plugin,
+    /// A project lifecycle script (setup, run, archive) from another tool. Inert.
+    Script,
+    /// A setting from another tool (default model, effort). Inert until applied.
+    Preference,
+    /// An agent or provider configuration from another tool. Inert.
+    ProviderInstance,
     Unsupported,
 }
 
@@ -55,6 +61,9 @@ impl CandidateKind {
             Self::Hook => "hook",
             Self::McpServer => "mcp_server",
             Self::Plugin => "plugin",
+            Self::Script => "script",
+            Self::Preference => "preference",
+            Self::ProviderInstance => "provider_instance",
             Self::Unsupported => "unsupported",
         }
     }
@@ -71,6 +80,9 @@ impl CandidateKind {
                 | Self::Hook
                 | Self::McpServer
                 | Self::Plugin
+                | Self::Script
+                | Self::Preference
+                | Self::ProviderInstance
         )
     }
 }
@@ -502,7 +514,7 @@ fn canonical_json(value: &Value) -> Value {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex_digest(hasher.finalize())
@@ -514,6 +526,18 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Test hook: commit, then fail after the `n`th candidate write, to prove the
+/// whole import rolls back from any point.
+#[cfg(test)]
+pub(crate) fn commit_import_failing_after(
+    db: &Connection,
+    candidates: &[NormalizedImportCandidate],
+    plan: &ImportPlan,
+    n: usize,
+) -> Result<ImportCommit, BridgeError> {
+    commit_import_inner(db, candidates, plan, Some(n))
 }
 
 pub fn commit_import(
@@ -761,6 +785,12 @@ fn classify_candidate(
         ));
     }
 
+    if candidate.kind == CandidateKind::Conversation {
+        if let Some(result) = classify_native_session(db, candidate, plan)? {
+            return Ok(result);
+        }
+    }
+
     let prior: Option<String> = db
         .query_row(
             "SELECT bridge_id FROM import_ledger
@@ -807,6 +837,70 @@ fn classify_candidate(
         revision_of: prior,
         diagnostics: candidate.diagnostics.clone(),
     })
+}
+
+/// One native session is one Bridge chat, whichever tool it was reached
+/// through: a session Bridge itself ran is never imported again, and a
+/// session already imported from another source is a duplicate (same
+/// content) or a changed source (new content).
+fn classify_native_session(
+    db: &Connection,
+    candidate: &ImportCandidate,
+    plan: &ImportPlan,
+) -> Result<Option<ImportCandidateResult>, BridgeError> {
+    let payload = &candidate.normalized_payload;
+    let (Some(native_key), Some(session_id)) = (
+        payload_str(payload, "nativeKey"),
+        payload.pointer("/nativeRef/sessionId").and_then(Value::as_str),
+    ) else {
+        return Ok(None);
+    };
+    let harness = payload.pointer("/nativeRef/harness").and_then(Value::as_str);
+    let bridge_own: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE provider_session_id=?1
+            AND (?2 IS NULL OR harness=?2) AND COALESCE(kind,'') <> 'imported')",
+        params![session_id, harness],
+        |row| row.get(0),
+    )?;
+    if bridge_own {
+        return Ok(Some(result_with_status(
+            candidate,
+            ImportCandidateStatus::SkippedDuplicate,
+            None,
+            "bridge_own_session",
+            "Bridge already has this chat because it ran there; nothing was imported",
+        )));
+    }
+    let existing: Option<(String, String)> = db
+        .query_row(
+            "SELECT session_id, content_hash FROM import_native_sessions WHERE native_key=?1",
+            params![native_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((session, hash)) = existing else {
+        return Ok(None);
+    };
+    let transcript_hash = payload_str(payload, "transcriptHash").unwrap_or(&candidate.content_hash);
+    if hash == transcript_hash || session == candidate.candidate_id {
+        return Ok(Some(result_with_status(
+            candidate,
+            ImportCandidateStatus::SkippedDuplicate,
+            Some(session),
+            "native_session_already_imported",
+            "This chat was already imported, from this or another tool; nothing was written",
+        )));
+    }
+    if plan.conflict_policy != ConflictPolicy::ImportAsNewHistoricalRevision {
+        return Ok(Some(result_with_status(
+            candidate,
+            ImportCandidateStatus::ChangedSource,
+            Some(session),
+            "changed_source",
+            "This chat changed since it was imported; choose a new historical revision or skip it",
+        )));
+    }
+    Ok(None)
 }
 
 fn destination_conflicts(
@@ -957,6 +1051,61 @@ fn write_candidate(
     Ok(created)
 }
 
+/// Harness ids an imported chat may carry. Anything else is refused rather
+/// than stored under a harness Bridge would later try to launch.
+const IMPORTABLE_HARNESSES: &[&str] = &["claude", "codex", "opencode", "cursor"];
+
+/// Forest kinds an imported entry may become. Each is validated by
+/// `session_forest::EntryKind::validate_payload` before it is written.
+const IMPORTABLE_ENTRY_KINDS: &[&str] = &[
+    "user.message",
+    "assistant.message",
+    "reasoning",
+    "tool.completed",
+    "compaction",
+];
+
+fn payload_str<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn imported_harness(payload: &Value) -> Result<&str, BridgeError> {
+    // Candidates from before the transfer bundle carry no harness; they were
+    // all Claude Code transcripts.
+    let harness = payload_str(payload, "harness").unwrap_or("claude");
+    if IMPORTABLE_HARNESSES.contains(&harness) {
+        Ok(harness)
+    } else {
+        Err(BridgeError::Invalid(format!(
+            "Imported chat names an unsupported harness '{harness}'"
+        )))
+    }
+}
+
+fn imported_source_label(candidate: &ImportCandidate) -> String {
+    format!(
+        "Imported from {}",
+        crate::import_bundle::tool_label(&candidate.source.provider)
+    )
+}
+
+fn entry_token_estimate(message: &Value) -> Option<i64> {
+    let chars = ["text", "summary"]
+        .iter()
+        .filter_map(|field| message.get(*field).and_then(Value::as_str))
+        .map(|text| text.chars().count())
+        .sum::<usize>()
+        + message
+            .pointer("/data/aggregatedOutput")
+            .and_then(Value::as_str)
+            .map(|text| text.chars().count())
+            .unwrap_or(0);
+    (chars > 0).then(|| (chars as i64 + 3) / 4)
+}
+
 fn write_conversation(
     transaction: &Transaction<'_>,
     import_id: &str,
@@ -964,8 +1113,8 @@ fn write_conversation(
     imported_at: &str,
 ) -> Result<Vec<String>, BridgeError> {
     let candidate = &normalized.candidate;
-    let messages = candidate
-        .normalized_payload
+    let payload = &candidate.normalized_payload;
+    let messages = payload
         .get("messages")
         .and_then(Value::as_array)
         .ok_or_else(|| BridgeError::Invalid("Conversation candidate has no messages".into()))?;
@@ -974,19 +1123,57 @@ fn write_conversation(
             "Conversation candidate has no messages".into(),
         ));
     }
+    let harness = imported_harness(payload)?;
+    let cwd = payload_str(payload, "cwd");
+    // A chat is filed under a workspace only on an exact path match; a folder
+    // Bridge does not know stays on the chat as its cwd.
+    let workspace_id: Option<String> = match payload_str(payload, "workspacePath").or(cwd) {
+        Some(path) => transaction
+            .query_row(
+                "SELECT id FROM workspaces WHERE path=?1 ORDER BY created_at LIMIT 1",
+                params![path],
+                |row| row.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    let parent: Option<(String, i64)> = match payload_str(payload, "parentCandidateId") {
+        Some(parent_id) => transaction
+            .query_row(
+                "SELECT id, COALESCE(depth,0) FROM sessions WHERE id=?1",
+                params![parent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?,
+        None => None,
+    };
+    let archived_at = payload
+        .get("archived")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then(|| imported_at.to_owned());
     transaction.execute(
         "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,ended_at,metric_source,
-            provider_session_id,active_turn_id,title,title_source,kind,cwd)
-         VALUES(?1,NULL,'claude','Claude Code Import','stopped',?2,?3,'imported',NULL,NULL,?4,'imported','imported',NULL)",
+            provider_session_id,active_turn_id,title,title_source,kind,cwd,model,effort,parent_session_id,depth,archived_at)
+         VALUES(?1,?2,?3,?4,'stopped',?5,?6,'imported',NULL,NULL,?7,'imported','imported',?8,?9,?10,?11,?12,?13)",
         params![
             normalized.deterministic_bridge_id,
+            workspace_id,
+            harness,
+            imported_source_label(candidate),
             candidate.created_at,
             candidate.updated_at,
             candidate.title,
+            cwd,
+            payload_str(payload, "model"),
+            payload_str(payload, "effort"),
+            parent.as_ref().map(|(id, _)| id.clone()),
+            parent.as_ref().map(|(_, depth)| depth + 1).unwrap_or(0),
+            archived_at,
         ],
     )?;
     let mut created = vec![normalized.deterministic_bridge_id.clone()];
-    let mut parent: Option<String> = None;
+    let mut parent_entry: Option<String> = None;
     for (index, message) in messages.iter().enumerate() {
         let source_id = message
             .get("sourceId")
@@ -995,7 +1182,7 @@ fn write_conversation(
         let kind = message
             .get("kind")
             .and_then(Value::as_str)
-            .filter(|kind| matches!(*kind, "user.message" | "assistant.message"))
+            .filter(|kind| IMPORTABLE_ENTRY_KINDS.contains(kind))
             .ok_or_else(|| BridgeError::Invalid("Imported message kind is unsupported".into()))?;
         let timestamp = message
             .get("timestamp")
@@ -1012,20 +1199,24 @@ fn write_conversation(
             &message_hash,
             &CandidateKind::Message,
         );
-        let mut payload = message.as_object().cloned().ok_or_else(|| {
+        let mut entry_payload = message.as_object().cloned().ok_or_else(|| {
             BridgeError::Invalid("Imported message payload must be an object".into())
         })?;
-        payload.insert("imported".into(), Value::Bool(true));
-        payload.insert(
+        entry_payload.insert("imported".into(), Value::Bool(true));
+        entry_payload.insert(
+            "importSource".into(),
+            Value::String(candidate.source.provider.clone()),
+        );
+        entry_payload.insert(
             "sourcePathFingerprint".into(),
             Value::String(candidate.source.source_path_fingerprint.clone()),
         );
-        payload.insert(
+        entry_payload.insert(
             crate::session_forest::TYPED_SCHEMA_MARKER.into(),
             Value::from(crate::session_forest::TYPED_SCHEMA_VERSION),
         );
         crate::session_forest::EntryKind::from_storage(kind)
-            .validate_payload(&Value::Object(payload.clone()))
+            .validate_payload(&Value::Object(entry_payload.clone()))
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         transaction.execute(
             "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,
@@ -1034,16 +1225,13 @@ fn write_conversation(
             params![
                 entry_id,
                 normalized.deterministic_bridge_id,
-                parent,
+                parent_entry,
                 (index + 1) as i64,
                 crate::model::SEMANTIC_EVENT_SCHEMA_VERSION,
                 kind,
-                Value::Object(payload).to_string(),
+                Value::Object(entry_payload).to_string(),
                 source_id,
-                message
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(|text| (text.chars().count() as i64 + 3) / 4),
+                entry_token_estimate(message),
                 timestamp,
             ],
         )?;
@@ -1057,15 +1245,57 @@ fn write_conversation(
             Some(source_id),
             Some(&message_hash),
         )?;
-        parent = Some(entry_id.clone());
+        parent_entry = Some(entry_id.clone());
         created.push(entry_id);
     }
     transaction.execute(
         "INSERT INTO session_heads(session_id,active_entry_id,native_provider_session_id,restoration_mode,
             resume_eligibility,latest_checkpoint_entry_id,updated_at)
          VALUES(?1,?2,NULL,'fresh','fresh',NULL,?3)",
-        params![normalized.deterministic_bridge_id, parent, imported_at],
+        params![normalized.deterministic_bridge_id, parent_entry, imported_at],
     )?;
+    if let Some(native_key) = payload_str(payload, "nativeKey") {
+        transaction.execute(
+            "INSERT INTO import_native_sessions(native_key,session_id,content_hash,import_id,created_at)
+             VALUES(?1,?2,?3,?4,?5)
+             ON CONFLICT(native_key) DO UPDATE SET session_id=excluded.session_id,
+                content_hash=excluded.content_hash, import_id=excluded.import_id, created_at=excluded.created_at",
+            params![
+                native_key,
+                normalized.deterministic_bridge_id,
+                payload_str(payload, "transcriptHash").unwrap_or(&candidate.content_hash),
+                import_id,
+                imported_at
+            ],
+        )?;
+    }
+    let mut contributors = vec![(
+        candidate.source.provider.clone(),
+        candidate.source.canonical_source_ref.clone(),
+    )];
+    for also in payload
+        .get("alsoFrom")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(tool), Some(source_ref)) = (payload_str(also, "tool"), payload_str(also, "sourceRef")) {
+            contributors.push((tool.to_owned(), source_ref.to_owned()));
+        }
+    }
+    for (tool, source_ref) in contributors {
+        transaction.execute(
+            "INSERT OR IGNORE INTO import_session_sources(session_id,tool,source_path_fingerprint,import_id,created_at)
+             VALUES(?1,?2,?3,?4,?5)",
+            params![
+                normalized.deterministic_bridge_id,
+                tool,
+                path_fingerprint(Path::new(&source_ref)),
+                import_id,
+                imported_at
+            ],
+        )?;
+    }
     if let Some(project_hint) = candidate.project_hint.as_deref() {
         let hint_hash = sha256_hex(project_hint.as_bytes());
         // Scoped by content_hash, like `revision_scoped_source_id` above, so
@@ -1081,8 +1311,14 @@ fn write_conversation(
         );
         transaction.execute(
             "INSERT INTO import_project_hints(id,source_hint,matched_workspace_id,match_state,created_at)
-             VALUES(?1,?2,NULL,'unconfirmed',?3)",
-            params![hint_id, project_hint, imported_at],
+             VALUES(?1,?2,?3,?4,?5)",
+            params![
+                hint_id,
+                project_hint,
+                workspace_id,
+                if workspace_id.is_some() { "confirmed" } else { "unconfirmed" },
+                imported_at
+            ],
         )?;
         insert_provenance(
             transaction,
@@ -1131,8 +1367,7 @@ fn write_memory(
     transaction.execute(
         "INSERT INTO memory_records(id,scope_key,kind,body,provenance,status,source_session_id,
             confidence_bps,rationale,valid_from,valid_to,expires_at,conflict_group,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,'claude_code:auto_memory','active',NULL,?5,
-            'Imported from Claude Code after explicit scope selection',?6,NULL,NULL,?7,?6,?6)",
+         VALUES(?1,?2,?3,?4,?8,'active',NULL,?5,?9,?6,NULL,NULL,?7,?6,?6)",
         params![
             normalized.deterministic_bridge_id,
             scope,
@@ -1141,6 +1376,8 @@ fn write_memory(
             i64::from(candidate.confidence_bps),
             imported_at,
             conflict_group,
+            imported_memory_provenance(candidate),
+            format!("{} after explicit scope selection", imported_source_label(candidate)),
         ],
     )?;
     Ok(normalized.deterministic_bridge_id.clone())
@@ -1299,6 +1536,15 @@ fn existing_memory_conflict(
 /// through the editor) and makes them a real target for conflict detection
 /// against Bridge-authored memories, instead of a kind value no other writer
 /// ever produces.
+/// `claude_code:auto_memory` for the shipped Claude path, `<tool>:memory`
+/// for every other source.
+fn imported_memory_provenance(candidate: &ImportCandidate) -> String {
+    if candidate.source.provider == "claude_code" {
+        return "claude_code:auto_memory".into();
+    }
+    format!("{}:memory", candidate.source.provider)
+}
+
 fn imported_memory_kind() -> Result<&'static str, BridgeError> {
     crate::memory_ledger::parse_kind(Some("fact"))
 }
@@ -1444,6 +1690,32 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
         ) BEGIN
             SELECT RAISE(ABORT, 'imported session history is immutable');
         END;",
+    )?;
+    Ok(())
+}
+
+/// Schema 83: one row per imported native session, so the same Claude or
+/// Codex session reached through several tools lands once, and every tool
+/// that pointed at an imported chat.
+pub(crate) fn install_import_native_identity(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS import_native_sessions (
+            native_key TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            import_id TEXT NOT NULL REFERENCES import_commits(id),
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS import_session_sources (
+            session_id TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            source_path_fingerprint TEXT NOT NULL,
+            import_id TEXT NOT NULL REFERENCES import_commits(id),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(session_id,tool,source_path_fingerprint)
+        );",
     )?;
     Ok(())
 }

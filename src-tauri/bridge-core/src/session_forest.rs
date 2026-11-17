@@ -17,6 +17,9 @@ pub(crate) const TYPED_SCHEMA_VERSION: u64 = 1;
 pub enum EntryKind {
     UserMessage,
     AssistantMessage,
+    /// A finished reasoning block. Written by import; the conversation
+    /// renders it as a collapsed thinking row.
+    Reasoning,
     ToolStarted,
     ToolCompleted,
     ApprovalRequested,
@@ -524,6 +527,7 @@ impl EntryKind {
         match self {
             Self::UserMessage => "user.message",
             Self::AssistantMessage => "assistant.message",
+            Self::Reasoning => "reasoning",
             Self::ToolStarted => "tool.started",
             Self::ToolCompleted => "tool.completed",
             Self::ApprovalRequested => "approval.requested",
@@ -551,6 +555,7 @@ impl EntryKind {
         match value {
             "user.message" => Self::UserMessage,
             "assistant.message" => Self::AssistantMessage,
+            "reasoning" => Self::Reasoning,
             "tool.started" => Self::ToolStarted,
             "tool.completed" => Self::ToolCompleted,
             "approval.requested" => Self::ApprovalRequested,
@@ -590,7 +595,7 @@ impl EntryKind {
             });
         }
         match self {
-            Self::UserMessage | Self::AssistantMessage => {
+            Self::UserMessage | Self::AssistantMessage | Self::Reasoning => {
                 require_string(payload, self, &["text"])?;
             }
             Self::ToolStarted | Self::ToolCompleted => {
