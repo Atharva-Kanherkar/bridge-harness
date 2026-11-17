@@ -225,7 +225,7 @@ export function isAppRuntime(briefing) {
  * `mcpServers` is filtered to the connector instances the reviewed tools belong
  * to: a server nobody reviewed a tool from has no reason to be reachable.
  */
-export function briefingOptions(briefing, mcpServers = {}, ask = null) {
+export function briefingOptions(briefing, mcpServers = {}, ask = null, projectTrusted = false) {
   if (briefing?.workflow) return workflowOptions(briefing, mcpServers, ask);
   // `allowedServers` already carries the read-scope servers on the Rust side,
   // but the union is restated here so the reachable-server set and the gate's
@@ -270,7 +270,10 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     // user settings, as their chats do, so their configured MCP servers come
     // up with their sign-in. It gains nothing to act with: the gate above
     // denies every model tool and the runtime is never sent a turn.
-    settingSources: isAppRuntime(briefing) ? ["user"] : [],
+    // In a trusted project folder it loads that project's settings too,
+    // exactly as a chat opened there would, so a server the project
+    // configures under a user-wide name resolves to the project's server.
+    settingSources: isAppRuntime(briefing) ? (projectTrusted ? ["user", "project", "local"] : ["user"]) : [],
     plugins: [],
     // No dialog kinds are declared and no dialog callback is wired, so the CLI
     // emits none and every flow behind one degrades to its no-dialog behaviour.

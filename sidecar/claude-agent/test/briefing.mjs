@@ -491,4 +491,6 @@ test("an app runtime loads connectors natively and reaches only its server", asy
   assert.equal(options.strictMcpConfig, false);
   assert.deepEqual(options.settingSources, ["user"], "the person's own servers, as their chats load them");
   assert.deepEqual(briefingOptions({ allowedTools: [] }).settingSources, [], "every other briefing inherits nothing");
+  assert.deepEqual(briefingOptions(briefing, {}, null, true).settingSources, ["user", "project", "local"], "a trusted project resolves as a chat there does");
+  assert.deepEqual(briefingOptions({ allowedTools: [] }, {}, null, true).settingSources, [], "trust never widens another briefing");
 });

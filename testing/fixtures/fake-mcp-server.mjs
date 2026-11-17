@@ -20,7 +20,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     write({ id, result: { tools } });
   } else if (method === "tools/call") {
     if (process.env.FAKE_MCP_LOG) appendFileSync(process.env.FAKE_MCP_LOG, `${JSON.stringify({ name: params?.name, arguments: params?.arguments ?? {} })}\n`);
-    const text = params?.name === "search_people" ? `Found ${params?.arguments?.query ?? ""} Lovelace` : `Sent ${JSON.stringify(params?.arguments ?? {})}`;
+    // $FAKE_MCP_LABEL tells two configured copies of this server apart.
+    const label = process.env.FAKE_MCP_LABEL ? `[${process.env.FAKE_MCP_LABEL}] ` : "";
+    const text = label + (params?.name === "search_people" ? `Found ${params?.arguments?.query ?? ""} Lovelace` : `Sent ${JSON.stringify(params?.arguments ?? {})}`);
     write({ id, result: { content: [{ type: "text", text }] } });
   } else if (id !== undefined) {
     write({ id, error: { code: -32601, message: "method not found" } });

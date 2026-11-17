@@ -92,6 +92,7 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
         // Replaced below by the connection the router finds the server on.
         harness: "claude".into(),
         account: None,
+        cwd: None,
         server: input.server,
         reads: input.reads,
         writes: input.writes,
@@ -108,6 +109,7 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
     check_inventory(&manifest, &inventory)?;
     manifest.harness = connection.harness;
     manifest.account = connection.account;
+    manifest.cwd = connection.cwd;
     manifest.server = inventory["name"]
         .as_str()
         .ok_or_else(|| invalid("Missing MCP server name"))?
@@ -186,6 +188,7 @@ fn load(
     let connection = Connection {
         harness: manifest.harness.clone(),
         account: manifest.account.clone(),
+        cwd: manifest.cwd.clone(),
         server: manifest.server.clone(),
     };
     Ok((PersonalAppDraft {
@@ -300,6 +303,7 @@ mod tests {
             intent: "Message a teammate".into(),
             harness: "claude".into(),
             account: None,
+            cwd: None,
             server: "claude.ai Slack".into(),
             reads: vec!["slack_search_users".into()],
             writes: vec!["slack_send_message".into()],

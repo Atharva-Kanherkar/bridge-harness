@@ -60,6 +60,10 @@ pub fn agent_label(harness: &str) -> &str {
 pub struct Connection {
     pub harness: String,
     pub account: Option<String>,
+    /// The project folder the server resolves in, or `None` for user-wide.
+    /// A project can configure a server under a user-wide server's name, so
+    /// the same name on the same account can be a different server here.
+    pub cwd: Option<String>,
     pub server: String,
 }
 
@@ -67,13 +71,31 @@ fn invalid(text: impl Into<String>) -> BridgeError {
     BridgeError::Invalid(text.into())
 }
 
-/// The chat's own agent and account.
-fn chat_identity(db: &Db, chat: &str) -> Result<(String, Option<String>), BridgeError> {
-    db.query_row("SELECT harness, account FROM sessions WHERE id=?1", [chat], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-    })
-    .optional()?
-    .ok_or_else(|| invalid("This chat no longer exists"))
+/// The chat's own agent, account and project folder.
+struct ChatIdentity {
+    harness: String,
+    account: Option<String>,
+    cwd: Option<String>,
+}
+
+fn chat_identity(core: &Arc<BridgeCore>, chat: &str) -> Result<ChatIdentity, BridgeError> {
+    let (harness, account, cwd) = core
+        .try_db()?
+        .query_row("SELECT harness, account, cwd FROM sessions WHERE id=?1", [chat], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?))
+        })
+        .optional()?
+        .ok_or_else(|| invalid("This chat no longer exists"))?;
+    let scratch_root = core.chat_scratch_dir(chat).parent().map(std::path::Path::to_path_buf);
+    Ok(ChatIdentity { harness, account, cwd: project_cwd(cwd.as_deref(), scratch_root.as_deref()) })
+}
+
+/// A chat's folder when it is a real project; a chat's own scratch folder
+/// resolves exactly as the user-wide configuration does.
+fn project_cwd(cwd: Option<&str>, scratch_root: Option<&std::path::Path>) -> Option<String> {
+    let cwd = cwd.filter(|cwd| !cwd.is_empty())?;
+    let inside_scratch = scratch_root.is_some_and(|root| std::path::Path::new(cwd).starts_with(root));
+    (!inside_scratch).then(|| cwd.to_owned())
 }
 
 /// A connector read is allowed where the chat's own access mode would let its
@@ -97,9 +119,12 @@ fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &V
             connection.server
         )));
     }
-    let (harness, account) = chat_identity(&*core.try_db()?, chat)?;
-    let live = harness == connection.harness
-        && account == connection.account
+    let identity = chat_identity(core, chat)?;
+    // The chat's own process only when it resolves servers exactly as the
+    // connection did: same agent, same account, same project folder.
+    let live = identity.harness == connection.harness
+        && identity.account == connection.account
+        && identity.cwd == connection.cwd
         && core
             .adapters
             .lock()
@@ -111,6 +136,7 @@ fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &V
     let key = runtimes::Key {
         harness: connection.harness.clone(),
         account: connection.account.clone(),
+        cwd: connection.cwd.clone(),
         server: connection.server.clone(),
     };
     runtimes::request_with(&key, request, &runtimes::launcher(core))
@@ -158,13 +184,20 @@ pub fn read_with(
 /// The connections to try for a server a chat names, in order: the chat's own
 /// agent and account when it can run apps directly, then the person's own
 /// Claude Code and Codex logins.
-pub fn candidates(chat_harness: &str, chat_account: Option<&str>, server: &str) -> Vec<Connection> {
+pub fn candidates(chat_harness: &str, chat_account: Option<&str>, chat_cwd: Option<&str>, server: &str) -> Vec<Connection> {
     let mut list = Vec::new();
     if capability(chat_harness, Op::Inventory) == Capability::Direct {
-        list.push(Connection { harness: chat_harness.into(), account: chat_account.map(str::to_owned), server: server.into() });
+        list.push(Connection {
+            harness: chat_harness.into(),
+            account: chat_account.map(str::to_owned),
+            cwd: chat_cwd.map(str::to_owned),
+            server: server.into(),
+        });
     }
+    // Other agents are asked user-wide: a project's servers belong to the
+    // agent the person opened that project in.
     for harness in ["claude", "codex"] {
-        let candidate = Connection { harness: harness.into(), account: None, server: server.into() };
+        let candidate = Connection { harness: harness.into(), account: None, cwd: None, server: server.into() };
         if !list.contains(&candidate) {
             list.push(candidate);
         }
@@ -174,8 +207,24 @@ pub fn candidates(chat_harness: &str, chat_account: Option<&str>, server: &str) 
 
 /// The first candidate with `server` connected, and its inventory.
 pub fn choose(core: &Arc<BridgeCore>, chat: &str, server: &str) -> Result<(Connection, Value), BridgeError> {
-    let (harness, account) = chat_identity(&*core.try_db()?, chat)?;
-    choose_with(&candidates(&harness, account.as_deref(), server), |connection| inventory(core, chat, connection))
+    let identity = chat_identity(core, chat)?;
+    choose_with(
+        &candidates(&identity.harness, identity.account.as_deref(), identity.cwd.as_deref(), server),
+        |connection| {
+            let found = inventory(core, chat, connection);
+            // A runtime started only to look for a server that is not there
+            // is stopped now, not kept warm for ten minutes.
+            if !found.as_ref().is_ok_and(|inventory| inventory["status"] == "connected") {
+                runtimes::retire(&runtimes::Key {
+                    harness: connection.harness.clone(),
+                    account: connection.account.clone(),
+                    cwd: connection.cwd.clone(),
+                    server: connection.server.clone(),
+                });
+            }
+            found
+        },
+    )
 }
 
 pub fn choose_with(
@@ -221,19 +270,44 @@ mod tests {
 
     #[test]
     fn candidates_put_the_chat_first_and_never_borrow_its_account() {
-        let list = candidates("codex", Some("work"), "slack");
-        assert_eq!(list[0], Connection { harness: "codex".into(), account: Some("work".into()), server: "slack".into() });
+        let list = candidates("codex", Some("work"), Some("/repo"), "slack");
+        assert_eq!(list[0], Connection { harness: "codex".into(), account: Some("work".into()), cwd: Some("/repo".into()), server: "slack".into() });
         assert_eq!(list[1].harness, "claude");
-        assert_eq!(list[2], Connection { harness: "codex".into(), account: None, server: "slack".into() });
-        let list = candidates("cursor", Some("work"), "slack");
+        assert_eq!(list[2], Connection { harness: "codex".into(), account: None, cwd: None, server: "slack".into() });
+        assert!(list[1..].iter().all(|c| c.cwd.is_none()), "other agents are asked user-wide");
+        let list = candidates("cursor", Some("work"), Some("/repo"), "slack");
         assert_eq!(list.iter().map(|c| c.harness.as_str()).collect::<Vec<_>>(), ["claude", "codex"]);
         assert!(list.iter().all(|c| c.account.is_none()), "an OpenCode or Cursor account is not a Claude or Codex one");
-        assert_eq!(candidates("claude", None, "slack").len(), 2, "no duplicate default");
+        assert_eq!(candidates("claude", None, None, "slack").len(), 2, "no duplicate default");
+        assert_eq!(candidates("claude", None, Some("/repo"), "slack").len(), 3, "a project connection is not the user-wide one");
+    }
+
+    #[test]
+    fn a_chat_scratch_folder_is_user_wide_and_a_project_is_not() {
+        let root = std::path::Path::new("/data/chats");
+        assert_eq!(project_cwd(Some("/data/chats/abc"), Some(root)), None);
+        assert_eq!(project_cwd(Some(""), Some(root)), None);
+        assert_eq!(project_cwd(None, Some(root)), None);
+        assert_eq!(project_cwd(Some("/Users/me/repo"), Some(root)), Some("/Users/me/repo".into()));
+    }
+
+    #[test]
+    fn the_live_chat_is_used_only_when_its_project_matches() {
+        let (_dir, core) = fixture();
+        core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status,cwd) VALUES('chat','codex','Chat','ready','/repo/a')").unwrap();
+        let identity = chat_identity(&core, "chat").unwrap();
+        assert_eq!(identity.cwd.as_deref(), Some("/repo/a"));
+        // With no live adapter registered both fall through to a warm runtime
+        // keyed by the folder; the identity is what decides, shown here.
+        let same = Connection { harness: "codex".into(), account: None, cwd: Some("/repo/a".into()), server: "review".into() };
+        let user_wide = Connection { cwd: None, ..same.clone() };
+        assert!(identity.harness == same.harness && identity.account == same.account && identity.cwd == same.cwd);
+        assert!(identity.cwd != user_wide.cwd, "a user-wide connection never rides a project chat's process");
     }
 
     #[test]
     fn choose_takes_the_first_connected_and_refuses_when_none() {
-        let list = candidates("cursor", None, "slack");
+        let list = candidates("cursor", None, None, "slack");
         let (chosen, _) = choose_with(&list, |c| Ok(if c.harness == "codex" { json!({"status":"connected","name":"slack"}) } else { json!({"status":"failed"}) })).unwrap();
         assert_eq!(chosen.harness, "codex");
         let error = choose_with(&list, |_| Err(invalid("down"))).unwrap_err().to_string();
@@ -242,7 +316,7 @@ mod tests {
 
     #[test]
     fn every_read_rechecks_the_current_annotations_first() {
-        let connection = Connection { harness: "codex".into(), account: None, server: "review".into() };
+        let connection = Connection { harness: "codex".into(), account: None, cwd: None, server: "review".into() };
         let run = |tools: Value, status: &str| {
             let mut sent = Vec::new();
             let result = read_with(&connection, "get_report", &json!({"id": 1}), |request| {
@@ -281,7 +355,7 @@ mod tests {
     fn unsupported_connections_refuse_with_the_agent_name() {
         let (_dir, core) = fixture();
         core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','cursor','Chat','ready')").unwrap();
-        let error = inventory(&core, "chat", &Connection { harness: "opencode".into(), account: None, server: "railway".into() }).unwrap_err().to_string();
+        let error = inventory(&core, "chat", &Connection { harness: "opencode".into(), account: None, cwd: None, server: "railway".into() }).unwrap_err().to_string();
         assert!(error.contains("OpenCode") && error.contains("Claude Code or Codex"), "{error}");
     }
 }

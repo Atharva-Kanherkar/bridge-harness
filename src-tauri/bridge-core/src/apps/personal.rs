@@ -67,6 +67,12 @@ pub struct Manifest {
     /// login, so manifests from before accounts hash the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The project folder the server was found in, when it was found through
+    /// a chat working in one: a project can configure a server under the same
+    /// name as the user-wide one, so the folder is part of which server this
+    /// is. Absent for a user-wide connection, so older manifests hash the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     pub server: String,
     pub reads: Vec<String>,
     pub writes: Vec<String>,
@@ -136,6 +142,9 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
         if !well_formed || account.chars().count() > 64 {
             return Err("an app account must be a configured account id".into());
         }
+    }
+    if manifest.cwd.as_deref().is_some_and(|cwd| !std::path::Path::new(cwd).is_absolute() || cwd.len() > 4096) {
+        return Err("an app's project folder must be an absolute path".into());
     }
     let server = manifest.server.trim();
     if server.is_empty() || server.chars().count() > MAX_SERVER_CHARS || server != manifest.server {
@@ -308,7 +317,7 @@ fn widening(before: &Manifest, after: &Manifest) -> Option<LockPersonalAppResult
     // A read that becomes a write starts asking: that narrows.
     let added_reads: Vec<String> = after.reads.iter().filter(|tool| !reads.contains(tool)).cloned().collect();
     let added_writes: Vec<String> = after.writes.iter().filter(|tool| !callable.contains(tool)).cloned().collect();
-    let target_changed = before.harness != after.harness || before.account != after.account || before.server != after.server;
+    let target_changed = before.harness != after.harness || before.account != after.account || before.cwd != after.cwd || before.server != after.server;
     (!added_reads.is_empty() || !added_writes.is_empty() || target_changed)
         .then_some(LockPersonalAppResult::Widens { added_reads, added_writes, target_changed })
 }
@@ -430,6 +439,7 @@ mod tests {
             intent: "Message a teammate on Slack".into(),
             harness: "claude".into(),
             account: None,
+            cwd: None,
             server: "claude.ai Slack".into(),
             reads: vec!["slack_search_users".into(), "slack_read_channel".into()],
             writes: vec!["slack_send_message".into()],
@@ -460,6 +470,14 @@ mod tests {
         let mut after = manifest();
         after.account = Some("work".into());
         assert!(matches!(widening(&manifest(), &after), Some(LockPersonalAppResult::Widens { target_changed: true, .. })), "another account is another target");
+        let mut project = manifest();
+        assert!(serde_json::to_value(&project).unwrap().get("cwd").is_none(), "user-wide leaves old hashes alone");
+        project.cwd = Some("/Users/me/repo".into());
+        assert!(validate(&project).is_ok());
+        assert_ne!(content_hash(&project), content_hash(&manifest()));
+        assert!(matches!(widening(&manifest(), &project), Some(LockPersonalAppResult::Widens { target_changed: true, .. })), "a project's server is another target");
+        project.cwd = Some("relative/repo".into());
+        assert!(validate(&project).is_err());
     }
 
     #[test]

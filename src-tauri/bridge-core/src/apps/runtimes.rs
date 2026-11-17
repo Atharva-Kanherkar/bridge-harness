@@ -25,11 +25,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const IDLE_LIMIT: Duration = Duration::from_secs(10 * 60);
+/// At most this many warm runtimes at once. A new one evicts the least
+/// recently used idle runtime; when every runtime is busy it is refused.
+pub const MAX_RUNTIMES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {
     pub harness: String,
     pub account: Option<String>,
+    /// The project folder the connection resolves in; `None` is user-wide.
+    pub cwd: Option<String>,
     pub server: String,
 }
 
@@ -97,6 +102,54 @@ fn reap_matching(limit: Duration, matches: impl Fn(&Key) -> bool) {
     }
 }
 
+/// Stop the runtime for `key`, if there is one: a discovery that found no
+/// such server leaves nothing behind.
+pub fn retire(key: &Key) {
+    let slot = lock(&pool().slots).get(key).cloned();
+    if let Some(slot) = slot {
+        lock(&slot).take();
+    }
+}
+
+/// Make room for one more runtime, before any process starts. Forgets empty
+/// slots, then evicts the least recently used idle runtime when full.
+fn admit(key: &Key) -> Result<(), BridgeError> {
+    let mut slots = lock(&pool().slots);
+    slots.retain(|candidate, slot| candidate == key || slot.try_lock().map_or(true, |warm| warm.is_some()));
+    let mut live = 0;
+    let mut oldest: Option<(Instant, Slot)> = None;
+    for (candidate, slot) in slots.iter() {
+        if candidate == key {
+            continue;
+        }
+        match slot.try_lock() {
+            Ok(warm) => {
+                if let Some(warm) = warm.as_ref() {
+                    live += 1;
+                    if oldest.as_ref().is_none_or(|(used, _)| warm.last_used < *used) {
+                        oldest = Some((warm.last_used, slot.clone()));
+                    }
+                }
+            }
+            // In use (launching or sending): live, and not evictable.
+            Err(_) => live += 1,
+        }
+    }
+    drop(slots);
+    if live < MAX_RUNTIMES {
+        return Ok(());
+    }
+    match oldest {
+        Some((_, slot)) => {
+            if let Ok(mut warm) = slot.try_lock() {
+                warm.take();
+            }
+            Ok(())
+        }
+        None => Err(BridgeError::Invalid("Too many app connections are busy; try again in a moment".into())),
+    }
+}
+
 /// One app-control request on the warm runtime for `key`, launching it with
 /// `launch` first when there is none.
 pub fn request_with(key: &Key, request: &Value, launch: &Launcher) -> Result<Value, BridgeError> {
@@ -105,6 +158,7 @@ pub fn request_with(key: &Key, request: &Value, launch: &Launcher) -> Result<Val
         // Held across a launch, so concurrent first callers share it.
         let mut warm = lock(&slot);
         if warm.is_none() {
+            admit(key)?;
             *warm = Some(start(key, launch, &slot)?);
         }
         let Some(warm) = warm.as_mut() else {
@@ -124,7 +178,15 @@ pub fn request_with(key: &Key, request: &Value, launch: &Launcher) -> Result<Val
 }
 
 fn start(key: &Key, launch: &Launcher, slot: &Slot) -> Result<Warm, BridgeError> {
-    let Launched { runtime, mut reader } = launch(key)?;
+    // One retry: two agents starting against a fresh home can race to create
+    // its state database, and the loser exits during initialization.
+    let Launched { runtime, mut reader } = match launch(key) {
+        Ok(launched) => launched,
+        Err(_) => {
+            std::thread::sleep(Duration::from_millis(400));
+            launch(key)?
+        }
+    };
     let owner = format!("app-runtime:{}", uuid::Uuid::new_v4());
     let reader_owner = owner.clone();
     let reader_slot = Arc::downgrade(slot);
@@ -179,9 +241,23 @@ fn launch(core: &Arc<BridgeCore>, key: &Key) -> Result<Launched, BridgeError> {
             )
         })
         .transpose()?;
-    let scratch = core.chat_scratch_dir(&format!("app-runtime-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&scratch)?;
-    let cwd = scratch.to_string_lossy().to_string();
+    // A project connection resolves its servers in that project, exactly as
+    // the chat that found it did; a missing folder is refused rather than
+    // resolving to the user-wide server of the same name.
+    let cwd = match &key.cwd {
+        Some(project) if std::path::Path::new(project).is_dir() => project.clone(),
+        Some(_) => {
+            return Err(BridgeError::Invalid(format!(
+                "The project folder this app's {} connection lives in is gone",
+                key.server
+            )))
+        }
+        None => {
+            let scratch = core.chat_scratch_dir(&format!("app-runtime-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&scratch)?;
+            scratch.to_string_lossy().to_string()
+        }
+    };
     let policy = match key.harness.as_str() {
         "claude" => Some(
             BriefingRuntimePolicy::compile_app_runtime(
@@ -198,22 +274,29 @@ fn launch(core: &Arc<BridgeCore>, key: &Key) -> Result<Launched, BridgeError> {
             )))
         }
     };
-    let started = core.adapter_registry.start(
-        &key.harness,
-        StartRequest {
-            session_id: None,
-            cwd: &cwd,
-            model: None,
-            effort: None,
-            instructions: None,
-            write_mode: None,
-            read_only_sandbox: None,
-            briefing: policy.as_ref(),
-            interactive: false,
-            account: account.as_ref(),
-            on_progress: None,
-        },
-    )?;
+    let start = || {
+        core.adapter_registry.start(
+            &key.harness,
+            StartRequest {
+                session_id: None,
+                cwd: &cwd,
+                model: None,
+                effort: None,
+                instructions: None,
+                // Codex: an explicit mode, so the launch never attaches Bridge's
+                // own tools (a launch without one keeps its old meaning and
+                // does). It is never sent a turn, so the mode grants nothing.
+                // Claude: the briefing alone carries the authority.
+                write_mode: policy.is_none().then_some(crate::delegation::WriteMode::Shared),
+                read_only_sandbox: None,
+                briefing: policy.as_ref(),
+                interactive: false,
+                account: account.as_ref(),
+                on_progress: None,
+            },
+        )
+    };
+    let started = start()?;
     Ok(Launched { runtime: started.runtime, reader: started.reader })
 }
 
@@ -283,12 +366,19 @@ mod tests {
         })
     }
 
+    /// The pool is process-wide, so the tests that fill or reap it take turns.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static TURN: Mutex<()> = Mutex::new(());
+        TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn key(account: Option<&str>) -> Key {
-        Key { harness: "codex".into(), account: account.map(str::to_owned), server: format!("srv-{}", uuid::Uuid::new_v4()) }
+        Key { harness: "codex".into(), account: account.map(str::to_owned), cwd: None, server: format!("srv-{}", uuid::Uuid::new_v4()) }
     }
 
     #[test]
     fn concurrent_callers_share_one_launch_and_accounts_stay_apart() {
+        let _turn = serial();
         let launches = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicUsize::new(0));
         let launch: Arc<Box<Launcher>> = Arc::new(fake_launcher(launches.clone(), stopped));
@@ -308,6 +398,10 @@ mod tests {
         let reply = request_with(&work, &json!({"kind":"inventory","server":work.server}), launch.as_ref().as_ref()).unwrap();
         assert_eq!(reply["via"], "codex:work", "another account is another runtime");
         assert_eq!(launches.load(Ordering::SeqCst), 2);
+        let mut project = shared.clone();
+        project.cwd = Some("/repo".into());
+        request_with(&project, &json!({"kind":"inventory","server":project.server}), launch.as_ref().as_ref()).unwrap();
+        assert_eq!(launches.load(Ordering::SeqCst), 3, "a project connection is its own runtime");
     }
 
     /// A real `codex app-server` against the fake MCP server, through the pool
@@ -340,7 +434,7 @@ mod tests {
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
         };
-        let key = Key { harness: "codex".into(), account: None, server: "fake".into() };
+        let key = Key { harness: "codex".into(), account: None, cwd: None, server: "fake".into() };
         let inventory = request_with(&key, &json!({"kind":"inventory","server":"fake"}), &launcher).unwrap();
         assert_eq!(inventory["status"], "connected", "{inventory}");
         assert_eq!(inventory["tools"], json!([
@@ -350,6 +444,49 @@ mod tests {
         let read = request_with(&key, &json!({"kind":"read","server":"fake","tool":"search_people","arguments":{"query":"Ada"}}), &launcher).unwrap();
         assert_eq!(read["content"][0]["text"], "Found Ada Lovelace", "{read}");
         reap_matching(Duration::ZERO, |candidate| candidate == &key);
+    }
+
+    /// The review's reproduction: the user-wide `review` server is tenant A
+    /// and a trusted project overrides `review` as tenant B. A warm runtime
+    /// for the project connection must read B, and the user-wide one A.
+    #[test]
+    #[ignore = "needs codex on PATH; run with --ignored"]
+    fn live_codex_project_connection_never_becomes_the_user_wide_one() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let project_path = project.path().canonicalize().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/fake-mcp-server.mjs");
+        let server = |label: &str| format!("[mcp_servers.review]\ncommand = \"node\"\nargs = [\"{}\"]\nenv = {{ FAKE_MCP_LABEL = \"{label}\" }}\n", fixture.display());
+        std::fs::write(
+            home.path().join("config.toml"),
+            format!("{}\n[projects.\"{}\"]\ntrust_level = \"trusted\"\n", server("A"), project_path.display()),
+        )
+        .unwrap();
+        std::fs::create_dir_all(project_path.join(".codex")).unwrap();
+        std::fs::write(project_path.join(".codex/config.toml"), server("B")).unwrap();
+        // SAFETY: an ignored test run on its own.
+        unsafe { std::env::set_var("CODEX_HOME", home.path()) };
+        let registry = Arc::new(crate::adapters::AdapterRegistry::built_in().unwrap());
+        let ready = Instant::now();
+        while !registry.descriptors().iter().any(|d| d.id == "codex" && d.available) {
+            assert!(ready.elapsed() < Duration::from_secs(30), "codex was not discovered");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let scratch = home.path().to_string_lossy().to_string();
+        let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
+            let cwd = key.cwd.clone().unwrap_or_else(|| scratch.clone());
+            let started = registry.start(&key.harness, StartRequest {
+                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
+            })?;
+            Ok(Launched { runtime: started.runtime, reader: started.reader })
+        };
+        let read = |key: &Key| request_with(key, &json!({"kind":"read","server":"review","tool":"search_people","arguments":{"query":"Ada"}}), &launcher).unwrap();
+        let user_wide = Key { harness: "codex".into(), account: None, cwd: None, server: "review".into() };
+        let in_project = Key { cwd: Some(project_path.to_string_lossy().into_owned()), ..user_wide.clone() };
+        assert_eq!(read(&in_project)["content"][0]["text"], "[B] Found Ada Lovelace");
+        assert_eq!(read(&user_wide)["content"][0]["text"], "[A] Found Ada Lovelace");
+        reap_matching(Duration::ZERO, |candidate| candidate.server == "review");
     }
 
     /// A real Claude sidecar launched as an app runtime (a briefing that never
@@ -383,7 +520,7 @@ mod tests {
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
         };
-        let key = Key { harness: "claude".into(), account: None, server: "fake".into() };
+        let key = Key { harness: "claude".into(), account: None, cwd: None, server: "fake".into() };
         let inventory = request_with(&key, &json!({"kind":"inventory","server":"fake"}), &launcher).unwrap();
         assert_eq!(inventory["status"], "connected", "{inventory}");
         let read = request_with(&key, &json!({"kind":"read","server":"fake","tool":"search_people","arguments":{"query":"Ada"}}), &launcher).unwrap();
@@ -396,7 +533,41 @@ mod tests {
     }
 
     #[test]
+    fn a_project_connection_whose_folder_is_gone_is_refused_not_widened() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let key = Key { harness: "codex".into(), account: None, cwd: Some("/nonexistent/bridge-project".into()), server: "review".into() };
+        let error = launch(&core, &key).err().expect("refused").to_string();
+        assert!(error.contains("project folder"), "{error}");
+    }
+
+    #[test]
+    fn the_pool_is_bounded_and_retired_runtimes_stop() {
+        let _turn = serial();
+        let launches = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let launch = fake_launcher(launches.clone(), stopped.clone());
+        let mine: Vec<Key> = (0..MAX_RUNTIMES + 2).map(|_| key(None)).collect();
+        for k in &mine {
+            request_with(k, &json!({"kind":"inventory","server":k.server}), launch.as_ref()).unwrap();
+        }
+        let live = lock(&pool().slots).values().filter(|slot| slot.try_lock().map_or(true, |warm| warm.is_some())).count();
+        assert!(live <= MAX_RUNTIMES, "{live} warm runtimes");
+        assert!(stopped.load(Ordering::SeqCst) >= 2, "the least recently used were evicted");
+        let before = stopped.load(Ordering::SeqCst);
+        let last = mine.last().unwrap();
+        retire(last);
+        assert_eq!(stopped.load(Ordering::SeqCst), before + 1, "a retired runtime stops");
+        retire(&key(None));
+        assert_eq!(stopped.load(Ordering::SeqCst), before + 1, "retiring an unknown connection is a no-op");
+        for k in &mine {
+            retire(k);
+        }
+    }
+
+    #[test]
     fn failed_launches_are_not_kept_and_idle_runtimes_stop() {
+        let _turn = serial();
         let k = key(None);
         let failing: Box<Launcher> = Box::new(|_: &Key| Err(BridgeError::Invalid("no codex".into())));
         assert!(request_with(&k, &json!({"kind":"inventory","server":"x"}), failing.as_ref()).is_err());
