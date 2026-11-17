@@ -581,9 +581,28 @@ pub fn subagent_files(main: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// A subagent transcript that was not brought over, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildFailure {
+    pub label: String,
+    pub reason: String,
+}
+
+/// A session and its subagents, plus every subagent that could not be read.
+#[derive(Debug, Clone)]
+pub struct SessionRead {
+    pub chats: Vec<ParsedTranscript>,
+    pub failures: Vec<ChildFailure>,
+}
+
 /// Read a session and its subagents: the main chat first, then one child chat
-/// per subagent, linked by `parent_chat_key`.
-pub fn read_session(main: &Path, label: &str) -> std::io::Result<Vec<ParsedTranscript>> {
+/// per subagent, linked by `parent_chat_key`. Subagent files and their
+/// `.meta.json` are opened only when they resolve inside `approved_roots`.
+pub fn read_session(
+    main: &Path,
+    label: &str,
+    approved_roots: &[PathBuf],
+) -> std::io::Result<SessionRead> {
     let key = main.to_string_lossy().into_owned();
     let parsed = read_transcript(main, &key, label)?;
     let parent_session = parsed
@@ -592,57 +611,99 @@ pub fn read_session(main: &Path, label: &str) -> std::io::Result<Vec<ParsedTrans
         .as_ref()
         .map(|native| native.session_id.clone())
         .unwrap_or_default();
-    let mut out = vec![parsed];
-    for file in subagent_files(main) {
-        let agent = file
+    let mut read = SessionRead {
+        chats: vec![parsed],
+        failures: Vec::new(),
+    };
+    for found in subagent_files(main) {
+        let agent = found
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("agent")
             .to_owned();
         let child_label = format!("{label} > {agent}");
-        let Ok(mut child) = read_transcript(&file, &file.to_string_lossy(), &child_label) else {
+        let Ok(file) = crate::external_import::canonicalize_approved_path(approved_roots, &found)
+        else {
+            read.failures.push(ChildFailure {
+                label: child_label,
+                reason: "the subagent transcript is outside the approved folders and was not read"
+                    .into(),
+            });
             continue;
         };
-        let meta = std::fs::read_to_string(file.with_extension("meta.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-        let agent_type = meta
-            .as_ref()
-            .and_then(|meta| meta.get("agentType"))
+        let Ok(mut child) = read_transcript(&file, &found.to_string_lossy(), &child_label) else {
+            continue;
+        };
+        let meta = read_agent_meta(&found, approved_roots, &child_label, &mut read.failures);
+        name_subagent(&mut child.chat, &key, &parent_session, &agent, meta.as_ref());
+        read.chats.push(child);
+    }
+    Ok(read)
+}
+
+/// A subagent's `agent-<id>.meta.json`, when it exists inside the approved folders.
+fn read_agent_meta(
+    transcript: &Path,
+    approved_roots: &[PathBuf],
+    label: &str,
+    failures: &mut Vec<ChildFailure>,
+) -> Option<Value> {
+    let path = transcript.with_extension("meta.json");
+    if std::fs::symlink_metadata(&path).is_err() {
+        return None;
+    }
+    let Ok(path) = crate::external_import::canonicalize_approved_path(approved_roots, &path) else {
+        failures.push(ChildFailure {
+            label: label.to_owned(),
+            reason: "the subagent's details are outside the approved folders and were not read"
+                .into(),
+        });
+        return None;
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+}
+
+/// Link a subagent chat to its session and name it from its type and task.
+fn name_subagent(
+    chat: &mut BundleChat,
+    parent_key: &str,
+    parent_session: &str,
+    agent: &str,
+    meta: Option<&Value>,
+) {
+    let agent_type = meta
+        .and_then(|meta| meta.get("agentType"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    chat.parent_chat_key = Some(parent_key.to_owned());
+    chat.agent_role = Some(AgentRole::Subagent);
+    if chat.model.is_none() {
+        chat.model = meta
+            .and_then(|meta| meta.get("model"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let chat = &mut child.chat;
-        chat.parent_chat_key = Some(key.clone());
-        chat.agent_role = Some(AgentRole::Subagent);
-        if chat.model.is_none() {
-            chat.model = meta
-                .as_ref()
-                .and_then(|meta| meta.get("model"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
-        if let Some(native) = chat.native_ref.as_mut() {
-            native.session_id = format!("{parent_session}/{agent}");
-        }
-        if chat.title_source == TitleSource::Derived {
-            let task = chat
-                .entries
-                .iter()
-                .find(|entry| entry.kind == BundleEntryKind::UserMessage)
-                .and_then(|entry| entry.text.as_deref())
-                .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
-                .map(|line| line.trim().chars().take(70).collect::<String>());
-            chat.title = Some(match (agent_type.as_deref(), task) {
-                (Some(kind), Some(task)) => format!("{kind}: {task}"),
-                (Some(kind), None) => format!("{kind} subagent"),
-                (None, Some(task)) => task,
-                (None, None) => "Subagent".into(),
-            });
-            chat.title_source = TitleSource::Tool;
-        }
-        out.push(child);
     }
-    Ok(out)
+    if let Some(native) = chat.native_ref.as_mut() {
+        native.session_id = format!("{parent_session}/{agent}");
+    }
+    if chat.title_source == TitleSource::Derived {
+        let task = chat
+            .entries
+            .iter()
+            .find(|entry| entry.kind == BundleEntryKind::UserMessage)
+            .and_then(|entry| entry.text.as_deref())
+            .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+            .map(|line| line.trim().chars().take(70).collect::<String>());
+        chat.title = Some(match (agent_type.as_deref(), task) {
+            (Some(kind), Some(task)) => format!("{kind}: {task}"),
+            (Some(kind), None) => format!("{kind} subagent"),
+            (None, Some(task)) => task,
+            (None, None) => "Subagent".into(),
+        });
+        chat.title_source = TitleSource::Tool;
+    }
 }
 
 /// What the review list shows for a session without reading all of it: the

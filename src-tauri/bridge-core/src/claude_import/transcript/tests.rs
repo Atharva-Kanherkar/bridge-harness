@@ -151,7 +151,7 @@ fn subagent_transcripts_become_child_chats() {
     ]);
     std::fs::write(sub.with_extension("meta.json"), r#"{"agentType":"Explore","spawnDepth":1,"model":"claude-haiku-5-5"}"#).unwrap();
     std::fs::write(dir.path().join("projects/p/sess-1/subagents/notes.txt"), "not a transcript").unwrap();
-    let parsed = read_session(&main, "projects/p/sess-1.jsonl").unwrap();
+    let parsed = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap().chats;
     assert_eq!(parsed.len(), 2);
     let child = &parsed[1].chat;
     assert_eq!(child.parent_chat_key.as_deref(), Some(parsed[0].chat.key.as_str()));
@@ -285,8 +285,9 @@ fn real_store_sweep() {
     for (index, path) in sessions.iter().enumerate() {
         let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
         let clock = std::time::Instant::now();
-        let parsed = match read_session(path, &format!("session-{index}")) {
-            Ok(parsed) => parsed,
+        let roots = [Path::new(&root).canonicalize().unwrap()];
+        let parsed = match read_session(path, &format!("session-{index}"), &roots) {
+            Ok(parsed) => parsed.chats,
             Err(_) => { errors += 1; continue; }
         };
         let took = clock.elapsed();

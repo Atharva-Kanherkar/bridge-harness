@@ -540,7 +540,7 @@ fn preview_conversations(
         std::collections::HashMap::new();
     let mut ref_by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for artifact in artifacts {
-        let read = (|| -> Result<Vec<transcript::ParsedTranscript>, BridgeError> {
+        let read = (|| -> Result<transcript::SessionRead, BridgeError> {
             let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref))?;
             let gate = discovery.format_versions.get(TRANSCRIPT_GATE).map(String::as_str);
             let validation = validate_schema_version(
@@ -550,12 +550,25 @@ fn preview_conversations(
             if !validation.accepted {
                 return Err(BridgeError::Invalid(validation.diagnostics[0].message.clone()));
             }
-            transcript::read_session(&path, &artifact.source_label)
+            transcript::read_session(&path, &artifact.source_label, approved_roots)
                 .map_err(|error| BridgeError::Invalid(format!("Claude transcript is unreadable: {error}")))
         })();
         match read {
-            Ok(parsed) => {
-                for item in parsed {
+            Ok(session) => {
+                let main_ref = session.chats.first().map(|item| item.chat.source_ref.clone());
+                let lost: Vec<ImportDiagnostic> = session
+                    .failures
+                    .iter()
+                    .map(|failure| ImportDiagnostic {
+                        code: "excluded_subagent".into(),
+                        severity: "warning".into(),
+                        classification: SourceClassification::Documented,
+                        message: format!("1 subagent: {} ({})", failure.reason, failure.label),
+                        recovery: None,
+                        source_label: Some(failure.label.clone()),
+                    })
+                    .collect();
+                for item in session.chats {
                     let diagnostics: Vec<ImportDiagnostic> = item
                         .skipped
                         .0
@@ -572,6 +585,9 @@ fn preview_conversations(
                     skipped_by_ref.insert(item.chat.source_ref.clone(), diagnostics);
                     ref_by_label.insert(item.chat.source_label.clone(), item.chat.source_ref.clone());
                     bundle.chats.push(item.chat);
+                }
+                if let Some(main_ref) = main_ref {
+                    skipped_by_ref.entry(main_ref).or_default().extend(lost);
                 }
             }
             Err(error) => out.push(unsupported_candidate(artifact, discovery, &error.to_string())),
@@ -1315,7 +1331,7 @@ mod tests {
         assert!(child_title.starts_with("Explore: "), "{child_title}");
         // Parity: every item the reader saw is a stored entry.
         let main_path = PathBuf::from(&conversations[0].canonical_source_ref);
-        let read = transcript::read_session(&main_path, "x").unwrap();
+        let read = transcript::read_session(&main_path, "x", &[claude.canonicalize().unwrap()]).unwrap().chats;
         let expected: i64 = read.iter().map(|item| item.chat.entries.len() as i64).sum();
         let stored: i64 = db.query_row("SELECT COUNT(*) FROM session_entries", [], |r| r.get(0)).unwrap();
         assert_eq!(stored, expected);
@@ -1343,6 +1359,51 @@ mod tests {
         // Idempotent: the same import again writes nothing.
         let again = crate::external_import::commit_import(&db, &normalized, &plan).unwrap();
         assert_eq!((again.imported, again.skipped), (0, 2));
+    }
+
+    fn preview_all(claude: &Path) -> Vec<ImportCandidate> {
+        let discovery = ClaudeCodeImporter.discover(&request(claude)).unwrap();
+        let ids = discovery
+            .artifacts
+            .iter()
+            .filter(|item| item.kind == CandidateKind::Conversation)
+            .map(|item| item.artifact_id.clone())
+            .collect();
+        ClaudeCodeImporter.preview(&discovery, &DiscoverySelection { artifact_ids: ids }).unwrap()
+    }
+
+    fn session_lines(session: &str, text: &str) -> String {
+        [
+            json!({"type":"user","uuid":format!("{session}-u"),"sessionId":session,"timestamp":"2026-11-01T10:00:00Z","cwd":"/work/app","message":{"role":"user","content":text}}).to_string(),
+            json!({"type":"assistant","uuid":format!("{session}-a"),"sessionId":session,"timestamp":"2026-11-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}).to_string(),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn a_subagent_symlink_outside_the_approved_folder_is_not_read() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        write(&claude.join("projects/p/sess-1.jsonl"), &session_lines("sess-1", "main task"));
+        let outside = root.path().join("outside");
+        write(&outside.join("private.jsonl"), &session_lines("sess-1", "OUTSIDE-SENTINEL-transcript"));
+        write(&outside.join("private.meta.json"), r#"{"agentType":"OUTSIDE-SENTINEL-meta"}"#);
+        let subagents = claude.join("projects/p/sess-1/subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        std::os::unix::fs::symlink(outside.join("private.jsonl"), subagents.join("agent-private.jsonl")).unwrap();
+        std::os::unix::fs::symlink(outside.join("private.meta.json"), subagents.join("agent-private.meta.json")).unwrap();
+        // An inside child whose meta escapes: the transcript is read, the meta is not.
+        write(&subagents.join("agent-inside.jsonl"), &session_lines("sess-1", "inside child"));
+        std::os::unix::fs::symlink(outside.join("private.meta.json"), subagents.join("agent-inside.meta.json")).unwrap();
+        let preview = preview_all(&claude);
+        let encoded = serde_json::to_string(&preview).unwrap();
+        assert!(!encoded.contains("OUTSIDE-SENTINEL"), "nothing outside the approved folder is read");
+        assert!(encoded.contains("inside child"));
+        let diagnostics: Vec<&ImportDiagnostic> = preview.iter().flat_map(|c| c.diagnostics.iter()).collect();
+        assert!(
+            diagnostics.iter().any(|d| d.code == "excluded_subagent" && d.message.contains("outside the approved folders")),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
