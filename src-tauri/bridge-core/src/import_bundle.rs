@@ -437,20 +437,33 @@ fn merge_chat(existing: &mut ResolvedChat, incoming: BundleChat, incoming_source
 
 /// Merge every bundle into one import. Fails closed on an unknown bundle version.
 pub fn resolve(bundles: Vec<TransferBundle>) -> Result<ResolvedImport, BridgeError> {
-    let mut out = ResolvedImport::default();
-    let mut chat_index: HashMap<String, usize> = HashMap::new();
-    // (tool, bundle chat key) -> identity, for parent links.
-    let mut local_identity: HashMap<(String, String), String> = HashMap::new();
-    let mut pending_parent: Vec<(String, String, String)> = Vec::new();
-    let mut workspace_by_path: HashMap<String, usize> = HashMap::new();
-    let mut workspace_key_map: HashMap<(String, String), String> = HashMap::new();
-    let mut project_by_root: HashMap<String, usize> = HashMap::new();
-    let mut project_key_map: HashMap<(String, String), String> = HashMap::new();
-    let mut memory_seen: HashSet<(String, Option<String>, String)> = HashSet::new();
-    let mut setup_seen: HashSet<(String, String, String)> = HashSet::new();
-    let mut preference_seen: HashSet<String> = HashSet::new();
-
+    let mut resolver = Resolver::default();
     for bundle in bundles {
+        resolver.add(bundle)?;
+    }
+    Ok(resolver.finish())
+}
+
+/// The state `resolve` keeps while it folds bundles together.
+#[derive(Default)]
+struct Resolver {
+    out: ResolvedImport,
+    chat_index: HashMap<String, usize>,
+    /// (tool, bundle chat key) -> identity, for parent links.
+    local_identity: HashMap<(String, String), String>,
+    /// (tool, child identity, parent key in that tool's bundle).
+    pending_parent: Vec<(String, String, String)>,
+    workspace_by_path: HashMap<String, usize>,
+    workspace_key_map: HashMap<(String, String), String>,
+    project_by_root: HashMap<String, usize>,
+    project_key_map: HashMap<(String, String), String>,
+    memory_seen: HashSet<(String, Option<String>, String)>,
+    setup_seen: HashSet<(String, String, String)>,
+    preference_seen: HashSet<String>,
+}
+
+impl Resolver {
+    fn add(&mut self, bundle: TransferBundle) -> Result<(), BridgeError> {
         if bundle.bundle_version != BUNDLE_VERSION {
             return Err(BridgeError::Invalid(format!(
                 "Import bundle version {} is not supported by this Bridge (expects {BUNDLE_VERSION}); update Bridge and try again",
@@ -461,179 +474,201 @@ pub fn resolve(bundles: Vec<TransferBundle>) -> Result<ResolvedImport, BridgeErr
         if tool.trim().is_empty() {
             return Err(BridgeError::Invalid("Import bundle has no source tool".into()));
         }
-        out.sources.push(bundle.source.clone());
-        out.diagnostics.extend(bundle.diagnostics);
+        self.out.sources.push(bundle.source.clone());
+        self.out.diagnostics.extend(bundle.diagnostics);
         for exclusion in bundle.excluded {
-            if let Some(existing) = out.excluded.iter_mut().find(|item| {
-                item.category == exclusion.category
-                    && item.source_label == exclusion.source_label
-                    && item.reason == exclusion.reason
-            }) {
-                existing.count += exclusion.count;
-            } else {
-                out.excluded.push(exclusion);
-            }
+            push_exclusion(
+                &mut self.out.excluded,
+                &exclusion.category,
+                &exclusion.source_label,
+                exclusion.count,
+                &exclusion.reason,
+            );
         }
-
         for project in bundle.projects {
-            let root = normalize_path(&project.repo_root);
-            let merged_key = match project_by_root.get(&root) {
-                Some(index) => out.projects[*index].key.clone(),
-                None => {
-                    let key = format!("project:{root}");
-                    project_by_root.insert(root.clone(), out.projects.len());
-                    out.projects.push(BundleProject {
-                        key: key.clone(),
-                        repo_root: root,
-                        ..project.clone()
-                    });
-                    key
-                }
-            };
-            project_key_map.insert((tool.clone(), project.key), merged_key);
+            self.add_project(&tool, project);
         }
-
         for workspace in bundle.workspaces {
-            let path = normalize_path(&workspace.path);
-            let project_key = workspace
-                .project_key
-                .as_ref()
-                .and_then(|key| project_key_map.get(&(tool.clone(), key.clone())).cloned());
-            let merged_key = match workspace_by_path.get(&path) {
-                Some(index) => {
-                    let existing = &mut out.workspaces[*index];
-                    if existing.title.is_none() {
-                        existing.title = workspace.title.clone();
-                    }
-                    if existing.branch.is_none() {
-                        existing.branch = workspace.branch.clone();
-                    }
-                    if existing.project_key.is_none() {
-                        existing.project_key = project_key.clone();
-                    }
-                    existing.key.clone()
-                }
-                None => {
-                    let key = format!("workspace:{path}");
-                    workspace_by_path.insert(path.clone(), out.workspaces.len());
-                    out.workspaces.push(BundleWorkspace {
-                        key: key.clone(),
-                        project_key,
-                        path,
-                        ..workspace.clone()
-                    });
-                    key
-                }
-            };
-            workspace_key_map.insert((tool.clone(), workspace.key), merged_key);
+            self.add_workspace(&tool, workspace);
         }
+        for chat in bundle.chats {
+            self.add_chat(&tool, &bundle.source, chat);
+        }
+        self.add_items(&tool, &bundle.source, bundle.memories, bundle.setup, bundle.preferences);
+        Ok(())
+    }
 
-        for mut chat in bundle.chats {
-            if chat.key.trim().is_empty() {
-                out.diagnostics.push(info(
-                    "chat_without_key",
-                    format!("A chat from {tool} had no key and was skipped"),
-                ));
-                continue;
+    fn add_project(&mut self, tool: &str, project: BundleProject) {
+        let root = normalize_path(&project.repo_root);
+        let merged_key = match self.project_by_root.get(&root) {
+            Some(index) => self.out.projects[*index].key.clone(),
+            None => {
+                let key = format!("project:{root}");
+                self.project_by_root.insert(root.clone(), self.out.projects.len());
+                self.out.projects.push(BundleProject {
+                    key: key.clone(),
+                    repo_root: root,
+                    ..project.clone()
+                });
+                key
             }
-            chat.workspace_key = chat
-                .workspace_key
-                .as_ref()
-                .and_then(|key| workspace_key_map.get(&(tool.clone(), key.clone())).cloned());
-            if let Some(cwd) = chat.cwd.as_deref() {
-                chat.cwd = Some(normalize_path(cwd));
-            }
-            let identity = chat
-                .native_ref
-                .as_ref()
-                .filter(|native| {
-                    !native.session_id.trim().is_empty() && !native.harness.trim().is_empty()
-                })
-                .map(NativeRef::key)
-                .unwrap_or_else(|| format!("{tool}:{}", chat.key));
-            if local_identity
-                .insert((tool.clone(), chat.key.clone()), identity.clone())
-                .is_some()
-            {
-                out.diagnostics.push(info(
-                    "duplicate_chat_key",
-                    format!("Two chats from {tool} shared one key; the later one was merged"),
-                ));
-            }
-            if let Some(parent) = chat.parent_chat_key.clone() {
-                pending_parent.push((tool.clone(), identity.clone(), parent));
-            }
-            match chat_index.get(&identity) {
-                Some(index) => merge_chat(&mut out.chats[*index], chat, &bundle.source),
-                None => {
-                    chat_index.insert(identity.clone(), out.chats.len());
-                    out.chats.push(ResolvedChat {
-                        identity,
-                        contributors: vec![(tool.clone(), chat.source_ref.clone())],
-                        primary: bundle.source.clone(),
-                        parent_identity: None,
-                        chat,
-                    });
+        };
+        self.project_key_map.insert((tool.to_owned(), project.key), merged_key);
+    }
+
+    fn add_workspace(&mut self, tool: &str, workspace: BundleWorkspace) {
+        let path = normalize_path(&workspace.path);
+        let project_key = workspace
+            .project_key
+            .as_ref()
+            .and_then(|key| self.project_key_map.get(&(tool.to_owned(), key.clone())).cloned());
+        let merged_key = match self.workspace_by_path.get(&path) {
+            Some(index) => {
+                let existing = &mut self.out.workspaces[*index];
+                if existing.title.is_none() {
+                    existing.title = workspace.title.clone();
                 }
+                if existing.branch.is_none() {
+                    existing.branch = workspace.branch.clone();
+                }
+                if existing.project_key.is_none() {
+                    existing.project_key = project_key.clone();
+                }
+                existing.key.clone()
+            }
+            None => {
+                let key = format!("workspace:{path}");
+                self.workspace_by_path.insert(path.clone(), self.out.workspaces.len());
+                self.out.workspaces.push(BundleWorkspace {
+                    key: key.clone(),
+                    project_key,
+                    path,
+                    ..workspace.clone()
+                });
+                key
+            }
+        };
+        self.workspace_key_map.insert((tool.to_owned(), workspace.key), merged_key);
+    }
+
+    fn add_chat(&mut self, tool: &str, source: &BundleSource, mut chat: BundleChat) {
+        if chat.key.trim().is_empty() {
+            self.out.diagnostics.push(info(
+                "chat_without_key",
+                format!("A chat from {tool} had no key and was skipped"),
+            ));
+            return;
+        }
+        chat.workspace_key = chat
+            .workspace_key
+            .as_ref()
+            .and_then(|key| self.workspace_key_map.get(&(tool.to_owned(), key.clone())).cloned());
+        if let Some(cwd) = chat.cwd.as_deref() {
+            chat.cwd = Some(normalize_path(cwd));
+        }
+        let identity = chat
+            .native_ref
+            .as_ref()
+            .filter(|native| !native.session_id.trim().is_empty() && !native.harness.trim().is_empty())
+            .map(NativeRef::key)
+            .unwrap_or_else(|| format!("{tool}:{}", chat.key));
+        if self
+            .local_identity
+            .insert((tool.to_owned(), chat.key.clone()), identity.clone())
+            .is_some()
+        {
+            self.out.diagnostics.push(info(
+                "duplicate_chat_key",
+                format!("Two chats from {tool} shared one key; the later one was merged"),
+            ));
+        }
+        if let Some(parent) = chat.parent_chat_key.clone() {
+            self.pending_parent.push((tool.to_owned(), identity.clone(), parent));
+        }
+        match self.chat_index.get(&identity) {
+            Some(index) => merge_chat(&mut self.out.chats[*index], chat, source),
+            None => {
+                self.chat_index.insert(identity.clone(), self.out.chats.len());
+                self.out.chats.push(ResolvedChat {
+                    identity,
+                    contributors: vec![(tool.to_owned(), chat.source_ref.clone())],
+                    primary: source.clone(),
+                    parent_identity: None,
+                    chat,
+                });
             }
         }
+    }
 
-        for memory in bundle.memories {
+    fn add_items(
+        &mut self,
+        tool: &str,
+        source: &BundleSource,
+        memories: Vec<BundleMemory>,
+        setup: Vec<BundleSetup>,
+        preferences: Vec<BundlePreference>,
+    ) {
+        for mut memory in memories {
             let key = (
                 memory.scope.clone(),
                 memory.project_key.clone(),
                 crate::external_import::sha256_hex(memory.body.trim().as_bytes()),
             );
-            if memory_seen.insert(key) {
-                let mut memory = memory;
+            if self.memory_seen.insert(key) {
                 memory.project_key = memory
                     .project_key
-                    .and_then(|key| project_key_map.get(&(tool.clone(), key)).cloned());
-                out.memories.push((bundle.source.clone(), memory));
+                    .and_then(|key| self.project_key_map.get(&(tool.to_owned(), key)).cloned());
+                self.out.memories.push((source.clone(), memory));
             }
         }
-        for setup in bundle.setup {
-            let body = setup
+        for item in setup {
+            let body = item
                 .body
                 .clone()
-                .or_else(|| setup.config.as_ref().map(Value::to_string))
+                .or_else(|| item.config.as_ref().map(Value::to_string))
                 .unwrap_or_default();
             let key = (
-                setup.kind.as_str().to_owned(),
-                setup.name.clone(),
+                item.kind.as_str().to_owned(),
+                item.name.clone(),
                 crate::external_import::sha256_hex(body.as_bytes()),
             );
-            if setup_seen.insert(key) {
-                out.setup.push((bundle.source.clone(), setup));
+            if self.setup_seen.insert(key) {
+                self.out.setup.push((source.clone(), item));
             }
         }
-        for preference in bundle.preferences {
-            if preference_seen.insert(format!("{}={}", preference.name, preference.value)) {
-                out.preferences.push((bundle.source.clone(), preference));
+        for preference in preferences {
+            if self
+                .preference_seen
+                .insert(format!("{}={}", preference.name, preference.value))
+            {
+                self.out.preferences.push((source.clone(), preference));
             }
         }
     }
 
-    for (tool, child_identity, parent_key) in pending_parent {
-        let Some(parent_identity) = local_identity.get(&(tool.clone(), parent_key)).cloned() else {
-            out.diagnostics.push(info(
-                "parent_chat_missing",
-                format!("A {tool} chat named a parent that was not in the import; it was kept as a top-level chat"),
-            ));
-            continue;
-        };
-        if parent_identity == child_identity {
-            continue;
-        }
-        if let Some(index) = chat_index.get(&child_identity) {
-            if out.chats[*index].parent_identity.is_none() {
-                out.chats[*index].parent_identity = Some(parent_identity);
+    fn finish(mut self) -> ResolvedImport {
+        for (tool, child_identity, parent_key) in std::mem::take(&mut self.pending_parent) {
+            let Some(parent_identity) = self.local_identity.get(&(tool.clone(), parent_key)).cloned()
+            else {
+                self.out.diagnostics.push(info(
+                    "parent_chat_missing",
+                    format!("A {tool} chat named a parent that was not in the import; it was kept as a top-level chat"),
+                ));
+                continue;
+            };
+            if parent_identity == child_identity {
+                continue;
+            }
+            if let Some(index) = self.chat_index.get(&child_identity) {
+                if self.out.chats[*index].parent_identity.is_none() {
+                    self.out.chats[*index].parent_identity = Some(parent_identity);
+                }
             }
         }
+        break_parent_cycles(&mut self.out);
+        order_parents_first(&mut self.out.chats);
+        self.out
     }
-    break_parent_cycles(&mut out);
-    order_parents_first(&mut out.chats);
-    Ok(out)
 }
 
 fn break_parent_cycles(out: &mut ResolvedImport) {
@@ -683,7 +718,7 @@ fn order_parents_first(chats: &mut Vec<ResolvedChat>) {
         remaining = rest;
         if remaining.len() == before {
             // Unreachable after cycle breaking; keep everything rather than loop.
-            ordered.extend(remaining.drain(..));
+            ordered.append(&mut remaining);
         }
     }
     *chats = ordered;
@@ -719,119 +754,145 @@ fn lower_entry(
     sequence: usize,
     excluded: &mut BTreeMap<&'static str, u32>,
 ) -> Option<Value> {
-    let text = entry.text.clone().unwrap_or_default();
     match entry.kind {
-        BundleEntryKind::UserMessage => {
-            let mut attachments = Vec::new();
-            for attachment in &entry.attachments {
-                match attachment.data_base64.as_deref() {
-                    Some(data)
-                        if attachment.media_type.starts_with("image/")
-                            && data.len() <= MAX_INLINE_ATTACHMENT_BYTES =>
-                    {
-                        attachments.push(json!({
-                            "mediaType": attachment.media_type,
-                            "dataUri": format!("data:{};base64,{data}", attachment.media_type),
-                        }));
-                    }
-                    _ => *excluded.entry("attachment").or_insert(0) += 1,
-                }
-            }
-            let text = if text.trim().is_empty() {
-                if attachments.is_empty() {
-                    *excluded.entry("empty_message").or_insert(0) += 1;
-                    return None;
-                }
-                "Attached image".to_owned()
-            } else {
-                text
-            };
-            let mut message = json!({
-                "sourceId": entry.source_id,
-                "role": "user",
-                "kind": "user.message",
-                "text": text,
-                "timestamp": entry.at,
-                "sequence": sequence,
-            });
-            if !attachments.is_empty() {
-                message["data"] = json!({ "attachments": attachments });
-            }
-            Some(message)
-        }
+        BundleEntryKind::UserMessage => lower_user(entry, sequence, excluded),
         BundleEntryKind::AssistantMessage | BundleEntryKind::Reasoning => {
-            if text.trim().is_empty() {
-                *excluded.entry("empty_message").or_insert(0) += 1;
-                return None;
-            }
-            let kind = if entry.kind == BundleEntryKind::Reasoning {
-                "reasoning"
-            } else {
-                "assistant.message"
-            };
-            Some(json!({
-                "sourceId": entry.source_id,
-                "role": "assistant",
-                "kind": kind,
-                "text": text,
-                "timestamp": entry.at,
-                "sequence": sequence,
-            }))
+            lower_text(entry, sequence, excluded)
         }
-        BundleEntryKind::ToolCall => {
-            let Some(tool) = entry.tool.as_ref() else {
-                *excluded.entry("tool_without_call").or_insert(0) += 1;
-                return None;
-            };
-            let call_id = if tool.call_id.trim().is_empty() {
-                entry.source_id.clone()
-            } else {
-                tool.call_id.clone()
-            };
-            let name = if tool.name.trim().is_empty() {
-                "tool".to_owned()
-            } else {
-                tool.name.clone()
-            };
-            let mut data = json!({
-                "type": "tool_use",
-                "name": name,
-                "input": tool.input,
-            });
-            if let Some(output) = tool.output.as_deref() {
-                let (kept, cut) = truncate_chars(output, MAX_TOOL_OUTPUT_CHARS);
-                data["aggregatedOutput"] = Value::String(if cut {
-                    format!("{kept}\n\n[output cut at {MAX_TOOL_OUTPUT_CHARS} characters on import]")
-                } else {
-                    kept
-                });
-            }
-            Some(json!({
-                "sourceId": entry.source_id,
-                "role": "assistant",
-                "kind": "tool.completed",
-                "itemId": call_id,
-                "title": name,
-                "status": match tool.status {
-                    ToolStatus::Completed => "completed",
-                    ToolStatus::Failed => "failed",
-                    ToolStatus::Unknown => "interrupted",
-                },
-                "data": data,
-                "timestamp": entry.at,
-                "sequence": sequence,
-            }))
-        }
-        BundleEntryKind::CompactionBoundary => Some(json!({
-            "sourceId": entry.source_id,
-            "role": "system",
-            "kind": "compaction",
-            "schemaVersion": 1,
-            "summary": if text.trim().is_empty() { "Conversation compacted".to_owned() } else { text },
-            "timestamp": entry.at,
-            "sequence": sequence,
-        })),
+        BundleEntryKind::ToolCall => lower_tool(entry, sequence, excluded),
+        BundleEntryKind::CompactionBoundary => Some(lower_compaction(entry, sequence)),
     }
+}
+
+fn lower_user(
+    entry: &BundleEntry,
+    sequence: usize,
+    excluded: &mut BTreeMap<&'static str, u32>,
+) -> Option<Value> {
+    let mut attachments = Vec::new();
+    for attachment in &entry.attachments {
+        match attachment.data_base64.as_deref() {
+            Some(data)
+                if attachment.media_type.starts_with("image/")
+                    && data.len() <= MAX_INLINE_ATTACHMENT_BYTES =>
+            {
+                attachments.push(json!({
+                    "mediaType": attachment.media_type,
+                    "dataUri": format!("data:{};base64,{data}", attachment.media_type),
+                }));
+            }
+            _ => *excluded.entry("attachment").or_insert(0) += 1,
+        }
+    }
+    let text = entry.text.clone().unwrap_or_default();
+    let text = if text.trim().is_empty() {
+        if attachments.is_empty() {
+            *excluded.entry("empty_message").or_insert(0) += 1;
+            return None;
+        }
+        "Attached image".to_owned()
+    } else {
+        text
+    };
+    let mut message = json!({
+        "sourceId": entry.source_id,
+        "role": "user",
+        "kind": "user.message",
+        "text": text,
+        "timestamp": entry.at,
+        "sequence": sequence,
+    });
+    if !attachments.is_empty() {
+        message["data"] = json!({ "attachments": attachments });
+    }
+    Some(message)
+}
+
+fn lower_text(
+    entry: &BundleEntry,
+    sequence: usize,
+    excluded: &mut BTreeMap<&'static str, u32>,
+) -> Option<Value> {
+    let text = entry.text.clone().unwrap_or_default();
+    if text.trim().is_empty() {
+        *excluded.entry("empty_message").or_insert(0) += 1;
+        return None;
+    }
+    let kind = if entry.kind == BundleEntryKind::Reasoning {
+        "reasoning"
+    } else {
+        "assistant.message"
+    };
+    Some(json!({
+        "sourceId": entry.source_id,
+        "role": "assistant",
+        "kind": kind,
+        "text": text,
+        "timestamp": entry.at,
+        "sequence": sequence,
+    }))
+}
+
+fn lower_tool(
+    entry: &BundleEntry,
+    sequence: usize,
+    excluded: &mut BTreeMap<&'static str, u32>,
+) -> Option<Value> {
+    let Some(tool) = entry.tool.as_ref() else {
+        *excluded.entry("tool_without_call").or_insert(0) += 1;
+        return None;
+    };
+    let call_id = if tool.call_id.trim().is_empty() {
+        entry.source_id.clone()
+    } else {
+        tool.call_id.clone()
+    };
+    let name = if tool.name.trim().is_empty() {
+        "tool".to_owned()
+    } else {
+        tool.name.clone()
+    };
+    let mut data = json!({
+        "type": "tool_use",
+        "name": name,
+        "input": tool.input,
+    });
+    if let Some(output) = tool.output.as_deref() {
+        let (kept, cut) = truncate_chars(output, MAX_TOOL_OUTPUT_CHARS);
+        data["aggregatedOutput"] = Value::String(if cut {
+            format!("{kept}\n\n[output cut at {MAX_TOOL_OUTPUT_CHARS} characters on import]")
+        } else {
+            kept
+        });
+    }
+    Some(json!({
+        "sourceId": entry.source_id,
+        "role": "assistant",
+        "kind": "tool.completed",
+        "itemId": call_id,
+        "title": name,
+        "status": match tool.status {
+            ToolStatus::Completed => "completed",
+            ToolStatus::Failed => "failed",
+            ToolStatus::Unknown => "interrupted",
+        },
+        "data": data,
+        "timestamp": entry.at,
+        "sequence": sequence,
+    }))
+}
+
+fn lower_compaction(entry: &BundleEntry, sequence: usize) -> Value {
+    let text = entry.text.clone().unwrap_or_default();
+    json!({
+        "sourceId": entry.source_id,
+        "role": "system",
+        "kind": "compaction",
+        "schemaVersion": 1,
+        "summary": if text.trim().is_empty() { "Conversation compacted".to_owned() } else { text },
+        "timestamp": entry.at,
+        "sequence": sequence,
+    })
 }
 
 fn derived_title(chat: &BundleChat) -> String {
@@ -916,126 +977,129 @@ pub struct LoweredImport {
 
 /// Turn a resolved import into candidates. Chats come out parents first, and a
 /// child carries its parent's candidate id so the writer can link them.
-pub fn lower(resolved: &ResolvedImport) -> LoweredImport {
-    let mut out = LoweredImport {
-        excluded: resolved.excluded.clone(),
-        diagnostics: resolved.diagnostics.clone(),
-        ..LoweredImport::default()
-    };
-    let mut candidate_by_identity: HashMap<String, String> = HashMap::new();
-    let workspace_by_key: HashMap<&str, &BundleWorkspace> = resolved
-        .workspaces
+/// A chat's entries as stored messages, numbered from 1, with anything left
+/// out counted against the chat's label.
+fn lower_messages(chat: &BundleChat, out: &mut LoweredImport) -> Vec<Value> {
+    let mut excluded: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let messages: Vec<Value> = chat
+        .entries
         .iter()
-        .map(|workspace| (workspace.key.as_str(), workspace))
+        .filter_map(|entry| lower_entry(entry, 0, &mut excluded))
+        .enumerate()
+        .map(|(index, mut message)| {
+            message["sequence"] = json!(index + 1);
+            message
+        })
         .collect();
-    for resolved_chat in &resolved.chats {
-        let chat = &resolved_chat.chat;
-        let mut excluded: BTreeMap<&'static str, u32> = BTreeMap::new();
-        let messages: Vec<Value> = chat
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let sequence = 0;
-                lower_entry(entry, sequence, &mut excluded)
-            })
-            .enumerate()
-            .map(|(index, mut message)| {
-                message["sequence"] = json!(index + 1);
-                message
-            })
-            .collect();
-        for (category, count) in &excluded {
-            push_exclusion(&mut out.excluded, category, &chat.source_label, *count, match *category {
-                "attachment" => "image too large or not an image; the message text was kept",
-                "empty_message" => "the message had no text",
-                _ => "the entry had no content Bridge can show",
-            });
-        }
-        if messages.is_empty() {
-            push_exclusion(
-                &mut out.excluded,
-                "chat",
-                &chat.source_label,
-                1,
-                match chat.entries_source {
-                    EntriesSource::None => "no transcript was found for this chat",
-                    _ => "the chat had no messages Bridge can show",
-                },
-            );
-            continue;
-        }
-        let title_source = if chat.title.as_ref().is_some_and(|t| !t.trim().is_empty()) {
-            chat.title_source
-        } else {
-            TitleSource::Derived
+    for (category, count) in &excluded {
+        let reason = match *category {
+            "attachment" => "image too large or not an image; the message text was kept",
+            "empty_message" => "the message had no text",
+            _ => "the entry had no content Bridge can show",
         };
-        let title = chat
-            .title
-            .clone()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| derived_title(chat));
-        let workspace_path = chat
-            .workspace_key
-            .as_deref()
-            .and_then(|key| workspace_by_key.get(key))
-            .map(|workspace| workspace.path.clone());
-        let parent_candidate = resolved_chat
-            .parent_identity
-            .as_ref()
-            .and_then(|parent| candidate_by_identity.get(parent).cloned());
-        // What the conversation says, independent of which tool delivered it:
-        // the same session through Conductor and through Claude Code compares equal.
-        let transcript_hash = content_hash(&Value::Array(messages.clone()));
-        let payload = json!({
-            "messages": messages,
-            "transcriptHash": transcript_hash,
-            "projectHint": chat.cwd,
-            "historical": true,
-            "resumable": false,
-            "harness": chat.harness,
-            "sourceTool": resolved_chat.primary.tool,
-            "sourceBadge": format!("Imported from {}", tool_label(&resolved_chat.primary.tool)),
-            "nativeRef": chat.native_ref,
-            "nativeKey": chat.native_ref.as_ref().map(NativeRef::key),
-            "cwd": chat.cwd,
-            "workspacePath": workspace_path,
-            "titleSource": title_source,
-            "entriesSource": chat.entries_source,
-            "archived": chat.archived,
-            "pinned": chat.pinned,
-            "model": chat.model,
-            "effort": chat.effort,
-            "agentRole": chat.agent_role,
-            "parentCandidateId": parent_candidate,
-            "pullRequests": chat.pull_requests,
-            "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|(tool, source_ref)| json!({
-                "tool": tool,
-                "sourceRef": source_ref,
-            })).collect::<Vec<_>>(),
-        });
-        let native_id = Some(
-            chat.native_ref
-                .as_ref()
-                .map(|native| native.session_id.clone())
-                .unwrap_or_else(|| chat.key.clone()),
-        );
-        let mut candidate = build_candidate(
-            import_source(&resolved_chat.primary, &chat.source_ref),
-            CandidateKind::Conversation,
-            title,
-            native_id,
-            payload,
-            Stability::VersionGated,
-            false,
-            Vec::new(),
-        );
-        candidate.created_at = chat.created_at.clone();
-        candidate.updated_at = chat.updated_at.clone();
-        // The payload was redacted above; the hint must be the same redacted value.
-        candidate.project_hint = candidate.normalized_payload["cwd"].as_str().map(str::to_owned);
-        candidate_by_identity.insert(resolved_chat.identity.clone(), candidate.candidate_id.clone());
-        out.candidates.push(candidate);
+        push_exclusion(&mut out.excluded, category, &chat.source_label, *count, reason);
     }
+    messages
+}
+
+/// Lower one resolved chat into a conversation candidate, or count it as
+/// excluded when nothing in it can be shown.
+fn lower_chat(
+    resolved_chat: &ResolvedChat,
+    workspace_by_key: &HashMap<&str, &BundleWorkspace>,
+    candidate_by_identity: &mut HashMap<String, String>,
+    out: &mut LoweredImport,
+) {
+    let chat = &resolved_chat.chat;
+    let messages = lower_messages(chat, out);
+    if messages.is_empty() {
+        push_exclusion(
+            &mut out.excluded,
+            "chat",
+            &chat.source_label,
+            1,
+            match chat.entries_source {
+                EntriesSource::None => "no transcript was found for this chat",
+                _ => "the chat had no messages Bridge can show",
+            },
+        );
+        return;
+    }
+    let title_source = if chat.title.as_ref().is_some_and(|t| !t.trim().is_empty()) {
+        chat.title_source
+    } else {
+        TitleSource::Derived
+    };
+    let title = chat
+        .title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| derived_title(chat));
+    let workspace_path = chat
+        .workspace_key
+        .as_deref()
+        .and_then(|key| workspace_by_key.get(key))
+        .map(|workspace| workspace.path.clone());
+    let parent_candidate = resolved_chat
+        .parent_identity
+        .as_ref()
+        .and_then(|parent| candidate_by_identity.get(parent).cloned());
+    // What the conversation says, independent of which tool delivered it:
+    // the same session through Conductor and through Claude Code compares equal.
+    let transcript_hash = content_hash(&Value::Array(messages.clone()));
+    let payload = json!({
+        "messages": messages,
+        "transcriptHash": transcript_hash,
+        "projectHint": chat.cwd,
+        "historical": true,
+        "resumable": false,
+        "harness": chat.harness,
+        "sourceTool": resolved_chat.primary.tool,
+        "sourceBadge": format!("Imported from {}", tool_label(&resolved_chat.primary.tool)),
+        "nativeRef": chat.native_ref,
+        "nativeKey": chat.native_ref.as_ref().map(NativeRef::key),
+        "cwd": chat.cwd,
+        "workspacePath": workspace_path,
+        "titleSource": title_source,
+        "entriesSource": chat.entries_source,
+        "archived": chat.archived,
+        "pinned": chat.pinned,
+        "model": chat.model,
+        "effort": chat.effort,
+        "agentRole": chat.agent_role,
+        "parentCandidateId": parent_candidate,
+        "pullRequests": chat.pull_requests,
+        "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|(tool, source_ref)| json!({
+            "tool": tool,
+            "sourceRef": source_ref,
+        })).collect::<Vec<_>>(),
+    });
+    let native_id = Some(
+        chat.native_ref
+            .as_ref()
+            .map(|native| native.session_id.clone())
+            .unwrap_or_else(|| chat.key.clone()),
+    );
+    let mut candidate = build_candidate(
+        import_source(&resolved_chat.primary, &chat.source_ref),
+        CandidateKind::Conversation,
+        title,
+        native_id,
+        payload,
+        Stability::VersionGated,
+        false,
+        Vec::new(),
+    );
+    candidate.created_at = chat.created_at.clone();
+    candidate.updated_at = chat.updated_at.clone();
+    // The payload was redacted above; the hint must be the same redacted value.
+    candidate.project_hint = candidate.normalized_payload["cwd"].as_str().map(str::to_owned);
+    candidate_by_identity.insert(resolved_chat.identity.clone(), candidate.candidate_id.clone());
+    out.candidates.push(candidate);
+}
+
+/// Lower memories, setup and preferences: each becomes one inert candidate.
+fn lower_items(resolved: &ResolvedImport, out: &mut LoweredImport) {
     for (source, memory) in &resolved.memories {
         if memory.body.trim().is_empty() {
             push_exclusion(&mut out.excluded, "memory", &memory.source_label, 1, "the memory was empty");
@@ -1101,6 +1165,24 @@ pub fn lower(resolved: &ResolvedImport) -> LoweredImport {
             Vec::new(),
         ));
     }
+}
+
+pub fn lower(resolved: &ResolvedImport) -> LoweredImport {
+    let mut out = LoweredImport {
+        excluded: resolved.excluded.clone(),
+        diagnostics: resolved.diagnostics.clone(),
+        ..LoweredImport::default()
+    };
+    let mut candidate_by_identity: HashMap<String, String> = HashMap::new();
+    let workspace_by_key: HashMap<&str, &BundleWorkspace> = resolved
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.key.as_str(), workspace))
+        .collect();
+    for resolved_chat in &resolved.chats {
+        lower_chat(resolved_chat, &workspace_by_key, &mut candidate_by_identity, &mut out);
+    }
+    lower_items(resolved, &mut out);
     out
 }
 
