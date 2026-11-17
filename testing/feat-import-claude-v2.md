@@ -36,3 +36,16 @@ count of non-boundary entries equals the source items the reader counted.
 session on a machine, lowers each through the bundle and commits every 40th to
 a real store. Must report zero read errors, zero parity breaks and zero commit
 errors. Prints aggregates only, never content.
+
+## Review amendments
+
+Added after review of #1065. Each row names the regression test that failed before its fix.
+
+| # | Expectation | Test |
+|---|---|---|
+| B1 | A subagent transcript or its `.meta.json` that resolves outside the approved folders (a symlink) is never opened; the escape is reported | `claude_import::tests::a_subagent_symlink_outside_the_approved_folder_is_not_read` |
+| B2 | A chat imported by the v1 reader is recognised by v2: the unchanged file is a duplicate, a changed one asks first, and the native mapping is filled in | `claude_import::tests::a_chat_imported_before_the_upgrade_is_not_imported_twice` |
+| B3 | Commit re-derives exactly the artifacts the preview read, for every caller, so a copy that was not selected cannot change the candidates | `api::tests::commit_uses_the_artifacts_the_preview_read` |
+| B4 | Inline sidechain records (`isSidechain` with `agentId` in the session file) become child chats, and a child also present as a `subagents/` file appears once | `inline_sidechains_become_child_chats`, `an_inline_sidechain_and_its_file_are_one_child` |
+| B5 | A subagent transcript that cannot be read is reported against its session instead of disappearing | `claude_import::tests::an_unreadable_subagent_is_reported` |
+| B6 | Skipping an oversized line holds at most one buffer, not the rest of the line | `discarding_a_line_never_holds_more_than_one_buffer` |
