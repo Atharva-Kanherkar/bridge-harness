@@ -7,6 +7,7 @@ import { hasNativeBrowser, type BrowserAction, type BrowserPageSnapshot } from "
 import { BrowserPage, type BrowserPageHandle } from "./BrowserPage";
 import { PaneState } from "./ui/pane";
 import { cn } from "../lib/utils";
+import { formatShortcut, modKey } from "../lib/platform";
 
 export type SimpleBrowserProps = {
   sessionId?: string;
@@ -238,8 +239,8 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
           </div>;
         })}
       </div>
-      <button type="button" className={control} aria-label="New browser tab" title="New tab  ⌘T" disabled={workspace.tabs.length >= 20} onClick={() => createTab()}><Plus size={14} /></button>
-      <button type="button" className={control} aria-label="Reopen closed browser tab" title="Reopen closed tab  ⌘⇧T" disabled={!workspace.recentlyClosed.length || workspace.tabs.length >= 20} onClick={reopenTab}><Undo2 size={13} /></button>
+      <button type="button" className={control} aria-label="New browser tab" title={`New tab  ${modKey("T")}`} disabled={workspace.tabs.length >= 20} onClick={() => createTab()}><Plus size={14} /></button>
+      <button type="button" className={control} aria-label="Reopen closed browser tab" title={`Reopen closed tab  ${formatShortcut({ meta: true, shift: true }, "T")}`} disabled={!workspace.recentlyClosed.length || workspace.tabs.length >= 20} onClick={reopenTab}><Undo2 size={13} /></button>
     </div>
     <form className="flex min-h-9 shrink-0 items-center gap-1 border-b border-border py-1 pl-1.5 pr-2" onSubmit={event => { event.preventDefault(); navigate(draft); }}>
       <button type="button" className={control} aria-label="Back" title="Back" disabled={!canBack} onClick={() => act("back")}><ArrowLeft size={13} /></button>
