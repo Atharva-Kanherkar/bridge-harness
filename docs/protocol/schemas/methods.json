@@ -1234,6 +1234,20 @@
       "resultSchema": "value.json"
     },
     {
+      "command": "get_personal_app_open",
+      "domain": "apps",
+      "method": "apps/get_personal_app_open",
+      "paramsSchema": "get-personal-app-open-params.json",
+      "resultSchema": "personal-app-open.json"
+    },
+    {
+      "command": "call_personal_app_tool",
+      "domain": "apps",
+      "method": "apps/call_personal_app_tool",
+      "paramsSchema": "call-personal-app-tool-params.json",
+      "resultSchema": "personal-app-call-result.json"
+    },
+    {
       "command": "lock_personal_app",
       "domain": "apps",
       "method": "apps/lock_personal_app",
@@ -2377,7 +2391,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 40
+    "minor": 41
   },
   "reserved": {
     "cancel": "$/cancel",

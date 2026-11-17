@@ -10,8 +10,10 @@ import { Button } from "./ui/button";
  * than one assembled here is what keeps the dialog honest about what the second
  * call will actually do.
  */
-export function ConnectorApprovalSheet({ effect, busy, onApprove, onDeny, inFlow = false }: {
+export function ConnectorApprovalSheet({ effect, detail, busy, onApprove, onDeny, inFlow = false }: {
   effect: string;
+  /** Exact payload shown verbatim under the sentence, e.g. the JSON a write sends. */
+  detail?: string;
   inFlow?: boolean;
   busy: boolean;
   onApprove: () => void;
@@ -42,6 +44,7 @@ export function ConnectorApprovalSheet({ effect, busy, onApprove, onDeny, inFlow
       <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/60 p-2 text-[12px] leading-relaxed text-foreground">
         {effect}
       </p>
+      {detail !== undefined && <pre aria-label="Exact arguments" className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/60 p-2 font-mono text-[11px] leading-relaxed text-foreground">{detail}</pre>}
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onDeny} disabled={busy}><X size={12} />Cancel</Button>
         <Button size="sm" loading={busy} onClick={onApprove}><Send size={12} />Send</Button>

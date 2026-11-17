@@ -654,6 +654,23 @@ impl BriefingRuntimePolicy {
         Ok(policy)
     }
 
+    /// One approved personal-app write: the app runtime's launch (native
+    /// connectors, the person's own settings, this one server), carrying
+    /// exactly one call. Reached only after the person approved these exact
+    /// arguments in Bridge's sheet; the sidecar and the SDK gate each check
+    /// deep equality and allow one use.
+    pub fn compile_app_write(server: String, tool: &str, arguments: serde_json::Value, limits: wire::WorkBriefLimits) -> Result<Self, BriefingUnsupported> {
+        let tool_ok = !tool.is_empty() && tool.len() <= 64 && tool.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+        if !tool_ok || !arguments.is_object() {
+            return Err(BriefingUnsupported::MalformedPolicy { detail: "an app write names one tool and an argument object".into() });
+        }
+        let mut policy = Self::compile_app_runtime(server.clone(), limits)?;
+        policy.exact_action = Some((format!("mcp__{}__{tool}", crate::workflows::wire_server_name(&server)), arguments));
+        policy.max_argument_bytes = 64 * 1024;
+        policy.direct_call = true;
+        Ok(policy)
+    }
+
     pub fn app_runtime(&self) -> Option<&str> {
         self.app_runtime.as_deref()
     }
@@ -1404,6 +1421,21 @@ mod tests {
         }
         assert!(BriefingRuntimePolicy::compile_app_runtime(" ".into(), action_limits()).is_err());
         assert!(BriefingRuntimePolicy::compile_scoped(vec![], action_limits()).unwrap().app_runtime().is_none());
+    }
+
+    #[test]
+    fn an_app_write_allows_exactly_its_one_tool() {
+        let arguments = serde_json::json!({"to": "Ada", "text": "hi"});
+        let write = BriefingRuntimePolicy::compile_app_write("claude.ai Slack".into(), "slack_send_message", arguments.clone(), action_limits()).unwrap();
+        assert!(write.direct_call() && write.native_connectors());
+        assert_eq!(write.app_runtime(), Some("claude.ai Slack"));
+        assert_eq!(write.exact_action_config(), Some(serde_json::json!({"tool": "mcp__claude_ai_Slack__slack_send_message", "arguments": arguments})));
+        assert!(matches!(write.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow));
+        for other in ["mcp__claude_ai_Slack__slack_delete_message", "mcp__claude_ai_Slack__slack_search_users", "Bash"] {
+            assert!(!matches!(write.decide(other, 10), ToolDecision::Allow), "{other}");
+        }
+        assert!(BriefingRuntimePolicy::compile_app_write("s".into(), "Bad Tool", serde_json::json!({}), action_limits()).is_err());
+        assert!(BriefingRuntimePolicy::compile_app_write("s".into(), "send", serde_json::json!([]), action_limits()).is_err());
     }
 
     #[test]

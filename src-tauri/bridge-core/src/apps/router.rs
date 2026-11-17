@@ -181,6 +181,31 @@ pub fn read_with(
     send(&json!({"kind": "read", "server": connection.server, "tool": tool, "arguments": arguments}))
 }
 
+/// One approved write. Callers reach this only with a claimed, single-use
+/// approval of these exact arguments (see [`super::open`]); nothing here asks
+/// again. Claude sends it from a one-shot exact-action launch, Codex with a
+/// direct call on the connection's runtime.
+pub fn write(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
+    match connection.harness.as_str() {
+        "claude" => super::write::claude(core, &key_for(connection), tool, arguments),
+        "codex" => send(core, chat, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments})),
+        other => Err(invalid(format!(
+            "{} cannot run personal apps directly yet; connect {} in Claude Code or Codex",
+            agent_label(other),
+            connection.server
+        ))),
+    }
+}
+
+fn key_for(connection: &Connection) -> runtimes::Key {
+    runtimes::Key {
+        harness: connection.harness.clone(),
+        account: connection.account.clone(),
+        cwd: connection.cwd.clone(),
+        server: connection.server.clone(),
+    }
+}
+
 /// The connections to try for a server a chat names, in order: the chat's own
 /// agent and account when it can run apps directly, then the person's own
 /// Claude Code and Codex logins.

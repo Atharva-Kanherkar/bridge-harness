@@ -70,6 +70,8 @@ pub(crate) fn chat(key: &str, harness: &str, native: Option<&str>, entries: Vec<
         entries_source: EntriesSource::Native,
         entries,
         pull_requests: Vec::new(),
+        legacy_native_id: None,
+        legacy_content_hash: None,
         source_ref: format!("/fixture/{harness}/{key}.jsonl"),
         source_label: format!("{key}.jsonl"),
     }
@@ -218,7 +220,7 @@ fn every_entry_kind_lands_in_the_forest_and_renders_as_its_live_twin() {
         .collect();
     assert_eq!(
         kinds,
-        vec!["user.message", "reasoning", "tool.completed", "tool.completed", "assistant.message", "user.message", "compaction", "assistant.message"]
+        vec!["user.message", "reasoning", "tool.completed", "tool.completed", "assistant.message", "user.message", "context.compacted", "assistant.message"]
     );
     let failed: String = db
         .query_row("SELECT payload FROM session_entries WHERE kind='tool.completed' AND payload LIKE '%no such file%'", [], |row| row.get(0))
@@ -381,7 +383,7 @@ fn oversized_images_and_empty_messages_are_reported_not_dropped_silently() {
     big.attachments.push(BundleAttachment {
         media_type: "image/png".into(),
         name: None,
-        data_base64: Some("A".repeat(MAX_INLINE_ATTACHMENT_BYTES + 1)),
+        data_base64: Some(base64_of(MAX_INLINE_ATTACHMENT_BYTES + 1)),
         bytes: (MAX_INLINE_ATTACHMENT_BYTES + 1) as u64,
     });
     let entries = vec![big, entry("empty", BundleEntryKind::AssistantMessage, "   ")];
@@ -771,4 +773,216 @@ fn entries_a_source_marked_as_none_never_beat_a_real_tool_copy() {
     let merged = resolve(vec![odd, t3]).unwrap().chats.remove(0).chat;
     assert_eq!(merged.entries_source, EntriesSource::ToolCopy);
     assert_eq!(merged.entries.len(), 1);
+}
+
+#[test]
+fn a_secret_cut_by_the_output_cap_is_redacted_before_cutting() {
+    let body = "MIIEowIBAAKCAQEAimportSentinelKeyBody0123456789";
+    let pem = format!("-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----");
+    // The END delimiter lands past the 20,000-character cap.
+    // Place the key so its END line starts 4 characters before the cap.
+    let before_end = pem.find("-----END").unwrap();
+    let output = format!("{}{pem}", "x".repeat(MAX_TOOL_OUTPUT_CHARS - before_end - 4));
+    let cut: String = output.chars().take(MAX_TOOL_OUTPUT_CHARS).collect();
+    assert!(cut.contains(body) && !cut.contains("-----END"), "the body fits under the cap, the END line does not");
+    let (whole, _) = sanitize_import_payload(&Value::String(output.clone()));
+    assert!(!whole.as_str().unwrap().contains(body), "the full output is redacted by the detector");
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("pem"), vec![
+        entry("u", BundleEntryKind::UserMessage, "print the deploy key"),
+        tool_entry("t", "Bash", &output, ToolStatus::Completed),
+    ]));
+    let db = database();
+    import(&db, vec![bundle]);
+    assert_eq!(count(&db, &format!("SELECT COUNT(*) FROM session_entries WHERE payload LIKE '%{body}%'")), 0);
+}
+
+#[test]
+fn archiving_a_workspace_keeps_its_imported_chats_as_history() {
+    let db = database();
+    db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/bridge-import-fixture','now')", []).unwrap();
+    db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','main','/tmp/bridge-import-fixture/project','idle','now')", []).unwrap();
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("archived-later"), rich_entries()));
+    assert_eq!(import(&db, vec![bundle]).imported, 1);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions WHERE kind='imported' AND workspace_id='w'"), 1);
+    crate::workspaces::archive_workspace_records(&db, "w", 0, || Ok(())).unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM workspaces WHERE id='w'"), 0, "the workspace is archived");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions WHERE kind='imported' AND workspace_id IS NULL AND cwd='/tmp/bridge-import-fixture/project'"), 1, "the imported chat stays, filed by its folder");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM session_entries"), rich_entries().len() as i64, "its history is untouched");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM import_project_hints WHERE matched_workspace_id IS NOT NULL"), 0);
+}
+
+fn parent_of(db: &Connection, title: &str) -> (Option<String>, i64) {
+    db.query_row("SELECT parent_session_id, COALESCE(depth,0) FROM sessions WHERE title=?1", params![title], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+}
+
+#[test]
+fn a_child_of_a_skipped_parent_attaches_to_the_existing_parent() {
+    // (a) The parent came over through Claude Code; Conductor later brings the
+    // same parent (a duplicate) and a new child.
+    let db = database();
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("main", "claude", Some("main-session"), rich_entries()));
+    assert_eq!(import(&db, vec![claude]).imported, 1);
+    let existing: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let mut conductor = TransferBundle::new(source("conductor"));
+    conductor.chats.push(chat("ws-main", "claude", Some("main-session"), rich_entries()));
+    let mut child = chat("kid", "claude", Some("main-session/agent-1"), vec![entry("k", BundleEntryKind::UserMessage, "late child")]);
+    child.parent_chat_key = Some("ws-main".into());
+    conductor.chats.push(child);
+    let commit = import(&db, vec![conductor]);
+    assert_eq!((commit.imported, commit.skipped), (1, 1));
+    assert_eq!(parent_of(&db, "late child"), (Some(existing.clone()), 1));
+
+    // (b) The parent grew, so it is a changed source and skipped by default,
+    // and a new child arrives with it.
+    let db = database();
+    let mut first = TransferBundle::new(source("claude_code"));
+    first.chats.push(chat("main", "claude", Some("grown"), rich_entries()));
+    import(&db, vec![first]);
+    let existing: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let mut grown = TransferBundle::new(source("claude_code"));
+    let mut entries = rich_entries();
+    entries.push(entry("more", BundleEntryKind::UserMessage, "one more turn"));
+    grown.chats.push(chat("main", "claude", Some("grown"), entries));
+    let mut child = chat("kid", "claude", Some("grown/agent-2"), vec![entry("k", BundleEntryKind::UserMessage, "child of a grown parent")]);
+    child.parent_chat_key = Some("main".into());
+    grown.chats.push(child);
+    let commit = import(&db, vec![grown]);
+    assert_eq!((commit.imported, commit.changed), (1, 1));
+    assert_eq!(parent_of(&db, "child of a grown parent"), (Some(existing), 1));
+}
+
+#[test]
+fn a_session_bridge_ran_stays_bridges_after_a_harness_switch() {
+    let db = database();
+    db.execute(
+        "INSERT INTO sessions(id,harness,label,status,metric_source,provider_session_id,kind,model)
+         VALUES('direct','claude','Claude','idle','reported','claude-native-1','direct','sonnet')",
+        [],
+    )
+    .unwrap();
+    // The person switches the chat to Codex: the real routine clears the old id.
+    let switched = crate::sessions::persist_chat_model_selection(
+        &db,
+        "direct",
+        "codex",
+        Some("gpt-5"),
+        crate::model::CapabilityTier::Standard,
+        ("claude", Some("sonnet")),
+        false,
+    )
+    .unwrap();
+    assert_eq!(switched, 1);
+    let provider: Option<String> = db.query_row("SELECT provider_session_id FROM sessions WHERE id='direct'", [], |row| row.get(0)).unwrap();
+    assert_eq!(provider, None);
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("s", "claude", Some("claude-native-1"), rich_entries()));
+    let commit = import(&db, vec![claude]);
+    assert_eq!((commit.imported, commit.skipped), (0, 1));
+    assert_eq!(commit.candidate_results[0].diagnostics[0].code, "bridge_own_session");
+}
+
+#[test]
+fn the_migration_backfills_native_sessions_bridge_ran_before_it() {
+    let mut db = database();
+    db.execute_batch(
+        "DROP TRIGGER bridge_native_sessions_on_insert; DROP TRIGGER bridge_native_sessions_on_update; DROP TABLE bridge_native_sessions;
+         INSERT INTO sessions(id,harness,label,status,metric_source,provider_session_id,kind) VALUES('old','codex','Codex','idle','reported','thread-9','direct');
+         INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('switched','codex','Codex','idle','reported','direct');
+         INSERT INTO session_heads(session_id,native_provider_session_id,restoration_mode,updated_at) VALUES('switched','thread-8','native','now');",
+    )
+    .unwrap();
+    let transaction = db.transaction().unwrap();
+    crate::external_import::install_import_native_identity(&transaction).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM bridge_native_sessions WHERE native_key IN ('codex:thread-9','codex:thread-8')"), 2);
+}
+
+#[test]
+fn setup_is_deduplicated_per_project_and_keeps_its_project() {
+    let mut bundle = TransferBundle::new(source("conductor"));
+    for (key, root) in [("a", "/nonexistent/api"), ("b", "/nonexistent/web")] {
+        bundle.projects.push(BundleProject { key: key.into(), name: key.into(), repo_root: root.into(), remote_url: None });
+        bundle.setup.push(BundleSetup { key: format!("setup-{key}"), kind: CandidateKind::Script, scope: "project".into(), project_key: Some(key.into()), name: "setup".into(), body: Some("bun install".into()), config: None, source_ref: format!("{root}/conductor.json"), source_label: format!("{key}/conductor.json") });
+    }
+    // The same script at global scope is a third, separate item.
+    bundle.setup.push(BundleSetup { key: "setup-global".into(), kind: CandidateKind::Script, scope: "global".into(), project_key: None, name: "setup".into(), body: Some("bun install".into()), config: None, source_ref: "/home/conductor.json".into(), source_label: "conductor.json".into() });
+    let resolved = resolve(vec![bundle]).unwrap();
+    assert_eq!(resolved.setup.len(), 3);
+    let projects: Vec<Option<String>> = resolved.setup.iter().map(|(_, item)| item.project_key.clone()).collect();
+    assert_eq!(projects, vec![Some("project:/nonexistent/api".into()), Some("project:/nonexistent/web".into()), None]);
+    let lowered = lower(&resolved);
+    assert_eq!(lowered.candidates[0].normalized_payload["projectKey"], "project:/nonexistent/api");
+    assert_eq!(lowered.candidates[0].normalized_payload["projectRoot"], "/nonexistent/api");
+}
+
+fn image_entry(id: &str, base64: String) -> BundleEntry {
+    let mut message = entry(id, BundleEntryKind::UserMessage, "see attached");
+    message.attachments.push(BundleAttachment { media_type: "image/png".into(), name: None, bytes: 0, data_base64: Some(base64) });
+    message
+}
+
+/// Base64 text for an image of exactly `bytes` bytes, padded like a real encoder.
+fn base64_of(bytes: usize) -> String {
+    let groups = bytes.div_ceil(3);
+    let padding = (3 - bytes % 3) % 3;
+    format!("{}{}", "A".repeat(groups * 4 - padding), "=".repeat(padding))
+}
+
+#[test]
+fn the_image_cap_counts_decoded_bytes() {
+    let four_mib = base64_of(4 * 1024 * 1024);
+    assert_eq!(four_mib.len(), 5_592_408, "a 4 MiB image is 5,592,408 base64 characters");
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("img"), vec![
+        image_entry("fits", four_mib),
+        image_entry("over", base64_of(MAX_INLINE_ATTACHMENT_BYTES + 1)),
+    ]));
+    let lowered = lower(&resolve(vec![bundle]).unwrap());
+    let messages = lowered.candidates[0].normalized_payload["messages"].as_array().unwrap().clone();
+    assert!(messages[0]["data"]["attachments"].is_array(), "a 4 MiB image is under the 5 MiB cap");
+    assert!(messages[1]["data"]["attachments"].is_null(), "one byte over 5 MiB is left out");
+    let attachments: u32 = lowered.excluded.iter().filter(|item| item.category == "attachment").map(|item| item.count).sum();
+    assert_eq!(attachments, 1);
+}
+
+#[test]
+fn a_cross_tool_revision_records_its_predecessor() {
+    let db = database();
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("s", "claude", Some("revised"), rich_entries()));
+    import(&db, vec![claude]);
+    let first: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let mut conductor = TransferBundle::new(source("conductor"));
+    let mut entries = rich_entries();
+    entries.push(entry("later", BundleEntryKind::UserMessage, "after the first import"));
+    conductor.chats.push(chat("ws", "claude", Some("revised"), entries));
+    let lowered = lower(&resolve(vec![conductor]).unwrap());
+    let normalized = normalize(&lowered.candidates);
+    let commit = commit_import(&db, &normalized, &plan_for(&lowered.candidates, ConflictPolicy::ImportAsNewHistoricalRevision)).unwrap();
+    assert_eq!(commit.imported, 1);
+    assert_eq!(commit.candidate_results[0].revision_of.as_deref(), Some(first.as_str()));
+    let ledger: Option<String> = db.query_row("SELECT revision_of FROM import_ledger WHERE provider='conductor'", [], |row| row.get(0)).unwrap();
+    assert_eq!(ledger.as_deref(), Some(first.as_str()));
+}
+
+#[test]
+fn an_imported_compaction_is_native_not_a_bridge_checkpoint() {
+    let db = database();
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("compacted"), rich_entries()));
+    import(&db, vec![bundle]);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM session_entries WHERE kind='compaction'"), 0, "no Bridge checkpoint is claimed");
+    let payload: String = db.query_row("SELECT payload FROM session_entries WHERE kind='context.compacted'", [], |row| row.get(0)).unwrap();
+    let payload: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(payload["data"]["harness"], "claude");
+    assert_eq!(payload["data"]["summary"], "Summary of the first hour");
+    assert_eq!(payload["title"], "Context compacted");
+    // The forest reads it back as a valid typed entry.
+    let entries = crate::session_forest::SessionForest::new(&db).active_branch(
+        &db.query_row("SELECT id FROM sessions", [], |row| row.get::<_, String>(0)).unwrap(),
+    );
+    assert!(entries.is_ok(), "{entries:?}");
 }

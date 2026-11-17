@@ -201,6 +201,12 @@ pub struct BundleChat {
     pub entries: Vec<BundleEntry>,
     #[serde(default)]
     pub pull_requests: Vec<String>,
+    /// The identity an older version of this adapter recorded for the same
+    /// chat (its native key and content hash), so an upgrade recognises it.
+    #[serde(default)]
+    pub legacy_native_id: Option<String>,
+    #[serde(default)]
+    pub legacy_content_hash: Option<String>,
     /// The file or row the chat was read from; provenance and identity key off it.
     pub source_ref: String,
     /// A short, safe label for the report (never raw content).
@@ -458,7 +464,8 @@ struct Resolver {
     project_by_root: HashMap<String, usize>,
     project_key_map: HashMap<(String, String), String>,
     memory_seen: HashSet<(String, Option<String>, String)>,
-    setup_seen: HashSet<(String, String, String)>,
+    /// (kind, name, scope, project, body hash): one item per project.
+    setup_seen: HashSet<(String, String, String, Option<String>, String)>,
     preference_seen: HashSet<String>,
 }
 
@@ -621,7 +628,10 @@ impl Resolver {
                 self.out.memories.push((source.clone(), memory));
             }
         }
-        for item in setup {
+        for mut item in setup {
+            item.project_key = item
+                .project_key
+                .and_then(|key| self.project_key_map.get(&(tool.to_owned(), key)).cloned());
             let body = item
                 .body
                 .clone()
@@ -630,6 +640,8 @@ impl Resolver {
             let key = (
                 item.kind.as_str().to_owned(),
                 item.name.clone(),
+                item.scope.clone(),
+                item.project_key.clone(),
                 crate::external_import::sha256_hex(body.as_bytes()),
             );
             if self.setup_seen.insert(key) {
@@ -752,6 +764,7 @@ fn truncate_chars(text: &str, limit: usize) -> (String, bool) {
 fn lower_entry(
     entry: &BundleEntry,
     sequence: usize,
+    harness: &str,
     excluded: &mut BTreeMap<&'static str, u32>,
 ) -> Option<Value> {
     match entry.kind {
@@ -760,8 +773,16 @@ fn lower_entry(
             lower_text(entry, sequence, excluded)
         }
         BundleEntryKind::ToolCall => lower_tool(entry, sequence, excluded),
-        BundleEntryKind::CompactionBoundary => Some(lower_compaction(entry, sequence)),
+        BundleEntryKind::CompactionBoundary => Some(lower_compaction(entry, sequence, harness)),
     }
+}
+
+/// The size of the bytes a base64 string encodes: the cap is on the image,
+/// not on its encoding, which is a third larger.
+fn decoded_len(base64: &str) -> usize {
+    let trimmed = base64.trim_end();
+    let padding = trimmed.bytes().rev().take_while(|byte| *byte == b'=').count().min(2);
+    (trimmed.len() * 3 / 4).saturating_sub(padding)
 }
 
 fn lower_user(
@@ -774,7 +795,7 @@ fn lower_user(
         match attachment.data_base64.as_deref() {
             Some(data)
                 if attachment.media_type.starts_with("image/")
-                    && data.len() <= MAX_INLINE_ATTACHMENT_BYTES =>
+                    && decoded_len(data) <= MAX_INLINE_ATTACHMENT_BYTES =>
             {
                 attachments.push(json!({
                     "mediaType": attachment.media_type,
@@ -858,7 +879,10 @@ fn lower_tool(
         "input": tool.input,
     });
     if let Some(output) = tool.output.as_deref() {
-        let (kept, cut) = truncate_chars(output, MAX_TOOL_OUTPUT_CHARS);
+        // Redact first: a detector that needs both ends of a secret (a PEM
+        // block) cannot see a secret the cap has already cut in half.
+        let (redacted, _) = sanitize_import_payload(&Value::String(output.to_owned()));
+        let (kept, cut) = truncate_chars(redacted.as_str().unwrap_or_default(), MAX_TOOL_OUTPUT_CHARS);
         data["aggregatedOutput"] = Value::String(if cut {
             format!("{kept}\n\n[output cut at {MAX_TOOL_OUTPUT_CHARS} characters on import]")
         } else {
@@ -882,14 +906,23 @@ fn lower_tool(
     }))
 }
 
-fn lower_compaction(entry: &BundleEntry, sequence: usize) -> Value {
-    let text = entry.text.clone().unwrap_or_default();
+/// The harness compacted its own context here. Stored the way live chats
+/// record it (`context.compacted`, drawn as "Context compacted"), never as a
+/// Bridge checkpoint, which is a different fact.
+fn lower_compaction(entry: &BundleEntry, sequence: usize, harness: &str) -> Value {
+    let summary = entry.text.clone().filter(|text| !text.trim().is_empty());
+    let mut data = json!({ "harness": harness });
+    if let Some(summary) = &summary {
+        data["summary"] = Value::String(summary.clone());
+    }
     json!({
         "sourceId": entry.source_id,
         "role": "system",
-        "kind": "compaction",
-        "schemaVersion": 1,
-        "summary": if text.trim().is_empty() { "Conversation compacted".to_owned() } else { text },
+        "kind": "context.compacted",
+        "status": "completed",
+        "title": "Context compacted",
+        "text": summary.unwrap_or_else(|| "Context compacted".to_owned()),
+        "data": data,
         "timestamp": entry.at,
         "sequence": sequence,
     })
@@ -984,7 +1017,7 @@ fn lower_messages(chat: &BundleChat, out: &mut LoweredImport) -> Vec<Value> {
     let messages: Vec<Value> = chat
         .entries
         .iter()
-        .filter_map(|entry| lower_entry(entry, 0, &mut excluded))
+        .filter_map(|entry| lower_entry(entry, 0, &chat.harness, &mut excluded))
         .enumerate()
         .map(|(index, mut message)| {
             message["sequence"] = json!(index + 1);
@@ -1068,6 +1101,11 @@ fn lower_chat(
         "effort": chat.effort,
         "agentRole": chat.agent_role,
         "parentCandidateId": parent_candidate,
+        // When the parent is skipped (already imported, or changed), the
+        // writer finds its existing chat through its native identity.
+        "parentNativeKey": resolved_chat.parent_identity,
+        "legacyNativeId": chat.legacy_native_id,
+        "legacyContentHash": chat.legacy_content_hash,
         "pullRequests": chat.pull_requests,
         "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|(tool, source_ref)| json!({
             "tool": tool,
@@ -1127,9 +1165,18 @@ fn lower_items(resolved: &ResolvedImport, out: &mut LoweredImport) {
             push_exclusion(&mut out.excluded, "setup", &setup.source_label, 1, "not a setup kind Bridge stores");
             continue;
         }
+        let project_root = setup.project_key.as_deref().and_then(|key| {
+            resolved
+                .projects
+                .iter()
+                .find(|project| project.key == key)
+                .map(|project| project.repo_root.clone())
+        });
         let payload = json!({
             "name": setup.name,
             "scope": setup.scope,
+            "projectKey": setup.project_key,
+            "projectRoot": project_root,
             "body": setup.body,
             "config": setup.config,
             "sourceTool": source.tool,

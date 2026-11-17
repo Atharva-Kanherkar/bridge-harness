@@ -82,10 +82,16 @@ pub struct ParsedTranscript {
     /// Raw count of user and assistant content the person would have seen,
     /// for the parity check: every one is either an entry or counted in `skipped`.
     pub source_items: u32,
+    /// Older transcripts keep subagent turns inline (`isSidechain` with an
+    /// `agentId`) instead of in `subagents/`. One reader per agent, by id.
+    pub inline_subagents: Vec<(String, ParsedTranscript)>,
 }
 
 #[derive(Debug, Default)]
 struct Reader {
+    /// Set on a session's own file: sidechain records go to `sidechains`.
+    split_sidechains: bool,
+    sidechains: BTreeMap<String, Reader>,
     entries: Vec<BundleEntry>,
     tool_index: HashMap<String, usize>,
     seen: HashSet<String>,
@@ -177,6 +183,16 @@ impl Reader {
             self.skipped.bump("non_object_line");
             return;
         };
+        if self.split_sidechains && object.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            let agent = object
+                .get("agentId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or("sidechain")
+                .to_owned();
+            self.sidechains.entry(agent).or_default().record(record);
+            return;
+        }
         let Some(kind) = object.get("type").and_then(Value::as_str) else {
             self.skipped.bump("untyped_record");
             return;
@@ -469,15 +485,50 @@ impl Reader {
     }
 }
 
+/// Skip the rest of the current line through the reader's own buffer,
+/// without collecting it: a rejected line never costs more than that buffer.
+fn discard_line<R: BufRead>(reader: &mut R) -> std::io::Result<u64> {
+    let mut skipped = 0u64;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(skipped);
+        }
+        match available.iter().position(|byte| *byte == b'\n') {
+            Some(end) => {
+                reader.consume(end + 1);
+                return Ok(skipped + end as u64 + 1);
+            }
+            None => {
+                let length = available.len();
+                reader.consume(length);
+                skipped += length as u64;
+            }
+        }
+    }
+}
+
 /// Read one transcript file. `key` and `label` name it inside the bundle.
 pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<ParsedTranscript> {
+    read_transcript_file(path, key, label, false)
+}
+
+fn read_transcript_file(
+    path: &Path,
+    key: &str,
+    label: &str,
+    split_sidechains: bool,
+) -> std::io::Result<ParsedTranscript> {
     let size = std::fs::metadata(path)?.len();
     if size > MAX_TRANSCRIPT_BYTES {
         return Err(std::io::Error::other(format!(
             "transcript is {size} bytes, over the {MAX_TRANSCRIPT_BYTES} byte import limit"
         )));
     }
-    let mut reader = Reader::default();
+    let mut reader = Reader {
+        split_sidechains,
+        ..Reader::default()
+    };
     let mut lines = BufReader::new(File::open(path)?);
     let mut buffer = Vec::new();
     loop {
@@ -488,9 +539,7 @@ pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<P
         }
         if buffer.len() > MAX_LINE_BYTES && !buffer.ends_with(b"\n") {
             reader.skipped.bump("oversized_line");
-            // Drain the rest of the oversized line.
-            let mut rest = Vec::new();
-            lines.read_until(b'\n', &mut rest)?;
+            discard_line(&mut lines)?;
             continue;
         }
         let line = String::from_utf8_lossy(&buffer);
@@ -503,6 +552,19 @@ pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<P
             Err(_) => reader.skipped.bump("malformed_line"),
         }
     }
+    Ok(finish(reader, path, key, label))
+}
+
+/// Turn a finished reader into a chat. `path` is the file it was read from.
+fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTranscript {
+    let inline_subagents = std::mem::take(&mut reader.sidechains)
+        .into_iter()
+        .map(|(agent, child)| {
+            let child_key = format!("{key}#agent-{agent}");
+            let child_label = format!("{label} > agent-{agent}");
+            (agent, finish(child, path, &child_key, &child_label))
+        })
+        .collect();
     let stem = path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -547,14 +609,17 @@ pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<P
         },
         entries: reader.entries,
         pull_requests: Vec::new(),
+        legacy_native_id: None,
+        legacy_content_hash: None,
         source_ref: path.to_string_lossy().into_owned(),
         source_label: label.to_owned(),
     };
-    Ok(ParsedTranscript {
+    ParsedTranscript {
         chat,
         skipped: reader.skipped,
         source_items: reader.source_items,
-    })
+        inline_subagents,
+    }
 }
 
 /// A session's subagent transcripts: `<dir>/<session>/subagents/agent-*.jsonl`.
@@ -581,68 +646,150 @@ pub fn subagent_files(main: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// A subagent transcript that was not brought over, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildFailure {
+    pub label: String,
+    pub reason: String,
+}
+
+/// A session and its subagents, plus every subagent that could not be read.
+#[derive(Debug, Clone)]
+pub struct SessionRead {
+    pub chats: Vec<ParsedTranscript>,
+    pub failures: Vec<ChildFailure>,
+}
+
 /// Read a session and its subagents: the main chat first, then one child chat
-/// per subagent, linked by `parent_chat_key`.
-pub fn read_session(main: &Path, label: &str) -> std::io::Result<Vec<ParsedTranscript>> {
+/// per subagent, linked by `parent_chat_key`. Subagent files and their
+/// `.meta.json` are opened only when they resolve inside `approved_roots`.
+pub fn read_session(
+    main: &Path,
+    label: &str,
+    approved_roots: &[PathBuf],
+) -> std::io::Result<SessionRead> {
     let key = main.to_string_lossy().into_owned();
-    let parsed = read_transcript(main, &key, label)?;
+    let mut parsed = read_transcript_file(main, &key, label, true)?;
+    let inline = std::mem::take(&mut parsed.inline_subagents);
     let parent_session = parsed
         .chat
         .native_ref
         .as_ref()
         .map(|native| native.session_id.clone())
         .unwrap_or_default();
-    let mut out = vec![parsed];
-    for file in subagent_files(main) {
-        let agent = file
+    let mut read = SessionRead {
+        chats: vec![parsed],
+        failures: Vec::new(),
+    };
+    for found in subagent_files(main) {
+        let agent = found
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("agent")
             .to_owned();
         let child_label = format!("{label} > {agent}");
-        let Ok(mut child) = read_transcript(&file, &file.to_string_lossy(), &child_label) else {
+        let Ok(file) = crate::external_import::canonicalize_approved_path(approved_roots, &found)
+        else {
+            read.failures.push(ChildFailure {
+                label: child_label,
+                reason: "the subagent transcript is outside the approved folders and was not read"
+                    .into(),
+            });
             continue;
         };
-        let meta = std::fs::read_to_string(file.with_extension("meta.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-        let agent_type = meta
-            .as_ref()
-            .and_then(|meta| meta.get("agentType"))
+        let mut child = match read_transcript(&file, &found.to_string_lossy(), &child_label) {
+            Ok(child) => child,
+            Err(error) => {
+                read.failures.push(ChildFailure {
+                    label: child_label,
+                    reason: format!("the subagent transcript could not be read: {error}"),
+                });
+                continue;
+            }
+        };
+        let meta = read_agent_meta(&found, approved_roots, &child_label, &mut read.failures);
+        name_subagent(&mut child.chat, &key, &parent_session, &agent, meta.as_ref());
+        read.chats.push(child);
+    }
+    // Inline subagents that also have their own file appear once: the file.
+    let from_files: HashSet<String> = subagent_files(main)
+        .iter()
+        .filter_map(|file| file.file_stem().and_then(|stem| stem.to_str()).map(str::to_owned))
+        .collect();
+    for (agent, mut child) in inline {
+        let agent = format!("agent-{agent}");
+        if from_files.contains(&agent) {
+            continue;
+        }
+        name_subagent(&mut child.chat, &key, &parent_session, &agent, None);
+        read.chats.push(child);
+    }
+    Ok(read)
+}
+
+/// A subagent's `agent-<id>.meta.json`, when it exists inside the approved folders.
+fn read_agent_meta(
+    transcript: &Path,
+    approved_roots: &[PathBuf],
+    label: &str,
+    failures: &mut Vec<ChildFailure>,
+) -> Option<Value> {
+    let path = transcript.with_extension("meta.json");
+    if std::fs::symlink_metadata(&path).is_err() {
+        return None;
+    }
+    let Ok(path) = crate::external_import::canonicalize_approved_path(approved_roots, &path) else {
+        failures.push(ChildFailure {
+            label: label.to_owned(),
+            reason: "the subagent's details are outside the approved folders and were not read"
+                .into(),
+        });
+        return None;
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+}
+
+/// Link a subagent chat to its session and name it from its type and task.
+fn name_subagent(
+    chat: &mut BundleChat,
+    parent_key: &str,
+    parent_session: &str,
+    agent: &str,
+    meta: Option<&Value>,
+) {
+    let agent_type = meta
+        .and_then(|meta| meta.get("agentType"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    chat.parent_chat_key = Some(parent_key.to_owned());
+    chat.agent_role = Some(AgentRole::Subagent);
+    if chat.model.is_none() {
+        chat.model = meta
+            .and_then(|meta| meta.get("model"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let chat = &mut child.chat;
-        chat.parent_chat_key = Some(key.clone());
-        chat.agent_role = Some(AgentRole::Subagent);
-        if chat.model.is_none() {
-            chat.model = meta
-                .as_ref()
-                .and_then(|meta| meta.get("model"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
-        if let Some(native) = chat.native_ref.as_mut() {
-            native.session_id = format!("{parent_session}/{agent}");
-        }
-        if chat.title_source == TitleSource::Derived {
-            let task = chat
-                .entries
-                .iter()
-                .find(|entry| entry.kind == BundleEntryKind::UserMessage)
-                .and_then(|entry| entry.text.as_deref())
-                .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
-                .map(|line| line.trim().chars().take(70).collect::<String>());
-            chat.title = Some(match (agent_type.as_deref(), task) {
-                (Some(kind), Some(task)) => format!("{kind}: {task}"),
-                (Some(kind), None) => format!("{kind} subagent"),
-                (None, Some(task)) => task,
-                (None, None) => "Subagent".into(),
-            });
-            chat.title_source = TitleSource::Tool;
-        }
-        out.push(child);
     }
-    Ok(out)
+    if let Some(native) = chat.native_ref.as_mut() {
+        native.session_id = format!("{parent_session}/{agent}");
+    }
+    if chat.title_source == TitleSource::Derived {
+        let task = chat
+            .entries
+            .iter()
+            .find(|entry| entry.kind == BundleEntryKind::UserMessage)
+            .and_then(|entry| entry.text.as_deref())
+            .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+            .map(|line| line.trim().chars().take(70).collect::<String>());
+        chat.title = Some(match (agent_type.as_deref(), task) {
+            (Some(kind), Some(task)) => format!("{kind}: {task}"),
+            (Some(kind), None) => format!("{kind} subagent"),
+            (None, Some(task)) => task,
+            (None, None) => "Subagent".into(),
+        });
+        chat.title_source = TitleSource::Tool;
+    }
 }
 
 /// What the review list shows for a session without reading all of it: the

@@ -24,6 +24,9 @@ pub const PROVIDER: &str = "claude_code";
 pub const ADAPTER_VERSION: &str = "2";
 pub const AUTO_MEMORY_GATE: &str = "claude-auto-memory-v1";
 pub const TRANSCRIPT_GATE: &str = "claude-jsonl-v2";
+/// The gate the v1 reader wrote into its payloads; kept so v2 can recompute
+/// a v1 import's identity exactly.
+const LEGACY_TRANSCRIPT_GATE: &str = "claude-jsonl-v1";
 pub const SETTINGS_GATE: &str = "claude-settings-v1";
 const MAX_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_DISCOVERY_DEPTH: usize = 20;
@@ -528,6 +531,22 @@ fn is_session_transcript(path: &Path) -> bool {
             .is_some_and(|name| name == "projects")
 }
 
+/// The identity the v1 reader recorded for this transcript: its first
+/// message id and content hash, recomputed by the retained v1 reader. v1
+/// refused files over 10 MB, so those have none.
+fn legacy_identity(
+    approved_roots: &[PathBuf],
+    artifact: &DiscoveredArtifact,
+    discovery: &DiscoveryResult,
+) -> Option<(String, String)> {
+    let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref)).ok()?;
+    if fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let v1 = preview_transcript(&path, artifact, discovery).ok()?;
+    Some((v1.source_native_id?, v1.content_hash))
+}
+
 /// Every selected transcript, read at full fidelity into one transfer bundle,
 /// merged and lowered to candidates. A transcript that cannot be read becomes
 /// a diagnostic-only candidate; the others still import.
@@ -553,7 +572,7 @@ fn preview_conversations(
         std::collections::HashMap::new();
     let mut ref_by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for artifact in artifacts {
-        let read = (|| -> Result<Vec<transcript::ParsedTranscript>, BridgeError> {
+        let read = (|| -> Result<transcript::SessionRead, BridgeError> {
             let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref))?;
             let gate = discovery.format_versions.get(TRANSCRIPT_GATE).map(String::as_str);
             let validation = validate_schema_version(
@@ -563,12 +582,32 @@ fn preview_conversations(
             if !validation.accepted {
                 return Err(BridgeError::Invalid(validation.diagnostics[0].message.clone()));
             }
-            transcript::read_session(&path, &artifact.source_label)
+            transcript::read_session(&path, &artifact.source_label, approved_roots)
                 .map_err(|error| BridgeError::Invalid(format!("Claude transcript is unreadable: {error}")))
         })();
         match read {
-            Ok(parsed) => {
-                for item in parsed {
+            Ok(session) => {
+                let main_ref = session.chats.first().map(|item| item.chat.source_ref.clone());
+                let lost: Vec<ImportDiagnostic> = session
+                    .failures
+                    .iter()
+                    .map(|failure| ImportDiagnostic {
+                        code: "excluded_subagent".into(),
+                        severity: "warning".into(),
+                        classification: SourceClassification::Documented,
+                        message: format!("1 subagent: {} ({})", failure.reason, failure.label),
+                        recovery: None,
+                        source_label: Some(failure.label.clone()),
+                    })
+                    .collect();
+                let legacy = legacy_identity(approved_roots, artifact, discovery);
+                for mut item in session.chats {
+                    if item.chat.agent_role.is_none() {
+                        if let Some((native_id, content_hash)) = legacy.clone() {
+                            item.chat.legacy_native_id = Some(native_id);
+                            item.chat.legacy_content_hash = Some(content_hash);
+                        }
+                    }
                     let diagnostics: Vec<ImportDiagnostic> = item
                         .skipped
                         .0
@@ -585,6 +624,9 @@ fn preview_conversations(
                     skipped_by_ref.insert(item.chat.source_ref.clone(), diagnostics);
                     ref_by_label.insert(item.chat.source_label.clone(), item.chat.source_ref.clone());
                     bundle.chats.push(item.chat);
+                }
+                if let Some(main_ref) = main_ref {
+                    skipped_by_ref.entry(main_ref).or_default().extend(lost);
                 }
             }
             Err(error) => out.push(unsupported_candidate(artifact, discovery, &error.to_string())),
@@ -974,7 +1016,7 @@ fn preview_transcript(
         "historical": true,
         "resumable": false,
         "sourceBadge": "Imported from Claude Code",
-        "transcriptParserVersion": TRANSCRIPT_GATE
+        "transcriptParserVersion": LEGACY_TRANSCRIPT_GATE
     });
     let mut result = candidate(
         path,
@@ -1331,7 +1373,7 @@ mod tests {
         assert!(child_title.starts_with("Explore: "), "{child_title}");
         // Parity: every item the reader saw is a stored entry.
         let main_path = PathBuf::from(&conversations[0].canonical_source_ref);
-        let read = transcript::read_session(&main_path, "x").unwrap();
+        let read = transcript::read_session(&main_path, "x", &[claude.canonicalize().unwrap()]).unwrap().chats;
         let expected: i64 = read.iter().map(|item| item.chat.entries.len() as i64).sum();
         let stored: i64 = db.query_row("SELECT COUNT(*) FROM session_entries", [], |r| r.get(0)).unwrap();
         assert_eq!(stored, expected);
@@ -1359,6 +1401,122 @@ mod tests {
         // Idempotent: the same import again writes nothing.
         let again = crate::external_import::commit_import(&db, &normalized, &plan).unwrap();
         assert_eq!((again.imported, again.skipped), (0, 2));
+    }
+
+    fn preview_all(claude: &Path) -> Vec<ImportCandidate> {
+        let discovery = ClaudeCodeImporter.discover(&request(claude)).unwrap();
+        let ids = discovery
+            .artifacts
+            .iter()
+            .filter(|item| item.kind == CandidateKind::Conversation)
+            .map(|item| item.artifact_id.clone())
+            .collect();
+        ClaudeCodeImporter.preview(&discovery, &DiscoverySelection { artifact_ids: ids }).unwrap()
+    }
+
+    fn session_lines(session: &str, text: &str) -> String {
+        [
+            json!({"type":"user","uuid":format!("{session}-u"),"sessionId":session,"timestamp":"2026-11-01T10:00:00Z","cwd":"/work/app","message":{"role":"user","content":text}}).to_string(),
+            json!({"type":"assistant","uuid":format!("{session}-a"),"sessionId":session,"timestamp":"2026-11-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}).to_string(),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn a_subagent_symlink_outside_the_approved_folder_is_not_read() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        write(&claude.join("projects/p/sess-1.jsonl"), &session_lines("sess-1", "main task"));
+        let outside = root.path().join("outside");
+        write(&outside.join("private.jsonl"), &session_lines("sess-1", "OUTSIDE-SENTINEL-transcript"));
+        write(&outside.join("private.meta.json"), r#"{"agentType":"OUTSIDE-SENTINEL-meta"}"#);
+        let subagents = claude.join("projects/p/sess-1/subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        std::os::unix::fs::symlink(outside.join("private.jsonl"), subagents.join("agent-private.jsonl")).unwrap();
+        std::os::unix::fs::symlink(outside.join("private.meta.json"), subagents.join("agent-private.meta.json")).unwrap();
+        // An inside child whose meta escapes: the transcript is read, the meta is not.
+        write(&subagents.join("agent-inside.jsonl"), &session_lines("sess-1", "inside child"));
+        std::os::unix::fs::symlink(outside.join("private.meta.json"), subagents.join("agent-inside.meta.json")).unwrap();
+        let preview = preview_all(&claude);
+        let encoded = serde_json::to_string(&preview).unwrap();
+        assert!(!encoded.contains("OUTSIDE-SENTINEL"), "nothing outside the approved folder is read");
+        assert!(encoded.contains("inside child"));
+        let diagnostics: Vec<&ImportDiagnostic> = preview.iter().flat_map(|c| c.diagnostics.iter()).collect();
+        assert!(
+            diagnostics.iter().any(|d| d.code == "excluded_subagent" && d.message.contains("outside the approved folders")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_subagent_is_reported() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        write(&claude.join("projects/p/sess-1.jsonl"), &session_lines("sess-1", "main task"));
+        let huge = claude.join("projects/p/sess-1/subagents/agent-huge.jsonl");
+        fs::create_dir_all(huge.parent().unwrap()).unwrap();
+        fs::File::create(&huge).unwrap().set_len(transcript::MAX_TRANSCRIPT_BYTES + 1).unwrap();
+        let preview = preview_all(&claude);
+        let chats: Vec<_> = preview.iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        assert_eq!(chats.len(), 1, "the readable session still imports");
+        assert!(
+            chats[0].diagnostics.iter().any(|d| d.code == "excluded_subagent" && d.message.contains("agent-huge") && d.message.contains("could not be read")),
+            "{:?}",
+            chats[0].diagnostics
+        );
+    }
+
+    fn commit_all(db: &rusqlite::Connection, candidates: &[ImportCandidate]) -> crate::external_import::ImportCommit {
+        let normalized: Vec<_> = candidates.iter().map(|c| ClaudeCodeImporter.normalize(c.clone()).unwrap()).collect();
+        crate::external_import::commit_import(
+            db,
+            &normalized,
+            &crate::external_import::ImportPlan {
+                selected_candidate_ids: candidates.iter().map(|c| c.candidate_id.clone()).collect(),
+                conflict_policy: crate::external_import::ConflictPolicy::Skip,
+                setup_activation_policy: crate::external_import::SetupActivationPolicy::Disabled,
+                memory_scope: None,
+                dry_run: false,
+                created_at: "2026-11-18T00:00:00Z".into(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_chat_imported_before_the_upgrade_is_not_imported_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-1.jsonl");
+        write(&path, &session_lines("sess-1", "imported by the old reader"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        // What the v1 reader wrote: one chat keyed by its first message.
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let artifact = discovery.artifacts.iter().find(|a| a.kind == CandidateKind::Conversation).unwrap().clone();
+        let v1 = preview_transcript(&path.canonicalize().unwrap(), &artifact, &discovery).unwrap();
+        assert_eq!(commit_all(&db, &[v1]).imported, 1);
+        // The same file through v2 is recognised, and the native mapping is filled in.
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let again = commit_all(&db, &v2);
+        assert_eq!((again.imported, again.skipped), (0, 1), "{again:?}");
+        let mapped: i64 = db.query_row("SELECT COUNT(*) FROM import_native_sessions WHERE native_key='claude:sess-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(mapped, 1);
+        // A changed file asks first instead of importing a second chat.
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-2.jsonl");
+        write(&path, &session_lines("sess-2", "first version"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let artifact = discovery.artifacts.iter().find(|a| a.kind == CandidateKind::Conversation).unwrap().clone();
+        commit_all(&db, &[preview_transcript(&path.canonicalize().unwrap(), &artifact, &discovery).unwrap()]);
+        let mut grown = session_lines("sess-2", "first version");
+        grown.push('\n');
+        grown.push_str(&json!({"type":"user","uuid":"sess-2-later","sessionId":"sess-2","timestamp":"2026-11-02T10:00:00Z","message":{"role":"user","content":"a later turn"}}).to_string());
+        write(&path, &grown);
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let changed = commit_all(&db, &v2);
+        assert_eq!((changed.imported, changed.changed), (0, 1), "{changed:?}");
     }
 
     #[test]

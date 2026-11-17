@@ -31,7 +31,9 @@ pub fn request_frame(id: &str, thread_id: &str, request: &Value) -> Result<Value
             "method": "mcpServerStatus/list",
             "params": {"serverName": server, "threadId": thread_id, "detail": "toolsAndAuthOnly"},
         })),
-        Some("read") => {
+        // A write reaches here only from the router, after the person
+        // approved these exact arguments: Codex applies no approval itself.
+        Some(kind @ ("read" | "write")) => {
             let tool = request["tool"]
                 .as_str()
                 .filter(|tool| !tool.is_empty() && tool.len() <= 64)
@@ -41,7 +43,7 @@ pub fn request_frame(id: &str, thread_id: &str, request: &Value) -> Result<Value
                 return Err(invalid("preview arguments must be an object within 64 KiB"));
             }
             Ok(json!({
-                "id": format!("{ID_PREFIX}read:{id}"),
+                "id": format!("{ID_PREFIX}{kind}:{id}"),
                 "method": "mcpServer/tool/call",
                 "params": {"threadId": thread_id, "server": server, "tool": tool, "arguments": arguments},
             }))
@@ -66,7 +68,7 @@ pub fn translate(frame: &Value) -> Option<Value> {
     let result = frame.get("result")?;
     let value = match kind {
         "inventory" => inventory(result),
-        "read" => read(result),
+        "read" | "write" => read(result),
         _ => None,
     };
     Some(match value {
@@ -150,8 +152,12 @@ mod tests {
         let inventory = request_frame("i1", "thread", &json!({"kind":"inventory","server":"slack"})).unwrap();
         assert_eq!(inventory["method"], "mcpServerStatus/list");
         assert_eq!(inventory["params"], json!({"serverName":"slack","threadId":"thread","detail":"toolsAndAuthOnly"}));
+        let write = request_frame("w1", "thread", &json!({"kind":"write","server":"slack","tool":"slack_send_message","arguments":{"text":"hi"}})).unwrap();
+        assert_eq!(write["id"], "bridge-app:write:w1");
+        assert_eq!(write["params"], json!({"threadId":"thread","server":"slack","tool":"slack_send_message","arguments":{"text":"hi"}}));
+        assert_eq!(translate(&json!({"id":"bridge-app:write:w1","result":{"content":[{"type":"text","text":"sent"}]}})).unwrap()["result"]["content"][0]["text"], "sent");
         for bad in [
-            json!({"kind":"write","server":"slack","tool":"x","arguments":{}}),
+            json!({"kind":"delete","server":"slack","tool":"x","arguments":{}}),
             json!({"kind":"read","server":"","tool":"x","arguments":{}}),
             json!({"kind":"read","server":"slack","tool":"x","arguments":[]}),
             json!({"kind":"read","server":"slack","tool":"x","arguments":{"t":"x".repeat(65536)}}),

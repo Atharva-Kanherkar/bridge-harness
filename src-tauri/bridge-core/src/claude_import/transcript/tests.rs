@@ -151,7 +151,7 @@ fn subagent_transcripts_become_child_chats() {
     ]);
     std::fs::write(sub.with_extension("meta.json"), r#"{"agentType":"Explore","spawnDepth":1,"model":"claude-haiku-5-5"}"#).unwrap();
     std::fs::write(dir.path().join("projects/p/sess-1/subagents/notes.txt"), "not a transcript").unwrap();
-    let parsed = read_session(&main, "projects/p/sess-1.jsonl").unwrap();
+    let parsed = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap().chats;
     assert_eq!(parsed.len(), 2);
     let child = &parsed[1].chat;
     assert_eq!(child.parent_chat_key.as_deref(), Some(parsed[0].chat.key.as_str()));
@@ -285,8 +285,9 @@ fn real_store_sweep() {
     for (index, path) in sessions.iter().enumerate() {
         let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
         let clock = std::time::Instant::now();
-        let parsed = match read_session(path, &format!("session-{index}")) {
-            Ok(parsed) => parsed,
+        let roots = [Path::new(&root).canonicalize().unwrap()];
+        let parsed = match read_session(path, &format!("session-{index}"), &roots) {
+            Ok(parsed) => parsed.chats,
             Err(_) => { errors += 1; continue; }
         };
         let took = clock.elapsed();
@@ -328,4 +329,105 @@ fn real_store_sweep() {
     assert_eq!(errors, 0);
     assert_eq!(parity_breaks, 0);
     assert_eq!(commit_errors, 0);
+}
+
+/// Peak resident memory of this process, in bytes.
+fn peak_rss_bytes() -> u64 {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    let raw = usage.ru_maxrss as u64;
+    if cfg!(target_os = "macos") { raw } else { raw * 1024 }
+}
+
+/// Run in a child process by `discarding_a_line_never_holds_more_than_one_buffer`,
+/// so no other test's allocations share the measurement.
+#[test]
+#[ignore]
+fn oversized_line_child() {
+    let Ok(path) = std::env::var("BRIDGE_OVERSIZED_LINE_FILE") else { return };
+    let before = peak_rss_bytes();
+    let parsed = read_transcript(Path::new(&path), "k", "l").unwrap();
+    assert_eq!(parsed.skipped.0.get("oversized_line"), Some(&1));
+    assert_eq!(parsed.chat.entries.len(), 1, "the line after the oversized one is still read");
+    println!("PEAK_GROWTH={}", peak_rss_bytes().saturating_sub(before));
+}
+
+#[test]
+fn discarding_a_line_never_holds_more_than_one_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("projects/p/huge-line.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    {
+        // One 256 MiB line with no newline in it, then one ordinary record.
+        let mut file = File::create(&path).unwrap();
+        let chunk = vec![b'a'; 4 * 1024 * 1024];
+        for _ in 0..64 {
+            file.write_all(&chunk).unwrap();
+        }
+        file.write_all(b"\n").unwrap();
+        writeln!(file, "{}", user("u1", "2026-11-01T10:00:00Z", json!("after"))).unwrap();
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "claude_import::transcript::tests::oversized_line_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("BRIDGE_OVERSIZED_LINE_FILE", &path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    // The harness prints "test … " before the test runs, so the figure can
+    // share that line.
+    let growth: u64 = stdout
+        .split("PEAK_GROWTH=")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse().ok())
+        .expect("the child reports its peak");
+    // The 64 MiB line buffer is the only allowance; keeping the rest of the
+    // line would add another 192 MiB.
+    assert!(growth < 128 * 1024 * 1024, "peak grew by {} MiB", growth / 1024 / 1024);
+}
+
+fn sidechain(uuid: &str, at: &str, kind: &str, content: Value) -> Value {
+    json!({"type":kind,"uuid":uuid,"sessionId":"sess-1","isSidechain":true,"agentId":"abc","timestamp":at,"message":{"role":kind,"content":content}})
+}
+
+fn main_with_inline_sidechain(dir: &Path) -> PathBuf {
+    let main = dir.join("projects/p/sess-1.jsonl");
+    write_lines(&main, &[
+        user("u1", "2026-11-01T10:00:00Z", json!("map the repo please")),
+        sidechain("s1", "2026-11-01T10:00:01Z", "user", json!("Map the repo and report key files")),
+        sidechain("s2", "2026-11-01T10:00:02Z", "assistant", json!([{"type":"text","text":"src/ and test/ matter."}])),
+        assistant("a1", "2026-11-01T10:00:03Z", json!([{"type":"text","text":"Here is the map."}])),
+    ]);
+    main
+}
+
+#[test]
+fn inline_sidechains_become_child_chats() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2, "the parent and one inline child");
+    let parent = &read.chats[0].chat;
+    let texts: Vec<_> = parent.entries.iter().filter_map(|e| e.text.clone()).collect();
+    assert_eq!(texts, vec!["map the repo please", "Here is the map."], "the subagent's turns are not the person's");
+    let child = &read.chats[1].chat;
+    assert_eq!(child.entries.len(), 2);
+    assert_eq!(child.parent_chat_key.as_deref(), Some(parent.key.as_str()));
+    assert_eq!(child.agent_role, Some(AgentRole::Subagent));
+    assert_eq!(child.native_ref.as_ref().unwrap().session_id, "sess-1/agent-abc");
+    assert_eq!(child.title.as_deref(), Some("Map the repo and report key files"));
+}
+
+#[test]
+fn an_inline_sidechain_and_its_file_are_one_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    write_lines(&dir.path().join("projects/p/sess-1/subagents/agent-abc.jsonl"), &[
+        sidechain("s1", "2026-11-01T10:00:01Z", "user", json!("Map the repo and report key files")),
+        sidechain("s2", "2026-11-01T10:00:02Z", "assistant", json!([{"type":"text","text":"src/ and test/ matter."}])),
+    ]);
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2, "the file and the inline copy are the same child");
+    assert!(read.chats[1].chat.source_ref.ends_with("agent-abc.jsonl"), "the separate file is preferred");
 }

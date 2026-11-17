@@ -163,6 +163,10 @@ pub fn preview_external_import(
     let selection = external_import::DiscoverySelection {
         artifact_ids: params.artifact_ids.clone(),
     };
+    core.external_import_previews
+        .lock()
+        .unwrap()
+        .insert(params.discovery_id.clone(), params.artifact_ids.clone());
     let candidates = match discovery.provider.as_str() {
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
@@ -338,7 +342,15 @@ pub fn commit_external_import(
     // caught here because the source bytes are read and re-hashed right now,
     // through the same schema-gate and structural-allowlist checks preview
     // already applied.
-    let artifact_ids = match &params.artifact_ids {
+    // What commit re-reads: the artifacts the caller names, else the ones the
+    // last preview read, else (no preview ran) every artifact.
+    let previewed = core
+        .external_import_previews
+        .lock()
+        .unwrap()
+        .get(&params.discovery_id)
+        .cloned();
+    let artifact_ids = match params.artifact_ids.clone().or(previewed) {
         Some(ids) => {
             let known: std::collections::HashSet<&str> = discovery
                 .artifacts
@@ -350,7 +362,7 @@ pub fn commit_external_import(
                     "Import commit names artifact '{unknown}' that this discovery did not find"
                 )));
             }
-            ids.clone()
+            ids
         }
         None => discovery
             .artifacts
@@ -866,6 +878,14 @@ pub fn get_personal_app(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppPar
 
 pub fn get_personal_app_draft(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppDraftParams) -> Result<wire::PersonalAppDraft, BridgeError> {
     crate::apps::draft::get(&*core.try_db()?, params, chrono::Utc::now())
+}
+
+pub fn get_personal_app_open(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppOpenParams) -> Result<wire::PersonalAppOpen, BridgeError> {
+    crate::apps::open::get(&*core.try_db()?, params)
+}
+
+pub fn call_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::CallPersonalAppToolParams) -> Result<wire::PersonalAppCallResult, BridgeError> {
+    crate::apps::open::call(core, params)
 }
 
 pub fn preview_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::PreviewPersonalAppToolParams) -> Result<Value, BridgeError> {
@@ -8170,6 +8190,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(commit_error.to_string().contains("no longer available"));
+    }
+
+    /// The folder-picker flow previews a selection and commits without naming
+    /// it. Commit must re-derive that selection, not every artifact: a second
+    /// copy of the same native session would otherwise merge in, change the
+    /// candidate's id, and fail the plan.
+    #[test]
+    fn commit_uses_the_artifacts_the_preview_read() {
+        let scratch = tempfile::tempdir().unwrap();
+        let claude_home = scratch.path().join(".claude");
+        let session = [
+            r#"{"type":"user","uuid":"u1","sessionId":"twin","timestamp":"2026-11-01T10:00:00Z","cwd":"/w","message":{"role":"user","content":"same session, two files"}}"#,
+            r#"{"type":"assistant","uuid":"a1","sessionId":"twin","timestamp":"2026-11-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}"#,
+        ]
+        .join("\n");
+        for project in ["a", "b"] {
+            std::fs::create_dir_all(claude_home.join(format!("projects/{project}"))).unwrap();
+            std::fs::write(claude_home.join(format!("projects/{project}/twin.jsonl")), &session).unwrap();
+        }
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let discovery = super::discover_external_import(
+            &core,
+            &super::wire::DiscoverExternalImportParams {
+                provider: "claude_code".into(),
+                approved_roots: vec![claude_home.to_string_lossy().into_owned()],
+                selected_export: None,
+                source_version: None,
+                schema_version: None,
+                format_versions: Default::default(),
+            },
+        )
+        .unwrap();
+        let first = discovery
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == super::wire::ExternalImportCandidateKind::Conversation)
+            .unwrap();
+        let preview = super::preview_external_import(
+            &core,
+            &super::wire::PreviewExternalImportParams {
+                discovery_id: discovery.discovery_id.clone(),
+                artifact_ids: vec![first.artifact_id.clone()],
+            },
+        )
+        .unwrap();
+        assert_eq!(preview.candidates.len(), 1);
+        let commit = super::commit_external_import(
+            &core,
+            &super::wire::CommitExternalImportParams {
+                discovery_id: discovery.discovery_id.clone(),
+                plan: stub_import_plan(vec![preview.candidates[0].candidate_id.clone()]),
+                artifact_ids: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(commit.imported, 1);
     }
 
     /// End-to-end through the same api functions the daemon dispatches to:

@@ -364,6 +364,8 @@ typed_methods![
     (GetPersonalApp, GetPersonalAppParams, PersonalApp),
     (GetPersonalAppDraft, GetPersonalAppDraftParams, PersonalAppDraft),
     (PreviewPersonalAppTool, PreviewPersonalAppToolParams, Value),
+    (GetPersonalAppOpen, GetPersonalAppOpenParams, PersonalAppOpen),
+    (CallPersonalAppTool, CallPersonalAppToolParams, PersonalAppCallResult),
     (LockPersonalApp, LockPersonalAppParams, LockPersonalAppResult),
     (DeletePersonalApp, DeletePersonalAppParams, ListPersonalAppsResult),
     // trails: one page per piece of work

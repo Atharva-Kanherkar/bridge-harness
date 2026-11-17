@@ -183,6 +183,20 @@ describe("normalizeAgentEvent", () => {
 });
 
 describe("normalizeSessionEntry", () => {
+  it("draws an imported harness compaction as Context compacted, not a Bridge checkpoint", () => {
+    // The exact payload the importer stores (bridge-core import_bundle::lower_compaction).
+    const imported = normalizeSessionEntry(durable("context.compacted", {
+      sourceId: "c1", role: "system", kind: "context.compacted", status: "completed", title: "Context compacted",
+      text: "Summary: fixed the invoice email header.", data: { harness: "claude", summary: "Summary: fixed the invoice email header." },
+      imported: true, importSource: "claude_code", _bridgeTypedSchemaVersion: 1,
+    }));
+    expect(imported?.type).toBe("context.compacted");
+    expect((imported as { title?: string }).title).toBe("Context compacted");
+    // The kind the importer used to write is Bridge's own checkpoint.
+    const old = normalizeSessionEntry(durable("compaction", { schemaVersion: 1, summary: "Summary", imported: true }));
+    expect(old?.type).not.toBe("context.compacted");
+  });
+
   it("re-encodes a durable tool entry into the same variant as its live twin", () => {
     const liveEvent = normalizeAgentEvent(live("command.started", { id: 9, itemId: "tool-1", status: "inProgress" }));
     const replayed = normalizeSessionEntry(durable("command.started", { itemId: "tool-1", status: "inProgress" }));

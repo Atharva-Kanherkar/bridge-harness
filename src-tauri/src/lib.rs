@@ -280,6 +280,19 @@ fn get_personal_app_draft(session_id: String, draft_id: String, content_hash: St
 }
 
 #[tauri::command(async)]
+fn get_personal_app_open(session_id: String, open_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppOpen, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("read an opened app", move || api::get_personal_app_open(&core, &wire::GetPersonalAppOpenParams { session_id, open_id, content_hash }))
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+fn call_personal_app_tool(session_id: String, open_id: String, content_hash: String, tool: String, arguments: serde_json::Value, approval_token: Option<String>, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppCallResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("call an app tool", move || api::call_personal_app_tool(&core, &wire::CallPersonalAppToolParams { session_id, open_id, content_hash, tool, arguments, approval_token }))
+}
+
+#[tauri::command(async)]
 fn preview_personal_app_tool(session_id: String, draft_id: String, content_hash: String, tool: String, arguments: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<serde_json::Value, BridgeError>> {
     let core = state.inner().clone();
     blocking("preview an app tool", move || api::preview_personal_app_tool(&core, &wire::PreviewPersonalAppToolParams { session_id, draft_id, content_hash, tool, arguments }))
@@ -3581,6 +3594,8 @@ pub fn run() -> i32 {
             list_personal_apps,
             get_personal_app,
             get_personal_app_draft,
+            get_personal_app_open,
+            call_personal_app_tool,
             preview_personal_app_tool,
             lock_personal_app,
             delete_personal_app,

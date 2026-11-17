@@ -126,7 +126,7 @@ test("ask mode runs Bridge's read-only tools without a prompt Claude cannot show
   for (const mode of ["Shared", "Isolated"]) {
     const options = permissionOptions(mode, false, bridge);
     assert.equal(options.permissionMode, "acceptEdits");
-    assert.deepEqual(options.allowedTools, ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read", "mcp__bridge__chats_search", "mcp__bridge__chats_read", "mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft", "mcp__bridge__apps_draft", "mcp__bridge__settings_change"]);
+    assert.deepEqual(options.allowedTools, ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read", "mcp__bridge__chats_search", "mcp__bridge__chats_read", "mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft", "mcp__bridge__apps_draft", "mcp__bridge__apps_open", "mcp__bridge__settings_change"]);
     assert.ok(!options.allowedTools.some(name => /notes_(create|edit|append|set|draw)/.test(name)));
   }
   assert.equal(permissionOptions("Shared", false, {}).allowedTools, undefined, "no bridge server, nothing to allow");

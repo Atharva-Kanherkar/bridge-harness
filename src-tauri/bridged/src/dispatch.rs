@@ -132,6 +132,14 @@ pub fn dispatch(
             let p: wire::GetPersonalAppDraftParams = decode(method, params)?;
             reply(api::get_personal_app_draft(core, &p))
         }
+        MethodName::GetPersonalAppOpen => {
+            let p: wire::GetPersonalAppOpenParams = decode(method, params)?;
+            reply(api::get_personal_app_open(core, &p))
+        }
+        MethodName::CallPersonalAppTool => {
+            let p: wire::CallPersonalAppToolParams = decode(method, params)?;
+            reply(api::call_personal_app_tool(core, &p))
+        }
         MethodName::PreviewPersonalAppTool => {
             let p: wire::PreviewPersonalAppToolParams = decode(method, params)?;
             reply(api::preview_personal_app_tool(core, &p))
