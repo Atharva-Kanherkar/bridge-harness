@@ -16,6 +16,7 @@ import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, typ
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
+import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
@@ -2213,19 +2214,23 @@ function AppContent() {
       // submit is a no-op, never a zero-entry placeholder row. The draft stays open.
       if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
+      const latency = beginNewChat();
       try {
         const overrides = draft.overrides ?? {};
         const reviewed = draftSettings.settings?.workspaceId === draft.workspaceId ? draftSettings.settings : undefined;
         const settings = await bridgeApi.resolveChatSettings({workspaceId:draft.workspaceId,overrides,expectedRevision:reviewed?.revision});
+        markFlight(latency, "resolve_chat_settings");
         const agent = settings.target.kind === "agent" ? settings.target : undefined;
         const mention = configuredAgentMention(text, agentShortcutTargets);
         if ((agent || mention) && (initialAttachments.length > 0 || !text)) {
           throw new Error("Agents need a text objective and workspace file references. Remove image attachments before sending to an agent.");
         }
         const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null});
+        markFlight(latency, "create_configured_chat");
         const next = result.state;
         const created = next.sessions.find(item => item.id === result.sessionId);
         if (!created) throw new Error("The host did not return the created chat");
+        bindNewChat(latency, result.sessionId);
         setChatConfiguration({sessionId:result.sessionId,value:result.configuration});
         const firstMessage = agent && !mention ? `#${agent.agentId} ${text}` : text;
         // Carry before selecting: the welcome-message effect fires on session-id
@@ -2260,6 +2265,7 @@ function AppContent() {
         }
         return created?.id;
       } catch (e) {
+        abandonFlight(latency);
         pendingWelcomeMessageRef.current = null;
         if (e instanceof TrailStartError) throw e;
         setError(errorMessage(e));
@@ -2914,6 +2920,7 @@ function AppContent() {
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
   async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
     const key = crypto.randomUUID();
+    const latency = beginSend(target.id);
     const flight = sessionStops.beginSend(target.id, () => setPending(current => current.filter(item => item.key !== key)));
     // The bubble lands before the first round-trip, not after it: the user
     // should see their words the instant they press Send, and the daemon may
@@ -2924,6 +2931,7 @@ function AppContent() {
       if (flight.ready) await flight.ready;
       if (flight.cancelled) return;
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      markFlight(latency, "prepare_turn");
       if (flight.cancelled) return;
       const text = prepared.text;
       if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
@@ -2931,13 +2939,17 @@ function AppContent() {
         flight.starting();
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
+        markFlight(latency, "start_chat");
         if (flight.cancelled) { flight.stopIfCancelled(); return; }
       }
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
       flight.submitted();
+      markSubmitted(latency);
       const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments, activeTurnInput);
+      markFlight(latency, "submit_input");
+      if (outcome.disposition !== "startedNewTurn") abandonFlight(latency);
       if (flight.cancelled) { flight.stopIfCancelled(); return; }
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
@@ -2948,6 +2960,8 @@ function AppContent() {
       if (flight.cancelled) return;
       throw e;
     } finally {
+      // A send that never reached submit has no first output to time.
+      if (!latency.submitted) abandonFlight(latency);
       flight.finish();
     }
   }

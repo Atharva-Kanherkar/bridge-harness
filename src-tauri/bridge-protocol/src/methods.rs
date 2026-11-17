@@ -107,6 +107,7 @@ methods![
     (UpdateChatModel, "sessions", "update_chat_model"),
     (CarrySessionHandoff, "sessions", "carry_session_handoff"),
     (PrepareTurn, "sessions", "prepare_turn"),
+    (RecordClientLatency, "sessions", "record_client_latency"),
     (SendTurn, "sessions", "send_turn"),
     (SubmitInput, "sessions", "submit_input"),
     (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),

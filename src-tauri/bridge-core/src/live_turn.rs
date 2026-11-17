@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -1717,51 +1717,37 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
 }
 
 /// Where one cold chat launch spent its time before the provider process
-/// existed, printed only when `BRIDGE_LAUNCH_TIMING=1`.
+/// existed, and what it did after.
 ///
 /// `SessionStartup` says when the provider was reached; this says what the
-/// invoke did before that, which is where a launch can actually be made
-/// faster. Each mark is a boundary this call crossed, and a normal launch pays
-/// one `Instant::now` per mark and nothing else.
+/// invoke did around that, which is where a launch can actually be made
+/// faster. Each mark is a boundary this call crossed. Every launch leaves a
+/// `latency.launch` ledger row; `BRIDGE_LAUNCH_TIMING=1` also prints it.
 struct LaunchTiming {
-    enabled: bool,
-    started: Instant,
-    marks: Vec<(&'static str, u128)>,
+    print: bool,
+    marks: crate::latency::Marks,
 }
 
 impl LaunchTiming {
     fn start() -> Self {
-        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let enabled = *ENABLED.get_or_init(|| {
+        static PRINT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let print = *PRINT.get_or_init(|| {
             std::env::var("BRIDGE_LAUNCH_TIMING").as_deref() == Ok("1")
         });
-        Self {
-            enabled,
-            started: Instant::now(),
-            marks: Vec::new(),
-        }
+        Self { print, marks: crate::latency::Marks::start() }
     }
 
     fn mark(&mut self, name: &'static str) {
-        if self.enabled {
-            self.marks.push((name, self.started.elapsed().as_millis()));
-        }
+        self.marks.mark(name);
     }
 
-    fn record(&self, session_id: &str, harness: &str) {
-        if !self.enabled {
-            return;
+    fn record(&self, db: &Connection, session_id: &str, harness: &str) {
+        if self.print {
+            crate::diagnostics::record(&self.marks.line(&format!("launch session={session_id} harness={harness}")));
         }
-        let mut line = format!(
-            "bridge: launch session={session_id} harness={harness} total_ms={}",
-            self.started.elapsed().as_millis()
-        );
-        let mut previous = 0;
-        for (name, at) in &self.marks {
-            line.push_str(&format!(" {name}_ms={} (+{})", at, at - previous));
-            previous = *at;
-        }
-        crate::diagnostics::record(&line);
+        let mut body = self.marks.to_json();
+        body["harness"] = serde_json::json!(harness);
+        crate::latency::record(db, "latency.launch", session_id, &body);
     }
 }
 
@@ -2459,9 +2445,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     }
     timing.mark("persist");
     core.events.publish(CoreEvent::StateChanged);
-    let snapshot = store::state(&state.db.lock().unwrap());
+    let db = state.db.lock().unwrap();
+    let snapshot = store::state(&db);
     timing.mark("state");
-    timing.record(&session_id, adapter_id);
+    timing.record(&db, &session_id, adapter_id);
     snapshot
 }
 
@@ -2903,6 +2890,25 @@ fn handle_agent_value_timed(
         if recorded {
             core.events.publish(CoreEvent::StateChanged);
         }
+        return;
+    }
+    // The sidecar's own account of a turn (sidecar/claude-agent/timing.mjs):
+    // a measurement, so it goes to the latency ledger, never the forest.
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("system")
+        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("bridge_timing")
+    {
+        let mut body = value.clone();
+        if let Some(object) = body.as_object_mut() {
+            object.remove("type");
+            object.remove("subtype");
+            object.insert("harness".into(), serde_json::json!("claude"));
+        }
+        crate::latency::record(
+            &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            "latency.harness",
+            session_id,
+            &body,
+        );
         return;
     }
     let state = core.clone();
@@ -12372,7 +12378,9 @@ fn submit_input_internal(
     attachments: Vec<wire::TurnImage>,
     preference: Option<wire::ActiveTurnInput>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    let mut timing = crate::latency::Marks::start();
     let _input_lease = core.input_activity.read().unwrap();
+    timing.mark("input_lease");
     ensure_session_not_archived(core, &session_id)?;
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
@@ -12385,6 +12393,8 @@ fn submit_input_internal(
     // meant the only person who could see the mistake was the only one who could
     // not mention it. Three durable states still refuse, and they name themselves.
     let worker = store::worker_runtime(&state.db.lock().unwrap(), &session_id)?;
+    timing.mark("gates");
+    let mut resumed = false;
     if let Some(runtime) = &worker {
         let has_live_runtime = state.adapters.lock().unwrap().contains_key(&session_id);
         session_input::worker_steer_gate(
@@ -12402,6 +12412,8 @@ fn submit_input_internal(
         // already refused a worker with no live runtime, because launching one is
         // the pool's decision, not a side effect of typing.
         resume_for_send(core, &session_id)?;
+        resumed = true;
+        timing.mark("resume");
     }
 
     // A pending OpenCode question is not "a turn in flight that can take more
@@ -12458,6 +12470,7 @@ fn submit_input_internal(
     } else {
         route.disposition()
     };
+    timing.mark("route");
 
     let prepared = match prepare_input(
         core,
@@ -12497,6 +12510,7 @@ fn submit_input_internal(
         None => prepared,
     };
     let interceptions = mirror_interceptions(&prepared.interceptions);
+    timing.mark("prepare");
 
     let mut queued_input_id = None;
     let mut delivered_route = route;
@@ -12557,9 +12571,19 @@ fn submit_input_internal(
     // keeps planning against the objective it issued and argues with guidance it
     // never saw. Told at submission time rather than at delivery: knowing a steer
     // is inbound is what stops the fight, and a queued one lands next boundary.
+    timing.mark("deliver");
     if worker.is_some() {
         notify_parent_worker_steered(core, &session_id, &prepared.display_text, delivered_route);
     }
+    let mut body = timing.to_json();
+    body["route"] = serde_json::json!(format!("{delivered_route:?}"));
+    body["resumed"] = serde_json::json!(resumed);
+    crate::latency::record(
+        &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        "latency.submit",
+        &session_id,
+        &body,
+    );
     Ok(wire::SubmitInputResult {
         disposition,
         queued_input_id,

@@ -357,6 +357,9 @@ fn launch(
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,
+        // A chat the person is waiting on reports where each turn spent its
+        // time (`latency.harness`). Background runs keep their exact frames.
+        "timing": interactive && read_only_sandbox.is_none() && briefing_config.is_none(),
         // The routed reasoning effort. The Claude Agent SDK takes this natively
         // (Options.effort), so low/medium are honoured instead of being silently
         // dropped the way the old thinking-budget mapping dropped them. The

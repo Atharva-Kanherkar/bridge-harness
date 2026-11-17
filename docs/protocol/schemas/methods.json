@@ -436,6 +436,13 @@
       "resultSchema": "sanitized-turn.json"
     },
     {
+      "command": "record_client_latency",
+      "domain": "sessions",
+      "method": "sessions/record_client_latency",
+      "paramsSchema": "record-client-latency-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "send_turn",
       "domain": "sessions",
       "method": "sessions/send_turn",
@@ -2363,7 +2370,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 39
+    "minor": 40
   },
   "reserved": {
     "cancel": "$/cancel",

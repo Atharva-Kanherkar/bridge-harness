@@ -667,7 +667,17 @@ pub fn create(
             &id,
             "Created chat with reviewed defaults",
         )?;
-        let state = crate::api::protocol_wire(store::state(&tx)?)?;
+        // The whole app state is rebuilt inside this write transaction and
+        // returned with the new chat; how long that takes is the first thing a
+        // person waits on after pressing Send in a new chat.
+        let mut timing = crate::latency::Marks::start();
+        let snapshot = store::state(&tx)?;
+        timing.mark("state");
+        let state: BridgeState = crate::api::protocol_wire(snapshot)?;
+        timing.mark("wire");
+        let mut body = timing.to_json();
+        body["sessions"] = serde_json::json!(state.sessions.len());
+        crate::latency::record(&tx, "latency.create_chat", &id, &body);
         tx.commit()?;
         Ok(ConfiguredChatResult {
             session_id: id.clone(),

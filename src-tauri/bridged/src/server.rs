@@ -453,9 +453,154 @@ fn request_loop(
         if line.iter().all(|byte| byte.is_ascii_whitespace()) {
             continue;
         }
+        let started = Instant::now();
         if let Some(response) = handle_frame(core, state, &line) {
-            write_frame(writer, &response)?;
+            let dispatched = started.elapsed();
+            let bytes = serde_json::to_vec(&response)?;
+            let serialized = started.elapsed();
+            writer.send(&bytes)?;
+            observe_request(core, &line, dispatched, serialized, started.elapsed(), bytes.len());
         }
+    }
+}
+
+/// Requests a person waits on when they press Send. Each call leaves its own
+/// `latency.rpc` row; they happen at the rate a person sends.
+const SEND_PATH_METHODS: &[&str] = &[
+    "sessions/resolve_chat_settings",
+    "sessions/create_configured_chat",
+    "sessions/prepare_turn",
+    "sessions/start_chat",
+    "sessions/submit_input",
+];
+/// The full-state read. Every `state-changed` triggers one, so it is counted
+/// on every call but written as one `latency.rpc_window` row per minute rather
+/// than a row per call.
+const STATE_METHOD: &str = "state/get_state";
+/// Any other request this slow is counted in its method's window.
+const SLOW_REQUEST: Duration = Duration::from_millis(250);
+const WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct RequestWindow {
+    started: Option<Instant>,
+    calls: u64,
+    total_ms: u128,
+    max_ms: u128,
+    max_bytes: usize,
+}
+
+fn mentions(line: &[u8], method: &str) -> bool {
+    line.windows(method.len()).any(|window| window == method.as_bytes())
+}
+
+/// Time a request after its response is already on the wire, so measuring
+/// never delays the answer: a row per send-path call, a per-minute window for
+/// state reads and slow requests, nothing for the rest.
+fn observe_request(
+    core: &Arc<BridgeCore>,
+    line: &[u8],
+    dispatched: Duration,
+    serialized: Duration,
+    total: Duration,
+    bytes: usize,
+) {
+    #[derive(serde::Deserialize)]
+    struct Peek {
+        method: String,
+        params: Option<PeekParams>,
+    }
+    #[derive(serde::Deserialize)]
+    struct PeekParams {
+        #[serde(rename = "sessionId")]
+        session_id: Option<String>,
+    }
+    // Cheap reject before parsing: a fast request naming none of these costs a
+    // few substring scans.
+    let send_path = SEND_PATH_METHODS.iter().any(|method| mentions(line, method));
+    if !send_path && total < SLOW_REQUEST && !mentions(line, STATE_METHOD) {
+        return;
+    }
+    let Ok(peek) = serde_json::from_slice::<Peek>(line) else {
+        return;
+    };
+    if SEND_PATH_METHODS.contains(&peek.method.as_str()) {
+        let session_id = peek.params.and_then(|params| params.session_id);
+        let body = serde_json::json!({
+            "method": peek.method,
+            "totalMs": total.as_millis(),
+            "dispatchMs": dispatched.as_millis(),
+            "serializeMs": (serialized - dispatched).as_millis(),
+            "writeMs": (total - serialized).as_millis(),
+            "bytes": bytes,
+        });
+        if total >= SLOW_REQUEST {
+            bridge_core::diagnostics::record(&format!("bridged: slow request {body}"));
+        }
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        bridge_core::latency::record(&db, "latency.rpc", session_id.as_deref().unwrap_or("-"), &body);
+        return;
+    }
+    if peek.method != STATE_METHOD && total < SLOW_REQUEST {
+        return;
+    }
+    if let Some(body) = count_in_window(&peek.method, total, bytes, Instant::now()) {
+        if body["maxMs"].as_u64().unwrap_or(0) >= SLOW_REQUEST.as_millis() as u64 {
+            bridge_core::diagnostics::record(&format!("bridged: slow requests {body}"));
+        }
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        bridge_core::latency::record(&db, "latency.rpc_window", "-", &body);
+    }
+}
+
+/// Add one call to its method's window; return the window's row once a full
+/// window has passed. A window closes on the first call after it ends, so a
+/// quiet method writes nothing.
+fn count_in_window(method: &str, total: Duration, bytes: usize, now: Instant) -> Option<Value> {
+    static WINDOWS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, RequestWindow>>> =
+        std::sync::OnceLock::new();
+    let mut windows = WINDOWS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let window = windows.entry(method.to_owned()).or_default();
+    let started = *window.started.get_or_insert(now);
+    window.calls += 1;
+    window.total_ms += total.as_millis();
+    window.max_ms = window.max_ms.max(total.as_millis());
+    window.max_bytes = window.max_bytes.max(bytes);
+    let elapsed = now.duration_since(started);
+    if elapsed < WINDOW {
+        return None;
+    }
+    let body = serde_json::json!({
+        "method": method,
+        "windowMs": elapsed.as_millis(),
+        "calls": window.calls,
+        "meanMs": window.total_ms / u128::from(window.calls),
+        "maxMs": window.max_ms,
+        "maxBytes": window.max_bytes,
+    });
+    *window = RequestWindow::default();
+    Some(body)
+}
+
+#[cfg(test)]
+mod request_window_tests {
+    use super::*;
+
+    #[test]
+    fn a_window_writes_one_row_after_a_minute_and_then_starts_over() {
+        let start = Instant::now();
+        let method = "test/window_a";
+        assert!(count_in_window(method, Duration::from_millis(100), 10, start).is_none());
+        assert!(count_in_window(method, Duration::from_millis(300), 30, start + Duration::from_secs(30)).is_none());
+        let row = count_in_window(method, Duration::from_millis(200), 20, start + WINDOW).unwrap();
+        assert_eq!(row["calls"], 3);
+        assert_eq!(row["meanMs"], 200);
+        assert_eq!(row["maxMs"], 300);
+        assert_eq!(row["maxBytes"], 30);
+        assert!(count_in_window(method, Duration::from_millis(5), 1, start + WINDOW + Duration::from_secs(1)).is_none());
     }
 }
 
