@@ -170,6 +170,22 @@ function announceZoom(level: number): void {
   window.dispatchEvent(new CustomEvent<number>(ZOOM_CHANGED_EVENT, { detail: level }));
 }
 
+/**
+ * The level the webview last confirmed, which is the number of window points
+ * one CSS pixel covers. Anything that hands a DOM rect to the native shell (the
+ * browser dock's child webview) multiplies by this, or it lands at 1/zoom scale.
+ */
+export function appliedZoom(): number {
+  return applied;
+}
+
+/** Call `listener` after every confirmed level change, including a fallback. */
+export function onZoomChange(listener: (level: number) => void): () => void {
+  const handle = (event: Event) => listener((event as CustomEvent<number>).detail);
+  window.addEventListener(ZOOM_CHANGED_EVENT, handle);
+  return () => window.removeEventListener(ZOOM_CHANGED_EVENT, handle);
+}
+
 // One owner for the level, so two commands in the same tick compose instead of
 // racing each other to the webview.
 //

@@ -6,6 +6,15 @@ import { BrowserPage } from "./BrowserPage";
 
 const harness = vi.hoisted(() => ({
   commands: [] as Array<{ command: string; args: Record<string, unknown> }>,
+  zoom: 1,
+  zoomListeners: new Set<(level: number) => void>(),
+}));
+vi.mock("../zoom", () => ({
+  appliedZoom: () => harness.zoom,
+  onZoomChange: (listener: (level: number) => void) => {
+    harness.zoomListeners.add(listener);
+    return () => harness.zoomListeners.delete(listener);
+  },
 }));
 vi.mock("../browserRuntime", () => ({
   hasNativeBrowser: () => true,
@@ -67,6 +76,8 @@ beforeEach(async () => {
   vi.stubGlobal("innerWidth", 800);
   vi.stubGlobal("innerHeight", 600);
   harness.commands.length = 0;
+  harness.zoom = 1;
+  harness.zoomListeners.clear();
   ResizeObserverStub.instances.length = 0;
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -116,5 +127,39 @@ describe("BrowserPage native viewport bounds", () => {
   ])("hides fully offscreen or subpixel bounds: %j", async rect => {
     await reportHostRect(rect);
     expect(lastLayout().visible).toBe(false);
+  });
+});
+
+describe("BrowserPage at a UI zoom other than 100%", () => {
+  // The reported bug: at 125% the page was drawn at 0.8x size and position,
+  // floating over the conversation instead of filling the pane.
+  it("converts the host rect from CSS pixels to window points", async () => {
+    harness.zoom = 1.25;
+    await reportHostRect({ left: 400, top: 80, right: 760, bottom: 580 });
+    expect(lastLayout()).toMatchObject({ x: 500, y: 100, width: 450, height: 625, visible: true });
+  });
+
+  it("clamps to the viewport in CSS pixels before scaling", async () => {
+    harness.zoom = 1.25;
+    // Window is 800x600 CSS px, so 1000x750 points.
+    await reportHostRect({ left: 400, top: 80, right: 900, bottom: 700 });
+    expect(lastLayout()).toMatchObject({ x: 500, y: 100, width: 500, height: 650, visible: true });
+  });
+
+  it("relayouts on a zoom change without waiting for a resize", async () => {
+    await reportHostRect({ left: 400, top: 80, right: 760, bottom: 580 });
+    expect(lastLayout()).toMatchObject({ x: 400, y: 80, width: 360, height: 500 });
+    const before = harness.commands.length;
+    harness.zoom = 1.5;
+    await act(async () => { harness.zoomListeners.forEach(listener => listener(1.5)); });
+    expect(harness.commands.length).toBeGreaterThan(before);
+    expect(lastLayout()).toMatchObject({ x: 600, y: 120, width: 540, height: 750, visible: true });
+  });
+
+  it("stops listening for zoom changes once the page unmounts", async () => {
+    expect(harness.zoomListeners.size).toBe(1);
+    await act(async () => root.unmount());
+    expect(harness.zoomListeners.size).toBe(0);
+    root = createRoot(container);
   });
 });

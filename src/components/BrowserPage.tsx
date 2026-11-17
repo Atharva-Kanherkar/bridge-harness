@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { browserCommand, browserViewportVisible, hasNativeBrowser, registerBrowserPageValidator, type BrowserAction, type BrowserPageSnapshot } from "../browserRuntime";
 import { createCoalescedRefresh, startSerialPoll } from "../polling";
+import { appliedZoom, onZoomChange } from "../zoom";
 
 export type BrowserPageHandle = {
   navigate(url: string): Promise<void>;
@@ -66,8 +67,12 @@ export const BrowserPage = forwardRef<BrowserPageHandle, BrowserPageProps>(funct
           const top = Math.max(0, Math.min(rect.top, window.innerHeight));
           const width = Math.max(0, Math.min(rect.right, window.innerWidth) - left);
           const height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - top);
-          const paintable = width >= 1 && height >= 1;
-          const bounds = { x: left, y: top, width, height, visible: paintable && browserViewportVisible(host, current.current.visible) };
+          // The DOM measures in CSS pixels; the shell places the page in window
+          // points. Bridge's UI zoom makes one CSS pixel cover `zoom` points, so
+          // without this the page lands at 1/zoom size and position.
+          const zoom = appliedZoom();
+          const paintable = width * zoom >= 1 && height * zoom >= 1;
+          const bounds = { x: left * zoom, y: top * zoom, width: width * zoom, height: height * zoom, visible: paintable && browserViewportVisible(host, current.current.visible) };
           const signature = JSON.stringify(bounds);
           if (signature === lastLayout) return;
           lastLayout = signature;
@@ -80,6 +85,7 @@ export const BrowserPage = forwardRef<BrowserPageHandle, BrowserPageProps>(funct
         mutations.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "aria-hidden", "open"] });
         window.addEventListener("resize", layout);
         document.addEventListener("visibilitychange", layout);
+        const stopZoom = onZoomChange(() => void layout());
         let lastSnapshot = 0;
         stop = startSerialPoll(async () => {
           await layout();
@@ -94,6 +100,7 @@ export const BrowserPage = forwardRef<BrowserPageHandle, BrowserPageProps>(funct
           resize.disconnect(); mutations.disconnect();
           window.removeEventListener("resize", layout);
           document.removeEventListener("visibilitychange", layout);
+          stopZoom();
           void browserCommand("close", sessionId, tabId).catch(() => {});
         };
       });
