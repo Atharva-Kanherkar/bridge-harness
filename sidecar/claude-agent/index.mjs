@@ -16,7 +16,8 @@ import { stopTaskFrame, childPermissions, withChildPermissions } from "./subagen
 //     normalize_claude_message_with_state already understands.
 //
 // Config arrives as a single JSON argument (argv[2]):
-//   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers }
+//   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers,
+//     timing }  (timing: report each turn as a system/bridge_timing frame)
 
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -28,6 +29,7 @@ import { isTrustedFolder } from "./trust.mjs";
 import { createDirectCall } from "./mcp-call.mjs";
 import { createAppControl } from "./app-control.mjs";
 import { isDirectCall } from "./briefing.mjs";
+import { createTurnTiming } from "./timing.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -37,9 +39,12 @@ import { isDirectCall } from "./briefing.mjs";
 // exactly as it did before. ESM ignores NODE_PATH, so an explicit module entry is
 // the only way to redirect a bare specifier.
 const sdkEntry = process.env.BRIDGE_CLAUDE_SDK_ENTRY;
+const bootStarted = performance.now();
 const { query } = sdkEntry
   ? await import(pathToFileURL(sdkEntry).href)
   : await import("@anthropic-ai/claude-agent-sdk");
+
+const sdkImportedMs = Math.round(performance.now() - bootStarted);
 
 // A closed pipe means the parent can no longer receive protocol frames. Exit
 // unsuccessfully instead of trying to report another frame to that same pipe.
@@ -124,6 +129,16 @@ const options = config.catalog === true
 const permissions = childPermissions(writeFrame, sessionId);
 if (config.catalog !== true) withChildPermissions(options, permissions);
 const run = query({ prompt: input, options });
+// Only an interactive chat asks for per-turn timing; every other run keeps its
+// exact frame sequence.
+const turnTiming = config.timing === true
+  ? createTurnTiming({
+    // performance.now() counts from process start, so boot includes Node's own.
+    processToSdkImportMs: Math.round(bootStarted) + sdkImportedMs,
+    sdkImportMs: sdkImportedMs,
+    queryCreatedMs: Math.round(performance.now()),
+  })
+  : null;
 
 // The one approved tool call a connector action launch may make without a
 // model turn. Inert unless the briefing carries an exact action.
@@ -168,7 +183,10 @@ rl.on("line", (line) => {
     // here would silently drop them — the exact failure image paste exists
     // to remove. See input.mjs for the shapes this tolerates.
     const blocks = userContentBlocks(frame);
-    if (blocks) input.push(userMessage(blocks));
+    if (blocks) {
+      turnTiming?.userFrame();
+      input.push(userMessage(blocks));
+    }
   } else if (frame.type === "control_response") {
     // One channel, two askers with their own request ids: a workflow run's
     // write (`wf-N`, ask.mjs) and a subagent's prompt (`child-permission-N`).
@@ -216,6 +234,7 @@ function needsFreshLoginQuery(message) {
 // Pump SDK messages straight to stdout as newline JSON.
 try {
   for await (const message of run) {
+    turnTiming?.observe(message);
     await writeFrame(message);
     if (needsFreshLoginQuery(message)) {
       // Some SDK versions return async cleanup despite typing close() as void.
@@ -224,7 +243,11 @@ try {
       try { await run.close(); } catch {}
       process.exit(1);
     }
-    if (message?.type === "result") reportContextUsage();
+    if (message?.type === "result") {
+      reportContextUsage();
+      const timing = turnTiming?.finish();
+      if (timing) await writeFrame(timing);
+    }
   }
 } catch (error) {
   await fail(`Claude Agent SDK error: ${error?.message ?? error}`);
