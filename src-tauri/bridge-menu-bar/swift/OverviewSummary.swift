@@ -15,7 +15,7 @@ struct OverviewSummary {
     init(_ presentation: Presentation) {
         let providers = presentation.settings.enabledFavoriteProviders
         let periods = providers.map { provider in
-            presentation.usage?.providers.first { $0.provider == provider }?.month
+            presentation.ownUsage(provider)?.month
         }
         providerCount = providers.count
         func known(_ metric: Metric) -> Bool {

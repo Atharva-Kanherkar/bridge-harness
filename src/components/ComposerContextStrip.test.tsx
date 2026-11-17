@@ -198,11 +198,15 @@ describe("ComposerContextStrip", () => {
     await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
 
     mount({ branches: ["feat/cursor-sidebar-dev", "main"], branchBusy: false });
-    await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
-    const firstBranch = document.querySelector<HTMLButtonElement>(
+    const firstBranch = () => document.querySelector<HTMLButtonElement>(
       '[role="menu"][aria-label="Branch"] [role="menuitemradio"]',
     );
-    expect(document.activeElement).toBe(firstBranch);
+    // Focus moves on an animation frame. Wait for it rather than for a fixed
+    // 20ms, which a loaded CI runner can outlast.
+    for (let tries = 0; tries < 50 && (!firstBranch() || document.activeElement !== firstBranch()); tries += 1) {
+      await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
+    }
+    expect(document.activeElement).toBe(firstBranch());
   });
 
   it("restores the branch trigger when loading is dismissed with Escape", async () => {

@@ -768,3 +768,40 @@ check(balancedFrames.overview.minX == 16 && abs(350 - lastTabRight - 16) < 0.01,
       "Overview and the last visible favorite align with equal card gutters")
 check(Set(balancedSwitcher.buttons.map { $0.frame.width }).count == 1 && balancedSwitcher.testMaximumOffset == 0,
       "Three favorites fill the available row evenly without invisible arrow space")
+
+// Extra accounts ride beside the user's own login. The own login stays the
+// provider's row even when the host lists an account first, and every
+// account keeps its own name and limits.
+let accountJSON = """
+{"settings":{"schemaVersion":1,"enabled":true,"codexEnabled":true,"claudeEnabled":true,"cursorEnabled":false,"opencodeEnabled":false,
+ "selectedProvider":"claude","pinnedProviders":["claude"],"opencodeWorkspace":null,"displayMode":"used","quotaWindow":"auto","showAccount":true,
+ "showTokens":true,"showCost":true,"refreshSeconds":300},
+ "usage":{"schemaVersion":1,"generatedAt":1,"providers":[
+  {"schemaVersion":1,"generatedAt":1,"provider":"claude","account":"me@personal.test","plan":"Claude Max","observedAt":1,"accountId":"personal","accountLabel":"Personal",
+   "windows":[{"id":"session","label":"5-hour","usedPercent":{"value":41,"source":"reported","status":"current"},"resetsAt":null,"windowMinutes":300}],
+   "today":{"tokens":{"status":"unavailable"},"costMicrousd":{"status":"unavailable"},"models":[]},
+   "month":{"tokens":{"status":"unavailable"},"costMicrousd":{"status":"unavailable"},"models":[]},"coverage":"Account limits only","error":null},
+  {"schemaVersion":1,"generatedAt":1,"provider":"claude","account":"me@team.test","plan":"Claude Team","observedAt":1,
+   "windows":[{"id":"session","label":"5-hour","usedPercent":{"value":7,"source":"reported","status":"current"},"resetsAt":null,"windowMinutes":300}],
+   "today":{"tokens":{"status":"unavailable"},"costMicrousd":{"status":"unavailable"},"models":[]},
+   "month":{"tokens":{"status":"unavailable"},"costMicrousd":{"status":"unavailable"},"models":[]},"coverage":"Recorded on this Mac","error":null},
+  {"schemaVersion":1,"generatedAt":1,"provider":"claude","account":"me@personal.test","plan":"Claude Max","observedAt":1,"accountId":"personal","accountLabel":"Personal",
+   "windows":[],"today":{"tokens":{"status":"unavailable"},"costMicrousd":{"status":"unavailable"},"models":[]},
+   "month":{"tokens":{"status":"unavailable"},"costMicrousd":{"status":"unavailable"},"models":[]},"coverage":"dup","error":null}
+ ]},"refreshing":false,"error":null}
+"""
+let accounts = try JSONDecoder().decode(Presentation.self, from: Data(accountJSON.utf8))
+check(accounts.selectedUsage?.account == "me@team.test", "An extra account never replaces the own login's row")
+check(accounts.statusUsage?.account == "me@team.test", "The status item reads the own login")
+check(accounts.accountUsages("claude").map { $0.title } == ["Claude · Personal"], "Each account is listed once, under its provider")
+check(accounts.accountUsages("claude").first?.windows.first?.usedPercent.current == 41, "An account keeps its own limits")
+check(accounts.accountUsages("codex").isEmpty, "Accounts stay under their own provider")
+check(accounts.selectedUsage?.title == "Claude", "The own login keeps the provider's name")
+let accountState = MenuState()
+accountState.presentation = accounts
+for overview in [true, false] {
+    accountState.showingOverview = overview
+    let hosting = NSHostingView(rootView: MenuCard(state: accountState))
+    hosting.layoutSubtreeIfNeeded()
+    check(hosting.fittingSize.height > 0, "The card renders with an account in \(overview ? "overview" : "detail")")
+}

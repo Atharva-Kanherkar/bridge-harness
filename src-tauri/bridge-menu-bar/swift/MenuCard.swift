@@ -60,6 +60,7 @@ struct MenuCard: View {
                     }
                     Text(usage.coverage).font(.system(size: 10)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
+                accountSections(presentation.accountUsages(usage.provider), presentation: presentation, compact: false)
             } else {
                 Text(presentation.refreshing ? "Reading provider usage…" : "Usage unavailable").font(.headline)
                 Text(presentation.error ?? "Refresh to read your account limits and recorded token usage.").foregroundColor(.secondary)
@@ -102,7 +103,7 @@ struct MenuCard: View {
                         Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("Show disconnected \(providerName(provider)) details")
-            } else if let usage = presentation.usage?.providers.first(where: { $0.provider == provider }) {
+            } else if let usage = presentation.ownUsage(provider) {
                 Button(action: { state.select(provider) }) {
                     HStack {
                         providerHeader(usage, compact: true)
@@ -110,17 +111,33 @@ struct MenuCard: View {
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("Show \(providerName(provider)) details")
                 ProviderQuotaSection(usage: usage, presentation: presentation, compact: true)
+                accountSections(presentation.accountUsages(provider), presentation: presentation, compact: true)
             } else {
                 Text(providerName(provider)).fontWeight(.semibold)
                 Text(presentation.refreshing ? "Reading usage…" : "Usage unavailable").foregroundColor(.secondary)
+                accountSections(presentation.accountUsages(provider), presentation: presentation, compact: true)
             }
         }
     }
 }
 
+/// Each extra account under its provider: its name, the signed-in address,
+/// and its own quota bars. Accounts have limits only; history stays with the
+/// user's own login.
+@ViewBuilder func accountSections(_ accounts: [UsageOverview], presentation: Presentation, compact: Bool) -> some View {
+    ForEach(accounts, id: \.title) { account in
+        Divider()
+        providerHeader(account, compact: true)
+        if presentation.settings.showAccount, let address = account.account {
+            Text(address).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+        }
+        ProviderQuotaSection(usage: account, presentation: presentation, compact: compact)
+    }
+}
+
 private func providerHeader(_ usage: UsageOverview, compact: Bool) -> some View {
     HStack(alignment: .firstTextBaseline) {
-        Text(providerName(usage.provider)).font(.system(size: compact ? 13 : 20, weight: .semibold))
+        Text(usage.title).lineLimit(1).font(.system(size: compact ? 13 : 20, weight: .semibold))
         Spacer()
         if let plan = usage.plan { Text(plan.replacingOccurrences(of: "_", with: " ").capitalized).font(.system(size: 11, weight: .medium)).foregroundColor(.secondary) }
     }
