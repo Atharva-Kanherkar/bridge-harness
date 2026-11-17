@@ -79,3 +79,8 @@ it("treats a failed isolation check as not isolated", async () => {
   await render();
   await expect(frame.onToolCall!("slack_search_users", {})).rejects.toThrow("Bridge Mac app");
 });
+it("names the agent whose connection the app uses", async () => {
+  vi.mocked(bridgeApi.getPersonalAppDraft).mockResolvedValueOnce({ ...draft(), harness: "codex" });
+  await render();
+  expect(container.textContent).toContain("claude.ai Slack · via Codex");
+});

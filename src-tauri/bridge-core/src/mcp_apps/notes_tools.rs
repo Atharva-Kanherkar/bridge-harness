@@ -140,7 +140,7 @@ pub fn all_definitions() -> Vec<Value> {
     vec![
         definition(
             "apps_draft", "Draft a personal app",
-            "Build a sandboxed personal app for one connected MCP server in this Claude chat. Reads run live; writes only show what would be sent. Return a preview card with native Lock and Revise actions. Use actual bare tool names; reads must be read-only. HTML must implement MCP Apps JSON-RPC over parent.postMessage; no external scripts, styles, links or requests. sample_args is the optional initial ui/notifications/tool-input arguments. app_id revises an existing personal app. Only the person can lock; this tool never locks or sends writes.",
+            "Build a sandboxed personal app for one MCP server. Bridge finds the server on this chat's own agent first, then on Claude Code or Codex, and refuses when none has it connected. Reads run live; writes only show what would be sent. Return a preview card with native Lock and Revise actions. Use actual bare tool names; reads must be read-only. HTML must implement MCP Apps JSON-RPC over parent.postMessage; no external scripts, styles, links or requests. sample_args is the optional initial ui/notifications/tool-input arguments. app_id revises an existing personal app. Only the person can lock; this tool never locks or sends writes.",
             json!({"type":"object","properties":{
                 "name":{"type":"string","minLength":1,"maxLength":60},
                 "intent":{"type":"string","minLength":1,"maxLength":300},

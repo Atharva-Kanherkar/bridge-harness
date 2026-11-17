@@ -13,6 +13,16 @@ describe("personal app draft transcript", () => {
       { type: "mcpToolCall", server: "bridge", tool: "apps_draft", result: { structuredContent: answer } },
       { tool: "bridge_apps_draft", state: { output: JSON.stringify(answer) } },
     ]) { expect(personalAppReference(row(data))).toEqual(answer); }
+    const acp = (title: string, update: Record<string, unknown>): ConversationItem => ({ ...row({ update }), title });
+    for (const update of [
+      { sessionUpdate: "tool_call_update", status: "completed", rawOutput: answer },
+      { sessionUpdate: "tool_call_update", status: "completed", content: [{ type: "content", content: { type: "text", text: JSON.stringify(answer) } }] },
+      { sessionUpdate: "tool_call_update", rawOutput: { content: [{ type: "text", text: JSON.stringify(answer) }] } },
+    ]) { expect(personalAppReference(acp("bridge: apps_draft", update))).toEqual(answer); }
+    expect(isPersonalAppItem(acp("bridge: apps_draft", {}))).toBe(true);
+    expect(isPersonalAppItem(acp("railway: apps_draft", {}))).toBe(false);
+    expect(isPersonalAppItem(acp("Run apps_draft", {}))).toBe(false);
+    expect(personalAppReference(acp("bridge: apps_draft", { rawInput: answer }))).toBeUndefined();
     expect(isPersonalAppItem(row({ name: "mcp__other__apps_draft" }))).toBe(false);
     expect(isPersonalAppItem(row({ type: "mcpToolCall", server: "other", tool: "apps_draft" }))).toBe(false);
     expect(personalAppReference(row({ name: "mcp__bridge__apps_draft", input: { ...answer, view_html: "evil" } }))).toBeUndefined();

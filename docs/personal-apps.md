@@ -1,7 +1,7 @@
 # Personal app drafts
 
-A top-level Claude chat can build a small app around one connected MCP server
-with `bridge.apps_draft`. The transcript card runs live reads and previews writes
+A top-level chat on Claude Code, Codex, OpenCode or Cursor can build a small
+app around one MCP server with `bridge.apps_draft`. The transcript card runs live reads and previews writes
 as “would send” results. Lock saves the reviewed content hash; Revise fills the
 composer. A revision that adds access needs a second native confirmation.
 Saved-app launch/routing and actual writes come in the next slice.
@@ -13,6 +13,25 @@ the existing chat's MCP inventory. A view uses MCP Apps JSON-RPC over
 `ui/notifications/tool-input` and `tools/call` with a bare tool name. It should
 report `ui/notifications/size-changed` after layout/content changes. Use inline
 scripts/styles and data assets; network and external links are unavailable.
+
+## One router for every agent
+
+Each app is bound to a connection: `{harness, account, server}`. The chat that
+drafts or previews it can be any of the four agents; the connection must be on
+an agent Bridge can call directly (Claude Code or Codex today). Drafting looks
+for the server on the chat's own agent and account first, then on the person's
+own Claude Code and Codex logins, and refuses with "connect it in Claude Code
+or Codex" when none has it. OpenCode and Cursor connections come in a later
+slice through a gated path.
+
+All MCP work goes through `apps::router`, which checks the allowlist, the
+read vocabulary and the chat's access mode before anything is sent. It uses
+the chat's own live runtime when the chat is that connection, otherwise a warm
+connection runtime (`apps::runtimes`): a hidden process for that exact
+connection with no Bridge tools and no model turn, stopped after 10 idle
+minutes. Claude's is a briefing whose only authority is app control on the one
+server; Codex's is `codex app-server` with an ephemeral thread, using
+`mcpServerStatus/list` and `mcpServer/tool/call`.
 
 The sidecar asks the existing Claude query for inventory and calls safe reads
 without a model turn. Only sanitized tool names and safety annotations cross

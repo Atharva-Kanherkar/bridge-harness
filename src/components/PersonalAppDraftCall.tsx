@@ -10,6 +10,10 @@ import { useDarkTheme } from "./Markdown";
 import { VisualActionsContext } from "./VisualCall";
 import { Button } from "./ui/button";
 
+/** The agent whose MCP connection the app uses, as the person knows it. */
+const CONNECTION_LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", cursor: "Cursor" };
+const connectionLabel = (harness: string) => CONNECTION_LABELS[harness] ?? harness;
+
 const LIVE_READS_UNAVAILABLE = "Live reads run only in the Bridge Mac app, where a preview cannot reach the network. Writes still show what would be sent.";
 
 function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: string; draftId: string; contentHash: string; readOnly: boolean }) {
@@ -58,7 +62,7 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
   return <div ref={ref} data-personal-app-state={draft.locked ? "locked" : "preview"} className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card text-foreground">
     <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
       <AppWindow size={16} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{draft.name}</div><div className="truncate text-xs text-muted-foreground">{draft.server} · {draft.harness}</div></div>
+      <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{draft.name}</div><div className="truncate text-xs text-muted-foreground">{draft.server} · via {connectionLabel(draft.harness)}</div></div>
       <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{draft.locked ? "Locked" : "Preview"}</span>
     </div>
     <div className="space-y-2 border-b border-border px-4 py-3 text-xs text-muted-foreground">
@@ -77,7 +81,7 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {wider && <div role="group" aria-label="Confirm wider access" className="space-y-2 rounded-xl border border-border bg-muted/40 p-3 text-xs">
         <p className="font-medium">This version adds access</p>
-        {wider.targetChanged && <p>Target changes to {draft.server} on {draft.harness}.</p>}
+        {wider.targetChanged && <p>Target changes to {draft.server} via {connectionLabel(draft.harness)}.</p>}
         {wider.addedReads.length > 0 && <p className="break-words">New reads: {wider.addedReads.join(", ")}</p>}
         {wider.addedWrites.length > 0 && <p className="break-words">New writes: {wider.addedWrites.join(", ")}</p>}
         <div className="flex gap-2"><Button size="xs" disabled={busy || readOnly} onClick={() => void lock(true)}>Allow access and lock</Button><Button size="xs" variant="ghost" disabled={busy} onClick={() => setWider(undefined)}>Cancel</Button></div>
