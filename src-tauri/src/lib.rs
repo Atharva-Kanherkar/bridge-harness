@@ -2484,6 +2484,20 @@ async fn list_terminals(
 }
 
 #[tauri::command]
+async fn record_client_latency(
+    session_id: String,
+    flow: String,
+    steps: Vec<wire::ClientLatencyStep>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Record send latency", move || {
+        api::record_client_latency(&core, &wire::RecordClientLatencyParams { session_id, flow, steps })
+    })
+    .await
+}
+
+#[tauri::command]
 async fn prepare_turn(
     session_id: String,
     text: String,
@@ -3812,6 +3826,7 @@ pub fn run() -> i32 {
             close_terminal,
             list_terminals,
             prepare_turn,
+            record_client_latency,
             send_turn,
             submit_input,
             voice_capabilities,

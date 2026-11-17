@@ -9,6 +9,7 @@ import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
+import { observeSendLatency, setLatencyReporter } from "./sendLatency";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
@@ -3547,6 +3548,9 @@ export const bridgeApi = {
     const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.status = "stopped"; session.endedAt = new Date().toISOString(); session.activeTurnId = null; }
     emitState(); return snapshot();
   },
+  recordClientLatency: (sessionId: string, flow: "new_chat" | "send", steps: { name: string; atMs: number }[]): Promise<void> => hasBackend()
+    ? unit(call("sessions/record_client_latency", { sessionId, flow, steps }))
+    : Promise.resolve(),
   prepareTurn: (sessionId: string, text: string): Promise<SanitizedTurn> => hasBackend()
     ? call("sessions/prepare_turn", { sessionId, text })
     : Promise.resolve({ text, interceptions: [] }),
@@ -3780,12 +3784,12 @@ export const bridgeApi = {
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) {
       return listen<AgentEvent[]>(AGENT_EVENT_BATCH, event => {
-        for (const frame of event.payload) { recordStreamReceipt(frame); handler(frame); }
+        for (const frame of event.payload) { recordStreamReceipt(frame); observeSendLatency(frame); handler(frame); }
       });
     }
     // The daemon itself sends one `agent-event` per frame; only the desktop
     // shell batches them, so the browser takes them as they come.
-    if (hasBackend()) return subscribe<AgentEvent>("agent-event", frame => { recordStreamReceipt(frame); handler(frame); });
+    if (hasBackend()) return subscribe<AgentEvent>("agent-event", frame => { recordStreamReceipt(frame); observeSendLatency(frame); handler(frame); });
     agentListeners.add(handler);
     return () => agentListeners.delete(handler);
   },
@@ -4293,3 +4297,9 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
   Object.assign(agent, status);
   return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }
+
+// A send's own timings go to the daemon's latency ledger. Fire and forget: a
+// lost timing row must never surface as an error in the chat.
+setLatencyReporter((sessionId, flow, steps) => {
+  void bridgeApi.recordClientLatency(sessionId, flow, steps).catch(() => undefined);
+});

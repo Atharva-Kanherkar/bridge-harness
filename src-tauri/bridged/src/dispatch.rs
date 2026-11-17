@@ -380,6 +380,10 @@ pub fn dispatch(
             let p: wire::PrepareTurnParams = decode(method, params)?;
             reply(api::prepare_turn(core, p.session_id, p.text))
         }
+        MethodName::RecordClientLatency => {
+            let p: wire::RecordClientLatencyParams = decode(method, params)?;
+            reply(api::record_client_latency(core, &p))
+        }
         MethodName::SendTurn => {
             let p: wire::SendTurnParams = decode(method, params)?;
             reply(api::send_turn(core, p.session_id, p.text))
@@ -1591,6 +1595,26 @@ mod tests {
         assert!(missing.is_err());
         let refused = dispatch(&core, MethodName::ListTrails, Some(json!({"bogus": true})));
         assert!(refused.is_err(), "unknown fields are refused");
+    }
+
+    #[test]
+    fn client_latency_lands_in_the_ledger_and_refuses_free_text() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let steps = json!([{"name": "prepare_turn", "atMs": 12}, {"name": "first_output_painted", "atMs": 4100}]);
+
+        let recorded = dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "send", "steps": steps})));
+        assert_eq!(recorded.unwrap(), Value::Null);
+        let (kind, entity, body): (String, String, String) = core.db.lock().unwrap()
+            .query_row("SELECT kind, entity_id, body FROM events WHERE source='latency'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!((kind.as_str(), entity.as_str()), ("latency.client", "chat"));
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"flow": "send", "steps": [["prepare_turn", 12], ["first_output_painted", 4100]]}));
+
+        let prose = json!([{"name": "the user typed this", "atMs": 1}]);
+        assert!(dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "send", "steps": prose}))).is_err());
+        assert!(dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "other", "steps": []}))).is_err());
+        assert!(dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "send", "steps": [], "text": "x"}))).is_err(), "unknown fields are refused");
     }
 
     #[test]

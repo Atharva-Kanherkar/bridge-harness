@@ -2087,6 +2087,33 @@ pub fn prepare_turn(
     live_turn::prepare_turn(core, session_id, text)
 }
 
+/// The webview's marks for one send, written to the latency ledger as a
+/// `latency.client` row. Bounded and name-checked: a timing row is a few
+/// numbers under short names, never free text from the page.
+pub fn record_client_latency(
+    core: &Arc<BridgeCore>,
+    params: &wire::RecordClientLatencyParams,
+) -> Result<(), BridgeError> {
+    const MAX_STEPS: usize = 32;
+    let is_name = |value: &str| {
+        !value.is_empty() && value.len() <= 48 && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'.')
+    };
+    if !matches!(params.flow.as_str(), "new_chat" | "send") {
+        return Err(BridgeError::Invalid(format!("unknown latency flow {}", params.flow)));
+    }
+    if params.steps.len() > MAX_STEPS || !params.steps.iter().all(|step| is_name(&step.name)) {
+        return Err(BridgeError::Invalid("latency steps must be at most 32 short snake_case names".into()));
+    }
+    let steps: Vec<serde_json::Value> = params
+        .steps
+        .iter()
+        .map(|step| serde_json::json!([step.name, step.at_ms]))
+        .collect();
+    let body = serde_json::json!({ "flow": params.flow, "steps": steps });
+    crate::latency::record(&core.db.lock().unwrap(), "latency.client", &params.session_id, &body);
+    Ok(())
+}
+
 pub fn send_turn(
     core: &Arc<BridgeCore>,
     session_id: String,

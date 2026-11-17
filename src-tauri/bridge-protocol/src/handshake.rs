@@ -146,9 +146,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// daemon, whose personal app calls would fail with `method_not_found`; a 1.37
 /// client still pairs with a 1.38 daemon.
 /// **1.39 adds chat-bound personal app draft previews** and read-only MCP calls.
+///
+/// **1.40 adds `sessions/record_client_latency`**, the webview's marks for one
+/// send. A new client must not pair with an older daemon, which would answer
+/// it with `method_not_found`; a 1.39 client still pairs with a 1.40 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 39,
+    minor: 40,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -459,6 +463,14 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn client_latency_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 39 };
+        let latency = ProtocolVersion { major: 1, minor: 40 };
+        assert!(!before.accepts(latency));
+        assert!(latency.accepts(before), "a 1.39 client still pairs with a 1.40 daemon");
     }
 
     #[test]

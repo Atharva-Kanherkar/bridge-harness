@@ -260,6 +260,7 @@ typed_methods![
         CarrySessionHandoffResult
     ),
     (PrepareTurn, PrepareTurnParams, SanitizedTurn),
+    (RecordClientLatency, RecordClientLatencyParams, UnitResult),
     (SendTurn, SendTurnParams, UnitResult),
     (SubmitInput, SubmitInputParams, SubmitInputResult),
     (
