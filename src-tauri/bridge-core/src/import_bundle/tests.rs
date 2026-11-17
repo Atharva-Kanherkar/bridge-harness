@@ -596,3 +596,55 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn exclusions_merge_by_category_label_and_reason_and_ignore_zero() {
+    let mut bundle = TransferBundle::new(source("codex"));
+    bundle.exclude("attachment", "a.jsonl", 2, "too big");
+    bundle.exclude("attachment", "a.jsonl", 3, "too big");
+    bundle.exclude("attachment", "b.jsonl", 1, "too big");
+    bundle.exclude("attachment", "a.jsonl", 1, "not an image");
+    bundle.exclude("chat", "a.jsonl", 1, "too big");
+    bundle.exclude("chat", "c.jsonl", 0, "nothing");
+    let summary: Vec<(String, String, u32, String)> = bundle
+        .excluded
+        .iter()
+        .map(|item| (item.category.clone(), item.source_label.clone(), item.count, item.reason.clone()))
+        .collect();
+    assert_eq!(summary, vec![
+        ("attachment".into(), "a.jsonl".into(), 5, "too big".into()),
+        ("attachment".into(), "b.jsonl".into(), 1, "too big".into()),
+        ("attachment".into(), "a.jsonl".into(), 1, "not an image".into()),
+        ("chat".into(), "a.jsonl".into(), 1, "too big".into()),
+    ]);
+    // Exclusions from several bundles add up in the resolved import.
+    let mut other = TransferBundle::new(source("conductor"));
+    other.exclude("attachment", "a.jsonl", 4, "too big");
+    let resolved = resolve(vec![bundle, other]).unwrap();
+    assert_eq!(resolved.excluded[0].count, 9);
+}
+
+#[test]
+fn import_limits_are_the_documented_values() {
+    assert_eq!(MAX_INLINE_ATTACHMENT_BYTES, 5_242_880);
+    assert_eq!(MAX_TOOL_OUTPUT_CHARS, 20_000);
+    assert_eq!(BUNDLE_VERSION, 1);
+}
+
+#[test]
+fn a_native_chat_with_no_entries_does_not_beat_a_tool_copy_with_some() {
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("s", "claude", Some("x"), Vec::new()));
+    let mut t3 = TransferBundle::new(source("t3code"));
+    let mut copy = chat("t", "claude", Some("x"), vec![entry("m", BundleEntryKind::UserMessage, "kept")]);
+    copy.entries_source = EntriesSource::ToolCopy;
+    t3.chats.push(copy);
+    let resolved = resolve(vec![claude, t3]).unwrap();
+    assert_eq!(resolved.chats[0].chat.entries_source, EntriesSource::ToolCopy);
+    // And a longer native transcript beats a shorter native one.
+    let mut a = TransferBundle::new(source("claude_code"));
+    a.chats.push(chat("s", "claude", Some("y"), vec![entry("1", BundleEntryKind::UserMessage, "one")]));
+    let mut b = TransferBundle::new(source("conductor"));
+    b.chats.push(chat("w", "claude", Some("y"), rich_entries()));
+    assert_eq!(resolve(vec![a, b]).unwrap().chats[0].chat.entries.len(), rich_entries().len());
+}
