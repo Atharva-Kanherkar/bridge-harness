@@ -2073,7 +2073,7 @@ export interface ExternalImportCandidate {
   updatedAt?: string | null;
 }
 
-export type ExternalImportCandidateKind = "conversation" | "message" | "attachment" | "memory" | "project_hint" | "instruction" | "rule" | "prompt" | "command" | "skill" | "agent" | "hook" | "mcp_server" | "plugin" | "unsupported";
+export type ExternalImportCandidateKind = "conversation" | "message" | "attachment" | "memory" | "project_hint" | "instruction" | "rule" | "prompt" | "command" | "skill" | "agent" | "hook" | "mcp_server" | "plugin" | "script" | "preference" | "provider_instance" | "unsupported";
 
 export interface ExternalImportCandidateResult {
   candidateId: string;
