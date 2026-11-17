@@ -341,6 +341,14 @@ fn secrets_in_messages_and_tool_io_never_reach_the_database() {
     tool.tool.as_mut().unwrap().input = json!({ "command": "env", "env": { "SLACK": sentinel } });
     entries.push(tool);
     bundle.chats.push(chat("s", "claude", Some("s"), entries));
+    let lowered = lower(&resolve(vec![{
+        let mut probe = TransferBundle::new(source("claude_code"));
+        let mut leaky = chat("p", "claude", Some("p"), rich_entries());
+        leaky.cwd = Some(format!("/work/{sentinel}"));
+        probe.chats.push(leaky);
+        probe
+    }]).unwrap());
+    assert!(!lowered.candidates[0].project_hint.as_deref().unwrap_or_default().contains(sentinel), "the folder hint is redacted too");
     import(&db, vec![bundle]);
     let leaked = count(&db, &format!(
         "SELECT (SELECT COUNT(*) FROM session_entries WHERE payload LIKE '%{sentinel}%')

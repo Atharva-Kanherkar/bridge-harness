@@ -1031,7 +1031,8 @@ pub fn lower(resolved: &ResolvedImport) -> LoweredImport {
         );
         candidate.created_at = chat.created_at.clone();
         candidate.updated_at = chat.updated_at.clone();
-        candidate.project_hint = chat.cwd.clone();
+        // The payload was redacted above; the hint must be the same redacted value.
+        candidate.project_hint = candidate.normalized_payload["cwd"].as_str().map(str::to_owned);
         candidate_by_identity.insert(resolved_chat.identity.clone(), candidate.candidate_id.clone());
         out.candidates.push(candidate);
     }
