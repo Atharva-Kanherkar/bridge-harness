@@ -201,6 +201,12 @@ pub struct BundleChat {
     pub entries: Vec<BundleEntry>,
     #[serde(default)]
     pub pull_requests: Vec<String>,
+    /// The identity an older version of this adapter recorded for the same
+    /// chat (its native key and content hash), so an upgrade recognises it.
+    #[serde(default)]
+    pub legacy_native_id: Option<String>,
+    #[serde(default)]
+    pub legacy_content_hash: Option<String>,
     /// The file or row the chat was read from; provenance and identity key off it.
     pub source_ref: String,
     /// A short, safe label for the report (never raw content).
@@ -1098,6 +1104,8 @@ fn lower_chat(
         // When the parent is skipped (already imported, or changed), the
         // writer finds its existing chat through its native identity.
         "parentNativeKey": resolved_chat.parent_identity,
+        "legacyNativeId": chat.legacy_native_id,
+        "legacyContentHash": chat.legacy_content_hash,
         "pullRequests": chat.pull_requests,
         "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|(tool, source_ref)| json!({
             "tool": tool,

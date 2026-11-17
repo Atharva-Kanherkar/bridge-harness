@@ -609,6 +609,8 @@ fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTran
         },
         entries: reader.entries,
         pull_requests: Vec::new(),
+        legacy_native_id: None,
+        legacy_content_hash: None,
         source_ref: path.to_string_lossy().into_owned(),
         source_label: label.to_owned(),
     };

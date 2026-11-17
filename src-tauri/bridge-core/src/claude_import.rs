@@ -24,6 +24,9 @@ pub const PROVIDER: &str = "claude_code";
 pub const ADAPTER_VERSION: &str = "2";
 pub const AUTO_MEMORY_GATE: &str = "claude-auto-memory-v1";
 pub const TRANSCRIPT_GATE: &str = "claude-jsonl-v2";
+/// The gate the v1 reader wrote into its payloads; kept so v2 can recompute
+/// a v1 import's identity exactly.
+const LEGACY_TRANSCRIPT_GATE: &str = "claude-jsonl-v1";
 pub const SETTINGS_GATE: &str = "claude-settings-v1";
 const MAX_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_DISCOVERY_DEPTH: usize = 20;
@@ -515,6 +518,22 @@ fn is_session_transcript(path: &Path) -> bool {
             .is_some_and(|name| name == "projects")
 }
 
+/// The identity the v1 reader recorded for this transcript: its first
+/// message id and content hash, recomputed by the retained v1 reader. v1
+/// refused files over 10 MB, so those have none.
+fn legacy_identity(
+    approved_roots: &[PathBuf],
+    artifact: &DiscoveredArtifact,
+    discovery: &DiscoveryResult,
+) -> Option<(String, String)> {
+    let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref)).ok()?;
+    if fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let v1 = preview_transcript(&path, artifact, discovery).ok()?;
+    Some((v1.source_native_id?, v1.content_hash))
+}
+
 /// Every selected transcript, read at full fidelity into one transfer bundle,
 /// merged and lowered to candidates. A transcript that cannot be read becomes
 /// a diagnostic-only candidate; the others still import.
@@ -568,7 +587,14 @@ fn preview_conversations(
                         source_label: Some(failure.label.clone()),
                     })
                     .collect();
-                for item in session.chats {
+                let legacy = legacy_identity(approved_roots, artifact, discovery);
+                for mut item in session.chats {
+                    if item.chat.agent_role.is_none() {
+                        if let Some((native_id, content_hash)) = legacy.clone() {
+                            item.chat.legacy_native_id = Some(native_id);
+                            item.chat.legacy_content_hash = Some(content_hash);
+                        }
+                    }
                     let diagnostics: Vec<ImportDiagnostic> = item
                         .skipped
                         .0
@@ -974,7 +1000,7 @@ fn preview_transcript(
         "historical": true,
         "resumable": false,
         "sourceBadge": "Imported from Claude Code",
-        "transcriptParserVersion": TRANSCRIPT_GATE
+        "transcriptParserVersion": LEGACY_TRANSCRIPT_GATE
     });
     let mut result = candidate(
         path,
@@ -1422,6 +1448,59 @@ mod tests {
             "{:?}",
             chats[0].diagnostics
         );
+    }
+
+    fn commit_all(db: &rusqlite::Connection, candidates: &[ImportCandidate]) -> crate::external_import::ImportCommit {
+        let normalized: Vec<_> = candidates.iter().map(|c| ClaudeCodeImporter.normalize(c.clone()).unwrap()).collect();
+        crate::external_import::commit_import(
+            db,
+            &normalized,
+            &crate::external_import::ImportPlan {
+                selected_candidate_ids: candidates.iter().map(|c| c.candidate_id.clone()).collect(),
+                conflict_policy: crate::external_import::ConflictPolicy::Skip,
+                setup_activation_policy: crate::external_import::SetupActivationPolicy::Disabled,
+                memory_scope: None,
+                dry_run: false,
+                created_at: "2026-11-18T00:00:00Z".into(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_chat_imported_before_the_upgrade_is_not_imported_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-1.jsonl");
+        write(&path, &session_lines("sess-1", "imported by the old reader"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        // What the v1 reader wrote: one chat keyed by its first message.
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let artifact = discovery.artifacts.iter().find(|a| a.kind == CandidateKind::Conversation).unwrap().clone();
+        let v1 = preview_transcript(&path.canonicalize().unwrap(), &artifact, &discovery).unwrap();
+        assert_eq!(commit_all(&db, &[v1]).imported, 1);
+        // The same file through v2 is recognised, and the native mapping is filled in.
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let again = commit_all(&db, &v2);
+        assert_eq!((again.imported, again.skipped), (0, 1), "{again:?}");
+        let mapped: i64 = db.query_row("SELECT COUNT(*) FROM import_native_sessions WHERE native_key='claude:sess-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(mapped, 1);
+        // A changed file asks first instead of importing a second chat.
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-2.jsonl");
+        write(&path, &session_lines("sess-2", "first version"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let artifact = discovery.artifacts.iter().find(|a| a.kind == CandidateKind::Conversation).unwrap().clone();
+        commit_all(&db, &[preview_transcript(&path.canonicalize().unwrap(), &artifact, &discovery).unwrap()]);
+        let mut grown = session_lines("sess-2", "first version");
+        grown.push('\n');
+        grown.push_str(&json!({"type":"user","uuid":"sess-2-later","sessionId":"sess-2","timestamp":"2026-11-02T10:00:00Z","message":{"role":"user","content":"a later turn"}}).to_string());
+        write(&path, &grown);
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let changed = commit_all(&db, &v2);
+        assert_eq!((changed.imported, changed.changed), (0, 1), "{changed:?}");
     }
 
     #[test]
