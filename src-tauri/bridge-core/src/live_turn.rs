@@ -12287,6 +12287,18 @@ fn answer_pending_question(
     // a second submission racing this one, or this one racing a card's
     // Decline through `resolve_approval` — and both would call the adapter,
     // sending OpenCode two contradictory replies to one question.
+    //
+    // Only a pending question needs the claim. Taking it for every message
+    // refused an ordinary message whenever another operation held the
+    // session (a limit recovery switching models, a launch), with a wrong
+    // "already being answered" even though nothing was being asked.
+    let pending = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        latest_unresolved_approval(&db, session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD).is_some()
+    };
+    if !pending {
+        return Ok(None);
+    }
     let _claim = core
         .claim_session_lifecycle(session_id, "question resolution")
         .map_err(|_| BridgeError::Invalid("This question is already being answered".into()))?;
@@ -14747,6 +14759,16 @@ fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod submit_input_tests {
     use super::*;
+
+    #[test]
+    fn a_message_with_no_pending_question_is_not_refused_by_another_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+        core.db.lock().unwrap().execute("INSERT INTO sessions(id,harness,label,status) VALUES('s','opencode','Chat','ready')", []).unwrap();
+        // Another operation (a limit recovery, a launch) holds the session.
+        let _held = core.claim_session_lifecycle("s", "limit recovery").unwrap();
+        assert!(matches!(answer_pending_question(&core, "s", "hello"), Ok(None)), "no question: the message goes on as an ordinary one");
+    }
     #[cfg(target_os = "macos")]
     use crate::api;
     use std::sync::atomic::{AtomicBool, Ordering};

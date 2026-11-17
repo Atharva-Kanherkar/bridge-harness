@@ -823,7 +823,7 @@ fn classify_candidate(
     }
 
     if candidate.kind == CandidateKind::Conversation {
-        if let Some(result) = classify_native_session(db, candidate, plan)? {
+        if let Some(result) = classify_native_session(db, candidate, plan, dry_run)? {
             return Ok(result);
         }
     }
@@ -884,6 +884,7 @@ fn classify_native_session(
     db: &Connection,
     candidate: &ImportCandidate,
     plan: &ImportPlan,
+    dry_run: bool,
 ) -> Result<Option<ImportCandidateResult>, BridgeError> {
     let payload = &candidate.normalized_payload;
     let (Some(native_key), Some(session_id)) = (
@@ -895,8 +896,9 @@ fn classify_native_session(
     let harness = payload.pointer("/nativeRef/harness").and_then(Value::as_str);
     let bridge_own: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE provider_session_id=?1
-            AND (?2 IS NULL OR harness=?2) AND COALESCE(kind,'') <> 'imported')",
-        params![session_id, harness],
+            AND (?2 IS NULL OR harness=?2) AND COALESCE(kind,'') <> 'imported')
+         OR EXISTS(SELECT 1 FROM bridge_native_sessions WHERE native_key=?3)",
+        params![session_id, harness, native_key],
         |row| row.get(0),
     )?;
     if bridge_own {
@@ -937,7 +939,20 @@ fn classify_native_session(
             "This chat changed since it was imported; choose a new historical revision or skip it",
         )));
     }
-    Ok(None)
+    // A new historical revision, possibly through another tool than the
+    // first import: the per-tool ledger cannot see that predecessor, so it is
+    // carried from here.
+    Ok(Some(ImportCandidateResult {
+        candidate_id: candidate.candidate_id.clone(),
+        status: if dry_run {
+            ImportCandidateStatus::DryRun
+        } else {
+            ImportCandidateStatus::Imported
+        },
+        created_bridge_ids: Vec::new(),
+        revision_of: Some(session),
+        diagnostics: candidate.diagnostics.clone(),
+    }))
 }
 
 fn destination_conflicts(
@@ -1099,7 +1114,7 @@ const IMPORTABLE_ENTRY_KINDS: &[&str] = &[
     "assistant.message",
     "reasoning",
     "tool.completed",
-    "compaction",
+    "context.compacted",
 ];
 
 fn payload_str<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {
@@ -1143,6 +1158,42 @@ fn entry_token_estimate(message: &Value) -> Option<i64> {
     (chars > 0).then(|| (chars as i64 + 3) / 4)
 }
 
+/// The Bridge chat an imported child belongs under: the parent written in
+/// this import, or, when the parent was skipped as already imported or
+/// changed, the chat that parent's native session already became.
+fn imported_parent(
+    transaction: &Transaction<'_>,
+    payload: &Value,
+) -> Result<Option<(String, i64)>, BridgeError> {
+    let lookup = |id: &str| {
+        transaction
+            .query_row(
+                "SELECT id, COALESCE(depth,0) FROM sessions WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+    };
+    if let Some(found) = payload_str(payload, "parentCandidateId")
+        .map(lookup)
+        .transpose()?
+        .flatten()
+    {
+        return Ok(Some(found));
+    }
+    let Some(native_key) = payload_str(payload, "parentNativeKey") else {
+        return Ok(None);
+    };
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT session_id FROM import_native_sessions WHERE native_key=?1",
+            params![native_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(existing.as_deref().map(lookup).transpose()?.flatten())
+}
+
 fn write_conversation(
     transaction: &Transaction<'_>,
     import_id: &str,
@@ -1174,16 +1225,7 @@ fn write_conversation(
             .optional()?,
         None => None,
     };
-    let parent: Option<(String, i64)> = match payload_str(payload, "parentCandidateId") {
-        Some(parent_id) => transaction
-            .query_row(
-                "SELECT id, COALESCE(depth,0) FROM sessions WHERE id=?1",
-                params![parent_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?,
-        None => None,
-    };
+    let parent = imported_parent(transaction, payload)?;
     let archived_at = payload
         .get("archived")
         .and_then(Value::as_bool)
@@ -1731,7 +1773,27 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
-/// Schema 83: one row per imported native session, so the same Claude or
+/// Imported history outlives the workspace it was filed under. Archiving a
+/// workspace deletes its live chats' history, which immutable imported
+/// entries refuse, so the imported chats leave the workspace first and keep
+/// their folder (`cwd`), and project hints stop pointing at it.
+pub(crate) fn detach_imported_from_workspace(
+    transaction: &Transaction<'_>,
+    workspace_id: &str,
+) -> Result<(), BridgeError> {
+    transaction.execute(
+        "UPDATE sessions SET workspace_id=NULL WHERE workspace_id=?1 AND kind='imported'",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "UPDATE import_project_hints SET matched_workspace_id=NULL, match_state='unconfirmed'
+         WHERE matched_workspace_id=?1",
+        params![workspace_id],
+    )?;
+    Ok(())
+}
+
+/// Schema 84: one row per imported native session, so the same Claude or
 /// Codex session reached through several tools lands once, and every tool
 /// that pointed at an imported chat.
 pub(crate) fn install_import_native_identity(
@@ -1752,7 +1814,37 @@ pub(crate) fn install_import_native_identity(
             import_id TEXT NOT NULL REFERENCES import_commits(id),
             created_at TEXT NOT NULL,
             PRIMARY KEY(session_id,tool,source_path_fingerprint)
-        );",
+        );
+        -- Every native session a Bridge chat has run, kept when the chat
+        -- later switches harness and its provider_session_id is cleared, so an
+        -- import never brings Bridge's own conversation back as a second chat.
+        CREATE TABLE IF NOT EXISTS bridge_native_sessions (
+            native_key TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS bridge_native_sessions_on_insert
+        AFTER INSERT ON sessions
+        WHEN NEW.provider_session_id IS NOT NULL AND COALESCE(NEW.kind,'') <> 'imported'
+        BEGIN
+            INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            VALUES(NEW.harness || ':' || NEW.provider_session_id, NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+        END;
+        CREATE TRIGGER IF NOT EXISTS bridge_native_sessions_on_update
+        AFTER UPDATE OF provider_session_id, harness ON sessions
+        WHEN NEW.provider_session_id IS NOT NULL AND COALESCE(NEW.kind,'') <> 'imported'
+        BEGIN
+            INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            VALUES(NEW.harness || ':' || NEW.provider_session_id, NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+        END;
+        INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            SELECT harness || ':' || provider_session_id, id, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM sessions
+            WHERE provider_session_id IS NOT NULL AND COALESCE(kind,'') <> 'imported';
+        INSERT OR IGNORE INTO bridge_native_sessions(native_key,session_id,recorded_at)
+            SELECT s.harness || ':' || h.native_provider_session_id, s.id, strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM session_heads h JOIN sessions s ON s.id = h.session_id
+            WHERE h.native_provider_session_id IS NOT NULL AND COALESCE(s.kind,'') <> 'imported';",
     )?;
     Ok(())
 }

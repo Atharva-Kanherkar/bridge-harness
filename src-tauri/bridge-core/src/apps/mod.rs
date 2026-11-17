@@ -22,6 +22,8 @@ pub mod manifest;
 pub mod personal;
 pub mod router;
 pub mod runtimes;
+pub mod write;
+pub mod open;
 pub mod registry;
 
 use rusqlite::Connection;
@@ -33,8 +35,9 @@ pub use builtin::{builtin, builtins, BadgeSource, BuiltinApp};
 
 /// `bridge` server tools that belong to Bridge itself, not to an app. They
 /// cannot be turned off. `(name, asks_first)`.
-pub const CORE_TOOLS: [(&str, bool); 7] = [
+pub const CORE_TOOLS: [(&str, bool); 8] = [
     ("apps_draft", false),
+    ("apps_open", false),
     ("visualize", false),
     ("settings_read", false),
     ("settings_change", false),

@@ -1,7 +1,8 @@
-import type { GetPersonalAppDraftParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppDraft, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
+import type { CallPersonalAppToolParams, GetPersonalAppDraftParams, GetPersonalAppOpenParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppCallResult, PersonalAppDraft, PersonalAppOpen, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
 
 export const MOCK_APP_DRAFT_ID = "personal-app-demo";
 export const MOCK_APP_HASH = `sha256:${"a".repeat(64)}`;
+export const MOCK_APP_OPEN_ID = "personal-app-open-demo";
 const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 body{margin:0;padding:20px;font:13px system-ui;color:var(--color-text-primary,CanvasText);background:var(--color-background-primary,Canvas)}
 h2{font-size:17px;margin:0 0 6px}p{margin:0 0 18px;opacity:.65}label{display:block;margin:12px 0 6px}
@@ -37,4 +38,30 @@ export function mockPreviewPersonalAppTool(params: PreviewPersonalAppToolParams)
   if (draft.writes.includes(params.tool)) return { content: [{ type: "text", text: `Preview only — would send ${params.tool} to ${draft.server}. Nothing was sent.\n${JSON.stringify(params.arguments, null, 2)}` }], structuredContent: { preview: true, wouldCall: { server: draft.server, tool: params.tool, arguments: params.arguments } }, isError: false };
   if (draft.reads.includes(params.tool)) return { content: [{ type: "text", text: "Ada Lovelace · @ada · Engineering (demo result)" }], isError: false };
   throw new Error("This tool is outside the preview's read/write allowlist");
+}
+
+/** The locked demo app, opened in the demo chat: reads answer, writes ask first. */
+export function mockGetPersonalAppOpen(params: GetPersonalAppOpenParams): PersonalAppOpen {
+  if (params.sessionId !== "session-1" || params.openId !== MOCK_APP_OPEN_ID || params.contentHash !== MOCK_APP_HASH) throw new Error("This app is unavailable in this chat");
+  const draft = mockGetPersonalAppDraft({ sessionId: "session-1", draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH });
+  return { openId: MOCK_APP_OPEN_ID, appId: draft.appId, version: 1, contentHash: MOCK_APP_HASH, name: draft.name, intent: draft.intent, harness: draft.harness, server: draft.server, reads: draft.reads, writes: draft.writes, viewHtml: html, prefill: { query: "Ada" } };
+}
+const mockApprovals = new Map<string, { tool: string; argumentsJson: string }>();
+const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+  : value !== null && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`
+  : JSON.stringify(value);
+export function mockCallPersonalAppTool(params: CallPersonalAppToolParams): PersonalAppCallResult {
+  const app = mockGetPersonalAppOpen(params);
+  if (app.reads.includes(params.tool)) return { kind: "result", result: { content: [{ type: "text", text: "Ada Lovelace · @ada · Engineering (demo result)" }], isError: false } };
+  if (!app.writes.includes(params.tool)) throw new Error("This tool is not part of the app");
+  if (!params.approvalToken) {
+    const token = `mock-approval-${mockApprovals.size + 1}`;
+    const argumentsJson = canonical(params.arguments);
+    mockApprovals.set(token, { tool: params.tool, argumentsJson });
+    return { kind: "approvalRequired", token, harness: app.harness, server: app.server, tool: params.tool, argumentsJson };
+  }
+  const approved = mockApprovals.get(params.approvalToken);
+  mockApprovals.delete(params.approvalToken);
+  if (!approved || approved.tool !== params.tool) throw new Error("This approval was already used or no longer exists");
+  return { kind: "result", result: { content: [{ type: "text", text: `Sent (demo): ${approved.argumentsJson}` }], isError: false } };
 }

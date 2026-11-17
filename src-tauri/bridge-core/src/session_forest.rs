@@ -20,6 +20,9 @@ pub enum EntryKind {
     /// A finished reasoning block. Written by import; the conversation
     /// renders it as a collapsed thinking row.
     Reasoning,
+    /// A harness's own context compaction, as live chats record it
+    /// (`agent::NATIVE_COMPACTION_KIND`). Not a Bridge checkpoint.
+    ContextCompacted,
     ToolStarted,
     ToolCompleted,
     ApprovalRequested,
@@ -528,6 +531,7 @@ impl EntryKind {
             Self::UserMessage => "user.message",
             Self::AssistantMessage => "assistant.message",
             Self::Reasoning => "reasoning",
+            Self::ContextCompacted => "context.compacted",
             Self::ToolStarted => "tool.started",
             Self::ToolCompleted => "tool.completed",
             Self::ApprovalRequested => "approval.requested",
@@ -556,6 +560,7 @@ impl EntryKind {
             "user.message" => Self::UserMessage,
             "assistant.message" => Self::AssistantMessage,
             "reasoning" => Self::Reasoning,
+            "context.compacted" => Self::ContextCompacted,
             "tool.started" => Self::ToolStarted,
             "tool.completed" => Self::ToolCompleted,
             "approval.requested" => Self::ApprovalRequested,
@@ -597,6 +602,18 @@ impl EntryKind {
         match self {
             Self::UserMessage | Self::AssistantMessage | Self::Reasoning => {
                 require_string(payload, self, &["text"])?;
+            }
+            Self::ContextCompacted => {
+                let harness = payload
+                    .pointer("/data/harness")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty());
+                if !harness {
+                    return Err(ForestError::InvalidPayload {
+                        kind: self.as_str().to_owned(),
+                        reason: "required non-empty string field: data.harness".into(),
+                    });
+                }
             }
             Self::ToolStarted | Self::ToolCompleted => {
                 require_one_string(payload, self, &["toolId", "itemId"])?;

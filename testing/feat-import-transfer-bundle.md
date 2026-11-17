@@ -57,3 +57,18 @@ is equivalent.
 
 The imported chat's toolbar badge names the source tool from the entry's
 `importSource` (`src/importSources.test.ts`).
+
+## Review amendments
+
+Added after review of #1064. Each row names the regression test that failed before its fix.
+
+| # | Expectation | Test |
+|---|---|---|
+| A1 | A secret in tool output is redacted before the output is cut, so a private key straddling the 20,000-character cap never survives | `a_secret_cut_by_the_output_cap_is_redacted_before_cutting` |
+| A2 | Archiving a workspace succeeds when imported chats are filed under it: they stay as history with their folder, and project hints stop pointing at the workspace | `archiving_a_workspace_keeps_its_imported_chats_as_history` |
+| A3 | A child whose parent was skipped (already imported, or changed) attaches to the parent's existing Bridge chat | `a_child_of_a_skipped_parent_attaches_to_the_existing_parent` |
+| A4 | A native session Bridge ran stays Bridge's after the chat switches harness, so importing it later is a no-op | `a_session_bridge_ran_stays_bridges_after_a_harness_switch` |
+| A5 | Setup items deduplicate per scope and project, and the inert candidate keeps its project | `setup_is_deduplicated_per_project_and_keeps_its_project` |
+| A6 | The image cap applies to decoded bytes: a 4 MiB image imports, one byte over 5 MiB is excluded | `the_image_cap_counts_decoded_bytes` |
+| A7 | A historical revision imported through another tool records the chat it revises | `a_cross_tool_revision_records_its_predecessor` |
+| A8 | An imported compaction is a native `context.compacted` entry (drawn as "Context compacted"), never a Bridge checkpoint | `an_imported_compaction_is_native_not_a_bridge_checkpoint` |

@@ -309,6 +309,40 @@ fn latest(db: &Connection, app_id: &str) -> Result<Option<Version>, BridgeError>
     .transpose()
 }
 
+/// A locked version, as an opened app reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockedVersion {
+    pub app_id: String,
+    pub version: u32,
+    pub manifest: Manifest,
+    pub content_hash: String,
+}
+
+/// The newest locked version of an app.
+pub fn latest_locked(db: &Connection, app_id: &str) -> Result<Option<LockedVersion>, BridgeError> {
+    Ok(latest(db, app_id)?.map(|version| LockedVersion {
+        app_id: version.app_id,
+        version: version.version,
+        manifest: version.manifest,
+        content_hash: version.content_hash,
+    }))
+}
+
+/// The locked version of an app with exactly this content hash.
+pub fn locked_with_hash(db: &Connection, app_id: &str, content_hash: &str) -> Result<Option<LockedVersion>, BridgeError> {
+    let row = db
+        .query_row(
+            "SELECT version, manifest FROM personal_app_versions WHERE app_id=?1 AND content_hash=?2 ORDER BY version DESC LIMIT 1",
+            params![app_id, content_hash],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    row.map(|(version, manifest)| {
+        Ok(LockedVersion { app_id: app_id.to_owned(), version, manifest: parse_manifest(&manifest)?, content_hash: content_hash.to_owned() })
+    })
+    .transpose()
+}
+
 /// What a draft can do that the locked version could not.
 fn widening(before: &Manifest, after: &Manifest) -> Option<LockPersonalAppResult> {
     let reads: BTreeSet<&String> = before.reads.iter().collect();
@@ -412,6 +446,8 @@ pub fn delete(db: &Connection, app_id: &str) -> Result<bool, BridgeError> {
     let versions = transaction.execute("DELETE FROM personal_app_versions WHERE app_id=?1", [app_id])?;
     let drafts = transaction.execute("DELETE FROM personal_app_drafts WHERE app_id=?1", [app_id])?;
     transaction.execute("DELETE FROM personal_app_draft_sessions WHERE app_id=?1", [app_id])?;
+    transaction.execute("DELETE FROM personal_app_write_approvals WHERE open_id IN (SELECT open_id FROM personal_app_opens WHERE app_id=?1)", [app_id])?;
+    transaction.execute("DELETE FROM personal_app_opens WHERE app_id=?1", [app_id])?;
     transaction.commit()?;
     Ok(versions + drafts > 0)
 }
@@ -425,6 +461,7 @@ mod tests {
         let transaction = db.transaction().unwrap();
         install_store(&transaction).unwrap();
         super::super::draft::install_store(&transaction).unwrap();
+        super::super::open::install_store(&transaction).unwrap();
         transaction.commit().unwrap();
         db
     }
