@@ -65,6 +65,13 @@
       "resultSchema": "external-import-commit.json"
     },
     {
+      "command": "detect_import_sources",
+      "domain": "imports",
+      "method": "imports/detect_import_sources",
+      "paramsSchema": "detect-import-sources-params.json",
+      "resultSchema": "import-sources-detection.json"
+    },
+    {
       "command": "github_status",
       "domain": "github",
       "method": "github/github_status",

@@ -99,6 +99,19 @@ impl ExternalHarnessImporter for ClaudeCodeImporter {
         }
         artifacts.sort_by(|left, right| left.source_label.cmp(&right.source_label));
         artifacts.dedup_by(|left, right| left.canonical_source_ref == right.canonical_source_ref);
+        // The review list shows each chat by title and folder; read only the
+        // first and last few KiB of each transcript for that.
+        for artifact in artifacts
+            .iter_mut()
+            .filter(|artifact| artifact.kind == CandidateKind::Conversation)
+        {
+            let peek = transcript::peek_session(Path::new(&artifact.canonical_source_ref));
+            let (title, _) = sanitize_import_payload(&Value::from(peek.title));
+            let (cwd, _) = sanitize_import_payload(&Value::from(peek.cwd));
+            artifact.title = title.as_str().map(str::to_owned);
+            artifact.project_path = cwd.as_str().map(str::to_owned);
+            artifact.started_at = peek.started_at;
+        }
         Ok(DiscoveryResult {
             // Opaque server-side cache key: the caller can no longer hand-build
             // a `DiscoveryResult` at `preview`/`commit` time and have it
@@ -746,6 +759,9 @@ fn push_artifact(
             .ok()
             .map(|time| DateTime::<Utc>::from(time).to_rfc3339()),
         required_schema_gate: gate.map(str::to_owned),
+        title: None,
+        project_path: None,
+        started_at: None,
     });
     Ok(())
 }

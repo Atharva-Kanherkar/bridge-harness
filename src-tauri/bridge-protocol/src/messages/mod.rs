@@ -195,6 +195,7 @@ typed_methods![
     (DiscoverExternalImport, DiscoverExternalImportParams, ExternalImportDiscovery),
     (PreviewExternalImport, PreviewExternalImportParams, ExternalImportPreview),
     (CommitExternalImport, CommitExternalImportParams, ExternalImportCommit),
+    (DetectImportSources, DetectImportSourcesParams, ImportSourcesDetection),
     // github
     (GithubStatus, GithubStatusParams, GithubStatusResult),
     (GithubPullRequests, GithubPrsParams, GithubPullRequestsResult),

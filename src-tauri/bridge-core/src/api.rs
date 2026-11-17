@@ -174,8 +174,97 @@ pub fn preview_external_import(
         }
     };
     Ok(wire::ExternalImportPreview {
-        candidates: protocol_wire(candidates)?,
+        candidates: protocol_wire(preview_summaries(candidates))?,
     })
+}
+
+/// What preview sends to the client: every field except a chat's messages,
+/// replaced by their count. Commit re-reads the source from disk and never
+/// trusts a client payload, so the messages are not needed on the wire, and a
+/// large import would otherwise exceed the daemon's message size limit.
+fn preview_summaries(
+    candidates: Vec<external_import::ImportCandidate>,
+) -> Vec<external_import::ImportCandidate> {
+    candidates
+        .into_iter()
+        .map(|mut candidate| {
+            if let Some(payload) = candidate.normalized_payload.as_object_mut() {
+                if let Some(messages) = payload.remove("messages") {
+                    let count = messages.as_array().map(Vec::len).unwrap_or(0);
+                    payload.insert("messageCount".into(), serde_json::Value::from(count));
+                }
+            }
+            candidate
+        })
+        .collect()
+}
+
+/// Read-only: which tools on this machine Bridge can import from.
+pub fn detect_import_sources(
+    _core: &Arc<BridgeCore>,
+) -> Result<wire::ImportSourcesDetection, BridgeError> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| BridgeError::Invalid("HOME is not set; Bridge cannot look for other tools".into()))?;
+    let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
+    Ok(wire::ImportSourcesDetection {
+        sources: crate::import_sources::detect(&home, claude_config_dir.as_deref(), &[]),
+        detected_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Chats written per transaction. A big import commits batch by batch so the
+/// database lock every send waits on is held for one batch at a time.
+const IMPORT_BATCH: usize = 25;
+
+/// Group candidates so a chat and every chat under it share a batch, then
+/// pack groups into batches of about `IMPORT_BATCH`.
+pub(crate) fn import_batches(
+    candidates: &[external_import::NormalizedImportCandidate],
+    selected: &std::collections::HashSet<&str>,
+) -> Vec<Vec<String>> {
+    use std::collections::{BTreeMap, HashMap};
+    let parent: HashMap<&str, &str> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let id = candidate.candidate.candidate_id.as_str();
+            candidate
+                .candidate
+                .normalized_payload
+                .get("parentCandidateId")
+                .and_then(serde_json::Value::as_str)
+                .map(|parent| (id, parent))
+        })
+        .collect();
+    let root = |start: &str| -> String {
+        let mut current = start.to_owned();
+        for _ in 0..64 {
+            match parent.get(current.as_str()) {
+                Some(next) if selected.contains(next) => current = (*next).to_owned(),
+                _ => break,
+            }
+        }
+        current
+    };
+    let mut groups: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut position: HashMap<String, usize> = HashMap::new();
+    for candidate in candidates {
+        let id = candidate.candidate.candidate_id.as_str();
+        if !selected.contains(id) {
+            continue;
+        }
+        let next = position.len();
+        let slot = *position.entry(root(id)).or_insert(next);
+        groups.entry(slot).or_default().push(id.to_owned());
+    }
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    for (_, ids) in groups {
+        match batches.last_mut() {
+            Some(batch) if batch.len() + ids.len() <= IMPORT_BATCH => batch.extend(ids),
+            _ => batches.push(ids),
+        }
+    }
+    batches
 }
 
 pub fn commit_external_import(
@@ -193,14 +282,27 @@ pub fn commit_external_import(
     // caught here because the source bytes are read and re-hashed right now,
     // through the same schema-gate and structural-allowlist checks preview
     // already applied.
-    let all_artifact_ids = discovery
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.artifact_id.clone())
-        .collect();
-    let selection = external_import::DiscoverySelection {
-        artifact_ids: all_artifact_ids,
+    let artifact_ids = match &params.artifact_ids {
+        Some(ids) => {
+            let known: std::collections::HashSet<&str> = discovery
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.artifact_id.as_str())
+                .collect();
+            if let Some(unknown) = ids.iter().find(|id| !known.contains(id.as_str())) {
+                return Err(BridgeError::Invalid(format!(
+                    "Import commit names artifact '{unknown}' that this discovery did not find"
+                )));
+            }
+            ids.clone()
+        }
+        None => discovery
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect(),
     };
+    let selection = external_import::DiscoverySelection { artifact_ids };
     let previewed = match discovery.provider.as_str() {
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
@@ -225,10 +327,66 @@ pub fn commit_external_import(
             ))),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let commit = {
-        let db = core.db.lock().unwrap();
-        external_import::commit_import(&db, &candidates, &plan)?
-    };
+    let selected: std::collections::HashSet<&str> = plan
+        .selected_candidate_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if let Some(unknown) = plan.selected_candidate_ids.iter().find(|id| {
+        !candidates
+            .iter()
+            .any(|candidate| &candidate.candidate.candidate_id == *id)
+    }) {
+        return Err(BridgeError::Invalid(format!(
+            "Import plan references unknown candidate '{unknown}'"
+        )));
+    }
+    let mut commit: Option<external_import::ImportCommit> = None;
+    for (index, batch) in import_batches(&candidates, &selected).into_iter().enumerate() {
+        let batch_plan = external_import::ImportPlan {
+            selected_candidate_ids: batch,
+            ..plan.clone()
+        };
+        let result = {
+            let db = core.db.lock().unwrap();
+            external_import::commit_import(&db, &candidates, &batch_plan)
+        };
+        let batch_commit = match (result, commit.as_mut()) {
+            (Ok(batch_commit), _) => batch_commit,
+            (Err(error), None) => return Err(error),
+            (Err(error), Some(so_far)) => {
+                // Earlier batches are committed and stay; this one rolled back.
+                so_far.rollback_state = "partial".into();
+                so_far.diagnostics.push(external_import::ImportDiagnostic {
+                    code: "batch_failed".into(),
+                    severity: "error".into(),
+                    classification: external_import::SourceClassification::Documented,
+                    message: format!("Batch {} rolled back and the rest was not imported: {error}", index + 1),
+                    recovery: Some("Run the import again; chats already imported are skipped".into()),
+                    source_label: None,
+                });
+                break;
+            }
+        };
+        if batch_commit.imported > 0 {
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        match commit.as_mut() {
+            None => commit = Some(batch_commit),
+            Some(total) => {
+                total.candidate_results.extend(batch_commit.candidate_results);
+                total.created_bridge_ids.extend(batch_commit.created_bridge_ids);
+                total.imported += batch_commit.imported;
+                total.skipped += batch_commit.skipped;
+                total.changed += batch_commit.changed;
+                total.conflicted += batch_commit.conflicted;
+                total.rejected += batch_commit.rejected;
+                total.unsupported += batch_commit.unsupported;
+                total.diagnostics.extend(batch_commit.diagnostics);
+            }
+        }
+    }
+    let commit = commit.ok_or_else(|| BridgeError::Invalid("Select at least one import candidate".into()))?;
     let imported_ids: std::collections::HashSet<&str> = commit
         .candidate_results
         .iter()
@@ -247,9 +405,6 @@ pub fn commit_external_import(
     // A committed import writes sessions/memory/setup rows directly, with no
     // other path that would tell the frontend to refetch — without this the
     // sidebar shows nothing new until the app restarts.
-    if commit.imported > 0 {
-        core.events.publish(CoreEvent::StateChanged);
-    }
     protocol_wire(commit)
 }
 
@@ -7999,6 +8154,7 @@ mod tests {
             &super::wire::CommitExternalImportParams {
                 discovery_id: "forged-discovery".into(),
                 plan: stub_import_plan(vec!["anything".into()]),
+                artifact_ids: None,
             },
         )
         .unwrap_err();
@@ -8057,6 +8213,7 @@ mod tests {
             &super::wire::CommitExternalImportParams {
                 discovery_id: discovery.discovery_id.clone(),
                 plan: stub_import_plan(vec![preview.candidates[0].candidate_id.clone()]),
+                artifact_ids: None,
             },
         )
         .unwrap();

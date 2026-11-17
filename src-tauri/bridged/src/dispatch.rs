@@ -234,6 +234,10 @@ pub fn dispatch(
             let p: wire::CommitExternalImportParams = decode(method, params)?;
             reply(api::commit_external_import(core, &p))
         }
+        MethodName::DetectImportSources => {
+            let _: wire::DetectImportSourcesParams = decode(method, params)?;
+            reply(api::detect_import_sources(core))
+        }
 
         MethodName::CreateWorkspace => {
             let p: wire::CreateWorkspaceParams = decode(method, params)?;

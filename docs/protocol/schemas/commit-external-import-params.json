@@ -56,6 +56,16 @@
     }
   },
   "properties": {
+    "artifactIds": {
+      "description": "The artifacts `preview` was run on. Commit re-derives only these, so a store of 80,000 transcripts is not re-read to import ten. Absent means every artifact in the discovery, as before.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "discoveryId": {
       "description": "Same discovery `preview` reviewed. Commit re-derives every candidate from disk against it rather than trusting client-supplied `normalizedPayload`/`contentHash`/`candidateId` values — the source file is re-read and re-hashed at commit time, closing the discover/preview/commit TOCTOU window.",
       "type": "string"
