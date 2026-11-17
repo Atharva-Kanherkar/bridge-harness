@@ -128,6 +128,14 @@ pub fn dispatch(
             let p: wire::GetPersonalAppParams = decode(method, params)?;
             reply(api::get_personal_app(core, &p))
         }
+        MethodName::GetPersonalAppDraft => {
+            let p: wire::GetPersonalAppDraftParams = decode(method, params)?;
+            reply(api::get_personal_app_draft(core, &p))
+        }
+        MethodName::PreviewPersonalAppTool => {
+            let p: wire::PreviewPersonalAppToolParams = decode(method, params)?;
+            reply(api::preview_personal_app_tool(core, &p))
+        }
         MethodName::LockPersonalApp => {
             let p: wire::LockPersonalAppParams = decode(method, params)?;
             reply(api::lock_personal_app(core, &p))
@@ -1598,6 +1606,7 @@ mod tests {
             reads: vec!["slack_search_users".into()],
             writes: vec!["slack_send_message".into()],
             view_html: "<button>Send</button>".into(),
+            sample_args: None,
         };
         let draft = bridge_core::apps::personal::create_draft(&core.db.lock().unwrap(), None, &manifest, chrono::Utc::now()).unwrap();
 

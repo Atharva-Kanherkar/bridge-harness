@@ -1,4 +1,4 @@
-import { briefingOptions, isBriefing } from "./briefing.mjs";
+import { briefingOptions, isBriefing, wireServerName } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
 /** The `bridge` server's tools that only read or display. */
@@ -6,7 +6,7 @@ export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_
 /** The `bridge` server's tools whose only effect waits for the person's review:
  *  a memory proposal changes nothing until they approve it in Bridge, and a
  *  drafted message is a card the person edits and sends themselves. */
-export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft"];
+export const BRIDGE_REVIEWED_TOOLS = ["mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft", "mcp__bridge__apps_draft"];
 /** Bridge's own settings, changed at the person's request: the theme, how
  *  chats show thinking, what a new chat starts on. The catalog cannot widen
  *  what an agent may do (no access, permissions, keys or budgets), every
@@ -17,10 +17,11 @@ export const BRIDGE_PREFERENCE_TOOLS = ["mcp__bridge__settings_change"];
 /** Bridge tools only the chat itself may call. A Claude-native subagent
  *  inherits the parent's MCP tools and the root chat's token, so the core
  *  cannot tell its calls apart; the sidecar can, by the hook input's agent_id. */
-export const BRIDGE_TOP_LEVEL_TOOLS = ["mcp__bridge__settings_read", "mcp__bridge__settings_change", "mcp__bridge__chats_search", "mcp__bridge__chats_read"];
+export const BRIDGE_TOP_LEVEL_TOOLS = ["mcp__bridge__apps_draft", "mcp__bridge__settings_read", "mcp__bridge__settings_change", "mcp__bridge__chats_search", "mcp__bridge__chats_read"];
 
 /** Why a subagent is refused each top-level-only tool. */
 const TOP_LEVEL_REASONS = {
+  mcp__bridge__apps_draft: "Only the chat itself drafts a personal app; report back to it instead.",
   mcp__bridge__settings_read: "Only the chat itself changes Bridge's settings; report back to it instead.",
   mcp__bridge__settings_change: "Only the chat itself changes Bridge's settings; report back to it instead.",
   mcp__bridge__chats_search: "Only the chat itself reads the person's other chats; ask it for what you need from them.",
@@ -42,6 +43,29 @@ export function makeTopLevelOnlyHook() {
       },
     };
   };
+}
+
+/**
+ * Whether this launch lets the model itself call a read on `server`, decided
+ * exactly as `permissionOptions` decides it. Personal-app previews call MCP
+ * with no permission check, so they ask this first: a preview must never read
+ * where the person's chosen mode would refuse the model.
+ */
+export function connectorReadPolicy({ writeMode, networkAllowed = false, mcpServers = {} } = {}) {
+  switch (writeMode) {
+    case "ReadOnly": {
+      // Mirrors makeReadOnlyHook: network authority, and only projected servers.
+      const projected = new Set(Object.keys(mcpServers ?? {}));
+      return (server) => Boolean(networkAllowed) && projected.has(wireServerName(server));
+    }
+    case "Shared":
+    case "Isolated":
+      // No Claude prompt is ever shown, so a third-party MCP call is refused.
+      return () => false;
+    case "Full":
+    default:
+      return () => true;
+  }
 }
 
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}, outputDir = null) {

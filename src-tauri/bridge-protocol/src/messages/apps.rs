@@ -220,6 +220,44 @@ pub struct DeletePersonalAppParams {
     pub id: String,
 }
 
+/// A preview is bound to its originating chat and the exact reviewed content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetPersonalAppDraftParams {
+    pub session_id: String,
+    pub draft_id: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreviewPersonalAppToolParams {
+    pub session_id: String,
+    pub draft_id: String,
+    pub content_hash: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Trusted stored content for a draft card. Locked cards still preview writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalAppDraft {
+    pub draft_id: String,
+    pub app_id: String,
+    pub content_hash: String,
+    pub locked: bool,
+    pub name: String,
+    pub intent: String,
+    pub harness: String,
+    pub server: String,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub view_html: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_args: Option<serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +347,14 @@ mod tests {
         assert!(serde_json::from_value::<GetPersonalAppParams>(json!({"id": "a", "x": 1})).is_err());
         assert!(serde_json::from_value::<DeletePersonalAppParams>(json!({"id": "a", "x": 1})).is_err());
         assert!(serde_json::from_value::<LockPersonalAppParams>(json!({"draftId": "d", "contentHash": "h", "x": 1})).is_err());
+    }
+
+    #[test]
+    fn draft_preview_params_round_trip_and_refuse_unknown_fields() {
+        round_trip(GetPersonalAppDraftParams { session_id:"s".into(),draft_id:"d".into(),content_hash:"h".into() });
+        round_trip(PreviewPersonalAppToolParams { session_id:"s".into(),draft_id:"d".into(),content_hash:"h".into(),tool:"get_user".into(),arguments:json!({"id":1}) });
+        assert!(serde_json::from_value::<GetPersonalAppDraftParams>(json!({"sessionId":"s","draftId":"d","contentHash":"h","html":"untrusted"})).is_err());
+        assert!(serde_json::from_value::<PreviewPersonalAppToolParams>(json!({"sessionId":"s","draftId":"d","contentHash":"h","tool":"get_user","arguments":{},"allowWrite":true})).is_err());
     }
 
     #[test]

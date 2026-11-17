@@ -14,6 +14,8 @@
 
 pub mod badges;
 pub mod builtin;
+pub mod control;
+pub mod draft;
 pub mod events;
 pub mod manifest;
 pub mod personal;
@@ -28,7 +30,8 @@ pub use builtin::{builtin, builtins, BadgeSource, BuiltinApp};
 
 /// `bridge` server tools that belong to Bridge itself, not to an app. They
 /// cannot be turned off. `(name, asks_first)`.
-pub const CORE_TOOLS: [(&str, bool); 6] = [
+pub const CORE_TOOLS: [(&str, bool); 7] = [
+    ("apps_draft", false),
     ("visualize", false),
     ("settings_read", false),
     ("settings_change", false),

@@ -698,6 +698,14 @@ pub fn get_personal_app(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppPar
     crate::apps::personal::get(&*core.try_db()?, &params.id)
 }
 
+pub fn get_personal_app_draft(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppDraftParams) -> Result<wire::PersonalAppDraft, BridgeError> {
+    crate::apps::draft::get(&*core.try_db()?, params, chrono::Utc::now())
+}
+
+pub fn preview_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::PreviewPersonalAppToolParams) -> Result<Value, BridgeError> {
+    crate::apps::draft::preview(core, params)
+}
+
 /// Lock a previewed draft as a personal app version. A version that can do
 /// more than the last one is reported, and stored only with `allowWider`.
 pub fn lock_personal_app(core: &Arc<BridgeCore>, params: &wire::LockPersonalAppParams) -> Result<wire::LockPersonalAppResult, BridgeError> {

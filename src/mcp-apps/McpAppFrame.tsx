@@ -1,12 +1,11 @@
 /**
- * The host half of MCP Apps for Bridge's own view, `ui://bridge/visual`.
+ * The host half of MCP Apps for Bridge's visual and personal-app previews.
  *
  * The view runs in `<iframe sandbox="allow-scripts">` with no
  * `allow-same-origin`, so it has an opaque origin, and under a CSP injected
- * ahead of its own markup that allows no network at all. The Tauri webview
- * sets no CSP of its own, so this frame is the only boundary, exactly as for
- * the `html` fence; and the frame only ever receives data, never code the
- * model wrote.
+ * ahead of its own markup. Personal content additionally sits inside a trusted
+ * relay frame: its frame-src policy blocks the inner view's self-navigation.
+ * Visuals receive validated data; personal views receive stored, hashed HTML.
  *
  * Messages go through the official ext-apps `AppBridge` over a
  * `PostMessageTransport` that accepts only messages whose source is this
@@ -16,25 +15,10 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge";
+import type { CallToolResult } from "@modelcontextprotocol/client";
 import { cn } from "@/lib/utils";
-
-export const VIEW_CSP = [
-  "default-src 'none'",
-  "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline'",
-  "img-src data: blob:",
-  "font-src data:",
-  "connect-src 'none'",
-  "frame-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join("; ");
-
-/** The view document with its CSP placed before anything that could load. */
-export function viewDocument(html: string): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${VIEW_CSP}">`;
-  return html.replace(/<head>/i, `<head>\n${meta}`);
-}
+import { personalViewDocument, viewDocument } from "./viewDocument";
+export { VIEW_CSP, viewDocument } from "./viewDocument";
 
 export type DisplayMode = "inline" | "fullscreen";
 
@@ -87,6 +71,9 @@ interface Props {
   initialHeight?: number;
   onHeight?: (height: number) => void;
   title: string;
+  /** Personal content is always nested under the trusted navigation guard. */
+  personalView?: { html: string; resourceUri: string };
+  onToolCall?: (tool: string, args: Record<string, unknown>) => Promise<CallToolResult>;
 }
 
 type Bridge = {
@@ -95,12 +82,12 @@ type Bridge = {
   close(): Promise<void>;
 };
 
-export function McpAppFrame({ input, theme, displayMode = "inline", actions, className, initialHeight = 320, onHeight, title }: Props) {
+export function McpAppFrame({ input, theme, displayMode = "inline", actions, className, initialHeight = 320, onHeight, title, personalView, onToolCall }: Props) {
   const frame = useRef<HTMLIFrameElement>(null);
   const bridge = useRef<Bridge | null>(null);
   const [height, setHeight] = useState(initialHeight);
-  const latest = useRef({ input, theme, displayMode, actions, onHeight });
-  latest.current = { input, theme, displayMode, actions, onHeight };
+  const latest = useRef({ input, theme, displayMode, actions, onHeight, onToolCall });
+  latest.current = { input, theme, displayMode, actions, onHeight, onToolCall };
 
   useLayoutEffect(() => {
     const node = frame.current;
@@ -109,16 +96,16 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
     void (async () => {
       // Both load on the first visual, not with the app: the view alone is
       // over half a megabyte.
-      const [{ AppBridge, PostMessageTransport }, { default: viewHtml }] = await Promise.all([
+      const [{ AppBridge, PostMessageTransport }, viewHtml] = await Promise.all([
         import("@modelcontextprotocol/ext-apps/app-bridge"),
-        import("./visual/generated/visual.html?raw"),
+        personalView ? Promise.resolve(personalView.html) : import("./visual/generated/visual.html?raw").then(module => module.default),
       ]);
       const target = node.contentWindow;
       if (cancelled || !target) return;
       const app = new AppBridge(
         null,
         { name: "bridge", version: "1" },
-        { openLinks: {}, message: { text: {} } },
+        personalView ? { serverTools: {} } : { openLinks: {}, message: { text: {} } },
         { hostContext: hostContext(latest.current.theme, latest.current.displayMode) },
       );
       app.oninitialized = () => {
@@ -126,11 +113,12 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       };
       app.onsizechange = ({ height: next }) => {
         if (typeof next !== "number" || !Number.isFinite(next)) return;
-        const clamped = Math.max(48, Math.ceil(next));
+        const clamped = Math.max(48, Math.min(personalView ? 1200 : Infinity, Math.ceil(next)));
         setHeight(clamped);
         latest.current.onHeight?.(clamped);
       };
       app.onmessage = async ({ content }) => {
+        if (personalView) throw new Error("Use the native Revise button");
         const text = (Array.isArray(content) ? content : [])
           .map(part => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : ""))
           .join("\n")
@@ -139,10 +127,15 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
         return {};
       };
       app.onopenlink = async ({ url }) => {
+        if (personalView) throw new Error("Personal previews cannot open external links");
         if (/^https?:\/\//i.test(url)) latest.current.actions?.open?.(url);
         return {};
       };
       app.onrequestdisplaymode = async () => ({ mode: latest.current.displayMode });
+      if (personalView) app.oncalltool = async ({ name, arguments: args }) => {
+        if (!latest.current.onToolCall) throw new Error("Live tools are unavailable in this preview");
+        return latest.current.onToolCall(name, args ?? {});
+      };
       await app.connect(new PostMessageTransport(target, target));
       if (cancelled) {
         void app.close();
@@ -150,14 +143,14 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       }
       bridge.current = app as unknown as Bridge;
       // Only now that the bridge listens does the view get its document.
-      node.srcdoc = viewDocument(viewHtml);
+      node.srcdoc = personalView ? personalViewDocument(viewHtml) : viewDocument(viewHtml);
     })();
     return () => {
       cancelled = true;
       void bridge.current?.close();
       bridge.current = null;
     };
-  }, []);
+  }, [personalView?.html, personalView?.resourceUri]);
 
   useEffect(() => {
     bridge.current?.setHostContext(hostContext(theme, displayMode));
@@ -171,7 +164,7 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       referrerPolicy="no-referrer"
       className={cn("block w-full border-0 bg-transparent", theme === "dark" ? "[color-scheme:dark]" : "[color-scheme:light]", className)}
       style={displayMode === "inline" ? { height } : undefined}
-      data-mcp-app="ui://bridge/visual"
+      data-mcp-app={personalView?.resourceUri ?? "ui://bridge/visual"}
     />
   );
 }

@@ -95,6 +95,7 @@ pub fn forwards_to_core(name: &str) -> bool {
         || name.starts_with("settings_")
         || name.starts_with(crate::history_tools::PREFIX)
         || name == crate::notes::tool::NOTIFY_USER
+        || name == "apps_draft"
 }
 
 impl VisualServer {

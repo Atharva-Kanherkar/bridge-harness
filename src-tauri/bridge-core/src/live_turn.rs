@@ -2623,6 +2623,9 @@ fn spawn_reader_thread(
                         break;
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        if crate::apps::control::deliver(&session_id, &value) {
+                            continue;
+                        }
                         // A provider's server-level heartbeat proves the process
                         // is alive and nothing more. It must not count as turn
                         // progress — the chat watchdog exists precisely for a

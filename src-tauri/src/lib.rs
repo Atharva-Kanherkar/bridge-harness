@@ -19,6 +19,7 @@ pub mod notifications;
 pub mod quick_prompt;
 mod diagnostics;
 mod nightly_updater;
+mod preview_isolation;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -261,6 +262,18 @@ fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: Option
     blocking("lock a personal app", move || {
         api::lock_personal_app(&core, &wire::LockPersonalAppParams { draft_id, content_hash, allow_wider: allow_wider.unwrap_or(false) })
     })
+}
+
+#[tauri::command(async)]
+fn get_personal_app_draft(session_id: String, draft_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppDraft, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("read an app draft", move || api::get_personal_app_draft(&core, &wire::GetPersonalAppDraftParams { session_id, draft_id, content_hash }))
+}
+
+#[tauri::command(async)]
+fn preview_personal_app_tool(session_id: String, draft_id: String, content_hash: String, tool: String, arguments: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<serde_json::Value, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("preview an app tool", move || api::preview_personal_app_tool(&core, &wire::PreviewPersonalAppToolParams { session_id, draft_id, content_hash, tool, arguments }))
 }
 
 #[tauri::command(async)]
@@ -3542,6 +3555,8 @@ pub fn run() -> i32 {
             set_app_enabled,
             list_personal_apps,
             get_personal_app,
+            get_personal_app_draft,
+            preview_personal_app_tool,
             lock_personal_app,
             delete_personal_app,
             list_trails,
@@ -3953,6 +3968,9 @@ pub fn run() -> i32 {
             }
             if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update" | "ensure_update_installable") {
                 return nightly_updater::commands(invoke);
+            }
+            if invoke.message.command() == "isolate_app_previews" {
+                return preview_isolation::commands(invoke);
             }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {

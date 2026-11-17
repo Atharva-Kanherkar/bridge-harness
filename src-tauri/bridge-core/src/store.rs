@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 81;
+const LATEST_SCHEMA_VERSION: i64 = 82;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -788,6 +788,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Personal apps: drafts waiting for their lock, and every locked
             // version. See `apps::personal`.
             81 => crate::apps::personal::install_store(&transaction)?,
+            82 => crate::apps::draft::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

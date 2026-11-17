@@ -145,9 +145,10 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `apps/delete_personal_app`). A new client must not pair with an older
 /// daemon, whose personal app calls would fail with `method_not_found`; a 1.37
 /// client still pairs with a 1.38 daemon.
+/// **1.39 adds chat-bound personal app draft previews** and read-only MCP calls.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 38,
+    minor: 39,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

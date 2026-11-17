@@ -34,6 +34,8 @@ import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrail
 import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailCandidatesResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberKind, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
 import type { TrailsChangedPayload } from "./trails";
 import { mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
+import { MOCK_APP_DRAFT_ID, MOCK_APP_HASH, mockGetPersonalAppDraft, mockLockPersonalApp, mockPreviewPersonalAppTool } from "./personalAppMock";
+import type { GetPersonalAppDraftParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppDraft, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
 import type { ListAppsResult } from "./protocol/generated/protocol";
 import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockSendOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
 import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
@@ -644,7 +646,9 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-18b", "session-1", 22, "user.message", { text: "Tell #dev in the deploy thread that staging is done and I'll watch errors before promoting.", itemId: "user-outgoing" }, "entry-17b"),
   forestEntry("entry-19b", "session-1", 23, "tool.completed", { status: "completed", title: "mcp__bridge__outgoing_draft", data: { type: "tool_use", name: "mcp__bridge__outgoing_draft", input: { to: { slack: { channel: "#dev", thread: "https://acme.slack.com/archives/C01/p1730000000" } }, body: "Deploy to staging is done \u2014 all checks green.", reason: "tell #dev the staging deploy finished" }, aggregatedOutput: JSON.stringify({ id: MOCK_OUTGOING_ID, state: "draft", destination: "Slack \u00b7 #dev \u00b7 thread" }) } }, "entry-18b"),
   forestEntry("entry-20b", "session-1", 24, "assistant.message", { text: "Drafted a reply for the #dev deploy thread. Edit or copy it from the card." }, "entry-19b"),
-  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b")
+  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b"),
+  forestEntry("entry-app-user", "session-1", 26, "user.message", { text: "Build me a small app to find and message a teammate on Slack.", itemId: "user-app" }, "entry-raw"),
+  forestEntry("entry-app-draft", "session-1", 27, "tool.completed", { status: "completed", title: "mcp__bridge__apps_draft", data: { type: "tool_use", name: "mcp__bridge__apps_draft", input: { name: "Slack DM" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-user")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -704,7 +708,7 @@ const mockMemoryMaxRecords = 200;
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
-    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
+    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-app-draft", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
     workerLeases: [
       { sessionId: "session-1w", workspaceId: "demo-1", role: "implementation", capabilityTier: "strong", taskFamily: "implementation", ownedPaths: ["src/auth/**"], writeMode: "isolated", leaseStatus: "active", expiresAt: null, createdAt: now, updatedAt: now },
       { sessionId: "session-1w2", workspaceId: "demo-1", role: "verification", capabilityTier: "strong", taskFamily: "verification", ownedPaths: ["src/auth/**"], writeMode: "readOnly", leaseStatus: "released", expiresAt: null, createdAt: now, updatedAt: now }
@@ -1884,6 +1888,20 @@ export const bridgeApi = {
   // Apps: core's manifests, their state on this Mac, pins and badges.
   listApps: async (): Promise<ListAppsResult> =>
     hasBackend() ? call("apps/list_apps") : mockListApps(mockBadgeCounts()),
+  getPersonalAppDraft: async (params: GetPersonalAppDraftParams): Promise<PersonalAppDraft> =>
+    hasBackend() ? call("apps/get_personal_app_draft", params) : mockGetPersonalAppDraft(params),
+  previewPersonalAppTool: async (params: PreviewPersonalAppToolParams): Promise<unknown> =>
+    hasBackend() ? call("apps/preview_personal_app_tool", params) : mockPreviewPersonalAppTool(params),
+  /** Whether a live app preview is isolated from the network, WebRTC
+   *  included, which CSP cannot block. Only the Mac app can switch WebRTC off
+   *  (see preview_isolation.rs); a browser tab cannot, so it is refused live
+   *  reads. Mock mode has only fake data. */
+  isolateAppPreviews: async (): Promise<boolean> => {
+    if (isTauri()) return invoke<boolean>("isolate_app_previews").then(value => value === true, () => false);
+    return !hasBackend();
+  },
+  lockPersonalApp: async (params: LockPersonalAppParams): Promise<LockPersonalAppResult> =>
+    hasBackend() ? call("apps/lock_personal_app", params) : mockLockPersonalApp(params),
   setAppPinned: async (id: string, pinned: boolean): Promise<ListAppsResult> =>
     hasBackend() ? call("apps/set_app_pinned", { id, pinned }) : mockSetAppPinned(id, pinned, mockBadgeCounts()),
   setAppEnabled: async (id: string, enabled: boolean): Promise<ListAppsResult> =>

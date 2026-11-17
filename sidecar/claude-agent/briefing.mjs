@@ -41,6 +41,12 @@ const MUTATION_WORDS = new Set([
   "set", "update", "upload", "write",
 ]);
 
+export function isReadToolName(name) {
+  if (typeof name !== "string" || !/^[a-z0-9_-]{1,64}$/.test(name)) return false;
+  const words = name.split(/[_-]/);
+  return !words.some(word => MUTATION_WORDS.has(word)) && words.some(word => READ_TOOL_VERBS.has(word));
+}
+
 /**
  * The segment the harness puts in tool names for a configured server: anything
  * outside `[A-Za-z0-9_-]` becomes `_`, so `claude.ai Slack` is `claude_ai_Slack`.
