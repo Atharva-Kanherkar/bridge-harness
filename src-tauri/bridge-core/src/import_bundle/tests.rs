@@ -757,3 +757,18 @@ fn an_empty_tool_copy_does_not_pretend_to_be_a_transcript() {
     let lowered = lower(&resolved);
     assert_eq!(lowered.excluded[0].reason, "no transcript was found for this chat");
 }
+
+#[test]
+fn entries_a_source_marked_as_none_never_beat_a_real_tool_copy() {
+    let mut odd = TransferBundle::new(source("orca"));
+    let mut declared_none = chat("o", "claude", Some("q"), rich_entries());
+    declared_none.entries_source = EntriesSource::None;
+    odd.chats.push(declared_none);
+    let mut t3 = TransferBundle::new(source("t3code"));
+    let mut copy = chat("t", "claude", Some("q"), vec![entry("m", BundleEntryKind::UserMessage, "from the copy")]);
+    copy.entries_source = EntriesSource::ToolCopy;
+    t3.chats.push(copy);
+    let merged = resolve(vec![odd, t3]).unwrap().chats.remove(0).chat;
+    assert_eq!(merged.entries_source, EntriesSource::ToolCopy);
+    assert_eq!(merged.entries.len(), 1);
+}
