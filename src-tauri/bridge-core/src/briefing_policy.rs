@@ -270,6 +270,10 @@ pub struct BriefingRuntimePolicy {
     /// own sign-in, instead of receiving explicit copies. Changes how a server
     /// is reached, never what the gate allows.
     native_connectors: bool,
+    /// A personal-app connection runtime: a turnless launch whose only
+    /// authority is app control (inventory and reads) on this one server.
+    /// Only [`Self::compile_app_runtime`] sets it.
+    app_runtime: Option<String>,
 }
 
 /// One connector server a workflow run may reach.
@@ -462,6 +466,7 @@ impl BriefingRuntimePolicy {
             exact_action: None,
             direct_call: false,
             native_connectors: false,
+            app_runtime: None,
         })
     }
 
@@ -505,6 +510,7 @@ impl BriefingRuntimePolicy {
             exact_action: None,
             direct_call: false,
             native_connectors: false,
+            app_runtime: None,
         })
     }
 
@@ -633,6 +639,25 @@ impl BriefingRuntimePolicy {
     /// leaves the authority alone: `decide` and the adapter's gate are the same
     /// rules over the same scope, and the harness may now merely *list* tools
     /// the gate will refuse.
+    /// A personal-app connection runtime for `server`. The model is allowed no
+    /// tool at all and is never sent a turn; the sidecar's app control answers
+    /// inventory and read requests for `server` alone, so this launch reads
+    /// exactly what the person's own chat could, through the account's own
+    /// signed-in connectors, and cannot write.
+    pub fn compile_app_runtime(server: String, limits: wire::WorkBriefLimits) -> Result<Self, BriefingUnsupported> {
+        if server.trim().is_empty() || server.len() > 100 {
+            return Err(BriefingUnsupported::MalformedPolicy { detail: "an app runtime names one server".into() });
+        }
+        let mut policy = Self::compile_scoped(Vec::new(), limits)?;
+        policy.native_connectors = true;
+        policy.app_runtime = Some(server);
+        Ok(policy)
+    }
+
+    pub fn app_runtime(&self) -> Option<&str> {
+        self.app_runtime.as_deref()
+    }
+
     pub fn with_native_connectors(mut self) -> Self {
         self.native_connectors = true;
         self

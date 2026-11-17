@@ -273,6 +273,9 @@ fn launch(
                 // Claude Code loads claude.ai connectors itself, signed in;
                 // the explicit copies below would come up needing auth.
                 "nativeConnectors": policy.native_connectors(),
+                // A personal-app connection runtime: app control on this one
+                // server, no model turn, no tools. Absent otherwise.
+                "appRuntime": policy.app_runtime().map(|server| json!({"server": server})),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
                 // No tool definitions and no coding preset. Present only for a

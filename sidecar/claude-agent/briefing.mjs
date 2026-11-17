@@ -207,7 +207,15 @@ export function isDirectCall(briefing) {
  * direct call, or a run Rust marked `nativeConnectors` (the Outgoing resolver).
  */
 export function loadsConnectorsNatively(briefing) {
-  return briefing?.nativeConnectors === true || isDirectCall(briefing);
+  return briefing?.nativeConnectors === true || isDirectCall(briefing) || isAppRuntime(briefing);
+}
+
+/**
+ * A personal-app connection runtime: no model turn and no tools, only app
+ * control (inventory and reads) on `appRuntime.server`. See app-control.mjs.
+ */
+export function isAppRuntime(briefing) {
+  return typeof briefing?.appRuntime?.server === "string" && briefing.appRuntime.server.length > 0;
 }
 
 /**
@@ -226,6 +234,7 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     ...(briefing?.allowedServers ?? []),
     ...(briefing?.readScopeServers ?? []),
     ...(briefing?.actionScope ? [briefing.actionScope.server] : []),
+    ...(isAppRuntime(briefing) ? [briefing.appRuntime.server] : []),
   ]);
   // Native connectors: Claude Code loads its claude.ai connectors itself, with
   // the account's own sign-in. An explicit copy never shares that sign-in and

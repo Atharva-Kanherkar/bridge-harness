@@ -14,6 +14,7 @@
 
 pub mod badges;
 pub mod builtin;
+pub mod codex;
 pub mod control;
 pub mod draft;
 pub mod events;

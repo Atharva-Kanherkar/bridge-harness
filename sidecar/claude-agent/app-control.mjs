@@ -6,7 +6,9 @@ const object = (value) => value !== null && typeof value === "object" && !Array.
 
 // `mayRead(serverName)` is the launch's own connector policy (see
 // connectorReadPolicy in options.mjs). It defaults to refusing.
-export function createAppControl({ enabled, status, request, writeFrame, mayRead = () => false }) {
+// `serverAllowed(serverName)` narrows which servers this launch serves at all,
+// for inventory and reads alike. A chat serves any; an app runtime one.
+export function createAppControl({ enabled, status, request, writeFrame, mayRead = () => false, serverAllowed = () => true }) {
   let active = 0;
   return async (frame) => {
     const id = typeof frame?.id === "string" && frame.id.length <= 100 ? frame.id : null;
@@ -24,6 +26,7 @@ export function createAppControl({ enabled, status, request, writeFrame, mayRead
       // A collision in the wire segment could route a read to another account.
       if (matches.length !== 1 || matches[0].status !== "connected") return reply(false, "connect one unambiguous MCP server in this chat first");
       const server = matches[0];
+      if (!serverAllowed(server.name)) return reply(false, "this launch does not serve that MCP server");
       const tools = (server.tools ?? []).map(tool => ({
         name: tool.name,
         readOnly: tool.annotations?.readOnly ?? null,

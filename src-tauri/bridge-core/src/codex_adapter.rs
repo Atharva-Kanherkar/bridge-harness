@@ -742,6 +742,10 @@ impl AdapterRuntime for CodexRuntime {
     fn process_id(&self) -> u32 {
         self.child.id()
     }
+    /// Inventory or a read on this thread's MCP connection, with no model turn.
+    fn app_control(&self, id: &str, request: &Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &crate::apps::codex::request_frame(id, &self.thread_id, request)?)
+    }
     fn provider_session_id(&self) -> &str {
         &self.thread_id
     }
