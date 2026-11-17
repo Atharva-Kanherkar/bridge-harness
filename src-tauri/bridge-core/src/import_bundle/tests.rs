@@ -381,7 +381,7 @@ fn oversized_images_and_empty_messages_are_reported_not_dropped_silently() {
     big.attachments.push(BundleAttachment {
         media_type: "image/png".into(),
         name: None,
-        data_base64: Some("A".repeat(MAX_INLINE_ATTACHMENT_BYTES + 1)),
+        data_base64: Some(base64_of(MAX_INLINE_ATTACHMENT_BYTES + 1)),
         bytes: (MAX_INLINE_ATTACHMENT_BYTES + 1) as u64,
     });
     let entries = vec![big, entry("empty", BundleEntryKind::AssistantMessage, "   ")];
@@ -914,4 +914,34 @@ fn setup_is_deduplicated_per_project_and_keeps_its_project() {
     let lowered = lower(&resolved);
     assert_eq!(lowered.candidates[0].normalized_payload["projectKey"], "project:/nonexistent/api");
     assert_eq!(lowered.candidates[0].normalized_payload["projectRoot"], "/nonexistent/api");
+}
+
+fn image_entry(id: &str, base64: String) -> BundleEntry {
+    let mut message = entry(id, BundleEntryKind::UserMessage, "see attached");
+    message.attachments.push(BundleAttachment { media_type: "image/png".into(), name: None, bytes: 0, data_base64: Some(base64) });
+    message
+}
+
+/// Base64 text for an image of exactly `bytes` bytes, padded like a real encoder.
+fn base64_of(bytes: usize) -> String {
+    let groups = bytes.div_ceil(3);
+    let padding = (3 - bytes % 3) % 3;
+    format!("{}{}", "A".repeat(groups * 4 - padding), "=".repeat(padding))
+}
+
+#[test]
+fn the_image_cap_counts_decoded_bytes() {
+    let four_mib = base64_of(4 * 1024 * 1024);
+    assert_eq!(four_mib.len(), 5_592_408, "a 4 MiB image is 5,592,408 base64 characters");
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("img"), vec![
+        image_entry("fits", four_mib),
+        image_entry("over", base64_of(MAX_INLINE_ATTACHMENT_BYTES + 1)),
+    ]));
+    let lowered = lower(&resolve(vec![bundle]).unwrap());
+    let messages = lowered.candidates[0].normalized_payload["messages"].as_array().unwrap().clone();
+    assert!(messages[0]["data"]["attachments"].is_array(), "a 4 MiB image is under the 5 MiB cap");
+    assert!(messages[1]["data"]["attachments"].is_null(), "one byte over 5 MiB is left out");
+    let attachments: u32 = lowered.excluded.iter().filter(|item| item.category == "attachment").map(|item| item.count).sum();
+    assert_eq!(attachments, 1);
 }

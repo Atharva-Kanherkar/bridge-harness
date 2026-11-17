@@ -770,6 +770,14 @@ fn lower_entry(
     }
 }
 
+/// The size of the bytes a base64 string encodes: the cap is on the image,
+/// not on its encoding, which is a third larger.
+fn decoded_len(base64: &str) -> usize {
+    let trimmed = base64.trim_end();
+    let padding = trimmed.bytes().rev().take_while(|byte| *byte == b'=').count().min(2);
+    (trimmed.len() * 3 / 4).saturating_sub(padding)
+}
+
 fn lower_user(
     entry: &BundleEntry,
     sequence: usize,
@@ -780,7 +788,7 @@ fn lower_user(
         match attachment.data_base64.as_deref() {
             Some(data)
                 if attachment.media_type.starts_with("image/")
-                    && data.len() <= MAX_INLINE_ATTACHMENT_BYTES =>
+                    && decoded_len(data) <= MAX_INLINE_ATTACHMENT_BYTES =>
             {
                 attachments.push(json!({
                     "mediaType": attachment.media_type,
