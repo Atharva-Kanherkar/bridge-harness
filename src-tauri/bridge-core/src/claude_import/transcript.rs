@@ -245,29 +245,7 @@ impl Reader {
         }
         let content = object.get("message").and_then(|message| message.get("content"));
         if object.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
-            let (summary, _) = tool_result_text(content);
-            let summary = match content {
-                Some(Value::Array(blocks)) => blocks
-                    .iter()
-                    .filter_map(|block| block.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                _ => summary,
-            };
-            match self.pending_compaction.take() {
-                Some(index) => self.entries[index].text = Some(summary),
-                None => {
-                    self.note_time(&at);
-                    self.push(BundleEntry {
-                        source_id: uuid,
-                        at,
-                        kind: BundleEntryKind::CompactionBoundary,
-                        text: Some(summary),
-                        tool: None,
-                        attachments: Vec::new(),
-                    });
-                }
-            }
+            self.compact_summary(uuid, at, content);
             return;
         }
         if !self.seen.insert(uuid.clone()) {
@@ -289,53 +267,85 @@ impl Reader {
                     attachments: Vec::new(),
                 });
             }
-            Some(Value::Array(blocks)) => {
-                let mut texts = Vec::new();
-                let mut attachments = Vec::new();
-                for block in blocks {
-                    match block.get("type").and_then(Value::as_str) {
-                        Some("text") => {
-                            if let Some(text) = block.get("text").and_then(Value::as_str) {
-                                texts.push(tidy_user_text(text));
-                            }
-                        }
-                        Some("image") => {
-                            let source = block.get("source");
-                            let data = source
-                                .and_then(|source| source.get("data"))
-                                .and_then(Value::as_str);
-                            let media_type = source
-                                .and_then(|source| source.get("media_type"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("image/png");
-                            attachments.push(BundleAttachment {
-                                media_type: media_type.to_owned(),
-                                name: None,
-                                bytes: data.map(|data| data.len() as u64 * 3 / 4).unwrap_or(0),
-                                data_base64: data.map(str::to_owned),
-                            });
-                        }
-                        Some("tool_result") => self.tool_result(block),
-                        Some("document") => self.skipped.bump("content:document"),
-                        Some(other) => self.skipped.bump(format!("content:{other}")),
-                        None => self.skipped.bump("untyped_content_block"),
+            Some(Value::Array(blocks)) => self.user_blocks(uuid, at, blocks),
+            _ => self.skipped.bump("unsupported_content_shape"),
+        }
+    }
+
+    /// A compaction summary fills the boundary just before it, or stands
+    /// alone as a boundary when the boundary record is missing.
+    fn compact_summary(&mut self, uuid: String, at: String, content: Option<&Value>) {
+        let (summary, _) = tool_result_text(content);
+        let summary = match content {
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => summary,
+        };
+        match self.pending_compaction.take() {
+            Some(index) => self.entries[index].text = Some(summary),
+            None => {
+                self.note_time(&at);
+                self.push(BundleEntry {
+                    source_id: uuid,
+                    at,
+                    kind: BundleEntryKind::CompactionBoundary,
+                    text: Some(summary),
+                    tool: None,
+                    attachments: Vec::new(),
+                });
+            }
+        }
+    }
+
+    /// A user record made of blocks: text and images become one message,
+    /// tool results fill in the calls they answer.
+    fn user_blocks(&mut self, uuid: String, at: String, blocks: &[Value]) {
+        let mut texts = Vec::new();
+        let mut attachments = Vec::new();
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        texts.push(tidy_user_text(text));
                     }
                 }
-                if !texts.is_empty() || !attachments.is_empty() {
-                    self.source_items += 1;
-                    let text = texts.join("\n\n");
-                    self.said(&text);
-                    self.push(BundleEntry {
-                        source_id: uuid,
-                        at,
-                        kind: BundleEntryKind::UserMessage,
-                        text: Some(text),
-                        tool: None,
-                        attachments,
+                Some("image") => {
+                    let source = block.get("source");
+                    let data = source
+                        .and_then(|source| source.get("data"))
+                        .and_then(Value::as_str);
+                    let media_type = source
+                        .and_then(|source| source.get("media_type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/png");
+                    attachments.push(BundleAttachment {
+                        media_type: media_type.to_owned(),
+                        name: None,
+                        bytes: data.map(|data| data.len() as u64 * 3 / 4).unwrap_or(0),
+                        data_base64: data.map(str::to_owned),
                     });
                 }
+                Some("tool_result") => self.tool_result(block),
+                Some("document") => self.skipped.bump("content:document"),
+                Some(other) => self.skipped.bump(format!("content:{other}")),
+                None => self.skipped.bump("untyped_content_block"),
             }
-            _ => self.skipped.bump("unsupported_content_shape"),
+        }
+        if !texts.is_empty() || !attachments.is_empty() {
+            self.source_items += 1;
+            let text = texts.join("\n\n");
+            self.said(&text);
+            self.push(BundleEntry {
+                source_id: uuid,
+                at,
+                kind: BundleEntryKind::UserMessage,
+                text: Some(text),
+                tool: None,
+                attachments,
+            });
         }
     }
 
@@ -652,12 +662,16 @@ pub fn peek_session(path: &Path) -> SessionPeek {
     };
     let size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
     let mut head = Vec::new();
-    let _ = (&mut file).take(WINDOW).read_to_end(&mut head);
+    if (&mut file).take(WINDOW).read_to_end(&mut head).is_err() {
+        return SessionPeek::default();
+    }
     let mut tail = Vec::new();
     if size > WINDOW {
         use std::io::{Seek, SeekFrom};
         if file.seek(SeekFrom::Start(size.saturating_sub(WINDOW))).is_ok() {
-            let _ = file.take(WINDOW).read_to_end(&mut tail);
+            if file.take(WINDOW).read_to_end(&mut tail).is_err() {
+                tail.clear();
+            }
         }
     }
     let mut peek = SessionPeek::default();
