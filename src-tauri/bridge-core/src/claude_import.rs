@@ -386,13 +386,33 @@ fn canonical_roots(roots: &[String]) -> Result<Vec<PathBuf>, BridgeError> {
     Ok(canonical)
 }
 
+/// A Claude config home, whatever it is called (`~/.claude`, or the folder
+/// `CLAUDE_CONFIG_DIR` or an account names): recognised by its layout, a
+/// `projects/` folder of Claude's project folders, which are named after a
+/// path with `/` written as `-`, so they start with `-`.
+fn is_claude_home(root: &Path) -> bool {
+    if root.file_name().and_then(|name| name.to_str()) == Some(".claude") {
+        return true;
+    }
+    let Ok(projects) = fs::read_dir(root.join("projects")) else {
+        return false;
+    };
+    projects.flatten().any(|entry| {
+        entry.path().is_dir()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with('-'))
+    })
+}
+
 fn discover_root(
     root: &Path,
     approved_roots: &[PathBuf],
     artifacts: &mut Vec<DiscoveredArtifact>,
     diagnostics: &mut Vec<ImportDiagnostic>,
 ) -> Result<(), BridgeError> {
-    let is_claude_home = root.file_name().and_then(|name| name.to_str()) == Some(".claude");
+    let is_claude_home = is_claude_home(root);
     let candidates = if is_claude_home {
         vec![
             (
@@ -1517,6 +1537,41 @@ mod tests {
         let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
         let changed = commit_all(&db, &v2);
         assert_eq!((changed.imported, changed.changed), (0, 1), "{changed:?}");
+    }
+
+    #[test]
+    fn a_custom_config_folder_is_read_as_a_claude_home() {
+        let home = tempfile::tempdir().unwrap();
+        let custom = home.path().join(".claude-work");
+        write(&custom.join("projects/-work-app/sess-9.jsonl"), &session_lines("sess-9", "work account chat"));
+        write(&custom.join("projects/-work-app/memory/MEMORY.md"), "- uses pnpm\n");
+        let found = crate::import_sources::detect(home.path(), Some(&custom), &[]);
+        let claude = &found[0];
+        assert_eq!(claude.counts.chats, 1, "detection counts the custom folder's chat");
+        // Review discovers exactly what detection counted, from the same roots.
+        let request = DiscoveryRequest {
+            provider: PROVIDER.into(),
+            approved_roots: claude.roots.clone(),
+            selected_export: None,
+            source_version: None,
+            schema_version: None,
+            format_versions: BTreeMap::new(),
+        };
+        let discovery = ClaudeCodeImporter.discover(&request).unwrap();
+        let kinds: Vec<&CandidateKind> = discovery.artifacts.iter().map(|a| &a.kind).collect();
+        assert_eq!(kinds.iter().filter(|k| ***k == CandidateKind::Conversation).count(), 1, "{kinds:?}");
+        assert_eq!(kinds.iter().filter(|k| ***k == CandidateKind::Memory).count(), 1, "{kinds:?}");
+    }
+
+    #[test]
+    fn a_repository_with_a_projects_folder_is_not_mistaken_for_a_claude_home() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("my-repo");
+        write(&repo.join("projects/website/notes.jsonl"), "{}");
+        write(&repo.join("CLAUDE.md"), "repo rules");
+        let discovery = ClaudeCodeImporter.discover(&request(&repo)).unwrap();
+        assert!(discovery.artifacts.iter().all(|a| a.kind != CandidateKind::Conversation));
+        assert!(discovery.artifacts.iter().any(|a| a.kind == CandidateKind::Instruction));
     }
 
     #[test]
