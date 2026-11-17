@@ -2483,18 +2483,19 @@ async fn list_terminals(
     Ok(api::list_terminals(state.inner(), &workspace_id))
 }
 
-#[tauri::command]
-async fn record_client_latency(
+// An owned future, like the personal-app commands: Tauri's expansion of an
+// `async fn` with a borrowed `State` adds an unused-Result assertion.
+#[tauri::command(async)]
+fn record_client_latency(
     session_id: String,
     flow: String,
     steps: Vec<wire::ClientLatencyStep>,
     state: State<'_, Arc<BridgeCore>>,
-) -> Result<(), BridgeError> {
+) -> impl std::future::Future<Output = Result<(), BridgeError>> {
     let core = state.inner().clone();
     blocking("Record send latency", move || {
         api::record_client_latency(&core, &wire::RecordClientLatencyParams { session_id, flow, steps })
     })
-    .await
 }
 
 #[tauri::command]

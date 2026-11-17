@@ -2110,7 +2110,7 @@ pub fn record_client_latency(
         .map(|step| serde_json::json!([step.name, step.at_ms]))
         .collect();
     let body = serde_json::json!({ "flow": params.flow, "steps": steps });
-    crate::latency::record(&core.db.lock().unwrap(), "latency.client", &params.session_id, &body);
+    crate::latency::record(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), "latency.client", &params.session_id, &body);
     Ok(())
 }
 

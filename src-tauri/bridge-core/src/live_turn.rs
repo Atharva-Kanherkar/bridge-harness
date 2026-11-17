@@ -2903,7 +2903,12 @@ fn handle_agent_value_timed(
             object.remove("subtype");
             object.insert("harness".into(), serde_json::json!("claude"));
         }
-        crate::latency::record(&core.db.lock().unwrap(), "latency.harness", session_id, &body);
+        crate::latency::record(
+            &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            "latency.harness",
+            session_id,
+            &body,
+        );
         return;
     }
     let state = core.clone();
@@ -12573,7 +12578,12 @@ fn submit_input_internal(
     let mut body = timing.to_json();
     body["route"] = serde_json::json!(format!("{delivered_route:?}"));
     body["resumed"] = serde_json::json!(resumed);
-    crate::latency::record(&core.db.lock().unwrap(), "latency.submit", &session_id, &body);
+    crate::latency::record(
+        &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        "latency.submit",
+        &session_id,
+        &body,
+    );
     Ok(wire::SubmitInputResult {
         disposition,
         queued_input_id,

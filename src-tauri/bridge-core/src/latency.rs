@@ -73,9 +73,11 @@ impl Marks {
 }
 
 /// Append one ledger row. Best-effort: a timing row is never worth failing the
-/// operation it describes, so an error is dropped.
+/// operation it describes, so an error is only noted on stderr.
 pub fn record(db: &Connection, kind: &str, entity_id: &str, body: &serde_json::Value) {
-    let _ = store::event(db, SOURCE, kind, entity_id, &body.to_string());
+    if let Err(error) = store::event(db, SOURCE, kind, entity_id, &body.to_string()) {
+        crate::diagnostics::record(&format!("bridge: could not record {kind}: {error}"));
+    }
 }
 
 #[cfg(test)]
