@@ -107,7 +107,9 @@ pub fn request_with(key: &Key, request: &Value, launch: &Launcher) -> Result<Val
         if warm.is_none() {
             *warm = Some(start(key, launch, &slot)?);
         }
-        let warm = warm.as_mut().expect("just started");
+        let Some(warm) = warm.as_mut() else {
+            return Err(BridgeError::Invalid("The connection could not start".into()));
+        };
         warm.last_used = Instant::now();
         warm.owner.clone()
     };
