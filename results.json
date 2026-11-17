@@ -1,0 +1,131 @@
+{
+  "results": [
+    {
+      "name": "Setup completes for a returning Claude Code user",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Claude Code is found with its chats, projects, memory and setup",
+      "ok": true,
+      "detail": "Found on this Mac | Bridge only lists folders here; nothing is read until you review a tool | Claude Code | 5 chats in 3 projects · 1 memory · 1 setup item · 204 background runs left out | Chats with their tool calls, thinking, images and subagents, plus memory and setup. Chats Claude Code ran for Conductor, T3 Code, Orca and Superset come over too. | Review | Codex | 1 chat | Codex chats are next. Nothing is read until then. | Coming | OpenCode | Found, but nothing to bring over yet | OpenCode chats are coming. Nothing is read until then. | Coming | Conductor | 3 workspaces in 2 repos | Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming. | Coming | T3 Cod"
+    },
+    {
+      "name": "Conductor is found by its worktrees and says its chats come with Claude Code",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Codex is found and honestly marked as coming",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Tools that are not installed say so",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Chats are grouped by the folder they ran in",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "A /rename title is shown, not the first message",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Every chat is selected by default",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Deselecting one chat updates the count",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Four chats, the Explore subagent and the memory came over",
+      "ok": true,
+      "detail": "imported=6"
+    },
+    {
+      "name": "Nothing was already in Bridge on the first import",
+      "ok": true,
+      "detail": "skipped=0"
+    },
+    {
+      "name": "The chat is badged with where it came from",
+      "ok": true,
+      "detail": "Imported · Claude Code · 2a437d18ae95…"
+    },
+    {
+      "name": "The user's screenshot came over as an image",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Tool calls came over, grouped the way Bridge shows live work",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Thinking came over as a thinking row",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "The compaction point came over with its summary",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "The search and the failing command are listed",
+      "ok": true,
+      "detail": "Worked for 3s | · needs the agent | Ran 1 command, searched code | 2 steps | Ran npm run render-email | runs code | npm run render-email -- --preview | Show all 2 steps | The template sets a fixed width of 240px and the preview context never passes logo_url, so the image collapses. I added logo_url to the preview "
+    },
+    {
+      "name": "The assistant's answer came over",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "The conversation after the compaction came over",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "The real session's tool calls and answer came over",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "The Explore subagent chat is reachable from the sidebar",
+      "ok": false,
+      "gap": true
+    },
+    {
+      "name": "A second import brings over only the chat left behind",
+      "ok": true,
+      "detail": "imported=1"
+    },
+    {
+      "name": "Everything imported before is recognised",
+      "ok": true,
+      "detail": "skipped=6"
+    }
+  ],
+  "shots": [
+    "01-found-dark",
+    "02-review-dark",
+    "03-done-dark",
+    "04a-chat-before-expand-dark",
+    "04b-tools-open-dark",
+    "04-chat-dark",
+    "05-real-session-dark",
+    "06-again-dark",
+    "07-done-light",
+    "08-found-light"
+  ]
+}
