@@ -45,3 +45,13 @@ importing brings over 6 items (4 chats, the Explore subagent, the memory) with
 screenshot, the thinking row, the tool group with the failing command, the
 answer and the compaction summary; the real Claude Code session renders; a
 second import brings over only the chat left behind and recognises all 6.
+
+## Review amendments
+
+Added after review of #1066. Each row names the regression test that failed before its fix.
+
+| # | Expectation | Test |
+|---|---|---|
+| C1 | A Claude config folder with any name (`CLAUDE_CONFIG_DIR=~/.claude-work`) is read as a config home: the chats detection counts are the chats review lists | `claude_import::tests::a_custom_config_folder_is_read_as_a_claude_home` |
+| C2 | Selected memories import together: the quick flow imports them alongside existing ones instead of letting the first block the rest | `MoveToBridge.test.tsx` "imports independent memories alongside each other", `external_import::tests` "independent memories import alongside" |
+| C3 | What did not come over includes the transcript records the reader skipped (documents, orphan results, unreadable lines), with counts; repeats it removed are not losses | `moveToBridge.test.ts` "reports skipped transcript records" |
