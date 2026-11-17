@@ -741,3 +741,19 @@ fn workspaces_and_projects_keep_their_fields_and_link_chats_through_them() {
     let lowered = lower(&resolved);
     assert_eq!(lowered.candidates[0].normalized_payload["workspacePath"], "/nonexistent/billing/tokyo");
 }
+
+#[test]
+fn an_empty_tool_copy_does_not_pretend_to_be_a_transcript() {
+    let mut claude = TransferBundle::new(source("claude_code"));
+    let mut gone = chat("s", "claude", Some("z"), Vec::new());
+    gone.entries_source = EntriesSource::None;
+    claude.chats.push(gone);
+    let mut t3 = TransferBundle::new(source("t3code"));
+    let mut empty_copy = chat("t", "claude", Some("z"), Vec::new());
+    empty_copy.entries_source = EntriesSource::ToolCopy;
+    t3.chats.push(empty_copy);
+    let resolved = resolve(vec![claude, t3]).unwrap();
+    assert_eq!(resolved.chats[0].chat.entries_source, EntriesSource::None);
+    let lowered = lower(&resolved);
+    assert_eq!(lowered.excluded[0].reason, "no transcript was found for this chat");
+}
