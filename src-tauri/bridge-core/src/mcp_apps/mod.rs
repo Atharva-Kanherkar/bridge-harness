@@ -164,6 +164,16 @@ impl ServerLaunch {
         overrides
     }
 
+    /// ACP `session/new` entry, for agents driven over the Agent Client
+    /// Protocol (Cursor).
+    pub fn acp_entry(&self) -> agent_client_protocol::schema::v1::McpServer {
+        use agent_client_protocol::schema::v1::{EnvVariable, McpServer, McpServerStdio};
+        let mut server = McpServerStdio::new(tool::SERVER_NAME, self.command.clone());
+        server.args = self.args.clone();
+        server.env = self.env.iter().map(|(key, value)| EnvVariable::new(key.clone(), value.clone())).collect();
+        McpServer::Stdio(server)
+    }
+
     /// OpenCode `mcp` entry, merged into `OPENCODE_CONFIG_CONTENT`.
     pub fn opencode_entry(&self) -> Value {
         let mut command = vec![self.command.to_string_lossy().into_owned()];

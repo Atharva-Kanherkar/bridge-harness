@@ -1221,6 +1221,7 @@ fn launch(
     instructions: Option<&str>,
     account: Option<&crate::provider_accounts::AccountLaunch>,
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
+    bridge_server: Option<crate::mcp_apps::ServerLaunch>,
 ) -> Result<(StartedAdapter, CursorProfile), BridgeError> {
     // An extra account brings its own key, which wins over any inherited one;
     // the account's other changes (blanking an inherited auth token) ride
@@ -1240,6 +1241,10 @@ fn launch(
     );
     for (name, value) in crate::provider_accounts::account_env(account) {
         spawn = spawn.env(name, value);
+    }
+    // Bridge's own chat tools, as Claude, Codex and OpenCode chats get them.
+    if let Some(server) = bridge_server {
+        spawn = spawn.mcp_server(server.acp_entry());
     }
     let session = AcpSession::connect(spawn).map_err(|error| launch_error(&error, key.as_deref()))?;
     let established_profile = profile_after_session(profile, &session);
@@ -1647,6 +1652,9 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
             request.instructions,
             request.account,
             request.on_progress,
+            crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing)
+                .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id))
+                .flatten(),
         )?;
         *self.probe.write().unwrap() = Some(CachedProbe {
             executable: established_profile.executable.clone(),
@@ -2854,6 +2862,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("the fake CLI starts a session");
         assert!(established_profile.session_opened);
@@ -2912,6 +2921,7 @@ mod tests {
             &profile,
             workspace.path().to_str().expect("a utf-8 workspace path"),
             Some("cursor-fast"),
+            None,
             None,
             None,
             None,
