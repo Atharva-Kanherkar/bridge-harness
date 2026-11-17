@@ -1407,6 +1407,24 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_subagent_is_reported() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        write(&claude.join("projects/p/sess-1.jsonl"), &session_lines("sess-1", "main task"));
+        let huge = claude.join("projects/p/sess-1/subagents/agent-huge.jsonl");
+        fs::create_dir_all(huge.parent().unwrap()).unwrap();
+        fs::File::create(&huge).unwrap().set_len(transcript::MAX_TRANSCRIPT_BYTES + 1).unwrap();
+        let preview = preview_all(&claude);
+        let chats: Vec<_> = preview.iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        assert_eq!(chats.len(), 1, "the readable session still imports");
+        assert!(
+            chats[0].diagnostics.iter().any(|d| d.code == "excluded_subagent" && d.message.contains("agent-huge") && d.message.contains("could not be read")),
+            "{:?}",
+            chats[0].diagnostics
+        );
+    }
+
+    #[test]
     fn config_roots_cover_home_env_and_accounts_once_each() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");

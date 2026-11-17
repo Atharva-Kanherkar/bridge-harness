@@ -631,8 +631,15 @@ pub fn read_session(
             });
             continue;
         };
-        let Ok(mut child) = read_transcript(&file, &found.to_string_lossy(), &child_label) else {
-            continue;
+        let mut child = match read_transcript(&file, &found.to_string_lossy(), &child_label) {
+            Ok(child) => child,
+            Err(error) => {
+                read.failures.push(ChildFailure {
+                    label: child_label,
+                    reason: format!("the subagent transcript could not be read: {error}"),
+                });
+                continue;
+            }
         };
         let meta = read_agent_meta(&found, approved_roots, &child_label, &mut read.failures);
         name_subagent(&mut child.chat, &key, &parent_session, &agent, meta.as_ref());
