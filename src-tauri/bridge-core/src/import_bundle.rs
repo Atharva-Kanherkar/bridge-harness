@@ -858,7 +858,10 @@ fn lower_tool(
         "input": tool.input,
     });
     if let Some(output) = tool.output.as_deref() {
-        let (kept, cut) = truncate_chars(output, MAX_TOOL_OUTPUT_CHARS);
+        // Redact first: a detector that needs both ends of a secret (a PEM
+        // block) cannot see a secret the cap has already cut in half.
+        let (redacted, _) = sanitize_import_payload(&Value::String(output.to_owned()));
+        let (kept, cut) = truncate_chars(redacted.as_str().unwrap_or_default(), MAX_TOOL_OUTPUT_CHARS);
         data["aggregatedOutput"] = Value::String(if cut {
             format!("{kept}\n\n[output cut at {MAX_TOOL_OUTPUT_CHARS} characters on import]")
         } else {

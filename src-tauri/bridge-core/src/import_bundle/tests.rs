@@ -772,3 +772,25 @@ fn entries_a_source_marked_as_none_never_beat_a_real_tool_copy() {
     assert_eq!(merged.entries_source, EntriesSource::ToolCopy);
     assert_eq!(merged.entries.len(), 1);
 }
+
+#[test]
+fn a_secret_cut_by_the_output_cap_is_redacted_before_cutting() {
+    let body = "MIIEowIBAAKCAQEAimportSentinelKeyBody0123456789";
+    let pem = format!("-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----");
+    // The END delimiter lands past the 20,000-character cap.
+    // Place the key so its END line starts 4 characters before the cap.
+    let before_end = pem.find("-----END").unwrap();
+    let output = format!("{}{pem}", "x".repeat(MAX_TOOL_OUTPUT_CHARS - before_end - 4));
+    let cut: String = output.chars().take(MAX_TOOL_OUTPUT_CHARS).collect();
+    assert!(cut.contains(body) && !cut.contains("-----END"), "the body fits under the cap, the END line does not");
+    let (whole, _) = sanitize_import_payload(&Value::String(output.clone()));
+    assert!(!whole.as_str().unwrap().contains(body), "the full output is redacted by the detector");
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("pem"), vec![
+        entry("u", BundleEntryKind::UserMessage, "print the deploy key"),
+        tool_entry("t", "Bash", &output, ToolStatus::Completed),
+    ]));
+    let db = database();
+    import(&db, vec![bundle]);
+    assert_eq!(count(&db, &format!("SELECT COUNT(*) FROM session_entries WHERE payload LIKE '%{body}%'")), 0);
+}
