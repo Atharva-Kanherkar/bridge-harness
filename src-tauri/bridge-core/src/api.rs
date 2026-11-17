@@ -267,6 +267,62 @@ pub(crate) fn import_batches(
     batches
 }
 
+/// Commit `candidates` batch by batch (see [`import_batches`]). A failed batch
+/// rolls back on its own; earlier batches stay and the result says so.
+fn commit_in_batches(
+    core: &Arc<BridgeCore>,
+    candidates: &[external_import::NormalizedImportCandidate],
+    plan: &external_import::ImportPlan,
+    selected: &std::collections::HashSet<&str>,
+) -> Result<external_import::ImportCommit, BridgeError> {
+    let mut commit: Option<external_import::ImportCommit> = None;
+    for (index, batch) in import_batches(candidates, selected).into_iter().enumerate() {
+        let batch_plan = external_import::ImportPlan {
+            selected_candidate_ids: batch,
+            ..plan.clone()
+        };
+        let result = {
+            let db = core.db.lock().unwrap();
+            external_import::commit_import(&db, candidates, &batch_plan)
+        };
+        let batch_commit = match (result, commit.as_mut()) {
+            (Ok(batch_commit), _) => batch_commit,
+            (Err(error), None) => return Err(error),
+            (Err(error), Some(so_far)) => {
+                // Earlier batches are committed and stay; this one rolled back.
+                so_far.rollback_state = "partial".into();
+                so_far.diagnostics.push(external_import::ImportDiagnostic {
+                    code: "batch_failed".into(),
+                    severity: "error".into(),
+                    classification: external_import::SourceClassification::Documented,
+                    message: format!("Batch {} rolled back and the rest was not imported: {error}", index + 1),
+                    recovery: Some("Run the import again; chats already imported are skipped".into()),
+                    source_label: None,
+                });
+                break;
+            }
+        };
+        if batch_commit.imported > 0 {
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        match commit.as_mut() {
+            None => commit = Some(batch_commit),
+            Some(total) => {
+                total.candidate_results.extend(batch_commit.candidate_results);
+                total.created_bridge_ids.extend(batch_commit.created_bridge_ids);
+                total.imported += batch_commit.imported;
+                total.skipped += batch_commit.skipped;
+                total.changed += batch_commit.changed;
+                total.conflicted += batch_commit.conflicted;
+                total.rejected += batch_commit.rejected;
+                total.unsupported += batch_commit.unsupported;
+                total.diagnostics.extend(batch_commit.diagnostics);
+            }
+        }
+    }
+    commit.ok_or_else(|| BridgeError::Invalid("Select at least one import candidate".into()))
+}
+
 pub fn commit_external_import(
     core: &Arc<BridgeCore>,
     params: &wire::CommitExternalImportParams,
@@ -341,52 +397,7 @@ pub fn commit_external_import(
             "Import plan references unknown candidate '{unknown}'"
         )));
     }
-    let mut commit: Option<external_import::ImportCommit> = None;
-    for (index, batch) in import_batches(&candidates, &selected).into_iter().enumerate() {
-        let batch_plan = external_import::ImportPlan {
-            selected_candidate_ids: batch,
-            ..plan.clone()
-        };
-        let result = {
-            let db = core.db.lock().unwrap();
-            external_import::commit_import(&db, &candidates, &batch_plan)
-        };
-        let batch_commit = match (result, commit.as_mut()) {
-            (Ok(batch_commit), _) => batch_commit,
-            (Err(error), None) => return Err(error),
-            (Err(error), Some(so_far)) => {
-                // Earlier batches are committed and stay; this one rolled back.
-                so_far.rollback_state = "partial".into();
-                so_far.diagnostics.push(external_import::ImportDiagnostic {
-                    code: "batch_failed".into(),
-                    severity: "error".into(),
-                    classification: external_import::SourceClassification::Documented,
-                    message: format!("Batch {} rolled back and the rest was not imported: {error}", index + 1),
-                    recovery: Some("Run the import again; chats already imported are skipped".into()),
-                    source_label: None,
-                });
-                break;
-            }
-        };
-        if batch_commit.imported > 0 {
-            core.events.publish(CoreEvent::StateChanged);
-        }
-        match commit.as_mut() {
-            None => commit = Some(batch_commit),
-            Some(total) => {
-                total.candidate_results.extend(batch_commit.candidate_results);
-                total.created_bridge_ids.extend(batch_commit.created_bridge_ids);
-                total.imported += batch_commit.imported;
-                total.skipped += batch_commit.skipped;
-                total.changed += batch_commit.changed;
-                total.conflicted += batch_commit.conflicted;
-                total.rejected += batch_commit.rejected;
-                total.unsupported += batch_commit.unsupported;
-                total.diagnostics.extend(batch_commit.diagnostics);
-            }
-        }
-    }
-    let commit = commit.ok_or_else(|| BridgeError::Invalid("Select at least one import candidate".into()))?;
+    let commit = commit_in_batches(core, &candidates, &plan, &selected)?;
     let imported_ids: std::collections::HashSet<&str> = commit
         .candidate_results
         .iter()
