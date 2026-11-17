@@ -330,3 +330,59 @@ fn real_store_sweep() {
     assert_eq!(parity_breaks, 0);
     assert_eq!(commit_errors, 0);
 }
+
+/// Peak resident memory of this process, in bytes.
+fn peak_rss_bytes() -> u64 {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    let raw = usage.ru_maxrss as u64;
+    if cfg!(target_os = "macos") { raw } else { raw * 1024 }
+}
+
+/// Run in a child process by `discarding_a_line_never_holds_more_than_one_buffer`,
+/// so no other test's allocations share the measurement.
+#[test]
+#[ignore]
+fn oversized_line_child() {
+    let Ok(path) = std::env::var("BRIDGE_OVERSIZED_LINE_FILE") else { return };
+    let before = peak_rss_bytes();
+    let parsed = read_transcript(Path::new(&path), "k", "l").unwrap();
+    assert_eq!(parsed.skipped.0.get("oversized_line"), Some(&1));
+    assert_eq!(parsed.chat.entries.len(), 1, "the line after the oversized one is still read");
+    println!("PEAK_GROWTH={}", peak_rss_bytes().saturating_sub(before));
+}
+
+#[test]
+fn discarding_a_line_never_holds_more_than_one_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("projects/p/huge-line.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    {
+        // One 256 MiB line with no newline in it, then one ordinary record.
+        let mut file = File::create(&path).unwrap();
+        let chunk = vec![b'a'; 4 * 1024 * 1024];
+        for _ in 0..64 {
+            file.write_all(&chunk).unwrap();
+        }
+        file.write_all(b"\n").unwrap();
+        writeln!(file, "{}", user("u1", "2026-11-01T10:00:00Z", json!("after"))).unwrap();
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "claude_import::transcript::tests::oversized_line_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("BRIDGE_OVERSIZED_LINE_FILE", &path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    // The harness prints "test … " before the test runs, so the figure can
+    // share that line.
+    let growth: u64 = stdout
+        .split("PEAK_GROWTH=")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse().ok())
+        .expect("the child reports its peak");
+    // The 64 MiB line buffer is the only allowance; keeping the rest of the
+    // line would add another 192 MiB.
+    assert!(growth < 128 * 1024 * 1024, "peak grew by {} MiB", growth / 1024 / 1024);
+}

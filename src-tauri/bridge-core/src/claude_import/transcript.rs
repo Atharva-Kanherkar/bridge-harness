@@ -469,6 +469,29 @@ impl Reader {
     }
 }
 
+/// Skip the rest of the current line through the reader's own buffer,
+/// without collecting it: a rejected line never costs more than that buffer.
+fn discard_line<R: BufRead>(reader: &mut R) -> std::io::Result<u64> {
+    let mut skipped = 0u64;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(skipped);
+        }
+        match available.iter().position(|byte| *byte == b'\n') {
+            Some(end) => {
+                reader.consume(end + 1);
+                return Ok(skipped + end as u64 + 1);
+            }
+            None => {
+                let length = available.len();
+                reader.consume(length);
+                skipped += length as u64;
+            }
+        }
+    }
+}
+
 /// Read one transcript file. `key` and `label` name it inside the bundle.
 pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<ParsedTranscript> {
     let size = std::fs::metadata(path)?.len();
@@ -488,9 +511,7 @@ pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<P
         }
         if buffer.len() > MAX_LINE_BYTES && !buffer.ends_with(b"\n") {
             reader.skipped.bump("oversized_line");
-            // Drain the rest of the oversized line.
-            let mut rest = Vec::new();
-            lines.read_until(b'\n', &mut rest)?;
+            discard_line(&mut lines)?;
             continue;
         }
         let line = String::from_utf8_lossy(&buffer);
