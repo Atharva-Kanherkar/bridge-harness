@@ -257,12 +257,9 @@ pub struct CommitExternalImportParams {
     pub artifact_ids: Option<Vec<String>>,
 }
 
-/// Find the tools on this machine that Bridge can import from. Read-only:
-/// it lists folders and counts files, and never opens a database or a transcript.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DetectImportSourcesParams {}
-
+/// What `imports/detect_import_sources` found for one tool. Detection takes no
+/// parameters and is read-only: it lists folders and counts files, and never
+/// opens a database or a transcript.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportSourceCounts {

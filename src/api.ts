@@ -1841,7 +1841,7 @@ export const bridgeApi = {
     return Promise.resolve({ candidates });
   },
   detectImportSources: (): Promise<ImportSourcesDetection> => {
-    if (hasBackend()) return call("imports/detect_import_sources", {});
+    if (hasBackend()) return call("imports/detect_import_sources");
     return Promise.resolve(mockImportSources());
   },
   commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan, artifactIds?: string[]): Promise<ExternalImportCommit> => {

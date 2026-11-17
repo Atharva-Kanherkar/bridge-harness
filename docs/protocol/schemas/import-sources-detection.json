@@ -46,6 +46,7 @@
       "type": "object"
     },
     "ImportSourceCounts": {
+      "description": "What `imports/detect_import_sources` found for one tool. Detection takes no parameters and is read-only: it lists folders and counts files, and never opens a database or a transcript.",
       "properties": {
         "background": {
           "default": 0,

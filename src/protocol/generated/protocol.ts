@@ -791,7 +791,7 @@ export interface BridgeMethodParams {
   "imports/discover_external_import": DiscoverExternalImportParams;
   "imports/preview_external_import": PreviewExternalImportParams;
   "imports/commit_external_import": CommitExternalImportParams;
-  "imports/detect_import_sources": DetectImportSourcesParams;
+  "imports/detect_import_sources": undefined;
   "github/github_status": GithubStatusParams;
   "github/github_prs": GithubPrsParams;
   "github/github_pr": GithubPrParams;
@@ -4169,8 +4169,6 @@ export interface ExternalImportCommit {
   skipped: number;
   unsupported: number;
 }
-
-export type DetectImportSourcesParams = Record<string, never>;
 
 export interface ImportSourcesDetection {
   detectedAt: string;

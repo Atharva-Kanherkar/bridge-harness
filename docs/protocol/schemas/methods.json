@@ -68,7 +68,7 @@
       "command": "detect_import_sources",
       "domain": "imports",
       "method": "imports/detect_import_sources",
-      "paramsSchema": "detect-import-sources-params.json",
+      "paramsSchema": null,
       "resultSchema": "import-sources-detection.json"
     },
     {
