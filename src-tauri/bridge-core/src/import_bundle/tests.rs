@@ -945,3 +945,23 @@ fn the_image_cap_counts_decoded_bytes() {
     let attachments: u32 = lowered.excluded.iter().filter(|item| item.category == "attachment").map(|item| item.count).sum();
     assert_eq!(attachments, 1);
 }
+
+#[test]
+fn a_cross_tool_revision_records_its_predecessor() {
+    let db = database();
+    let mut claude = TransferBundle::new(source("claude_code"));
+    claude.chats.push(chat("s", "claude", Some("revised"), rich_entries()));
+    import(&db, vec![claude]);
+    let first: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |row| row.get(0)).unwrap();
+    let mut conductor = TransferBundle::new(source("conductor"));
+    let mut entries = rich_entries();
+    entries.push(entry("later", BundleEntryKind::UserMessage, "after the first import"));
+    conductor.chats.push(chat("ws", "claude", Some("revised"), entries));
+    let lowered = lower(&resolve(vec![conductor]).unwrap());
+    let normalized = normalize(&lowered.candidates);
+    let commit = commit_import(&db, &normalized, &plan_for(&lowered.candidates, ConflictPolicy::ImportAsNewHistoricalRevision)).unwrap();
+    assert_eq!(commit.imported, 1);
+    assert_eq!(commit.candidate_results[0].revision_of.as_deref(), Some(first.as_str()));
+    let ledger: Option<String> = db.query_row("SELECT revision_of FROM import_ledger WHERE provider='conductor'", [], |row| row.get(0)).unwrap();
+    assert_eq!(ledger.as_deref(), Some(first.as_str()));
+}

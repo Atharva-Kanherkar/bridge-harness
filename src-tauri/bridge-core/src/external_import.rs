@@ -823,7 +823,7 @@ fn classify_candidate(
     }
 
     if candidate.kind == CandidateKind::Conversation {
-        if let Some(result) = classify_native_session(db, candidate, plan)? {
+        if let Some(result) = classify_native_session(db, candidate, plan, dry_run)? {
             return Ok(result);
         }
     }
@@ -884,6 +884,7 @@ fn classify_native_session(
     db: &Connection,
     candidate: &ImportCandidate,
     plan: &ImportPlan,
+    dry_run: bool,
 ) -> Result<Option<ImportCandidateResult>, BridgeError> {
     let payload = &candidate.normalized_payload;
     let (Some(native_key), Some(session_id)) = (
@@ -938,7 +939,20 @@ fn classify_native_session(
             "This chat changed since it was imported; choose a new historical revision or skip it",
         )));
     }
-    Ok(None)
+    // A new historical revision, possibly through another tool than the
+    // first import: the per-tool ledger cannot see that predecessor, so it is
+    // carried from here.
+    Ok(Some(ImportCandidateResult {
+        candidate_id: candidate.candidate_id.clone(),
+        status: if dry_run {
+            ImportCandidateStatus::DryRun
+        } else {
+            ImportCandidateStatus::Imported
+        },
+        created_bridge_ids: Vec::new(),
+        revision_of: Some(session),
+        diagnostics: candidate.diagnostics.clone(),
+    }))
 }
 
 fn destination_conflicts(
