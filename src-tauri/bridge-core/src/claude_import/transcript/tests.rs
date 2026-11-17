@@ -386,3 +386,48 @@ fn discarding_a_line_never_holds_more_than_one_buffer() {
     // line would add another 192 MiB.
     assert!(growth < 128 * 1024 * 1024, "peak grew by {} MiB", growth / 1024 / 1024);
 }
+
+fn sidechain(uuid: &str, at: &str, kind: &str, content: Value) -> Value {
+    json!({"type":kind,"uuid":uuid,"sessionId":"sess-1","isSidechain":true,"agentId":"abc","timestamp":at,"message":{"role":kind,"content":content}})
+}
+
+fn main_with_inline_sidechain(dir: &Path) -> PathBuf {
+    let main = dir.join("projects/p/sess-1.jsonl");
+    write_lines(&main, &[
+        user("u1", "2026-11-01T10:00:00Z", json!("map the repo please")),
+        sidechain("s1", "2026-11-01T10:00:01Z", "user", json!("Map the repo and report key files")),
+        sidechain("s2", "2026-11-01T10:00:02Z", "assistant", json!([{"type":"text","text":"src/ and test/ matter."}])),
+        assistant("a1", "2026-11-01T10:00:03Z", json!([{"type":"text","text":"Here is the map."}])),
+    ]);
+    main
+}
+
+#[test]
+fn inline_sidechains_become_child_chats() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2, "the parent and one inline child");
+    let parent = &read.chats[0].chat;
+    let texts: Vec<_> = parent.entries.iter().filter_map(|e| e.text.clone()).collect();
+    assert_eq!(texts, vec!["map the repo please", "Here is the map."], "the subagent's turns are not the person's");
+    let child = &read.chats[1].chat;
+    assert_eq!(child.entries.len(), 2);
+    assert_eq!(child.parent_chat_key.as_deref(), Some(parent.key.as_str()));
+    assert_eq!(child.agent_role, Some(AgentRole::Subagent));
+    assert_eq!(child.native_ref.as_ref().unwrap().session_id, "sess-1/agent-abc");
+    assert_eq!(child.title.as_deref(), Some("Map the repo and report key files"));
+}
+
+#[test]
+fn an_inline_sidechain_and_its_file_are_one_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    write_lines(&dir.path().join("projects/p/sess-1/subagents/agent-abc.jsonl"), &[
+        sidechain("s1", "2026-11-01T10:00:01Z", "user", json!("Map the repo and report key files")),
+        sidechain("s2", "2026-11-01T10:00:02Z", "assistant", json!([{"type":"text","text":"src/ and test/ matter."}])),
+    ]);
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2, "the file and the inline copy are the same child");
+    assert!(read.chats[1].chat.source_ref.ends_with("agent-abc.jsonl"), "the separate file is preferred");
+}

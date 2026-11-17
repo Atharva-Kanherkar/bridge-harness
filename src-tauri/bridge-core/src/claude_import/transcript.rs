@@ -82,10 +82,16 @@ pub struct ParsedTranscript {
     /// Raw count of user and assistant content the person would have seen,
     /// for the parity check: every one is either an entry or counted in `skipped`.
     pub source_items: u32,
+    /// Older transcripts keep subagent turns inline (`isSidechain` with an
+    /// `agentId`) instead of in `subagents/`. One reader per agent, by id.
+    pub inline_subagents: Vec<(String, ParsedTranscript)>,
 }
 
 #[derive(Debug, Default)]
 struct Reader {
+    /// Set on a session's own file: sidechain records go to `sidechains`.
+    split_sidechains: bool,
+    sidechains: BTreeMap<String, Reader>,
     entries: Vec<BundleEntry>,
     tool_index: HashMap<String, usize>,
     seen: HashSet<String>,
@@ -177,6 +183,16 @@ impl Reader {
             self.skipped.bump("non_object_line");
             return;
         };
+        if self.split_sidechains && object.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            let agent = object
+                .get("agentId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or("sidechain")
+                .to_owned();
+            self.sidechains.entry(agent).or_default().record(record);
+            return;
+        }
         let Some(kind) = object.get("type").and_then(Value::as_str) else {
             self.skipped.bump("untyped_record");
             return;
@@ -494,13 +510,25 @@ fn discard_line<R: BufRead>(reader: &mut R) -> std::io::Result<u64> {
 
 /// Read one transcript file. `key` and `label` name it inside the bundle.
 pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<ParsedTranscript> {
+    read_transcript_file(path, key, label, false)
+}
+
+fn read_transcript_file(
+    path: &Path,
+    key: &str,
+    label: &str,
+    split_sidechains: bool,
+) -> std::io::Result<ParsedTranscript> {
     let size = std::fs::metadata(path)?.len();
     if size > MAX_TRANSCRIPT_BYTES {
         return Err(std::io::Error::other(format!(
             "transcript is {size} bytes, over the {MAX_TRANSCRIPT_BYTES} byte import limit"
         )));
     }
-    let mut reader = Reader::default();
+    let mut reader = Reader {
+        split_sidechains,
+        ..Reader::default()
+    };
     let mut lines = BufReader::new(File::open(path)?);
     let mut buffer = Vec::new();
     loop {
@@ -524,6 +552,19 @@ pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<P
             Err(_) => reader.skipped.bump("malformed_line"),
         }
     }
+    Ok(finish(reader, path, key, label))
+}
+
+/// Turn a finished reader into a chat. `path` is the file it was read from.
+fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTranscript {
+    let inline_subagents = std::mem::take(&mut reader.sidechains)
+        .into_iter()
+        .map(|(agent, child)| {
+            let child_key = format!("{key}#agent-{agent}");
+            let child_label = format!("{label} > agent-{agent}");
+            (agent, finish(child, path, &child_key, &child_label))
+        })
+        .collect();
     let stem = path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -571,11 +612,12 @@ pub fn read_transcript(path: &Path, key: &str, label: &str) -> std::io::Result<P
         source_ref: path.to_string_lossy().into_owned(),
         source_label: label.to_owned(),
     };
-    Ok(ParsedTranscript {
+    ParsedTranscript {
         chat,
         skipped: reader.skipped,
         source_items: reader.source_items,
-    })
+        inline_subagents,
+    }
 }
 
 /// A session's subagent transcripts: `<dir>/<session>/subagents/agent-*.jsonl`.
@@ -625,7 +667,8 @@ pub fn read_session(
     approved_roots: &[PathBuf],
 ) -> std::io::Result<SessionRead> {
     let key = main.to_string_lossy().into_owned();
-    let parsed = read_transcript(main, &key, label)?;
+    let mut parsed = read_transcript_file(main, &key, label, true)?;
+    let inline = std::mem::take(&mut parsed.inline_subagents);
     let parent_session = parsed
         .chat
         .native_ref
@@ -664,6 +707,19 @@ pub fn read_session(
         };
         let meta = read_agent_meta(&found, approved_roots, &child_label, &mut read.failures);
         name_subagent(&mut child.chat, &key, &parent_session, &agent, meta.as_ref());
+        read.chats.push(child);
+    }
+    // Inline subagents that also have their own file appear once: the file.
+    let from_files: HashSet<String> = subagent_files(main)
+        .iter()
+        .filter_map(|file| file.file_stem().and_then(|stem| stem.to_str()).map(str::to_owned))
+        .collect();
+    for (agent, mut child) in inline {
+        let agent = format!("agent-{agent}");
+        if from_files.contains(&agent) {
+            continue;
+        }
+        name_subagent(&mut child.chat, &key, &parent_session, &agent, None);
         read.chats.push(child);
     }
     Ok(read)
