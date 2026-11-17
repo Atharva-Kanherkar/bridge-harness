@@ -266,7 +266,11 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     mcpServers: scopedMcpServers,
     // Nothing inherited. A project's settings can carry permissions and hooks,
     // and a briefing run must not gain authority from where it happens to be run.
-    settingSources: [],
+    // A personal-app runtime is the one exception: it loads the person's own
+    // user settings, as their chats do, so their configured MCP servers come
+    // up with their sign-in. It gains nothing to act with: the gate above
+    // denies every model tool and the runtime is never sent a turn.
+    settingSources: isAppRuntime(briefing) ? ["user"] : [],
     plugins: [],
     // No dialog kinds are declared and no dialog callback is wired, so the CLI
     // emits none and every flow behind one degrades to its no-dialog behaviour.

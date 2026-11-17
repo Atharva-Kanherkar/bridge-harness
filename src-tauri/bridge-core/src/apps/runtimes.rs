@@ -350,6 +350,49 @@ mod tests {
         reap_matching(Duration::ZERO, |candidate| candidate == &key);
     }
 
+    /// A real Claude sidecar launched as an app runtime (a briefing that never
+    /// gets a prompt) answers inventory and a read for its one server, and
+    /// refuses another server. Uses a temporary `CLAUDE_CONFIG_DIR`.
+    #[test]
+    #[ignore = "needs claude and the sidecar; run with --ignored"]
+    fn live_claude_app_runtime_serves_only_its_server_without_a_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/fake-mcp-server.mjs");
+        std::fs::write(
+            home.path().join(".claude.json"),
+            json!({"mcpServers": {"fake": {"type": "stdio", "command": "node", "args": [fixture.to_string_lossy()]}}}).to_string(),
+        )
+        .unwrap();
+        // SAFETY: an ignored test run on its own.
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", home.path()) };
+        let registry = Arc::new(crate::adapters::AdapterRegistry::built_in().unwrap());
+        let ready = Instant::now();
+        while !registry.descriptors().iter().any(|d| d.id == "claude" && d.available) {
+            assert!(ready.elapsed() < Duration::from_secs(60), "claude was not discovered");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let cwd = home.path().to_string_lossy().to_string();
+        let launch_registry = registry.clone();
+        let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
+            let policy = BriefingRuntimePolicy::compile_app_runtime(key.server.clone(), crate::connector_runs::run_limits(crate::connector_runs::RunKind::Ingress)).unwrap();
+            let started = launch_registry.start(&key.harness, StartRequest {
+                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                read_only_sandbox: None, briefing: Some(&policy), interactive: false, account: None, on_progress: None,
+            })?;
+            Ok(Launched { runtime: started.runtime, reader: started.reader })
+        };
+        let key = Key { harness: "claude".into(), account: None, server: "fake".into() };
+        let inventory = request_with(&key, &json!({"kind":"inventory","server":"fake"}), &launcher).unwrap();
+        assert_eq!(inventory["status"], "connected", "{inventory}");
+        let read = request_with(&key, &json!({"kind":"read","server":"fake","tool":"search_people","arguments":{"query":"Ada"}}), &launcher).unwrap();
+        assert!(read.to_string().contains("Found Ada Lovelace"), "{read}");
+        let write = request_with(&key, &json!({"kind":"read","server":"fake","tool":"send_note","arguments":{}}), &launcher);
+        assert!(write.is_err(), "a write is never served");
+        let other = request_with(&key, &json!({"kind":"inventory","server":"other"}), &launcher);
+        assert!(other.is_err(), "another server is never served");
+        reap_matching(Duration::ZERO, |candidate| candidate == &key);
+    }
+
     #[test]
     fn failed_launches_are_not_kept_and_idle_runtimes_stop() {
         let k = key(None);

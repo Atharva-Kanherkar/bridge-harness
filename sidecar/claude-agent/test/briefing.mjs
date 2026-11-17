@@ -489,5 +489,6 @@ test("an app runtime loads connectors natively and reaches only its server", asy
   const options = briefingOptions(briefing, { Linear: { command: "x" }, Other: { command: "y" } });
   assert.deepEqual(Object.keys(options.mcpServers), ["Linear"]);
   assert.equal(options.strictMcpConfig, false);
-  assert.deepEqual(options.settingSources, []);
+  assert.deepEqual(options.settingSources, ["user"], "the person's own servers, as their chats load them");
+  assert.deepEqual(briefingOptions({ allowedTools: [] }).settingSources, [], "every other briefing inherits nothing");
 });
