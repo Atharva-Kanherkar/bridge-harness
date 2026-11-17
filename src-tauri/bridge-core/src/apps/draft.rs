@@ -504,7 +504,10 @@ mod tests {
             true
         );
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[2]["kind"], "read");
+        // Two drafting inventories, then the read rechecks the current
+        // inventory before it is sent.
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[2]["kind"], "inventory");
+        assert_eq!(calls[3]["kind"], "read");
     }
 }

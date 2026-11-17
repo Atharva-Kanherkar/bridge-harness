@@ -125,10 +125,34 @@ pub fn inventory(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) ->
 /// here so no path can skip it.
 pub fn read(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
     may_read(&*core.try_db()?, chat)?;
+    read_with(connection, tool, arguments, |request| send(core, chat, connection, request))
+}
+
+/// The read itself, after the server's *current* inventory says the tool is
+/// still a safe read. A draft can outlive a server update that turns a tool
+/// destructive, and Codex runs `mcpServer/tool/call` with no approval of its
+/// own, so the annotations are checked on the same path before every call.
+pub fn read_with(
+    connection: &Connection,
+    tool: &str,
+    arguments: &Value,
+    mut send: impl FnMut(&Value) -> Result<Value, BridgeError>,
+) -> Result<Value, BridgeError> {
     if !crate::briefing_policy::is_read_tool_name(tool) {
         return Err(invalid("This tool is not a read"));
     }
-    send(core, chat, connection, &json!({"kind": "read", "server": connection.server, "tool": tool, "arguments": arguments}))
+    let inventory = send(&json!({"kind": "inventory", "server": connection.server}))?;
+    if inventory["status"] != "connected" {
+        return Err(invalid(format!("{} is not connected; reconnect it and try again", connection.server)));
+    }
+    let current = inventory["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|candidate| candidate["name"].as_str() == Some(tool)))
+        .ok_or_else(|| invalid(format!("{} no longer offers {tool}", connection.server)))?;
+    if current["readOnly"] == false || current["destructive"] == true {
+        return Err(invalid(format!("{tool} is no longer marked as a safe read, so it was not called")));
+    }
+    send(&json!({"kind": "read", "server": connection.server, "tool": tool, "arguments": arguments}))
 }
 
 /// The connections to try for a server a chat names, in order: the chat's own
@@ -214,6 +238,35 @@ mod tests {
         assert_eq!(chosen.harness, "codex");
         let error = choose_with(&list, |_| Err(invalid("down"))).unwrap_err().to_string();
         assert!(error.contains("Connect it in Claude Code or Codex"), "{error}");
+    }
+
+    #[test]
+    fn every_read_rechecks_the_current_annotations_first() {
+        let connection = Connection { harness: "codex".into(), account: None, server: "review".into() };
+        let run = |tools: Value, status: &str| {
+            let mut sent = Vec::new();
+            let result = read_with(&connection, "get_report", &json!({"id": 1}), |request| {
+                sent.push(request["kind"].as_str().unwrap_or_default().to_owned());
+                Ok(if request["kind"] == "inventory" { json!({"status": status, "tools": tools}) } else { json!({"content": []}) })
+            });
+            (result, sent)
+        };
+        let (ok, sent) = run(json!([{"name":"get_report","readOnly":true,"destructive":null}]), "connected");
+        assert!(ok.is_ok());
+        assert_eq!(sent, ["inventory", "read"]);
+        for (tools, status) in [
+            (json!([{"name":"get_report","readOnly":false,"destructive":null}]), "connected"),
+            (json!([{"name":"get_report","readOnly":null,"destructive":true}]), "connected"),
+            (json!([{"name":"other_get","readOnly":true}]), "connected"),
+            (json!([{"name":"get_report","readOnly":true}]), "failed"),
+        ] {
+            let (result, sent) = run(tools.clone(), status);
+            assert!(result.is_err(), "{tools} {status}");
+            assert_eq!(sent, ["inventory"], "the tool is never called: {tools} {status}");
+        }
+        let (unannotated, _) = run(json!([{"name":"get_report","readOnly":null,"destructive":null}]), "connected");
+        assert!(unannotated.is_ok(), "an unannotated read verb stays a read, as at draft time");
+        assert!(read_with(&connection, "delete_report", &json!({}), |_| panic!("never sent")).is_err());
     }
 
     #[test]
