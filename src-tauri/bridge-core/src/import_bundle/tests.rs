@@ -218,7 +218,7 @@ fn every_entry_kind_lands_in_the_forest_and_renders_as_its_live_twin() {
         .collect();
     assert_eq!(
         kinds,
-        vec!["user.message", "reasoning", "tool.completed", "tool.completed", "assistant.message", "user.message", "compaction", "assistant.message"]
+        vec!["user.message", "reasoning", "tool.completed", "tool.completed", "assistant.message", "user.message", "context.compacted", "assistant.message"]
     );
     let failed: String = db
         .query_row("SELECT payload FROM session_entries WHERE kind='tool.completed' AND payload LIKE '%no such file%'", [], |row| row.get(0))
@@ -964,4 +964,23 @@ fn a_cross_tool_revision_records_its_predecessor() {
     assert_eq!(commit.candidate_results[0].revision_of.as_deref(), Some(first.as_str()));
     let ledger: Option<String> = db.query_row("SELECT revision_of FROM import_ledger WHERE provider='conductor'", [], |row| row.get(0)).unwrap();
     assert_eq!(ledger.as_deref(), Some(first.as_str()));
+}
+
+#[test]
+fn an_imported_compaction_is_native_not_a_bridge_checkpoint() {
+    let db = database();
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("s", "claude", Some("compacted"), rich_entries()));
+    import(&db, vec![bundle]);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM session_entries WHERE kind='compaction'"), 0, "no Bridge checkpoint is claimed");
+    let payload: String = db.query_row("SELECT payload FROM session_entries WHERE kind='context.compacted'", [], |row| row.get(0)).unwrap();
+    let payload: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(payload["data"]["harness"], "claude");
+    assert_eq!(payload["data"]["summary"], "Summary of the first hour");
+    assert_eq!(payload["title"], "Context compacted");
+    // The forest reads it back as a valid typed entry.
+    let entries = crate::session_forest::SessionForest::new(&db).active_branch(
+        &db.query_row("SELECT id FROM sessions", [], |row| row.get::<_, String>(0)).unwrap(),
+    );
+    assert!(entries.is_ok(), "{entries:?}");
 }

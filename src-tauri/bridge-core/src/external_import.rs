@@ -1114,7 +1114,7 @@ const IMPORTABLE_ENTRY_KINDS: &[&str] = &[
     "assistant.message",
     "reasoning",
     "tool.completed",
-    "compaction",
+    "context.compacted",
 ];
 
 fn payload_str<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {

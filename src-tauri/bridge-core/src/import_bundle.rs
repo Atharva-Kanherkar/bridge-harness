@@ -758,6 +758,7 @@ fn truncate_chars(text: &str, limit: usize) -> (String, bool) {
 fn lower_entry(
     entry: &BundleEntry,
     sequence: usize,
+    harness: &str,
     excluded: &mut BTreeMap<&'static str, u32>,
 ) -> Option<Value> {
     match entry.kind {
@@ -766,7 +767,7 @@ fn lower_entry(
             lower_text(entry, sequence, excluded)
         }
         BundleEntryKind::ToolCall => lower_tool(entry, sequence, excluded),
-        BundleEntryKind::CompactionBoundary => Some(lower_compaction(entry, sequence)),
+        BundleEntryKind::CompactionBoundary => Some(lower_compaction(entry, sequence, harness)),
     }
 }
 
@@ -899,14 +900,23 @@ fn lower_tool(
     }))
 }
 
-fn lower_compaction(entry: &BundleEntry, sequence: usize) -> Value {
-    let text = entry.text.clone().unwrap_or_default();
+/// The harness compacted its own context here. Stored the way live chats
+/// record it (`context.compacted`, drawn as "Context compacted"), never as a
+/// Bridge checkpoint, which is a different fact.
+fn lower_compaction(entry: &BundleEntry, sequence: usize, harness: &str) -> Value {
+    let summary = entry.text.clone().filter(|text| !text.trim().is_empty());
+    let mut data = json!({ "harness": harness });
+    if let Some(summary) = &summary {
+        data["summary"] = Value::String(summary.clone());
+    }
     json!({
         "sourceId": entry.source_id,
         "role": "system",
-        "kind": "compaction",
-        "schemaVersion": 1,
-        "summary": if text.trim().is_empty() { "Conversation compacted".to_owned() } else { text },
+        "kind": "context.compacted",
+        "status": "completed",
+        "title": "Context compacted",
+        "text": summary.unwrap_or_else(|| "Context compacted".to_owned()),
+        "data": data,
         "timestamp": entry.at,
         "sequence": sequence,
     })
@@ -1001,7 +1011,7 @@ fn lower_messages(chat: &BundleChat, out: &mut LoweredImport) -> Vec<Value> {
     let messages: Vec<Value> = chat
         .entries
         .iter()
-        .filter_map(|entry| lower_entry(entry, 0, &mut excluded))
+        .filter_map(|entry| lower_entry(entry, 0, &chat.harness, &mut excluded))
         .enumerate()
         .map(|(index, mut message)| {
             message["sequence"] = json!(index + 1);
