@@ -3025,7 +3025,10 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
          ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)?, title_ladder:crate::title_jobs::read_ladder(r.get::<_,Option<String>>(25)?.as_deref()) }))?;
     let events = query(
         db,
-        "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
+        // Latency rows are measurements, not activity: the app's recent-events
+        // window (auto-allowed approvals, queued follow-ups) must not lose
+        // real events to them.
+        "SELECT id,source,kind,entity_id,body,created_at FROM events WHERE source<>'latency' ORDER BY id DESC LIMIT 200",
         |r| {
             Ok(BridgeEvent {
                 id: r.get(0)?,
@@ -4582,6 +4585,18 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn latency_rows_never_take_a_place_in_the_recent_events_window() {
+        let db = open(Path::new(":memory:")).unwrap();
+        event(&db, "session", "session.input.steered", "chat", "guidance").unwrap();
+        for _ in 0..250 {
+            crate::latency::record(&db, "latency.rpc", "chat", &json!({"totalMs": 1}));
+        }
+        let events = state(&db).unwrap().events;
+        assert!(events.iter().all(|event| event.source != "latency"));
+        assert!(events.iter().any(|event| event.kind == "session.input.steered"), "a real event outlives any number of latency rows");
+    }
 
     #[test]
     fn schema_68_records_the_account_a_chat_signs_in_with() {
