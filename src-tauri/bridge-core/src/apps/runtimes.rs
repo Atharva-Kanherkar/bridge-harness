@@ -308,6 +308,48 @@ mod tests {
         assert_eq!(launches.load(Ordering::SeqCst), 2);
     }
 
+    /// A real `codex app-server` against the fake MCP server, through the pool
+    /// and the Codex adapter: inventory with annotations and a direct read, no
+    /// model turn. Uses a temporary `CODEX_HOME`, never the person's own.
+    #[test]
+    #[ignore = "needs codex on PATH; run with --ignored"]
+    fn live_codex_runtime_inventories_and_reads_without_a_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/fake-mcp-server.mjs");
+        std::fs::write(
+            home.path().join("config.toml"),
+            format!("[mcp_servers.fake]\ncommand = \"node\"\nargs = [\"{}\"]\n", fixture.display()),
+        )
+        .unwrap();
+        // SAFETY: an ignored test run on its own; nothing else reads the variable concurrently.
+        unsafe { std::env::set_var("CODEX_HOME", home.path()) };
+        let registry = Arc::new(crate::adapters::AdapterRegistry::built_in().unwrap());
+        let ready = Instant::now();
+        while !registry.descriptors().iter().any(|d| d.id == "codex" && d.available) {
+            assert!(ready.elapsed() < Duration::from_secs(30), "codex was not discovered");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let cwd = home.path().to_string_lossy().to_string();
+        let launch_registry = registry.clone();
+        let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
+            let started = launch_registry.start(&key.harness, StartRequest {
+                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
+            })?;
+            Ok(Launched { runtime: started.runtime, reader: started.reader })
+        };
+        let key = Key { harness: "codex".into(), account: None, server: "fake".into() };
+        let inventory = request_with(&key, &json!({"kind":"inventory","server":"fake"}), &launcher).unwrap();
+        assert_eq!(inventory["status"], "connected", "{inventory}");
+        assert_eq!(inventory["tools"], json!([
+            {"name":"search_people","readOnly":true,"destructive":null},
+            {"name":"send_note","readOnly":null,"destructive":true}
+        ]));
+        let read = request_with(&key, &json!({"kind":"read","server":"fake","tool":"search_people","arguments":{"query":"Ada"}}), &launcher).unwrap();
+        assert_eq!(read["content"][0]["text"], "Found Ada Lovelace", "{read}");
+        reap_matching(Duration::ZERO, |candidate| candidate == &key);
+    }
+
     #[test]
     fn failed_launches_are_not_kept_and_idle_runtimes_stop() {
         let k = key(None);
