@@ -413,11 +413,11 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
             {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
           </div>
+          {speedControl && <div className="border-b border-border pb-2.5">{speedControl}</div>}
           <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Thinking effort</div>
           {showEffort
             ? <div data-testid="effort-control"><EffortList {...effortProps} /></div>
             : <p className="text-[12px] leading-5 text-muted-foreground">No thinking control for this model.</p>}
-          {speedControl && <div className="border-t border-border pt-2.5">{speedControl}</div>}
           {showEffort && <p className="mt-auto pt-1 text-[11px] text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
         </div>}
         </div>
