@@ -1421,6 +1421,7 @@ pub fn start_session(
                 cwd: &path,
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
+                speed: None,
                 instructions: Some(instructions),
                 write_mode: root_write_mode,
                 interactive,
@@ -1457,6 +1458,7 @@ pub fn start_session(
                     cwd: &path,
                     model: chosen_model.as_deref(),
                     effort: chosen_effort_name,
+                    speed: None,
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: root_write_mode,
                     interactive,
@@ -2050,6 +2052,12 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let chosen_effort = if scoped_settings { effort.clone() } else { effort
         .filter(|value| !value.is_empty())
         .or(configured_effort) };
+    // The chat's own speed tier. The registry drops one the launch model does
+    // not list, so a stale choice never reaches the provider.
+    let chosen_speed: Option<String> = state.db.lock().unwrap()
+        .query_row("SELECT speed FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+        .ok()
+        .flatten();
     timing.mark("context");
     let registry = state.adapter_registry.clone();
     let launch_adapter_id = dispatch_id.clone();
@@ -2089,6 +2097,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 cwd: &launch_cwd,
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
+                speed: chosen_speed.as_deref(),
                 instructions: Some(instructions),
                 write_mode: root_write_mode,
                 interactive,
@@ -2125,6 +2134,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
+                    speed: chosen_speed.as_deref(),
                     instructions: Some(&runtime_instructions),
                     write_mode: root_write_mode,
                     interactive,
@@ -2197,6 +2207,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
+                    speed: chosen_speed.as_deref(),
                     instructions: Some(&runtime_instructions),
                     write_mode: root_write_mode,
                     interactive,
@@ -6262,6 +6273,7 @@ pub fn launch_worker_outcome(
                         cwd: &reservation.path,
                         model: Some(model.as_str()),
                         effort: Some(&effort),
+                        speed: None,
                         instructions: Some(instructions.as_str()),
                         write_mode: Some(directive.write_mode),
                         read_only_sandbox: read_only_sandbox.as_ref(),
@@ -6290,6 +6302,7 @@ pub fn launch_worker_outcome(
                                 cwd: &reservation.path,
                                 model: Some(model.as_str()),
                                 effort: Some(&effort),
+                                speed: None,
                                 instructions: Some(restored_instructions.as_str()),
                                 write_mode: Some(directive.write_mode),
                                 read_only_sandbox: read_only_sandbox.as_ref(),
@@ -6311,6 +6324,7 @@ pub fn launch_worker_outcome(
                             cwd: &reservation.path,
                             model: Some(model.as_str()),
                             effort: Some(&effort),
+                            speed: None,
                             instructions: Some(restored_instructions.as_str()),
                             write_mode: Some(directive.write_mode),
                             read_only_sandbox: read_only_sandbox.as_ref(),
@@ -6333,6 +6347,7 @@ pub fn launch_worker_outcome(
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
+                    speed: None,
                     instructions: Some(instructions.as_str()),
                     write_mode: Some(directive.write_mode),
                     read_only_sandbox: read_only_sandbox.as_ref(),
@@ -19825,6 +19840,7 @@ mod hot_worker_prompt_tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: vec!["medium".into()], default_for_tier: true,
+                    speed_tiers: Vec::new(),
                 }],
             }
         }

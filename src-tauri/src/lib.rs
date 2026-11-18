@@ -2276,13 +2276,14 @@ async fn update_chat_model(
     model: Option<String>,
     effort: Option<String>,
     account: Option<String>,
+    speed: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Stopping the old adapter can block on process teardown; run the whole
     // claim -> teardown -> commit window on the blocking pool.
     let core = state.inner().clone();
     blocking("Adapter shutdown", move || {
-        api::update_chat_model_with_account(&core, &session_id, &harness, model.as_deref(), effort.as_deref(), account.as_deref())
+        api::update_chat_selection(&core, &session_id, &harness, model.as_deref(), effort.as_deref(), account.as_deref(), speed.as_deref())
     })
     .await
 }

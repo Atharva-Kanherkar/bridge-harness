@@ -412,6 +412,7 @@ impl DraftModel for ClaudeDraftModel {
                         cwd: &cwd,
                         model: Some(&self.model),
                         effort: None,
+                        speed: None,
                         instructions: Some(INSTRUCTIONS),
                         write_mode: None,
                         read_only_sandbox: None,

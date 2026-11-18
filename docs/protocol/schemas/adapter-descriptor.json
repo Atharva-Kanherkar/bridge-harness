@@ -106,6 +106,13 @@
           ],
           "default": "curated_fallback"
         },
+        "speedTiers": {
+          "description": "Faster service tiers beyond standard speed, as the provider listed them.",
+          "items": {
+            "$ref": "#/definitions/SpeedTier"
+          },
+          "type": "array"
+        },
         "supportedEffortLevels": {
           "default": [],
           "items": {
@@ -133,6 +140,28 @@
         "danger_full_access"
       ],
       "type": "string"
+    },
+    "SpeedTier": {
+      "description": "Mirrors `bridge_core::model::SpeedTier`: one faster service tier. `id` is what the provider takes back on launch (Claude `fast`, Codex `priority`).",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
     }
   },
   "description": "Mirrors `bridge_core::model::AdapterDescriptor`.",

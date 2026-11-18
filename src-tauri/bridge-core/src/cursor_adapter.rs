@@ -648,6 +648,7 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
             lifecycle: ModelLifecycle::Unknown,
             source: ModelCatalogSource::RuntimeApi,
             supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
             default_for_tier: false,
         })
         .collect();
@@ -667,6 +668,7 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
                     model.lifecycle
                 },
                 supported_effort_levels: model.supported_effort_levels,
+                speed_tiers: model.speed_tiers,
                 promotion_priority: i64::from(provider_default),
             }
         }),
@@ -2810,6 +2812,7 @@ mod tests {
             cwd: "/workspace",
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode,
             read_only_sandbox: None,
@@ -2945,6 +2948,7 @@ mod tests {
             cwd: "/workspace",
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,

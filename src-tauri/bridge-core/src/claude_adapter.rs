@@ -37,6 +37,11 @@ pub fn register_node_compile_cache_root(root: impl Into<PathBuf>) {
 /// Referenced by the catalog in `adapters.rs` and by the runtime fallback below.
 pub const DEFAULT_MODEL: &str = "sonnet";
 
+/// The effort level Bridge offers for Claude Code's ultracode.
+pub const ULTRACODE_EFFORT: &str = "ultracode";
+/// The speed tier id for Claude Code's fast mode.
+pub const FAST_MODE_SPEED: &str = "fast";
+
 pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
     let sidecar = sidecar_entry()?;
@@ -88,6 +93,23 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
                 }).collect::<Vec<_>>())
                 .unwrap_or_default();
             if model.get("supportsEffort").and_then(Value::as_bool) == Some(false) { supported_effort_levels.clear(); }
+            // Claude Code runs ultracode (standing workflow orchestration) on
+            // exactly the models that take `xhigh` effort, and offers it as an
+            // effort level (`/effort ultracode`). The sidecar launches it as the
+            // `ultracode` setting.
+            if supported_effort_levels.iter().any(|level| level == "xhigh") {
+                supported_effort_levels.push(ULTRACODE_EFFORT.to_owned());
+            }
+            // Fast mode is a speed, not an effort: same model, faster output.
+            let speed_tiers = if model.get("supportsFastMode").and_then(Value::as_bool) == Some(true) {
+                vec![crate::model::SpeedTier {
+                    id: FAST_MODE_SPEED.to_owned(),
+                    label: "Fast".to_owned(),
+                    description: Some("Faster output on the same model, billed at a higher rate".to_owned()),
+                }]
+            } else {
+                Vec::new()
+            };
             // "default" is the CLI's alias for whatever it currently prefers,
             // not a model; Bridge tracks its own per-tier defaults instead.
             (!id.is_empty() && !label.is_empty() && id != "default").then(|| crate::adapters::DiscoveredModel {
@@ -97,6 +119,7 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
                 is_default: alias == "default",
                 // Claude treats a missing ladder as "no knob", not "unknown".
                 supported_effort_levels: Some(supported_effort_levels),
+                speed_tiers,
             })
         }).collect::<Vec<_>>();
         if !found.is_empty() { return Ok(found); }
@@ -203,6 +226,7 @@ fn launch(
         cwd,
         model,
         effort,
+        speed,
         instructions,
         write_mode,
         read_only_sandbox,
@@ -368,6 +392,9 @@ fn launch(
         // dropped the way the old thinking-budget mapping dropped them. The
         // sidecar sanitizes it to the levels the SDK accepts.
         "effort": effort.map(str::trim).filter(|value| !value.is_empty()),
+        // Fast mode, already checked against the model's catalog row. The
+        // sidecar opts in through the SDK's flag settings.
+        "speed": speed.map(str::trim).filter(|value| !value.is_empty()),
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
     binary::hydrate_command_path(&mut command);
@@ -1592,6 +1619,7 @@ mod tests {
             cwd: cwd.to_str().unwrap(),
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1671,6 +1699,7 @@ mod tests {
             cwd,
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1690,6 +1719,7 @@ mod tests {
             cwd,
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1999,9 +2029,26 @@ mod catalogue_tests {
         ]);
         for model in &models[1..] {
             assert!(!model.is_default);
-            assert_eq!(model.supported_effort_levels.clone().unwrap(), ["low", "medium", "high", "xhigh", "max"]);
+            // Every xhigh-capable model also runs ultracode.
+            assert_eq!(model.supported_effort_levels.clone().unwrap(), ["low", "medium", "high", "xhigh", "max", ULTRACODE_EFFORT]);
         }
     }
+    #[test]
+    fn fast_mode_and_ultracode_come_from_the_live_catalog() {
+        // Shapes from the 0.3.322 catalog: fast mode on Opus, not on Sonnet;
+        // ultracode wherever `xhigh` is.
+        let models = parse_discovered_models(&serde_json::from_str::<Value>(r#"{"models":[
+            {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus","description":"Opus 5.5 · Best","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"],"supportsFastMode":true},
+            {"value":"sonnet","resolvedModel":"claude-sonnet-5-5","displayName":"Sonnet","description":"Sonnet 5.5 · Fast","supportsEffort":true,"supportedEffortLevels":["low","high","max"]}
+        ]}"#).unwrap().to_string()).unwrap();
+        let opus = models.iter().find(|model| model.id == "claude-opus-5-5").unwrap();
+        assert_eq!(opus.speed_tiers.iter().map(|tier| tier.id.as_str()).collect::<Vec<_>>(), [FAST_MODE_SPEED]);
+        assert_eq!(opus.supported_effort_levels.as_ref().unwrap().last().map(String::as_str), Some(ULTRACODE_EFFORT));
+        let sonnet = models.iter().find(|model| model.id == "claude-sonnet-5-5").unwrap();
+        assert!(sonnet.speed_tiers.is_empty());
+        assert!(!sonnet.supported_effort_levels.as_ref().unwrap().iter().any(|level| level == ULTRACODE_EFFORT));
+    }
+
     #[test]
     fn ignores_malformed_rows_and_unresolved_default() {
         let models = parse_discovered_models("{\"models\":[{}, {\"value\":\"default\"}, {\"value\":\"sonnet\",\"displayName\":\"Sonnet\"}]}" ).unwrap();

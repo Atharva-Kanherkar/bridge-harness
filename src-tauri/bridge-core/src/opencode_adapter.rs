@@ -2494,6 +2494,7 @@ pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Ve
             lifecycle: crate::model::ModelLifecycle::Unknown,
             source: crate::model::ModelCatalogSource::RuntimeApi,
             supported_effort_levels: model.variants.clone(),
+            speed_tiers: Vec::new(),
             default_for_tier: false,
         })
         .collect::<Vec<_>>();
@@ -3567,6 +3568,7 @@ mod tests {
                 cwd: directory.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
+                speed: None,
                 instructions: Some("End every reply with the word BANANA."),
                 write_mode: Some(WriteMode::Isolated),
                 read_only_sandbox: None,
@@ -3714,6 +3716,7 @@ mod tests {
                 cwd: directory.path().to_str().unwrap(),
                 model: Some("opencode-go/glm-5.2"),
                 effort: None,
+                speed: None,
                 instructions: None,
                 write_mode: None,
                 read_only_sandbox: None,
@@ -4131,6 +4134,7 @@ mod read_only_sandbox_tests {
                 cwd: workspace.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
+                speed: None,
                 instructions: Some("Be brief. When asked to run a shell command, run it with your shell tool and paste its exact output."),
                 write_mode: Some(WriteMode::ReadOnly),
                 read_only_sandbox: Some(&sandbox),

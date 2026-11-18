@@ -684,6 +684,7 @@ fn launch_run(
             cwd: &cwd,
             model: Some(&model),
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,

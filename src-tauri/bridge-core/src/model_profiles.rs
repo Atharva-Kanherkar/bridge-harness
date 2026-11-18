@@ -695,6 +695,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 },
                 ModelOption {
@@ -706,6 +707,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 },
                 ModelOption {
@@ -717,6 +719,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 },
             ],
@@ -883,6 +886,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::RuntimeApi,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 },
                 ModelOption {
@@ -894,6 +898,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::RuntimeApi,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 },
                 ModelOption {
@@ -905,6 +910,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::RuntimeApi,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 },
             ],
@@ -942,6 +948,7 @@ mod tests {
             lifecycle: crate::model::ModelLifecycle::Stable,
             source: crate::model::ModelCatalogSource::RuntimeApi,
             supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
             default_for_tier: true,
         });
 
@@ -992,6 +999,7 @@ mod tests {
             lifecycle: crate::model::ModelLifecycle::Stable,
             source: crate::model::ModelCatalogSource::RuntimeApi,
             supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
             default_for_tier: true,
         });
         let resolved = resolve_profile(&db, &refreshed, ProfilePurpose::Implementer)

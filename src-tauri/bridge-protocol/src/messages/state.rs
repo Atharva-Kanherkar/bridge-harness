@@ -131,6 +131,10 @@ pub struct Session {
     /// the harness's `advanced.accounts`. Null is the user's own login.
     #[serde(default)]
     pub account: Option<String>,
+    /// The chat's speed tier, by a `ModelOption::speed_tiers` id. Absent is the
+    /// provider's standard speed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
     /// `title` at several lengths, shortest first, all naming the same task, so
     /// a list can show the longest one that fits. Empty when the chat has none,
     /// or its title changed since they were written.
@@ -178,7 +182,21 @@ pub struct ModelOption {
     pub source: ModelCatalogSource,
     #[serde(default)]
     pub supported_effort_levels: Vec<String>,
+    /// Faster service tiers beyond standard speed, as the provider listed them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speed_tiers: Vec<SpeedTier>,
     pub default_for_tier: bool,
+}
+
+/// Mirrors `bridge_core::model::SpeedTier`: one faster service tier. `id` is
+/// what the provider takes back on launch (Claude `fast`, Codex `priority`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedTier {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 fn model_option_default_true() -> bool {
@@ -456,6 +474,7 @@ mod tests {
                 fork_parent_entry_id: None,
                 account: None,
                 title_ladder: Vec::new(),
+                speed: None,
             }],
             events: vec![BridgeEvent {
                 id: JsSafeI64::new(9).unwrap(),
@@ -554,6 +573,7 @@ mod tests {
                     lifecycle: ModelLifecycle::Stable,
                     source: ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 }],
                 default_model: Some("gpt-5".into()),

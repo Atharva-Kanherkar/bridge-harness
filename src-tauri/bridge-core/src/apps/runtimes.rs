@@ -289,6 +289,7 @@ pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRun
                 cwd: &cwd,
                 model: None,
                 effort: None,
+                speed: None,
                 instructions: None,
                 // Codex: an explicit mode, so the launch never attaches Bridge's
                 // own tools (a launch without one keeps its old meaning and
@@ -436,7 +437,7 @@ mod tests {
         let launch_registry = registry.clone();
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let started = launch_registry.start(&key.harness, StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
@@ -483,7 +484,7 @@ mod tests {
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let cwd = key.cwd.clone().unwrap_or_else(|| scratch.clone());
             let started = registry.start(&key.harness, StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
@@ -522,7 +523,7 @@ mod tests {
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let policy = BriefingRuntimePolicy::compile_app_runtime(key.server.clone(), crate::connector_runs::run_limits(crate::connector_runs::RunKind::Ingress)).unwrap();
             let started = launch_registry.start(&key.harness, StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: Some(&policy), interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })

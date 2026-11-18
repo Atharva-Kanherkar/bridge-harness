@@ -82,6 +82,7 @@ fn a_pinned_deployment_is_reported_and_enforced_at_harness_start() {
                 cwd: "/tmp",
                 model: None,
                 effort: None,
+                speed: None,
                 instructions: None,
                 write_mode: None,
                 read_only_sandbox: None,

@@ -2275,6 +2275,7 @@ mod tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: Vec::new(),
+                    speed_tiers: Vec::new(),
                     default_for_tier: true,
                 }],
                 default_model: Some(model.into()),
@@ -3535,6 +3536,7 @@ mod tests {
             lifecycle: crate::model::ModelLifecycle::Stable,
             source: crate::model::ModelCatalogSource::CuratedFallback,
             supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
             default_for_tier,
         }
     }

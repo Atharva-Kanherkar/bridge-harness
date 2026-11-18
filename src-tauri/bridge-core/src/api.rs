@@ -1938,6 +1938,21 @@ pub fn update_chat_model_with_account(
     effort: Option<&str>,
     account: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
+    update_chat_selection(core, session_id, harness, model, effort, account, None)
+}
+
+/// [`update_chat_model_with_account`] with the chat's speed tier: an id from
+/// the selected model's `speed_tiers`, or `standard`. `None` keeps the current
+/// speed when the target model still offers it.
+pub fn update_chat_selection(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    harness: &Harness,
+    model: Option<&str>,
+    effort: Option<&str>,
+    account: Option<&str>,
+    speed: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     // Exclusive for the whole plan -> teardown -> commit window: a concurrent
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
@@ -1945,25 +1960,29 @@ pub fn update_chat_model_with_account(
     crate::chat_defaults::validate_model_switch(&core.db.lock().unwrap(), &core.adapter_registry, session_id, &store::harness_name(harness))?;
     let account = account.map_or(crate::sessions::AccountRequest::Keep, crate::sessions::AccountRequest::Choose);
     let change = core.plan_chat_selection_change(session_id, harness, model, account)?;
-    let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
-        "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+    let (previous_model, previous_effort, previous_speed): (Option<String>, Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
+        "SELECT model,effort,speed FROM sessions WHERE id=?1", params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let target_model = change.as_ref().map(|change| change.selected_model())
         .unwrap_or(previous_model.as_deref());
     let descriptor = core.adapter_registry.descriptors().into_iter()
         .find(|adapter| adapter.id == store::harness_name(harness))
         .ok_or_else(|| BridgeError::Invalid("Model adapter is unavailable".into()))?;
-    let next_effort = if target_model.is_none() && descriptor.models.is_empty() && effort.is_none() {
+    let (next_effort, next_speed) = if target_model.is_none() && descriptor.models.is_empty() && effort.is_none() && speed.is_none() {
         // Provider defaults have no advertised effort controls yet. Drop the
         // outgoing provider's effort rather than carrying it into this launch.
-        None
+        (None, None)
     } else {
         let selected = descriptor.models.iter().find(|option| Some(option.id.as_str()) == target_model)
             .ok_or_else(|| BridgeError::Invalid("Selected model is unavailable; refresh models".into()))?;
-        selected_chat_effort(selected, effort, previous_effort.as_deref())?
+        (
+            selected_chat_effort(selected, effort, previous_effort.as_deref())?,
+            selected_chat_speed(selected, speed, previous_speed.as_deref())?,
+        )
     };
     let effort_changed = next_effort != previous_effort;
+    let speed_changed = next_speed != previous_speed;
     let model_changed = change.is_some();
     if let Some(change) = change {
         // Only a switch the next turn can natively resume skips the handover.
@@ -2009,22 +2028,46 @@ pub fn update_chat_model_with_account(
             thread::spawn(move || switch_summary::deliver_and_wait(background, session));
         }
     }
-    if effort_changed {
+    if effort_changed || speed_changed {
         if !model_changed {
-            // Effort is a launch option. Keep the native session identity and
-            // restart its runtime on the next turn so a warm query cannot ignore it.
+            // Effort and speed are launch options. Keep the native session
+            // identity and restart its runtime on the next turn so a warm query
+            // cannot ignore them.
             core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
         }
         let db = core.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
         session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         transaction.execute(
-            "UPDATE sessions SET effort=?2 WHERE id=?1 AND active_turn_id IS NULL",
-            rusqlite::params![session_id, next_effort],
+            "UPDATE sessions SET effort=?2,speed=?3 WHERE id=?1 AND active_turn_id IS NULL",
+            rusqlite::params![session_id, next_effort, next_speed],
         )?;
         transaction.commit()?;
     }
     core.state_snapshot()
+}
+
+/// An explicit speed must be one the model lists (or `standard`, where there
+/// is a faster tier to leave). An inherited one the new model does not offer
+/// returns to the provider's default instead of failing a later turn.
+fn selected_chat_speed(
+    model: &crate::model::ModelOption,
+    requested: Option<&str>,
+    previous: Option<&str>,
+) -> Result<Option<String>, BridgeError> {
+    let offered = |value: &str| value == adapters::STANDARD_SPEED
+        || model.speed_tiers.iter().any(|tier| tier.id == value);
+    if let Some(value) = requested {
+        if !offered(value) {
+            return Err(BridgeError::Invalid(format!(
+                "{} does not offer speed {value}; refresh models and choose a listed speed",
+                model.label,
+            )));
+        }
+    }
+    Ok(requested.or(previous)
+        .filter(|value| !model.speed_tiers.is_empty() && offered(value))
+        .map(str::to_owned))
 }
 
 /// Explicit user choices are validated; inherited choices incompatible with a

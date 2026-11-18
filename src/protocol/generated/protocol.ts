@@ -2502,6 +2502,7 @@ export interface ModelOption {
   label: string;
   lifecycle?: ModelLifecycle;
   source?: ModelCatalogSource;
+  speedTiers?: SpeedTier[];
   supportedEffortLevels?: string[];
   tier: CapabilityTier;
 }
@@ -3089,6 +3090,7 @@ export interface Session {
   providerSessionId?: string | null;
   requestedTier?: CapabilityTier | null;
   restorationMode: RestorationMode;
+  speed?: string | null;
   startedAt?: string | null;
   status: SessionStatus;
   title?: string | null;
@@ -3188,6 +3190,12 @@ export interface SlashCommandResolve {
   kind: string;
   name: string;
   switchHarness: boolean;
+}
+
+export interface SpeedTier {
+  description?: string | null;
+  id: string;
+  label: string;
 }
 
 export type StateOperation = "close" | "reopen";
@@ -4596,6 +4604,7 @@ export interface UpdateChatModelParams {
   harness: HarnessId;
   model?: string | null;
   sessionId: string;
+  speed?: string | null;
 }
 
 export interface CarrySessionHandoffParams {

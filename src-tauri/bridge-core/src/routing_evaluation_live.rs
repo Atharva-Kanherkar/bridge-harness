@@ -223,6 +223,7 @@ fn one_bounded_turn(
             cwd: &cwd,
             model: Some(model),
             effort,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,

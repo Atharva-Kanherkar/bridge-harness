@@ -97,6 +97,7 @@ fn request(cwd: &str) -> StartRequest<'_> {
         cwd,
         model: None,
         effort: None,
+        speed: None,
         instructions: None,
         write_mode: None,
         read_only_sandbox: None,

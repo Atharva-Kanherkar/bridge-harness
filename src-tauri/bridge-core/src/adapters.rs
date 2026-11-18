@@ -619,6 +619,11 @@ pub struct StartRequest<'a> {
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// The chat's speed tier, by the id the model's catalog row listed it
+    /// under (`ModelOption::speed_tiers`): Claude `fast`, Codex `priority` or
+    /// `ultrafast`. `None` is the provider's standard speed. Adapters without
+    /// speed tiers ignore it.
+    pub speed: Option<&'a str>,
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
@@ -651,6 +656,7 @@ impl std::fmt::Debug for StartRequest<'_> {
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
+            .field("speed", &self.speed)
             .field("instructions", &self.instructions)
             .field("write_mode", &self.write_mode)
             .field("read_only_sandbox", &self.read_only_sandbox)
@@ -676,6 +682,8 @@ pub struct ResumeRequest<'a> {
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// See [`StartRequest::speed`].
+    pub speed: Option<&'a str>,
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
@@ -698,6 +706,7 @@ impl std::fmt::Debug for ResumeRequest<'_> {
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
+            .field("speed", &self.speed)
             .field("instructions", &self.instructions)
             .field("write_mode", &self.write_mode)
             .field("read_only_sandbox", &self.read_only_sandbox)
@@ -718,6 +727,7 @@ impl<'a> ResumeRequest<'a> {
             cwd: self.cwd,
             model: self.model,
             effort: self.effort,
+            speed: self.speed,
             instructions: self.instructions,
             write_mode: self.write_mode,
             read_only_sandbox: self.read_only_sandbox,
@@ -808,6 +818,23 @@ pub fn descriptor_supports_agent_role(descriptor: &AdapterDescriptor, role: &str
         _ => false,
     }
 }
+
+/// A speed the launch model does not list is dropped, not sent: a provider
+/// can refuse an unknown service tier outright, and a stale choice must not
+/// fail a turn after a model change.
+fn supported_model_speed<'a>(descriptor: &AdapterDescriptor, model: Option<&str>, speed: Option<&'a str>) -> Option<&'a str> {
+    let selected = descriptor.models.iter().find(|option|
+        Some(option.id.as_str()) == model.or(descriptor.default_model.as_deref()));
+    speed.filter(|value| selected.is_some_and(|model|
+        model.speed_tiers.iter().any(|tier| tier.id == *value)
+            // An explicit return to standard matters only where a faster tier
+            // exists to return from.
+            || (*value == STANDARD_SPEED && !model.speed_tiers.is_empty())))
+}
+
+/// The speed a person chose to go back to after a faster tier. Distinct from
+/// no choice at all (`None`), which leaves the provider's own default alone.
+pub const STANDARD_SPEED: &str = "standard";
 
 fn supported_model_effort<'a>(descriptor: &AdapterDescriptor, model: Option<&str>, effort: Option<&'a str>) -> Option<&'a str> {
     let selected = descriptor.models.iter().find(|option|
@@ -1009,6 +1036,7 @@ impl AdapterRegistry {
         }
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         adapter.start(request)
     }
 
@@ -1020,6 +1048,7 @@ impl AdapterRegistry {
             return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
         }
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         adapter.start_completion(request)
     }
 
@@ -1044,6 +1073,7 @@ impl AdapterRegistry {
         }
         let descriptor = adapter.descriptor();
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         adapter.resume(request)
     }
 
@@ -1287,6 +1317,7 @@ impl OpenCodeAdapter {
                                 compatible: model.compatible,
                                 lifecycle: model.lifecycle,
                                 supported_effort_levels: model.supported_effort_levels,
+                                speed_tiers: model.speed_tiers,
                                 promotion_priority: i64::from(model.default_for_tier),
                             })
                             .collect();
@@ -1346,6 +1377,7 @@ impl OpenCodeAdapter {
                         compatible: model.compatible,
                         lifecycle: model.lifecycle,
                         supported_effort_levels: model.supported_effort_levels,
+                        speed_tiers: model.speed_tiers,
                         promotion_priority: i64::from(model.default_for_tier),
                     })
                     .collect();
@@ -1420,6 +1452,7 @@ impl OpenCodeAdapter {
                 compatible: model.compatible,
                 lifecycle: model.lifecycle,
                 supported_effort_levels: model.supported_effort_levels,
+                speed_tiers: model.speed_tiers,
                 promotion_priority: i64::from(model.default_for_tier),
             })
             .collect();
@@ -1604,6 +1637,8 @@ pub struct DiscoveredModel {
     /// `None` means the row omitted the ladder, so a curated ladder can stay.
     /// `Some`, including an empty list, is the provider's answer.
     pub supported_effort_levels: Option<Vec<String>>,
+    /// Faster service tiers the provider lists for this model.
+    pub speed_tiers: Vec<crate::model::SpeedTier>,
 }
 
 /// Priority handed to a discovered model the provider marks as its default. Set
@@ -1646,6 +1681,7 @@ fn runtime_candidates_with_fallbacks(
                 label,
                 is_default,
                 supported_effort_levels,
+                speed_tiers,
             } = model;
             match fallbacks.iter().find(|fallback| fallback.id == id) {
                 // Curated entries stay authoritative for tier; discovery
@@ -1663,6 +1699,7 @@ fn runtime_candidates_with_fallbacks(
                     if let Some(levels) = supported_effort_levels {
                         merged.supported_effort_levels = levels;
                     }
+                    merged.speed_tiers = speed_tiers;
                     if is_default {
                         merged.promotion_priority = DISCOVERED_DEFAULT_PRIORITY;
                     }
@@ -1683,6 +1720,7 @@ fn runtime_candidates_with_fallbacks(
                         },
                     );
                     candidate.supported_effort_levels = supported_effort_levels.unwrap_or_default();
+                    candidate.speed_tiers = speed_tiers;
                     candidate
                 }
             }
@@ -2030,6 +2068,7 @@ mod tests {
             cwd: "/tmp/chat",
             model: Some("m"),
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: Some(WriteMode::Full),
             read_only_sandbox: None,
@@ -2224,6 +2263,7 @@ mod tests {
             label: label.into(),
             is_default: false,
             supported_effort_levels: Some(Vec::new()),
+            speed_tiers: Vec::new(),
         }
     }
 
