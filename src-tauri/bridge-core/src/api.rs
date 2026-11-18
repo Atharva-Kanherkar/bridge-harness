@@ -207,10 +207,8 @@ fn preview_summaries(
 pub fn detect_import_sources(
     _core: &Arc<BridgeCore>,
 ) -> Result<wire::ImportSourcesDetection, BridgeError> {
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
+    let (home, claude_config_dir) = claude_import::claude_env()
         .ok_or_else(|| BridgeError::Invalid("HOME is not set; Bridge cannot look for other tools".into()))?;
-    let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
     Ok(wire::ImportSourcesDetection {
         sources: crate::import_sources::detect(&home, claude_config_dir.as_deref(), &[]),
         detected_at: chrono::Utc::now().to_rfc3339(),

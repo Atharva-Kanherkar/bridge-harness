@@ -45,8 +45,15 @@ fn supported_format_versions() -> std::collections::BTreeMap<String, String> {
     ])
 }
 
-impl ExternalHarnessImporter for ClaudeCodeImporter {
-    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, BridgeError> {
+impl ClaudeCodeImporter {
+    /// Discovery that knows this machine's config homes up front. A folder
+    /// detection found is a config home whatever its layout, even before
+    /// Claude Code has saved a project in it.
+    pub fn discover_with_homes(
+        &self,
+        request: &DiscoveryRequest,
+        known_homes: &[PathBuf],
+    ) -> Result<DiscoveryResult, BridgeError> {
         if request.provider != PROVIDER {
             return Err(BridgeError::Invalid(format!(
                 "Claude Code importer cannot discover provider '{}'",
@@ -78,7 +85,8 @@ impl ExternalHarnessImporter for ClaudeCodeImporter {
         let mut artifacts = Vec::new();
         let mut diagnostics = Vec::new();
         for root in &discovery_roots {
-            discover_root(root, &approved_roots, &mut artifacts, &mut diagnostics)?;
+            let is_home = is_claude_home(root, known_homes);
+            discover_root(root, is_home, &approved_roots, &mut artifacts, &mut diagnostics)?;
         }
         if let Some(export) = selected_export {
             let path = canonicalize_approved_path(&approved_roots, &export)?;
@@ -137,6 +145,12 @@ impl ExternalHarnessImporter for ClaudeCodeImporter {
             diagnostics,
             discovered_at: Utc::now().to_rfc3339(),
         })
+    }
+}
+
+impl ExternalHarnessImporter for ClaudeCodeImporter {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, BridgeError> {
+        self.discover_with_homes(request, &machine_config_roots())
     }
 
     fn preview(
@@ -387,11 +401,15 @@ fn canonical_roots(roots: &[String]) -> Result<Vec<PathBuf>, BridgeError> {
 }
 
 /// A Claude config home, whatever it is called (`~/.claude`, or the folder
-/// `CLAUDE_CONFIG_DIR` or an account names): recognised by its layout, a
+/// `CLAUDE_CONFIG_DIR` or an account names). A folder this machine uses as a
+/// config home is one by identity, even before Claude Code has saved a
+/// project in it. Any other folder is recognised by its layout: a
 /// `projects/` folder of Claude's project folders, which are named after a
 /// path with `/` written as `-`, so they start with `-`.
-fn is_claude_home(root: &Path) -> bool {
-    if root.file_name().and_then(|name| name.to_str()) == Some(".claude") {
+fn is_claude_home(root: &Path, known_homes: &[PathBuf]) -> bool {
+    if known_homes.iter().any(|home| home == root)
+        || root.file_name().and_then(|name| name.to_str()) == Some(".claude")
+    {
         return true;
     }
     let Ok(projects) = fs::read_dir(root.join("projects")) else {
@@ -408,11 +426,11 @@ fn is_claude_home(root: &Path) -> bool {
 
 fn discover_root(
     root: &Path,
+    is_claude_home: bool,
     approved_roots: &[PathBuf],
     artifacts: &mut Vec<DiscoveredArtifact>,
     diagnostics: &mut Vec<ImportDiagnostic>,
 ) -> Result<(), BridgeError> {
-    let is_claude_home = is_claude_home(root);
     let candidates = if is_claude_home {
         vec![
             (
@@ -1366,6 +1384,21 @@ fn unsupported_diagnostic(
     }
 }
 
+/// Where this daemon's Claude Code keeps its config: the home folder and
+/// `CLAUDE_CONFIG_DIR`. Detection and discovery both read it from here, so a
+/// folder detection advertises is one discovery treats as a config home.
+pub fn claude_env() -> Option<(PathBuf, Option<PathBuf>)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some((home, std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)))
+}
+
+/// The config homes detection reports on this machine.
+pub fn machine_config_roots() -> Vec<PathBuf> {
+    claude_env()
+        .map(|(home, config_dir)| config_roots(&home, config_dir.as_deref(), &[]))
+        .unwrap_or_default()
+}
+
 /// Every Claude Code config folder on this machine: `~/.claude`, the folder
 /// named by `CLAUDE_CONFIG_DIR`, and each provider account's folder. Missing
 /// folders are left out and the same folder reached twice is listed once.
@@ -1726,6 +1759,52 @@ mod tests {
         let kinds: Vec<&CandidateKind> = discovery.artifacts.iter().map(|a| &a.kind).collect();
         assert_eq!(kinds.iter().filter(|k| ***k == CandidateKind::Conversation).count(), 1, "{kinds:?}");
         assert_eq!(kinds.iter().filter(|k| ***k == CandidateKind::Memory).count(), 1, "{kinds:?}");
+    }
+
+    /// A config folder detection found, before Claude Code has saved a
+    /// project in it (no `projects/`, then an empty one): review lists the
+    /// setup items detection counted.
+    #[test]
+    fn a_detected_config_home_with_only_setup_is_listed() {
+        let home = tempfile::tempdir().unwrap();
+        let custom = home.path().join(".claude-work");
+        write(&custom.join("settings.json"), r#"{"model":"opus"}"#);
+        write(&custom.join("agents/reviewer.md"), "---\nname: reviewer\n---\nReview diffs.\n");
+        for state in ["no projects folder", "empty projects folder"] {
+            if state == "empty projects folder" {
+                fs::create_dir_all(custom.join("projects")).unwrap();
+            }
+            let claude = &crate::import_sources::detect(home.path(), Some(&custom), &[])[0];
+            assert_eq!(claude.counts.setup, 2, "{state}: detection counts the setup");
+            let request = DiscoveryRequest {
+                provider: PROVIDER.into(),
+                approved_roots: claude.roots.clone(),
+                selected_export: None,
+                source_version: None,
+                schema_version: None,
+                format_versions: BTreeMap::new(),
+            };
+            let homes = config_roots(home.path(), Some(&custom), &[]);
+            let discovery = ClaudeCodeImporter.discover_with_homes(&request, &homes).unwrap();
+            let mut kinds: Vec<String> = discovery.artifacts.iter().map(|a| format!("{:?}", a.kind)).collect();
+            kinds.sort();
+            assert_eq!(kinds, vec!["Agent", "Prompt"], "{state}: review lists what detection counted");
+        }
+    }
+
+    /// Only the folders this machine uses as config homes are trusted by
+    /// identity: an unrelated folder with the same files is still a project.
+    #[test]
+    fn an_unrelated_folder_is_not_a_config_home_by_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        write(&repo.join("settings.json"), r#"{"model":"opus"}"#);
+        write(&repo.join("agents/reviewer.md"), "agent");
+        let other_home = root.path().join(".claude-work");
+        fs::create_dir_all(&other_home).unwrap();
+        let homes = vec![other_home.canonicalize().unwrap()];
+        let discovery = ClaudeCodeImporter.discover_with_homes(&request(&repo), &homes).unwrap();
+        assert!(discovery.artifacts.is_empty(), "{:?}", discovery.artifacts);
     }
 
     #[test]
