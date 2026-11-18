@@ -318,6 +318,27 @@ pub struct BundleExclusion {
     pub reason: String,
 }
 
+/// One source that pointed at a merged chat, with the identity an older
+/// adapter version recorded for it (so any copy can match an earlier import).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contributor {
+    pub tool: String,
+    pub source_ref: String,
+    pub legacy_native_id: Option<String>,
+    pub legacy_content_hash: Option<String>,
+}
+
+impl Contributor {
+    fn of(tool: &str, chat: &BundleChat) -> Self {
+        Self {
+            tool: tool.to_owned(),
+            source_ref: chat.source_ref.clone(),
+            legacy_native_id: chat.legacy_native_id.clone(),
+            legacy_content_hash: chat.legacy_content_hash.clone(),
+        }
+    }
+}
+
 /// One chat after merging, with every source that pointed at it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedChat {
@@ -326,7 +347,7 @@ pub struct ResolvedChat {
     pub chat: BundleChat,
     pub primary: BundleSource,
     /// Every `(tool, source_ref)` that contributed, primary first.
-    pub contributors: Vec<(String, String)>,
+    pub contributors: Vec<Contributor>,
     pub parent_identity: Option<String>,
 }
 
@@ -394,7 +415,7 @@ fn entry_count_for_merge(chat: &BundleChat) -> (u8, usize) {
 fn merge_chat(existing: &mut ResolvedChat, incoming: BundleChat, incoming_source: &BundleSource) {
     existing
         .contributors
-        .push((incoming_source.tool.clone(), incoming.source_ref.clone()));
+        .push(Contributor::of(&incoming_source.tool, &incoming));
     let take_entries = entry_count_for_merge(&incoming) > entry_count_for_merge(&existing.chat);
     let chat = &mut existing.chat;
     if take_entries {
@@ -598,7 +619,7 @@ impl Resolver {
                 self.chat_index.insert(identity.clone(), self.out.chats.len());
                 self.out.chats.push(ResolvedChat {
                     identity,
-                    contributors: vec![(tool.to_owned(), chat.source_ref.clone())],
+                    contributors: vec![Contributor::of(tool, &chat)],
                     primary: source.clone(),
                     parent_identity: None,
                     chat,
@@ -1109,9 +1130,11 @@ fn lower_chat(
         "legacyNativeId": chat.legacy_native_id,
         "legacyContentHash": chat.legacy_content_hash,
         "pullRequests": chat.pull_requests,
-        "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|(tool, source_ref)| json!({
-            "tool": tool,
-            "sourceRef": source_ref,
+        "alsoFrom": resolved_chat.contributors.iter().skip(1).map(|contributor| json!({
+            "tool": contributor.tool,
+            "sourceRef": contributor.source_ref,
+            "legacyNativeId": contributor.legacy_native_id,
+            "legacyContentHash": contributor.legacy_content_hash,
         })).collect::<Vec<_>>(),
     });
     let native_id = Some(

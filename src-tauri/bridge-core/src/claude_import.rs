@@ -1586,6 +1586,24 @@ mod tests {
     }
 
     #[test]
+    fn a_v1_import_of_any_copy_is_recognised() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let lines = session_lines("sess-twin", "one session, two copies");
+        write(&claude.join("projects/a/sess-twin.jsonl"), &lines);
+        write(&claude.join("projects/b/sess-twin.jsonl"), &lines);
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        // v1 imported the copy in b; v2 resolves both and makes a the primary.
+        assert_eq!(import_with_v1(&db, &claude, &claude.join("projects/b/sess-twin.jsonl")).imported, 1);
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        assert_eq!(v2.len(), 1, "the two copies resolve to one chat");
+        let commit = commit_all(&db, &v2);
+        assert_eq!((commit.imported, commit.skipped), (0, 1), "{commit:?}");
+        let chats: i64 = db.query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported'", [], |r| r.get(0)).unwrap();
+        assert_eq!(chats, 1);
+    }
+
+    #[test]
     fn config_roots_cover_home_env_and_accounts_once_each() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");

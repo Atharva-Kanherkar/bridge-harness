@@ -974,31 +974,50 @@ fn classify_legacy_import(
     dry_run: bool,
 ) -> Result<Option<ImportCandidateResult>, BridgeError> {
     let payload = &candidate.normalized_payload;
-    let Some(legacy_id) = payload_str(payload, "legacyNativeId") else {
-        return Ok(None);
-    };
-    // No hash: the source has outgrown what the older version could read, so
-    // it cannot be unchanged.
-    let legacy_hash = payload_str(payload, "legacyContentHash");
-    let previous: Option<(String, String)> = db
-        .query_row(
-            "SELECT bridge_id, source_content_hash FROM import_ledger
-             WHERE importer_namespace=?1 AND provider=?2 AND source_path_fingerprint=?3
-               AND source_native_key=?4 AND candidate_kind='conversation'
-             ORDER BY created_at DESC LIMIT 1",
-            params![
-                IMPORTER_NAMESPACE,
-                candidate.source.provider,
-                candidate.source.source_path_fingerprint,
-                legacy_id,
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+    // Every copy the chat was merged from: the primary source, then each
+    // other copy, each with the identity an older version recorded for it.
+    let mut copies: Vec<(String, String, Option<String>, Option<String>)> = vec![(
+        candidate.source.provider.clone(),
+        candidate.source.source_path_fingerprint.clone(),
+        payload_str(payload, "legacyNativeId").map(str::to_owned),
+        payload_str(payload, "legacyContentHash").map(str::to_owned),
+    )];
+    for also in payload.get("alsoFrom").and_then(Value::as_array).into_iter().flatten() {
+        if let (Some(tool), Some(source_ref)) = (payload_str(also, "tool"), payload_str(also, "sourceRef")) {
+            copies.push((
+                tool.to_owned(),
+                path_fingerprint(Path::new(source_ref)),
+                payload_str(also, "legacyNativeId").map(str::to_owned),
+                payload_str(also, "legacyContentHash").map(str::to_owned),
+            ));
+        }
+    }
+    let mut previous: Option<(String, String)> = None;
+    let mut legacy_hash: Option<String> = None;
+    for (provider, fingerprint, legacy_id, hash) in copies {
+        let Some(legacy_id) = legacy_id else { continue };
+        let found: Option<(String, String)> = db
+            .query_row(
+                "SELECT bridge_id, source_content_hash FROM import_ledger
+                 WHERE importer_namespace=?1 AND provider=?2 AND source_path_fingerprint=?3
+                   AND source_native_key=?4 AND candidate_kind='conversation'
+                 ORDER BY created_at DESC LIMIT 1",
+                params![IMPORTER_NAMESPACE, provider, fingerprint, legacy_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if found.is_some() {
+            previous = found;
+            // No hash: the source has outgrown what the older version could
+            // read, so it cannot be unchanged.
+            legacy_hash = hash;
+            break;
+        }
+    }
     let Some((session, hash)) = previous else {
         return Ok(None);
     };
-    if Some(hash.as_str()) == legacy_hash {
+    if Some(hash.as_str()) == legacy_hash.as_deref() {
         return Ok(Some(result_with_status(
             candidate,
             ImportCandidateStatus::SkippedDuplicate,
