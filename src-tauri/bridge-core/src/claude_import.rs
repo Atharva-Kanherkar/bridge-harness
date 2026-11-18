@@ -567,6 +567,27 @@ fn v1_first_message_id(path: &Path) -> Option<String> {
 /// a diagnostic-only candidate; the others still import.
 /// Read one selected transcript and its subagents, after the path and the
 /// schema gate check out.
+/// One chat among the selected transcripts: its file and its native session
+/// (or bundle key). A file can hold several chats: inline subagents.
+type ChatKey = (String, String);
+
+fn chat_key(chat: &crate::import_bundle::BundleChat) -> ChatKey {
+    let id = chat
+        .native_ref
+        .as_ref()
+        .map(|native| native.session_id.clone())
+        .unwrap_or_else(|| chat.key.clone());
+    (chat.source_ref.clone(), id)
+}
+
+/// The same key for a lowered candidate, whose native id is the session id or key.
+fn candidate_key(candidate: &ImportCandidate) -> ChatKey {
+    (
+        candidate.source.canonical_source_ref.clone(),
+        candidate.source_native_id.clone().unwrap_or_default(),
+    )
+}
+
 fn read_artifact_session(
     approved_roots: &[PathBuf],
     artifact: &DiscoveredArtifact,
@@ -617,7 +638,7 @@ fn skipped_diagnostics(item: &transcript::ParsedTranscript) -> Vec<ImportDiagnos
 fn attach_exclusions(
     out: &mut Vec<ImportCandidate>,
     excluded: Vec<crate::import_bundle::BundleExclusion>,
-    ref_by_label: &std::collections::HashMap<String, String>,
+    ref_by_label: &std::collections::HashMap<String, ChatKey>,
     artifacts: &[&DiscoveredArtifact],
     discovery: &DiscoveryResult,
 ) {
@@ -630,10 +651,9 @@ fn attach_exclusions(
             recovery: None,
             source_label: Some(excluded.source_label.clone()),
         };
-        let source_ref = ref_by_label.get(&excluded.source_label);
+        let chat = ref_by_label.get(&excluded.source_label);
         let holder = out.iter_mut().find(|candidate| {
-            candidate.kind == CandidateKind::Conversation
-                && Some(&candidate.source.canonical_source_ref) == source_ref
+            candidate.kind == CandidateKind::Conversation && chat == Some(&candidate_key(candidate))
         });
         match holder {
             Some(candidate) => candidate.diagnostics.push(diagnostic),
@@ -668,14 +688,14 @@ fn preview_conversations(
         roots: discovery.approved_roots.clone(),
         detected_at: discovery.discovered_at.clone(),
     });
-    let mut skipped_by_ref: std::collections::HashMap<String, Vec<ImportDiagnostic>> =
+    let mut skipped_by_ref: std::collections::HashMap<ChatKey, Vec<ImportDiagnostic>> =
         std::collections::HashMap::new();
-    let mut ref_by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut ref_by_label: std::collections::HashMap<String, ChatKey> = std::collections::HashMap::new();
     for artifact in artifacts {
         let read = read_artifact_session(approved_roots, artifact, discovery);
         match read {
             Ok(session) => {
-                let main_ref = session.chats.first().map(|item| item.chat.source_ref.clone());
+                let main_ref = session.chats.first().map(|item| chat_key(&item.chat));
                 let lost: Vec<ImportDiagnostic> =
                     session.failures.iter().map(subagent_failure_diagnostic).collect();
                 let legacy = legacy_identity(approved_roots, artifact, discovery);
@@ -686,8 +706,10 @@ fn preview_conversations(
                             item.chat.legacy_content_hash = content_hash;
                         }
                     }
-                    skipped_by_ref.insert(item.chat.source_ref.clone(), skipped_diagnostics(&item));
-                    ref_by_label.insert(item.chat.source_label.clone(), item.chat.source_ref.clone());
+                    // An inline subagent shares its parent's file: key by the
+                    // chat itself and add, so neither overwrites the other.
+                    skipped_by_ref.entry(chat_key(&item.chat)).or_default().extend(skipped_diagnostics(&item));
+                    ref_by_label.insert(item.chat.source_label.clone(), chat_key(&item.chat));
                     bundle.chats.push(item.chat);
                 }
                 if let Some(main_ref) = main_ref {
@@ -699,7 +721,7 @@ fn preview_conversations(
     }
     let lowered = import_bundle::lower(&import_bundle::resolve(vec![bundle])?);
     for mut candidate in lowered.candidates {
-        if let Some(diagnostics) = skipped_by_ref.remove(&candidate.source.canonical_source_ref) {
+        if let Some(diagnostics) = skipped_by_ref.remove(&candidate_key(&candidate)) {
             candidate.diagnostics.extend(diagnostics);
         }
         out.push(candidate);
@@ -1623,6 +1645,27 @@ mod tests {
             .query_row("SELECT parent_session_id, depth FROM sessions WHERE title='helper task'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!((parent.as_deref(), depth), (Some(existing.as_str()), 1));
+    }
+
+    #[test]
+    fn a_parent_keeps_its_losses_next_to_an_inline_child() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let lines = [
+            json!({"type":"user","uuid":"u1","sessionId":"sess-doc","timestamp":"2026-11-01T10:00:00Z","cwd":"/w","message":{"role":"user","content":[{"type":"text","text":"read this pdf"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}]}}).to_string(),
+            json!({"type":"user","uuid":"s1","sessionId":"sess-doc","isSidechain":true,"agentId":"abc","timestamp":"2026-11-01T10:00:01Z","message":{"role":"user","content":"summarise the pdf"}}).to_string(),
+            json!({"type":"assistant","uuid":"s2","sessionId":"sess-doc","isSidechain":true,"agentId":"abc","timestamp":"2026-11-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}).to_string(),
+        ];
+        write(&claude.join("projects/p/sess-doc.jsonl"), &lines.join("\n"));
+        let preview = preview_all(&claude);
+        let chats: Vec<_> = preview.iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        assert_eq!(chats.len(), 2);
+        let parent = chats.iter().find(|c| c.source_native_id.as_deref() == Some("sess-doc")).unwrap();
+        assert!(
+            parent.diagnostics.iter().any(|d| d.message.contains("content:document")),
+            "the dropped document is reported on its own chat: {:?}",
+            parent.diagnostics
+        );
     }
 
     #[test]
