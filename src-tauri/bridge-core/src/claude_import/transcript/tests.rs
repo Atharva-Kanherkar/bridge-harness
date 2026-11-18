@@ -431,3 +431,46 @@ fn an_inline_sidechain_and_its_file_are_one_child() {
     assert_eq!(read.chats.len(), 2, "the file and the inline copy are the same child");
     assert!(read.chats[1].chat.source_ref.ends_with("agent-abc.jsonl"), "the separate file is preferred");
 }
+
+#[test]
+fn files_without_a_session_id_never_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = |uuid: &str, text: &str| json!({"type":"user","uuid":uuid,"timestamp":"2026-11-01T10:00:00Z","message":{"role":"user","content":text}});
+    let first = dir.path().join("exports/a/session.jsonl");
+    let second = dir.path().join("exports/b/session.jsonl");
+    write_lines(&first, &[record("a-1", "first export")]);
+    write_lines(&second, &[record("b-1", "unrelated second export")]);
+    let mut bundle = TransferBundle::new(BundleSource { tool: "claude_code".into(), tool_version: None, schema_version: None, adapter_version: "2".into(), roots: vec![], detected_at: "now".into() });
+    for path in [&first, &second] {
+        let parsed = read_transcript(path, &path.to_string_lossy(), "session.jsonl").unwrap();
+        assert!(parsed.chat.native_ref.is_none(), "a file name is not a session id");
+        bundle.chats.push(parsed.chat);
+    }
+    let resolved = import_bundle::resolve(vec![bundle]).unwrap();
+    assert_eq!(resolved.chats.len(), 2);
+}
+
+#[test]
+fn an_inline_child_is_kept_when_its_file_is_unreadable_or_shorter() {
+    // The separate file is too big to read: the inline copy is kept.
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    let file = dir.path().join("projects/p/sess-1/subagents/agent-abc.jsonl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    File::create(&file).unwrap().set_len(MAX_TRANSCRIPT_BYTES + 1).unwrap();
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2);
+    assert_eq!(read.chats[1].chat.entries.len(), 2, "the inline answer survives");
+    assert_eq!(read.failures.len(), 1, "the unreadable file is still reported");
+
+    // The separate file holds only the prompt: the longer inline copy wins.
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    write_lines(&dir.path().join("projects/p/sess-1/subagents/agent-abc.jsonl"), &[
+        sidechain("s1", "2026-11-01T10:00:01Z", "user", json!("Map the repo and report key files")),
+    ]);
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2, "still one child");
+    assert_eq!(read.chats[1].chat.entries.len(), 2, "the answer is not lost");
+    assert_eq!(read.chats[1].chat.native_ref.as_ref().unwrap().session_id, "sess-1/agent-abc");
+}

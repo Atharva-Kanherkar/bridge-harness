@@ -552,19 +552,47 @@ fn is_session_transcript(path: &Path) -> bool {
 }
 
 /// The identity the v1 reader recorded for this transcript: its first
-/// message id and content hash, recomputed by the retained v1 reader. v1
-/// refused files over 10 MB, so those have none.
+/// message id, and its content hash recomputed by the retained v1 reader.
+/// v1 refused files over 10 MB, so a file that has grown past that since it
+/// was imported keeps its key but has no comparable hash: it has changed.
 fn legacy_identity(
     approved_roots: &[PathBuf],
     artifact: &DiscoveredArtifact,
     discovery: &DiscoveryResult,
-) -> Option<(String, String)> {
+) -> Option<(String, Option<String>)> {
     let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref)).ok()?;
     if fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
-        return None;
+        return v1_first_message_id(&path).map(|id| (id, None));
     }
     let v1 = preview_transcript(&path, artifact, discovery).ok()?;
-    Some((v1.source_native_id?, v1.content_hash))
+    Some((v1.source_native_id?, Some(v1.content_hash)))
+}
+
+/// The key v1 gave a transcript: the id of the first record it accepted as a
+/// message, found by streaming, with v1's own record rules.
+fn v1_first_message_id(path: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = fs::File::open(path).ok()?;
+    let mut skipped = BTreeMap::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.ok()?;
+        let Ok(record) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        let Some(object) = record.as_object() else {
+            continue;
+        };
+        let Some(record_type) = object.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if !matches!(record_type, "user" | "assistant") {
+            continue;
+        }
+        if let Some((source_id, _)) = parse_transcript_record(object, record_type, 1, &mut skipped) {
+            return Some(source_id);
+        }
+    }
+    None
 }
 
 /// Every selected transcript, read at full fidelity into one transfer bundle,
@@ -572,6 +600,27 @@ fn legacy_identity(
 /// a diagnostic-only candidate; the others still import.
 /// Read one selected transcript and its subagents, after the path and the
 /// schema gate check out.
+/// One chat among the selected transcripts: its file and its native session
+/// (or bundle key). A file can hold several chats: inline subagents.
+type ChatKey = (String, String);
+
+fn chat_key(chat: &crate::import_bundle::BundleChat) -> ChatKey {
+    let id = chat
+        .native_ref
+        .as_ref()
+        .map(|native| native.session_id.clone())
+        .unwrap_or_else(|| chat.key.clone());
+    (chat.source_ref.clone(), id)
+}
+
+/// The same key for a lowered candidate, whose native id is the session id or key.
+fn candidate_key(candidate: &ImportCandidate) -> ChatKey {
+    (
+        candidate.source.canonical_source_ref.clone(),
+        candidate.source_native_id.clone().unwrap_or_default(),
+    )
+}
+
 fn read_artifact_session(
     approved_roots: &[PathBuf],
     artifact: &DiscoveredArtifact,
@@ -622,7 +671,7 @@ fn skipped_diagnostics(item: &transcript::ParsedTranscript) -> Vec<ImportDiagnos
 fn attach_exclusions(
     out: &mut Vec<ImportCandidate>,
     excluded: Vec<crate::import_bundle::BundleExclusion>,
-    ref_by_label: &std::collections::HashMap<String, String>,
+    ref_by_label: &std::collections::HashMap<String, ChatKey>,
     artifacts: &[&DiscoveredArtifact],
     discovery: &DiscoveryResult,
 ) {
@@ -635,10 +684,9 @@ fn attach_exclusions(
             recovery: None,
             source_label: Some(excluded.source_label.clone()),
         };
-        let source_ref = ref_by_label.get(&excluded.source_label);
+        let chat = ref_by_label.get(&excluded.source_label);
         let holder = out.iter_mut().find(|candidate| {
-            candidate.kind == CandidateKind::Conversation
-                && Some(&candidate.source.canonical_source_ref) == source_ref
+            candidate.kind == CandidateKind::Conversation && chat == Some(&candidate_key(candidate))
         });
         match holder {
             Some(candidate) => candidate.diagnostics.push(diagnostic),
@@ -673,14 +721,14 @@ fn preview_conversations(
         roots: discovery.approved_roots.clone(),
         detected_at: discovery.discovered_at.clone(),
     });
-    let mut skipped_by_ref: std::collections::HashMap<String, Vec<ImportDiagnostic>> =
+    let mut skipped_by_ref: std::collections::HashMap<ChatKey, Vec<ImportDiagnostic>> =
         std::collections::HashMap::new();
-    let mut ref_by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut ref_by_label: std::collections::HashMap<String, ChatKey> = std::collections::HashMap::new();
     for artifact in artifacts {
         let read = read_artifact_session(approved_roots, artifact, discovery);
         match read {
             Ok(session) => {
-                let main_ref = session.chats.first().map(|item| item.chat.source_ref.clone());
+                let main_ref = session.chats.first().map(|item| chat_key(&item.chat));
                 let lost: Vec<ImportDiagnostic> =
                     session.failures.iter().map(subagent_failure_diagnostic).collect();
                 let legacy = legacy_identity(approved_roots, artifact, discovery);
@@ -688,11 +736,13 @@ fn preview_conversations(
                     if item.chat.agent_role.is_none() {
                         if let Some((native_id, content_hash)) = legacy.clone() {
                             item.chat.legacy_native_id = Some(native_id);
-                            item.chat.legacy_content_hash = Some(content_hash);
+                            item.chat.legacy_content_hash = content_hash;
                         }
                     }
-                    skipped_by_ref.insert(item.chat.source_ref.clone(), skipped_diagnostics(&item));
-                    ref_by_label.insert(item.chat.source_label.clone(), item.chat.source_ref.clone());
+                    // An inline subagent shares its parent's file: key by the
+                    // chat itself and add, so neither overwrites the other.
+                    skipped_by_ref.entry(chat_key(&item.chat)).or_default().extend(skipped_diagnostics(&item));
+                    ref_by_label.insert(item.chat.source_label.clone(), chat_key(&item.chat));
                     bundle.chats.push(item.chat);
                 }
                 if let Some(main_ref) = main_ref {
@@ -704,7 +754,7 @@ fn preview_conversations(
     }
     let lowered = import_bundle::lower(&import_bundle::resolve(vec![bundle])?);
     for mut candidate in lowered.candidates {
-        if let Some(diagnostics) = skipped_by_ref.remove(&candidate.source.canonical_source_ref) {
+        if let Some(diagnostics) = skipped_by_ref.remove(&candidate_key(&candidate)) {
             candidate.diagnostics.extend(diagnostics);
         }
         out.push(candidate);
@@ -1561,6 +1611,97 @@ mod tests {
         let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
         let changed = commit_all(&db, &v2);
         assert_eq!((changed.imported, changed.changed), (0, 1), "{changed:?}");
+    }
+
+    /// Import `path` with the retained v1 reader, as an earlier Bridge did.
+    fn import_with_v1(db: &rusqlite::Connection, claude: &Path, path: &Path) -> crate::external_import::ImportCommit {
+        let discovery = ClaudeCodeImporter.discover(&request(claude)).unwrap();
+        let canonical = path.canonicalize().unwrap();
+        let artifact = discovery
+            .artifacts
+            .iter()
+            .find(|a| a.kind == CandidateKind::Conversation && Path::new(&a.canonical_source_ref) == canonical)
+            .unwrap()
+            .clone();
+        commit_all(db, &[preview_transcript(&canonical, &artifact, &discovery).unwrap()])
+    }
+
+    #[test]
+    fn a_v1_import_that_grew_past_ten_mib_is_still_recognised() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-big.jsonl");
+        write(&path, &session_lines("sess-big", "small when v1 imported it"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        assert_eq!(import_with_v1(&db, &claude, &path).imported, 1);
+        // Claude keeps appending: the file passes the 10 MiB v1 limit.
+        let long = json!({"type":"assistant","uuid":"later","sessionId":"sess-big","timestamp":"2026-11-02T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"x".repeat(MAX_SOURCE_BYTES as usize + 1024)}]}}).to_string();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("\n{long}").as_bytes()).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > MAX_SOURCE_BYTES);
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let commit = commit_all(&db, &v2);
+        assert_eq!((commit.imported, commit.changed), (0, 1), "{commit:?}");
+    }
+
+    #[test]
+    fn a_v1_import_of_any_copy_is_recognised() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let lines = session_lines("sess-twin", "one session, two copies");
+        write(&claude.join("projects/a/sess-twin.jsonl"), &lines);
+        write(&claude.join("projects/b/sess-twin.jsonl"), &lines);
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        // v1 imported the copy in b; v2 resolves both and makes a the primary.
+        assert_eq!(import_with_v1(&db, &claude, &claude.join("projects/b/sess-twin.jsonl")).imported, 1);
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        assert_eq!(v2.len(), 1, "the two copies resolve to one chat");
+        let commit = commit_all(&db, &v2);
+        assert_eq!((commit.imported, commit.skipped), (0, 1), "{commit:?}");
+        let chats: i64 = db.query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported'", [], |r| r.get(0)).unwrap();
+        assert_eq!(chats, 1);
+    }
+
+    #[test]
+    fn a_child_of_a_changed_v1_parent_attaches_to_it() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-parent.jsonl");
+        write(&path, &session_lines("sess-parent", "parent before"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        assert_eq!(import_with_v1(&db, &claude, &path).imported, 1);
+        let existing: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |r| r.get(0)).unwrap();
+        // The parent grows and gains a subagent.
+        let later = json!({"type":"user","uuid":"later","sessionId":"sess-parent","timestamp":"2026-11-02T10:00:00Z","message":{"role":"user","content":"spawn a helper"}}).to_string();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("\n{later}").as_bytes()).unwrap();
+        write(&claude.join("projects/p/sess-parent/subagents/agent-h.jsonl"), &session_lines("sess-parent", "helper task"));
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let commit = commit_all(&db, &v2);
+        assert_eq!((commit.imported, commit.changed), (1, 1), "{commit:?}");
+        let (parent, depth): (Option<String>, i64) = db
+            .query_row("SELECT parent_session_id, depth FROM sessions WHERE title='helper task'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((parent.as_deref(), depth), (Some(existing.as_str()), 1));
+    }
+
+    #[test]
+    fn a_parent_keeps_its_losses_next_to_an_inline_child() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let lines = [
+            json!({"type":"user","uuid":"u1","sessionId":"sess-doc","timestamp":"2026-11-01T10:00:00Z","cwd":"/w","message":{"role":"user","content":[{"type":"text","text":"read this pdf"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}]}}).to_string(),
+            json!({"type":"user","uuid":"s1","sessionId":"sess-doc","isSidechain":true,"agentId":"abc","timestamp":"2026-11-01T10:00:01Z","message":{"role":"user","content":"summarise the pdf"}}).to_string(),
+            json!({"type":"assistant","uuid":"s2","sessionId":"sess-doc","isSidechain":true,"agentId":"abc","timestamp":"2026-11-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}).to_string(),
+        ];
+        write(&claude.join("projects/p/sess-doc.jsonl"), &lines.join("\n"));
+        let preview = preview_all(&claude);
+        let chats: Vec<_> = preview.iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        assert_eq!(chats.len(), 2);
+        let parent = chats.iter().find(|c| c.source_native_id.as_deref() == Some("sess-doc")).unwrap();
+        assert!(
+            parent.diagnostics.iter().any(|d| d.message.contains("content:document")),
+            "the dropped document is reported on its own chat: {:?}",
+            parent.diagnostics
+        );
     }
 
     #[test]

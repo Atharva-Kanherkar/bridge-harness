@@ -1003,4 +1003,62 @@ fn independent_memories_import_alongside_each_other_and_existing_ones() {
     let commit = commit_import(&db, &normalized, &plan_for(&lowered.candidates, ConflictPolicy::ImportAlongside)).unwrap();
     assert_eq!((commit.imported, commit.conflicted), (2, 0));
     assert_eq!(count(&db, "SELECT COUNT(*) FROM memory_records WHERE status='active'"), 3);
+fn a_child_of_a_bridge_run_parent_attaches_to_that_chat() {
+    let db = database();
+    db.execute(
+        "INSERT INTO sessions(id,harness,label,status,metric_source,provider_session_id,kind,depth)
+         VALUES('bridge-chat','claude','Claude','idle','reported','owned-main','direct',0)",
+        [],
+    )
+    .unwrap();
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("main", "claude", Some("owned-main"), rich_entries()));
+    let mut child = chat("kid", "claude", Some("owned-main/agent-1"), vec![entry("k", BundleEntryKind::UserMessage, "subagent of a Bridge chat")]);
+    child.parent_chat_key = Some("main".into());
+    bundle.chats.push(child);
+    let commit = import(&db, vec![bundle]);
+    assert_eq!((commit.imported, commit.skipped), (1, 1));
+    assert_eq!(parent_of(&db, "subagent of a Bridge chat"), (Some("bridge-chat".into()), 1));
+}
+
+fn setup_bundle(roots: &[&str]) -> TransferBundle {
+    let mut bundle = TransferBundle::new(source("conductor"));
+    for (index, root) in roots.iter().enumerate() {
+        let key = format!("p{index}");
+        bundle.projects.push(BundleProject { key: key.clone(), name: key.clone(), repo_root: (*root).into(), remote_url: None });
+        bundle.setup.push(BundleSetup { key: format!("s{index}"), kind: CandidateKind::Script, scope: "project".into(), project_key: Some(key), name: "setup".into(), body: Some("bun install".into()), config: None, source_ref: format!("{root}/conductor.json"), source_label: format!("{root}/conductor.json") });
+    }
+    bundle
+}
+
+#[test]
+fn setup_conflicts_are_per_scope_and_project() {
+    let db = database();
+    // Two projects, the same script: not a conflict under Skip.
+    let both = import(&db, vec![setup_bundle(&["/nonexistent/api", "/nonexistent/web"])]);
+    assert_eq!((both.imported, both.conflicted), (2, 0), "{both:?}");
+    // The same project's script from another file (another tool's settings):
+    // that is a real conflict with what is already there.
+    let mut again = setup_bundle(&["/nonexistent/api"]);
+    again.setup[0].body = Some("pnpm install".into());
+    again.setup[0].source_ref = "/nonexistent/api/.conductor/settings.toml".into();
+    let conflict = import(&db, vec![again]);
+    assert_eq!((conflict.imported, conflict.conflicted), (0, 1), "{conflict:?}");
+}
+
+#[test]
+fn memories_deduplicate_by_the_real_project() {
+    let bundle_for = |tool: &str, root: &str| {
+        let mut bundle = TransferBundle::new(source(tool));
+        bundle.projects.push(BundleProject { key: "1".into(), name: "app".into(), repo_root: root.into(), remote_url: None });
+        bundle.memories.push(BundleMemory { key: "m".into(), scope: "project".into(), project_key: Some("1".into()), kind: "fact".into(), body: "run tests with bun".into(), source_ref: format!("{root}/MEMORY.md"), source_label: "MEMORY.md".into() });
+        bundle
+    };
+    let resolved = resolve(vec![bundle_for("conductor", "/nonexistent/one"), bundle_for("t3code", "/nonexistent/two")]).unwrap();
+    assert_eq!(resolved.projects.len(), 2);
+    let projects: Vec<Option<String>> = resolved.memories.iter().map(|(_, memory)| memory.project_key.clone()).collect();
+    assert_eq!(projects, vec![Some("project:/nonexistent/one".into()), Some("project:/nonexistent/two".into())]);
+    // The same project through two tools is still one memory.
+    let same = resolve(vec![bundle_for("conductor", "/nonexistent/one"), bundle_for("t3code", "/nonexistent/one")]).unwrap();
+    assert_eq!(same.memories.len(), 1);
 }

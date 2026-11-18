@@ -601,12 +601,13 @@ fn commit_import_inner(
     let mut completed_writes = 0_usize;
     for candidate in selected {
         let classified = classify_candidate(&transaction, candidate, plan, false)?;
-        if classified
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == LEGACY_IMPORT_RECOGNISED)
-        {
-            remember_legacy_native_session(&transaction, candidate, &classified, &import_id, &created_at)?;
+        if let Some(code) = classified.diagnostics.iter().find_map(|diagnostic| {
+            [LEGACY_IMPORT_RECOGNISED, LEGACY_IMPORT_CHANGED]
+                .contains(&diagnostic.code.as_str())
+                .then_some(diagnostic.code.as_str())
+        }) {
+            let unchanged = code == LEGACY_IMPORT_RECOGNISED;
+            remember_legacy_native_session(&transaction, candidate, &classified, unchanged, &import_id, &created_at)?;
         }
         if classified.status != ImportCandidateStatus::Imported {
             persist_candidate_diagnostics(
@@ -904,7 +905,8 @@ fn classify_native_session(
         payload_str(payload, "nativeKey"),
         payload.pointer("/nativeRef/sessionId").and_then(Value::as_str),
     ) else {
-        return Ok(None);
+        // No native identity: an older import may still know this file.
+        return classify_legacy_import(db, candidate, plan, dry_run);
     };
     let harness = payload.pointer("/nativeRef/harness").and_then(Value::as_str);
     let bridge_own: bool = db.query_row(
@@ -979,31 +981,50 @@ fn classify_legacy_import(
     dry_run: bool,
 ) -> Result<Option<ImportCandidateResult>, BridgeError> {
     let payload = &candidate.normalized_payload;
-    let (Some(legacy_id), Some(legacy_hash)) = (
-        payload_str(payload, "legacyNativeId"),
-        payload_str(payload, "legacyContentHash"),
-    ) else {
-        return Ok(None);
-    };
-    let previous: Option<(String, String)> = db
-        .query_row(
-            "SELECT bridge_id, source_content_hash FROM import_ledger
-             WHERE importer_namespace=?1 AND provider=?2 AND source_path_fingerprint=?3
-               AND source_native_key=?4 AND candidate_kind='conversation'
-             ORDER BY created_at DESC LIMIT 1",
-            params![
-                IMPORTER_NAMESPACE,
-                candidate.source.provider,
-                candidate.source.source_path_fingerprint,
-                legacy_id,
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+    // Every copy the chat was merged from: the primary source, then each
+    // other copy, each with the identity an older version recorded for it.
+    let mut copies: Vec<(String, String, Option<String>, Option<String>)> = vec![(
+        candidate.source.provider.clone(),
+        candidate.source.source_path_fingerprint.clone(),
+        payload_str(payload, "legacyNativeId").map(str::to_owned),
+        payload_str(payload, "legacyContentHash").map(str::to_owned),
+    )];
+    for also in payload.get("alsoFrom").and_then(Value::as_array).into_iter().flatten() {
+        if let (Some(tool), Some(source_ref)) = (payload_str(also, "tool"), payload_str(also, "sourceRef")) {
+            copies.push((
+                tool.to_owned(),
+                path_fingerprint(Path::new(source_ref)),
+                payload_str(also, "legacyNativeId").map(str::to_owned),
+                payload_str(also, "legacyContentHash").map(str::to_owned),
+            ));
+        }
+    }
+    let mut previous: Option<(String, String)> = None;
+    let mut legacy_hash: Option<String> = None;
+    for (provider, fingerprint, legacy_id, hash) in copies {
+        let Some(legacy_id) = legacy_id else { continue };
+        let found: Option<(String, String)> = db
+            .query_row(
+                "SELECT bridge_id, source_content_hash FROM import_ledger
+                 WHERE importer_namespace=?1 AND provider=?2 AND source_path_fingerprint=?3
+                   AND source_native_key=?4 AND candidate_kind='conversation'
+                 ORDER BY created_at DESC LIMIT 1",
+                params![IMPORTER_NAMESPACE, provider, fingerprint, legacy_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if found.is_some() {
+            previous = found;
+            // No hash: the source has outgrown what the older version could
+            // read, so it cannot be unchanged.
+            legacy_hash = hash;
+            break;
+        }
+    }
     let Some((session, hash)) = previous else {
         return Ok(None);
     };
-    if hash == legacy_hash {
+    if Some(hash.as_str()) == legacy_hash.as_deref() {
         return Ok(Some(result_with_status(
             candidate,
             ImportCandidateStatus::SkippedDuplicate,
@@ -1017,7 +1038,7 @@ fn classify_legacy_import(
             candidate,
             ImportCandidateStatus::ChangedSource,
             Some(session),
-            "changed_source",
+            LEGACY_IMPORT_CHANGED,
             "This chat changed since an earlier version of Bridge imported it; choose a new historical revision or skip it",
         )));
     }
@@ -1035,6 +1056,9 @@ fn classify_legacy_import(
 }
 
 const LEGACY_IMPORT_RECOGNISED: &str = "legacy_import_recognised";
+/// A chat an older version imported that has changed since: left as it is,
+/// but its native mapping is still filled in so its new children find it.
+const LEGACY_IMPORT_CHANGED: &str = "legacy_import_changed";
 
 /// Fill in the native mapping for a chat an earlier version imported, so the
 /// same session through any other tool is recognised from now on.
@@ -1042,6 +1066,7 @@ fn remember_legacy_native_session(
     transaction: &Transaction<'_>,
     normalized: &NormalizedImportCandidate,
     classified: &ImportCandidateResult,
+    unchanged: bool,
     import_id: &str,
     created_at: &str,
 ) -> Result<(), BridgeError> {
@@ -1049,7 +1074,11 @@ fn remember_legacy_native_session(
     let (Some(native_key), Some(session)) = (payload_str(payload, "nativeKey"), classified.revision_of.as_deref()) else {
         return Ok(());
     };
-    let transcript_hash = payload_str(payload, "transcriptHash").unwrap_or(&normalized.candidate.content_hash);
+    // A changed chat keeps a hash no transcript will match, so the next import
+    // still sees it as changed rather than a duplicate.
+    let current = payload_str(payload, "transcriptHash").unwrap_or(&normalized.candidate.content_hash);
+    let stale = format!("legacy-changed:{current}");
+    let transcript_hash = if unchanged { current } else { stale.as_str() };
     transaction.execute(
         "INSERT OR IGNORE INTO import_native_sessions(native_key,session_id,content_hash,import_id,created_at)
          VALUES(?1,?2,?3,?4,?5)",
@@ -1078,11 +1107,7 @@ fn destination_conflicts(
         )?);
     }
     if candidate.kind.is_setup() {
-        return Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM import_setup_candidates WHERE candidate_kind=?1 AND title=?2)",
-            params![candidate.kind.as_str(), candidate.title],
-            |row| row.get(0),
-        )?);
+        return setup_conflict_exists(db, candidate);
     }
     Ok(false)
 }
@@ -1287,9 +1312,17 @@ fn imported_parent(
     let Some(native_key) = payload_str(payload, "parentNativeKey") else {
         return Ok(None);
     };
+    // The parent's native session already became a Bridge chat: through an
+    // earlier import, or because Bridge ran it (skipped as Bridge's own).
     let existing: Option<String> = transaction
         .query_row(
-            "SELECT session_id FROM import_native_sessions WHERE native_key=?1",
+            "SELECT session_id FROM import_native_sessions WHERE native_key=?1
+             UNION ALL
+             SELECT session_id FROM bridge_native_sessions WHERE native_key=?1
+             UNION ALL
+             SELECT id FROM sessions WHERE harness || ':' || provider_session_id = ?1
+                AND COALESCE(kind,'') <> 'imported'
+             LIMIT 1",
             params![native_key],
             |row| row.get(0),
         )
@@ -1565,6 +1598,30 @@ fn write_memory(
     Ok(normalized.deterministic_bridge_id.clone())
 }
 
+/// Where a setup item applies: its scope and, for a project item, the
+/// project it belongs to (the same project key whichever tool it came from).
+fn setup_place(candidate: &ImportCandidate) -> (&str, Option<&str>) {
+    let payload = &candidate.normalized_payload;
+    (
+        payload_str(payload, "scope").unwrap_or("global"),
+        payload_str(payload, "projectKey"),
+    )
+}
+
+/// A setup item conflicts only with one of the same kind and name in the
+/// same place: the same script in two projects is two items.
+fn setup_conflict_exists(db: &Connection, candidate: &ImportCandidate) -> Result<bool, BridgeError> {
+    let (scope, project) = setup_place(candidate);
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM import_setup_candidates
+            WHERE candidate_kind=?1 AND title=?2
+              AND COALESCE(json_extract(payload,'$.scope'),'global')=?3
+              AND json_extract(payload,'$.projectKey') IS ?4)",
+        params![candidate.kind.as_str(), candidate.title, scope, project],
+        |row| row.get(0),
+    )?)
+}
+
 fn write_setup_candidate(
     transaction: &Transaction<'_>,
     normalized: &NormalizedImportCandidate,
@@ -1577,16 +1634,13 @@ fn write_setup_candidate(
         ));
     }
     let candidate = &normalized.candidate;
-    let conflict: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM import_setup_candidates WHERE candidate_kind=?1 AND title=?2)",
-        params![candidate.kind.as_str(), candidate.title],
-        |row| row.get(0),
-    )?;
+    let conflict = setup_conflict_exists(transaction, candidate)?;
+    let (scope, project) = setup_place(candidate);
     let conflict_group = conflict.then(|| {
         deterministic_identity(
             "bridge",
             candidate.kind.as_str(),
-            Some(&candidate.title),
+            Some(&format!("{}|{scope}|{}", candidate.title, project.unwrap_or_default())),
             "setup-conflict",
             &candidate.kind,
         )

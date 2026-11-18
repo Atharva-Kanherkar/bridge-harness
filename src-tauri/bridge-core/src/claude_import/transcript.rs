@@ -565,12 +565,9 @@ fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTran
             (agent, finish(child, path, &child_key, &child_label))
         })
         .collect();
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(key)
-        .to_owned();
-    let session_id = reader.session_id.clone().unwrap_or(stem);
+    // Only Claude's own session id is a native identity. A file name is not:
+    // two unrelated exports called session.jsonl would merge into one chat.
+    let session_id = reader.session_id.clone();
     let (title, title_source) = match (&reader.custom_title, &reader.ai_title) {
         (Some(title), _) if !title.trim().is_empty() => (Some(title.clone()), TitleSource::User),
         (_, Some(title))
@@ -594,7 +591,7 @@ fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTran
         harness: "claude".into(),
         model: reader.model.clone(),
         effort: None,
-        native_ref: Some(NativeRef {
+        native_ref: session_id.map(|session_id| NativeRef {
             harness: "claude".into(),
             session_id,
             config_root: None,
@@ -681,6 +678,8 @@ pub fn read_session(
         chats: vec![parsed],
         failures: Vec::new(),
     };
+    // Subagent files that were read, by agent name, to their place in `chats`.
+    let mut from_files: HashMap<String, usize> = HashMap::new();
     for found in subagent_files(main) {
         let agent = found
             .file_stem()
@@ -709,20 +708,20 @@ pub fn read_session(
         };
         let meta = read_agent_meta(&found, approved_roots, &child_label, &mut read.failures);
         name_subagent(&mut child.chat, &key, &parent_session, &agent, meta.as_ref());
+        from_files.insert(agent, read.chats.len());
         read.chats.push(child);
     }
-    // Inline subagents that also have their own file appear once: the file.
-    let from_files: HashSet<String> = subagent_files(main)
-        .iter()
-        .filter_map(|file| file.file_stem().and_then(|stem| stem.to_str()).map(str::to_owned))
-        .collect();
+    // An agent kept both inline and in its own file appears once. The file
+    // wins only when it was read and holds at least as much; otherwise the
+    // inline copy is kept, so a failed or shorter file never loses turns.
     for (agent, mut child) in inline {
         let agent = format!("agent-{agent}");
-        if from_files.contains(&agent) {
-            continue;
-        }
         name_subagent(&mut child.chat, &key, &parent_session, &agent, None);
-        read.chats.push(child);
+        match from_files.get(&agent).copied() {
+            Some(index) if read.chats[index].chat.entries.len() >= child.chat.entries.len() => {}
+            Some(index) => read.chats[index] = child,
+            None => read.chats.push(child),
+        }
     }
     Ok(read)
 }
@@ -771,7 +770,9 @@ fn name_subagent(
             .and_then(Value::as_str)
             .map(str::to_owned);
     }
-    if let Some(native) = chat.native_ref.as_mut() {
+    if parent_session.is_empty() {
+        chat.native_ref = None;
+    } else if let Some(native) = chat.native_ref.as_mut() {
         native.session_id = format!("{parent_session}/{agent}");
     }
     if chat.title_source == TitleSource::Derived {
