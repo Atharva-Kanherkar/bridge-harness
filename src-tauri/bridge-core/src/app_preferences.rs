@@ -30,7 +30,7 @@ pub fn save(db: &Connection, values: &AppPreferenceValues) -> Result<(AppPrefere
     macro_rules! merge {
         ($($field:ident),*) => { $(if values.$field.is_some() { next.$field = values.$field; })* };
     }
-    merge!(theme, skin, effort_selector, show_thinking, auto_expand_edits);
+    merge!(theme, skin, effort_selector, show_thinking, auto_expand_edits, allow_opencode_app_courier);
     if next == current.values {
         return Ok((current, false));
     }

@@ -51,6 +51,21 @@ pub fn capability(harness: &str, op: Op) -> Capability {
     }
 }
 
+/// Why an OpenCode connection is refused while the person has not opted in.
+pub const OPENCODE_OFF: &str = "Personal apps through OpenCode are off. They are less safe: OpenCode reaches MCP servers only through its code mode, which can also make network requests Bridge cannot approve. You can turn them on in Settings, Permissions, at your own discretion, or connect this server in Claude Code or Codex";
+
+/// Whether the person turned on personal apps through OpenCode.
+pub fn opencode_allowed(db: &Db) -> bool {
+    crate::app_preferences::read(db).map(|prefs| prefs.values.allow_opencode_app_courier == Some(true)).unwrap_or(false)
+}
+
+fn gate(core: &Arc<BridgeCore>, connection: &Connection) -> Result<(), BridgeError> {
+    if connection.harness == "opencode" && !opencode_allowed(&*core.try_db()?) {
+        return Err(invalid(OPENCODE_OFF));
+    }
+    Ok(())
+}
+
 pub fn agent_label(harness: &str) -> &str {
     match harness {
         "claude" => "Claude Code",
@@ -150,6 +165,7 @@ fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &V
 }
 
 pub fn inventory(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) -> Result<Value, BridgeError> {
+    gate(core, connection)?;
     if capability(&connection.harness, Op::Inventory) == Capability::Partial {
         return super::courier::opencode_inventory(core, &key_for(connection));
     }
@@ -161,6 +177,7 @@ pub fn inventory(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) ->
 /// here so no path can skip it.
 pub fn read(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
     may_read(&*core.try_db()?, chat)?;
+    gate(core, connection)?;
     if capability(&connection.harness, Op::Read) == Capability::GatedCourier {
         // No annotations exist to recheck; the read vocabulary still applies,
         // and the courier holds the agent to exactly this call.
@@ -204,6 +221,7 @@ pub fn read_with(
 /// again. Claude sends it from a one-shot exact-action launch, Codex with a
 /// direct call on the connection's runtime.
 pub fn write(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
+    gate(core, connection)?;
     match connection.harness.as_str() {
         "claude" => super::write::claude(core, &key_for(connection), tool, arguments),
         "codex" => send(core, chat, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments})),
@@ -228,9 +246,13 @@ fn key_for(connection: &Connection) -> runtimes::Key {
 /// The connections to try for a server a chat names, in order: the chat's own
 /// agent and account when it can run apps directly, then the person's own
 /// Claude Code and Codex logins.
-pub fn candidates(chat_harness: &str, chat_account: Option<&str>, chat_cwd: Option<&str>, server: &str) -> Vec<Connection> {
+pub fn candidates(chat_harness: &str, chat_account: Option<&str>, chat_cwd: Option<&str>, server: &str, opencode: bool) -> Vec<Connection> {
     let mut list = Vec::new();
-    if capability(chat_harness, Op::Inventory) != Capability::Unsupported {
+    let usable = match chat_harness {
+        "opencode" => opencode,
+        harness => capability(harness, Op::Inventory) != Capability::Unsupported,
+    };
+    if usable {
         list.push(Connection {
             harness: chat_harness.into(),
             account: chat_account.map(str::to_owned),
@@ -252,8 +274,9 @@ pub fn candidates(chat_harness: &str, chat_account: Option<&str>, chat_cwd: Opti
 /// The first candidate with `server` connected, and its inventory.
 pub fn choose(core: &Arc<BridgeCore>, chat: &str, server: &str) -> Result<(Connection, Value), BridgeError> {
     let identity = chat_identity(core, chat)?;
+    let opencode = opencode_allowed(&*core.try_db()?);
     choose_with(
-        &candidates(&identity.harness, identity.account.as_deref(), identity.cwd.as_deref(), server),
+        &candidates(&identity.harness, identity.account.as_deref(), identity.cwd.as_deref(), server, opencode),
         |connection| {
             let found = inventory(core, chat, connection);
             // A runtime started only to look for a server that is not there
@@ -317,18 +340,19 @@ mod tests {
 
     #[test]
     fn candidates_put_the_chat_first_and_never_borrow_its_account() {
-        let list = candidates("codex", Some("work"), Some("/repo"), "slack");
+        let list = candidates("codex", Some("work"), Some("/repo"), "slack", false);
         assert_eq!(list[0], Connection { harness: "codex".into(), account: Some("work".into()), cwd: Some("/repo".into()), server: "slack".into() });
         assert_eq!(list[1].harness, "claude");
         assert_eq!(list[2], Connection { harness: "codex".into(), account: None, cwd: None, server: "slack".into() });
         assert!(list[1..].iter().all(|c| c.cwd.is_none()), "other agents are asked user-wide");
-        let list = candidates("opencode", None, Some("/repo"), "railway");
-        assert_eq!(list[0], Connection { harness: "opencode".into(), account: None, cwd: Some("/repo".into()), server: "railway".into() }, "the chat's own OpenCode first");
-        let list = candidates("cursor", Some("work"), Some("/repo"), "slack");
+        let list = candidates("opencode", None, Some("/repo"), "railway", true);
+        assert_eq!(list[0], Connection { harness: "opencode".into(), account: None, cwd: Some("/repo".into()), server: "railway".into() }, "the chat's own OpenCode first, once allowed");
+        assert!(candidates("opencode", None, Some("/repo"), "railway", false).iter().all(|c| c.harness != "opencode"), "never while the person has not opted in");
+        let list = candidates("cursor", Some("work"), Some("/repo"), "slack", true);
         assert_eq!(list.iter().map(|c| c.harness.as_str()).collect::<Vec<_>>(), ["claude", "codex"]);
         assert!(list.iter().all(|c| c.account.is_none()), "an OpenCode or Cursor account is not a Claude or Codex one");
-        assert_eq!(candidates("claude", None, None, "slack").len(), 2, "no duplicate default");
-        assert_eq!(candidates("claude", None, Some("/repo"), "slack").len(), 3, "a project connection is not the user-wide one");
+        assert_eq!(candidates("claude", None, None, "slack", false).len(), 2, "no duplicate default");
+        assert_eq!(candidates("claude", None, Some("/repo"), "slack", false).len(), 3, "a project connection is not the user-wide one");
     }
 
     #[test]
@@ -356,7 +380,7 @@ mod tests {
 
     #[test]
     fn choose_takes_the_first_connected_and_refuses_when_none() {
-        let list = candidates("cursor", None, None, "slack");
+        let list = candidates("cursor", None, None, "slack", false);
         let (chosen, _) = choose_with(&list, |c| Ok(if c.harness == "codex" { json!({"status":"connected","name":"slack"}) } else { json!({"status":"failed"}) })).unwrap();
         assert_eq!(chosen.harness, "codex");
         let error = choose_with(&list, |_| Err(invalid("down"))).unwrap_err().to_string();
@@ -398,6 +422,22 @@ mod tests {
         let db = core.db.lock().unwrap();
         db.execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','codex','Chat','ready')").unwrap();
         assert!(may_read(&db, "chat").is_ok(), "no stored mode launches as Full");
+    }
+
+    #[test]
+    fn opencode_connections_are_refused_until_the_person_opts_in() {
+        let (_dir, core) = fixture();
+        core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','opencode','Chat','ready')").unwrap();
+        let connection = Connection { harness: "opencode".into(), account: None, cwd: None, server: "railway".into() };
+        for error in [
+            inventory(&core, "chat", &connection).unwrap_err().to_string(),
+            read(&core, "chat", &connection, "get_logs", &json!({})).unwrap_err().to_string(),
+            write(&core, "chat", &connection, "deploy", &json!({})).unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("less safe") && error.contains("own discretion"), "{error}");
+        }
+        crate::app_preferences::save(&core.db.lock().unwrap(), &bridge_protocol::messages::AppPreferenceValues { allow_opencode_app_courier: Some(true), ..Default::default() }).unwrap();
+        assert!(opencode_allowed(&core.db.lock().unwrap()));
     }
 
     #[test]

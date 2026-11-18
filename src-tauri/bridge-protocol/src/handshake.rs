@@ -153,9 +153,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.41 adds opened personal apps**: `apps/get_personal_app_open` and
 /// `apps/call_personal_app_tool`, whose writes wait for an approval token.
+///
+/// **1.42 adds `allowOpencodeAppCourier` to app preferences.** A 1.42 client
+/// saving it to a 1.41 daemon would be refused as an unknown field.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 41,
+    minor: 42,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -466,6 +469,14 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn opencode_courier_preference_client_rejects_an_older_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 41 };
+        let flag = ProtocolVersion { major: 1, minor: 42 };
+        assert!(!before.accepts(flag));
+        assert!(flag.accepts(before), "a 1.41 client still pairs with a 1.42 daemon");
     }
 
     #[test]

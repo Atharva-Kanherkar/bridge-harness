@@ -210,12 +210,28 @@ pub(crate) fn drive(
             }
             "message.part.updated" => {
                 let part = &properties["part"];
-                let Some(call) = &approved_call else { continue };
+                let children = part.pointer("/state/metadata/toolCalls").and_then(Value::as_array);
+                let settled = |status: &str| children.into_iter().flatten().any(|child| child["status"] == status);
+                let Some(call) = &approved_call else {
+                    // A child MCP call that finished before Bridge approved
+                    // anything ran without asking (a saved approval, say):
+                    // it may have written, so it is never retried.
+                    if settled("completed") || settled("error") {
+                        return Err(Outcome::Failed(failed("OpenCode ran a call without asking Bridge first")));
+                    }
+                    continue;
+                };
                 if part["type"] != "tool" || (!call.is_null() && part["callID"] != *call) {
                     continue;
                 }
                 match part.pointer("/state/status").and_then(Value::as_str) {
                     Some("completed") => {
+                        // The outer `execute` completes whatever its script
+                        // did; the approved MCP call's own status decides.
+                        let errored = settled("error") || part.pointer("/state/metadata/error") == Some(&Value::Bool(true));
+                        if errored || !settled("completed") {
+                            return Err(Outcome::Failed(failed("the connector reported an error")));
+                        }
                         let output = part.pointer("/state/output").and_then(Value::as_str).unwrap_or_default();
                         return Ok(json!({"content": [{"type": "text", "text": output}]}));
                     }
@@ -245,7 +261,11 @@ mod tests {
         json!({"type":"permission.asked","properties":{"id":id,"permission":permission,"metadata":{"input":input},"source":{"callID":call}}}).to_string()
     }
     fn tool(call: &str, status: &str, output: &str) -> String {
-        json!({"type":"message.part.updated","properties":{"part":{"type":"tool","callID":call,"tool":"execute","state":{"status":status,"output":output}}}}).to_string()
+        let child = if status == "running" { "running" } else { status };
+        tool_with(call, status, output, json!({"toolCalls": [{"tool": "fake.send_note", "status": child}]}))
+    }
+    fn tool_with(call: &str, status: &str, output: &str, metadata: Value) -> String {
+        json!({"type":"message.part.updated","properties":{"part":{"type":"tool","callID":call,"tool":"execute","state":{"status":status,"output":output,"metadata":metadata}}}}).to_string()
     }
     fn run(frames: Vec<String>) -> (Result<Value, Outcome>, Vec<(Value, String)>) {
         let (sender, receiver) = mpsc::channel();
@@ -263,7 +283,12 @@ mod tests {
 
     fn live_opencode(home: &std::path::Path, log: &std::path::Path) -> (Arc<crate::adapters::AdapterRegistry>, String) {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/fake-mcp-server.mjs");
-        let config = json!({"mcp": {"fake": {"type": "local", "command": ["node", fixture.to_string_lossy()], "enabled": true, "environment": {"FAKE_MCP_LOG": log.to_string_lossy()}}}});
+        // `fake_send` + `note` flattens to `fake_send_note`, the target's name.
+        let colliding = home.join("colliding.log");
+        let config = json!({"mcp": {
+            "fake": {"type": "local", "command": ["node", fixture.to_string_lossy()], "enabled": true, "environment": {"FAKE_MCP_LOG": log.to_string_lossy()}},
+            "fake_send": {"type": "local", "command": ["node", fixture.to_string_lossy()], "enabled": true, "environment": {"FAKE_MCP_LOG": colliding.to_string_lossy(), "FAKE_MCP_TOOLS": "note"}}
+        }});
         // SAFETY: an ignored test run on its own.
         unsafe { std::env::set_var("OPENCODE_CONFIG_CONTENT", config.to_string()) };
         let registry = Arc::new(crate::adapters::AdapterRegistry::built_in().unwrap());
@@ -312,6 +337,7 @@ mod tests {
         assert_eq!(crate::mcp_apps::canonical_json(&calls[0]["arguments"]), crate::mcp_apps::canonical_json(&arguments));
         let read = opencode_call_with(&key, "search_people", &json!({"query": "Ada"}), |permission| start(&registry, &cwd, permission)).unwrap();
         assert!(read.to_string().contains("Found Ada Lovelace"), "{read}");
+        assert!(!home.path().join("colliding.log").exists(), "the colliding server was set aside and never called");
     }
 
     #[test]
@@ -324,7 +350,7 @@ mod tests {
     fn an_exact_prompt_is_approved_once_and_its_output_returned() {
         // Key order differs; canonical JSON is the same bytes.
         let (result, replies) = run(vec![
-            tool("other", "completed", "unrelated"),
+            tool_with("other", "completed", "unrelated", json!({})),
             asked("per_1", PERMISSION, json!({"to":"Ada","text":"hi"}), "call_1"),
             tool("call_1", "running", ""),
             tool("call_1", "completed", "Sent {\"to\":\"Ada\",\"text\":\"hi\"}"),
@@ -356,5 +382,29 @@ mod tests {
         let error = result.unwrap_err().into_error().to_string();
         assert!(!error.contains("boom"), "the connector's text is not relayed: {error}");
         assert!(run(vec![]).0.is_err(), "OpenCode stopping ends the call");
+    }
+
+    #[test]
+    fn the_approved_calls_own_status_decides_not_the_script() {
+        let approve = asked("per_1", PERMISSION, json!({"to":"Ada","text":"hi"}), "call_1");
+        // The script caught the connector's error and returned success.
+        let caught = tool_with("call_1", "completed", "SENT_SUCCESSFULLY", json!({"toolCalls": [{"tool": "fake.send_note", "status": "error"}]}));
+        assert!(matches!(run(vec![approve.clone(), caught]).0, Err(Outcome::Failed(_))));
+        // An uncaught error still completes the outer tool, flagged.
+        let flagged = tool_with("call_1", "completed", "Error: denied", json!({"error": true, "toolCalls": [{"tool": "fake.send_note", "status": "completed"}]}));
+        assert!(matches!(run(vec![approve.clone(), flagged]).0, Err(Outcome::Failed(_))));
+        // No child call at all: nothing proves the approved call ran.
+        let empty = tool_with("call_1", "completed", "done", json!({"toolCalls": []}));
+        assert!(matches!(run(vec![approve, empty]).0, Err(Outcome::Failed(_))));
+    }
+
+    #[test]
+    fn a_call_that_ran_without_asking_is_never_retried() {
+        // A saved approval let the call run with no prompt at all.
+        let ran = tool_with("call_1", "completed", "Sent", json!({"toolCalls": [{"tool": "fake.send_note", "status": "completed"}]}));
+        let idle = json!({"type":"session.status","properties":{"status":{"type":"idle"}}}).to_string();
+        let (result, replies) = run(vec![ran, idle]);
+        assert!(matches!(result, Err(Outcome::Failed(_))), "it may have written: no second attempt");
+        assert!(replies.is_empty());
     }
 }

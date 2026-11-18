@@ -89,5 +89,6 @@ it("says when an app runs through OpenCode", async () => {
   vi.mocked(bridgeApi.getPersonalAppOpen).mockResolvedValueOnce({ ...open(), harness: "opencode" });
   await render();
   expect(container.textContent).toContain("via OpenCode");
-  expect(container.textContent).toContain("each call uses a model turn");
+  expect(container.textContent).toContain("Less safe");
+  expect(container.textContent).toContain("own discretion");
 });

@@ -362,12 +362,12 @@ fn launch(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let directory = request.cwd.to_owned();
-    prepare_session(kind, &client, api, &base_url, &directory);
+
     let session_prefix = match api {
         ServerApi::V1 => "/session",
         ServerApi::V2 => "/api/session",
     };
-    let session_result = match resume_session_id {
+    let session_result = prepare_session(kind, &client, api, &base_url, &directory).and_then(|()| match resume_session_id {
         Some(session_id) => client
             .get(api.url(&base_url, &format!("{session_prefix}/{session_id}"), &directory))
             .timeout(Duration::from_secs(10))
@@ -391,7 +391,7 @@ fn launch(
                 .map_err(http_error("create OpenCode session"))
                 .and_then(|response| checked_json(response, "create OpenCode session"))
         }
-    };
+    });
     // 2.x wraps every result in `{data}`.
     let session_result = session_result.map(|session| match api {
         ServerApi::V1 => session,
@@ -767,13 +767,66 @@ fn ensure_kind_supported(kind: SessionKind<'_>, api: ServerApi) -> Result<(), Br
     Ok(())
 }
 
-/// A session's tools are fixed when it is created, and OpenCode connects MCP
-/// servers after it is ready: a courier waits for its one server, or the
-/// model would be told the tool does not exist.
-fn prepare_session(kind: SessionKind<'_>, client: &Client, api: ServerApi, base_url: &str, directory: &str) {
-    if let SessionKind::Courier { server, .. } = kind {
-        wait_for_mcp_server(client, api, base_url, directory, server);
+/// Before a courier session exists, so its tools and permissions are fixed
+/// the way Bridge needs them:
+/// - wait for the one server to connect (a session's tools are fixed when it
+///   is created, and OpenCode connects servers after it is ready);
+/// - disconnect every other server in this private OpenCode process, so no
+///   other server's tool can share the target's flattened permission name
+///   (`fake`+`send_note` and `fake_send`+`note` are both `fake_send_note`).
+///   Disconnecting is per process, never written to the person's config;
+/// - refuse when OpenCode holds a saved "always allow" for the target: it is
+///   appended after the session's rules, so the call would never be asked
+///   about and Bridge could not check its arguments.
+fn prepare_session(kind: SessionKind<'_>, client: &Client, api: ServerApi, base_url: &str, directory: &str) -> Result<(), BridgeError> {
+    let SessionKind::Courier { permission, server } = kind else { return Ok(()) };
+    wait_for_mcp_server(client, api, base_url, directory, server);
+    let get = |path: &str, action: &'static str| -> Result<Value, BridgeError> {
+        client.get(api.url(base_url, path, directory)).timeout(Duration::from_secs(10)).send().map_err(http_error(action))
+            .and_then(|response| checked_json(response, action))
+    };
+    let listed = get("/api/mcp", "list OpenCode MCP servers")?;
+    let others: Vec<&str> = listed["data"].as_array().into_iter().flatten().filter_map(|entry| entry["name"].as_str()).filter(|name| *name != server).collect();
+    for other in &others {
+        let path = format!("/api/experimental/mcp/{}/disconnect", percent_encode_segment(other));
+        let response = client.post(api.url(base_url, &path, directory)).timeout(Duration::from_secs(10)).send().map_err(http_error("isolate an OpenCode MCP server"))?;
+        if !response.status().is_success() {
+            return Err(BridgeError::Invalid("OpenCode would not set aside its other MCP servers for this call, so it was not made".into()));
+        }
     }
+    // Setting servers aside makes OpenCode rebuild its code-mode tool
+    // catalog in the background, and a session created meanwhile starts with
+    // none. There is no readiness signal for it, so give it a moment.
+    if !others.is_empty() {
+        thread::sleep(Duration::from_millis(1500));
+    }
+    wait_for_mcp_server(client, api, base_url, directory, server);
+    let saved = get("/api/permission/saved", "read OpenCode's saved permissions")?;
+    if saved_allows(&saved, permission) {
+        return Err(BridgeError::Invalid(format!(
+            "OpenCode has a saved \"always allow\" covering {permission}, so it would make the call without asking and Bridge could not check it. Remove that saved permission in OpenCode to use this app through OpenCode"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether any of OpenCode's saved permissions allows `permission`. Saved
+/// rules are allows; their `action` may carry `*` wildcards.
+fn saved_allows(saved: &Value, permission: &str) -> bool {
+    fn matches(pattern: &str, text: &str) -> bool {
+        match pattern.split_once('*') {
+            None => pattern == text,
+            Some((head, tail)) => text.strip_prefix(head).is_some_and(|rest| (0..=rest.len()).any(|cut| rest.is_char_boundary(cut) && matches(tail, &rest[cut..]))),
+        }
+    }
+    saved["data"].as_array().into_iter().flatten().any(|rule| {
+        let effect = rule["effect"].as_str().unwrap_or("allow");
+        effect == "allow" && rule["action"].as_str().is_some_and(|action| matches(action, permission))
+    })
+}
+
+fn percent_encode_segment(text: &str) -> String {
+    text.bytes().map(|byte| if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) { (byte as char).to_string() } else { format!("%{byte:02X}") }).collect()
 }
 
 /// Wait up to 20 s for `server` to leave OpenCode's connecting states. A
@@ -3347,6 +3400,18 @@ mod tests {
             "2.x is scoped by header, not query"
         );
         assert_eq!(encode_directory("/Users/me/my repo/é"), "/Users/me/my%20repo/%C3%A9");
+    }
+
+    #[test]
+    fn saved_approvals_that_cover_the_courier_tool_are_found() {
+        let saved = |rules: Value| json!({"data": rules});
+        assert!(saved_allows(&saved(json!([{"id":"a","action":"fake_send_note","resource":"*"}])), "fake_send_note"));
+        assert!(saved_allows(&saved(json!([{"id":"a","action":"fake_*","resource":"*"}])), "fake_send_note"));
+        assert!(saved_allows(&saved(json!([{"id":"a","action":"*","resource":"*"}])), "fake_send_note"));
+        assert!(!saved_allows(&saved(json!([{"id":"a","action":"fake_read","resource":"*"}])), "fake_send_note"));
+        assert!(!saved_allows(&saved(json!([{"id":"a","action":"fake_send_note","effect":"deny"}])), "fake_send_note"));
+        assert!(!saved_allows(&saved(json!([])), "fake_send_note"));
+        assert_eq!(percent_encode_segment("claude.ai Slack"), "claude.ai%20Slack");
     }
 
     #[test]
