@@ -17,7 +17,7 @@ function button(container: HTMLElement, label: string) {
 }
 
 const job = (fields: Partial<ImportJob>): ImportJob => ({
-  jobId: "job-1", tool: "claude_code", status: "running", total: 0, processed: 0, imported: 0, memories: 0,
+  jobId: "job-1", tool: "claude_code", status: "running", total: 0, processed: 0, imported: 0,
   alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 0, notCarried: [], errors: [],
   startedAt: "2026-11-19T10:00:00Z", updatedAt: "2026-11-19T10:00:00Z", ...fields,
 });
@@ -57,7 +57,8 @@ describe("MoveToBridge", () => {
     await render();
     const text = container.textContent ?? "";
     expect(text).toContain("Found on this Mac");
-    expect(text).toContain("3 chats in 1 project · 1 memory · 1 setup item");
+    expect(text).toContain("3 chats in 1 project · 1 setup item");
+    expect(text).toContain("Claude Code keeps using its own memory");
     expect(text).toContain("Not found on this Mac");
     expect(text).not.toContain("Review");
     expect(container.querySelectorAll("button").length).toBe(1);
@@ -90,7 +91,7 @@ describe("MoveToBridge", () => {
     await act(async () => { button(container, "Import").click(); await flush(); });
 
     await send(job({
-      status: "done", total: 400, processed: 400, imported: 380, memories: 3, alreadyInBridge: 15, failed: 1, leftOut: 51190,
+      status: "done", total: 400, processed: 400, imported: 380, alreadyInBridge: 15, failed: 1, leftOut: 51190,
       notCarried: [{ text: "documents or PDFs inside messages", count: 4 }], errors: [],
       updatedAt: "2026-11-19T10:09:00Z", finishedAt: "2026-11-19T10:09:00Z",
     }));

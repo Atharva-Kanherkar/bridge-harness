@@ -1725,13 +1725,13 @@ const mockImportListeners = new Set<(job: ImportJob) => void>();
 function startMockImport(tool: string): ImportJob {
   if (mockImportJob?.status === "running") return mockImportJob;
   const now = new Date().toISOString();
-  const job: ImportJob = { jobId: crypto.randomUUID(), tool, status: "running", total: 24, processed: 0, imported: 0, memories: 0, alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 3, notCarried: [], errors: [], startedAt: now, updatedAt: now };
+  const job: ImportJob = { jobId: crypto.randomUUID(), tool, status: "running", total: 24, processed: 0, imported: 0, alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 3, notCarried: [], errors: [], startedAt: now, updatedAt: now };
   mockImportJob = job;
   const tick = () => {
     const current = mockImportJob!;
     const processed = Math.min(current.total, current.processed + 6);
     const done = processed === current.total;
-    mockImportJob = { ...current, processed, imported: processed - 2, memories: 1, alreadyInBridge: Math.min(2, processed), currentProject: done ? undefined : "/Users/you/Code/app", status: done ? "done" : "running", updatedAt: new Date().toISOString(), finishedAt: done ? new Date().toISOString() : undefined };
+    mockImportJob = { ...current, processed, imported: processed - 2, alreadyInBridge: Math.min(2, processed), currentProject: done ? undefined : "/Users/you/Code/app", status: done ? "done" : "running", updatedAt: new Date().toISOString(), finishedAt: done ? new Date().toISOString() : undefined };
     mockImportListeners.forEach(listener => listener(mockImportJob!));
     if (!done) setTimeout(tick, 600);
   };
@@ -1745,7 +1745,7 @@ function mockImportSources(): ImportSourcesDetection {
   return {
     detectedAt: new Date().toISOString(),
     sources: [
-      { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus memory and setup." },
+      { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory." },
       { tool: "codex", label: "Codex", installed: true, supported: false, roots: ["/mock/.codex/sessions"], counts: { chats: 12, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note: "Codex chats are next. Nothing is read until then." },
       absent("opencode", "OpenCode", "OpenCode chats are coming. Nothing is read until then."),
       { tool: "conductor", label: "Conductor", installed: true, supported: false, roots: ["/mock/conductor/workspaces"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming." },

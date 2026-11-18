@@ -8,14 +8,14 @@ const source = (counts: Partial<DetectedImportSource["counts"]>, installed = tru
 });
 
 const job = (fields: Partial<ImportJob>): ImportJob => ({
-  jobId: "j1", tool: "claude_code", status: "running", total: 0, processed: 0, imported: 0, memories: 0,
+  jobId: "j1", tool: "claude_code", status: "running", total: 0, processed: 0, imported: 0,
   alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 0, notCarried: [], errors: [],
   startedAt: "2026-11-19T10:00:00Z", updatedAt: "2026-11-19T10:00:00Z", ...fields,
 });
 
 describe("Move to Bridge logic", () => {
   it("summarizes what a tool holds, and says when it is absent or empty", () => {
-    expect(sourceSummary(source({ chats: 1312, projects: 14, memories: 3, setup: 1 }))).toBe("1,312 chats in 14 projects · 3 memories · 1 setup item");
+    expect(sourceSummary(source({ chats: 1312, projects: 14, memories: 3, setup: 1 }))).toBe("1,312 chats in 14 projects · 1 setup item");
     expect(sourceSummary(source({ chats: 1, projects: 1 }))).toBe("1 chat in 1 project");
     expect(sourceSummary(source({ chats: 2, projects: 1, background: 49798 }))).toBe("2 chats in 1 project · 49,798 background runs left out");
     expect(sourceSummary(source({ projects: 2, workspaces: 5 }))).toBe("5 workspaces in 2 repos");

@@ -324,13 +324,11 @@ pub struct ImportJob {
     pub tool: String,
     /// `running`, `done` or `failed`.
     pub status: String,
-    /// Files the job reads: transcripts, memories and setup items.
+    /// Files the job reads: transcripts and setup items.
     pub total: u64,
     pub processed: u64,
-    /// Chats, memories and setup items written to Bridge.
+    /// Chats and setup items written to Bridge.
     pub imported: u64,
-    /// Memories among `imported`.
-    pub memories: u64,
     pub already_in_bridge: u64,
     /// Chats imported before whose source has changed since; kept as they were.
     pub changed: u64,

@@ -155,15 +155,16 @@ try {
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats, projects, memory, setup and the background run left out", /605 chats in 6 projects · 1 memory · 1 setup item · \d+ background runs? left out/.test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats, projects, setup and the background run left out", /605 chats in 6 projects · 1 setup item · \d+ background runs? left out/.test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found and honestly marked as coming", found.includes("Codex chats are next"));
   check("Tools that are not installed say so", found.includes("Not found on this Mac"));
   await shot("01-found-dark");
 
-  // 605 chats, the Explore subagent, the memory and CLAUDE.md: 607 files read,
-  // 608 items written (the subagent comes out of its parent's file).
-  const EXPECTED = 608;
+  // 605 chats, the Explore subagent and CLAUDE.md: 606 files read, 607 items
+  // written (the subagent comes out of its parent's file). Claude Code keeps
+  // its own memory, so the memory file stays where it is.
+  const EXPECTED = 607;
   await caption("One click: Import");
   await click("Import", "button");
   await waitFor("the progress card", `!!document.querySelector('section[aria-label="Import progress"]')`, 10000);
@@ -173,7 +174,7 @@ try {
   await sleep(700);
   await shot("02-progress-dark");
   const card = await js(`document.querySelector('section[aria-label="Import progress"]').innerText`);
-  check("The card counts files and says what came over", /of 607/.test(card) && /came over/.test(card), card.replace(/\n+/g, " | "));
+  check("The card counts files and says what came over", /of 606/.test(card) && /came over/.test(card), card.replace(/\n+/g, " | "));
   check("The card says the page can be left", card.includes("You can leave this page"));
 
   await caption("Leave the page while it works");
@@ -189,7 +190,7 @@ try {
   const imported = Number((await js(`document.querySelector('[data-import-result="imported"]')?.textContent`)).replace(/,/g, ""));
   const skippedFirst = Number(await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`));
   const summary = await text();
-  check("Every chat, the subagent, the memory and CLAUDE.md came over", imported === EXPECTED, `imported=${imported}`);
+  check("Every chat, the subagent and CLAUDE.md came over", imported === EXPECTED, `imported=${imported}`);
   check("Nothing was already in Bridge on the first import", skippedFirst === 0, `skipped=${skippedFirst}`);
   // The fixture's temp-folder run, plus the probes Bridge itself ran in the
   // fake home while setting up: all background runs, all left out.

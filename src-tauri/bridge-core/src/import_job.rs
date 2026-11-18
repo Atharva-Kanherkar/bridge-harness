@@ -14,7 +14,7 @@ use crate::BridgeError;
 use crate::events::CoreEvent;
 use crate::external_import::{
     CandidateKind, ConflictPolicy, DiscoveredArtifact, DiscoverySelection, ExternalHarnessImporter,
-    ImportCandidate, ImportCandidateStatus, ImportCommit, ImportPlan, SetupActivationPolicy,
+    ImportCandidate, ImportCommit, ImportPlan, SetupActivationPolicy,
 };
 use crate::runtime::BridgeCore;
 use bridge_protocol::messages as wire;
@@ -34,8 +34,6 @@ const BATCH_FILES: usize = 25;
 const BATCH_BYTES: u64 = 16 * 1024 * 1024;
 /// Progress events are at most this frequent; the last one always goes out.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
-/// Memories from the one-button import join the person's own memory.
-const MEMORY_SCOPE: &str = "account:local";
 
 fn install(db: &Connection) -> Result<(), BridgeError> {
     db.execute_batch(
@@ -271,7 +269,7 @@ struct Refusal {
 }
 
 /// Read one batch at full fidelity and commit everything importable in it:
-/// chats and memories alongside what is already there, setup switched off.
+/// chats alongside what is already there, setup switched off.
 /// Each family (a chat with its subagents, or one item) commits in its own
 /// transaction, so one item Bridge refuses never costs the rest of the batch.
 fn import_batch(
@@ -303,14 +301,11 @@ fn import_batch(
         .iter()
         .map(|candidate| candidate.candidate.candidate_id.as_str())
         .collect();
-    let has_memory = normalized
-        .iter()
-        .any(|candidate| candidate.candidate.kind == CandidateKind::Memory);
     let plan = ImportPlan {
         selected_candidate_ids: selected.iter().map(|id| (*id).to_owned()).collect(),
         conflict_policy: ConflictPolicy::ImportAlongside,
         setup_activation_policy: SetupActivationPolicy::Disabled,
-        memory_scope: has_memory.then(|| MEMORY_SCOPE.to_owned()),
+        memory_scope: None,
         dry_run: false,
         created_at: Utc::now().to_rfc3339(),
     };
@@ -340,16 +335,6 @@ fn import_batch(
     if commit.imported > 0 {
         core.events.publish(CoreEvent::StateChanged);
     }
-    let memory_imported = commit.candidate_results.iter().any(|result| {
-        result.status == ImportCandidateStatus::Imported
-            && normalized.iter().any(|candidate| {
-                candidate.candidate.candidate_id == result.candidate_id
-                    && candidate.candidate.kind == CandidateKind::Memory
-            })
-    });
-    if memory_imported {
-        core.events.publish(CoreEvent::MemoryChanged { scope_key: MEMORY_SCOPE.into() });
-    }
     Ok(BatchOutcome { candidates: previewed, commit: Some(commit), refusals })
 }
 
@@ -371,17 +356,6 @@ fn merge_commit(total: &mut Option<ImportCommit>, next: ImportCommit) {
 
 /// Why Bridge refused an item, as a person reads it in "did not come over".
 fn refusal_text(kind: &CandidateKind, reason: &str) -> String {
-    if *kind == CandidateKind::Memory {
-        if reason.contains("can be at most") {
-            return "memories longer than 4,000 characters".into();
-        }
-        if reason.contains("records and nothing was written") {
-            return "memories that did not fit: Bridge memory is full".into();
-        }
-        if reason.contains("cannot store credentials") {
-            return "memories that hold a credential".into();
-        }
-    }
     let what = match kind {
         CandidateKind::Conversation => "chats",
         CandidateKind::Memory => "memories",
@@ -394,16 +368,6 @@ fn refusal_text(kind: &CandidateKind, reason: &str) -> String {
 pub(crate) fn add_batch(job: &mut wire::ImportJob, candidates: &[ImportCandidate], commit: Option<&ImportCommit>) {
     if let Some(commit) = commit {
         job.imported += u64::from(commit.imported);
-        let imported: HashSet<&str> = commit
-            .candidate_results
-            .iter()
-            .filter(|result| result.status == ImportCandidateStatus::Imported)
-            .map(|result| result.candidate_id.as_str())
-            .collect();
-        job.memories += candidates
-            .iter()
-            .filter(|candidate| candidate.kind == CandidateKind::Memory && imported.contains(candidate.candidate_id.as_str()))
-            .count() as u64;
         job.already_in_bridge += u64::from(commit.skipped);
         job.changed += u64::from(commit.changed);
         job.failed += u64::from(commit.rejected + commit.conflicted);

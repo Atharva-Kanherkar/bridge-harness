@@ -4,15 +4,18 @@
 // is tested without a DOM.
 import type { DetectedImportSource, ImportJob } from "./protocol/generated/protocol";
 
-/** "312 chats in 14 projects · 3 memories" for a found tool, or why it is empty. */
+/**
+ * "312 chats in 14 projects · 1 setup item" for a found tool, or why it is
+ * empty. Memories are not listed: the agent keeps using its own memory, so
+ * the import leaves them where they are.
+ */
 export function sourceSummary(source: DetectedImportSource): string {
   if (!source.installed) return "Not found on this Mac";
-  const { chats, projects, workspaces, memories, setup } = source.counts;
+  const { chats, projects, workspaces, setup } = source.counts;
   const background = source.counts.background ?? 0;
   const parts: string[] = [];
   if (chats > 0) parts.push(`${chats.toLocaleString()} ${chats === 1 ? "chat" : "chats"}${projects > 0 && workspaces === 0 ? ` in ${projects.toLocaleString()} ${projects === 1 ? "project" : "projects"}` : ""}`);
   if (workspaces > 0) parts.push(`${workspaces.toLocaleString()} ${workspaces === 1 ? "workspace" : "workspaces"} in ${projects.toLocaleString()} ${projects === 1 ? "repo" : "repos"}`);
-  if (memories > 0) parts.push(`${memories.toLocaleString()} ${memories === 1 ? "memory" : "memories"}`);
   if (setup > 0) parts.push(`${setup.toLocaleString()} setup ${setup === 1 ? "item" : "items"}`);
   if (background > 0) parts.push(`${background.toLocaleString()} background ${background === 1 ? "run" : "runs"} left out`);
   return parts.length > 0 ? parts.join(" · ") : "Found, but nothing to bring over yet";

@@ -46,7 +46,7 @@ export function MoveToBridge({ onError }: { onError: (message: string) => void }
   return <>
     {job && running && <ImportProgress job={job} />}
     {job && !running && <ImportSummary job={job} />}
-    <SettingsGroup label="Found on this Mac" note="Import brings over your chats, memories and setup. Setup arrives switched off.">
+    <SettingsGroup label="Found on this Mac" note="Import brings over your chats and setup. Setup arrives switched off.">
       {sources === null && <SettingsRow label={<span className="flex items-center gap-2 text-muted-foreground"><CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />Looking for other tools…</span>} />}
       {sources?.map(item => <SettingsRow
         key={item.tool}
@@ -138,7 +138,6 @@ function ImportSummary({ job }: { job: ImportJob }) {
     note={finishedLabel(job)}
   >
     <SettingsRow label="Came over" description="Imported chats are in the sidebar, under their project when Bridge knows the folder." control={<Count value={job.imported} tone="plain" result="imported" />} />
-    {job.memories > 0 && <SettingsRow label="Memories" description="Added alongside the memories you already have." control={<Count value={job.memories} />} />}
     <SettingsRow label="Already in Bridge" description="Imported before, or chats Bridge ran itself." control={<Count value={job.alreadyInBridge} result="skipped" />} />
     {job.changed > 0 && <SettingsRow label="Changed since the last import" description="Kept as they were imported." control={<Count value={job.changed} />} />}
     {job.leftOut > 0 && <SettingsRow label="Background runs left out" description="Sessions Claude Code ran in a temporary folder, such as SDK probes. Not chats you had." control={<Count value={job.leftOut} />} />}

@@ -6,14 +6,14 @@ Importing from Claude Code is one button and a background job. The Review step i
 
 - The Import page lists the tools found on this Mac. Claude Code has one button, Import. Nothing else is asked before importing.
 - Import starts a job in Bridge's own process and returns at once. The window can leave the page or close; the job keeps going.
-- The job imports every real chat, every memory, and the setup items (instructions, settings, agents, commands, skills, rules). Setup arrives switched off. Background runs (chats Claude Code ran in the OS temp folder) are left out and counted as left out.
+- The job imports every real chat and the setup items (instructions, settings, agents, commands, skills, rules). Setup arrives switched off. Background runs (chats Claude Code ran in the OS temp folder) are left out and counted as left out. Claude Code's memory files are not imported: Claude Code in Bridge keeps reading them itself, so copying them would only duplicate them into Bridge memory.
 - The job builds its work list from file paths and sizes only: no transcript is opened to list it and nothing is sent to the window. It then reads and imports a small batch at a time in a fixed order, bounded by count and by bytes, so memory stays bounded whatever the number of transcripts.
 - Progress (processed of total, came over, already in Bridge, the current project) is saved after every batch and published as a live event. The page shows it as an animated progress card.
 - When the job finishes, Bridge tells the person: an in-app toast, plus a system notification when Bridge is not focused. The page shows what came over, what was already in Bridge, the background runs left out, and what did not come over.
 - Only one import runs at a time. Pressing Import while one runs shows the running one.
 - If Bridge quits mid-import, the job resumes on the next start from the last finished batch. Chats imported earlier are recognised and not imported twice.
 - Importing again later brings over only what is new or changed.
-- One item Bridge refuses costs only that item: each chat with its subagents, and each other item, commits in its own transaction. A memory over 4,000 characters, or one that does not fit because Bridge memory is full, is listed under "did not come over" with that reason, and the rest of its batch lands.
+- One item Bridge refuses costs only that item: each chat with its subagents, and each other item, commits in its own transaction. The refused item is listed under "did not come over" with the reason, and the rest of its batch lands.
 - The Import page is the found tools and an Import button. The folder wizard is gone: its folder picker ran the same full listing that froze the window.
 
 ## Unit Tests
@@ -24,12 +24,13 @@ Importing from Claude Code is one button and a background job. The Review step i
 
 ## Integration / Functional Tests
 
-- `import_job` on a real store: a fake Claude home with chats in two projects, a background run, a memory and an agent. The job imports the chats and the memory, leaves the background run out, imports the agent switched off, and publishes progress and a finished state.
+- `import_job` on a real store: a fake Claude home with chats in two projects, a background run, a memory and an agent. The job imports the chats, leaves the background run and the memory where they are, imports the agent switched off, and publishes progress and a finished state.
 - Running the job twice imports nothing the second time; everything is already in Bridge.
 - A job left `running` (Bridge quit) resumes on startup from its cursor and finishes.
 - One unreadable transcript is reported under "did not come over" and the rest import.
 - A transcript that vanishes mid-import costs only itself.
-- A memory over 4,000 characters, and a memory past a full memory budget, are each refused alone and reported; the chats and other memories in the same batch import.
+- An item Bridge refuses (built with a memory over 4,000 characters) is refused alone and reported; the chats in the same batch import.
+- No Claude Code memory file lands in Bridge memory.
 - `MoveToBridge.test.tsx`: Import starts the job; a progress event animates the card; a finished event shows the summary; reopening the page during a job shows its progress.
 - Both hosts (bridged and the embedded desktop) resume an interrupted import at startup.
 

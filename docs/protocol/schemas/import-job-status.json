@@ -42,7 +42,7 @@
           ]
         },
         "imported": {
-          "description": "Chats, memories and setup items written to Bridge.",
+          "description": "Chats and setup items written to Bridge.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -52,12 +52,6 @@
         },
         "leftOut": {
           "description": "Background runs from the OS temp folder, not imported.",
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "memories": {
-          "description": "Memories among `imported`.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -85,7 +79,7 @@
           "type": "string"
         },
         "total": {
-          "description": "Files the job reads: transcripts, memories and setup items.",
+          "description": "Files the job reads: transcripts and setup items.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -101,7 +95,6 @@
         "imported",
         "jobId",
         "leftOut",
-        "memories",
         "processed",
         "startedAt",
         "status",

@@ -83,8 +83,8 @@ fn the_work_list_is_ordered_leaves_background_runs_out_and_opens_nothing() {
     let kinds: Vec<CandidateKind> = work.artifacts.iter().map(|a| a.kind.clone()).collect();
     assert_eq!(
         kinds,
-        vec![CandidateKind::Agent, CandidateKind::Memory, CandidateKind::Conversation, CandidateKind::Conversation],
-        "setup and memories first, then chats"
+        vec![CandidateKind::Agent, CandidateKind::Conversation, CandidateKind::Conversation],
+        "setup first, then chats; Claude Code keeps its own memory"
     );
     let keys: Vec<String> = work.artifacts.iter().map(claude_import::job_key).collect();
     assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "a strict order the cursor can resume from: {keys:?}");
@@ -107,7 +107,7 @@ fn batches_hold_at_most_25_files_and_16_mib() {
 }
 
 #[test]
-fn a_job_imports_chats_memory_and_setup_and_leaves_background_runs_out() {
+fn a_job_imports_chats_and_setup_and_leaves_background_runs_out() {
     let root = tempfile::tempdir().unwrap();
     let roots = claude_home(root.path());
     let scratch = tempfile::tempdir().unwrap();
@@ -117,9 +117,8 @@ fn a_job_imports_chats_memory_and_setup_and_leaves_background_runs_out() {
     let job = run_job(&core, &roots);
 
     assert_eq!(job.status, "done");
-    assert_eq!((job.processed, job.total, job.left_out), (4, 4, 1));
-    assert_eq!(job.memories, 1);
-    assert_eq!(job.imported, 4, "two chats, the memory and the agent: {job:?}");
+    assert_eq!((job.processed, job.total, job.left_out), (3, 3, 1));
+    assert_eq!(job.imported, 3, "two chats and the agent: {job:?}");
     assert_eq!((job.failed, job.already_in_bridge), (0, 0));
     assert!(job.errors.is_empty(), "{:?}", job.errors);
     assert!(job.finished_at.is_some() && job.current_project.is_none());
@@ -151,7 +150,7 @@ fn importing_again_brings_over_nothing_already_in_bridge() {
 
     assert_eq!(again.status, "done");
     assert_eq!(again.imported, 0, "{again:?}");
-    assert_eq!(again.already_in_bridge, 4);
+    assert_eq!(again.already_in_bridge, 3);
     assert_eq!(imported_sessions(&core), 2);
 }
 
@@ -166,7 +165,7 @@ fn a_job_bridge_quit_in_the_middle_of_resumes_from_its_cursor() {
     let cursor = claude_import::job_key(&work.artifacts[0]);
     let mut job = new_job();
     job.processed = 1;
-    job.total = 4;
+    job.total = 3;
     save(&core, &job, Some(&cursor)).unwrap();
 
     assert!(resume_with_roots(&core, roots.clone()).unwrap(), "a running job is picked up");
@@ -181,8 +180,8 @@ fn a_job_bridge_quit_in_the_middle_of_resumes_from_its_cursor() {
     };
 
     assert_eq!(finished.status, "done");
-    assert_eq!((finished.processed, finished.total), (4, 4));
-    assert_eq!(finished.imported, 3, "only what came after the cursor: {finished:?}");
+    assert_eq!((finished.processed, finished.total), (3, 3));
+    assert_eq!(finished.imported, 2, "only what came after the cursor: {finished:?}");
     assert_eq!(imported_sessions(&core), 2);
     assert!(!resume_with_roots(&core, roots).unwrap(), "a finished job is not resumed again");
 }
@@ -240,63 +239,71 @@ fn a_file_that_vanishes_mid_import_costs_only_that_file() {
 
     Runner { core: &core, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
 
-    assert_eq!(job.processed, 4);
+    assert_eq!(job.processed, 3);
     assert_eq!(job.failed, 1, "only the vanished chat: {job:?}");
-    assert_eq!(job.imported, 3, "the agent, the memory and the other chat: {job:?}");
+    assert_eq!(job.imported, 2, "the agent and the other chat: {job:?}");
     assert_eq!(imported_sessions(&core), 1);
     assert!(job.not_carried.iter().any(|item| item.text.starts_with("A chat could not be read")), "{:?}", job.not_carried);
 }
 
-/// A memory Bridge refuses (over 4,000 characters) costs only that memory:
-/// the chats and the other memory in its batch still come over, and the
-/// summary says why it did not.
+/// Claude Code in Bridge reads its own memory files, so the import leaves
+/// them where they are: nothing lands in Bridge memory.
 #[test]
-fn a_refused_memory_costs_only_itself() {
+fn claude_code_memories_stay_with_claude_code() {
     let root = tempfile::tempdir().unwrap();
     let roots = claude_home(root.path());
-    write(&root.path().join(".claude/projects/-work-api/memory/MEMORY.md"), &"- a long note\n".repeat(400));
     let scratch = tempfile::tempdir().unwrap();
     let core = core(scratch.path());
 
     let job = run_job(&core, &roots);
 
     assert_eq!(job.status, "done");
-    assert_eq!(job.failed, 1, "{job:?}");
-    assert_eq!(job.memories, 1, "the short memory still came over: {job:?}");
+    let records: i64 = {
+        let db = core.db.lock().unwrap();
+        db.query_row("SELECT COUNT(*) FROM memory_records", [], |row| row.get(0)).unwrap()
+    };
+    assert_eq!(records, 0);
+    assert!(job.not_carried.is_empty() && job.failed == 0, "{job:?}");
+}
+
+/// An item Bridge refuses costs only itself: each family commits in its own
+/// transaction, so the chats in the same batch still come over, and the
+/// summary says why the item did not. (A memory over 4,000 characters is a
+/// refusal that is easy to build; the job itself no longer reads memories.)
+#[test]
+fn one_refused_item_costs_only_itself() {
+    let root = tempfile::tempdir().unwrap();
+    let roots = claude_home(root.path());
+    write(&root.path().join(".claude/projects/-work-app/memory/MEMORY.md"), &"- a long note\n".repeat(400));
+    let mut work = claude_import::job_work(&roots).unwrap();
+    let request = crate::external_import::DiscoveryRequest {
+        provider: claude_import::PROVIDER.into(),
+        approved_roots: roots.iter().map(|r| r.to_string_lossy().into_owned()).collect(),
+        selected_export: None,
+        source_version: None,
+        schema_version: None,
+        format_versions: std::collections::BTreeMap::new(),
+    };
+    let memory = ClaudeCodeImporter
+        .discover_with_homes(&request, &roots)
+        .unwrap()
+        .artifacts
+        .into_iter()
+        .find(|artifact| artifact.kind == CandidateKind::Memory)
+        .unwrap();
+    work.artifacts.insert(1, memory);
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut job = new_job();
+    save(&core, &job, None).unwrap();
+
+    Runner { core: &core, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
+
+    assert_eq!((job.processed, job.failed), (4, 1), "{job:?}");
     assert_eq!(imported_sessions(&core), 2, "the chats in the same batch still came over");
     assert!(job.errors.is_empty(), "a refused item is a loss, not a job error: {:?}", job.errors);
     assert!(
-        job.not_carried.iter().any(|item| item.text == "memories longer than 4,000 characters" && item.count == 1),
-        "{:?}", job.not_carried
-    );
-}
-
-/// When Bridge's memory is full, the memories that do not fit are reported
-/// as such and everything else imports.
-#[test]
-fn memories_beyond_a_full_memory_are_reported() {
-    let root = tempfile::tempdir().unwrap();
-    let roots = claude_home(root.path());
-    write(&root.path().join(".claude/projects/-work-api/memory/MEMORY.md"), "- the api uses axum\n");
-    let scratch = tempfile::tempdir().unwrap();
-    let core = core(scratch.path());
-    {
-        let db = core.db.lock().unwrap();
-        db.execute(
-            "INSERT INTO memory_consolidation_settings(scope_key, mode, harness, model, max_records, allow_removal, debounce_seconds, updated_at)
-             VALUES ('account:local', 'off', NULL, NULL, 1, 0, 600, '2026-11-19T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-    }
-
-    let job = run_job(&core, &roots);
-
-    assert_eq!(job.status, "done");
-    assert_eq!((job.memories, job.failed), (1, 1), "{job:?}");
-    assert_eq!(imported_sessions(&core), 2);
-    assert!(
-        job.not_carried.iter().any(|item| item.text == "memories that did not fit: Bridge memory is full" && item.count == 1),
+        job.not_carried.iter().any(|item| item.text.starts_with("memories Bridge refused") && item.count == 1),
         "{:?}", job.not_carried
     );
 }
@@ -327,8 +334,8 @@ fn measure_the_job_on_this_machine() {
     let started = Instant::now();
     let job = run_job(&core, &roots);
     println!(
-        "MEASURE job_secs={:.1} status={} processed={} imported={} memories={} already={} failed={} left_out={} not_carried_kinds={} errors={}",
-        started.elapsed().as_secs_f64(), job.status, job.processed, job.imported, job.memories,
+        "MEASURE job_secs={:.1} status={} processed={} imported={} already={} failed={} left_out={} not_carried_kinds={} errors={}",
+        started.elapsed().as_secs_f64(), job.status, job.processed, job.imported,
         job.already_in_bridge, job.failed, job.left_out, job.not_carried.len(), job.errors.len()
     );
     for error in &job.errors {

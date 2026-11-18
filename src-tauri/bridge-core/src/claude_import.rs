@@ -1384,10 +1384,11 @@ fn unsupported_diagnostic(
     }
 }
 
-/// What a background import reads, in the order it reads them: setup and
-/// memories first, then every transcript by project folder. Built from file
-/// listings and sizes only; no transcript is opened. Chats Claude Code ran in
-/// the OS temp folder are background runs: counted, and left out.
+/// What a background import reads, in the order it reads them: setup first,
+/// then every transcript by project folder. Built from file listings and
+/// sizes only; no transcript is opened. Chats Claude Code ran in the OS temp
+/// folder are background runs: counted, and left out. Claude Code's memory
+/// files are not imported: Claude Code in Bridge keeps reading them itself.
 pub struct JobWork {
     pub roots: Vec<PathBuf>,
     pub artifacts: Vec<DiscoveredArtifact>,
@@ -1409,7 +1410,8 @@ pub fn job_work(roots: &[PathBuf]) -> Result<JobWork, BridgeError> {
     }
     artifacts.sort_by_cached_key(job_key);
     artifacts.dedup_by(|left, right| left.canonical_source_ref == right.canonical_source_ref);
-    let listed = artifacts.len();
+    artifacts.retain(|artifact| artifact.kind != CandidateKind::Memory);
+    let kept = artifacts.len();
     artifacts.retain(|artifact| {
         artifact.kind != CandidateKind::Conversation
             || !Path::new(&artifact.canonical_source_ref)
@@ -1418,7 +1420,7 @@ pub fn job_work(roots: &[PathBuf]) -> Result<JobWork, BridgeError> {
     });
     Ok(JobWork {
         roots: roots.to_vec(),
-        left_out: (listed - artifacts.len()) as u64,
+        left_out: (kept - artifacts.len()) as u64,
         artifacts,
     })
 }

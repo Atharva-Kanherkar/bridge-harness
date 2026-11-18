@@ -2239,7 +2239,6 @@ export interface ImportJob {
   imported: number;
   jobId: string;
   leftOut: number;
-  memories: number;
   notCarried?: ImportNotCarried[];
   processed: number;
   startedAt: string;

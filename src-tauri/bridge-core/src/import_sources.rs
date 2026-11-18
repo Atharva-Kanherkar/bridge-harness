@@ -145,7 +145,7 @@ fn claude(
         roots: roots.iter().map(|root| root.to_string_lossy().into_owned()).collect(),
         counts,
         note: Some(
-            "Chats with their tool calls, thinking, images and subagents, plus memory and setup. Chats Claude Code ran for Conductor, T3 Code, Orca and Superset come over too."
+            "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory. Chats Claude Code ran for Conductor, T3 Code, Orca and Superset come over too."
                 .into(),
         ),
     }
