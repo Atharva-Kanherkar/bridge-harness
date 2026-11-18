@@ -973,3 +973,60 @@ describe("ChatModelControl while the host resolves the model", () => {
     expect(panel().textContent).not.toContain("Default");
   });
 });
+
+describe("ChatModelControl speed", () => {
+  // Live catalogs: Claude Opus lists fast mode; Codex lists `priority` as Fast
+  // and, where offered, Ultrafast. Sonnet lists nothing faster.
+  const speedAdapters: AdapterDescriptor[] = [
+    {
+      id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
+      models: [
+        { id: "claude-opus-5-5", label: "Opus 5.5", tier: "strong", defaultForTier: true, supportedEffortLevels: ["high", "xhigh", "max", "ultracode"], speedTiers: [{ id: "fast", label: "Fast", description: "Faster output on the same model" }] },
+        { id: "claude-sonnet-5-5", label: "Sonnet 5.5", tier: "standard", defaultForTier: true, supportedEffortLevels: ["high"] },
+      ],
+      defaultModel: "claude-sonnet-5-5",
+    },
+    {
+      id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
+      models: [{ id: "gpt-6-astra", label: "GPT-6 Astra", tier: "strong", defaultForTier: true, speedTiers: [{ id: "priority", label: "Fast" }, { id: "ultrafast", label: "Ultrafast" }] }],
+      defaultModel: "gpt-6-astra",
+    },
+  ];
+  const speedRadios = () => [...panel().querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="Speed"] [role="radio"]')];
+
+  it("offers standard plus each listed tier and emits the tier id", async () => {
+    const onSpeedChange = vi.fn();
+    await act(async () => root.render(
+      <ChatModelControl adapters={speedAdapters} harness="codex" model="gpt-6-astra" compact onChange={vi.fn()} speed={null} onSpeedChange={onSpeedChange} />,
+    ));
+    await act(async () => trigger().click());
+    expect(speedRadios().map(radio => radio.textContent)).toEqual(["Standard", "Fast", "Ultrafast"]);
+    expect(speedRadios().find(radio => radio.getAttribute("aria-checked") === "true")?.dataset.speed).toBe("standard");
+    await act(async () => speedRadios().find(radio => radio.dataset.speed === "ultrafast")!.click());
+    expect(onSpeedChange).toHaveBeenCalledWith("ultrafast");
+  });
+
+  it("marks Claude fast mode and goes back to standard explicitly", async () => {
+    const onSpeedChange = vi.fn();
+    await act(async () => root.render(
+      <ChatModelControl adapters={speedAdapters} harness="claude" model="claude-opus-5-5" compact onChange={vi.fn()} speed="fast" onSpeedChange={onSpeedChange} />,
+    ));
+    await act(async () => trigger().click());
+    expect(speedRadios().find(radio => radio.getAttribute("aria-checked") === "true")?.dataset.speed).toBe("fast");
+    expect(panel().textContent).toContain("Faster output on the same model");
+    await act(async () => speedRadios().find(radio => radio.dataset.speed === "standard")!.click());
+    expect(onSpeedChange).toHaveBeenCalledWith("standard");
+  });
+
+  it("shows nothing for a model without faster tiers or a surface that cannot change speed", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={speedAdapters} harness="claude" model="claude-sonnet-5-5" compact onChange={vi.fn()} speed={null} onSpeedChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    expect(container.querySelector('[data-testid="speed-control"]')).toBeNull();
+    await act(async () => root.render(
+      <ChatModelControl adapters={speedAdapters} harness="claude" model="claude-opus-5-5" compact onChange={vi.fn()} speed="fast" />,
+    ));
+    expect(container.querySelector('[data-testid="speed-control"]')).toBeNull();
+  });
+});

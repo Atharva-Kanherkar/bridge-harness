@@ -245,6 +245,7 @@ fn ask(registry: &crate::adapters::AdapterRegistry, harness: &str, model: Option
                 cwd,
                 model,
                 effort: None,
+                speed: None,
                 instructions: Some(instructions),
                 write_mode: Some(crate::delegation::WriteMode::Shared),
                 read_only_sandbox: None,

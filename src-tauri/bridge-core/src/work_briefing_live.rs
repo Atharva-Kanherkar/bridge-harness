@@ -459,6 +459,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             cwd: &cwd,
             model: Some(&selection.model),
             effort: selection.effort.as_deref(),
+            speed: None,
             instructions: Some(&instructions),
             write_mode: None,
             read_only_sandbox: None,

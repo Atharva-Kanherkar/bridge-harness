@@ -349,9 +349,24 @@ pub struct ModelOption {
     /// not report one — the picker then hides or falls back to its fixed list.
     #[serde(default)]
     pub supported_effort_levels: Vec<String>,
+    /// Faster service tiers this model offers beyond standard speed, as the
+    /// provider listed them: Claude's fast mode, Codex's `serviceTiers`
+    /// (`priority` is Fast, `ultrafast` when listed). Empty means standard only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speed_tiers: Vec<SpeedTier>,
     /// Bridge's promoted model for this tier, not merely the provider's
     /// advertised default. Exactly one eligible entry per populated tier wins.
     pub default_for_tier: bool,
+}
+
+/// One faster service tier. `id` is what the provider takes back on launch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedTier {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 fn model_option_default_true() -> bool {
@@ -523,6 +538,10 @@ pub struct Session {
     /// The extra Claude or Codex account this chat signs in with
     /// (`provider_accounts`); `None` is the user's own login.
     pub account: Option<String>,
+    /// The chat's speed tier (`ModelOption::speed_tiers`); `None` is the
+    /// provider's standard speed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
     /// `title` at several lengths, shortest first (`title_jobs`). Only served
     /// while it still belongs to the stored title.
     #[serde(skip_serializing_if = "Vec::is_empty")]

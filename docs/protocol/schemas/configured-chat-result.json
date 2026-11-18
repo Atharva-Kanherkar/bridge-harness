@@ -447,6 +447,13 @@
         "restorationMode": {
           "$ref": "#/definitions/RestorationMode"
         },
+        "speed": {
+          "description": "The chat's speed tier, by a `ModelOption::speed_tiers` id. Absent is the provider's standard speed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "startedAt": {
           "type": [
             "string",

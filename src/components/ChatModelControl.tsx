@@ -10,6 +10,7 @@ import { effortLevelsFrom } from "./effort/effortLevels";
 import { EffortSlider } from "./effort/EffortSlider";
 import { EffortSentence } from "./effort/EffortSentence";
 import { EffortList } from "./effort/EffortList";
+import { SpeedControl } from "./effort/SpeedControl";
 import { cn } from "@/lib/utils";
 
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
@@ -71,6 +72,12 @@ export type ChatModelControlProps = {
    *  the current effort but is inert — the state lives with the caller, so a
    *  surface that has not wired a setter yet reads rather than writes. */
   onEffortChange?: (effort: string) => void;
+  /** The chat's speed tier: an id from the model's `speedTiers`, `standard`,
+   *  or null for the provider's default. */
+  speed?: string | null;
+  /** Changes the speed. Without it the speed control is not shown: only a
+   *  running chat has a speed to change. */
+  onSpeedChange?: (speed: string) => void;
   /** Re-probes provider-owned catalogues and repaints from fresh descriptors. */
   onRefresh?: () => Promise<void> | void;
   /** The host is still resolving which model this chat will use (new-chat
@@ -93,7 +100,7 @@ const VIEWPORT_MARGIN = 12;
  *  never flashes a spinner. */
 const MODEL_LOADING_DELAY_MS = 600;
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, onRefresh, loading, knownLabel }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, speed, onSpeedChange, onRefresh, loading, knownLabel }: ChatModelControlProps) {
   const currentAccount = normalizeAccount(harness, account);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -287,6 +294,12 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const switchInFlight = !!disabled && inFlight;
   const effortDisabled = !!disabled && !inFlight;
   const effortProps = { levels: effortLevels, value: effortValue, onChange: onEffortChange ? changeEffort : undefined, disabled: effortDisabled, harness: activeHarness, modelLabel };
+  // Faster service tiers the selected model lists. Only a surface that can
+  // change the speed shows them; a model without any shows nothing.
+  const speedTiers = onSpeedChange ? currentModel?.speedTiers ?? [] : [];
+  const speedControl = speedTiers.length > 0
+    ? <SpeedControl tiers={speedTiers} value={pending ? null : speed} onChange={onSpeedChange} disabled={!!disabled} />
+    : null;
   const pickModel = (nextHarness: Harness, nextModel: string | null, nextAccount: string | null) => {
     if (switchInFlight) return;
     setInFlight(true);
@@ -400,6 +413,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
             {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
           </div>
+          {speedControl && <div className="border-b border-border pb-2.5">{speedControl}</div>}
           <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Thinking effort</div>
           {showEffort
             ? <div data-testid="effort-control"><EffortList {...effortProps} /></div>
@@ -412,6 +426,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
           </div>
         )}
+        {!twoPane && speedControl && <div className="shrink-0 border-t border-border px-3.5 py-2.5">{speedControl}</div>}
         <div className="shrink-0 border-t border-border px-3 py-2.5">
           <p className="text-[12px] leading-4 text-faint">Switching restarts the provider session. History stays.</p>
         </div>
