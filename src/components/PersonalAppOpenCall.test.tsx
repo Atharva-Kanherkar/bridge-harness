@@ -84,3 +84,10 @@ it("reads answer at once, need isolation, and history is read-only", async () =>
   expect(button("Revise")!.disabled).toBe(true);
   expect(call).toHaveBeenCalledTimes(1);
 });
+
+it("says when an app runs through OpenCode", async () => {
+  vi.mocked(bridgeApi.getPersonalAppOpen).mockResolvedValueOnce({ ...open(), harness: "opencode" });
+  await render();
+  expect(container.textContent).toContain("via OpenCode");
+  expect(container.textContent).toContain("each call uses a model turn");
+});

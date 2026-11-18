@@ -61,6 +61,19 @@ Migration 82 adds draft/chat bindings; optional sample arguments are omitted
 from old manifests so existing hashes remain unchanged. Protocol 1.39 adds
 `apps/get_personal_app_draft` and `apps/preview_personal_app_tool`.
 
+## OpenCode connections: the gated courier
+
+OpenCode has no direct MCP call, so an app whose server is connected only in
+OpenCode runs each read and each approved write through a hidden OpenCode
+session (`apps::courier`):
+
+- **Session rules:** deny everything, allow `execute` (OpenCode 2 exposes MCP tools only inside code mode), and ask for the one tool (`<server>_<tool>`). No Bridge tools are attached, and the session is created only after OpenCode reports that server connected, since a session's tools are fixed at creation.
+- **The call:** the model is told to make exactly that call. OpenCode raises `permission.asked` with the exact arguments in `metadata.input`, and Bridge replies `once` only for the first prompt whose arguments equal the approved ones byte for byte in canonical JSON. Every other prompt is rejected and ends the call. The result is that call's output.
+- **Retry:** an agent that ends without asking at all gets one fresh session. Nothing ran.
+- **Unverified tools:** OpenCode reports a server's status but not its tools, so drafting on an OpenCode connection records the tools as unverified, and reads are classified by Bridge's read words alone. The card says a call through OpenCode uses a model turn.
+
+Cursor connections are not supported yet.
+
 ## Opening and using a locked app
 
 A top-level chat on any of the four agents opens a locked app with

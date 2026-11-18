@@ -247,9 +247,7 @@ fn launch(
     }
     let binary = resolve_executable(settings)?;
     let api = ServerApi::of(&ensure_supported_version(&binary)?);
-    if matches!(kind, SessionKind::Courier { .. }) && api != ServerApi::V2 {
-        return Err(BridgeError::Invalid("Personal apps need OpenCode 2 or newer to call this server".into()));
-    }
+    ensure_kind_supported(kind, api)?;
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
@@ -364,12 +362,7 @@ fn launch(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let directory = request.cwd.to_owned();
-    // A session's tools are fixed when it is created, and OpenCode connects
-    // MCP servers after it is ready: a courier waits for its one server, or
-    // the model would be told the tool does not exist.
-    if let SessionKind::Courier { server, .. } = kind {
-        wait_for_mcp_server(&client, api, &base_url, &directory, server);
-    }
+    prepare_session(kind, &client, api, &base_url, &directory);
     let session_prefix = match api {
         ServerApi::V1 => "/session",
         ServerApi::V2 => "/api/session",
@@ -763,6 +756,24 @@ fn seed_stored_credentials(host_db: &Path, sandbox_db: &Path, now_ms: i64) -> Re
     }
     transaction.commit()?;
     Ok(copied)
+}
+
+/// A courier needs the 2.x API: its MCP tools live in code mode and its
+/// permission prompts carry their arguments.
+fn ensure_kind_supported(kind: SessionKind<'_>, api: ServerApi) -> Result<(), BridgeError> {
+    if matches!(kind, SessionKind::Courier { .. }) && api != ServerApi::V2 {
+        return Err(BridgeError::Invalid("Personal apps need OpenCode 2 or newer to call this server".into()));
+    }
+    Ok(())
+}
+
+/// A session's tools are fixed when it is created, and OpenCode connects MCP
+/// servers after it is ready: a courier waits for its one server, or the
+/// model would be told the tool does not exist.
+fn prepare_session(kind: SessionKind<'_>, client: &Client, api: ServerApi, base_url: &str, directory: &str) {
+    if let SessionKind::Courier { server, .. } = kind {
+        wait_for_mcp_server(client, api, base_url, directory, server);
+    }
 }
 
 /// Wait up to 20 s for `server` to leave OpenCode's connecting states. A

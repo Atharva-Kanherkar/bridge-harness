@@ -5,7 +5,7 @@ import { bridgeApi } from "../api";
 import type { ConversationItem } from "../conversation";
 import type { LockPersonalAppResult, PersonalAppDraft } from "../protocol/generated/protocol";
 import { personalAppReference, personalAppTool } from "../transcript/personalApp";
-import { connectionLabel, LIVE_READS_UNAVAILABLE } from "./personalAppShared";
+import { connectionLabel, connectionNote, LIVE_READS_UNAVAILABLE } from "./personalAppShared";
 import { PersonalAppOpenCard } from "./PersonalAppOpenCall";
 import { McpAppFrame, useNearViewport } from "../mcp-apps/McpAppFrame";
 import { useDarkTheme } from "./Markdown";
@@ -65,6 +65,7 @@ function DraftCard({ sessionId, draftId, contentHash, readOnly }: { sessionId: s
     <div className="space-y-2 border-b border-border px-4 py-3 text-xs text-muted-foreground">
       <p>{draft.intent}</p>
       <p className="text-foreground">Preview only. Write actions show what would be sent.</p>
+      {connectionNote(draft.harness) && <p>{connectionNote(draft.harness)}</p>}
       {readOnly && <p>History preview. Live tools and changes are disabled.</p>}
       {!readOnly && isolated === false && <p>{LIVE_READS_UNAVAILABLE}</p>}
       <details><summary className="cursor-pointer">Access · {draft.reads.length} {draft.reads.length === 1 ? "read" : "reads"} · {draft.writes.length} {draft.writes.length === 1 ? "write" : "writes"}</summary>
