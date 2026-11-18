@@ -595,6 +595,14 @@ fn commit_import_inner(
     let mut completed_writes = 0_usize;
     for candidate in selected {
         let classified = classify_candidate(&transaction, candidate, plan, false)?;
+        if let Some(code) = classified.diagnostics.iter().find_map(|diagnostic| {
+            [LEGACY_IMPORT_RECOGNISED, LEGACY_IMPORT_CHANGED]
+                .contains(&diagnostic.code.as_str())
+                .then_some(diagnostic.code.as_str())
+        }) {
+            let unchanged = code == LEGACY_IMPORT_RECOGNISED;
+            remember_legacy_native_session(&transaction, candidate, &classified, unchanged, &import_id, &created_at)?;
+        }
         if classified.status != ImportCandidateStatus::Imported {
             persist_candidate_diagnostics(
                 &transaction,
@@ -891,7 +899,8 @@ fn classify_native_session(
         payload_str(payload, "nativeKey"),
         payload.pointer("/nativeRef/sessionId").and_then(Value::as_str),
     ) else {
-        return Ok(None);
+        // No native identity: an older import may still know this file.
+        return classify_legacy_import(db, candidate, plan, dry_run);
     };
     let harness = payload.pointer("/nativeRef/harness").and_then(Value::as_str);
     let bridge_own: bool = db.query_row(
@@ -918,7 +927,7 @@ fn classify_native_session(
         )
         .optional()?;
     let Some((session, hash)) = existing else {
-        return Ok(None);
+        return classify_legacy_import(db, candidate, plan, dry_run);
     };
     let transcript_hash = payload_str(payload, "transcriptHash").unwrap_or(&candidate.content_hash);
     if hash == transcript_hash || session == candidate.candidate_id {
@@ -953,6 +962,123 @@ fn classify_native_session(
         revision_of: Some(session),
         diagnostics: candidate.diagnostics.clone(),
     }))
+}
+
+/// A chat an older adapter version imported, recorded under its old key
+/// (for the Claude v1 reader, the first message id). Recognised so an upgrade
+/// never imports the same history twice: unchanged is a duplicate whose native
+/// mapping is filled in at commit, changed asks first.
+fn classify_legacy_import(
+    db: &Connection,
+    candidate: &ImportCandidate,
+    plan: &ImportPlan,
+    dry_run: bool,
+) -> Result<Option<ImportCandidateResult>, BridgeError> {
+    let payload = &candidate.normalized_payload;
+    // Every copy the chat was merged from: the primary source, then each
+    // other copy, each with the identity an older version recorded for it.
+    let mut copies: Vec<(String, String, Option<String>, Option<String>)> = vec![(
+        candidate.source.provider.clone(),
+        candidate.source.source_path_fingerprint.clone(),
+        payload_str(payload, "legacyNativeId").map(str::to_owned),
+        payload_str(payload, "legacyContentHash").map(str::to_owned),
+    )];
+    for also in payload.get("alsoFrom").and_then(Value::as_array).into_iter().flatten() {
+        if let (Some(tool), Some(source_ref)) = (payload_str(also, "tool"), payload_str(also, "sourceRef")) {
+            copies.push((
+                tool.to_owned(),
+                path_fingerprint(Path::new(source_ref)),
+                payload_str(also, "legacyNativeId").map(str::to_owned),
+                payload_str(also, "legacyContentHash").map(str::to_owned),
+            ));
+        }
+    }
+    let mut previous: Option<(String, String)> = None;
+    let mut legacy_hash: Option<String> = None;
+    for (provider, fingerprint, legacy_id, hash) in copies {
+        let Some(legacy_id) = legacy_id else { continue };
+        let found: Option<(String, String)> = db
+            .query_row(
+                "SELECT bridge_id, source_content_hash FROM import_ledger
+                 WHERE importer_namespace=?1 AND provider=?2 AND source_path_fingerprint=?3
+                   AND source_native_key=?4 AND candidate_kind='conversation'
+                 ORDER BY created_at DESC LIMIT 1",
+                params![IMPORTER_NAMESPACE, provider, fingerprint, legacy_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if found.is_some() {
+            previous = found;
+            // No hash: the source has outgrown what the older version could
+            // read, so it cannot be unchanged.
+            legacy_hash = hash;
+            break;
+        }
+    }
+    let Some((session, hash)) = previous else {
+        return Ok(None);
+    };
+    if Some(hash.as_str()) == legacy_hash.as_deref() {
+        return Ok(Some(result_with_status(
+            candidate,
+            ImportCandidateStatus::SkippedDuplicate,
+            Some(session),
+            LEGACY_IMPORT_RECOGNISED,
+            "This chat was imported by an earlier version of Bridge; nothing was written",
+        )));
+    }
+    if plan.conflict_policy != ConflictPolicy::ImportAsNewHistoricalRevision {
+        return Ok(Some(result_with_status(
+            candidate,
+            ImportCandidateStatus::ChangedSource,
+            Some(session),
+            LEGACY_IMPORT_CHANGED,
+            "This chat changed since an earlier version of Bridge imported it; choose a new historical revision or skip it",
+        )));
+    }
+    Ok(Some(ImportCandidateResult {
+        candidate_id: candidate.candidate_id.clone(),
+        status: if dry_run {
+            ImportCandidateStatus::DryRun
+        } else {
+            ImportCandidateStatus::Imported
+        },
+        created_bridge_ids: Vec::new(),
+        revision_of: Some(session),
+        diagnostics: candidate.diagnostics.clone(),
+    }))
+}
+
+const LEGACY_IMPORT_RECOGNISED: &str = "legacy_import_recognised";
+/// A chat an older version imported that has changed since: left as it is,
+/// but its native mapping is still filled in so its new children find it.
+const LEGACY_IMPORT_CHANGED: &str = "legacy_import_changed";
+
+/// Fill in the native mapping for a chat an earlier version imported, so the
+/// same session through any other tool is recognised from now on.
+fn remember_legacy_native_session(
+    transaction: &Transaction<'_>,
+    normalized: &NormalizedImportCandidate,
+    classified: &ImportCandidateResult,
+    unchanged: bool,
+    import_id: &str,
+    created_at: &str,
+) -> Result<(), BridgeError> {
+    let payload = &normalized.candidate.normalized_payload;
+    let (Some(native_key), Some(session)) = (payload_str(payload, "nativeKey"), classified.revision_of.as_deref()) else {
+        return Ok(());
+    };
+    // A changed chat keeps a hash no transcript will match, so the next import
+    // still sees it as changed rather than a duplicate.
+    let current = payload_str(payload, "transcriptHash").unwrap_or(&normalized.candidate.content_hash);
+    let stale = format!("legacy-changed:{current}");
+    let transcript_hash = if unchanged { current } else { stale.as_str() };
+    transaction.execute(
+        "INSERT OR IGNORE INTO import_native_sessions(native_key,session_id,content_hash,import_id,created_at)
+         VALUES(?1,?2,?3,?4,?5)",
+        params![native_key, session, transcript_hash, import_id, created_at],
+    )?;
+    Ok(())
 }
 
 fn destination_conflicts(

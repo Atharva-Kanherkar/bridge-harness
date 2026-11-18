@@ -50,6 +50,7 @@ fn launch(core: &Arc<BridgeCore>, key: &Key, permission: Option<&str>) -> Result
             interactive: false,
             account: account.as_ref(),
             on_progress: None,
+            speed: None,
         },
         // Status only needs a running server: a permission nothing will match.
         permission.unwrap_or("bridge_status_only__"),
@@ -306,7 +307,7 @@ mod tests {
         registry.start_app_courier("opencode", StartRequest {
             session_id: None, cwd, model: model.as_deref(), effort: None, instructions: None,
             write_mode: Some(crate::delegation::WriteMode::ReadOnly), read_only_sandbox: None, briefing: None,
-            interactive: false, account: None, on_progress: None,
+            interactive: false, account: None, on_progress: None, speed: None,
         }, permission, server)
     }
 

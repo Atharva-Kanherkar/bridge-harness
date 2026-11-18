@@ -70,6 +70,8 @@ pub(crate) fn chat(key: &str, harness: &str, native: Option<&str>, entries: Vec<
         entries_source: EntriesSource::Native,
         entries,
         pull_requests: Vec::new(),
+        legacy_native_id: None,
+        legacy_content_hash: None,
         source_ref: format!("/fixture/{harness}/{key}.jsonl"),
         source_label: format!("{key}.jsonl"),
     }

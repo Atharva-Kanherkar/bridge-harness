@@ -170,6 +170,10 @@ pub struct BridgeCore {
     /// never discovered on disk.
     pub external_import_discoveries:
         Mutex<HashMap<String, crate::external_import::DiscoveryResult>>,
+    /// The artifacts the last preview of each discovery read. Commit re-derives
+    /// exactly these, so a copy the person did not select cannot merge in and
+    /// change the candidates they approved.
+    pub external_import_previews: Mutex<HashMap<String, Vec<String>>>,
     /// The composer typeahead's warm hidden session and fallback cooldowns.
     /// See `suggestion_engine` for why this lives on `BridgeCore` rather than
     /// being started fresh per request: process-start latency on every
@@ -404,6 +408,7 @@ impl BridgeCore {
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
+            external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
         }
@@ -569,6 +574,7 @@ impl BridgeCore {
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
+            external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
         })
