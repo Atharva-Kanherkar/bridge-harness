@@ -53,7 +53,8 @@ describe("Move to Bridge logic", () => {
 
   it("says what an ended import did, in one line", () => {
     expect(importNotice(job({ status: "done", imported: 33019, alreadyInBridge: 12, failed: 2 })))
-      .toEqual({ title: "Import finished", body: "33,019 items came over from Claude Code, 12 already in Bridge, 2 could not be imported.", failed: false });
+      .toEqual({ title: "Import finished", body: "33,019 items came over from Claude Code, 12 already in Bridge. 2 could not be imported.", failed: false });
+    expect(importNotice(job({ status: "done", imported: 0, alreadyInBridge: 608 })).body).toBe("Nothing new came over from Claude Code. 608 already in Bridge.");
     expect(importNotice(job({ status: "done", imported: 1 })).body).toBe("1 item came over from Claude Code.");
     expect(importNotice(job({ status: "failed", errors: ["Claude Code was not found on this Mac"] })))
       .toEqual({ title: "Import stopped", body: "Claude Code was not found on this Mac", failed: true });

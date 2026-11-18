@@ -78,7 +78,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "work", label: "Refresh frequency", description: "How often the briefing runs" },
   { section: "work", label: "Refresh on focus", description: "Also refresh when Bridge regains focus" },
 
-  { section: "import", label: "Import history", description: "Bring Claude Code history, memory, and setup into Bridge" },
+  { section: "import", label: "Import history", description: "Bring Claude Code chats, memory, and setup into Bridge with one click" },
 ];
 
 function matches(row: SearchableRow, needle: string): boolean {
