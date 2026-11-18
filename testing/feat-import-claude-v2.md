@@ -49,3 +49,14 @@ Added after review of #1065. Each row names the regression test that failed befo
 | B4 | Inline sidechain records (`isSidechain` with `agentId` in the session file) become child chats, and a child also present as a `subagents/` file appears once | `inline_sidechains_become_child_chats`, `an_inline_sidechain_and_its_file_are_one_child` |
 | B5 | A subagent transcript that cannot be read is reported against its session instead of disappearing | `claude_import::tests::an_unreadable_subagent_is_reported` |
 | B6 | Skipping an oversized line holds at most one buffer, not the rest of the line | `discarding_a_line_never_holds_more_than_one_buffer` |
+
+### Second review
+
+| # | Expectation | Test |
+|---|---|---|
+| B7 | A v1 import whose file later grew past 10 MiB is still recognised (as changed), not imported again | `claude_import::tests::a_v1_import_that_grew_past_ten_mib_is_still_recognised` |
+| B8 | Every merged copy of a session is checked against the v1 ledger, not only the copy chosen as primary | `claude_import::tests::a_v1_import_of_any_copy_is_recognised` |
+| B9 | A child of a changed v1 parent attaches to that parent's existing chat | `claude_import::tests::a_child_of_a_changed_v1_parent_attaches_to_it` |
+| B10 | An inline subagent is dropped only for a readable file copy at least as long; otherwise the inline copy is kept | `an_inline_child_is_kept_when_its_file_is_unreadable_or_shorter` |
+| B11 | Each chat keeps its own loss diagnostics when an inline child shares its file | `claude_import::tests::a_parent_keeps_its_losses_next_to_an_inline_child` |
+| B12 | A transcript with no `sessionId` gets no shared native identity, so two unrelated files never merge | `files_without_a_session_id_never_merge` |
