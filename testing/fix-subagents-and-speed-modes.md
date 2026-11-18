@@ -57,3 +57,15 @@ whose work and completion landed in two different sessions.
 - Sidecar `node:test` for the fast-mode and ultracode options.
 - Vitest for the speed control.
 - Regenerate protocol artifacts; `bun run build` and `bun run test` green.
+
+## Rust CI follow-up
+
+- `node scripts/clippy-ratchet.mjs` passes without increasing or editing the
+  lint baseline and without adding lint suppressions.
+- Database lock failures in the added speed read return through `try_db`;
+  teardown reports cleanup failure and still finishes runtime shutdown.
+- Extracting the workflow draft launch preserves its tool-less policy,
+  default speed, reader, usage recording and runtime shutdown.
+- Existing `runtime_budget`, `harness_subagents`, chat speed and
+  `workflow_draft` tests pass. Run `bun run build` and `bun run test`.
+- UI/E2E: N/A for this lint-only follow-up; no user flow changes.
