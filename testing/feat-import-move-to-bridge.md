@@ -55,3 +55,9 @@ Added after review of #1066. Each row names the regression test that failed befo
 | C1 | A Claude config folder with any name (`CLAUDE_CONFIG_DIR=~/.claude-work`) is read as a config home: the chats detection counts are the chats review lists | `claude_import::tests::a_custom_config_folder_is_read_as_a_claude_home` |
 | C2 | Selected memories import together: the quick flow imports them alongside existing ones instead of letting the first block the rest | `MoveToBridge.test.tsx` "imports independent memories alongside each other", `external_import::tests` "independent memories import alongside" |
 | C3 | What did not come over includes the transcript records the reader skipped (documents, orphan results, unreadable lines), with counts; repeats it removed are not losses | `moveToBridge.test.ts` "reports skipped transcript records" |
+
+### Second review
+
+| # | Expectation | Test |
+|---|---|---|
+| C4 | A config folder detection found stays a config home in discovery even before it has a saved project, so its setup items are listed | `claude_import::tests::a_detected_config_home_with_only_setup_is_listed`, `claude_import::tests::an_unrelated_folder_is_not_a_config_home_by_identity` |
