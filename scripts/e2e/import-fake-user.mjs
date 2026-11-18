@@ -152,10 +152,14 @@ try {
     }
     return false;
   })()`);
-  await caption("Open Settings, Data & storage, then Import history");
+  await caption("Open Settings, then Chat history, then Import");
   await click("Open settings for");
-  await click("Data & storage");
-  await click("Import history");
+  await click("Chat history");
+  await waitFor("the Chat history page", `!!document.querySelector("[data-settings-column]") && document.querySelector("[data-settings-column]").innerText.includes("Archived chats")`);
+  const history = await js(`document.querySelector("[data-settings-column]").innerText`);
+  check("Chat history has its own place in Settings, with Import and Archived chats", history.includes("Chat history") && history.includes("Import") && history.includes("Archived chats"));
+  await shot("00-chat-history-dark");
+  await click("Import", "main button, [data-settings-column] button");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
@@ -173,7 +177,10 @@ try {
   await caption("One click: Import");
   await click("Import", "button");
   await waitFor("the progress card", `!!document.querySelector('section[aria-label="Import progress"]')`, 10000);
-  // Where the transfer clip starts: the frame on screen when the card shows.
+  // Centre the card first so it stays put for the clip and the close-ups;
+  // the clip starts with the frame on screen once it is there.
+  await js(`document.querySelector('section[aria-label="Import progress"]').scrollIntoView({ block: "center" })`);
+  await sleep(300);
   transferFrom = frames.length;
   check("Import starts at once and shows its progress", true);
   check("The Import button waits while the import runs", await js(`[...document.querySelectorAll("button")].some(b => b.textContent.includes("Importing") && b.disabled)`));
@@ -260,8 +267,8 @@ try {
 
   await caption("Import again: nothing lands twice");
   await click("Open settings for");
-  await click("Data & storage");
-  await click("Import history");
+  await click("Chat history");
+  await click("Import", "main button, [data-settings-column] button");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   check("The finished import is still summarised on the page", (await text()).includes("Import finished"));
   await click("Import again", "button");
@@ -294,8 +301,10 @@ if (RECORD && frames.length > 1) {
   // The transfer card on its own, cut from the full-size frames.
   try {
     const rect = JSON.parse(readFileSync(join(OUT, "transfer-rect.json"), "utf8"));
-    const even = value => Math.floor(value / 2) * 2;
-    const crop = `crop=${even(rect.width)}:${even(rect.height)}:${even(rect.x)}:${even(rect.y)}`;
+    const even = value => Math.max(0, Math.floor(value / 2) * 2);
+    // Keep the box inside the 1440×900 frame whatever the card's position.
+    const x = even(rect.x), y = even(rect.y);
+    const crop = `crop=${even(Math.min(rect.width, 1440 - x))}:${even(Math.min(rect.height, 900 - y))}:${x}:${y}`;
     // Eight seconds of the card from when it showed: a short loop of chats in flight.
     const start = frames[transferFrom]?.at ?? frames[0].at;
     const span = frames.slice(transferFrom).filter(frame => frame.at - start <= 8);
