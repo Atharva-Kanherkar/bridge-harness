@@ -1028,3 +1028,20 @@ fn setup_conflicts_are_per_scope_and_project() {
     let conflict = import(&db, vec![again]);
     assert_eq!((conflict.imported, conflict.conflicted), (0, 1), "{conflict:?}");
 }
+
+#[test]
+fn memories_deduplicate_by_the_real_project() {
+    let bundle_for = |tool: &str, root: &str| {
+        let mut bundle = TransferBundle::new(source(tool));
+        bundle.projects.push(BundleProject { key: "1".into(), name: "app".into(), repo_root: root.into(), remote_url: None });
+        bundle.memories.push(BundleMemory { key: "m".into(), scope: "project".into(), project_key: Some("1".into()), kind: "fact".into(), body: "run tests with bun".into(), source_ref: format!("{root}/MEMORY.md"), source_label: "MEMORY.md".into() });
+        bundle
+    };
+    let resolved = resolve(vec![bundle_for("conductor", "/nonexistent/one"), bundle_for("t3code", "/nonexistent/two")]).unwrap();
+    assert_eq!(resolved.projects.len(), 2);
+    let projects: Vec<Option<String>> = resolved.memories.iter().map(|(_, memory)| memory.project_key.clone()).collect();
+    assert_eq!(projects, vec![Some("project:/nonexistent/one".into()), Some("project:/nonexistent/two".into())]);
+    // The same project through two tools is still one memory.
+    let same = resolve(vec![bundle_for("conductor", "/nonexistent/one"), bundle_for("t3code", "/nonexistent/one")]).unwrap();
+    assert_eq!(same.memories.len(), 1);
+}
