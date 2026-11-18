@@ -875,6 +875,12 @@ impl BridgeCore {
         let runtime = { self.adapters.lock().unwrap().remove(session_id) };
         if let Some(mut runtime) = runtime {
             runtime.stop(reason);
+            // The reader no longer counts as current, so its exit will not
+            // close the subagents and background tasks that died with it.
+            let closed = crate::harness_subagents::close_with_process(&self.db.lock().unwrap(), session_id);
+            for event in closed {
+                self.events.publish(crate::events::CoreEvent::Agent(event));
+            }
         }
         // A model switch's outgoing runtime lives outside the adapter map while
         // it summarises; stopping the session must not leave it running.

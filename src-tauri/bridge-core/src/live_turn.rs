@@ -2486,6 +2486,13 @@ fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), B
          WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
         params![session_id],
     )?;
+    // Every caller stops this process next, and its reader no longer counts as
+    // current, so the reader's exit will not close what dies with it.
+    let closed = crate::harness_subagents::close_with_process(&db, session_id);
+    drop(db);
+    for event in closed {
+        core.events.publish(CoreEvent::Agent(event));
+    }
     Ok(())
 }
 

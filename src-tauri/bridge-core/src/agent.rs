@@ -1352,6 +1352,14 @@ pub struct ClaudeStreamState {
     child_streams: HashMap<String, Box<ClaudeStreamState>>,
     tasks: HashMap<String, Value>,
     ignored_tasks: std::collections::HashSet<String>,
+    /// Tool ids a continuation of a known agent arrived under, mapped to the
+    /// child id its first `Agent` call created.
+    task_aliases: HashMap<String, String>,
+    /// Tool calls a subagent made, by tool id, mapped to that subagent. A
+    /// background shell it starts reports under its own tool id.
+    child_tool_owner: HashMap<String, String>,
+    /// Background (non-agent) tasks a subagent started, by task id.
+    child_task_owner: HashMap<String, String>,
     pub active_message_id: Option<String>,
     /// The current workflow message's cumulative streaming usage. Ordinary
     /// chats continue recording only their result frame.
@@ -1774,7 +1782,16 @@ pub fn normalize_claude_message_with_state(
 ) -> Vec<NormalizedEvent> {
     if let Some(id) = message.get("parent_tool_use_id").or_else(|| message.pointer("/request/agentID")).and_then(Value::as_str) {
         if state.ignored_tasks.contains(id) { return vec![]; }
-        let id = state.tasks.get(id).and_then(|task| task.get("tool_use_id")).and_then(Value::as_str).unwrap_or(id).to_owned();
+        let id = state.tasks.get(id).and_then(|task| task.get("tool_use_id")).and_then(Value::as_str)
+            .or_else(|| state.task_aliases.get(id).map(String::as_str))
+            .unwrap_or(id).to_owned();
+        if let Some(blocks) = message.pointer("/message/content").and_then(Value::as_array) {
+            for block in blocks.iter().filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use")) {
+                if let Some(tool) = block.get("id").and_then(Value::as_str) {
+                    state.child_tool_owner.insert(tool.to_owned(), id.clone());
+                }
+            }
+        }
         let child = state.child_streams.entry(id.clone()).or_default();
         let mut events = normalize_claude_message_inner(message, child);
         for event in &mut events {
@@ -1803,14 +1820,27 @@ pub fn normalize_claude_message_with_state(
             || message.get("skip_transcript").and_then(Value::as_bool) == Some(true)
             || message.get("task_type").and_then(Value::as_str).is_some_and(|kind| kind != "local_agent") {
             state.ignored_tasks.insert(task.to_owned());
-            if let Some(tool)=message.get("tool_use_id").and_then(Value::as_str) { state.ignored_tasks.insert(tool.to_owned()); }
+            if let Some(tool)=message.get("tool_use_id").and_then(Value::as_str) {
+                state.ignored_tasks.insert(tool.to_owned());
+                // A background shell a subagent started is that subagent's work.
+                if let Some(owner) = state.child_tool_owner.get(tool).cloned() {
+                    state.child_task_owner.insert(task.to_owned(), owner);
+                }
+            }
             // Not a subagent: background processes and watchers are activity.
-            return normalize_claude_message_inner(message, state);
+            return normalize_claude_background_task(message, task, state);
         }
-        if state.ignored_tasks.contains(task) { return normalize_claude_message_inner(message, state); }
-        let old = state.tasks.get(task).cloned().unwrap_or_else(|| json!({}));
-        let id = message.get("tool_use_id").or_else(|| old.get("tool_use_id")).and_then(Value::as_str).unwrap_or(task);
+        if state.ignored_tasks.contains(task) { return normalize_claude_background_task(message, task, state); }
+        let known = state.tasks.get(task).cloned();
+        let old = known.clone().unwrap_or_else(|| json!({}));
+        // One agent keeps the child its first call created: a continuation
+        // reuses the task id under a new tool id.
+        let id = old.get("tool_use_id").or_else(|| message.get("tool_use_id")).and_then(Value::as_str).unwrap_or(task).to_owned();
         if id.is_empty() { return vec![]; }
+        if let Some(tool) = message.get("tool_use_id").and_then(Value::as_str).filter(|tool| *tool != id) {
+            state.task_aliases.insert(tool.to_owned(), id.clone());
+        }
+        let id = id.as_str();
         let mut event = with_data(match subtype {
             "task_started" => "subagent.started", "task_notification" => "subagent.completed",
             "task_progress" => "subagent.progress", "task_updated" => "subagent.status", _ => return vec![],
@@ -1823,10 +1853,41 @@ pub fn normalize_claude_message_with_state(
         event.status = Some(message.get("status").or_else(|| message.pointer("/patch/status")).and_then(Value::as_str)
             .unwrap_or(if subtype == "task_notification" {"completed"} else {"working"}).to_owned());
         event.text = message.get("summary").and_then(Value::as_str).map(str::to_owned);
-        if subtype == "task_started" { state.tasks.insert(task.to_owned(), message.clone()); }
+        // A report about a task this process never started (an orphan after a
+        // restart, a shell whose start was never seen) may only update a child
+        // that already exists; it must never create one.
+        if known.is_none() && subtype != "task_started" {
+            event.data["subagent"]["lookupOnly"] = json!(true);
+        }
+        if subtype == "task_started" {
+            let mut started = message.clone();
+            started["tool_use_id"] = json!(id);
+            state.tasks.insert(task.to_owned(), started);
+        }
         return vec![event];
     }
     normalize_claude_message_inner(message, state)
+}
+
+/// A background shell or watcher. When a subagent started it, its frames go
+/// to that subagent's stream and carry its tag; otherwise they are the chat's.
+fn normalize_claude_background_task(message: &Value, task: &str, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
+    let Some(owner) = state.child_task_owner.get(task).cloned() else {
+        return normalize_claude_message_inner(message, state);
+    };
+    let (agent, title) = state.tasks.values()
+        .find(|known| known.get("tool_use_id").and_then(Value::as_str) == Some(owner.as_str()))
+        .map(|known| (
+            known.get("subagent_type").and_then(Value::as_str).unwrap_or("claude").to_owned(),
+            known.get("description").and_then(Value::as_str).unwrap_or("Claude subagent").to_owned(),
+        ))
+        .unwrap_or_else(|| ("claude".into(), "Claude subagent".into()));
+    let child = state.child_streams.entry(owner.clone()).or_default();
+    let mut events = normalize_claude_message_inner(message, child);
+    for event in &mut events {
+        tag_harness_subagent(event, &owner, &agent, &title);
+    }
+    events
 }
 
 fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
@@ -1864,7 +1925,11 @@ fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState
             let tasks = std::mem::take(&mut state.tasks);
             let ignored_tasks = std::mem::take(&mut state.ignored_tasks);
             let activity = std::mem::take(&mut state.activity);
-            *state = ClaudeStreamState { child_streams, tasks, ignored_tasks, activity, ..Default::default() };
+            // Background agents outlive the turn; so does who owns what.
+            let task_aliases = std::mem::take(&mut state.task_aliases);
+            let child_tool_owner = std::mem::take(&mut state.child_tool_owner);
+            let child_task_owner = std::mem::take(&mut state.child_task_owner);
+            *state = ClaudeStreamState { child_streams, tasks, ignored_tasks, task_aliases, child_tool_owner, child_task_owner, activity, ..Default::default() };
             state.usage_cumulative = usage_cumulative;
             events.extend(normalize_claude_result(message, state));
             events
@@ -4638,6 +4703,56 @@ mod harness_subagent_tests {
         // The level snapshot does not turn a subagent into a process.
         let level = normalize_claude_message_with_state(&json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task","task_type":"local_agent","description":"Research"}]}), &mut state);
         assert!(level.iter().all(|event| event.item_id.as_deref() != Some("background-task:task")));
+    }
+    #[test]
+    fn claude_continuation_keeps_the_child_of_its_first_call() {
+        // Live shape: SendMessage resumes agent `a98` under a new tool id; the
+        // agent's frames keep the original id and its completion the new one.
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"a98","tool_use_id":"agent-call","task_type":"local_agent","description":"Map the registry"}), &mut state);
+        normalize_claude_message_with_state(&json!({"type":"result","subtype":"success"}), &mut state);
+        let resumed = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"a98","tool_use_id":"send-message","task_type":"local_agent","description":"Map the registry"}), &mut state);
+        assert_eq!(resumed[0].data["subagent"]["sessionId"], "agent-call");
+        assert!(resumed[0].data["subagent"].get("lookupOnly").is_none());
+        let frame = normalize_claude_message_with_state(&json!({"type":"assistant","parent_tool_use_id":"send-message","message":{"id":"m","content":[{"type":"text","text":"Still mapping"}]}}), &mut state);
+        assert!(frame.iter().all(|e| e.data["subagent"]["sessionId"] == "agent-call"));
+        let done = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"a98","tool_use_id":"send-message","status":"completed","summary":"Mapped"}), &mut state);
+        assert_eq!(done[0].kind, "subagent.completed");
+        assert_eq!(done[0].data["subagent"]["sessionId"], "agent-call");
+        assert_eq!(done[0].data["taskId"], "a98");
+    }
+    #[test]
+    fn claude_reports_about_unknown_tasks_are_lookup_only() {
+        // A restarted process reports what the previous one left behind:
+        // shells and agents it never started. None of these may become a row.
+        let mut state = ClaudeStreamState::default();
+        for frame in [
+            json!({"type":"system","subtype":"task_notification","task_id":"b1pwyirf3","tool_use_id":"toolu_shell","status":"stopped","summary":"Background shell command didn't finish before the previous session ended"}),
+            json!({"type":"system","subtype":"task_notification","task_id":"a9811e","status":"stopped","summary":"Background agent \"Map\" didn't finish before the previous session ended"}),
+            json!({"type":"system","subtype":"task_progress","task_id":"a77","tool_use_id":"toolu_x","usage":{"tool_uses":3}}),
+        ] {
+            let events = normalize_claude_message_with_state(&frame, &mut state);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].data["subagent"]["lookupOnly"], true, "{frame}");
+        }
+        normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"known","tool_use_id":"agent","task_type":"local_agent"}), &mut state);
+        let known = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"known","status":"completed"}), &mut state);
+        assert!(known[0].data["subagent"].get("lookupOnly").is_none());
+    }
+    #[test]
+    fn claude_background_shell_started_by_a_subagent_is_its_work() {
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"agent-task","tool_use_id":"agent-call","task_type":"local_agent","description":"Hunt H6"}), &mut state);
+        normalize_claude_message_with_state(&json!({"type":"assistant","parent_tool_use_id":"agent-call","message":{"id":"m","content":[{"type":"tool_use","id":"bash-call","name":"Bash","input":{"command":"pnpm install","run_in_background":true}}]}}), &mut state);
+        let started = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"bcav","tool_use_id":"bash-call","task_type":"local_bash","description":"Install deps"}), &mut state);
+        assert!(!started.is_empty());
+        assert!(started.iter().all(|e| e.data["subagent"]["sessionId"] == "agent-call" && !e.kind.starts_with("subagent.")));
+        let done = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_notification","task_id":"bcav","tool_use_id":"bash-call","status":"completed","summary":"Background command completed (exit code 0)"}), &mut state);
+        assert!(done.iter().all(|e| e.data["subagent"]["sessionId"] == "agent-call"));
+        assert_eq!(done[0].kind, "tool.completed");
+        // The chat's own shell stays the chat's.
+        let own = normalize_claude_message_with_state(&json!({"type":"system","subtype":"task_started","task_id":"own","tool_use_id":"root-bash","task_type":"local_bash","description":"Dev server"}), &mut state);
+        assert!(own.iter().all(|e| e.data.get("subagent").is_none()));
     }
     #[test]
     fn claude_child_messages_tools_and_progress_are_attributed() {
