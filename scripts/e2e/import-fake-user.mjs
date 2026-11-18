@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // A scripted fake user for "Move to Bridge". It drives the real app in a
 // browser tab attached to a real `bridged` (see docs/web-client.md), the way a
-// person would: open Settings, find their tools, review, deselect one chat,
-// import, open the imported chats and look at what came over, then import
-// again to see that nothing lands twice. Every step asserts what is on screen;
-// any mismatch exits non-zero. It records the run as screenshots, an MP4 and a GIF.
+// person would: open Settings, find their tools, press Import once, watch the
+// progress, leave the page while it works, get told when it is done, open the
+// imported chats, then import again to see that nothing lands twice. Every
+// step asserts what is on screen; any mismatch exits non-zero. It records the
+// run as screenshots, an MP4 and a GIF.
 //
 //   HOME=<fake home> bridged --data-dir <dir> --listen 127.0.0.1:4391 --allowed-origin http://127.0.0.1:1471
 //   bunx vite --port 1471 --strictPort
@@ -154,34 +155,47 @@ try {
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats, projects, memory and setup", found.includes("5 chats in 3 projects · 1 memory · 1 setup item"), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats, projects, memory, setup and the background run left out", /605 chats in 6 projects · 1 memory · 1 setup item · \d+ background runs? left out/.test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found and honestly marked as coming", found.includes("Codex chats are next"));
   check("Tools that are not installed say so", found.includes("Not found on this Mac"));
   await shot("01-found-dark");
 
-  await caption("Review what Claude Code holds, grouped by project");
-  await click("Review");
-  await waitFor("the review list", `document.body.innerText.includes("Review Claude Code")`);
-  const review = await text();
-  check("Chats are grouped by the folder they ran in", ["/work/billing-service", "/work/docs-site", "/work/invoice-app"].every(folder => review.includes(folder)));
-  check("A /rename title is shown, not the first message", review.includes("Invoice email header fix"));
-  check("Every chat is selected by default", review.includes("5 of 5 chats selected"));
-  await shot("02-review-dark");
+  // 605 chats, the Explore subagent, the memory and CLAUDE.md: 607 files read,
+  // 608 items written (the subagent comes out of its parent's file).
+  const EXPECTED = 608;
+  await caption("One click: Import");
+  await click("Import", "button");
+  await waitFor("the progress card", `!!document.querySelector('section[aria-label="Import progress"]')`, 10000);
+  check("Import starts at once and shows its progress", true);
+  check("The Import button waits while the import runs", await js(`[...document.querySelectorAll("button")].some(b => b.textContent.includes("Importing") && b.disabled)`));
+  await waitFor("the first batches", `/\\d+ of \\d+/.test(document.querySelector('section[aria-label="Import progress"]')?.innerText ?? "")`, 30000);
+  await sleep(700);
+  await shot("02-progress-dark");
+  const card = await js(`document.querySelector('section[aria-label="Import progress"]').innerText`);
+  check("The card counts files and says what came over", /of 607/.test(card) && /came over/.test(card), card.replace(/\n+/g, " | "));
+  check("The card says the page can be left", card.includes("You can leave this page"));
 
-  await caption("Leave one chat behind");
-  await click("Speed up the docs build", "[role=switch]");
-  check("Deselecting one chat updates the count", (await text()).includes("4 of 5 chats selected"));
+  await caption("Leave the page while it works");
+  await click("Data & storage");
+  await waitFor("Bridge to say the import is done", `document.body.innerText.includes("Import finished")`, 120000);
+  const toast = await text();
+  check("Bridge says when it is done, on whatever page you are on", toast.includes(`${EXPECTED} items came over from Claude Code`), toast.slice(toast.indexOf("Import finished"), toast.indexOf("Import finished") + 120).replace(/\n+/g, " | "));
+  await shot("03-finished-toast-dark");
 
-  await caption("Import");
-  await click("Import 5 selected");
-  await waitFor("the import to finish", `document.body.innerText.includes("Came over")`, 60000);
-  const imported = Number(await js(`document.querySelector('[data-import-result="imported"]')?.textContent`));
+  await caption("Open the summary from the notice");
+  await click("Import finished: open the import summary", "button[aria-label]");
+  await waitFor("the summary", `!!document.querySelector('[data-import-result="imported"]')`, 10000);
+  const imported = Number((await js(`document.querySelector('[data-import-result="imported"]')?.textContent`)).replace(/,/g, ""));
   const skippedFirst = Number(await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`));
-  check("Four chats, the Explore subagent and the memory came over", imported === 6, `imported=${imported}`);
+  const summary = await text();
+  check("Every chat, the subagent, the memory and CLAUDE.md came over", imported === EXPECTED, `imported=${imported}`);
   check("Nothing was already in Bridge on the first import", skippedFirst === 0, `skipped=${skippedFirst}`);
-  await caption(`${imported} items came over`);
-  await shot("03-done-dark");
+  // The fixture's temp-folder run, plus the probes Bridge itself ran in the
+  // fake home while setting up: all background runs, all left out.
+  check("Background runs are left out and counted", summary.includes("Background runs left out"));
+  await caption(`${imported} items came over; background runs left out`);
+  await shot("04-summary-dark");
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
@@ -195,7 +209,8 @@ try {
   writeFileSync(join(OUT, "chat.txt"), chat);
   check("Tool calls came over, grouped the way Bridge shows live work", chat.includes("Ran 1 command, searched code"));
   check("Thinking came over as a thinking row", chat.includes("Thought for a moment"));
-  check("The compaction point came over with its summary", chat.includes("fixed the invoice email header"));
+  // Drawn the way Bridge draws a live compaction, at the point it happened.
+  check("The compaction point came over where it happened", /Context compacted/.test(chat) && chat.indexOf("Context compacted") < chat.indexOf("Add a snapshot test"));
   await caption("Open the tool group: the calls and their output are there");
   await click("Ran 1 command, searched code", "[aria-expanded]");
   await waitFor("the tool group to open", `[...document.querySelectorAll("[aria-expanded]")].some(el => el.textContent.includes("Ran 1 command") && el.getAttribute("aria-expanded") === "true")`);
@@ -225,23 +240,15 @@ try {
   await click("Data & storage");
   await click("Import history");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
-  await click("Review");
-  await waitFor("the review list", `document.body.innerText.includes("Review Claude Code")`);
-  await click("Import 6 selected");
-  await waitFor("the second import to finish", `document.body.innerText.includes("Came over")`, 60000);
+  check("The finished import is still summarised on the page", (await text()).includes("Import finished"));
+  await click("Import again", "button");
+  await waitFor("the second import to finish", `document.body.innerText.includes("Import finished") && document.querySelector('[data-import-result="skipped"]')?.textContent.replace(/,/g, "") === "${EXPECTED}"`, 120000);
   const importedAgain = Number(await js(`document.querySelector('[data-import-result="imported"]')?.textContent`));
-  const skippedAgain = Number(await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`));
-  check("A second import brings over only the chat left behind", importedAgain === 1, `imported=${importedAgain}`);
+  const skippedAgain = Number((await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`)).replace(/,/g, ""));
+  check("A second import brings over nothing new", importedAgain === 0, `imported=${importedAgain}`);
   check("Everything imported before is recognised", skippedAgain === imported, `skipped=${skippedAgain}`);
   await shot("06-again-dark");
 
-  await caption("Same screens in light mode");
-  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
-  await sleep(800);
-  await shot("07-done-light");
-  await click("Start over");
-  await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
-  await shot("08-found-light");
   log("all checks passed");
 } finally {
   if (RECORD) { try { await send("Page.stopScreencast"); } catch { /* closing */ } }

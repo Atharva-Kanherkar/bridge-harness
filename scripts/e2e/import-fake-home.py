@@ -6,8 +6,9 @@
 It holds a real Claude Code 2.1.325 session (the sanitized fixture, with an
 Explore subagent), a billing chat with a pasted screenshot, thinking, a search,
 a failing command, a compaction and a /rename title, three small docs chats,
-one Claude memory and a CLAUDE.md, plus traces of Codex, Conductor and T3 Code
-so the "Found on this Mac" list shows what is coming.
+600 short chats in three more projects, one background run in the OS temp
+folder, one Claude memory and a CLAUDE.md, plus traces of Codex, Conductor and
+T3 Code so the "Found on this Mac" list shows what is coming.
 """
 import base64, json, os, shutil, sys, uuid
 
@@ -49,6 +50,20 @@ for n, ask in enumerate(["Fix the broken sidebar links", "Write the getting star
         {"type": "user", "uuid": f"x{n}", "sessionId": s, "timestamp": f"2026-11-0{n}T08:00:00Z", "cwd": "/work/docs-site", "message": {"role": "user", "content": ask}},
         {"type": "assistant", "uuid": f"y{n}", "sessionId": s, "timestamp": f"2026-11-0{n}T08:01:00Z", "cwd": "/work/docs-site", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}},
     ])
+# Enough chats that the import runs for a couple of dozen batches, so its
+# progress is on screen long enough to watch.
+for n in range(600):
+    s, project = str(uuid.UUID(int=1000 + n)), ["api-gateway", "mobile-app", "data-pipeline"][n % 3]
+    turns = []
+    for t in range(3):
+        turns.append({"type": "user", "uuid": f"g{n}-u{t}", "sessionId": s, "timestamp": f"2026-10-{(n % 28) + 1:02d}T09:{t:02d}:00Z", "cwd": f"/work/{project}", "message": {"role": "user", "content": f"Task {n}.{t}: tidy the {project} handlers"}})
+        turns.append({"type": "assistant", "uuid": f"g{n}-a{t}", "sessionId": s, "timestamp": f"2026-10-{(n % 28) + 1:02d}T09:{t:02d}:30Z", "cwd": f"/work/{project}", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done, the handlers are tidier. " * 20}]}})
+    write(f".claude/projects/-work-{project}/{s}.jsonl", turns)
+# A run Claude Code made in the OS temp folder: a background run, left out.
+probe = "9d2e4c1a-0b3f-4a5e-8c7d-6e5f4a3b2c1d"
+write(f".claude/projects/-private-var-folders-h7-T-probe/{probe}.jsonl", [
+    {"type": "user", "uuid": "p1", "sessionId": probe, "timestamp": "2026-11-15T07:00:00Z", "cwd": "/private/var/folders/h7/T/probe", "message": {"role": "user", "content": "ping"}},
+])
 os.makedirs(os.path.join(home, ".claude/projects/-work-billing-service/memory"))
 open(os.path.join(home, ".claude/projects/-work-billing-service/memory/MEMORY.md"), "w").write("- The billing service uses pnpm, not npm.\n- Email templates live in templates/.\n")
 open(os.path.join(home, ".claude/CLAUDE.md"), "w").write("Prefer small commits. Run tests before saying done.\n")
