@@ -260,7 +260,6 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   </SettingsGroup>;
   const dataLinks = <SettingsGroup label="Chat history">
     <SettingsRow label="Archived chats" description="Search, read and unarchive conversations." onOpen={() => navigate("archives")} />
-    <SettingsRow label="Import history" description="Bring supported chat history and configuration from another coding agent." onOpen={() => navigate("import")} />
   </SettingsGroup>;
   return <div className="flex h-full min-h-0 flex-col md:flex-row">
     {!contextual && <SettingsRail

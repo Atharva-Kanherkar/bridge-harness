@@ -1,4 +1,4 @@
-// The settings rail: title, search, four groups, and the reset footer.
+// The settings rail: title, search, the destinations, and the reset footer.
 //
 // It replaces both the old 64px header (whose subtitle described a Settings
 // screen that no longer existed) and the shield note that sat under the nav

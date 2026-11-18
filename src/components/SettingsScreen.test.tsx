@@ -32,7 +32,7 @@ const props = {
 };
 
 describe("SettingsScreen", () => {
-  it("shows exactly four primary settings destinations", () => {
+  it("shows all five primary settings destinations", () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
     for (const section of PRIMARY_SECTIONS) expect(html).toContain(SECTION_LABELS[section].replace("&", "&amp;"));
     for (const label of ["Presets", "Harnesses", "Clones", "Runtimes"]) expect(html).not.toContain(`>${label}<`);
@@ -84,6 +84,22 @@ describe("SettingsScreen", () => {
         await flush();
       });
     };
+
+    it("opens Import from the rail as its own page", async () => {
+      await render({ initialSection: "general" });
+      const rail = container.querySelector("nav[aria-label='Settings']") as HTMLElement;
+      await act(async () => { button(rail, "Import").click(); await flush(); });
+      expect(button(rail, "Import").getAttribute("aria-current")).toBe("page");
+      expect(container.textContent).toContain("Move to Bridge");
+      expect(container.textContent).not.toContain("Back to Data & storage");
+    });
+
+    it("no longer lists Import history under Data & storage", async () => {
+      await render({ initialSection: "data" });
+      const page = [...container.querySelectorAll("button")].filter(candidate => !candidate.closest("nav"));
+      expect(page.some(candidate => candidate.textContent?.includes("Archived chats"))).toBe(true);
+      expect(page.some(candidate => candidate.textContent?.includes("Import history"))).toBe(false);
+    });
 
     it("opens archived chats inside Settings from Data & storage", async () => {
       await render({ initialSection: "data" });
