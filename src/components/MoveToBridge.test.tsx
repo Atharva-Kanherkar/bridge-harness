@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { ExternalImportArtifact, ExternalImportCandidate, ExternalImportDiscovery } from "../protocol/generated/protocol";
+import type { ImportJob } from "../protocol/generated/protocol";
 import { MoveToBridge } from "./MoveToBridge";
 
 async function flush() {
@@ -16,115 +16,120 @@ function button(container: HTMLElement, label: string) {
   return result as HTMLButtonElement;
 }
 
-const artifact = (index: number): ExternalImportArtifact => ({
-  artifactId: `a${index}`, canonicalSourceRef: `/h/.claude/projects/p/${index}.jsonl`, sourceLabel: `projects/p/${index}.jsonl`,
-  kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 100, modifiedAt: null,
-  requiredSchemaGate: "claude-jsonl-v2", title: `Chat ${index}`, projectPath: index % 2 ? "/work/api" : "/work/web",
-  startedAt: `2026-11-${String((index % 28) + 1).padStart(2, "0")}T10:00:00Z`,
-});
-
-const candidateFor = (id: string): ExternalImportCandidate => ({
-  candidateId: `cand-${id}`, source: { provider: "claude_code", adapterVersion: "2", sourceVersion: null, schemaVersion: "claude-jsonl-v2", canonicalSourceRef: id, sourcePathFingerprint: "f", discoveredAt: "now", sourceMetadata: {} },
-  sourceNativeId: id, kind: "conversation", title: id, createdAt: null, updatedAt: null, projectHint: null, contentHash: "h", stability: "version_gated",
-  confidenceBps: 8000, selectedByDefault: false, redactionSummary: { structuredFieldsExcluded: 0, textValuesRedacted: 0, categories: [], safelyRepresentable: true },
-  diagnostics: id === "a3" ? [{ code: "excluded_attachment", severity: "warning", classification: "documented", message: "1 attachment: image too large or not an image; the message text was kept", recovery: null, sourceLabel: id }] : [],
-  normalizedPayload: { messageCount: 4 },
+const job = (fields: Partial<ImportJob>): ImportJob => ({
+  jobId: "job-1", tool: "claude_code", status: "running", total: 0, processed: 0, imported: 0, memories: 0,
+  alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 0, notCarried: [], errors: [],
+  startedAt: "2026-11-19T10:00:00Z", updatedAt: "2026-11-19T10:00:00Z", ...fields,
 });
 
 describe("MoveToBridge", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let emit: (job: ImportJob) => void;
+  let unlisten: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    unlisten = vi.fn();
+    vi.spyOn(bridgeApi, "onImportProgress").mockImplementation(async handler => { emit = handler; return unlisten; });
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({});
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
     await act(async () => root.unmount());
+    vi.restoreAllMocks();
     container.remove();
   });
 
-  it("lists every tool on first open, with Review only where Bridge can import today", async () => {
+  const render = async () => {
     await act(async () => { root.render(<MoveToBridge onError={error => { throw new Error(error); }} />); await flush(); });
+  };
+  // Counts glide to each new value over 450 ms; wait for them to land.
+  const send = async (next: ImportJob) => {
+    await act(async () => { emit(next); await flush(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+  };
+
+  it("lists every tool with one Import button, only where Bridge can import today", async () => {
+    await render();
     const text = container.textContent ?? "";
     expect(text).toContain("Found on this Mac");
     expect(text).toContain("3 chats in 1 project · 1 memory · 1 setup item");
-    expect(text).toContain("Conductor runs Claude Code, so its chats come over with the Claude Code import");
-    expect(text).toContain("5 workspaces in 2 repos");
     expect(text).toContain("Not found on this Mac");
+    expect(text).not.toContain("Review");
     expect(container.querySelectorAll("button").length).toBe(1);
-    expect(button(container, "Review").disabled).toBe(false);
+    expect(button(container, "Import").disabled).toBe(false);
   });
 
-  it("reviews by project, imports 30 chats in two batches scoped to their artifacts, and reports what did not come over", async () => {
-    const artifacts = Array.from({ length: 30 }, (_, index) => artifact(index));
-    const discovery: ExternalImportDiscovery = { discoveryId: "d1", provider: "claude_code", approvedRoots: ["/h/.claude"], sourceVersion: null, formatVersions: {}, artifacts, diagnostics: [], discoveredAt: "now" };
-    vi.spyOn(bridgeApi, "discoverExternalImport").mockResolvedValue(discovery);
-    const preview = vi.spyOn(bridgeApi, "previewExternalImport").mockImplementation(async (_, ids) => ({ candidates: ids.map(candidateFor) }));
-    const commit = vi.spyOn(bridgeApi, "commitExternalImport").mockImplementation(async (_, __, plan) => ({
-      importId: "i", candidateResults: [], createdBridgeIds: [], imported: plan.selectedCandidateIds.length - 1, skipped: 1, changed: 0, conflicted: 0, rejected: 0, unsupported: 0, rollbackState: "committed", diagnostics: [], createdAt: "now",
+  it("starts the import in the background and shows its progress live", async () => {
+    const start = vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({}));
+    await render();
+
+    await act(async () => { button(container, "Import").click(); await flush(); });
+
+    expect(start).toHaveBeenCalledWith("claude_code");
+    expect(container.textContent).toContain("Finding your chats…");
+    expect(button(container, "Importing…").disabled).toBe(true);
+
+    await send(job({ total: 400, processed: 100, imported: 90, alreadyInBridge: 10, currentProject: "/Users/you/work/invoice-app", updatedAt: "2026-11-19T10:00:05Z" }));
+    const bar = container.querySelector("[role='progressbar']")!;
+    expect(bar.getAttribute("aria-valuenow")).toBe("25");
+    expect(container.textContent).toContain("100 of 400");
+    expect(container.textContent).toContain("90 came over");
+    expect(container.textContent).toContain("10 already in Bridge");
+    expect(container.textContent).toContain("Now reading …/work/invoice-app");
+    expect(container.textContent).toContain("You can leave this page or close the window");
+  });
+
+  it("shows what came over, what was left out and what did not come over when it ends", async () => {
+    vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({}));
+    await render();
+    await act(async () => { button(container, "Import").click(); await flush(); });
+
+    await send(job({
+      status: "done", total: 400, processed: 400, imported: 380, memories: 3, alreadyInBridge: 15, failed: 1, leftOut: 51190,
+      notCarried: [{ text: "documents or PDFs inside messages", count: 4 }], errors: [],
+      updatedAt: "2026-11-19T10:09:00Z", finishedAt: "2026-11-19T10:09:00Z",
     }));
-    await act(async () => { root.render(<MoveToBridge onError={error => { throw new Error(error); }} />); await flush(); });
-    await act(async () => { button(container, "Review").click(); await flush(); });
-    const projects = [...container.querySelectorAll("[data-import-project]")].map(node => node.getAttribute("data-import-project"));
-    expect(projects).toEqual(["/work/api", "/work/web"]);
-    expect(container.textContent).toContain("30 of 30 chats selected");
-    expect(container.textContent).toContain("Show all 15");
-    // Turn one project off: its 15 chats leave the selection.
-    const projectSwitch = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="All chats in /work/web"]')!;
-    await act(async () => { projectSwitch.click(); await flush(); });
-    expect(container.textContent).toContain("15 of 30 chats selected");
-    await act(async () => { projectSwitch.click(); await flush(); });
-    await act(async () => { button(container, "Import 30 selected").click(); await flush(); });
-    expect(preview).toHaveBeenCalledTimes(2);
-    expect(preview.mock.calls.map(call => call[1].length)).toEqual([25, 5]);
-    expect(commit).toHaveBeenCalledTimes(2);
-    // Each commit names exactly the artifacts its preview read.
-    expect(commit.mock.calls.map(call => call[3]?.length)).toEqual([25, 5]);
-    expect(commit.mock.calls[0][2].memoryScope).toBeNull();
-    expect(container.querySelector('[data-import-result="imported"]')?.textContent).toBe("28");
-    expect(container.querySelector('[data-import-result="skipped"]')?.textContent).toBe("2");
-    expect(container.textContent).toContain("1 × attachment: image too large or not an image; the message text was kept");
-    await act(async () => { button(container, "Start over").click(); await flush(); });
-    expect(container.textContent).toContain("Found on this Mac");
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Import finished");
+    expect(container.querySelector("[data-import-result='imported']")?.textContent).toBe("380");
+    expect(container.querySelector("[data-import-result='skipped']")?.textContent).toBe("15");
+    expect(text).toContain("Background runs left out");
+    expect(text).toContain("51,190");
+    expect(text).toContain("4 × documents or PDFs inside messages");
+    expect(text).toContain("Could not be imported");
+    expect(container.querySelector("[role='progressbar']")).toBeNull();
+    expect(button(container, "Import again").disabled).toBe(false);
   });
 
-  it("imports independent memories alongside each other instead of letting the first block the rest", async () => {
-    const memory = (id: string): ExternalImportArtifact => ({ ...artifact(0), artifactId: id, kind: "memory", sourceLabel: `projects/${id}/memory/MEMORY.md`, title: null, projectPath: null });
-    vi.spyOn(bridgeApi, "discoverExternalImport").mockResolvedValue({ discoveryId: "d", provider: "claude_code", approvedRoots: [], sourceVersion: null, formatVersions: {}, artifacts: [artifact(1), memory("m1"), memory("m2")], diagnostics: [], discoveredAt: "now" });
-    vi.spyOn(bridgeApi, "previewExternalImport").mockImplementation(async (_, ids) => ({ candidates: ids.map(id => ({ ...candidateFor(id), kind: id.startsWith("m") ? "memory" as const : "conversation" as const })) }));
-    const commit = vi.spyOn(bridgeApi, "commitExternalImport").mockResolvedValue({ importId: "i", candidateResults: [], createdBridgeIds: [], imported: 3, skipped: 0, changed: 0, conflicted: 0, rejected: 0, unsupported: 0, rollbackState: "committed", diagnostics: [], createdAt: "now" });
-    await act(async () => { root.render(<MoveToBridge onError={error => { throw new Error(error); }} />); await flush(); });
-    await act(async () => { button(container, "Review").click(); await flush(); });
-    await act(async () => { button(container, "Import 3 selected").click(); await flush(); });
-    const plan = commit.mock.calls[0][2];
-    expect(plan.selectedCandidateIds).toHaveLength(3);
-    expect(plan.memoryScope).toBe("account:local");
-    expect(plan.conflictPolicy).toBe("import_alongside");
+  it("opened in the middle of an import, shows that import instead of a fresh button", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ job: job({ total: 50, processed: 20, imported: 20, updatedAt: "2026-11-19T10:00:03Z" }) });
+    await render();
+
+    expect(container.textContent).toContain("20 of 50");
+    expect(button(container, "Importing…").disabled).toBe(true);
   });
 
-  it("keeps going after a batch fails and says so", async () => {
-    const artifacts = Array.from({ length: 26 }, (_, index) => artifact(index));
-    vi.spyOn(bridgeApi, "discoverExternalImport").mockResolvedValue({ discoveryId: "d", provider: "claude_code", approvedRoots: [], sourceVersion: null, formatVersions: {}, artifacts, diagnostics: [], discoveredAt: "now" });
-    vi.spyOn(bridgeApi, "previewExternalImport").mockImplementationOnce(async () => { throw new Error("The Bridge daemon connection was lost"); })
-      .mockImplementation(async (_, ids) => ({ candidates: ids.map(candidateFor) }));
-    vi.spyOn(bridgeApi, "commitExternalImport").mockResolvedValue({ importId: "i", candidateResults: [], createdBridgeIds: [], imported: 1, skipped: 0, changed: 0, conflicted: 0, rejected: 0, unsupported: 0, rollbackState: "committed", diagnostics: [], createdAt: "now" });
-    await act(async () => { root.render(<MoveToBridge onError={error => { throw new Error(error); }} />); await flush(); });
-    await act(async () => { button(container, "Review").click(); await flush(); });
-    await act(async () => { button(container, "Import 26 selected").click(); await flush(); });
-    expect(container.textContent).toContain("The Bridge daemon connection was lost");
-    expect(container.querySelector('[data-import-result="imported"]')?.textContent).toBe("1");
+  it("keeps the newest progress when an older status read arrives late", async () => {
+    let resolveStatus: (value: { job?: ImportJob }) => void = () => undefined;
+    vi.spyOn(bridgeApi, "importStatus").mockReturnValue(new Promise(resolve => { resolveStatus = resolve; }));
+    await render();
+    await send(job({ total: 50, processed: 40, updatedAt: "2026-11-19T10:00:09Z" }));
+
+    await act(async () => { resolveStatus({ job: job({ total: 50, processed: 10, updatedAt: "2026-11-19T10:00:02Z" }) }); await flush(); });
+
+    expect(container.textContent).toContain("40 of 50");
   });
 
-  it("reports a failed detection instead of spinning forever", async () => {
-    vi.spyOn(bridgeApi, "detectImportSources").mockRejectedValue(new Error("HOME is not set"));
-    const errors: string[] = [];
-    await act(async () => { root.render(<MoveToBridge onError={error => errors.push(error)} />); await flush(); });
-    expect(errors).toEqual(["HOME is not set"]);
-    expect(container.textContent).not.toContain("Looking for other tools");
+  it("stops listening when the page closes", async () => {
+    await render();
+    await act(async () => root.unmount());
+    expect(unlisten).toHaveBeenCalled();
+    root = createRoot(container);
   });
 });

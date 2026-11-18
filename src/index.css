@@ -823,6 +823,24 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: skeleton-in 0.24s ease-out 0.12s both;
 }
 
+/* The import progress bar: a soft highlight runs along the filled part while
+   Bridge works through the import. Reduced motion leaves the plain bar. */
+.import-progress-sweep {
+  background-image: linear-gradient(
+    100deg,
+    transparent 25%,
+    color-mix(in srgb, var(--color-background) 45%, transparent) 50%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-sweep 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .import-progress-sweep { animation: none; }
+}
+
 @keyframes skeleton-sweep {
   from { background-position: 150% 0; }
   to { background-position: -50% 0; }

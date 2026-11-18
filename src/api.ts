@@ -53,6 +53,8 @@ import type {
   ExternalImportPlan,
   ExternalImportPreview,
   ImportSourcesDetection,
+  ImportJob,
+  ImportJobStatus,
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
@@ -1716,6 +1718,27 @@ export const mockWorkflowApi = {
   },
 };
 
+let mockImportJob: ImportJob | null = null;
+const mockImportListeners = new Set<(job: ImportJob) => void>();
+
+/** Mock mode: a 24-file import that finishes in a few seconds. */
+function startMockImport(tool: string): ImportJob {
+  if (mockImportJob?.status === "running") return mockImportJob;
+  const now = new Date().toISOString();
+  const job: ImportJob = { jobId: crypto.randomUUID(), tool, status: "running", total: 24, processed: 0, imported: 0, memories: 0, alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 3, notCarried: [], errors: [], startedAt: now, updatedAt: now };
+  mockImportJob = job;
+  const tick = () => {
+    const current = mockImportJob!;
+    const processed = Math.min(current.total, current.processed + 6);
+    const done = processed === current.total;
+    mockImportJob = { ...current, processed, imported: processed - 2, memories: 1, alreadyInBridge: Math.min(2, processed), currentProject: done ? undefined : "/Users/you/Code/app", status: done ? "done" : "running", updatedAt: new Date().toISOString(), finishedAt: done ? new Date().toISOString() : undefined };
+    mockImportListeners.forEach(listener => listener(mockImportJob!));
+    if (!done) setTimeout(tick, 600);
+  };
+  setTimeout(tick, 600);
+  return job;
+}
+
 /** Mock-mode tools: Claude Code found with history, two ADEs found, the rest absent. */
 function mockImportSources(): ImportSourcesDetection {
   const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
@@ -1845,6 +1868,21 @@ export const bridgeApi = {
   detectImportSources: (): Promise<ImportSourcesDetection> => {
     if (hasBackend()) return call("imports/detect_import_sources");
     return Promise.resolve(mockImportSources());
+  },
+  /** Import everything from one tool in the background; returns at once. */
+  startImport: (tool: string): Promise<ImportJob> => {
+    if (hasBackend()) return call("imports/start_import", { tool });
+    return Promise.resolve(startMockImport(tool));
+  },
+  importStatus: (): Promise<ImportJobStatus> => {
+    if (hasBackend()) return call("imports/import_status");
+    return Promise.resolve({ job: mockImportJob ?? undefined });
+  },
+  /** A background import's progress after every batch, and its end. */
+  onImportProgress: async (handler: (job: ImportJob) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<ImportJob>("imports/progress", handler);
+    mockImportListeners.add(handler);
+    return () => { mockImportListeners.delete(handler); };
   },
   commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan, artifactIds?: string[]): Promise<ExternalImportCommit> => {
     if (hasBackend()) return call("imports/commit_external_import", { discoveryId, plan, ...(artifactIds ? { artifactIds } : {}) } satisfies CommitExternalImportParams);
