@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DetectedImportSource, ImportJob } from "./protocol/generated/protocol";
-import { finishedLabel, folderLabel, importNotice, importPercent, newerJob, sourceSummary } from "./moveToBridge";
+import { finishedLabel, folderLabel, importNotice, importPercent, newerJob, sourceSummary, timeLeft } from "./moveToBridge";
 
 const source = (counts: Partial<DetectedImportSource["counts"]>, installed = true): DetectedImportSource => ({
   tool: "claude_code", label: "Claude Code", installed, supported: true, roots: [], note: null,
@@ -58,5 +58,18 @@ describe("Move to Bridge logic", () => {
     expect(importNotice(job({ status: "done", imported: 1 })).body).toBe("1 item came over from Claude Code.");
     expect(importNotice(job({ status: "failed", errors: ["Claude Code was not found on this Mac"] })))
       .toEqual({ title: "Import stopped", body: "Claude Code was not found on this Mac", failed: true });
+  });
+
+  it("says how long is left from the pace so far, like a file copy", () => {
+    const start = Date.parse("2026-11-19T10:00:00Z");
+    const at = (seconds: number) => start + seconds * 1000;
+    const running = (processed: number, total: number) => job({ processed, total, startedAt: "2026-11-19T10:00:00Z" });
+    expect(timeLeft(running(0, 100), at(10))).toBe("Working out the time left…");
+    expect(timeLeft(running(5, 100), at(1))).toBe("Working out the time left…");
+    expect(timeLeft(running(50, 100), at(20))).toBe("Less than a minute left");
+    expect(timeLeft(running(1000, 33538), at(15))).toBe("About 8 minutes left");
+    expect(timeLeft(running(100, 33538), at(30))).toBe("About 3 hours left");
+    expect(timeLeft(running(100, 220), at(60))).toBe("About 1 minute left");
+    expect(timeLeft(running(100, 100), at(60))).toBe("Finishing up…");
   });
 });

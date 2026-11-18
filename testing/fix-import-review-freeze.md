@@ -8,7 +8,7 @@ Importing from Claude Code is one button and a background job. The Review step i
 - Import starts a job in Bridge's own process and returns at once. The window can leave the page or close; the job keeps going.
 - The job imports every real chat and the setup items (instructions, settings, agents, commands, skills, rules). Setup arrives switched off. Background runs (chats Claude Code ran in the OS temp folder) are left out and counted as left out. Claude Code's memory files are not imported: Claude Code in Bridge keeps reading them itself, so copying them would only duplicate them into Bridge memory.
 - The job builds its work list from file paths and sizes only: no transcript is opened to list it and nothing is sent to the window. It then reads and imports a small batch at a time in a fixed order, bounded by count and by bytes, so memory stays bounded whatever the number of transcripts.
-- Progress (processed of total, came over, already in Bridge, the current project) is saved after every batch and published as a live event. The page shows it as an animated progress card.
+- Progress (processed of total, came over, already in Bridge, the current project) is saved after every batch and published as a live event. The page shows it as a progress card with a transfer stage, after a file copy on macOS or Windows: the tool's tile, Bridge's tile, and chat cards arcing between them while Bridge's tile pulses as they land. It says how long is left from the pace so far. When the import ends the cards stop, the path turns solid and Bridge's tile shows a check. Under reduced motion no cards are drawn.
 - When the job finishes, Bridge tells the person: an in-app toast, plus a system notification when Bridge is not focused. The page shows what came over, what was already in Bridge, the background runs left out, and what did not come over.
 - Only one import runs at a time. Pressing Import while one runs shows the running one.
 - If Bridge quits mid-import, the job resumes on the next start from the last finished batch. Chats imported earlier are recognised and not imported twice.
@@ -20,7 +20,7 @@ Importing from Claude Code is one button and a background job. The Review step i
 
 - `claude_import`: the job's work list is sorted, skips temp-folder projects, counts them as left out, includes memories and setup, and resumes after a cursor.
 - `import_job`: batches respect the count and byte limits; the report adds up imported, already in Bridge, changed, failed and not-carried reasons across batches.
-- `moveToBridge.ts`: not-carried keys render as readable text.
+- `moveToBridge.ts`: not-carried keys render as readable text; the time left reads from the pace so far, and waits for a few seconds of pace.
 
 ## Integration / Functional Tests
 
@@ -31,7 +31,7 @@ Importing from Claude Code is one button and a background job. The Review step i
 - A transcript that vanishes mid-import costs only itself.
 - An item Bridge refuses (built with a memory over 4,000 characters) is refused alone and reported; the chats in the same batch import.
 - No Claude Code memory file lands in Bridge memory.
-- `MoveToBridge.test.tsx`: Import starts the job; a progress event animates the card; a finished event shows the summary; reopening the page during a job shows its progress.
+- `MoveToBridge.test.tsx`: Import starts the job; a progress event animates the card; the transfer stage draws six cards from Claude Code to Bridge with the time left; a finished event shows the summary and the stage with a check and no cards; reopening the page during a job shows its progress.
 - Both hosts (bridged and the embedded desktop) resume an interrupted import at startup.
 
 ## Smoke Tests

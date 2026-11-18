@@ -841,6 +841,130 @@ html[data-native-fullscreen] .u-traffic-inset {
   .import-progress-sweep { animation: none; }
 }
 
+/* The import's transfer stage (ImportTransfer.tsx): chats arc from the tool's
+   tile to Bridge's, like a file copy. Each card rides three nested animations
+   on one 2.4s clock: across (linear, so the arc stays on the dashed path), up
+   and down (ease out, then ease in: a parabola), and its own fade, scale and
+   tilt. Reduced motion removes the cards and stills the rest. */
+.import-transfer-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 0.875rem;
+  border: 1px solid var(--color-border-card);
+  background: var(--color-card);
+  color: var(--color-muted-foreground);
+  box-shadow: 0 1px 2px color-mix(in srgb, black 12%, transparent);
+}
+.import-transfer-target { color: var(--color-foreground); }
+.import-transfer[data-transfer="running"] .import-transfer-target::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  animation: import-transfer-land 0.8s ease-out infinite;
+}
+@keyframes import-transfer-land {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-foreground) 22%, transparent); }
+  to { box-shadow: 0 0 0 7px color-mix(in srgb, var(--color-foreground) 0%, transparent); }
+}
+.import-transfer-path {
+  stroke: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-dasharray: 2 5;
+  animation: import-transfer-flow 0.8s linear infinite;
+}
+.import-transfer[data-transfer="done"] .import-transfer-path {
+  stroke-dasharray: none;
+  stroke: color-mix(in srgb, var(--color-success) 55%, transparent);
+  animation: none;
+}
+@keyframes import-transfer-flow {
+  to { stroke-dashoffset: -14; }
+}
+.import-transfer-flight {
+  position: absolute;
+  left: 2%;
+  top: 46px;
+  width: 96%;
+  height: 0;
+  animation: import-transfer-across 2.4s linear infinite both;
+}
+@keyframes import-transfer-across {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+.import-transfer-arc {
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: import-transfer-arc 2.4s infinite both;
+}
+@keyframes import-transfer-arc {
+  0% { transform: translateY(0); animation-timing-function: cubic-bezier(0.33, 0.66, 0.66, 1); }
+  50% { transform: translateY(-22px); animation-timing-function: cubic-bezier(0.33, 0, 0.66, 0.34); }
+  100% { transform: translateY(0); }
+}
+.import-transfer-card {
+  position: absolute;
+  left: -9px;
+  top: -12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5px;
+  width: 18px;
+  height: 23px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--color-foreground) 22%, transparent);
+  background: color-mix(in srgb, var(--color-foreground) 9%, var(--color-popover));
+  box-shadow: 0 4px 10px -2px color-mix(in srgb, black 30%, transparent);
+  animation: import-transfer-card 2.4s ease-in-out infinite both;
+}
+.import-transfer-card i {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--color-foreground) 55%, transparent);
+}
+.import-transfer-card i:nth-child(1) { width: 75%; }
+.import-transfer-card i:nth-child(2) { width: 100%; }
+.import-transfer-card i:nth-child(3) { width: 55%; }
+@keyframes import-transfer-card {
+  0% { opacity: 0; transform: scale(0.6) rotate(-14deg); }
+  14% { opacity: 1; transform: scale(1) rotate(-6deg); }
+  50% { transform: scale(1.06) rotate(0deg); }
+  84% { opacity: 1; transform: scale(0.95) rotate(6deg); }
+  100% { opacity: 0; transform: scale(0.55) rotate(10deg); }
+}
+.import-transfer-check {
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--color-success);
+  color: var(--color-background);
+  box-shadow: 0 0 0 2px var(--color-card);
+  animation: import-transfer-check 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes import-transfer-check {
+  from { opacity: 0; transform: scale(0.3); }
+  to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .import-transfer-flight { display: none; }
+  .import-transfer-path,
+  .import-transfer[data-transfer="running"] .import-transfer-target::after,
+  .import-transfer-check { animation: none; }
+}
+
 @keyframes skeleton-sweep {
   from { background-position: 150% 0; }
   to { background-position: -50% 0; }

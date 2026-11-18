@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { DetectedImportSource, ImportJob } from "../protocol/generated/protocol";
-import { finishedLabel, folderLabel, importPercent, newerJob, sourceSummary } from "../moveToBridge";
+import { finishedLabel, folderLabel, importPercent, newerJob, sourceSummary, timeLeft } from "../moveToBridge";
+import { ImportTransfer } from "./ImportTransfer";
 import { PrimaryButton, SettingsGroup, SettingsRow, StatusPill } from "./settings/kit";
 
 // "Move to Bridge": the tools found on this Mac and one Import button. The
@@ -91,18 +92,30 @@ function useGliding(target: number): number {
   return shown;
 }
 
+/** The clock, once a second, so the time left keeps moving between batches. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
 function ImportProgress({ job }: { job: ImportJob }) {
   const counting = job.total === 0;
   const percent = importPercent(job);
   const processed = useGliding(job.processed);
   const imported = useGliding(job.imported);
+  const now = useNow();
   return <section aria-label="Import progress" data-import-job={job.status} className="mb-6 rounded-xl border border-border-card bg-card p-4">
     <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
       <CircleNotch size={13} strokeWidth={1.8} className="animate-spin text-muted-foreground" aria-hidden="true" />
       {counting ? "Finding your chats…" : "Bringing your chats over"}
       {!counting && <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">{percent}%</span>}
     </div>
-    <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+    <div className="mx-auto mt-4 max-w-md px-2"><ImportTransfer tool={job.tool} /></div>
+    <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-muted">
       <div
         role="progressbar"
         aria-label="Import progress"
@@ -117,6 +130,7 @@ function ImportProgress({ job }: { job: ImportJob }) {
       <span className="text-foreground">{processed.toLocaleString()}</span> of {job.total.toLocaleString()}
       {" · "}<span data-import-result="imported">{imported.toLocaleString()}</span> came over
       {job.alreadyInBridge > 0 && <> · {job.alreadyInBridge.toLocaleString()} already in Bridge</>}
+      <span className="float-right" data-import-time-left>{timeLeft(job, now)}</span>
     </p>}
     {job.currentProject && <p className="mt-1 truncate text-[11.5px] text-muted-foreground/80">Now reading {folderLabel(job.currentProject)}</p>}
     <p className="mt-3 text-[11.5px] text-muted-foreground">You can leave this page or close the window. Bridge lets you know when it is done.</p>
@@ -133,7 +147,9 @@ function ImportSummary({ job }: { job: ImportJob }) {
   const errors = job.errors ?? [];
   const notCarried = job.notCarried ?? [];
   const extraErrors = errors.length - ERRORS_SHOWN;
-  return <SettingsGroup
+  return <>
+  {!failed && <div className="mx-auto mb-5 max-w-md px-2" data-import-done><ImportTransfer tool={job.tool} done /></div>}
+  <SettingsGroup
     label={failed ? "Import stopped" : "Import finished"}
     note={finishedLabel(job)}
   >
@@ -148,5 +164,6 @@ function ImportSummary({ job }: { job: ImportJob }) {
     />}
     {errors.slice(0, ERRORS_SHOWN).map(error => <SettingsRow key={error} label={<span className="text-warning">{error}</span>} />)}
     {extraErrors > 0 && <SettingsRow label={<span className="text-muted-foreground">and {extraErrors} more</span>} />}
-  </SettingsGroup>;
+  </SettingsGroup>
+  </>;
 }

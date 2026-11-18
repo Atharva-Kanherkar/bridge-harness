@@ -85,6 +85,33 @@ describe("MoveToBridge", () => {
     expect(container.textContent).toContain("You can leave this page or close the window");
   });
 
+  it("draws the transfer: chats arcing from Claude Code to Bridge, with the time left", async () => {
+    vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({}));
+    await render();
+    await act(async () => { button(container, "Import").click(); await flush(); });
+    await send(job({ total: 400, processed: 100, imported: 100, startedAt: new Date(Date.now() - 20_000).toISOString(), updatedAt: "2026-11-19T10:00:05Z" }));
+
+    const stage = container.querySelector("[data-transfer]")!;
+    expect(stage.getAttribute("data-transfer")).toBe("running");
+    expect(stage.textContent).toContain("Claude Code");
+    expect(stage.textContent).toContain("Bridge");
+    expect(stage.querySelectorAll(".import-transfer-card").length).toBe(6);
+    expect(stage.querySelector(".import-transfer-check")).toBeNull();
+    expect(container.querySelector("[data-import-time-left]")?.textContent).toBe("Less than a minute left");
+  });
+
+  it("lands the transfer with a check when the import ends", async () => {
+    vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({}));
+    await render();
+    await act(async () => { button(container, "Import").click(); await flush(); });
+    await send(job({ status: "done", total: 4, processed: 4, imported: 4, updatedAt: "2026-11-19T10:09:00Z", finishedAt: "2026-11-19T10:09:00Z" }));
+
+    const stage = container.querySelector("[data-transfer]")!;
+    expect(stage.getAttribute("data-transfer")).toBe("done");
+    expect(stage.querySelectorAll(".import-transfer-card").length).toBe(0);
+    expect(stage.querySelector(".import-transfer-check")).not.toBeNull();
+  });
+
   it("shows what came over, what was left out and what did not come over when it ends", async () => {
     vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({}));
     await render();

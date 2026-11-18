@@ -63,3 +63,20 @@ export function importNotice(job: ImportJob, toolLabel = "Claude Code"): { title
   if (job.alreadyInBridge > 0) parts.push(`${job.alreadyInBridge.toLocaleString()} already in Bridge`);
   return { title: "Import finished", body: `${parts.join(", ")}.${failed}`, failed: false };
 }
+
+/**
+ * How long a running import has left, the way a file copy says it: from the
+ * pace so far. Nothing until a few seconds of pace exist to go on.
+ */
+export function timeLeft(job: Pick<ImportJob, "processed" | "total" | "startedAt">, nowMs: number): string {
+  const elapsed = (nowMs - Date.parse(job.startedAt)) / 1000;
+  if (job.total <= 0 || job.processed <= 0 || !(elapsed >= 3)) return "Working out the time left…";
+  const remaining = Math.max(0, job.total - job.processed);
+  if (remaining === 0) return "Finishing up…";
+  const seconds = (remaining / job.processed) * elapsed;
+  if (seconds < 60) return "Less than a minute left";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `About ${minutes} ${minutes === 1 ? "minute" : "minutes"} left`;
+  const hours = Math.round(minutes / 60);
+  return `About ${hours} ${hours === 1 ? "hour" : "hours"} left`;
+}

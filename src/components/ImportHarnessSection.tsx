@@ -9,7 +9,7 @@ import { SettingsPage } from "./settings/kit";
 export function ImportHarnessSection({ onError }: { onError: (message: string) => void }) {
   return <SettingsPage
     title="Import"
-    description="Bring your chats, memories and setup over from the tools you already use. Everything stays on this Mac, and secrets are removed before anything is saved."
+    description="Bring your chats and setup over from the tools you already use. Everything stays on this Mac, and secrets are removed before anything is saved."
   >
     <MoveToBridge onError={onError} />
   </SettingsPage>;
