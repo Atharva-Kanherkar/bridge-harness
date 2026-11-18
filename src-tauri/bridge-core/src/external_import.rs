@@ -975,11 +975,7 @@ fn destination_conflicts(
         )?);
     }
     if candidate.kind.is_setup() {
-        return Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM import_setup_candidates WHERE candidate_kind=?1 AND title=?2)",
-            params![candidate.kind.as_str(), candidate.title],
-            |row| row.get(0),
-        )?);
+        return setup_conflict_exists(db, candidate);
     }
     Ok(false)
 }
@@ -1470,6 +1466,30 @@ fn write_memory(
     Ok(normalized.deterministic_bridge_id.clone())
 }
 
+/// Where a setup item applies: its scope and, for a project item, the
+/// project it belongs to (the same project key whichever tool it came from).
+fn setup_place(candidate: &ImportCandidate) -> (&str, Option<&str>) {
+    let payload = &candidate.normalized_payload;
+    (
+        payload_str(payload, "scope").unwrap_or("global"),
+        payload_str(payload, "projectKey"),
+    )
+}
+
+/// A setup item conflicts only with one of the same kind and name in the
+/// same place: the same script in two projects is two items.
+fn setup_conflict_exists(db: &Connection, candidate: &ImportCandidate) -> Result<bool, BridgeError> {
+    let (scope, project) = setup_place(candidate);
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM import_setup_candidates
+            WHERE candidate_kind=?1 AND title=?2
+              AND COALESCE(json_extract(payload,'$.scope'),'global')=?3
+              AND json_extract(payload,'$.projectKey') IS ?4)",
+        params![candidate.kind.as_str(), candidate.title, scope, project],
+        |row| row.get(0),
+    )?)
+}
+
 fn write_setup_candidate(
     transaction: &Transaction<'_>,
     normalized: &NormalizedImportCandidate,
@@ -1482,16 +1502,13 @@ fn write_setup_candidate(
         ));
     }
     let candidate = &normalized.candidate;
-    let conflict: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM import_setup_candidates WHERE candidate_kind=?1 AND title=?2)",
-        params![candidate.kind.as_str(), candidate.title],
-        |row| row.get(0),
-    )?;
+    let conflict = setup_conflict_exists(transaction, candidate)?;
+    let (scope, project) = setup_place(candidate);
     let conflict_group = conflict.then(|| {
         deterministic_identity(
             "bridge",
             candidate.kind.as_str(),
-            Some(&candidate.title),
+            Some(&format!("{}|{scope}|{}", candidate.title, project.unwrap_or_default())),
             "setup-conflict",
             &candidate.kind,
         )

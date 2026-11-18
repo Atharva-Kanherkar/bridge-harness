@@ -1003,3 +1003,28 @@ fn a_child_of_a_bridge_run_parent_attaches_to_that_chat() {
     assert_eq!((commit.imported, commit.skipped), (1, 1));
     assert_eq!(parent_of(&db, "subagent of a Bridge chat"), (Some("bridge-chat".into()), 1));
 }
+
+fn setup_bundle(roots: &[&str]) -> TransferBundle {
+    let mut bundle = TransferBundle::new(source("conductor"));
+    for (index, root) in roots.iter().enumerate() {
+        let key = format!("p{index}");
+        bundle.projects.push(BundleProject { key: key.clone(), name: key.clone(), repo_root: (*root).into(), remote_url: None });
+        bundle.setup.push(BundleSetup { key: format!("s{index}"), kind: CandidateKind::Script, scope: "project".into(), project_key: Some(key), name: "setup".into(), body: Some("bun install".into()), config: None, source_ref: format!("{root}/conductor.json"), source_label: format!("{root}/conductor.json") });
+    }
+    bundle
+}
+
+#[test]
+fn setup_conflicts_are_per_scope_and_project() {
+    let db = database();
+    // Two projects, the same script: not a conflict under Skip.
+    let both = import(&db, vec![setup_bundle(&["/nonexistent/api", "/nonexistent/web"])]);
+    assert_eq!((both.imported, both.conflicted), (2, 0), "{both:?}");
+    // The same project's script from another file (another tool's settings):
+    // that is a real conflict with what is already there.
+    let mut again = setup_bundle(&["/nonexistent/api"]);
+    again.setup[0].body = Some("pnpm install".into());
+    again.setup[0].source_ref = "/nonexistent/api/.conductor/settings.toml".into();
+    let conflict = import(&db, vec![again]);
+    assert_eq!((conflict.imported, conflict.conflicted), (0, 1), "{conflict:?}");
+}
