@@ -67,6 +67,9 @@
         "hook",
         "mcp_server",
         "plugin",
+        "script",
+        "preference",
+        "provider_instance",
         "unsupported"
       ],
       "type": "string"

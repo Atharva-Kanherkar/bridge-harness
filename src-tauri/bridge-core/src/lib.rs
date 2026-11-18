@@ -91,6 +91,7 @@ pub mod delegation;
 pub mod diagnostics;
 pub mod events;
 pub mod external_import;
+pub mod import_bundle;
 pub mod frame_queue;
 pub mod git;
 pub mod github_surface;

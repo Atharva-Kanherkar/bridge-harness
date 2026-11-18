@@ -22,6 +22,9 @@ pub enum ExternalImportCandidateKind {
     Hook,
     McpServer,
     Plugin,
+    Script,
+    Preference,
+    ProviderInstance,
     Unsupported,
 }
 
