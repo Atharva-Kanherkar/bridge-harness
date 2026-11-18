@@ -51,8 +51,8 @@ for n, ask in enumerate(["Fix the broken sidebar links", "Write the getting star
         {"type": "assistant", "uuid": f"y{n}", "sessionId": s, "timestamp": f"2026-11-0{n}T08:01:00Z", "cwd": "/work/docs-site", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}},
     ])
 # Enough chats that the import runs for a couple of dozen batches, so its
-# progress is on screen long enough to watch.
-for n in range(600):
+# progress is on screen long enough to watch. IMPORT_FAKE_CHATS sets how many.
+for n in range(int(os.environ.get("IMPORT_FAKE_CHATS", "600"))):
     s, project = str(uuid.UUID(int=1000 + n)), ["api-gateway", "mobile-app", "data-pipeline"][n % 3]
     turns = []
     for t in range(3):
