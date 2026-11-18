@@ -102,6 +102,23 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
+/** Claude Code's flag-tier settings for a chat's speed and ultracode. Fast
+ * mode needs an explicit opt-in from an SDK host (`fastMode` in these flag
+ * settings; without it the CLI reports `sdk_opt_in_required`). Ultracode is
+ * offered as an effort level, the way `/effort ultracode` sets it, and runs at
+ * the model's default effort. Bridge only sends either when the model's
+ * catalog row offered it. */
+export function sdkFlagSettings({ effort = null, speed = null } = {}) {
+  const settings = {};
+  const chosen = typeof speed === "string" ? speed.trim().toLowerCase() : "";
+  if (chosen === "fast") settings.fastMode = true;
+  // An explicit standard outranks a `fastMode` saved in the user's own
+  // settings by an interactive `/fast`: flag settings sit above them.
+  else if (chosen === "standard") settings.fastMode = false;
+  if (typeof effort === "string" && effort.trim().toLowerCase() === "ultracode") settings.ultracode = true;
+  return Object.keys(settings).length ? settings : null;
+}
+
 /** PreToolUse runs before user allow rules, including on native subagents.
  * File and shell tools keep Isolated permissions; MCP is always refused. */
 function worktreeWorkflowOptions() {
@@ -126,7 +143,7 @@ function worktreeWorkflowOptions() {
   };
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, outputDir = null, plugins = [], mcpServers = {}, briefing = null, effort = null, projectTrusted = false }, ask = null) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, outputDir = null, plugins = [], mcpServers = {}, briefing = null, effort = null, speed = null, projectTrusted = false }, ask = null) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -158,6 +175,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.
   const resolvedEffort = sdkEffort(effort);
+  const flagSettings = sdkFlagSettings({ effort, speed });
   // A toolless briefing answers from text alone: no tool definitions are sent
   // at all, and its instructions replace the coding preset instead of riding
   // on it. Rust only sets this for a policy with an empty scope, and the
@@ -179,6 +197,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(budget?.maxTurns != null ? { maxTurns: budget.maxTurns } : {}),
     ...(budget?.costCeilingMicrousd != null ? { maxBudgetUsd: budget.costCeilingMicrousd / 1_000_000 } : {}),
     ...(toolless ? { tools: [] } : {}),
+    ...(flagSettings ? { settings: flagSettings } : {}),
   };
 }
 

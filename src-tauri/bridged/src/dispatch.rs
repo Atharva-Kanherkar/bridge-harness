@@ -379,7 +379,7 @@ pub fn dispatch(
         }
         MethodName::UpdateChatModel => {
             let p: wire::UpdateChatModelParams = decode(method, params)?;
-            reply(api::update_chat_model_with_account(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref(), p.account.as_deref()))
+            reply(api::update_chat_selection(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref(), p.account.as_deref(), p.speed.as_deref()))
         }
         MethodName::CarrySessionHandoff => {
             let p: wire::CarrySessionHandoffParams = decode(method, params)?;

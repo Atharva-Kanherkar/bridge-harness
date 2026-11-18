@@ -346,6 +346,7 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
             cwd: &cwd,
             model: Some(model),
             effort: None,
+            speed: None,
             instructions: Some(suggestion_instructions()),
             // No file or shell access: this session only ever predicts text.
             write_mode: Some(WriteMode::ReadOnly),

@@ -172,6 +172,7 @@ fn start(provider: &str, cwd: &str) -> (Box<dyn AdapterRuntime>, BufReader<Child
         cwd,
         model: None,
         effort: None,
+        speed: None,
         instructions: None,
         write_mode: None,
         read_only_sandbox: None,

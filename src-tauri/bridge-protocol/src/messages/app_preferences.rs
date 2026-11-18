@@ -42,6 +42,12 @@ pub struct AppPreferenceValues {
     pub show_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_expand_edits: Option<bool>,
+    /// Let personal apps call servers connected only in OpenCode, through its
+    /// gated courier. Off unless the person turns it on: OpenCode's code mode
+    /// can make network requests Bridge cannot approve. Never changeable by a
+    /// chat's `settings_change`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_opencode_app_courier: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

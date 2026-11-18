@@ -459,6 +459,7 @@ fn live_tools() {
                 cwd: &cwd_text,
                 model: eval_model().as_deref(),
                 effort: None,
+                speed: None,
                 instructions: None,
                 write_mode: Some(crate::delegation::WriteMode::Full),
                 read_only_sandbox: None,
