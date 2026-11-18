@@ -1003,6 +1003,9 @@ fn independent_memories_import_alongside_each_other_and_existing_ones() {
     let commit = commit_import(&db, &normalized, &plan_for(&lowered.candidates, ConflictPolicy::ImportAlongside)).unwrap();
     assert_eq!((commit.imported, commit.conflicted), (2, 0));
     assert_eq!(count(&db, "SELECT COUNT(*) FROM memory_records WHERE status='active'"), 3);
+}
+
+#[test]
 fn a_child_of_a_bridge_run_parent_attaches_to_that_chat() {
     let db = database();
     db.execute(
