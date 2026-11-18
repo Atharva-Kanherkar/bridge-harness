@@ -595,12 +595,13 @@ fn commit_import_inner(
     let mut completed_writes = 0_usize;
     for candidate in selected {
         let classified = classify_candidate(&transaction, candidate, plan, false)?;
-        if classified
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == LEGACY_IMPORT_RECOGNISED)
-        {
-            remember_legacy_native_session(&transaction, candidate, &classified, &import_id, &created_at)?;
+        if let Some(code) = classified.diagnostics.iter().find_map(|diagnostic| {
+            [LEGACY_IMPORT_RECOGNISED, LEGACY_IMPORT_CHANGED]
+                .contains(&diagnostic.code.as_str())
+                .then_some(diagnostic.code.as_str())
+        }) {
+            let unchanged = code == LEGACY_IMPORT_RECOGNISED;
+            remember_legacy_native_session(&transaction, candidate, &classified, unchanged, &import_id, &created_at)?;
         }
         if classified.status != ImportCandidateStatus::Imported {
             persist_candidate_diagnostics(
@@ -1031,7 +1032,7 @@ fn classify_legacy_import(
             candidate,
             ImportCandidateStatus::ChangedSource,
             Some(session),
-            "changed_source",
+            LEGACY_IMPORT_CHANGED,
             "This chat changed since an earlier version of Bridge imported it; choose a new historical revision or skip it",
         )));
     }
@@ -1049,6 +1050,9 @@ fn classify_legacy_import(
 }
 
 const LEGACY_IMPORT_RECOGNISED: &str = "legacy_import_recognised";
+/// A chat an older version imported that has changed since: left as it is,
+/// but its native mapping is still filled in so its new children find it.
+const LEGACY_IMPORT_CHANGED: &str = "legacy_import_changed";
 
 /// Fill in the native mapping for a chat an earlier version imported, so the
 /// same session through any other tool is recognised from now on.
@@ -1056,6 +1060,7 @@ fn remember_legacy_native_session(
     transaction: &Transaction<'_>,
     normalized: &NormalizedImportCandidate,
     classified: &ImportCandidateResult,
+    unchanged: bool,
     import_id: &str,
     created_at: &str,
 ) -> Result<(), BridgeError> {
@@ -1063,7 +1068,11 @@ fn remember_legacy_native_session(
     let (Some(native_key), Some(session)) = (payload_str(payload, "nativeKey"), classified.revision_of.as_deref()) else {
         return Ok(());
     };
-    let transcript_hash = payload_str(payload, "transcriptHash").unwrap_or(&normalized.candidate.content_hash);
+    // A changed chat keeps a hash no transcript will match, so the next import
+    // still sees it as changed rather than a duplicate.
+    let current = payload_str(payload, "transcriptHash").unwrap_or(&normalized.candidate.content_hash);
+    let stale = format!("legacy-changed:{current}");
+    let transcript_hash = if unchanged { current } else { stale.as_str() };
     transaction.execute(
         "INSERT OR IGNORE INTO import_native_sessions(native_key,session_id,content_hash,import_id,created_at)
          VALUES(?1,?2,?3,?4,?5)",

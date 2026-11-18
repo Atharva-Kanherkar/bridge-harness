@@ -1604,6 +1604,28 @@ mod tests {
     }
 
     #[test]
+    fn a_child_of_a_changed_v1_parent_attaches_to_it() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-parent.jsonl");
+        write(&path, &session_lines("sess-parent", "parent before"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        assert_eq!(import_with_v1(&db, &claude, &path).imported, 1);
+        let existing: String = db.query_row("SELECT id FROM sessions WHERE kind='imported'", [], |r| r.get(0)).unwrap();
+        // The parent grows and gains a subagent.
+        let later = json!({"type":"user","uuid":"later","sessionId":"sess-parent","timestamp":"2026-11-02T10:00:00Z","message":{"role":"user","content":"spawn a helper"}}).to_string();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("\n{later}").as_bytes()).unwrap();
+        write(&claude.join("projects/p/sess-parent/subagents/agent-h.jsonl"), &session_lines("sess-parent", "helper task"));
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let commit = commit_all(&db, &v2);
+        assert_eq!((commit.imported, commit.changed), (1, 1), "{commit:?}");
+        let (parent, depth): (Option<String>, i64) = db
+            .query_row("SELECT parent_session_id, depth FROM sessions WHERE title='helper task'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((parent.as_deref(), depth), (Some(existing.as_str()), 1));
+    }
+
+    #[test]
     fn config_roots_cover_home_env_and_accounts_once_each() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
