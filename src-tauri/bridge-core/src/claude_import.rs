@@ -570,96 +570,63 @@ fn legacy_identity(
 /// Every selected transcript, read at full fidelity into one transfer bundle,
 /// merged and lowered to candidates. A transcript that cannot be read becomes
 /// a diagnostic-only candidate; the others still import.
-fn preview_conversations(
+/// Read one selected transcript and its subagents, after the path and the
+/// schema gate check out.
+fn read_artifact_session(
     approved_roots: &[PathBuf],
+    artifact: &DiscoveredArtifact,
+    discovery: &DiscoveryResult,
+) -> Result<transcript::SessionRead, BridgeError> {
+    let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref))?;
+    let gate = discovery.format_versions.get(TRANSCRIPT_GATE).map(String::as_str);
+    let validation = validate_schema_version(
+        &SchemaGate { format: TRANSCRIPT_GATE.into(), allowed_versions: vec![TRANSCRIPT_GATE.into()] },
+        gate,
+    );
+    if !validation.accepted {
+        return Err(BridgeError::Invalid(validation.diagnostics[0].message.clone()));
+    }
+    transcript::read_session(&path, &artifact.source_label, approved_roots)
+        .map_err(|error| BridgeError::Invalid(format!("Claude transcript is unreadable: {error}")))
+}
+
+fn subagent_failure_diagnostic(failure: &transcript::ChildFailure) -> ImportDiagnostic {
+    ImportDiagnostic {
+        code: "excluded_subagent".into(),
+        severity: "warning".into(),
+        classification: SourceClassification::Documented,
+        message: format!("1 subagent: {} ({})", failure.reason, failure.label),
+        recovery: None,
+        source_label: Some(failure.label.clone()),
+    }
+}
+
+/// One diagnostic per kind of record the reader skipped, with its count.
+fn skipped_diagnostics(item: &transcript::ParsedTranscript) -> Vec<ImportDiagnostic> {
+    item.skipped
+        .0
+        .iter()
+        .map(|(reason, count)| ImportDiagnostic {
+            code: "transcript_record_skipped".into(),
+            severity: "info".into(),
+            classification: SourceClassification::Documented,
+            message: format!("Skipped {count} '{reason}' record(s) Bridge has no place for"),
+            recovery: None,
+            source_label: Some(item.chat.source_label.clone()),
+        })
+        .collect()
+}
+
+/// Put each thing lowering left out on the chat it came from, or on a
+/// diagnostic-only stand-in when the whole chat was left out.
+fn attach_exclusions(
+    out: &mut Vec<ImportCandidate>,
+    excluded: Vec<crate::import_bundle::BundleExclusion>,
+    ref_by_label: &std::collections::HashMap<String, String>,
     artifacts: &[&DiscoveredArtifact],
     discovery: &DiscoveryResult,
-) -> Result<Vec<ImportCandidate>, BridgeError> {
-    use crate::import_bundle::{self, BundleSource, TransferBundle};
-    if artifacts.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    let mut bundle = TransferBundle::new(BundleSource {
-        tool: PROVIDER.into(),
-        tool_version: discovery.source_version.clone(),
-        schema_version: Some(TRANSCRIPT_GATE.into()),
-        adapter_version: ADAPTER_VERSION.into(),
-        roots: discovery.approved_roots.clone(),
-        detected_at: discovery.discovered_at.clone(),
-    });
-    let mut skipped_by_ref: std::collections::HashMap<String, Vec<ImportDiagnostic>> =
-        std::collections::HashMap::new();
-    let mut ref_by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for artifact in artifacts {
-        let read = (|| -> Result<transcript::SessionRead, BridgeError> {
-            let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref))?;
-            let gate = discovery.format_versions.get(TRANSCRIPT_GATE).map(String::as_str);
-            let validation = validate_schema_version(
-                &SchemaGate { format: TRANSCRIPT_GATE.into(), allowed_versions: vec![TRANSCRIPT_GATE.into()] },
-                gate,
-            );
-            if !validation.accepted {
-                return Err(BridgeError::Invalid(validation.diagnostics[0].message.clone()));
-            }
-            transcript::read_session(&path, &artifact.source_label, approved_roots)
-                .map_err(|error| BridgeError::Invalid(format!("Claude transcript is unreadable: {error}")))
-        })();
-        match read {
-            Ok(session) => {
-                let main_ref = session.chats.first().map(|item| item.chat.source_ref.clone());
-                let lost: Vec<ImportDiagnostic> = session
-                    .failures
-                    .iter()
-                    .map(|failure| ImportDiagnostic {
-                        code: "excluded_subagent".into(),
-                        severity: "warning".into(),
-                        classification: SourceClassification::Documented,
-                        message: format!("1 subagent: {} ({})", failure.reason, failure.label),
-                        recovery: None,
-                        source_label: Some(failure.label.clone()),
-                    })
-                    .collect();
-                let legacy = legacy_identity(approved_roots, artifact, discovery);
-                for mut item in session.chats {
-                    if item.chat.agent_role.is_none() {
-                        if let Some((native_id, content_hash)) = legacy.clone() {
-                            item.chat.legacy_native_id = Some(native_id);
-                            item.chat.legacy_content_hash = Some(content_hash);
-                        }
-                    }
-                    let diagnostics: Vec<ImportDiagnostic> = item
-                        .skipped
-                        .0
-                        .iter()
-                        .map(|(reason, count)| ImportDiagnostic {
-                            code: "transcript_record_skipped".into(),
-                            severity: "info".into(),
-                            classification: SourceClassification::Documented,
-                            message: format!("Skipped {count} '{reason}' record(s) Bridge has no place for"),
-                            recovery: None,
-                            source_label: Some(item.chat.source_label.clone()),
-                        })
-                        .collect();
-                    skipped_by_ref.insert(item.chat.source_ref.clone(), diagnostics);
-                    ref_by_label.insert(item.chat.source_label.clone(), item.chat.source_ref.clone());
-                    bundle.chats.push(item.chat);
-                }
-                if let Some(main_ref) = main_ref {
-                    skipped_by_ref.entry(main_ref).or_default().extend(lost);
-                }
-            }
-            Err(error) => out.push(unsupported_candidate(artifact, discovery, &error.to_string())),
-        }
-    }
-    let lowered = import_bundle::lower(&import_bundle::resolve(vec![bundle])?);
-    for mut candidate in lowered.candidates {
-        if let Some(diagnostics) = skipped_by_ref.remove(&candidate.source.canonical_source_ref) {
-            candidate.diagnostics.extend(diagnostics);
-        }
-        out.push(candidate);
-    }
-    for excluded in lowered.excluded {
+) {
+    for excluded in excluded {
         let diagnostic = ImportDiagnostic {
             code: format!("excluded_{}", excluded.category),
             severity: "warning".into(),
@@ -686,6 +653,63 @@ fn preview_conversations(
             }
         }
     }
+}
+
+fn preview_conversations(
+    approved_roots: &[PathBuf],
+    artifacts: &[&DiscoveredArtifact],
+    discovery: &DiscoveryResult,
+) -> Result<Vec<ImportCandidate>, BridgeError> {
+    use crate::import_bundle::{self, BundleSource, TransferBundle};
+    if artifacts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut bundle = TransferBundle::new(BundleSource {
+        tool: PROVIDER.into(),
+        tool_version: discovery.source_version.clone(),
+        schema_version: Some(TRANSCRIPT_GATE.into()),
+        adapter_version: ADAPTER_VERSION.into(),
+        roots: discovery.approved_roots.clone(),
+        detected_at: discovery.discovered_at.clone(),
+    });
+    let mut skipped_by_ref: std::collections::HashMap<String, Vec<ImportDiagnostic>> =
+        std::collections::HashMap::new();
+    let mut ref_by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for artifact in artifacts {
+        let read = read_artifact_session(approved_roots, artifact, discovery);
+        match read {
+            Ok(session) => {
+                let main_ref = session.chats.first().map(|item| item.chat.source_ref.clone());
+                let lost: Vec<ImportDiagnostic> =
+                    session.failures.iter().map(subagent_failure_diagnostic).collect();
+                let legacy = legacy_identity(approved_roots, artifact, discovery);
+                for mut item in session.chats {
+                    if item.chat.agent_role.is_none() {
+                        if let Some((native_id, content_hash)) = legacy.clone() {
+                            item.chat.legacy_native_id = Some(native_id);
+                            item.chat.legacy_content_hash = Some(content_hash);
+                        }
+                    }
+                    skipped_by_ref.insert(item.chat.source_ref.clone(), skipped_diagnostics(&item));
+                    ref_by_label.insert(item.chat.source_label.clone(), item.chat.source_ref.clone());
+                    bundle.chats.push(item.chat);
+                }
+                if let Some(main_ref) = main_ref {
+                    skipped_by_ref.entry(main_ref).or_default().extend(lost);
+                }
+            }
+            Err(error) => out.push(unsupported_candidate(artifact, discovery, &error.to_string())),
+        }
+    }
+    let lowered = import_bundle::lower(&import_bundle::resolve(vec![bundle])?);
+    for mut candidate in lowered.candidates {
+        if let Some(diagnostics) = skipped_by_ref.remove(&candidate.source.canonical_source_ref) {
+            candidate.diagnostics.extend(diagnostics);
+        }
+        out.push(candidate);
+    }
+    attach_exclusions(&mut out, lowered.excluded, &ref_by_label, artifacts, discovery);
     Ok(out)
 }
 
