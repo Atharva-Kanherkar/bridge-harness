@@ -63,6 +63,13 @@ fn check_inventory(manifest: &Manifest, inventory: &Value) -> Result<(), BridgeE
     if inventory["status"] != "connected" {
         return Err(invalid("Connect the app's MCP server in this chat first"));
     }
+    // OpenCode reports a server's status and nothing about its tools. Such
+    // an app's tools are unverified: reads are held to Bridge's read words
+    // (checked in `personal::validate`) and every call to the courier's exact
+    // match. Only an inventory that says so explicitly skips this.
+    if inventory["verified"] == false && inventory["tools"].is_null() {
+        return Ok(());
+    }
     let tools = inventory["tools"]
         .as_array()
         .ok_or_else(|| invalid("The MCP server returned no tool inventory"))?;
@@ -410,6 +417,10 @@ mod tests {
         assert!(check_inventory(&manifest(), &inventory).is_err());
         inventory["tools"] = json!([]);
         assert!(check_inventory(&manifest(), &inventory).is_err());
+        let unverified = json!({"status":"connected","tools":null,"verified":false});
+        assert!(check_inventory(&manifest(), &unverified).is_ok(), "OpenCode's status-only inventory");
+        assert!(check_inventory(&manifest(), &json!({"status":"connected","tools":null})).is_err(), "a missing list is not unverified");
+        assert!(check_inventory(&manifest(), &json!({"status":"failed","tools":null,"verified":false})).is_err());
         inventory["status"] = json!("failed");
         assert!(check_inventory(&manifest(), &inventory).is_err());
     }

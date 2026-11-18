@@ -180,6 +180,11 @@ pub trait AdapterRuntime: Send {
             "This provider cannot call a tool without a model turn".into(),
         ))
     }
+    /// One MCP server's connection status, for agents with no tool inventory
+    /// to read (OpenCode). `{name, status}`.
+    fn mcp_status(&self, _server: &str) -> Result<Value, BridgeError> {
+        Err(BridgeError::Invalid("This provider cannot report an MCP server's status".into()))
+    }
     /// Inventory or a preview read on this chat's existing MCP connection.
     fn app_control(&self, _id: &str, _request: &Value) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid("This provider cannot preview personal apps".into()))
@@ -745,6 +750,11 @@ pub trait HarnessAdapter: Send + Sync + Any {
         validate_start_compatibility(&self.descriptor(), &request)?;
         self.start(request)
     }
+    /// A personal-app courier session that may ask for exactly one MCP tool
+    /// (see `apps::courier`). Unsupported unless an adapter overrides it.
+    fn start_app_courier(&self, _request: StartRequest<'_>, _permission: &str, _server: &str) -> Result<StartedAdapter, BridgeError> {
+        Err(BridgeError::Invalid(format!("{} cannot run a personal app courier", self.descriptor().label)))
+    }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
     /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
@@ -1010,6 +1020,16 @@ impl AdapterRegistry {
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         adapter.start(request)
+    }
+
+    pub fn start_app_courier(&self, id: &str, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
+        let adapter = self.adapters.get(id).ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?;
+        crate::credential_policy::gate_adapter(id)?;
+        let descriptor = adapter.descriptor();
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
+        }
+        adapter.start_app_courier(request, permission, server)
     }
 
     pub fn start_completion(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1508,6 +1528,12 @@ impl HarnessAdapter for OpenCodeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+        })
+    }
+    fn start_app_courier(&self, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
+        let started = opencode_adapter::start_courier_with_settings(request, &self.settings(), permission, server)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
         })
     }
     fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {

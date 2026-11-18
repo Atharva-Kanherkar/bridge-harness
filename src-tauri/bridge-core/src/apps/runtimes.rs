@@ -230,7 +230,11 @@ fn launch(core: &Arc<BridgeCore>, key: &Key) -> Result<Launched, BridgeError> {
 
 /// A launch of `key`'s connection under `policy` instead of the app runtime's
 /// own: a Claude one-shot approved write. Same account, folder and settings.
-pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRuntimePolicy>) -> Result<Launched, BridgeError> {
+/// Where and as whom a connection's process runs: the connection's own
+/// account, and its project folder (or a fresh scratch folder for a
+/// user-wide connection). The folder is canonical: OpenCode keys its server
+/// state by path, and a symlinked path (`/tmp`) splits it in two.
+pub fn environment(core: &Arc<BridgeCore>, key: &Key) -> Result<(String, Option<crate::provider_accounts::AccountLaunch>), BridgeError> {
     let account = {
         let db = core.try_db()?;
         key.account
@@ -264,6 +268,12 @@ pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRun
             scratch.to_string_lossy().to_string()
         }
     };
+    let cwd = std::fs::canonicalize(&cwd).map(|path| path.to_string_lossy().into_owned()).unwrap_or(cwd);
+    Ok((cwd, account))
+}
+
+pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRuntimePolicy>) -> Result<Launched, BridgeError> {
+    let (cwd, account) = environment(core, key)?;
     let policy = match (key.harness.as_str(), policy) {
         ("claude", Some(policy)) => Some(policy),
         ("claude", None) => Some(

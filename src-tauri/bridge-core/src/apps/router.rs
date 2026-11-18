@@ -33,13 +33,20 @@ pub enum Op {
 pub enum Capability {
     /// Bridge calls the agent's own MCP client with no model turn.
     Direct,
+    /// A hidden session of the agent makes the call, and Bridge approves the
+    /// agent's own permission prompt only on an exact match (`courier`).
+    GatedCourier,
+    /// Only the server's connection status is known, not its tools.
+    Partial,
     /// Not available from this agent yet; the reason names what to do.
     Unsupported,
 }
 
-pub fn capability(harness: &str, _op: Op) -> Capability {
-    match harness {
-        "claude" | "codex" => Capability::Direct,
+pub fn capability(harness: &str, op: Op) -> Capability {
+    match (harness, op) {
+        ("claude" | "codex", _) => Capability::Direct,
+        ("opencode", Op::Inventory) => Capability::Partial,
+        ("opencode", Op::Read | Op::Write) => Capability::GatedCourier,
         _ => Capability::Unsupported,
     }
 }
@@ -143,6 +150,9 @@ fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &V
 }
 
 pub fn inventory(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) -> Result<Value, BridgeError> {
+    if capability(&connection.harness, Op::Inventory) == Capability::Partial {
+        return super::courier::opencode_inventory(core, &key_for(connection));
+    }
     send(core, chat, connection, &json!({"kind": "inventory", "server": connection.server}))
 }
 
@@ -151,6 +161,14 @@ pub fn inventory(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) ->
 /// here so no path can skip it.
 pub fn read(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
     may_read(&*core.try_db()?, chat)?;
+    if capability(&connection.harness, Op::Read) == Capability::GatedCourier {
+        // No annotations exist to recheck; the read vocabulary still applies,
+        // and the courier holds the agent to exactly this call.
+        if !crate::briefing_policy::is_read_tool_name(tool) {
+            return Err(invalid("This tool is not a read"));
+        }
+        return super::courier::opencode_call(core, &key_for(connection), tool, arguments);
+    }
     read_with(connection, tool, arguments, |request| send(core, chat, connection, request))
 }
 
@@ -189,6 +207,7 @@ pub fn write(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: 
     match connection.harness.as_str() {
         "claude" => super::write::claude(core, &key_for(connection), tool, arguments),
         "codex" => send(core, chat, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments})),
+        "opencode" => super::courier::opencode_call(core, &key_for(connection), tool, arguments),
         other => Err(invalid(format!(
             "{} cannot run personal apps directly yet; connect {} in Claude Code or Codex",
             agent_label(other),
@@ -211,7 +230,7 @@ fn key_for(connection: &Connection) -> runtimes::Key {
 /// Claude Code and Codex logins.
 pub fn candidates(chat_harness: &str, chat_account: Option<&str>, chat_cwd: Option<&str>, server: &str) -> Vec<Connection> {
     let mut list = Vec::new();
-    if capability(chat_harness, Op::Inventory) == Capability::Direct {
+    if capability(chat_harness, Op::Inventory) != Capability::Unsupported {
         list.push(Connection {
             harness: chat_harness.into(),
             account: chat_account.map(str::to_owned),
@@ -286,7 +305,10 @@ mod tests {
                 assert_eq!(capability(harness, op), Capability::Direct);
             }
         }
-        for harness in ["opencode", "cursor", "grok", "pi"] {
+        assert_eq!(capability("opencode", Op::Inventory), Capability::Partial);
+        assert_eq!(capability("opencode", Op::Read), Capability::GatedCourier);
+        assert_eq!(capability("opencode", Op::Write), Capability::GatedCourier);
+        for harness in ["cursor", "grok", "pi"] {
             assert_eq!(capability(harness, Op::Read), Capability::Unsupported);
         }
         assert_eq!(agent_label("codex"), "Codex");
@@ -300,6 +322,8 @@ mod tests {
         assert_eq!(list[1].harness, "claude");
         assert_eq!(list[2], Connection { harness: "codex".into(), account: None, cwd: None, server: "slack".into() });
         assert!(list[1..].iter().all(|c| c.cwd.is_none()), "other agents are asked user-wide");
+        let list = candidates("opencode", None, Some("/repo"), "railway");
+        assert_eq!(list[0], Connection { harness: "opencode".into(), account: None, cwd: Some("/repo".into()), server: "railway".into() }, "the chat's own OpenCode first");
         let list = candidates("cursor", Some("work"), Some("/repo"), "slack");
         assert_eq!(list.iter().map(|c| c.harness.as_str()).collect::<Vec<_>>(), ["claude", "codex"]);
         assert!(list.iter().all(|c| c.account.is_none()), "an OpenCode or Cursor account is not a Claude or Codex one");
@@ -380,7 +404,7 @@ mod tests {
     fn unsupported_connections_refuse_with_the_agent_name() {
         let (_dir, core) = fixture();
         core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','cursor','Chat','ready')").unwrap();
-        let error = inventory(&core, "chat", &Connection { harness: "opencode".into(), account: None, cwd: None, server: "railway".into() }).unwrap_err().to_string();
-        assert!(error.contains("OpenCode") && error.contains("Claude Code or Codex"), "{error}");
+        let error = inventory(&core, "chat", &Connection { harness: "cursor".into(), account: None, cwd: None, server: "railway".into() }).unwrap_err().to_string();
+        assert!(error.contains("Cursor") && error.contains("Claude Code or Codex"), "{error}");
     }
 }

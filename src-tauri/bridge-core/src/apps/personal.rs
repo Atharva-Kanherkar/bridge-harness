@@ -32,7 +32,7 @@ pub const DRAFT_TTL_HOURS: i64 = 24;
 /// Harnesses an app's connection may name: the ones Bridge can make a direct
 /// tool call on. The chat that drafts or opens an app can be any agent; see
 /// [`super::router`].
-pub const HARNESSES: &[&str] = &["claude", "codex"];
+pub const HARNESSES: &[&str] = &["claude", "codex", "opencode"];
 
 pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -525,7 +525,7 @@ mod tests {
             ("name", Box::new(|m| m.name = "n".repeat(61))),
             ("intent", Box::new(|m| m.intent = String::new())),
             ("intent", Box::new(|m| m.intent = "i".repeat(301))),
-            ("claude", Box::new(|m| m.harness = "opencode".into())),
+            ("claude", Box::new(|m| m.harness = "cursor".into())),
             ("server", Box::new(|m| m.server = String::new())),
             ("server", Box::new(|m| m.server = " claude.ai Slack".into())),
             ("tools", Box::new(|m| { m.reads.clear(); m.writes.clear(); })),
