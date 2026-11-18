@@ -4,8 +4,9 @@
 // cannot be reachable from one and missing from another. Later slices load
 // this from core as manifests; until then it is the frontend's own list.
 
-import { Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Route, Send, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
+import { AppWindow, Bot, ChartNoAxesColumn, FolderGit2, GitPullRequest, LayoutGrid, Library, NotebookPen, Route, Send, Store, TerminalSquare, Workflow, type LucideIcon } from "lucide-react";
 import type { AppView } from "../navigationHistory";
+import type { PersonalAppSummary } from "../protocol/generated/protocol";
 
 export type AppId =
   | "notes"
@@ -55,10 +56,11 @@ export const CARD_APPS: readonly { id: string; name: string; description: string
   { id: "outgoing", name: "Outgoing", description: "Messages a chat drafts for you to send", icon: Send },
 ];
 
-/** Screens that are not apps: the chat itself, its board, and settings pages
- *  reached from inside other screens. Anything else must be an app, or the
+/** Screens that are not apps: the chat itself, its board, settings pages
+ *  reached from inside other screens, and the pane each of the person's own
+ *  apps opens in (reached from its own launcher entry). Anything else must be an app, or the
  *  launcher would leave it unreachable. */
-export const NON_APP_VIEWS: readonly AppView[] = ["workspace", "work", "settings", "archives", "briefing-settings"];
+export const NON_APP_VIEWS: readonly AppView[] = ["workspace", "work", "settings", "archives", "briefing-settings", "personal-app"];
 
 export const SLOT_LABELS: Record<AppSlot, string> = { screen: "Full screen", dock: "Dock" };
 
@@ -103,9 +105,57 @@ export function appsBadge(badges: AppBadges): BadgeText | undefined {
   return badgeText({ count, capped });
 }
 
+// Personal apps --------------------------------------------------------------
+//
+// The person's own locked apps ("My apps") share the launcher, the sidebar
+// pins and navigation with the built-ins. Core keys both by id, and the two
+// never collide; the client prefixes personal ids so one key names either.
+
+export type PersonalKey = `personal:${string}`;
+/** A built-in app or one of the person's own. */
+export type AppKey = AppId | PersonalKey;
+
+export function personalKey(appId: string): PersonalKey {
+  return `personal:${appId}`;
+}
+
+/** The personal app id a key names, or null for a built-in. */
+export function personalIdOf(key: AppKey): string | null {
+  return key.startsWith("personal:") ? key.slice("personal:".length) : null;
+}
+
+/** The id core knows the app by. */
+export function coreIdOf(key: AppKey): string {
+  return personalIdOf(key) ?? key;
+}
+
+/** The key for an id core reported, or null when this client knows no such
+ *  app. `personal` is the set of the person's app ids. */
+export function keyOfCoreId(id: string, personal: ReadonlySet<string>): AppKey | null {
+  if (isAppId(id)) return id;
+  return personal.has(id) ? personalKey(id) : null;
+}
+
+/** What the launcher and the sidebar draw for any app. */
+export type LaunchEntry = {
+  key: AppKey;
+  name: string;
+  description: string;
+  icon: LucideIcon;
+  keywords: readonly string[];
+};
+
+export function builtinEntry(app: BuiltinApp): LaunchEntry {
+  return { key: app.id, name: app.name, description: app.description, icon: app.icon, keywords: app.keywords };
+}
+
+export function personalEntry(app: Pick<PersonalAppSummary, "id" | "name" | "intent" | "server">): LaunchEntry {
+  return { key: personalKey(app.id), name: app.name, description: app.intent, icon: AppWindow, keywords: [app.server.toLowerCase(), "my apps"] };
+}
+
 /** Case-insensitive match on the name and the keywords. An empty query
  *  matches everything. */
-export function appMatches(app: BuiltinApp, query: string): boolean {
+export function appMatches(app: Pick<BuiltinApp, "name" | "keywords">, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
   return app.name.toLowerCase().includes(needle) || app.keywords.some(word => word.includes(needle));

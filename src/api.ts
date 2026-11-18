@@ -34,9 +34,9 @@ import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrailCandidates, mockListTrails, mockPreviewTrailBrief, mockReadTrail, mockRemoveTrailMember, mockUpdateTrail, onMockTrailsChanged } from "./trailsMock";
 import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailCandidatesResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberKind, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
 import type { TrailsChangedPayload } from "./trails";
-import { mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
-import { MOCK_APP_DRAFT_ID, MOCK_APP_HASH, MOCK_APP_OPEN_ID, mockCallPersonalAppTool, mockGetPersonalAppDraft, mockGetPersonalAppOpen, mockLockPersonalApp, mockPreviewPersonalAppTool } from "./personalAppMock";
-import type { CallPersonalAppToolParams, GetPersonalAppDraftParams, GetPersonalAppOpenParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppCallResult, PersonalAppDraft, PersonalAppOpen, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
+import { mockDeletePersonalApp, mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
+import { MOCK_APP_DRAFT_ID, MOCK_APP_HASH, MOCK_APP_OPEN_ID, mockCallPersonalAppTool, mockClosePersonalAppSurface, mockOpenPersonalAppSurface, mockGetPersonalAppDraft, mockGetPersonalAppOpen, mockLockPersonalApp, mockPreviewPersonalAppTool } from "./personalAppMock";
+import type { ClosePersonalAppSurfaceResult, ListPersonalAppsResult, PersonalAppSurfaceOpen, CallPersonalAppToolParams, GetPersonalAppDraftParams, GetPersonalAppOpenParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppCallResult, PersonalAppDraft, PersonalAppOpen, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
 import type { ListAppsResult } from "./protocol/generated/protocol";
 import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockSendOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
 import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
@@ -1922,6 +1922,14 @@ export const bridgeApi = {
   /** One call from an opened app; a write first returns `approvalRequired`. */
   callPersonalAppTool: async (params: CallPersonalAppToolParams): Promise<PersonalAppCallResult> =>
     hasBackend() ? call("apps/call_personal_app_tool", params) : mockCallPersonalAppTool(params),
+  /** The person opens one of their apps in its own pane. Only this UI calls it. */
+  openPersonalAppSurface: async (appId: string): Promise<PersonalAppSurfaceOpen> =>
+    hasBackend() ? call("apps/open_personal_app_surface", { appId }) : mockOpenPersonalAppSurface(appId),
+  /** The pane closed: its open, and any write waiting in it, go. */
+  closePersonalAppSurface: async (openId: string): Promise<ClosePersonalAppSurfaceResult> =>
+    hasBackend() ? call("apps/close_personal_app_surface", { openId }) : mockClosePersonalAppSurface(openId),
+  deletePersonalApp: async (id: string): Promise<ListPersonalAppsResult> =>
+    hasBackend() ? call("apps/delete_personal_app", { id }) : mockDeletePersonalApp(id),
   previewPersonalAppTool: async (params: PreviewPersonalAppToolParams): Promise<unknown> =>
     hasBackend() ? call("apps/preview_personal_app_tool", params) : mockPreviewPersonalAppTool(params),
   /** Whether a live app preview is isolated from the network, WebRTC

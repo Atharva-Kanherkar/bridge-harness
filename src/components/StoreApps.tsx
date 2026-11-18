@@ -7,17 +7,18 @@
 // itself.
 
 import { useState } from "react";
-import { Pin, PinOff, Power, PowerOff } from "lucide-react";
-import { BUILTIN_APPS, CARD_APPS, SLOT_LABELS, type AppId } from "../apps/registry";
+import { AppWindow, Pin, PinOff, Power, PowerOff, Trash2 } from "lucide-react";
+import { BUILTIN_APPS, CARD_APPS, SLOT_LABELS, personalKey, type AppId, type AppKey } from "../apps/registry";
 import { setPinned } from "../apps/pins";
-import { applyAnswer, useApps } from "../apps/store";
+import { applyAnswer, loadApps, useApps, usePersonalApps } from "../apps/store";
+import { connectionLabel } from "./personalAppShared";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { chordLabel } from "../keymap";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { AppSummary } from "../protocol/generated/protocol";
+import type { AppSummary, PersonalAppEntry } from "../protocol/generated/protocol";
 
 type Row = {
   id: string;
@@ -53,8 +54,9 @@ function rows(apps: readonly AppSummary[] | null): Row[] {
   return [...screens, ...cards];
 }
 
-export function StoreApps({ onOpenApp }: { onOpenApp?: (id: AppId) => void }) {
+export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) {
   const apps = useApps();
+  const personal = usePersonalApps();
   const [status, setStatus] = useState<string | null>(null);
 
   const pin = async (row: Row, pinned: boolean) => {
@@ -118,7 +120,82 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (id: AppId) => void }) {
           );
         })}
       </ul>
+      <MyApps apps={personal} onOpenApp={onOpenApp} onStatus={setStatus} />
     </div>
     </div>
   );
+}
+
+/** The person's own locked apps. Each opens in its own pane, pins like any
+ *  app, and can be turned off (its waiting writes are revoked) or deleted. */
+function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry[]; onOpenApp?: (key: AppKey) => void; onStatus: (text: string) => void }) {
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const pin = async (entry: PersonalAppEntry, pinned: boolean) => {
+    const result = await setPinned(personalKey(entry.app.id), !pinned);
+    onStatus(!result.ok ? result.message : pinned ? `Unpinned ${entry.app.name}.` : `Pinned ${entry.app.name} to the sidebar.`);
+  };
+  const power = async (entry: PersonalAppEntry) => {
+    try {
+      applyAnswer(await bridgeApi.setAppEnabled(entry.app.id, !entry.enabled));
+      onStatus(entry.enabled ? `Turned ${entry.app.name} off. Writes waiting for approval were cancelled.` : `Turned ${entry.app.name} on.`);
+    } catch (error) {
+      onStatus(errorMessage(error));
+    }
+  };
+  const remove = async (entry: PersonalAppEntry) => {
+    setConfirming(null);
+    try {
+      await bridgeApi.deletePersonalApp(entry.app.id);
+      await loadApps();
+      onStatus(`Deleted ${entry.app.name}.`);
+    } catch (error) {
+      onStatus(errorMessage(error));
+    }
+  };
+
+  return <section aria-labelledby="my-apps-heading" className="mt-8">
+    <h2 id="my-apps-heading" className="mb-1 text-[14px] font-medium text-foreground">My apps</h2>
+    <p className="mb-3 text-[12.5px] text-muted-foreground">Apps your agents built and you locked. Each runs only its locked tools, and every write asks you first.</p>
+    {apps.length === 0
+      ? <p className="rounded-xl border border-dashed border-border px-3.5 py-3 text-[12.5px] text-muted-foreground">No apps yet. Ask a chat to build one for an MCP server you use, then lock it.</p>
+      : <ul aria-label="My apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+        {apps.map(entry => {
+          const { app, enabled } = entry;
+          const pinned = entry.pinned !== null && entry.pinned !== undefined;
+          return <li key={app.id} data-personal-app={app.id} data-enabled={enabled ? "true" : "false"} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
+            <div className="flex items-start gap-3">
+              <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><AppWindow size={18} strokeWidth={1.5} aria-hidden="true" /></span>
+              <div className="min-w-0 flex-1">
+                <h3 className="flex items-center gap-1.5 text-[13.5px] font-medium text-foreground">
+                  {app.name}
+                  {pinned && <Pin size={11} className="fill-current text-muted-foreground" aria-label="Pinned" />}
+                  {!enabled && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">Off</span>}
+                </h3>
+                <p className="text-[12px] leading-snug text-muted-foreground">{app.intent}</p>
+                <p className="mt-1 truncate text-[11px] text-muted-foreground">{app.server} · via {connectionLabel(app.harness)} · v{app.version}</p>
+              </div>
+            </div>
+            {confirming === app.id
+              ? <div role="group" aria-label={`Delete ${app.name}?`} className="mt-auto flex flex-wrap items-center gap-1.5 text-[12px]">
+                <span className="min-w-0 flex-1 text-foreground">Delete every version of {app.name}?</span>
+                <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>Cancel</Button>
+                <Button size="sm" variant="destructive" onClick={() => void remove(entry)}>Delete</Button>
+              </div>
+              : <div className="mt-auto flex flex-wrap items-center justify-end gap-1">
+                <Button size="sm" variant="ghost" onClick={() => setConfirming(app.id)} aria-label={`Delete ${app.name}`}><Trash2 aria-hidden="true" />Delete</Button>
+                <Button size="sm" variant="ghost" onClick={() => void power(entry)} aria-label={`Turn ${app.name} ${enabled ? "off" : "on"}`}>
+                  {enabled ? <PowerOff aria-hidden="true" /> : <Power aria-hidden="true" />}
+                  {enabled ? "Turn off" : "Turn on"}
+                </Button>
+                {enabled && <Button size="sm" variant="ghost" onClick={() => void pin(entry, pinned)} aria-label={`${pinned ? "Unpin" : "Pin"} ${app.name}`}>
+                  {pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+                  {pinned ? "Unpin" : "Pin"}
+                </Button>}
+                {enabled && onOpenApp && <Button size="sm" variant="outline" onClick={() => onOpenApp(personalKey(app.id))} aria-label={`Open ${app.name}`}>Open</Button>}
+              </div>}
+          </li>;
+        })}
+      </ul>}
+  </section>;
 }

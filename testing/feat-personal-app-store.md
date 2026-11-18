@@ -10,7 +10,7 @@ Issue #1026, slice 4c-1. Plan: "Plan: My apps in the Store, launcher and memory 
   - Opening again replaces the previous Surface open for that app and revokes its pending approval.
   - `apps/close_personal_app_surface {openId}` removes it and its approval.
   - Daemon start clears all Surface opens.
-- **Owner.** `get_personal_app_open` and `call_personal_app_tool` take `owner: {kind: "chat", sessionId} | {kind: "surface"}`. The open's stored owner must equal it, otherwise "This app is unavailable here".
+- **Owner.** `get_personal_app_open` and `call_personal_app_tool` name the owner with `sessionId` (a chat) or no `sessionId` (the person's surface), so a 1.42 client, which always sends one, keeps working. The open's stored owner must equal it, otherwise "This app is unavailable here".
 - **Reads.**
   - A chat open follows the chat's access mode, as before.
   - A Surface open is allowed.

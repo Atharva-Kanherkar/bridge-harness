@@ -9,17 +9,17 @@
 
 import { useSyncExternalStore } from "react";
 import { bridgeApi } from "../api";
-import type { AppSummary, ListAppsResult } from "../protocol/generated/protocol";
-import { BUILTIN_APPS, isAppId, type AppBadges, type AppId, type BuiltinApp } from "./registry";
+import type { AppSummary, ListAppsResult, PersonalAppEntry } from "../protocol/generated/protocol";
+import { BUILTIN_APPS, keyOfCoreId, personalEntry, type AppBadges, type AppKey, type BuiltinApp, type LaunchEntry, isAppId } from "./registry";
 
 export const COALESCE_MS = 250;
 /** Where slice 1 kept pins in this browser. Read once for the import. */
 export const PINS_KEY = "bridge.apps.pins.v1";
 export const MAX_PINS = 3;
 
-type Snapshot = { apps: readonly AppSummary[] | null };
+type Snapshot = { apps: readonly AppSummary[] | null; personal: readonly PersonalAppEntry[] };
 
-const EMPTY: Snapshot = { apps: null };
+const EMPTY: Snapshot = { apps: null, personal: [] };
 let snapshot: Snapshot = EMPTY;
 const listeners = new Set<() => void>();
 let started = false;
@@ -38,7 +38,7 @@ function apply(result: ListAppsResult, sequence: number) {
   if (sequence < applied) return;
   applied = sequence;
   const first = snapshot.apps === null;
-  snapshot = { apps: result.apps };
+  snapshot = { apps: result.apps, personal: result.personal ?? [] };
   notify();
   if (first) for (const hook of firstLoadHooks.splice(0)) hook();
 }
@@ -82,6 +82,15 @@ function read(): Snapshot {
 /** Every app core lists, or null before the first answer. */
 export function useApps(): readonly AppSummary[] | null {
   return useSyncExternalStore(subscribeApps, read, read).apps;
+}
+
+function readPersonal(): readonly PersonalAppEntry[] {
+  return snapshot.personal;
+}
+
+/** The person's locked apps ("My apps"), newest lock first, on or off. */
+export function usePersonalApps(): readonly PersonalAppEntry[] {
+  return useSyncExternalStore(subscribeApps, readPersonal, readPersonal);
 }
 
 /** Run `hook` once, after the first list arrives. */
@@ -147,13 +156,24 @@ export function enabledApps(apps: readonly AppSummary[] | null): readonly Builti
   return BUILTIN_APPS.filter(app => on.has(app.id));
 }
 
-/** Pinned apps that have a screen, in sidebar order. */
-export function pinsOf(apps: readonly AppSummary[] | null): readonly AppId[] {
+/** The person's apps that are on, as launcher entries. */
+export function enabledPersonal(personal: readonly PersonalAppEntry[]): readonly LaunchEntry[] {
+  return personal.filter(entry => entry.enabled).map(entry => personalEntry(entry.app));
+}
+
+/** Pinned apps that have a screen, built-in and personal, in sidebar order. */
+export function pinsOf(apps: readonly AppSummary[] | null, personal: readonly PersonalAppEntry[] = []): readonly AppKey[] {
   if (!apps) return [];
-  return apps
-    .filter(app => app.enabled && app.pinned !== null && app.pinned !== undefined && isAppId(app.manifest.id))
-    .sort((a, b) => (a.pinned ?? 0) - (b.pinned ?? 0))
-    .map(app => app.manifest.id as AppId);
+  const ids = new Set(personal.map(entry => entry.app.id));
+  const pinned: { key: AppKey; position: number }[] = [];
+  for (const app of apps) {
+    const key = keyOfCoreId(app.manifest.id, ids);
+    if (key && isAppId(key) && app.enabled && app.pinned !== null && app.pinned !== undefined) pinned.push({ key, position: app.pinned });
+  }
+  for (const entry of personal) {
+    if (entry.enabled && entry.pinned !== null && entry.pinned !== undefined) pinned.push({ key: keyOfCoreId(entry.app.id, ids)!, position: entry.pinned });
+  }
+  return pinned.sort((a, b) => a.position - b.position).map(pin => pin.key);
 }
 
 /** Each badge core reported, by app id. */

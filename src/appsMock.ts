@@ -2,7 +2,7 @@
 // state and pins kept in localStorage so `bun run dev` behaves like a daemon
 // across reloads. The refusals use core's exact words.
 
-import type { AppBadge, AppManifest, AppSlot, AppSummary, ListAppsResult } from "./protocol/generated/protocol";
+import type { AppBadge, AppManifest, AppSlot, AppSummary, ListAppsResult, ListPersonalAppsResult, PersonalAppSummary } from "./protocol/generated/protocol";
 
 const STATE_KEY = "bridge.apps.mock.v1";
 const MAX_PINS = 3;
@@ -28,6 +28,17 @@ const SPECS: Spec[] = [
 
 export const MOCK_APP_IDS: readonly string[] = SPECS.map(spec => spec.id);
 
+/** The demo's one locked personal app ("My apps"), until it is deleted. */
+export const MOCK_PERSONAL_APP: PersonalAppSummary = {
+  id: "slack-dm", version: 1, name: "Slack DM", intent: "Find and message a teammate without leaving the chat",
+  harness: "claude", server: "claude.ai Slack", reads: ["slack_search_users"], writes: ["slack_send_message"],
+  contentHash: `sha256:${"a".repeat(64)}`, viewBytes: 0, lockedAt: "2026-11-18T09:00:00Z",
+};
+
+function personalApps(): PersonalAppSummary[] {
+  return state().deleted ? [] : [MOCK_PERSONAL_APP];
+}
+
 function manifest(spec: Spec): AppManifest {
   return {
     id: spec.id,
@@ -42,12 +53,12 @@ function manifest(spec: Spec): AppManifest {
   };
 }
 
-type State = { off: string[]; pins: string[] };
+type State = { off: string[]; pins: string[]; deleted?: boolean };
 
 function read(): State {
   try {
     const parsed = JSON.parse(localStorage.getItem(STATE_KEY) ?? "null") as Partial<State> | null;
-    if (parsed && Array.isArray(parsed.off) && Array.isArray(parsed.pins)) return { off: parsed.off, pins: parsed.pins };
+    if (parsed && Array.isArray(parsed.off) && Array.isArray(parsed.pins)) return { off: parsed.off, pins: parsed.pins, deleted: parsed.deleted === true };
   } catch {
     // Storage blocked or corrupt: start fresh.
   }
@@ -82,10 +93,25 @@ export function mockListApps(counts: MockBadgeCounts = {}): ListAppsResult {
       const position = pins.indexOf(spec.id);
       return { manifest: manifest(spec), enabled, canDisable: spec.canDisable ?? true, pinned: position >= 0 ? position : null, badge } satisfies AppSummary;
     }),
+    personal: personalApps().map(app => {
+      const position = pins.indexOf(app.id);
+      return { app, enabled: !off.includes(app.id), pinned: position >= 0 ? position : null };
+    }),
   };
 }
 
+export function mockDeletePersonalApp(id: string): ListPersonalAppsResult {
+  if (id === MOCK_PERSONAL_APP.id) {
+    const current = state();
+    write({ off: current.off.filter(item => item !== id), pins: current.pins.filter(pin => pin !== id), deleted: true });
+    emit();
+  }
+  return { apps: personalApps() };
+}
+
 function spec(id: string): Spec {
+  const personal = personalApps().find(app => app.id === id);
+  if (personal) return { id, name: personal.name, description: personal.intent, slots: ["screen"] };
   const found = SPECS.find(item => item.id === id);
   if (!found) throw new Error(`Bridge has no app called ${id}.`);
   return found;
@@ -94,7 +120,7 @@ function spec(id: string): Spec {
 export function mockSetAppPinned(id: string, pinned: boolean, counts?: MockBadgeCounts): ListAppsResult {
   const app = spec(id);
   const current = state();
-  let pins = current.pins.filter(pin => SPECS.some(item => item.id === pin));
+  let pins = current.pins.filter(pin => SPECS.some(item => item.id === pin) || personalApps().some(app => app.id === pin));
   if (pinned && !pins.includes(id)) {
     if (!app.slots.includes("screen") && !app.slots.includes("dock")) throw new Error(`${app.name} has no screen to pin to the sidebar.`);
     if (current.off.includes(id)) throw new Error(`Turn ${app.name} on before pinning it.`);
@@ -117,7 +143,7 @@ export function mockSetAppEnabled(id: string, enabled: boolean, counts?: MockBad
   const off = enabled ? current.off.filter(item => item !== id) : current.off.includes(id) ? current.off : [...current.off, id];
   const pins = enabled ? current.pins : current.pins.filter(pin => pin !== id);
   if (off.join() !== current.off.join() || pins.join() !== current.pins.join()) {
-    write({ off, pins });
+    write({ ...current, off, pins });
     emit();
   }
   return mockListApps(counts);
