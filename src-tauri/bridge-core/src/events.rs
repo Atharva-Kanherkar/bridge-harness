@@ -243,7 +243,7 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
             CoreEvent::NotesPageChanged(change) => serde_json::to_value(change).expect("page change serializes"),
             CoreEvent::NotesPassProgress(progress) => serde_json::to_value(progress).expect("pass progress serializes"),
-            CoreEvent::ImportProgress(job) => serde_json::to_value(job).expect("import job serializes"),
+            CoreEvent::ImportProgress(job) => serde_json::to_value(job).unwrap_or(serde_json::Value::Null),
             CoreEvent::TrailsChanged(changed) => serde_json::to_value(changed).expect("trails change serializes"),
             CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
             CoreEvent::WorkflowRunChanged { run } => serde_json::json!({ "run": run }),

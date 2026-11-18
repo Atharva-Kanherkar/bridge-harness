@@ -92,13 +92,13 @@ fn the_work_list_is_ordered_leaves_background_runs_out_and_opens_nothing() {
 }
 
 #[test]
-fn batches_hold_at_most_25_files_and_64_mib() {
+fn batches_hold_at_most_25_files_and_16_mib() {
     let small: Vec<_> = (0..60).map(|i| artifact(&format!("/s/{i:02}"), 1_000)).collect();
     let sizes: Vec<usize> = batches(small).iter().map(Vec::len).collect();
     assert_eq!(sizes, vec![25, 25, 10]);
 
     let mib = 1024 * 1024;
-    let large = vec![artifact("/a", 40 * mib), artifact("/b", 40 * mib), artifact("/c", 10 * mib), artifact("/d", 200 * mib), artifact("/e", 1)];
+    let large = vec![artifact("/a", 10 * mib), artifact("/b", 10 * mib), artifact("/c", 6 * mib), artifact("/d", 200 * mib), artifact("/e", 1)];
     let grouped: Vec<Vec<String>> = batches(large)
         .into_iter()
         .map(|batch| batch.into_iter().map(|a| a.artifact_id).collect())
@@ -225,6 +225,82 @@ fn an_unreadable_chat_is_reported_and_the_rest_import() {
     assert_eq!(imported_sessions(&core), 2, "the readable chats still came over");
 }
 
+/// A chat Claude Code deletes or rewrites while the import runs costs that
+/// chat only: the rest of its batch still comes over.
+#[test]
+fn a_file_that_vanishes_mid_import_costs_only_that_file() {
+    let root = tempfile::tempdir().unwrap();
+    let roots = claude_home(root.path());
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let work = claude_import::job_work(&roots).unwrap();
+    fs::remove_file(root.path().join(".claude/projects/-work-api/s2.jsonl")).unwrap();
+    let mut job = new_job();
+    save(&core, &job, None).unwrap();
+
+    Runner { core: &core, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
+
+    assert_eq!(job.processed, 4);
+    assert_eq!(job.failed, 1, "only the vanished chat: {job:?}");
+    assert_eq!(job.imported, 3, "the agent, the memory and the other chat: {job:?}");
+    assert_eq!(imported_sessions(&core), 1);
+    assert!(job.not_carried.iter().any(|item| item.text.starts_with("A chat could not be read")), "{:?}", job.not_carried);
+}
+
+/// A memory Bridge refuses (over 4,000 characters) costs only that memory:
+/// the chats and the other memory in its batch still come over, and the
+/// summary says why it did not.
+#[test]
+fn a_refused_memory_costs_only_itself() {
+    let root = tempfile::tempdir().unwrap();
+    let roots = claude_home(root.path());
+    write(&root.path().join(".claude/projects/-work-api/memory/MEMORY.md"), &"- a long note\n".repeat(400));
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+
+    let job = run_job(&core, &roots);
+
+    assert_eq!(job.status, "done");
+    assert_eq!(job.failed, 1, "{job:?}");
+    assert_eq!(job.memories, 1, "the short memory still came over: {job:?}");
+    assert_eq!(imported_sessions(&core), 2, "the chats in the same batch still came over");
+    assert!(job.errors.is_empty(), "a refused item is a loss, not a job error: {:?}", job.errors);
+    assert!(
+        job.not_carried.iter().any(|item| item.text == "memories longer than 4,000 characters" && item.count == 1),
+        "{:?}", job.not_carried
+    );
+}
+
+/// When Bridge's memory is full, the memories that do not fit are reported
+/// as such and everything else imports.
+#[test]
+fn memories_beyond_a_full_memory_are_reported() {
+    let root = tempfile::tempdir().unwrap();
+    let roots = claude_home(root.path());
+    write(&root.path().join(".claude/projects/-work-api/memory/MEMORY.md"), "- the api uses axum\n");
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    {
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO memory_consolidation_settings(scope_key, mode, harness, model, max_records, allow_removal, debounce_seconds, updated_at)
+             VALUES ('account:local', 'off', NULL, NULL, 1, 0, 600, '2026-11-19T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let job = run_job(&core, &roots);
+
+    assert_eq!(job.status, "done");
+    assert_eq!((job.memories, job.failed), (1, 1), "{job:?}");
+    assert_eq!(imported_sessions(&core), 2);
+    assert!(
+        job.not_carried.iter().any(|item| item.text == "memories that did not fit: Bridge memory is full" && item.count == 1),
+        "{:?}", job.not_carried
+    );
+}
+
 #[test]
 fn skipped_records_read_as_what_was_lost() {
     assert_eq!(skipped_record("Skipped 4 'content:document' records"), Some(("documents or PDFs inside messages".into(), 4)));
@@ -255,4 +331,28 @@ fn measure_the_job_on_this_machine() {
         started.elapsed().as_secs_f64(), job.status, job.processed, job.imported, job.memories,
         job.already_in_bridge, job.failed, job.left_out, job.not_carried.len(), job.errors.len()
     );
+    for error in &job.errors {
+        println!("MEASURE error: {}", error.chars().take(300).collect::<String>());
+    }
+    for item in &job.not_carried {
+        println!("MEASURE not_carried: {} x {}", item.count, item.text.chars().take(120).collect::<String>());
+    }
+}
+
+/// One real transcript (`MEASURE_FILE`), hard-linked into a scratch Claude
+/// home and imported alone. Prints aggregate numbers only.
+#[test]
+#[ignore = "reads a real transcript; run by hand to measure"]
+fn measure_one_transcript() {
+    let source = PathBuf::from(std::env::var("MEASURE_FILE").expect("set MEASURE_FILE"));
+    let root = tempfile::tempdir_in(source.parent().unwrap()).unwrap();
+    let target = root.path().join(".claude/projects/-measure/one.jsonl");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::hard_link(&source, &target).unwrap();
+    let roots = claude_import::config_roots(root.path(), None, &[]);
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let started = Instant::now();
+    let job = run_job(&core, &roots);
+    println!("MEASURE one_secs={:.1} bytes={} status={} imported={} failed={}", started.elapsed().as_secs_f64(), fs::metadata(&source).unwrap().len(), job.status, job.imported, job.failed);
 }

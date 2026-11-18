@@ -234,7 +234,9 @@ const IMPORT_BATCH: usize = 25;
 
 /// Group candidates so a chat and every chat under it share a batch, then
 /// pack groups into batches of about `IMPORT_BATCH`.
-pub(crate) fn import_batches(
+/// Selected candidates grouped into families: a chat with its subagents, or
+/// one item on its own. A family is committed together or not at all.
+pub(crate) fn import_families(
     candidates: &[external_import::NormalizedImportCandidate],
     selected: &std::collections::HashSet<&str>,
 ) -> Vec<Vec<String>> {
@@ -272,8 +274,15 @@ pub(crate) fn import_batches(
         let slot = *position.entry(root(id)).or_insert(next);
         groups.entry(slot).or_default().push(id.to_owned());
     }
+    groups.into_values().collect()
+}
+
+pub(crate) fn import_batches(
+    candidates: &[external_import::NormalizedImportCandidate],
+    selected: &std::collections::HashSet<&str>,
+) -> Vec<Vec<String>> {
     let mut batches: Vec<Vec<String>> = Vec::new();
-    for (_, ids) in groups {
+    for ids in import_families(candidates, selected) {
         match batches.last_mut() {
             Some(batch) if batch.len() + ids.len() <= IMPORT_BATCH => batch.extend(ids),
             _ => batches.push(ids),
@@ -284,7 +293,7 @@ pub(crate) fn import_batches(
 
 /// Commit `candidates` batch by batch (see [`import_batches`]). A failed batch
 /// rolls back on its own; earlier batches stay and the result says so.
-pub(crate) fn commit_in_batches(
+fn commit_in_batches(
     core: &Arc<BridgeCore>,
     candidates: &[external_import::NormalizedImportCandidate],
     plan: &external_import::ImportPlan,

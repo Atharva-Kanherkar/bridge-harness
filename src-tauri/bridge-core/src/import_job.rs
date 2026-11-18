@@ -26,10 +26,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Files read and committed per batch, and the bytes a batch may hold. One
-/// file larger than the byte limit is a batch of its own.
+/// Files read and committed per batch, and the bytes a batch may hold. A
+/// parsed chat takes several times its file size in memory, so the byte limit
+/// is what keeps the job's memory flat. One file larger than the limit is a
+/// batch of its own.
 const BATCH_FILES: usize = 25;
-const BATCH_BYTES: u64 = 64 * 1024 * 1024;
+const BATCH_BYTES: u64 = 16 * 1024 * 1024;
 /// Progress events are at most this frequent; the last one always goes out.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// Memories from the one-button import join the person's own memory.
@@ -67,7 +69,7 @@ fn latest(db: &Connection) -> Result<Option<(wire::ImportJob, Option<String>)>, 
 
 fn save(core: &BridgeCore, job: &wire::ImportJob, cursor: Option<&str>) -> Result<(), BridgeError> {
     let state = serde_json::to_string(job).map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    let db = core.db.lock().unwrap();
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     install(&db)?;
     db.execute(
         "INSERT INTO import_jobs (job_id, status, cursor, state, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -80,7 +82,7 @@ fn save(core: &BridgeCore, job: &wire::ImportJob, cursor: Option<&str>) -> Resul
 
 /// The latest import, running or finished.
 pub fn status(core: &BridgeCore) -> Result<Option<wire::ImportJob>, BridgeError> {
-    let db = core.db.lock().unwrap();
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(latest(&db)?.map(|(job, _)| job))
 }
 
@@ -131,7 +133,7 @@ pub fn start_import_maintenance(core: Arc<BridgeCore>) {
 
 pub(crate) fn resume_with_roots(core: &Arc<BridgeCore>, roots: Vec<PathBuf>) -> Result<bool, BridgeError> {
     let saved = {
-        let db = core.db.lock().unwrap();
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         latest(&db)?
     };
     let Some((job, cursor)) = saved.filter(|(job, _)| job.status == "running") else {
@@ -181,6 +183,10 @@ struct Runner<'a> {
 impl Runner<'_> {
     fn run(&mut self, roots: &[PathBuf], cursor: Option<String>) -> Result<(), BridgeError> {
         let work = claude_import::job_work(roots)?;
+        self.run_work(work, cursor)
+    }
+
+    fn run_work(&mut self, work: claude_import::JobWork, cursor: Option<String>) -> Result<(), BridgeError> {
         let remaining: Vec<DiscoveredArtifact> = work
             .artifacts
             .into_iter()
@@ -190,14 +196,22 @@ impl Runner<'_> {
         self.job.left_out = work.left_out;
         self.checkpoint(cursor.as_deref())?;
         for batch in batches(remaining) {
-            let last = claude_import::job_key(batch.last().expect("batches are never empty"));
+            let Some(last) = batch.last().map(claude_import::job_key) else {
+                continue;
+            };
             let files = batch.len() as u64;
             self.job.current_project = batch
                 .iter()
                 .find(|artifact| artifact.kind == CandidateKind::Conversation)
                 .and_then(|artifact| claude_import::transcript_folder(Path::new(&artifact.canonical_source_ref)));
             match import_batch(self.core, &work.roots, batch) {
-                Ok((candidates, commit)) => add_batch(self.job, &candidates, commit.as_ref()),
+                Ok(outcome) => {
+                    add_batch(self.job, &outcome.candidates, outcome.commit.as_ref());
+                    for refusal in &outcome.refusals {
+                        self.job.failed += refusal.count;
+                        not_carried(self.job, &refusal_text(&refusal.kind, &refusal.reason), refusal.count);
+                    }
+                }
                 Err(error) => {
                     self.job.failed += files;
                     self.job.errors.push(format!("{files} files could not be imported: {error}"));
@@ -227,39 +241,63 @@ pub(crate) fn batches(artifacts: Vec<DiscoveredArtifact>) -> Vec<Vec<DiscoveredA
     let mut out: Vec<Vec<DiscoveredArtifact>> = Vec::new();
     let mut bytes = 0u64;
     for artifact in artifacts {
-        let fits = out.last().is_some_and(|batch| {
-            batch.len() < BATCH_FILES && bytes.saturating_add(artifact.estimated_bytes) <= BATCH_BYTES
-        });
-        if !fits {
-            out.push(Vec::new());
-            bytes = 0;
+        let size = artifact.estimated_bytes;
+        match out.last_mut() {
+            Some(batch) if batch.len() < BATCH_FILES && bytes.saturating_add(size) <= BATCH_BYTES => {
+                bytes = bytes.saturating_add(size);
+                batch.push(artifact);
+            }
+            _ => {
+                bytes = size;
+                out.push(vec![artifact]);
+            }
         }
-        bytes = bytes.saturating_add(artifact.estimated_bytes);
-        out.last_mut().expect("a batch was just pushed").push(artifact);
     }
     out
 }
 
+/// What one batch did: everything it read, what was committed, and the
+/// families Bridge refused, each with why.
+struct BatchOutcome {
+    candidates: Vec<ImportCandidate>,
+    commit: Option<ImportCommit>,
+    refusals: Vec<Refusal>,
+}
+
+struct Refusal {
+    kind: CandidateKind,
+    reason: String,
+    count: u64,
+}
+
 /// Read one batch at full fidelity and commit everything importable in it:
 /// chats and memories alongside what is already there, setup switched off.
+/// Each family (a chat with its subagents, or one item) commits in its own
+/// transaction, so one item Bridge refuses never costs the rest of the batch.
 fn import_batch(
     core: &Arc<BridgeCore>,
     roots: &[PathBuf],
     artifacts: Vec<DiscoveredArtifact>,
-) -> Result<(Vec<ImportCandidate>, Option<ImportCommit>), BridgeError> {
+) -> Result<BatchOutcome, BridgeError> {
     let selection = DiscoverySelection {
         artifact_ids: artifacts.iter().map(|artifact| artifact.artifact_id.clone()).collect(),
     };
     let discovery = claude_import::job_discovery(roots, artifacts);
-    let previewed = ClaudeCodeImporter.preview(&discovery, &selection)?;
-    let normalized = previewed
-        .iter()
-        .filter(|candidate| candidate.kind != CandidateKind::Unsupported)
-        .cloned()
-        .map(|candidate| ClaudeCodeImporter.normalize(candidate))
-        .collect::<Result<Vec<_>, _>>()?;
+    // The report needs each candidate's id, kind and diagnostics, never its
+    // messages: keep a copy without the payload, and move the payload on to
+    // the commit instead of holding a second copy of every chat.
+    let mut previewed = Vec::new();
+    let mut normalized = Vec::new();
+    for mut candidate in ClaudeCodeImporter.preview(&discovery, &selection)? {
+        let payload = std::mem::take(&mut candidate.normalized_payload);
+        previewed.push(candidate.clone());
+        if candidate.kind != CandidateKind::Unsupported {
+            candidate.normalized_payload = payload;
+            normalized.push(ClaudeCodeImporter.normalize(candidate)?);
+        }
+    }
     if normalized.is_empty() {
-        return Ok((previewed, None));
+        return Ok(BatchOutcome { candidates: previewed, commit: None, refusals: Vec::new() });
     }
     let selected: HashSet<&str> = normalized
         .iter()
@@ -276,7 +314,32 @@ fn import_batch(
         dry_run: false,
         created_at: Utc::now().to_rfc3339(),
     };
-    let commit = crate::api::commit_in_batches(core, &normalized, &plan, &selected)?;
+    let mut commit: Option<ImportCommit> = None;
+    let mut refusals = Vec::new();
+    for family in crate::api::import_families(&normalized, &selected) {
+        let family_plan = ImportPlan { selected_candidate_ids: family.clone(), ..plan.clone() };
+        let result = {
+            let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            crate::external_import::commit_import(&db, &normalized, &family_plan)
+        };
+        match result {
+            Ok(next) => merge_commit(&mut commit, next),
+            Err(error) => refusals.push(Refusal {
+                kind: normalized
+                    .iter()
+                    .find(|candidate| candidate.candidate.candidate_id == family[0])
+                    .map_or(CandidateKind::Unsupported, |candidate| candidate.candidate.kind.clone()),
+                reason: error.to_string(),
+                count: family.len() as u64,
+            }),
+        }
+    }
+    let Some(commit) = commit else {
+        return Ok(BatchOutcome { candidates: previewed, commit: None, refusals });
+    };
+    if commit.imported > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
     let memory_imported = commit.candidate_results.iter().any(|result| {
         result.status == ImportCandidateStatus::Imported
             && normalized.iter().any(|candidate| {
@@ -287,7 +350,44 @@ fn import_batch(
     if memory_imported {
         core.events.publish(CoreEvent::MemoryChanged { scope_key: MEMORY_SCOPE.into() });
     }
-    Ok((previewed, Some(commit)))
+    Ok(BatchOutcome { candidates: previewed, commit: Some(commit), refusals })
+}
+
+fn merge_commit(total: &mut Option<ImportCommit>, next: ImportCommit) {
+    let Some(total) = total.as_mut() else {
+        *total = Some(next);
+        return;
+    };
+    total.candidate_results.extend(next.candidate_results);
+    total.created_bridge_ids.extend(next.created_bridge_ids);
+    total.imported += next.imported;
+    total.skipped += next.skipped;
+    total.changed += next.changed;
+    total.conflicted += next.conflicted;
+    total.rejected += next.rejected;
+    total.unsupported += next.unsupported;
+    total.diagnostics.extend(next.diagnostics);
+}
+
+/// Why Bridge refused an item, as a person reads it in "did not come over".
+fn refusal_text(kind: &CandidateKind, reason: &str) -> String {
+    if *kind == CandidateKind::Memory {
+        if reason.contains("can be at most") {
+            return "memories longer than 4,000 characters".into();
+        }
+        if reason.contains("records and nothing was written") {
+            return "memories that did not fit: Bridge memory is full".into();
+        }
+        if reason.contains("cannot store credentials") {
+            return "memories that hold a credential".into();
+        }
+    }
+    let what = match kind {
+        CandidateKind::Conversation => "chats",
+        CandidateKind::Memory => "memories",
+        _ => "setup items",
+    };
+    format!("{what} Bridge refused: {reason}")
 }
 
 /// Fold one batch's preview and commit into the job's report.
