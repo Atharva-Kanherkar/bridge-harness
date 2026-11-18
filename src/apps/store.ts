@@ -157,7 +157,7 @@ export function enabledApps(apps: readonly AppSummary[] | null): readonly Builti
 }
 
 /** The person's apps that are on, as launcher entries. */
-export function enabledPersonal(personal: readonly PersonalAppEntry[]): readonly LaunchEntry[] {
+export function enabledPersonal(personal: readonly PersonalAppEntry[] = []): readonly LaunchEntry[] {
   return personal.filter(entry => entry.enabled).map(entry => personalEntry(entry.app));
 }
 
