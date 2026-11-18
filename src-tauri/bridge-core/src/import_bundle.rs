@@ -616,15 +616,17 @@ impl Resolver {
         preferences: Vec<BundlePreference>,
     ) {
         for mut memory in memories {
+            // Deduplicate by the real destination project: two tools can both
+            // call unrelated projects "1".
+            memory.project_key = memory
+                .project_key
+                .and_then(|key| self.project_key_map.get(&(tool.to_owned(), key)).cloned());
             let key = (
                 memory.scope.clone(),
                 memory.project_key.clone(),
                 crate::external_import::sha256_hex(memory.body.trim().as_bytes()),
             );
             if self.memory_seen.insert(key) {
-                memory.project_key = memory
-                    .project_key
-                    .and_then(|key| self.project_key_map.get(&(tool.to_owned(), key)).cloned());
                 self.out.memories.push((source.clone(), memory));
             }
         }

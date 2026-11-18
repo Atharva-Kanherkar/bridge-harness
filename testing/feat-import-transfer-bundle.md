@@ -72,3 +72,11 @@ Added after review of #1064. Each row names the regression test that failed befo
 | A6 | The image cap applies to decoded bytes: a 4 MiB image imports, one byte over 5 MiB is excluded | `the_image_cap_counts_decoded_bytes` |
 | A7 | A historical revision imported through another tool records the chat it revises | `a_cross_tool_revision_records_its_predecessor` |
 | A8 | An imported compaction is a native `context.compacted` entry (drawn as "Context compacted"), never a Bridge checkpoint | `an_imported_compaction_is_native_not_a_bridge_checkpoint` |
+
+### Second review
+
+| # | Expectation | Test |
+|---|---|---|
+| A9 | A child whose parent is a session Bridge ran (skipped as Bridge's own) attaches to that Bridge chat | `a_child_of_a_bridge_run_parent_attaches_to_that_chat` |
+| A10 | Setup conflicts compare kind, name, scope and project: the same script in two projects is not a conflict, the same script in one project still is | `setup_conflicts_are_per_scope_and_project` |
+| A11 | Memories deduplicate by their real destination project, not a tool-local project key | `memories_deduplicate_by_the_real_project` |
