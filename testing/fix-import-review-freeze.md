@@ -4,6 +4,7 @@ Importing from Claude Code is one button and a background job. The Review step i
 
 ## Functional Behavior
 
+- Settings has a Chat history entry in its sidebar, before Data & storage. Its page holds Import and Archived chats; each opens with a "Back to Chat history" link, and Data & storage no longer lists them.
 - The Import page lists the tools found on this Mac. Claude Code has one button, Import. Nothing else is asked before importing.
 - Import starts a job in Bridge's own process and returns at once. The window can leave the page or close; the job keeps going.
 - The job imports every real chat and the setup items (instructions, settings, agents, commands, skills, rules). Setup arrives switched off. Background runs (chats Claude Code ran in the OS temp folder) are left out and counted as left out. Claude Code's memory files are not imported: Claude Code in Bridge keeps reading them itself, so copying them would only duplicate them into Bridge memory.
@@ -33,6 +34,7 @@ Importing from Claude Code is one button and a background job. The Review step i
 - No Claude Code memory file lands in Bridge memory.
 - `MoveToBridge.test.tsx`: Import starts the job; a progress event animates the card; the transfer stage draws six cards from Claude Code to Bridge with the time left; a finished event shows the summary and the stage with a check and no cards; reopening the page during a job shows its progress.
 - Both hosts (bridged and the embedded desktop) resume an interrupted import at startup.
+- `sections.test.ts` and `SettingsScreen.test.tsx`: the rail is General, Coding agents, Permissions, Chat history, Data & storage; Chat history opens Import and Archived chats; Data & storage lists neither.
 
 ## Smoke Tests
 

@@ -32,7 +32,7 @@ const props = {
 };
 
 describe("SettingsScreen", () => {
-  it("shows exactly four primary settings destinations", () => {
+  it("shows all five primary settings destinations", () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
     for (const section of PRIMARY_SECTIONS) expect(html).toContain(SECTION_LABELS[section].replace("&", "&amp;"));
     for (const label of ["Presets", "Harnesses", "Clones", "Runtimes"]) expect(html).not.toContain(`>${label}<`);
@@ -85,10 +85,29 @@ describe("SettingsScreen", () => {
       });
     };
 
-    it("opens archived chats inside Settings from Data & storage", async () => {
-      await render({ initialSection: "data" });
+    it("puts Import and Archived chats in their own Chat history page, not under Data & storage", async () => {
+      await render({ initialSection: "general" });
+      const rail = container.querySelector("nav[aria-label='Settings']") as HTMLElement;
+      await act(async () => { button(rail, "Chat history").click(); await flush(); });
+      expect(button(rail, "Chat history").getAttribute("aria-current")).toBe("page");
+      const page = [...container.querySelectorAll("button")].filter(candidate => !candidate.closest("nav")).map(candidate => candidate.textContent ?? "");
+      expect(page.some(text => text.startsWith("Import"))).toBe(true);
+      expect(page.some(text => text.startsWith("Archived chats"))).toBe(true);
+
+      await open("Import");
+      expect(container.textContent).toContain("Back to Chat history");
+      expect(container.textContent).toContain("Found on this Mac");
+      expect(button(rail, "Chat history").getAttribute("aria-current")).toBe("page");
+
+      await act(async () => { button(rail, "Data & storage").click(); await flush(); });
+      const storage = [...container.querySelectorAll("button")].filter(candidate => !candidate.closest("nav")).map(candidate => candidate.textContent ?? "");
+      expect(storage.some(text => text.startsWith("Archived chats") || text.startsWith("Import"))).toBe(false);
+    });
+
+    it("opens archived chats inside Settings from Chat history", async () => {
+      await render({ initialSection: "history" });
       await open("Archived chats");
-      expect(container.textContent).toContain("Back to Data & storage");
+      expect(container.textContent).toContain("Back to Chat history");
       expect(container.textContent).toContain("Archived chats");
       expect(container.textContent).toContain("General");
     });

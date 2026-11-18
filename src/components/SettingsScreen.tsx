@@ -10,7 +10,7 @@ import { WorkSettingsSection } from "./WorkSettingsSection";
 import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { ImportHarnessSection } from "./ImportHarnessSection";
-import { SettingsGroup, SettingsRow, TextButton } from "./settings/kit";
+import { SettingsGroup, SettingsPage, SettingsRow, TextButton } from "./settings/kit";
 import { SettingsRail } from "./settings/SettingsRail";
 import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
 import { AppearancePage } from "./settings/AppearancePage";
@@ -258,10 +258,12 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     <SettingsRow label="Menu bar" description="Show account usage and spend in the macOS menu bar." onOpen={() => navigate("menuBar")} />
     <SettingsRow label="Updates" description={availableUpdate ? `Bridge ${availableUpdate.version} is available.` : "Check for new versions of Bridge."} onOpen={() => navigate("updates")} />
   </SettingsGroup>;
-  const dataLinks = <SettingsGroup label="Chat history">
-    <SettingsRow label="Archived chats" description="Search, read and unarchive conversations." onOpen={() => navigate("archives")} />
-    <SettingsRow label="Import history" description="Bring supported chat history and configuration from another coding agent." onOpen={() => navigate("import")} />
-  </SettingsGroup>;
+  const historyPage = <SettingsPage title="Chat history" description="Bring your chats over from other tools, or find the ones you archived.">
+    <SettingsGroup>
+      <SettingsRow label="Import" description="Bring your chats and setup over from Claude Code with one click." onOpen={() => navigate("import")} />
+      <SettingsRow label="Archived chats" description="Search, read and unarchive conversations." onOpen={() => navigate("archives")} />
+    </SettingsGroup>
+  </SettingsPage>;
   return <div className="flex h-full min-h-0 flex-col md:flex-row">
     {!contextual && <SettingsRail
       section={section}
@@ -284,7 +286,8 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
       {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} onOpenAgents={() => navigate("agents")} />}
       {section === "general" && <AppearancePage title="General" extra={<><ActiveTurnInputSetting onError={onError} />{generalLinks}</>} />}
-      {section === "data" && <StoragePage title="Data & storage" extra={dataLinks} onError={onError} copilot={storageCopilot} />}
+      {section === "history" && historyPage}
+      {section === "data" && <StoragePage title="Data & storage" onError={onError} copilot={storageCopilot} />}
       {section === "appearance" && <AppearancePage />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}
       {section === "menuBar" && <MenuBarSettingsPage />}
