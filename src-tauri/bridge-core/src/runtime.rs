@@ -449,6 +449,9 @@ impl BridgeCore {
         // Adoption state must survive restart: a pending row whose worktree is
         // gone would otherwise block its parent forever.
         crate::worker_adoption::recover(&connection)?;
+        // An app pane lives only as long as the window that drew it; none
+        // survives a restart, and nor does a write waiting in one.
+        crate::apps::open::remove_surfaces(&connection, None)?;
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)?;
         // No history snapshot here on purpose. `VACUUM INTO` plus a full-file
         // hash grows with total history, and running it before the daemon

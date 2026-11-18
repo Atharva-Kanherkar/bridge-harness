@@ -78,6 +78,17 @@ pub fn agent_label(harness: &str) -> &str {
     }
 }
 
+/// Who a call is for. The open's stored owner decides this, never the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller<'a> {
+    /// A chat: its access mode governs reads, and its own process may carry
+    /// the call when it is exactly the connection.
+    Chat(&'a str),
+    /// The person opened the app themselves from the Store or the launcher.
+    /// Reads are allowed; calls never ride a chat's process.
+    Surface,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     pub harness: String,
@@ -132,8 +143,16 @@ pub fn may_read(db: &Db, chat: &str) -> Result<(), BridgeError> {
     }
 }
 
-/// Send one app-control request for `connection`, on behalf of `chat`.
-fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &Value) -> Result<Value, BridgeError> {
+/// Whether `caller` may read: a chat by its access mode, a Surface always.
+pub fn may_read_as(db: &Db, caller: Caller<'_>) -> Result<(), BridgeError> {
+    match caller {
+        Caller::Chat(chat) => may_read(db, chat),
+        Caller::Surface => Ok(()),
+    }
+}
+
+/// Send one app-control request for `connection`, on behalf of `caller`.
+fn send(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, request: &Value) -> Result<Value, BridgeError> {
     if capability(&connection.harness, Op::Inventory) != Capability::Direct {
         return Err(invalid(format!(
             "{} cannot run personal apps directly yet; connect {} in Claude Code or Codex",
@@ -141,18 +160,11 @@ fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &V
             connection.server
         )));
     }
-    let identity = chat_identity(core, chat)?;
-    // The chat's own process only when it resolves servers exactly as the
-    // connection did: same agent, same account, same project folder.
-    let live = identity.harness == connection.harness
-        && identity.account == connection.account
-        && identity.cwd == connection.cwd
-        && core
-            .adapters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(chat);
-    if live {
+    let live = match caller {
+        Caller::Chat(chat) => live_chat_matches(core, chat, connection)?,
+        Caller::Surface => false,
+    };
+    if let (true, Caller::Chat(chat)) = (live, caller) {
         return control::request(core, chat, request);
     }
     let key = runtimes::Key {
@@ -164,19 +176,33 @@ fn send(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, request: &V
     runtimes::request_with(&key, request, &runtimes::launcher(core))
 }
 
-pub fn inventory(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) -> Result<Value, BridgeError> {
+/// The chat's own process only when it resolves servers exactly as the
+/// connection did: same agent, same account, same project folder.
+fn live_chat_matches(core: &Arc<BridgeCore>, chat: &str, connection: &Connection) -> Result<bool, BridgeError> {
+    let identity = chat_identity(core, chat)?;
+    Ok(identity.harness == connection.harness
+        && identity.account == connection.account
+        && identity.cwd == connection.cwd
+        && core
+            .adapters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(chat))
+}
+
+pub fn inventory(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection) -> Result<Value, BridgeError> {
     gate(core, connection)?;
     if capability(&connection.harness, Op::Inventory) == Capability::Partial {
         return super::courier::opencode_inventory(core, &key_for(connection));
     }
-    send(core, chat, connection, &json!({"kind": "inventory", "server": connection.server}))
+    send(core, caller, connection, &json!({"kind": "inventory", "server": connection.server}))
 }
 
 /// One allowlisted read. The caller has already checked the tool against the
-/// app's stored, hash-verified allowlist; the chat's access mode is checked
+/// app's stored, hash-verified allowlist; the caller's read policy is checked
 /// here so no path can skip it.
-pub fn read(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
-    may_read(&*core.try_db()?, chat)?;
+pub fn read(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
+    may_read_as(&*core.try_db()?, caller)?;
     gate(core, connection)?;
     if capability(&connection.harness, Op::Read) == Capability::GatedCourier {
         // No annotations exist to recheck; the read vocabulary still applies,
@@ -186,7 +212,7 @@ pub fn read(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &
         }
         return super::courier::opencode_call(core, &key_for(connection), tool, arguments);
     }
-    read_with(connection, tool, arguments, |request| send(core, chat, connection, request))
+    read_with(connection, tool, arguments, |request| send(core, caller, connection, request))
 }
 
 /// The read itself, after the server's *current* inventory says the tool is
@@ -220,18 +246,32 @@ pub fn read_with(
 /// approval of these exact arguments (see [`super::open`]); nothing here asks
 /// again. Claude sends it from a one-shot exact-action launch, Codex with a
 /// direct call on the connection's runtime.
-pub fn write(core: &Arc<BridgeCore>, chat: &str, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
-    gate(core, connection)?;
+pub fn write(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
+    preflight_write(core, connection)?;
     match connection.harness.as_str() {
         "claude" => super::write::claude(core, &key_for(connection), tool, arguments),
-        "codex" => send(core, chat, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments})),
+        "codex" => send(core, caller, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments})),
         "opencode" => super::courier::opencode_call(core, &key_for(connection), tool, arguments),
-        other => Err(invalid(format!(
-            "{} cannot run personal apps directly yet; connect {} in Claude Code or Codex",
-            agent_label(other),
-            connection.server
-        ))),
+        other => Err(unsupported_write(other, connection)),
     }
+}
+
+/// Every refusal a write meets before anything is sent. An error after this
+/// passes may have come after the call ran.
+pub fn preflight_write(core: &Arc<BridgeCore>, connection: &Connection) -> Result<(), BridgeError> {
+    gate(core, connection)?;
+    match connection.harness.as_str() {
+        "claude" | "codex" | "opencode" => Ok(()),
+        other => Err(unsupported_write(other, connection)),
+    }
+}
+
+fn unsupported_write(harness: &str, connection: &Connection) -> BridgeError {
+    invalid(format!(
+        "{} cannot run personal apps directly yet; connect {} in Claude Code or Codex",
+        agent_label(harness),
+        connection.server
+    ))
 }
 
 fn key_for(connection: &Connection) -> runtimes::Key {
@@ -278,7 +318,7 @@ pub fn choose(core: &Arc<BridgeCore>, chat: &str, server: &str) -> Result<(Conne
     choose_with(
         &candidates(&identity.harness, identity.account.as_deref(), identity.cwd.as_deref(), server, opencode),
         |connection| {
-            let found = inventory(core, chat, connection);
+            let found = inventory(core, Caller::Chat(chat), connection);
             // A runtime started only to look for a server that is not there
             // is stopped now, not kept warm for ten minutes.
             if !found.as_ref().is_ok_and(|inventory| inventory["status"] == "connected") {
@@ -422,6 +462,7 @@ mod tests {
         let db = core.db.lock().unwrap();
         db.execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','codex','Chat','ready')").unwrap();
         assert!(may_read(&db, "chat").is_ok(), "no stored mode launches as Full");
+        assert!(may_read_as(&db, Caller::Surface).is_ok(), "the person opened it themselves");
     }
 
     #[test]
@@ -430,9 +471,12 @@ mod tests {
         core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','opencode','Chat','ready')").unwrap();
         let connection = Connection { harness: "opencode".into(), account: None, cwd: None, server: "railway".into() };
         for error in [
-            inventory(&core, "chat", &connection).unwrap_err().to_string(),
-            read(&core, "chat", &connection, "get_logs", &json!({})).unwrap_err().to_string(),
-            write(&core, "chat", &connection, "deploy", &json!({})).unwrap_err().to_string(),
+            inventory(&core, Caller::Chat("chat"), &connection).unwrap_err().to_string(),
+            read(&core, Caller::Chat("chat"), &connection, "get_logs", &json!({})).unwrap_err().to_string(),
+            write(&core, Caller::Chat("chat"), &connection, "deploy", &json!({})).unwrap_err().to_string(),
+            inventory(&core, Caller::Surface, &connection).unwrap_err().to_string(),
+            read(&core, Caller::Surface, &connection, "get_logs", &json!({})).unwrap_err().to_string(),
+            write(&core, Caller::Surface, &connection, "deploy", &json!({})).unwrap_err().to_string(),
         ] {
             assert!(error.contains("less safe") && error.contains("own discretion"), "{error}");
         }
@@ -444,7 +488,7 @@ mod tests {
     fn unsupported_connections_refuse_with_the_agent_name() {
         let (_dir, core) = fixture();
         core.db.lock().unwrap().execute_batch("INSERT INTO sessions(id,harness,label,status) VALUES('chat','cursor','Chat','ready')").unwrap();
-        let error = inventory(&core, "chat", &Connection { harness: "cursor".into(), account: None, cwd: None, server: "railway".into() }).unwrap_err().to_string();
+        let error = inventory(&core, Caller::Chat("chat"), &Connection { harness: "cursor".into(), account: None, cwd: None, server: "railway".into() }).unwrap_err().to_string();
         assert!(error.contains("Cursor") && error.contains("Claude Code or Codex"), "{error}");
     }
 }

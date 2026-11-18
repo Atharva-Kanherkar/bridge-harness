@@ -244,6 +244,8 @@ methods![
     (CallPersonalAppTool, "apps", "call_personal_app_tool"),
     (LockPersonalApp, "apps", "lock_personal_app"),
     (DeletePersonalApp, "apps", "delete_personal_app"),
+    (OpenPersonalAppSurface, "apps", "open_personal_app_surface"),
+    (ClosePersonalAppSurface, "apps", "close_personal_app_surface"),
     // trails: one page per piece of work, joining chats, notes, PRs and drafts
     (ListTrails, "trails", "list_trails"),
     (ReadTrail, "trails", "read_trail"),

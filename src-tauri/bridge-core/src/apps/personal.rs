@@ -328,6 +328,14 @@ pub fn latest_locked(db: &Connection, app_id: &str) -> Result<Option<LockedVersi
     }))
 }
 
+/// The app's generation: minted at its first lock, gone when it is deleted,
+/// so a recreated id is a new generation. `None` when nothing is locked.
+pub fn generation(db: &Connection, app_id: &str) -> Result<Option<String>, BridgeError> {
+    Ok(db
+        .query_row("SELECT generation FROM personal_app_generations WHERE app_id=?1", [app_id], |row| row.get(0))
+        .optional()?)
+}
+
 /// The locked version of an app with exactly this content hash.
 pub fn locked_with_hash(db: &Connection, app_id: &str, content_hash: &str) -> Result<Option<LockedVersion>, BridgeError> {
     let row = db
@@ -410,6 +418,10 @@ pub fn lock(
             version.locked_at
         ],
     )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO personal_app_generations(app_id, generation, created_at) VALUES(?1, ?2, ?3)",
+        params![version.app_id, uuid::Uuid::new_v4().to_string(), version.locked_at],
+    )?;
     transaction.execute("DELETE FROM personal_app_drafts WHERE id=?1", [draft_id])?;
     transaction.commit()?;
     Ok(LockPersonalAppResult::Locked { app: version.summary() })
@@ -440,9 +452,13 @@ pub fn get(db: &Connection, app_id: &str) -> Result<PersonalApp, BridgeError> {
     Ok(PersonalApp { app: version.summary(), view_html: version.manifest.view_html })
 }
 
-/// Remove every version and draft of an app. `true` when anything was removed.
+/// Remove every version and draft of an app, its opens and pending writes,
+/// its generation, and whether it was on or pinned, so an app later made
+/// with the same id starts fresh. `true` when anything was removed.
 pub fn delete(db: &Connection, app_id: &str) -> Result<bool, BridgeError> {
     let transaction = db.unchecked_transaction()?;
+    transaction.execute("DELETE FROM personal_app_generations WHERE app_id=?1", [app_id])?;
+    super::registry::forget(&transaction, app_id)?;
     let versions = transaction.execute("DELETE FROM personal_app_versions WHERE app_id=?1", [app_id])?;
     let drafts = transaction.execute("DELETE FROM personal_app_drafts WHERE app_id=?1", [app_id])?;
     transaction.execute("DELETE FROM personal_app_draft_sessions WHERE app_id=?1", [app_id])?;
@@ -462,6 +478,8 @@ mod tests {
         install_store(&transaction).unwrap();
         super::super::draft::install_store(&transaction).unwrap();
         super::super::open::install_store(&transaction).unwrap();
+        super::super::open::install_owners(&transaction).unwrap();
+        super::super::registry::install_store(&transaction).unwrap();
         transaction.commit().unwrap();
         db
     }

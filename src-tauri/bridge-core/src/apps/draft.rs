@@ -254,7 +254,7 @@ pub fn preview(
     if let Some(stub) = preview_kind(&draft, &p.tool, &p.arguments)? {
         return Ok(stub);
     }
-    router::read(core, &p.session_id, &connection, &p.tool, &p.arguments)
+    router::read(core, router::Caller::Chat(&p.session_id), &connection, &p.tool, &p.arguments)
 }
 
 #[cfg(test)]

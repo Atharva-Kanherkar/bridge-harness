@@ -850,8 +850,34 @@ pub fn list_apps(core: &Arc<BridgeCore>) -> Result<wire::ListAppsResult, BridgeE
     } else {
         crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())
     };
-    let apps = crate::apps::badges::summaries(&*core.try_db()?, &notes, Some(cached))?;
-    Ok(wire::ListAppsResult { apps })
+    let db = core.try_db()?;
+    let apps = crate::apps::badges::summaries(&db, &notes, Some(cached))?;
+    let personal = personal_entries(&db)?;
+    Ok(wire::ListAppsResult { apps, personal })
+}
+
+/// The person's locked apps with whether each is on and where it is pinned.
+fn personal_entries(db: &rusqlite::Connection) -> Result<Vec<wire::PersonalAppEntry>, BridgeError> {
+    let off = crate::apps::registry::disabled_ids(db)?;
+    let pins = crate::apps::registry::pins(db)?;
+    Ok(crate::apps::personal::list(db)?
+        .into_iter()
+        .map(|app| wire::PersonalAppEntry {
+            enabled: !off.contains(&app.id),
+            pinned: pins.iter().position(|pin| pin == &app.id).map(|index| index as u32),
+            app,
+        })
+        .collect())
+}
+
+/// The person opens one of their apps from the Store or the launcher.
+pub fn open_personal_app_surface(core: &Arc<BridgeCore>, params: &wire::OpenPersonalAppSurfaceParams) -> Result<wire::PersonalAppSurfaceOpen, BridgeError> {
+    crate::apps::open::open_surface(core, &params.app_id)
+}
+
+/// The app's pane closed: its open and any write waiting on it go.
+pub fn close_personal_app_surface(core: &Arc<BridgeCore>, params: &wire::ClosePersonalAppSurfaceParams) -> Result<wire::ClosePersonalAppSurfaceResult, BridgeError> {
+    Ok(wire::ClosePersonalAppSurfaceResult { closed: crate::apps::open::close_surface(&*core.try_db()?, &params.open_id)? })
 }
 
 /// Pin or unpin an app in the sidebar. Core holds the three-pin limit.

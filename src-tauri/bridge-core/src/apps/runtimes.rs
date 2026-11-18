@@ -218,6 +218,15 @@ fn start(key: &Key, launch: &Launcher, slot: &Slot) -> Result<Warm, BridgeError>
     Ok(Warm { owner, runtime, last_used: Instant::now() })
 }
 
+/// Put a runtime in `key`'s slot, as if it had launched. `make` gets the
+/// owner its replies must be delivered to.
+#[cfg(test)]
+pub fn install_for_tests(key: &Key, make: impl FnOnce(&str) -> Box<dyn AdapterRuntime>) {
+    let owner = format!("app-runtime:{}", uuid::Uuid::new_v4());
+    let runtime = make(&owner);
+    *lock(&slot(key)) = Some(Warm { owner, runtime, last_used: Instant::now() });
+}
+
 /// The production launcher: the connection's harness, its account, no tools.
 pub fn launcher(core: &Arc<BridgeCore>) -> impl Fn(&Key) -> Result<Launched, BridgeError> + Send + Sync {
     let core = core.clone();
