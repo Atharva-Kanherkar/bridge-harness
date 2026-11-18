@@ -984,3 +984,22 @@ fn an_imported_compaction_is_native_not_a_bridge_checkpoint() {
     );
     assert!(entries.is_ok(), "{entries:?}");
 }
+
+#[test]
+fn a_child_of_a_bridge_run_parent_attaches_to_that_chat() {
+    let db = database();
+    db.execute(
+        "INSERT INTO sessions(id,harness,label,status,metric_source,provider_session_id,kind,depth)
+         VALUES('bridge-chat','claude','Claude','idle','reported','owned-main','direct',0)",
+        [],
+    )
+    .unwrap();
+    let mut bundle = TransferBundle::new(source("claude_code"));
+    bundle.chats.push(chat("main", "claude", Some("owned-main"), rich_entries()));
+    let mut child = chat("kid", "claude", Some("owned-main/agent-1"), vec![entry("k", BundleEntryKind::UserMessage, "subagent of a Bridge chat")]);
+    child.parent_chat_key = Some("main".into());
+    bundle.chats.push(child);
+    let commit = import(&db, vec![bundle]);
+    assert_eq!((commit.imported, commit.skipped), (1, 1));
+    assert_eq!(parent_of(&db, "subagent of a Bridge chat"), (Some("bridge-chat".into()), 1));
+}

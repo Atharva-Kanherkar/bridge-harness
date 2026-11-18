@@ -1184,9 +1184,17 @@ fn imported_parent(
     let Some(native_key) = payload_str(payload, "parentNativeKey") else {
         return Ok(None);
     };
+    // The parent's native session already became a Bridge chat: through an
+    // earlier import, or because Bridge ran it (skipped as Bridge's own).
     let existing: Option<String> = transaction
         .query_row(
-            "SELECT session_id FROM import_native_sessions WHERE native_key=?1",
+            "SELECT session_id FROM import_native_sessions WHERE native_key=?1
+             UNION ALL
+             SELECT session_id FROM bridge_native_sessions WHERE native_key=?1
+             UNION ALL
+             SELECT id FROM sessions WHERE harness || ':' || provider_session_id = ?1
+                AND COALESCE(kind,'') <> 'imported'
+             LIMIT 1",
             params![native_key],
             |row| row.get(0),
         )
