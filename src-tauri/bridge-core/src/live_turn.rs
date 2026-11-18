@@ -2054,7 +2054,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         .or(configured_effort) };
     // The chat's own speed tier. The registry drops one the launch model does
     // not list, so a stale choice never reaches the provider.
-    let chosen_speed: Option<String> = state.db.lock().unwrap()
+    let chosen_speed: Option<String> = state.try_db()?
         .query_row("SELECT speed FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
         .ok()
         .flatten();

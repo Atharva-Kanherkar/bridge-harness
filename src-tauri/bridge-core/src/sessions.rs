@@ -877,7 +877,13 @@ impl BridgeCore {
             runtime.stop(reason);
             // The reader no longer counts as current, so its exit will not
             // close the subagents and background tasks that died with it.
-            let closed = crate::harness_subagents::close_with_process(&self.db.lock().unwrap(), session_id);
+            let closed = match self.try_db() {
+                Ok(db) => crate::harness_subagents::close_with_process(&db, session_id),
+                Err(error) => {
+                    eprintln!("[sessions] cleanup for {session_id}: {error}");
+                    Vec::new()
+                }
+            };
             for event in closed {
                 self.events.publish(crate::events::CoreEvent::Agent(event));
             }

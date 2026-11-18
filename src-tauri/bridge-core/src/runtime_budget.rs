@@ -128,7 +128,14 @@ impl IdleRuntimes {
                 // The reader was deactivated above, so its exit path will not
                 // close what died with the process. A child left open here
                 // (quiet past the window) would read as running forever.
-                for event in crate::harness_subagents::close_with_process(&core.db.lock().unwrap(), &id) {
+                let closed = match core.try_db() {
+                    Ok(db) => crate::harness_subagents::close_with_process(&db, &id),
+                    Err(error) => {
+                        eprintln!("[runtime-budget] cleanup for {id}: {error}");
+                        Vec::new()
+                    }
+                };
+                for event in closed {
                     core.events.publish(CoreEvent::Agent(event));
                 }
                 self.seen.remove(&id);
