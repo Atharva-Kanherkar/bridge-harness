@@ -974,12 +974,12 @@ fn classify_legacy_import(
     dry_run: bool,
 ) -> Result<Option<ImportCandidateResult>, BridgeError> {
     let payload = &candidate.normalized_payload;
-    let (Some(legacy_id), Some(legacy_hash)) = (
-        payload_str(payload, "legacyNativeId"),
-        payload_str(payload, "legacyContentHash"),
-    ) else {
+    let Some(legacy_id) = payload_str(payload, "legacyNativeId") else {
         return Ok(None);
     };
+    // No hash: the source has outgrown what the older version could read, so
+    // it cannot be unchanged.
+    let legacy_hash = payload_str(payload, "legacyContentHash");
     let previous: Option<(String, String)> = db
         .query_row(
             "SELECT bridge_id, source_content_hash FROM import_ledger
@@ -998,7 +998,7 @@ fn classify_legacy_import(
     let Some((session, hash)) = previous else {
         return Ok(None);
     };
-    if hash == legacy_hash {
+    if Some(hash.as_str()) == legacy_hash {
         return Ok(Some(result_with_status(
             candidate,
             ImportCandidateStatus::SkippedDuplicate,

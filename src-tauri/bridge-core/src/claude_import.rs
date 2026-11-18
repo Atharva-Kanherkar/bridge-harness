@@ -519,19 +519,47 @@ fn is_session_transcript(path: &Path) -> bool {
 }
 
 /// The identity the v1 reader recorded for this transcript: its first
-/// message id and content hash, recomputed by the retained v1 reader. v1
-/// refused files over 10 MB, so those have none.
+/// message id, and its content hash recomputed by the retained v1 reader.
+/// v1 refused files over 10 MB, so a file that has grown past that since it
+/// was imported keeps its key but has no comparable hash: it has changed.
 fn legacy_identity(
     approved_roots: &[PathBuf],
     artifact: &DiscoveredArtifact,
     discovery: &DiscoveryResult,
-) -> Option<(String, String)> {
+) -> Option<(String, Option<String>)> {
     let path = canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref)).ok()?;
     if fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
-        return None;
+        return v1_first_message_id(&path).map(|id| (id, None));
     }
     let v1 = preview_transcript(&path, artifact, discovery).ok()?;
-    Some((v1.source_native_id?, v1.content_hash))
+    Some((v1.source_native_id?, Some(v1.content_hash)))
+}
+
+/// The key v1 gave a transcript: the id of the first record it accepted as a
+/// message, found by streaming, with v1's own record rules.
+fn v1_first_message_id(path: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = fs::File::open(path).ok()?;
+    let mut skipped = BTreeMap::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.ok()?;
+        let Ok(record) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        let Some(object) = record.as_object() else {
+            continue;
+        };
+        let Some(record_type) = object.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if !matches!(record_type, "user" | "assistant") {
+            continue;
+        }
+        if let Some((source_id, _)) = parse_transcript_record(object, record_type, 1, &mut skipped) {
+            return Some(source_id);
+        }
+    }
+    None
 }
 
 /// Every selected transcript, read at full fidelity into one transfer bundle,
@@ -655,7 +683,7 @@ fn preview_conversations(
                     if item.chat.agent_role.is_none() {
                         if let Some((native_id, content_hash)) = legacy.clone() {
                             item.chat.legacy_native_id = Some(native_id);
-                            item.chat.legacy_content_hash = Some(content_hash);
+                            item.chat.legacy_content_hash = content_hash;
                         }
                     }
                     skipped_by_ref.insert(item.chat.source_ref.clone(), skipped_diagnostics(&item));
@@ -1525,6 +1553,36 @@ mod tests {
         let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
         let changed = commit_all(&db, &v2);
         assert_eq!((changed.imported, changed.changed), (0, 1), "{changed:?}");
+    }
+
+    /// Import `path` with the retained v1 reader, as an earlier Bridge did.
+    fn import_with_v1(db: &rusqlite::Connection, claude: &Path, path: &Path) -> crate::external_import::ImportCommit {
+        let discovery = ClaudeCodeImporter.discover(&request(claude)).unwrap();
+        let canonical = path.canonicalize().unwrap();
+        let artifact = discovery
+            .artifacts
+            .iter()
+            .find(|a| a.kind == CandidateKind::Conversation && Path::new(&a.canonical_source_ref) == canonical)
+            .unwrap()
+            .clone();
+        commit_all(db, &[preview_transcript(&canonical, &artifact, &discovery).unwrap()])
+    }
+
+    #[test]
+    fn a_v1_import_that_grew_past_ten_mib_is_still_recognised() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let path = claude.join("projects/p/sess-big.jsonl");
+        write(&path, &session_lines("sess-big", "small when v1 imported it"));
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        assert_eq!(import_with_v1(&db, &claude, &path).imported, 1);
+        // Claude keeps appending: the file passes the 10 MiB v1 limit.
+        let long = json!({"type":"assistant","uuid":"later","sessionId":"sess-big","timestamp":"2026-11-02T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"x".repeat(MAX_SOURCE_BYTES as usize + 1024)}]}}).to_string();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("\n{long}").as_bytes()).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > MAX_SOURCE_BYTES);
+        let v2: Vec<_> = preview_all(&claude).into_iter().filter(|c| c.kind == CandidateKind::Conversation).collect();
+        let commit = commit_all(&db, &v2);
+        assert_eq!((commit.imported, commit.changed), (0, 1), "{commit:?}");
     }
 
     #[test]
