@@ -431,3 +431,21 @@ fn an_inline_sidechain_and_its_file_are_one_child() {
     assert_eq!(read.chats.len(), 2, "the file and the inline copy are the same child");
     assert!(read.chats[1].chat.source_ref.ends_with("agent-abc.jsonl"), "the separate file is preferred");
 }
+
+#[test]
+fn files_without_a_session_id_never_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = |uuid: &str, text: &str| json!({"type":"user","uuid":uuid,"timestamp":"2026-11-01T10:00:00Z","message":{"role":"user","content":text}});
+    let first = dir.path().join("exports/a/session.jsonl");
+    let second = dir.path().join("exports/b/session.jsonl");
+    write_lines(&first, &[record("a-1", "first export")]);
+    write_lines(&second, &[record("b-1", "unrelated second export")]);
+    let mut bundle = TransferBundle::new(BundleSource { tool: "claude_code".into(), tool_version: None, schema_version: None, adapter_version: "2".into(), roots: vec![], detected_at: "now".into() });
+    for path in [&first, &second] {
+        let parsed = read_transcript(path, &path.to_string_lossy(), "session.jsonl").unwrap();
+        assert!(parsed.chat.native_ref.is_none(), "a file name is not a session id");
+        bundle.chats.push(parsed.chat);
+    }
+    let resolved = import_bundle::resolve(vec![bundle]).unwrap();
+    assert_eq!(resolved.chats.len(), 2);
+}

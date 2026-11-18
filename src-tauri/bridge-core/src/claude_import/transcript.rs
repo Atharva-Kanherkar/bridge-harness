@@ -565,12 +565,9 @@ fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTran
             (agent, finish(child, path, &child_key, &child_label))
         })
         .collect();
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(key)
-        .to_owned();
-    let session_id = reader.session_id.clone().unwrap_or(stem);
+    // Only Claude's own session id is a native identity. A file name is not:
+    // two unrelated exports called session.jsonl would merge into one chat.
+    let session_id = reader.session_id.clone();
     let (title, title_source) = match (&reader.custom_title, &reader.ai_title) {
         (Some(title), _) if !title.trim().is_empty() => (Some(title.clone()), TitleSource::User),
         (_, Some(title))
@@ -594,7 +591,7 @@ fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTran
         harness: "claude".into(),
         model: reader.model.clone(),
         effort: None,
-        native_ref: Some(NativeRef {
+        native_ref: session_id.map(|session_id| NativeRef {
             harness: "claude".into(),
             session_id,
             config_root: None,
@@ -771,7 +768,9 @@ fn name_subagent(
             .and_then(Value::as_str)
             .map(str::to_owned);
     }
-    if let Some(native) = chat.native_ref.as_mut() {
+    if parent_session.is_empty() {
+        chat.native_ref = None;
+    } else if let Some(native) = chat.native_ref.as_mut() {
         native.session_id = format!("{parent_session}/{agent}");
     }
     if chat.title_source == TitleSource::Derived {

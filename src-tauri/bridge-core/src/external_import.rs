@@ -898,7 +898,8 @@ fn classify_native_session(
         payload_str(payload, "nativeKey"),
         payload.pointer("/nativeRef/sessionId").and_then(Value::as_str),
     ) else {
-        return Ok(None);
+        // No native identity: an older import may still know this file.
+        return classify_legacy_import(db, candidate, plan, dry_run);
     };
     let harness = payload.pointer("/nativeRef/harness").and_then(Value::as_str);
     let bridge_own: bool = db.query_row(
