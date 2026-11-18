@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildOptions, permissionOptions, sdkEffort } from "../options.mjs";
+import { buildOptions, permissionOptions, sdkEffort, sdkFlagSettings } from "../options.mjs";
 
 const base = {
   sessionId: "11111111-1111-4111-8111-111111111111",
@@ -80,6 +80,23 @@ test("effort is normalized and an out-of-set level is dropped rather than sent",
   assert.equal(sdkEffort("xhigh"), "xhigh");
   assert.equal(sdkEffort("ultra"), null);
   assert.equal(sdkEffort(undefined), null);
+});
+
+test("fast speed opts the SDK into fast mode through flag settings", () => {
+  // Without `fastMode` in the flag settings the CLI refuses fast mode for an
+  // SDK host (`sdk_opt_in_required`).
+  assert.deepEqual(buildOptions({ ...base, resume: false, speed: "fast" }).settings, { fastMode: true });
+  assert.equal(buildOptions({ ...base, resume: false, speed: null }).settings, undefined);
+  assert.equal(buildOptions({ ...base, resume: false, speed: "priority" }).settings, undefined);
+  // Going back to standard overrides a fast mode saved by an interactive /fast.
+  assert.deepEqual(buildOptions({ ...base, resume: false, speed: "standard" }).settings, { fastMode: false });
+});
+
+test("ultracode effort turns on the ultracode setting at the model's default effort", () => {
+  const options = buildOptions({ ...base, resume: false, effort: "ultracode", speed: "fast" });
+  assert.deepEqual(options.settings, { fastMode: true, ultracode: true });
+  assert.equal(options.effort, undefined);
+  assert.equal(sdkFlagSettings({ effort: "max" }), null);
 });
 
 test("read-only mode denies direct write tools without dangerous bypass", () => {

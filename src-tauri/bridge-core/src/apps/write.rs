@@ -147,7 +147,7 @@ mod tests {
         let arguments = json!({"to": "Ada", "text": "hi \u{1F44B}", "meta": {"b": [2, 1], "a": null}});
         let result = claude_with(&key, "send_note", &arguments, |key, policy| {
             let started = registry.start(&key.harness, crate::adapters::StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: Some(&policy), interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
@@ -183,7 +183,7 @@ mod tests {
         let cwd = home.path().to_string_lossy().to_string();
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let started = registry.start(&key.harness, crate::adapters::StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None,
                 write_mode: Some(crate::delegation::WriteMode::Shared),
                 read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
             })?;

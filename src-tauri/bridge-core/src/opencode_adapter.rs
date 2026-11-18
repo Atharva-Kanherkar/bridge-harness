@@ -169,7 +169,7 @@ pub fn start_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, false)
+    launch(request, None, settings, SessionKind::Chat)
 }
 
 /// A standalone draft completion, with every provider tool family denied.
@@ -179,7 +179,28 @@ pub fn start_completion_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, true)
+    launch(request, None, settings, SessionKind::Completion)
+}
+
+/// A personal-app courier: a session whose only authority is to ask for one
+/// MCP tool, `permission` (OpenCode's `<server>_<tool>` name). Everything else
+/// is denied except `execute`, the code-mode tool OpenCode 2 runs MCP calls
+/// in; each MCP call inside it still raises its own permission prompt, which
+/// Bridge answers. No Bridge tools are attached.
+pub fn start_courier_with_settings(
+    request: StartRequest<'_>,
+    settings: &OpenCodeSettings,
+    permission: &str,
+    server: &str,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request, None, settings, SessionKind::Courier { permission, server })
+}
+
+#[derive(Clone, Copy)]
+enum SessionKind<'a> {
+    Chat,
+    Completion,
+    Courier { permission: &'a str, server: &'a str },
 }
 
 pub fn resume_with_settings(
@@ -190,7 +211,7 @@ pub fn resume_with_settings(
         request.as_start(),
         Some(request.provider_session_id),
         settings,
-        false,
+        SessionKind::Chat,
     )
 }
 
@@ -207,7 +228,7 @@ fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
-    completion_only: bool,
+    kind: SessionKind<'_>,
 ) -> Result<StartedOpenCode, BridgeError> {
     ensure_read_only_transport_supported(request.read_only_sandbox)?;
     // OpenCode's permission rules are coarse families, so admitting one reviewed
@@ -226,6 +247,7 @@ fn launch(
     }
     let binary = resolve_executable(settings)?;
     let api = ServerApi::of(&ensure_supported_version(&binary)?);
+    ensure_kind_supported(kind, api)?;
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
@@ -252,7 +274,7 @@ fn launch(
     }
     // An interactive chat gets Bridge's `visualize` server, merged into
     // whatever inline config the user already passes OpenCode.
-    let visualize = (!completion_only
+    let visualize = (matches!(kind, SessionKind::Chat)
         && crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing))
         .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id.filter(|_| request.interactive)))
         .flatten();
@@ -340,11 +362,12 @@ fn launch(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let directory = request.cwd.to_owned();
+
     let session_prefix = match api {
         ServerApi::V1 => "/session",
         ServerApi::V2 => "/api/session",
     };
-    let session_result = match resume_session_id {
+    let session_result = prepare_session(kind, &client, api, &base_url, &directory).and_then(|()| match resume_session_id {
         Some(session_id) => client
             .get(api.url(&base_url, &format!("{session_prefix}/{session_id}"), &directory))
             .timeout(Duration::from_secs(10))
@@ -352,10 +375,10 @@ fn launch(
             .map_err(http_error("resume OpenCode session"))
             .and_then(|response| checked_json(response, "resume OpenCode session")),
         None => {
-            let mut body = if completion_only {
-                completion_session_body(model.as_ref(), variant.as_deref())
-            } else {
-                session_create_body(model.as_ref(), variant.as_deref(), request.write_mode)
+            let mut body = match kind {
+                SessionKind::Completion => completion_session_body(model.as_ref(), variant.as_deref()),
+                SessionKind::Courier { permission, .. } => courier_session_body(model.as_ref(), variant.as_deref(), permission),
+                SessionKind::Chat => session_create_body(model.as_ref(), variant.as_deref(), request.write_mode),
             };
             if api == ServerApi::V2 {
                 body = v2_session_body(body);
@@ -368,7 +391,7 @@ fn launch(
                 .map_err(http_error("create OpenCode session"))
                 .and_then(|response| checked_json(response, "create OpenCode session"))
         }
-    };
+    });
     // 2.x wraps every result in `{data}`.
     let session_result = session_result.map(|session| match api {
         ServerApi::V1 => session,
@@ -733,6 +756,123 @@ fn seed_stored_credentials(host_db: &Path, sandbox_db: &Path, now_ms: i64) -> Re
     }
     transaction.commit()?;
     Ok(copied)
+}
+
+/// A courier needs the 2.x API: its MCP tools live in code mode and its
+/// permission prompts carry their arguments.
+fn ensure_kind_supported(kind: SessionKind<'_>, api: ServerApi) -> Result<(), BridgeError> {
+    if matches!(kind, SessionKind::Courier { .. }) && api != ServerApi::V2 {
+        return Err(BridgeError::Invalid("Personal apps need OpenCode 2 or newer to call this server".into()));
+    }
+    Ok(())
+}
+
+/// Before a courier session exists, so its tools and permissions are fixed
+/// the way Bridge needs them:
+/// - wait for the one server to connect (a session's tools are fixed when it
+///   is created, and OpenCode connects servers after it is ready);
+/// - disconnect every other server in this private OpenCode process, so no
+///   other server's tool can share the target's flattened permission name
+///   (`fake`+`send_note` and `fake_send`+`note` are both `fake_send_note`).
+///   Disconnecting is per process, never written to the person's config;
+/// - refuse when OpenCode holds a saved "always allow" for the target: it is
+///   appended after the session's rules, so the call would never be asked
+///   about and Bridge could not check its arguments.
+fn prepare_session(kind: SessionKind<'_>, client: &Client, api: ServerApi, base_url: &str, directory: &str) -> Result<(), BridgeError> {
+    let SessionKind::Courier { permission, server } = kind else { return Ok(()) };
+    wait_for_mcp_server(client, api, base_url, directory, server);
+    let get = |path: &str, action: &'static str| -> Result<Value, BridgeError> {
+        client.get(api.url(base_url, path, directory)).timeout(Duration::from_secs(10)).send().map_err(http_error(action))
+            .and_then(|response| checked_json(response, action))
+    };
+    let listed = get("/api/mcp", "list OpenCode MCP servers")?;
+    let others: Vec<&str> = listed["data"].as_array().into_iter().flatten().filter_map(|entry| entry["name"].as_str()).filter(|name| *name != server).collect();
+    for other in &others {
+        let path = format!("/api/experimental/mcp/{}/disconnect", percent_encode_segment(other));
+        let response = client.post(api.url(base_url, &path, directory)).timeout(Duration::from_secs(10)).send().map_err(http_error("isolate an OpenCode MCP server"))?;
+        if !response.status().is_success() {
+            return Err(BridgeError::Invalid("OpenCode would not set aside its other MCP servers for this call, so it was not made".into()));
+        }
+    }
+    // Setting servers aside makes OpenCode rebuild its code-mode tool
+    // catalog in the background, and a session created meanwhile starts with
+    // none. There is no readiness signal for it, so give it a moment.
+    if !others.is_empty() {
+        thread::sleep(Duration::from_millis(1500));
+    }
+    wait_for_mcp_server(client, api, base_url, directory, server);
+    let saved = get("/api/permission/saved", "read OpenCode's saved permissions")?;
+    if saved_allows(&saved, permission) {
+        return Err(BridgeError::Invalid(format!(
+            "OpenCode has a saved \"always allow\" covering {permission}, so it would make the call without asking and Bridge could not check it. Remove that saved permission in OpenCode to use this app through OpenCode"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether any of OpenCode's saved permissions allows `permission`. Saved
+/// rules are allows; their `action` may carry `*` wildcards.
+fn saved_allows(saved: &Value, permission: &str) -> bool {
+    fn matches(pattern: &str, text: &str) -> bool {
+        match pattern.split_once('*') {
+            None => pattern == text,
+            Some((head, tail)) => text.strip_prefix(head).is_some_and(|rest| (0..=rest.len()).any(|cut| rest.is_char_boundary(cut) && matches(tail, &rest[cut..]))),
+        }
+    }
+    saved["data"].as_array().into_iter().flatten().any(|rule| {
+        let effect = rule["effect"].as_str().unwrap_or("allow");
+        effect == "allow" && rule["action"].as_str().is_some_and(|action| matches(action, permission))
+    })
+}
+
+fn percent_encode_segment(text: &str) -> String {
+    text.bytes().map(|byte| if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) { (byte as char).to_string() } else { format!("%{byte:02X}") }).collect()
+}
+
+/// Wait up to 20 s for `server` to leave OpenCode's connecting states. A
+/// server that fails or needs sign-in stops the wait early; the call then
+/// reports it. Never an error itself.
+fn wait_for_mcp_server(client: &Client, api: ServerApi, base_url: &str, directory: &str, server: &str) {
+    let url = api.url(base_url, "/api/mcp", directory);
+    let client = client.clone();
+    let server = server.to_owned();
+    let waited = thread::Builder::new().name("opencode-mcp-wait".into()).spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            let status = client
+                .get(url.clone())
+                .timeout(Duration::from_secs(5))
+                .send()
+                .ok()
+                .and_then(|response| response.json::<Value>().ok())
+                .and_then(|listed| {
+                    listed["data"].as_array().and_then(|servers| {
+                        servers.iter().find(|entry| entry["name"].as_str() == Some(server.as_str()))
+                            .and_then(|entry| entry.pointer("/status/status").and_then(Value::as_str).map(str::to_owned))
+                    })
+                });
+            if matches!(status.as_deref(), Some("connected" | "failed" | "needs_auth" | "disabled")) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+    if let Ok(handle) = waited {
+        let _joined = handle.join();
+    }
+}
+
+/// Deny everything, allow code mode, ask for exactly one MCP tool. The order
+/// matters: OpenCode takes the last matching rule.
+fn courier_session_body(model: Option<&ModelRef>, variant: Option<&str>, permission: &str) -> Value {
+    let mut body = session_create_body(model, variant, Some(WriteMode::ReadOnly));
+    body["title"] = json!("Bridge personal app call");
+    body["permission"] = json!([
+        {"permission":"*", "pattern":"*", "action":"deny"},
+        {"permission":"execute", "pattern":"*", "action":"allow"},
+        {"permission": permission, "pattern":"*", "action":"ask"},
+    ]);
+    body
 }
 
 fn completion_session_body(model: Option<&ModelRef>, variant: Option<&str>) -> Value {
@@ -1493,6 +1633,25 @@ fn spawn_event_stream(
 }
 
 impl OpenCodeRuntime {
+    /// One GET on this runtime's server, parsed, off the async runtime.
+    fn get_json(&self, path: &str, action: &'static str) -> Result<Value, BridgeError> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| BridgeError::Adapter("OpenCode runtime is stopped".into()))?
+            .clone();
+        let url = self.api.url(&self.base_url, path, &self.directory);
+        thread::Builder::new()
+            .name("opencode-get".into())
+            .spawn(move || -> Result<Value, BridgeError> {
+                let response = client.get(url).timeout(Duration::from_secs(10)).send().map_err(http_error(action))?;
+                checked_json(response, action)
+            })
+            .map_err(|error| BridgeError::Adapter(error.to_string()))?
+            .join()
+            .map_err(|_| BridgeError::Adapter(format!("Failed to {action}")))?
+    }
+
     fn request(
         &self,
         method: reqwest::Method,
@@ -1563,6 +1722,21 @@ impl OpenCodeRuntime {
 }
 
 impl AdapterRuntime for OpenCodeRuntime {
+    /// One configured server's connection status, from the 2.x MCP list.
+    /// OpenCode exposes no tool list, so `tools` is absent.
+    fn mcp_status(&self, server: &str) -> Result<Value, BridgeError> {
+        if self.api != ServerApi::V2 {
+            return Err(BridgeError::Invalid("Personal apps need OpenCode 2 or newer".into()));
+        }
+        let listed = self.get_json("/api/mcp", "list OpenCode MCP servers")?;
+        let entry = listed["data"]
+            .as_array()
+            .and_then(|servers| servers.iter().find(|entry| entry["name"].as_str() == Some(server)));
+        Ok(match entry {
+            Some(entry) => json!({"name": server, "status": entry.pointer("/status/status").and_then(Value::as_str).unwrap_or("unavailable")}),
+            None => json!({"name": server, "status": "unavailable"}),
+        })
+    }
     fn process_id(&self) -> u32 {
         self.child.id()
     }
@@ -2494,6 +2668,7 @@ pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Ve
             lifecycle: crate::model::ModelLifecycle::Unknown,
             source: crate::model::ModelCatalogSource::RuntimeApi,
             supported_effort_levels: model.variants.clone(),
+            speed_tiers: Vec::new(),
             default_for_tier: false,
         })
         .collect::<Vec<_>>();
@@ -3229,6 +3404,28 @@ mod tests {
     }
 
     #[test]
+    fn saved_approvals_that_cover_the_courier_tool_are_found() {
+        let saved = |rules: Value| json!({"data": rules});
+        assert!(saved_allows(&saved(json!([{"id":"a","action":"fake_send_note","resource":"*"}])), "fake_send_note"));
+        assert!(saved_allows(&saved(json!([{"id":"a","action":"fake_*","resource":"*"}])), "fake_send_note"));
+        assert!(saved_allows(&saved(json!([{"id":"a","action":"*","resource":"*"}])), "fake_send_note"));
+        assert!(!saved_allows(&saved(json!([{"id":"a","action":"fake_read","resource":"*"}])), "fake_send_note"));
+        assert!(!saved_allows(&saved(json!([{"id":"a","action":"fake_send_note","effect":"deny"}])), "fake_send_note"));
+        assert!(!saved_allows(&saved(json!([])), "fake_send_note"));
+        assert_eq!(percent_encode_segment("claude.ai Slack"), "claude.ai%20Slack");
+    }
+
+    #[test]
+    fn a_courier_session_denies_all_but_code_mode_and_asks_for_one_tool() {
+        let body = v2_session_body(courier_session_body(None, None, "fake_send_note"));
+        assert_eq!(body["permissions"], json!([
+            {"action":"*","resource":"*","effect":"deny"},
+            {"action":"execute","resource":"*","effect":"allow"},
+            {"action":"fake_send_note","resource":"*","effect":"ask"},
+        ]), "the last matching rule wins, so the ask comes last");
+    }
+
+    #[test]
     fn v2_sessions_carry_the_model_and_v2_permission_rules() {
         let model = ModelRef { provider_id: "opencode-go".into(), model_id: "kimi-k3".into() };
         let body = v2_session_body(session_create_body(Some(&model), Some("high"), Some(WriteMode::Isolated)));
@@ -3567,6 +3764,7 @@ mod tests {
                 cwd: directory.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
+                speed: None,
                 instructions: Some("End every reply with the word BANANA."),
                 write_mode: Some(WriteMode::Isolated),
                 read_only_sandbox: None,
@@ -3714,6 +3912,7 @@ mod tests {
                 cwd: directory.path().to_str().unwrap(),
                 model: Some("opencode-go/glm-5.2"),
                 effort: None,
+                speed: None,
                 instructions: None,
                 write_mode: None,
                 read_only_sandbox: None,
@@ -4131,6 +4330,7 @@ mod read_only_sandbox_tests {
                 cwd: workspace.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
+                speed: None,
                 instructions: Some("Be brief. When asked to run a shell command, run it with your shell tool and paste its exact output."),
                 write_mode: Some(WriteMode::ReadOnly),
                 read_only_sandbox: Some(&sandbox),

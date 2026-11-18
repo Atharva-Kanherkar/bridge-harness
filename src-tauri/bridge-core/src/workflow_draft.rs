@@ -380,6 +380,26 @@ impl ClaudeDraftModel {
     pub fn new(core: &Arc<BridgeCore>, model: &str) -> Self {
         Self { core: core.clone(), model: model.to_owned() }
     }
+
+    fn start(&self, cwd: &str, policy: &BriefingRuntimePolicy) -> Result<crate::adapters::StartedAdapter, String> {
+        self.core.adapter_registry.start(
+            "claude",
+            StartRequest {
+                session_id: None,
+                account: None,
+                cwd,
+                model: Some(&self.model),
+                effort: None,
+                speed: None,
+                instructions: Some(INSTRUCTIONS),
+                write_mode: None,
+                read_only_sandbox: None,
+                briefing: Some(policy),
+                interactive: false,
+                on_progress: None,
+            },
+        ).map_err(|error| format!("provider start: {error}"))
+    }
 }
 
 impl DraftModel for ClaudeDraftModel {
@@ -401,26 +421,7 @@ impl DraftModel for ClaudeDraftModel {
             )
             .map_err(|error| error.to_string())?;
         let result = (|| {
-            let started = self
-                .core
-                .adapter_registry
-                .start(
-                    "claude",
-                    StartRequest {
-                        session_id: None,
-                        account: None,
-                        cwd: &cwd,
-                        model: Some(&self.model),
-                        effort: None,
-                        instructions: Some(INSTRUCTIONS),
-                        write_mode: None,
-                        read_only_sandbox: None,
-                        briefing: Some(&policy),
-                        interactive: false,
-                        on_progress: None,
-                    },
-                )
-                .map_err(|error| format!("provider start: {error}"))?;
+            let started = self.start(&cwd, &policy)?;
             let (sender, lines) = mpsc::channel::<String>();
             let mut reader = started.reader;
             std::thread::spawn(move || {

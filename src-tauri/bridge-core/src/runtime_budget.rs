@@ -13,7 +13,16 @@ use std::{
 
 const MAX_IDLE_RUNTIMES: usize = 2;
 const IDLE_TTL: Duration = Duration::from_secs(120);
+/// How long an open harness subagent may stay silent and still hold its chat's
+/// process. A live Claude or Codex child streams far more often than this (a
+/// single shell call is capped at ten minutes); one the provider never closed
+/// stops pinning the process once it has been quiet this long.
+const SUBAGENT_QUIET_WINDOW_MINUTES: i64 = 30;
 
+/// The process is the only place a harness subagent or a background shell
+/// runs. A chat that is idle in Bridge's eyes, because its own turn ended,
+/// can still own both, and releasing it kills them mid-run. Bridge workers
+/// were always protected; harness children and background tasks now are too.
 fn can_release(db: &rusqlite::Connection, id: &str) -> bool {
     db.query_row(
         "SELECT parent_session_id IS NULL AND kind IN ('direct','orchestrator')
@@ -21,7 +30,20 @@ fn can_release(db: &rusqlite::Connection, id: &str) -> bool {
          AND NOT EXISTS(SELECT 1 FROM worker_runtime WHERE parent_session_id=sessions.id AND result_status='pending')
          AND NOT EXISTS(SELECT 1 FROM durable_outbox WHERE destination='parent' AND event_type='worker.result' AND status='pending' AND json_extract(payload,'$.report.parent_session_id')=sessions.id)
          AND NOT EXISTS(SELECT 1 FROM queued_session_input WHERE session_id=sessions.id AND state IN ('queued','claiming'))
-         FROM sessions WHERE id=?1", [id], |row| row.get::<_, bool>(0),
+         AND NOT EXISTS(SELECT 1 FROM sessions child
+             WHERE child.parent_session_id=sessions.id AND child.kind='harness_subagent'
+               -- An approval card is a person's to answer, however long it takes.
+               AND (child.status='waiting'
+                    OR (child.status IN ('working','starting','ready')
+                        AND COALESCE((SELECT e.created_at FROM session_entries e WHERE e.session_id=child.id ORDER BY e.sequence DESC LIMIT 1), child.started_at, '')
+                            >= strftime('%Y-%m-%dT%H:%M:%S','now',?2))))
+         AND NOT EXISTS(SELECT 1 FROM session_background_tasks task
+             WHERE task.in_progress=1
+               AND (task.session_id=sessions.id OR task.session_id IN
+                    (SELECT child.id FROM sessions child WHERE child.parent_session_id=sessions.id AND child.kind='harness_subagent')))
+         FROM sessions WHERE id=?1",
+        rusqlite::params![id, format!("-{SUBAGENT_QUIET_WINDOW_MINUTES} minutes")],
+        |row| row.get::<_, bool>(0),
     ).unwrap_or(false)
 }
 
@@ -103,6 +125,19 @@ impl IdleRuntimes {
                 // already idle. Release it directly, outside database/map locks.
                 drop(_input_lease);
                 runtime.stop(ShutdownReason::Completed);
+                // The reader was deactivated above, so its exit path will not
+                // close what died with the process. A child left open here
+                // (quiet past the window) would read as running forever.
+                let closed = match core.try_db() {
+                    Ok(db) => crate::harness_subagents::close_with_process(&db, &id),
+                    Err(error) => {
+                        eprintln!("[runtime-budget] cleanup for {id}: {error}");
+                        Vec::new()
+                    }
+                };
+                for event in closed {
+                    core.events.publish(CoreEvent::Agent(event));
+                }
                 self.seen.remove(&id);
                 core.events.publish(CoreEvent::StateChanged);
                 // One release per tick bounds housekeeping and lets new input
@@ -226,6 +261,50 @@ mod tests {
         assert!(!can_release(&db, "parent"));
         db.execute("UPDATE durable_outbox SET status='delivered' WHERE id='result'", []).unwrap();
         assert!(can_release(&db, "parent"));
+    }
+    #[test]
+    fn a_chat_running_harness_subagents_or_background_shells_is_not_idle() {
+        // Live 2026-11-17: background agents died about two minutes after the
+        // chat's turn ended, every time, because this check let it go.
+        let dir = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(dir.path());
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind,provider_session_id) VALUES('chat','claude','Chat','ready','reported','direct','root')", []).unwrap();
+        assert!(can_release(&db, "chat"));
+        let mut started = crate::agent::NormalizedEvent::new("subagent.started");
+        started.data = serde_json::json!({"subtype":"task_started","taskId":"a98","subagent":{"sessionId":"agent-call","title":"Hunt"}});
+        crate::harness_subagents::route(&db, "chat", &started, &serde_json::json!({})).unwrap();
+        assert!(!can_release(&db, "chat"), "a working background agent holds the process");
+        // Idle and quiet past the window: a child the provider never closed
+        // must not pin the process forever.
+        db.execute("UPDATE sessions SET status='ready' WHERE kind='harness_subagent'", []).unwrap();
+        db.execute("UPDATE session_entries SET created_at='2020-01-01T00:00:00+00:00' WHERE session_id IN (SELECT id FROM sessions WHERE kind='harness_subagent')", []).unwrap();
+        assert!(can_release(&db, "chat"));
+        // Except a child waiting on a person's approval.
+        db.execute("UPDATE sessions SET status='waiting' WHERE kind='harness_subagent'", []).unwrap();
+        assert!(!can_release(&db, "chat"), "an open approval holds the process however quiet");
+        db.execute("UPDATE sessions SET status='ready' WHERE kind='harness_subagent'", []).unwrap();
+        let mut done = crate::agent::NormalizedEvent::new("subagent.completed");
+        done.status = Some("completed".into());
+        done.data = serde_json::json!({"subagent":{"sessionId":"agent-call"}});
+        crate::harness_subagents::route(&db, "chat", &done, &serde_json::json!({})).unwrap();
+        assert!(can_release(&db, "chat"));
+        // A background shell, the chat's own or a child's, holds it too.
+        for owner in ["chat", "child-shell"] {
+            let mut shell = crate::agent::NormalizedEvent::new("tool.started");
+            shell.item_id = Some(format!("background-task:{owner}"));
+            shell.status = Some("inProgress".into());
+            shell.data = serde_json::json!({"backgroundTask":true});
+            if owner == "chat" {
+                crate::store::session_event(&db, "chat", &shell, &serde_json::json!({})).unwrap();
+            } else {
+                shell.data["subagent"] = serde_json::json!({"sessionId":"agent-call"});
+                crate::harness_subagents::route(&db, "chat", &shell, &serde_json::json!({})).unwrap();
+            }
+            assert!(!can_release(&db, "chat"), "{owner}");
+            crate::background_activity::interrupt(&db, None).unwrap();
+            assert!(can_release(&db, "chat"), "{owner}");
+        }
     }
     #[test]
     fn a_new_process_or_resumed_activity_restarts_the_idle_deadline() {

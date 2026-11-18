@@ -124,6 +124,7 @@ pub(crate) fn one_hidden_turn(
                 cwd: &cwd,
                 model,
                 effort: None,
+                speed: None,
                 instructions: Some(instructions),
                 write_mode: None,
                 read_only_sandbox: None,
@@ -142,6 +143,7 @@ pub(crate) fn one_hidden_turn(
                 model,
                 // a title needs no deliberation; harnesses without the knob drop it.
                 effort: Some("low"),
+                speed: None,
                 instructions: Some(instructions),
                 // No file or shell access: this session only ever names chats.
                 write_mode: Some(WriteMode::ReadOnly),

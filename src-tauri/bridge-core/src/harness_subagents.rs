@@ -69,7 +69,30 @@ pub fn route(
         return Ok(vec![]);
     }
     let tx = db.unchecked_transaction()?;
-    let existing: Option<String> = tx.query_row("SELECT id FROM sessions WHERE parent_session_id=?1 AND provider_session_id=?2 AND kind=?3",params![parent,provider,KIND],|r|r.get(0)).optional()?;
+    let mut existing: Option<String> = tx.query_row("SELECT id FROM sessions WHERE parent_session_id=?1 AND provider_session_id=?2 AND kind=?3",params![parent,provider,KIND],|r|r.get(0)).optional()?;
+    // Claude names one agent by its task id for its whole life, while every
+    // continuation (`SendMessage`, a resume after a restart) arrives under a
+    // new tool id. The task id finds the child the first call created, so the
+    // work and its completion stay on one row.
+    let task = event.data.get("taskId").and_then(Value::as_str).filter(|task| !task.is_empty());
+    if existing.is_none() && event.kind.starts_with("subagent.") {
+        if let Some(task) = task {
+            existing = tx.query_row(
+                "SELECT c.id FROM sessions c WHERE c.parent_session_id=?1 AND c.kind=?3
+                   AND EXISTS(SELECT 1 FROM session_entries e WHERE e.session_id=c.id AND e.kind='subagent.started'
+                              AND json_extract(e.payload,'$.data.taskId')=?2)
+                 ORDER BY c.started_at LIMIT 1",
+                params![parent, task, KIND],
+                |r| r.get(0),
+            ).optional()?;
+        }
+    }
+    // A lifecycle report for a task this chat never started (a background
+    // shell, or an orphan reported by a restarted process) is not an agent.
+    if existing.is_none() && tag.get("lookupOnly").and_then(Value::as_bool) == Some(true) {
+        tx.commit()?;
+        return Ok(vec![]);
+    }
     let created = existing.is_none();
     let child = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let title = tag
@@ -99,6 +122,10 @@ pub fn route(
             return Ok(vec![]);
         }
     }
+    // A continued Claude agent runs again under the row it finished on.
+    let reopened = !created
+        && event.kind == "subagent.started"
+        && event.data.get("subtype").and_then(Value::as_str) == Some("task_started");
     // Replace fallback labels once the lifecycle's actual description arrives.
     if event.kind == "subagent.started" {
         tx.execute(
@@ -151,6 +178,7 @@ pub fn route(
     };
     if created
         || revived
+        || reopened
         || turn_started
         || terminal(event)
         || matches!(
@@ -160,7 +188,7 @@ pub fn route(
     {
         tx.execute("UPDATE sessions SET status=CASE WHEN status='waiting' AND ?2='working' AND NOT ?5 THEN status ELSE ?2 END,active_turn_id=CASE WHEN ?3 THEN NULL ELSE COALESCE(?4,active_turn_id) END,
         ended_at=CASE WHEN ?5 THEN NULL WHEN ?3 THEN COALESCE(ended_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ELSE ended_at END
-        WHERE id=?1 AND (status NOT IN ('completed','failed','interrupted') OR ?3 OR ?5)",params![child,status,terminal(event),turn,turn_started])?;
+        WHERE id=?1 AND (status NOT IN ('completed','failed','interrupted') OR ?3 OR ?5)",params![child,status,terminal(event),turn,turn_started || reopened])?;
     }
     // The caller bills child usage to the parent; the child keeps no copy.
     if event.kind != "usage.updated" {
@@ -223,11 +251,37 @@ pub fn stop_target(
 /// idle rather than terminal: a provider that really keeps a child running
 /// past the turn (a Claude background agent) revives it with its next frame.
 /// A child waiting on an approval keeps that state, since the card is real.
+///
+/// Claude is the exception. A foreground `Agent` call holds the turn open, so
+/// a Claude child still open when the turn ends is a background agent, and
+/// Claude reports its end with `task_notification`. Idling it would show a
+/// running agent as finished; the process exit closes it if that never comes.
 pub fn idle_children(db: &Connection, parent: &str) -> Result<usize, BridgeError> {
     Ok(db.execute(
-        "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE kind=?1 AND parent_session_id=?2 AND status IN ('working','starting')",
+        "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE kind=?1 AND parent_session_id=?2 AND status IN ('working','starting') AND harness<>'claude'",
         params![KIND, parent],
     )?)
+}
+
+/// Everything a chat's process was running dies with it: its open harness
+/// subagents and the background tasks of the chat and of those children. A
+/// caller that ends a process after deactivating its reader (idle release, a
+/// replacing launch) must close them itself, because that reader's exit path
+/// no longer will. Returns the events to publish.
+pub fn close_with_process(db: &Connection, parent: &str) -> Vec<AgentEvent> {
+    let mut events = interrupt_family_events(db, Some(parent)).unwrap_or_default();
+    let mut sessions = vec![parent.to_owned()];
+    if let Ok(mut stmt) = db.prepare("SELECT id FROM sessions WHERE parent_session_id=?1 AND kind=?2") {
+        if let Ok(rows) = stmt.query_map(params![parent, KIND], |r| r.get::<_, String>(0)) {
+            sessions.extend(rows.filter_map(Result::ok));
+        }
+    }
+    for session in sessions {
+        if let Ok(closed) = crate::background_activity::interrupt(db, Some(&session)) {
+            events.extend(closed);
+        }
+    }
+    events
 }
 
 pub fn interrupt_orphans(db: &Connection) -> Result<usize, BridgeError> {
@@ -237,6 +291,20 @@ pub fn interrupt_children(db: &Connection, parent: &str) -> Result<usize, Bridge
     interrupt_family(db, Some(parent))
 }
 fn interrupt_family(db: &Connection, parent: Option<&str>) -> Result<usize, BridgeError> {
+    let mut closed = 0;
+    interrupt_family_with(db, parent, |_| closed += 1)?;
+    Ok(closed)
+}
+fn interrupt_family_events(db: &Connection, parent: Option<&str>) -> Result<Vec<AgentEvent>, BridgeError> {
+    let mut events = Vec::new();
+    interrupt_family_with(db, parent, |stored| events.extend(stored))?;
+    Ok(events)
+}
+fn interrupt_family_with(
+    db: &Connection,
+    parent: Option<&str>,
+    mut on_child: impl FnMut(Vec<AgentEvent>),
+) -> Result<(), BridgeError> {
     let ids = {
         let mut stmt=db.prepare("SELECT parent_session_id,provider_session_id FROM sessions WHERE kind=?1 AND status IN ('working','waiting','starting','ready') AND (?2 IS NULL OR parent_session_id=?2)")?;
         let ids = stmt
@@ -250,9 +318,9 @@ fn interrupt_family(db: &Connection, parent: Option<&str>) -> Result<usize, Brid
         let mut event = NormalizedEvent::new("subagent.completed");
         event.status = Some("interrupted".into());
         event.data = json!({"subagent":{"sessionId":provider},"reason":"parent_process_exited"});
-        route(db, parent, &event, &json!({"source":"recovery"}))?;
+        on_child(route(db, parent, &event, &json!({"source":"recovery"}))?);
     }
-    Ok(ids.len())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -267,6 +335,97 @@ mod tests {
         let mut e = NormalizedEvent::new(kind);
         e.data = json!({"subagent":{"sessionId":id,"agent":"codex","title":"Research"}});
         e
+    }
+    fn claude_db() -> Connection {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind,provider_session_id,cwd) VALUES('parent','claude','Chat','ready','estimated','direct','root','/tmp')",[]).unwrap();
+        db
+    }
+    fn task(kind: &str, tool: &str, task: &str, subtype: &str) -> NormalizedEvent {
+        let mut e = NormalizedEvent::new(kind);
+        e.data = json!({"subtype":subtype,"taskId":task,"subagent":{"sessionId":tool,"agent":"Explore","title":"Map the registry"}});
+        e
+    }
+    #[test]
+    fn a_continued_claude_agent_stays_one_child_across_processes() {
+        // Live 2026-11-17: the agent's work landed on the row of its first
+        // call and its completion on a second row made for SendMessage.
+        let db = claude_db();
+        route(&db, "parent", &task("subagent.started", "agent-call", "a98", "task_started"), &json!({})).unwrap();
+        let mut work = event("command.completed", "agent-call");
+        work.status = Some("completed".into());
+        route(&db, "parent", &work, &json!({})).unwrap();
+        // A restarted process announces the continuation under a new tool id.
+        route(&db, "parent", &task("subagent.started", "send-message", "a98", "task_started"), &json!({})).unwrap();
+        let mut done = task("subagent.completed", "send-message", "a98", "task_notification");
+        done.status = Some("completed".into());
+        route(&db, "parent", &done, &json!({})).unwrap();
+        let rows: Vec<(String, String)> = db.prepare("SELECT provider_session_id,status FROM sessions WHERE kind='harness_subagent'").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("agent-call".to_owned(), "completed".to_owned())]);
+    }
+    #[test]
+    fn a_continuation_reopens_a_finished_claude_agent() {
+        let db = claude_db();
+        route(&db, "parent", &task("subagent.started", "agent-call", "a98", "task_started"), &json!({})).unwrap();
+        let mut done = task("subagent.completed", "agent-call", "a98", "task_notification");
+        done.status = Some("completed".into());
+        route(&db, "parent", &done, &json!({})).unwrap();
+        route(&db, "parent", &task("subagent.started", "agent-call", "a98", "task_started"), &json!({})).unwrap();
+        let (status, ended): (String, Option<String>) = db.query_row("SELECT status,ended_at FROM sessions WHERE kind='harness_subagent'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), ended), ("working", None));
+        // An out-of-order start without Claude's task lifecycle does not.
+        route(&db, "parent", &done, &json!({})).unwrap();
+        route(&db, "parent", &event("subagent.started", "agent-call"), &json!({})).unwrap();
+        let status: String = db.query_row("SELECT status FROM sessions WHERE kind='harness_subagent'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "completed");
+    }
+    #[test]
+    fn a_report_about_an_unknown_task_never_creates_a_row() {
+        // Live: 118 one-entry "Claude subagent" rows from shell and orphan
+        // notifications after a restart.
+        let db = claude_db();
+        let mut orphan = task("subagent.completed", "b1pwyirf3", "b1pwyirf3", "task_notification");
+        orphan.status = Some("stopped".into());
+        orphan.data["subagent"]["lookupOnly"] = json!(true);
+        assert!(route(&db, "parent", &orphan, &json!({})).unwrap().is_empty());
+        let count: i64 = db.query_row("SELECT count(*) FROM sessions WHERE kind='harness_subagent'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+        // The same report for an agent this chat did start closes that row.
+        route(&db, "parent", &task("subagent.started", "agent-call", "a98", "task_started"), &json!({})).unwrap();
+        let mut killed = task("subagent.completed", "a98", "a98", "task_notification");
+        killed.status = Some("stopped".into());
+        killed.data["subagent"]["lookupOnly"] = json!(true);
+        assert!(!route(&db, "parent", &killed, &json!({})).unwrap().is_empty());
+        let rows: Vec<(String, String)> = db.prepare("SELECT provider_session_id,status FROM sessions WHERE kind='harness_subagent'").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("agent-call".to_owned(), "interrupted".to_owned())]);
+    }
+    #[test]
+    fn a_finished_claude_turn_leaves_its_background_agents_running() {
+        let db = claude_db();
+        route(&db, "parent", &task("subagent.started", "agent-call", "a98", "task_started"), &json!({})).unwrap();
+        assert_eq!(idle_children(&db, "parent").unwrap(), 0);
+        let status: String = db.query_row("SELECT status FROM sessions WHERE kind='harness_subagent'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "working");
+    }
+    #[test]
+    fn closing_with_the_process_ends_children_and_their_background_tasks() {
+        let db = claude_db();
+        route(&db, "parent", &task("subagent.started", "agent-call", "a98", "task_started"), &json!({})).unwrap();
+        let mut shell = event("tool.started", "agent-call");
+        shell.item_id = Some("background-task:bcav".into());
+        shell.status = Some("inProgress".into());
+        shell.data["backgroundTask"] = json!(true);
+        route(&db, "parent", &shell, &json!({})).unwrap();
+        let open = |db: &Connection| db.query_row("SELECT count(*) FROM session_background_tasks WHERE in_progress=1", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(open(&db), 1);
+        let events = close_with_process(&db, "parent");
+        assert!(events.iter().any(|e| e.kind == "subagent.completed"));
+        assert_eq!(open(&db), 0);
+        let status: String = db.query_row("SELECT status FROM sessions WHERE kind='harness_subagent'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "interrupted");
+        assert!(close_with_process(&db, "parent").is_empty());
     }
     #[test]
     fn the_parents_own_thread_never_becomes_its_child() {

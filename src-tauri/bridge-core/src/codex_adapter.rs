@@ -41,6 +41,8 @@ pub struct CodexRuntime {
     sandbox_policy: Option<Value>,
     context_inventory: Mutex<Vec<AdapterContextInventory>>,
     realtime_voice: bool,
+    /// The chat's speed (`StartRequest::speed`), re-stated on every turn.
+    service_tier: Option<String>,
     stopped: bool,
     stderr_tail: crate::adapters::StderrTail,
 }
@@ -107,7 +109,38 @@ pub(crate) fn discovered_model_from_row(row: &Value) -> Option<crate::adapters::
         label: label.to_owned(),
         is_default: row.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
         supported_effort_levels: reasoning_efforts_from_row(row),
+        speed_tiers: speed_tiers_from_row(row),
     })
+}
+
+/// `serviceTiers` as the provider listed them (`{id,name,description}`), in
+/// its order. `priority` is what Codex labels Fast. Codex 0.170 also names an
+/// `ultrafast` speed in `additionalSpeedTiers`; one listed there without a
+/// matching tier row is offered under its own id.
+fn speed_tiers_from_row(row: &Value) -> Vec<crate::model::SpeedTier> {
+    let mut tiers: Vec<crate::model::SpeedTier> = row.get("serviceTiers").or_else(|| row.get("service_tiers"))
+        .and_then(Value::as_array)
+        .map(|tiers| tiers.iter().filter_map(|tier| {
+            let id = tier.get("id").and_then(Value::as_str).map(str::trim).filter(|id| !id.is_empty() && *id != STANDARD_SPEED && *id != "default")?;
+            let label = tier.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).unwrap_or(id);
+            Some(crate::model::SpeedTier {
+                id: id.to_owned(),
+                label: label.to_owned(),
+                description: tier.get("description").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned),
+            })
+        }).collect())
+        .unwrap_or_default();
+    let extra = row.get("additionalSpeedTiers").or_else(|| row.get("additional_speed_tiers")).and_then(Value::as_array);
+    if extra.is_some_and(|extra| extra.iter().any(|tier| tier.as_str() == Some("ultrafast")))
+        && !tiers.iter().any(|tier| tier.id == "ultrafast" || tier.label.eq_ignore_ascii_case("ultrafast"))
+    {
+        tiers.push(crate::model::SpeedTier {
+            id: "ultrafast".into(),
+            label: "Ultrafast".into(),
+            description: Some("The fastest available responses for latency-sensitive work".into()),
+        });
+    }
+    tiers
 }
 
 /// `supportedReasoningEfforts` (and the snake_case alias) as the provider sent
@@ -189,6 +222,7 @@ fn launch(
         cwd,
         model,
         effort,
+        speed,
         instructions,
         write_mode,
         read_only_sandbox,
@@ -333,6 +367,8 @@ fn launch(
             ContextLifecyclePhase::Start,
         )
     };
+    let mut params = params;
+    apply_thread_service_tier(&mut params, speed);
     write_value(&writer, &json!({"method":method,"id":2,"params":params}))?;
     let (response, mut later_messages) = wait_for_response(&mut reader, 2)?;
     startup_messages.append(&mut later_messages);
@@ -360,6 +396,7 @@ fn launch(
             sandbox_policy,
             context_inventory: Mutex::new(codex_context_inventory(lifecycle_phase)?),
             realtime_voice,
+            service_tier: speed.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
             stopped: false,
             stderr_tail,
         },
@@ -621,6 +658,7 @@ impl CodexRuntime {
     }
     fn start_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
         let mut params = turn_start_params(&self.thread_id, text, context, self.sandbox_policy.as_ref());
+        apply_turn_service_tier(&mut params, self.service_tier.as_deref());
         append_images(&mut params, images);
         // `additionalContext` is gated behind the experimental API: without the
         // capability Codex answers `-32600` and the turn never starts.
@@ -688,6 +726,30 @@ fn append_images(params: &mut Value, images: &[bridge_protocol::messages::TurnIm
 /// and takes no focus, no target size, and no summary instruction.
 fn compact_start_params(thread_id: &str) -> Value {
     json!({"threadId": thread_id})
+}
+
+/// The speed a chat chose that is not standard: a `serviceTiers` id from
+/// `model/list` (`priority` is Fast, `ultrafast` when listed).
+const STANDARD_SPEED: &str = "standard";
+
+/// A faster tier is set on the thread itself, so a resumed or forked thread
+/// keeps it. Standard sends nothing here: the app-server's thread-level field
+/// has no documented "standard" value.
+fn apply_thread_service_tier(params: &mut Value, speed: Option<&str>) {
+    if let Some(tier) = speed.map(str::trim).filter(|value| !value.is_empty() && *value != STANDARD_SPEED) {
+        params["serviceTier"] = json!(tier);
+    }
+}
+
+/// Every turn re-states the chat's speed. A chat switched back to standard
+/// asks for it per turn (`serviceTierForTurn: "default"`, as the app-server
+/// documents), because its thread may still carry the faster tier.
+fn apply_turn_service_tier(params: &mut Value, speed: Option<&str>) {
+    match speed.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(STANDARD_SPEED) => params["serviceTierForTurn"] = json!("default"),
+        Some(tier) => params["serviceTier"] = json!(tier),
+        None => {}
+    }
 }
 
 fn turn_start_params(
@@ -1134,7 +1196,7 @@ mod tests {
             turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
             turn_steer_id: AtomicI64::new(TURN_STEER_REQUEST_ID_BASE),
             sandbox_policy: None, context_inventory: Mutex::new(vec![]),
-            stopped: false, stderr_tail: Default::default(), realtime_voice: false,
+            stopped: false, stderr_tail: Default::default(), realtime_voice: false, service_tier: None,
         };
         assert!(runtime.supports_active_turn_steering());
         let images = [bridge_protocol::messages::TurnImage { media_type: "image/png".into(), base64_data: "cG5n".into() }];
@@ -1621,6 +1683,7 @@ mod tests {
             cwd: cwd.to_str().unwrap(),
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1700,6 +1763,7 @@ mod tests {
             cwd,
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1719,6 +1783,7 @@ mod tests {
             cwd,
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1811,6 +1876,59 @@ mod tests {
         assert_eq!(model.label, "GPT-5.6-Sol");
         assert!(model.is_default);
         assert_eq!(model.supported_effort_levels.unwrap(), ["low", "medium", "high", "xhigh", "max", "ultra"]);
+    }
+
+    #[test]
+    fn model_list_service_tiers_become_speed_tiers() {
+        // Live 0.159 row shape: Fast is the `priority` tier.
+        let row = json!({
+            "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol",
+            "serviceTiers": [{ "id": "priority", "name": "Fast", "description": "2x speed, increased usage" }],
+            "additionalSpeedTiers": ["fast"]
+        });
+        let tiers = discovered_model_from_row(&row).unwrap().speed_tiers;
+        assert_eq!(tiers.len(), 1);
+        assert_eq!((tiers[0].id.as_str(), tiers[0].label.as_str()), ("priority", "Fast"));
+        assert_eq!(tiers[0].description.as_deref(), Some("2x speed, increased usage"));
+        // Ultrafast named only as an extra speed is still offered.
+        let ultra = discovered_model_from_row(&json!({
+            "id": "gpt-6-astra", "displayName": "GPT-6 Astra",
+            "serviceTiers": [{ "id": "priority", "name": "Fast", "description": "" }],
+            "additionalSpeedTiers": ["fast", "ultrafast"]
+        })).unwrap().speed_tiers;
+        assert_eq!(ultra.iter().map(|tier| tier.id.as_str()).collect::<Vec<_>>(), ["priority", "ultrafast"]);
+        assert!(ultra[0].description.is_none());
+        // Listed once, not twice.
+        let listed = discovered_model_from_row(&json!({
+            "id": "gpt-6-astra", "displayName": "GPT-6 Astra",
+            "serviceTiers": [{ "id": "ultrafast", "name": "Ultrafast", "description": "Fastest" }],
+            "additionalSpeedTiers": ["ultrafast"]
+        })).unwrap().speed_tiers;
+        assert_eq!(listed.len(), 1);
+        assert!(discovered_model_from_row(&json!({"id": "gpt-reserve", "displayName": "Reserve"})).unwrap().speed_tiers.is_empty());
+    }
+
+    #[test]
+    fn a_chosen_speed_rides_the_thread_and_every_turn() {
+        let mut start = thread_start_params("/tmp", Some("gpt-6.1-sol"), None, None, None);
+        apply_thread_service_tier(&mut start, Some("priority"));
+        assert_eq!(start["serviceTier"], "priority");
+        let mut resume = thread_resume_params("thread", "/tmp", None, None, None, None);
+        apply_thread_service_tier(&mut resume, Some("standard"));
+        assert!(resume.get("serviceTier").is_none(), "standard has no thread-level value");
+        apply_thread_service_tier(&mut resume, None);
+        assert!(resume.get("serviceTier").is_none());
+
+        let mut fast = turn_start_params("thread", "go", TurnContext::default(), None);
+        apply_turn_service_tier(&mut fast, Some("ultrafast"));
+        assert_eq!(fast["serviceTier"], "ultrafast");
+        let mut standard = turn_start_params("thread", "go", TurnContext::default(), None);
+        apply_turn_service_tier(&mut standard, Some("standard"));
+        assert_eq!(standard["serviceTierForTurn"], "default");
+        assert!(standard.get("serviceTier").is_none());
+        let mut untouched = turn_start_params("thread", "go", TurnContext::default(), None);
+        apply_turn_service_tier(&mut untouched, None);
+        assert!(untouched.get("serviceTier").is_none() && untouched.get("serviceTierForTurn").is_none());
     }
 
     #[test]

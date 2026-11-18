@@ -35,6 +35,13 @@
     },
     "sessionId": {
       "type": "string"
+    },
+    "speed": {
+      "description": "A speed tier id from the selected model's `speedTiers`, or `standard` for the provider's standard speed. Omitted keeps the current speed when the target model offers it.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

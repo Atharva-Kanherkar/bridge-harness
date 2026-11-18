@@ -230,7 +230,11 @@ fn launch(core: &Arc<BridgeCore>, key: &Key) -> Result<Launched, BridgeError> {
 
 /// A launch of `key`'s connection under `policy` instead of the app runtime's
 /// own: a Claude one-shot approved write. Same account, folder and settings.
-pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRuntimePolicy>) -> Result<Launched, BridgeError> {
+/// Where and as whom a connection's process runs: the connection's own
+/// account, and its project folder (or a fresh scratch folder for a
+/// user-wide connection). The folder is canonical: OpenCode keys its server
+/// state by path, and a symlinked path (`/tmp`) splits it in two.
+pub fn environment(core: &Arc<BridgeCore>, key: &Key) -> Result<(String, Option<crate::provider_accounts::AccountLaunch>), BridgeError> {
     let account = {
         let db = core.try_db()?;
         key.account
@@ -264,6 +268,12 @@ pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRun
             scratch.to_string_lossy().to_string()
         }
     };
+    let cwd = std::fs::canonicalize(&cwd).map(|path| path.to_string_lossy().into_owned()).unwrap_or(cwd);
+    Ok((cwd, account))
+}
+
+pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRuntimePolicy>) -> Result<Launched, BridgeError> {
+    let (cwd, account) = environment(core, key)?;
     let policy = match (key.harness.as_str(), policy) {
         ("claude", Some(policy)) => Some(policy),
         ("claude", None) => Some(
@@ -289,6 +299,7 @@ pub fn launch_with(core: &Arc<BridgeCore>, key: &Key, policy: Option<BriefingRun
                 cwd: &cwd,
                 model: None,
                 effort: None,
+                speed: None,
                 instructions: None,
                 // Codex: an explicit mode, so the launch never attaches Bridge's
                 // own tools (a launch without one keeps its old meaning and
@@ -436,7 +447,7 @@ mod tests {
         let launch_registry = registry.clone();
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let started = launch_registry.start(&key.harness, StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
@@ -483,7 +494,7 @@ mod tests {
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let cwd = key.cwd.clone().unwrap_or_else(|| scratch.clone());
             let started = registry.start(&key.harness, StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: None, interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
@@ -522,7 +533,7 @@ mod tests {
         let launcher = move |key: &Key| -> Result<Launched, BridgeError> {
             let policy = BriefingRuntimePolicy::compile_app_runtime(key.server.clone(), crate::connector_runs::run_limits(crate::connector_runs::RunKind::Ingress)).unwrap();
             let started = launch_registry.start(&key.harness, StartRequest {
-                session_id: None, cwd: &cwd, model: None, effort: None, instructions: None, write_mode: None,
+                session_id: None, cwd: &cwd, model: None, effort: None, speed: None, instructions: None, write_mode: None,
                 read_only_sandbox: None, briefing: Some(&policy), interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })

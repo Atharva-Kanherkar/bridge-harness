@@ -3492,13 +3492,13 @@ export const bridgeApi = {
   },
   /** `account` is an extra sign-in's id, or the harness id for the user's own
    *  login; omitted keeps the chat's account on the same harness. */
-  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null, account?: string): Promise<BridgeState> => {
-    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort, ...(account === undefined ? {} : { account }) });
+  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null, account?: string, speed?: string): Promise<BridgeState> => {
+    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort, ...(account === undefined ? {} : { account }), ...(speed === undefined ? {} : { speed }) });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
     if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) {
       const nextAccount = account === undefined ? (session.harness === harness ? session.account ?? null : null) : normalizeAccount(harness, account);
-      session.harness = harness; session.model = model; session.account = nextAccount; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh";
+      session.harness = harness; session.model = model; session.account = nextAccount; if (effort) session.effort = effort; if (speed !== undefined) session.speed = speed; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh";
     }
     emitState(); return snapshot();
   },

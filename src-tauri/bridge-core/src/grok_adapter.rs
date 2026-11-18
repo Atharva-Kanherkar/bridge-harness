@@ -480,6 +480,7 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
             lifecycle: ModelLifecycle::Unknown,
             source: ModelCatalogSource::RuntimeApi,
             supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
             default_for_tier: false,
         })
         .collect();
@@ -499,6 +500,7 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
                     model.lifecycle
                 },
                 supported_effort_levels: model.supported_effort_levels,
+                speed_tiers: model.speed_tiers,
                 promotion_priority: i64::from(provider_default),
             }
         }),
@@ -1490,6 +1492,7 @@ mod tests {
             cwd: worktree.path().to_str().unwrap(),
             model: Some("grok-code"),
             effort: None,
+            speed: None,
             instructions: Some("You are a helpful assistant"),
             write_mode: None,
             read_only_sandbox: None,
@@ -1847,6 +1850,7 @@ mod tests {
                 lifecycle: ModelLifecycle::Stable,
                 source: ModelCatalogSource::RuntimeApi,
                 supported_effort_levels: Vec::new(),
+                speed_tiers: Vec::new(),
                 default_for_tier: true,
             }],
             default_model: Some("grok-code".into()),

@@ -84,6 +84,8 @@ pub struct CatalogCandidate {
     /// Reasoning effort levels this model accepts, carried through to the
     /// selectable `ModelOption`. Empty means the model has no effort knob.
     pub supported_effort_levels: Vec<String>,
+    /// Faster service tiers, carried through to `ModelOption::speed_tiers`.
+    pub speed_tiers: Vec<crate::model::SpeedTier>,
     /// Higher values win promotion. Provider defaults should outrank ordinary
     /// discoveries; release-aware adapters may use monotonically increasing
     /// values so a newly stable model becomes Standard automatically.
@@ -105,6 +107,7 @@ impl CatalogCandidate {
             compatible: true,
             lifecycle: ModelLifecycle::Stable,
             supported_effort_levels: Vec::new(),
+            speed_tiers: Vec::new(),
             promotion_priority,
         }
     }
@@ -207,6 +210,7 @@ pub fn normalize(
             lifecycle: candidate.lifecycle,
             source,
             supported_effort_levels: candidate.supported_effort_levels,
+            speed_tiers: candidate.speed_tiers,
         })
         .collect::<Vec<_>>();
     models.sort_by(|left, right| {
@@ -240,6 +244,7 @@ pub fn normalize_runtime_options(models: &[ModelOption]) -> Vec<ModelOption> {
                 model.lifecycle
             },
             supported_effort_levels: model.supported_effort_levels.clone(),
+            speed_tiers: model.speed_tiers.clone(),
             promotion_priority: i64::from(model.default_for_tier),
         }),
     )

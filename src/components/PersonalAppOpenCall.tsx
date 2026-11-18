@@ -6,7 +6,7 @@ import type { PersonalAppOpen } from "../protocol/generated/protocol";
 import { McpAppFrame, useNearViewport } from "../mcp-apps/McpAppFrame";
 import { ConnectorApprovalSheet } from "./ConnectorApprovalSheet";
 import { useDarkTheme } from "./Markdown";
-import { connectionLabel, LIVE_READS_UNAVAILABLE } from "./personalAppShared";
+import { connectionLabel, connectionNote, LIVE_READS_UNAVAILABLE } from "./personalAppShared";
 import { VisualActionsContext } from "./VisualCall";
 import { Button } from "./ui/button";
 
@@ -100,6 +100,7 @@ export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }
     <div className="space-y-2 border-b border-border px-4 py-3 text-xs text-muted-foreground">
       <p>{app.intent}</p>
       <p className="flex items-center gap-1.5 text-foreground"><ShieldCheck size={12} aria-hidden="true" />Writes ask first. You see the exact call before anything is sent.</p>
+      {connectionNote(app.harness) && <p>{connectionNote(app.harness)}</p>}
       {readOnly && <p>History. Live tools are disabled.</p>}
       {!readOnly && isolated === false && <p>{LIVE_READS_UNAVAILABLE}</p>}
       <details><summary className="cursor-pointer">Access · {app.reads.length} {app.reads.length === 1 ? "read" : "reads"} · {app.writes.length} {app.writes.length === 1 ? "write" : "writes"}</summary>

@@ -69,6 +69,7 @@ impl Session {
             cwd: cwd.path().to_str().unwrap(),
             model: None,
             effort: None,
+            speed: None,
             instructions: Some(instructions),
             write_mode: None,
             read_only_sandbox: None,

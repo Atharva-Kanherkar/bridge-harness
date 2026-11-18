@@ -84,3 +84,8 @@ it("names the agent whose connection the app uses", async () => {
   await render();
   expect(container.textContent).toContain("claude.ai Slack · via Codex");
 });
+it("says when a draft runs through OpenCode", async () => {
+  vi.mocked(bridgeApi.getPersonalAppDraft).mockResolvedValueOnce({ ...draft(), harness: "opencode" });
+  await render();
+  expect(container.textContent).toContain("tools are not verified");
+});
