@@ -380,6 +380,13 @@ pub fn run(core: &Arc<BridgeCore>, top_level: bool, tool: &str, args: &Value) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_chat_can_never_turn_on_the_opencode_courier() {
+        // An unsafe opt-in belongs to the person alone: no catalogued
+        // setting may reach it, whatever a chat (or text it read) asks.
+        assert!(super::catalog().iter().all(|setting| !setting.key.to_ascii_lowercase().contains("opencode") && !setting.key.to_ascii_lowercase().contains("courier")));
+    }
+
     use super::*;
 
     fn core() -> (tempfile::TempDir, Arc<BridgeCore>) {

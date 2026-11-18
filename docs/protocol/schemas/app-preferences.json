@@ -7,6 +7,13 @@
       "additionalProperties": false,
       "description": "Absent means never set: the app keeps its built-in default.",
       "properties": {
+        "allowOpencodeAppCourier": {
+          "description": "Let personal apps call servers connected only in OpenCode, through its gated courier. Off unless the person turns it on: OpenCode's code mode can make network requests Bridge cannot approve. Never changeable by a chat's `settings_change`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "autoExpandEdits": {
           "type": [
             "boolean",
