@@ -377,16 +377,14 @@ pub fn call(core: &Arc<BridgeCore>, p: &CallPersonalAppToolParams) -> Result<Per
         }
         Some(token) => {
             let arguments = claim(&*core.try_db()?, p, token, now())?;
-            if let Err(error) = router::preflight_write(core, &connection) {
-                ledger("write", Outcome::Failed);
-                return Err(error);
-            }
-            let result = router::write(core, owner, &connection, &p.tool, &arguments);
-            let outcome = Outcome::of(&result, true);
+            let dispatch = super::control::Dispatch::default();
+            let result = router::write(core, owner, &connection, &p.tool, &arguments, &dispatch);
+            let outcome = Outcome::of(&result, dispatch.began());
             ledger("write", outcome);
             match result {
                 Ok(result) => Ok(PersonalAppCallResult::Result { result }),
-                Err(error) => Err(invalid(format!("Bridge could not confirm whether this was sent: {error}"))),
+                Err(error) if outcome == Outcome::Unknown => Err(invalid(format!("Bridge could not confirm whether this was sent: {error}"))),
+                Err(error) => Err(error),
             }
         }
     }
@@ -469,8 +467,8 @@ pub enum Outcome {
 
 impl Outcome {
     /// Adapters return a server's MCP error inside `Ok`, so `Ok` alone does
-    /// not mean it worked. `dispatched` is whether an `Err` came after
-    /// sending began.
+    /// not mean it worked. `dispatched` is whether sending began (see
+    /// [`super::control::Dispatch`]): an `Err` before it sent nothing.
     pub fn of(result: &Result<Value, BridgeError>, dispatched: bool) -> Self {
         match result {
             Ok(value) if value.get("isError") == Some(&Value::Bool(true)) => Self::Failed,

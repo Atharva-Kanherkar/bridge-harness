@@ -25,12 +25,39 @@ impl Drop for Registration {
     }
 }
 
+/// Whether sending a write to its server began. It is marked at the last
+/// point before the request leaves Bridge, so an error with it unmarked was a
+/// refusal (nothing was sent), and an error with it marked may have come after
+/// the call ran.
+#[derive(Debug, Default)]
+pub struct Dispatch(std::sync::atomic::AtomicBool);
+
+impl Dispatch {
+    pub fn mark(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn began(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 pub fn request(
     core: &Arc<BridgeCore>,
     session: &str,
     request: &Value,
 ) -> Result<Value, BridgeError> {
-    request_with(session, |id| {
+    request_tracked(core, session, request, None)
+}
+
+/// [`request`], marking `dispatch` once the request was written.
+pub fn request_tracked(
+    core: &Arc<BridgeCore>,
+    session: &str,
+    request: &Value,
+    dispatch: Option<&Dispatch>,
+) -> Result<Value, BridgeError> {
+    request_with_dispatch(session, dispatch, |id| {
         let adapters = core
             .adapters
             .lock()
@@ -48,6 +75,15 @@ pub fn request(
 /// owner, so a reply can never cross from one process to another.
 pub fn request_with(
     owner: &str,
+    send: impl FnOnce(&str) -> Result<(), BridgeError>,
+) -> Result<Value, BridgeError> {
+    request_with_dispatch(owner, None, send)
+}
+
+/// [`request_with`], marking `dispatch` once `send` wrote the request.
+pub fn request_with_dispatch(
+    owner: &str,
+    dispatch: Option<&Dispatch>,
     send: impl FnOnce(&str) -> Result<(), BridgeError>,
 ) -> Result<Value, BridgeError> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -71,6 +107,9 @@ pub fn request_with(
     }
     let _registration = Registration(id.clone());
     send(&id)?;
+    if let Some(dispatch) = dispatch {
+        dispatch.mark();
+    }
     receiver
         .recv_timeout(Duration::from_secs(30))
         .map_err(|_| {

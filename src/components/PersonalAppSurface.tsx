@@ -6,6 +6,20 @@ import type { PersonalAppSurfaceOpen } from "../protocol/generated/protocol";
 import { PersonalAppOpenCard } from "./PersonalAppOpenCall";
 import { Button } from "./ui/button";
 
+/** Opens and closes per app, run one at a time across every mount. Core
+ *  keeps one surface per app and a new open replaces the last, so an open a
+ *  pane abandoned must finish (and close itself) before a newer pane's open
+ *  starts; otherwise its late reply would replace the newer one. */
+const queues = new Map<string, Promise<unknown>>();
+
+export function serialized<T>(appId: string, task: () => Promise<T>): Promise<T> {
+  const next = (queues.get(appId) ?? Promise.resolve()).then(task, task);
+  const settled = next.then(() => undefined, () => undefined);
+  queues.set(appId, settled);
+  void settled.then(() => { if (queues.get(appId) === settled) queues.delete(appId); });
+  return next;
+}
+
 /**
  * One of the person's own apps, opened from the Store or the launcher. The
  * pane holds a Surface open: core makes it on mount (replacing any earlier
@@ -26,17 +40,25 @@ export function PersonalAppSurface({ appId }: { appId: string }) {
     let made: string | undefined;
     setOpen(undefined);
     setError("");
-    void bridgeApi.openPersonalAppSurface(appId).then(
-      value => {
+    void serialized(appId, async () => {
+      // A pane that went away before its turn opens nothing.
+      if (!current) return;
+      try {
+        const value = await bridgeApi.openPersonalAppSurface(appId);
+        if (!current) {
+          await bridgeApi.closePersonalAppSurface(value.openId).catch(() => undefined);
+          return;
+        }
         made = value.openId;
-        if (current) setOpen(value);
-        else void bridgeApi.closePersonalAppSurface(value.openId).catch(() => undefined);
-      },
-      reason => { if (current) setError(errorMessage(reason)); },
-    );
+        setOpen(value);
+      } catch (reason) {
+        if (current) setError(errorMessage(reason));
+      }
+    });
     return () => {
       current = false;
-      if (made) void bridgeApi.closePersonalAppSurface(made).catch(() => undefined);
+      const openId = made;
+      if (openId) void serialized(appId, () => bridgeApi.closePersonalAppSurface(openId).catch(() => undefined));
     };
     // A newer locked version opens afresh.
   }, [appId, enabled, version]);

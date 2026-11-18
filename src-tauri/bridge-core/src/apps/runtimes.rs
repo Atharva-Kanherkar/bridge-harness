@@ -153,6 +153,13 @@ fn admit(key: &Key) -> Result<(), BridgeError> {
 /// One app-control request on the warm runtime for `key`, launching it with
 /// `launch` first when there is none.
 pub fn request_with(key: &Key, request: &Value, launch: &Launcher) -> Result<Value, BridgeError> {
+    request_tracked(key, request, launch, None)
+}
+
+/// [`request_with`], marking `dispatch` once the request was written to the
+/// runtime. A refusal to start one (say its project folder is gone) leaves it
+/// unmarked: nothing was sent.
+pub fn request_tracked(key: &Key, request: &Value, launch: &Launcher, dispatch: Option<&control::Dispatch>) -> Result<Value, BridgeError> {
     let slot = slot(key);
     let owner = {
         // Held across a launch, so concurrent first callers share it.
@@ -167,7 +174,7 @@ pub fn request_with(key: &Key, request: &Value, launch: &Launcher) -> Result<Val
         warm.last_used = Instant::now();
         warm.owner.clone()
     };
-    control::request_with(&owner, |id| {
+    control::request_with_dispatch(&owner, dispatch, |id| {
         let warm = lock(&slot);
         let warm = warm
             .as_ref()

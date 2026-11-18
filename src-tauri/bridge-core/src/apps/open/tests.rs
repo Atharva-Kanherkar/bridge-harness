@@ -207,6 +207,8 @@ fn count(f: &Fixture, sql: &str) -> i64 {
 struct WarmRuntime {
     owner: String,
     sent: Arc<Mutex<Vec<Value>>>,
+    /// Writes are received, then the connection fails before answering.
+    drop_writes: bool,
 }
 
 impl crate::adapters::AdapterRuntime for WarmRuntime {
@@ -219,6 +221,10 @@ impl crate::adapters::AdapterRuntime for WarmRuntime {
     fn stop(&mut self, _: crate::adapters::ShutdownReason) {}
     fn app_control(&self, id: &str, request: &Value) -> Result<(), BridgeError> {
         self.sent.lock().unwrap().push(request.clone());
+        if self.drop_writes && request["kind"] == "write" {
+            assert!(control::deliver(&self.owner, &json!({"type":"app_control_result","id":id,"ok":false,"error":"connection lost"})));
+            return Ok(());
+        }
         let result = match request["kind"].as_str() {
             Some("inventory") => json!({"name":"fake","status":"connected","tools":tools()}),
             Some("read") => json!({"content":[{"type":"text","text":"Ada"}]}),
@@ -233,6 +239,15 @@ impl crate::adapters::AdapterRuntime for WarmRuntime {
 /// once never share a warm runtime), with that runtime warm. Returns the
 /// fixture and the warm runtime's log; `f.sent` stays the chat's.
 fn surface_fixture() -> (Fixture, Arc<Mutex<Vec<Value>>>) {
+    surface_fixture_with(false)
+}
+
+fn surface_key(f: &Fixture) -> super::super::runtimes::Key {
+    let manifest = personal::latest_locked(&f.core.db.lock().unwrap(), &f.app_id).unwrap().unwrap().manifest;
+    super::super::runtimes::Key { harness: "codex".into(), account: None, cwd: manifest.cwd, server: "fake".into() }
+}
+
+fn surface_fixture_with(drop_writes: bool) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
     let f = fixture();
     let cwd = format!("/surface/{}", uuid::Uuid::new_v4());
     let app_id = {
@@ -246,7 +261,7 @@ fn surface_fixture() -> (Fixture, Arc<Mutex<Vec<Value>>>) {
     let log = warm.clone();
     super::super::runtimes::install_for_tests(
         &super::super::runtimes::Key { harness: "codex".into(), account: None, cwd: Some(cwd), server: "fake".into() },
-        move |owner| Box::new(WarmRuntime { owner: owner.to_owned(), sent: log }),
+        move |owner| Box::new(WarmRuntime { owner: owner.to_owned(), sent: log, drop_writes }),
     );
     (Fixture { app_id, ..f }, warm)
 }
@@ -419,4 +434,35 @@ fn no_agent_tool_reaches_a_surface_open() {
     let (open_id, _) = open(&f);
     let owner: String = f.core.db.lock().unwrap().query_row("SELECT owner FROM personal_app_opens WHERE open_id=?1", [&open_id], |r| r.get(0)).unwrap();
     assert_eq!(owner, "chat");
+}
+
+fn last_write_outcome(f: &Fixture) -> String {
+    let body: String = f.core.db.lock().unwrap().query_row(
+        "SELECT body FROM events WHERE kind='personal_app.call.write' ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    serde_json::from_str::<Value>(&body).unwrap()["outcome"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_write_refused_before_sending_is_failed_not_unknown() {
+    // The review's case: the warm runtime retired, and starting a new one is
+    // refused (its project folder is gone) before any request is written.
+    let (f, warm) = surface_fixture();
+    let surface = open_surface(&f.core, &f.app_id).unwrap();
+    let token = approval(call(&f.core, &surface_params(&surface.open_id, &surface.content_hash, "send_note", json!({"text": "hi"}), None)).unwrap());
+    super::super::runtimes::retire(&surface_key(&f));
+    let error = call(&f.core, &surface_params(&surface.open_id, &surface.content_hash, "send_note", json!({}), Some(&token))).unwrap_err().to_string();
+    assert!(!error.contains("could not confirm"), "nothing was sent, so the person is not told it might have been: {error}");
+    assert!(warm.lock().unwrap().iter().all(|r| r["kind"] != "write"), "zero writes");
+    assert_eq!(last_write_outcome(&f), "failed");
+}
+
+#[test]
+fn a_write_that_fails_after_it_was_written_is_unknown() {
+    let (f, warm) = surface_fixture_with(true);
+    let surface = open_surface(&f.core, &f.app_id).unwrap();
+    let token = approval(call(&f.core, &surface_params(&surface.open_id, &surface.content_hash, "send_note", json!({"text": "hi"}), None)).unwrap());
+    let error = call(&f.core, &surface_params(&surface.open_id, &surface.content_hash, "send_note", json!({}), Some(&token))).unwrap_err().to_string();
+    assert!(error.contains("could not confirm"), "{error}");
+    assert_eq!(warm.lock().unwrap().iter().filter(|r| r["kind"] == "write").count(), 1);
+    assert_eq!(last_write_outcome(&f), "unknown");
 }

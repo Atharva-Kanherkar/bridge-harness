@@ -12,7 +12,7 @@
 //! Adapters only carry requests. A call never reaches another account,
 //! because both paths are chosen by the full connection identity.
 
-use super::{control, runtimes};
+use super::{control::{self, Dispatch}, runtimes};
 use crate::{delegation::WriteMode, runtime::BridgeCore, BridgeError};
 use rusqlite::{Connection as Db, OptionalExtension};
 use serde_json::{json, Value};
@@ -153,6 +153,11 @@ pub fn may_read_as(db: &Db, caller: Caller<'_>) -> Result<(), BridgeError> {
 
 /// Send one app-control request for `connection`, on behalf of `caller`.
 fn send(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, request: &Value) -> Result<Value, BridgeError> {
+    send_tracked(core, caller, connection, request, None)
+}
+
+/// [`send`], marking `dispatch` once the request was written.
+fn send_tracked(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, request: &Value, dispatch: Option<&Dispatch>) -> Result<Value, BridgeError> {
     if capability(&connection.harness, Op::Inventory) != Capability::Direct {
         return Err(invalid(format!(
             "{} cannot run personal apps directly yet; connect {} in Claude Code or Codex",
@@ -165,7 +170,7 @@ fn send(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, req
         Caller::Surface => false,
     };
     if let (true, Caller::Chat(chat)) = (live, caller) {
-        return control::request(core, chat, request);
+        return control::request_tracked(core, chat, request, dispatch);
     }
     let key = runtimes::Key {
         harness: connection.harness.clone(),
@@ -173,7 +178,7 @@ fn send(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, req
         cwd: connection.cwd.clone(),
         server: connection.server.clone(),
     };
-    runtimes::request_with(&key, request, &runtimes::launcher(core))
+    runtimes::request_tracked(&key, request, &runtimes::launcher(core), dispatch)
 }
 
 /// The chat's own process only when it resolves servers exactly as the
@@ -210,7 +215,8 @@ pub fn read(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection,
         if !crate::briefing_policy::is_read_tool_name(tool) {
             return Err(invalid("This tool is not a read"));
         }
-        return super::courier::opencode_call(core, &key_for(connection), tool, arguments);
+        // A read changes nothing, so whether it was dispatched does not matter.
+        return super::courier::opencode_call(core, &key_for(connection), tool, arguments, &Dispatch::default());
     }
     read_with(connection, tool, arguments, |request| send(core, caller, connection, request))
 }
@@ -245,13 +251,14 @@ pub fn read_with(
 /// One approved write. Callers reach this only with a claimed, single-use
 /// approval of these exact arguments (see [`super::open`]); nothing here asks
 /// again. Claude sends it from a one-shot exact-action launch, Codex with a
-/// direct call on the connection's runtime.
-pub fn write(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
+/// direct call on the connection's runtime. `dispatch` is marked once the
+/// call left Bridge; an error with it unmarked sent nothing.
+pub fn write(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection, tool: &str, arguments: &Value, dispatch: &Dispatch) -> Result<Value, BridgeError> {
     preflight_write(core, connection)?;
     match connection.harness.as_str() {
-        "claude" => super::write::claude(core, &key_for(connection), tool, arguments),
-        "codex" => send(core, caller, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments})),
-        "opencode" => super::courier::opencode_call(core, &key_for(connection), tool, arguments),
+        "claude" => super::write::claude(core, &key_for(connection), tool, arguments, dispatch),
+        "codex" => send_tracked(core, caller, connection, &json!({"kind": "write", "server": connection.server, "tool": tool, "arguments": arguments}), Some(dispatch)),
+        "opencode" => super::courier::opencode_call(core, &key_for(connection), tool, arguments, dispatch),
         other => Err(unsupported_write(other, connection)),
     }
 }
@@ -473,10 +480,10 @@ mod tests {
         for error in [
             inventory(&core, Caller::Chat("chat"), &connection).unwrap_err().to_string(),
             read(&core, Caller::Chat("chat"), &connection, "get_logs", &json!({})).unwrap_err().to_string(),
-            write(&core, Caller::Chat("chat"), &connection, "deploy", &json!({})).unwrap_err().to_string(),
+            write(&core, Caller::Chat("chat"), &connection, "deploy", &json!({}), &Dispatch::default()).unwrap_err().to_string(),
             inventory(&core, Caller::Surface, &connection).unwrap_err().to_string(),
             read(&core, Caller::Surface, &connection, "get_logs", &json!({})).unwrap_err().to_string(),
-            write(&core, Caller::Surface, &connection, "deploy", &json!({})).unwrap_err().to_string(),
+            write(&core, Caller::Surface, &connection, "deploy", &json!({}), &Dispatch::default()).unwrap_err().to_string(),
         ] {
             assert!(error.contains("less safe") && error.contains("own discretion"), "{error}");
         }

@@ -63,3 +63,31 @@ it("says when the app was deleted", async () => {
   await settle();
   expect(container.textContent).toContain("This app was deleted.");
 });
+
+it("never lets an abandoned open replace a newer pane's open", async () => {
+  // The review's case: pane A's open is slow; the person leaves and comes
+  // back, so pane B opens. Core replaces the last surface on every open, so
+  // B must not start until A has opened and closed itself.
+  const order: string[] = [];
+  let releaseA!: () => void;
+  const opened = vi.spyOn(bridgeApi, "openPersonalAppSurface").mockImplementation(async () => {
+    const n = opened.mock.calls.length;
+    order.push(`open ${n}`);
+    if (n === 1) await new Promise<void>(resolve => { releaseA = resolve; });
+    order.push(`opened ${n}`);
+    return { openId: `open-${n}`, appId: "slack-dm", version: 1, contentHash: MOCK_APP_HASH };
+  });
+  const closed = vi.spyOn(bridgeApi, "closePersonalAppSurface").mockImplementation(async openId => { order.push(`close ${openId}`); return { closed: true }; });
+  vi.spyOn(bridgeApi, "getPersonalAppOpen").mockRejectedValue(new Error("not needed"));
+  act(() => root.render(<PersonalAppSurface key="a" appId={MOCK_PERSONAL_APP.id} />));
+  await settle();
+  act(() => root.render(<div />));
+  act(() => root.render(<PersonalAppSurface key="b" appId={MOCK_PERSONAL_APP.id} />));
+  await settle();
+  expect(order, "B waits for A").toEqual(["open 1"]);
+  releaseA();
+  await settle(); await settle();
+  expect(order).toEqual(["open 1", "opened 1", "close open-1", "open 2", "opened 2"]);
+  expect(closed).not.toHaveBeenCalledWith("open-2");
+  expect(container.querySelector("[data-personal-app-surface]")).not.toBeNull();
+});
