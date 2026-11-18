@@ -32,9 +32,11 @@ fn can_release(db: &rusqlite::Connection, id: &str) -> bool {
          AND NOT EXISTS(SELECT 1 FROM queued_session_input WHERE session_id=sessions.id AND state IN ('queued','claiming'))
          AND NOT EXISTS(SELECT 1 FROM sessions child
              WHERE child.parent_session_id=sessions.id AND child.kind='harness_subagent'
-               AND child.status IN ('working','waiting','starting','ready')
-               AND COALESCE((SELECT e.created_at FROM session_entries e WHERE e.session_id=child.id ORDER BY e.sequence DESC LIMIT 1), child.started_at, '')
-                   >= strftime('%Y-%m-%dT%H:%M:%S','now',?2))
+               -- An approval card is a person's to answer, however long it takes.
+               AND (child.status='waiting'
+                    OR (child.status IN ('working','starting','ready')
+                        AND COALESCE((SELECT e.created_at FROM session_entries e WHERE e.session_id=child.id ORDER BY e.sequence DESC LIMIT 1), child.started_at, '')
+                            >= strftime('%Y-%m-%dT%H:%M:%S','now',?2))))
          AND NOT EXISTS(SELECT 1 FROM session_background_tasks task
              WHERE task.in_progress=1
                AND (task.session_id=sessions.id OR task.session_id IN
@@ -271,6 +273,10 @@ mod tests {
         db.execute("UPDATE sessions SET status='ready' WHERE kind='harness_subagent'", []).unwrap();
         db.execute("UPDATE session_entries SET created_at='2020-01-01T00:00:00+00:00' WHERE session_id IN (SELECT id FROM sessions WHERE kind='harness_subagent')", []).unwrap();
         assert!(can_release(&db, "chat"));
+        // Except a child waiting on a person's approval.
+        db.execute("UPDATE sessions SET status='waiting' WHERE kind='harness_subagent'", []).unwrap();
+        assert!(!can_release(&db, "chat"), "an open approval holds the process however quiet");
+        db.execute("UPDATE sessions SET status='ready' WHERE kind='harness_subagent'", []).unwrap();
         let mut done = crate::agent::NormalizedEvent::new("subagent.completed");
         done.status = Some("completed".into());
         done.data = serde_json::json!({"subagent":{"sessionId":"agent-call"}});
