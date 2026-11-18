@@ -96,6 +96,14 @@ pub struct ExternalImportArtifact {
     pub modified_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_schema_gate: Option<String>,
+    /// For a chat: its title, read from the first and last few KiB only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// For a chat: the folder it ran in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -242,6 +250,51 @@ pub struct CommitExternalImportParams {
     /// discover/preview/commit TOCTOU window.
     pub discovery_id: String,
     pub plan: ExternalImportPlan,
+    /// The artifacts `preview` was run on. Commit re-derives only these, so a
+    /// store of 80,000 transcripts is not re-read to import ten. Absent means
+    /// every artifact in the discovery, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_ids: Option<Vec<String>>,
+}
+
+/// What `imports/detect_import_sources` found for one tool. Detection takes no
+/// parameters and is read-only: it lists folders and counts files, and never
+/// opens a database or a transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSourceCounts {
+    pub chats: u64,
+    pub projects: u64,
+    pub workspaces: u64,
+    pub memories: u64,
+    pub setup: u64,
+    /// Sessions that ran in a temporary folder: SDK probes and background
+    /// runs, not chats a person had. Listed, but not selected by default.
+    #[serde(default)]
+    pub background: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedImportSource {
+    /// Bundle tool id: `claude_code`, `codex`, `opencode`, `conductor`, `t3code`, `orca`, `superset`.
+    pub tool: String,
+    pub label: String,
+    pub installed: bool,
+    /// Bridge can import this tool's own data today.
+    pub supported: bool,
+    pub roots: Vec<String>,
+    pub counts: ImportSourceCounts,
+    /// One line for the person: what comes over, or why not yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSourcesDetection {
+    pub sources: Vec<DetectedImportSource>,
+    pub detected_at: String,
 }
 
 #[cfg(test)]

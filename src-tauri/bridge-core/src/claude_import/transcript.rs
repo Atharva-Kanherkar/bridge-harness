@@ -795,7 +795,7 @@ fn name_subagent(
 
 /// What the review list shows for a session without reading all of it: the
 /// title (custom over grounded AI title over first message), the folder, and
-/// when it started. Reads at most the first and last 64 KiB.
+/// when it started. Reads at most the first and last 32 KiB.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionPeek {
     pub title: Option<String>,
@@ -804,7 +804,7 @@ pub struct SessionPeek {
 }
 
 pub fn peek_session(path: &Path) -> SessionPeek {
-    const WINDOW: u64 = 64 * 1024;
+    const WINDOW: u64 = 32 * 1024;
     let Ok(mut file) = File::open(path) else {
         return SessionPeek::default();
     };

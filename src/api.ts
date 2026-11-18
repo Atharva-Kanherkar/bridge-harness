@@ -52,6 +52,7 @@ import type {
   ExternalImportDiscovery,
   ExternalImportPlan,
   ExternalImportPreview,
+  ImportSourcesDetection,
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
@@ -1715,6 +1716,23 @@ export const mockWorkflowApi = {
   },
 };
 
+/** Mock-mode tools: Claude Code found with history, two ADEs found, the rest absent. */
+function mockImportSources(): ImportSourcesDetection {
+  const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
+  return {
+    detectedAt: new Date().toISOString(),
+    sources: [
+      { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus memory and setup." },
+      { tool: "codex", label: "Codex", installed: true, supported: false, roots: ["/mock/.codex/sessions"], counts: { chats: 12, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note: "Codex chats are next. Nothing is read until then." },
+      absent("opencode", "OpenCode", "OpenCode chats are coming. Nothing is read until then."),
+      { tool: "conductor", label: "Conductor", installed: true, supported: false, roots: ["/mock/conductor/workspaces"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming." },
+      absent("t3code", "T3 Code", "T3 Code runs Claude Code, so its Claude chats come over with the Claude Code import. Thread titles and projects are coming."),
+      absent("orca", "Orca", "Orca's Claude Code chats come over with the Claude Code import. Its projects and multi-agent runs are coming."),
+      absent("superset", "Superset", "Superset's Claude Code chats come over with the Claude Code import. Its workspaces and agent settings are coming."),
+    ],
+  };
+}
+
 export const bridgeApi = {
   /** The app preferences record (theme, skin, transcript display). The core
    *  keeps it so a chat or another window can change it; see `appPreferences.ts`. */
@@ -1778,7 +1796,8 @@ export const bridgeApi = {
       artifacts: [
         { artifactId: "mock-instructions", canonicalSourceRef: `${root}/CLAUDE.md`, sourceLabel: "CLAUDE.md", kind: "instruction", classification: "documented", stability: "stable", estimatedBytes: 820, modifiedAt: discoveredAt, requiredSchemaGate: null },
         { artifactId: "mock-memory", canonicalSourceRef: `${root}/projects/demo/memory/MEMORY.md`, sourceLabel: "projects/demo/memory/MEMORY.md", kind: "memory", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 430, modifiedAt: discoveredAt, requiredSchemaGate: "claude-auto-memory-v1" },
-        { artifactId: "mock-history", canonicalSourceRef: `${root}/projects/demo/session.jsonl`, sourceLabel: "projects/demo/session.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 2_400, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v1" },
+        { artifactId: "mock-history", canonicalSourceRef: `${root}/projects/demo/session.jsonl`, sourceLabel: "projects/demo/session.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 2_400, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v2", title: "Fix the failing invoice test", projectPath: "/Users/you/invoice-app", startedAt: discoveredAt },
+        { artifactId: "mock-history-2", canonicalSourceRef: `${root}/projects/demo/session-2.jsonl`, sourceLabel: "projects/demo/session-2.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 9_100, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v2", title: "Add a README for the discount fix", projectPath: "/Users/you/invoice-app", startedAt: discoveredAt },
       ],
     });
   },
@@ -1819,11 +1838,16 @@ export const bridgeApi = {
     const candidates: ExternalImportCandidate[] = [];
     if (selected.has("mock-instructions")) candidates.push(candidate("mock-instructions", { kind: "instruction" }));
     if (selected.has("mock-memory")) candidates.push(candidate("mock-memory", { kind: "memory", title: "Claude auto memory" }));
-    if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messages: [] } }));
+    if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messageCount: 14 } }));
+    if (selected.has("mock-history-2")) candidates.push(candidate("mock-history-2", { kind: "conversation", title: "Add a README for the discount fix", normalizedPayload: { messageCount: 6 }, diagnostics: [{ code: "excluded_attachment", severity: "warning", classification: "documented", message: "1 attachment: image too large or not an image; the message text was kept", recovery: null, sourceLabel: "projects/demo/session-2.jsonl" }] }));
     return Promise.resolve({ candidates });
   },
-  commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan): Promise<ExternalImportCommit> => {
-    if (hasBackend()) return call("imports/commit_external_import", { discoveryId, plan } satisfies CommitExternalImportParams);
+  detectImportSources: (): Promise<ImportSourcesDetection> => {
+    if (hasBackend()) return call("imports/detect_import_sources");
+    return Promise.resolve(mockImportSources());
+  },
+  commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan, artifactIds?: string[]): Promise<ExternalImportCommit> => {
+    if (hasBackend()) return call("imports/commit_external_import", { discoveryId, plan, ...(artifactIds ? { artifactIds } : {}) } satisfies CommitExternalImportParams);
     const selected = candidates.filter(candidate => plan.selectedCandidateIds.includes(candidate.candidateId));
     return Promise.resolve({
       importId: crypto.randomUUID(),

@@ -174,6 +174,12 @@ pub struct DiscoveredArtifact {
     pub estimated_bytes: u64,
     pub modified_at: Option<String>,
     pub required_schema_gate: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub project_path: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

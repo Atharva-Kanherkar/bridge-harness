@@ -16,6 +16,7 @@ export type BridgeMethod =
   | "imports/discover_external_import"
   | "imports/preview_external_import"
   | "imports/commit_external_import"
+  | "imports/detect_import_sources"
   | "github/github_status"
   | "github/github_prs"
   | "github/github_pr"
@@ -358,6 +359,7 @@ export const BRIDGE_METHODS = [
   { method: "imports/discover_external_import", domain: "imports", command: "discover_external_import" },
   { method: "imports/preview_external_import", domain: "imports", command: "preview_external_import" },
   { method: "imports/commit_external_import", domain: "imports", command: "commit_external_import" },
+  { method: "imports/detect_import_sources", domain: "imports", command: "detect_import_sources" },
   { method: "github/github_status", domain: "github", command: "github_status" },
   { method: "github/github_prs", domain: "github", command: "github_prs" },
   { method: "github/github_pr", domain: "github", command: "github_pr" },
@@ -793,6 +795,7 @@ export interface BridgeMethodParams {
   "imports/discover_external_import": DiscoverExternalImportParams;
   "imports/preview_external_import": PreviewExternalImportParams;
   "imports/commit_external_import": CommitExternalImportParams;
+  "imports/detect_import_sources": undefined;
   "github/github_status": GithubStatusParams;
   "github/github_prs": GithubPrsParams;
   "github/github_pr": GithubPrParams;
@@ -1137,6 +1140,7 @@ export interface BridgeMethodResults {
   "imports/discover_external_import": ExternalImportDiscovery;
   "imports/preview_external_import": ExternalImportPreview;
   "imports/commit_external_import": ExternalImportCommit;
+  "imports/detect_import_sources": ImportSourcesDetection;
   "github/github_status": GithubStatusResult;
   "github/github_prs": GithubPullRequestsResult;
   "github/github_pr": GithubPullRequestResult;
@@ -1998,6 +2002,16 @@ export interface DeploymentInfo {
   topology: ExecutionTopology;
 }
 
+export interface DetectedImportSource {
+  counts: ImportSourceCounts;
+  installed: boolean;
+  label: string;
+  note?: string | null;
+  roots: string[];
+  supported: boolean;
+  tool: string;
+}
+
 export interface DiskDeleteFailure {
   path: string;
   reason: string;
@@ -2059,9 +2073,12 @@ export interface ExternalImportArtifact {
   estimatedBytes: number;
   kind: ExternalImportCandidateKind;
   modifiedAt?: string | null;
+  projectPath?: string | null;
   requiredSchemaGate?: string | null;
   sourceLabel: string;
   stability: ExternalImportStability;
+  startedAt?: string | null;
+  title?: string | null;
 }
 
 export interface ExternalImportCandidate {
@@ -2200,6 +2217,15 @@ export interface HealthWarning {
   id: string;
   paths: string[];
   title: string;
+}
+
+export interface ImportSourceCounts {
+  background?: number;
+  chats: number;
+  memories: number;
+  projects: number;
+  setup: number;
+  workspaces: number;
 }
 
 export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
@@ -4141,6 +4167,7 @@ export interface ExternalImportPreview {
 }
 
 export interface CommitExternalImportParams {
+  artifactIds?: string[] | null;
   discoveryId: string;
   plan: ExternalImportPlan;
 }
@@ -4158,6 +4185,11 @@ export interface ExternalImportCommit {
   rollbackState: string;
   skipped: number;
   unsupported: number;
+}
+
+export interface ImportSourcesDetection {
+  detectedAt: string;
+  sources: DetectedImportSource[];
 }
 
 export interface GithubStatusParams {

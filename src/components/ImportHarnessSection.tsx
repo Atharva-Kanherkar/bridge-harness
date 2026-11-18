@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { pickPath } from "../pathPicker";
 import { LoaderCircle as CircleNotch, FileJson as FileJs, FolderOpen, Lock as LockSimple, ShieldCheck, TriangleAlert as Warning } from "lucide-react";
 import { bridgeApi } from "../api";
+import { MoveToBridge } from "./MoveToBridge";
 import type {
   ExternalImportArtifact,
   ExternalImportCandidate,
@@ -22,7 +23,7 @@ import {
 
 const CLAUDE_FORMAT_VERSIONS = {
   "claude-auto-memory-v1": "claude-auto-memory-v1",
-  "claude-jsonl-v1": "claude-jsonl-v1",
+  "claude-jsonl-v2": "claude-jsonl-v2",
   "claude-settings-v1": "claude-settings-v1",
 };
 
@@ -134,7 +135,7 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
 
   return <SettingsPage
     title="Import"
-    description="Bring selected Claude Code history, memory, and reusable setup into Bridge. Discovery is read-only and nothing is stored until the final confirmation."
+    description="Move to Bridge from the tools you already use: chats with their tool calls, thinking, images and subagents, plus memory and setup. Discovery is read-only and nothing is stored until the final confirmation."
     action={<StatusPill>{STAGE_LABEL[stage]}</StatusPill>}
   >
     <SettingsGroup label="What this does and does not do">
@@ -155,8 +156,10 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
       />
     </SettingsGroup>
 
+    {stage === "source" && <MoveToBridge onError={onError} />}
+
     {stage === "source" && <SettingsGroup
-      label="Source"
+      label="Or choose a folder"
       note="Bridge reads only what you choose"
     >
       <SettingsRow

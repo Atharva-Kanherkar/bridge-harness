@@ -110,16 +110,25 @@ async fn preview_external_import(
 async fn commit_external_import(
     discovery_id: String,
     plan: wire::ExternalImportPlan,
+    artifact_ids: Option<Vec<String>>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ExternalImportCommit, BridgeError> {
     let core = state.inner().clone();
     blocking("Commit external import", move || {
         api::commit_external_import(
             &core,
-            &wire::CommitExternalImportParams { discovery_id, plan },
+            &wire::CommitExternalImportParams { discovery_id, plan, artifact_ids },
         )
     })
     .await
+}
+
+#[tauri::command]
+async fn detect_import_sources(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportSourcesDetection, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Detect import sources", move || api::detect_import_sources(&core)).await
 }
 
 #[tauri::command]
@@ -3558,6 +3567,7 @@ pub fn run() -> i32 {
             discover_external_import,
             preview_external_import,
             commit_external_import,
+            detect_import_sources,
             github_status,
             connector_list,
             connector_inbox,
