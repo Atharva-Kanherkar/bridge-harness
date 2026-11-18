@@ -678,6 +678,8 @@ pub fn read_session(
         chats: vec![parsed],
         failures: Vec::new(),
     };
+    // Subagent files that were read, by agent name, to their place in `chats`.
+    let mut from_files: HashMap<String, usize> = HashMap::new();
     for found in subagent_files(main) {
         let agent = found
             .file_stem()
@@ -706,20 +708,20 @@ pub fn read_session(
         };
         let meta = read_agent_meta(&found, approved_roots, &child_label, &mut read.failures);
         name_subagent(&mut child.chat, &key, &parent_session, &agent, meta.as_ref());
+        from_files.insert(agent, read.chats.len());
         read.chats.push(child);
     }
-    // Inline subagents that also have their own file appear once: the file.
-    let from_files: HashSet<String> = subagent_files(main)
-        .iter()
-        .filter_map(|file| file.file_stem().and_then(|stem| stem.to_str()).map(str::to_owned))
-        .collect();
+    // An agent kept both inline and in its own file appears once. The file
+    // wins only when it was read and holds at least as much; otherwise the
+    // inline copy is kept, so a failed or shorter file never loses turns.
     for (agent, mut child) in inline {
         let agent = format!("agent-{agent}");
-        if from_files.contains(&agent) {
-            continue;
-        }
         name_subagent(&mut child.chat, &key, &parent_session, &agent, None);
-        read.chats.push(child);
+        match from_files.get(&agent).copied() {
+            Some(index) if read.chats[index].chat.entries.len() >= child.chat.entries.len() => {}
+            Some(index) => read.chats[index] = child,
+            None => read.chats.push(child),
+        }
     }
     Ok(read)
 }

@@ -449,3 +449,28 @@ fn files_without_a_session_id_never_merge() {
     let resolved = import_bundle::resolve(vec![bundle]).unwrap();
     assert_eq!(resolved.chats.len(), 2);
 }
+
+#[test]
+fn an_inline_child_is_kept_when_its_file_is_unreadable_or_shorter() {
+    // The separate file is too big to read: the inline copy is kept.
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    let file = dir.path().join("projects/p/sess-1/subagents/agent-abc.jsonl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    File::create(&file).unwrap().set_len(MAX_TRANSCRIPT_BYTES + 1).unwrap();
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2);
+    assert_eq!(read.chats[1].chat.entries.len(), 2, "the inline answer survives");
+    assert_eq!(read.failures.len(), 1, "the unreadable file is still reported");
+
+    // The separate file holds only the prompt: the longer inline copy wins.
+    let dir = tempfile::tempdir().unwrap();
+    let main = main_with_inline_sidechain(dir.path());
+    write_lines(&dir.path().join("projects/p/sess-1/subagents/agent-abc.jsonl"), &[
+        sidechain("s1", "2026-11-01T10:00:01Z", "user", json!("Map the repo and report key files")),
+    ]);
+    let read = read_session(&main, "projects/p/sess-1.jsonl", &[dir.path().canonicalize().unwrap()]).unwrap();
+    assert_eq!(read.chats.len(), 2, "still one child");
+    assert_eq!(read.chats[1].chat.entries.len(), 2, "the answer is not lost");
+    assert_eq!(read.chats[1].chat.native_ref.as_ref().unwrap().session_id, "sess-1/agent-abc");
+}
