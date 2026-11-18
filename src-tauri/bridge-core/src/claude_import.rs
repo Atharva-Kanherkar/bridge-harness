@@ -1384,6 +1384,64 @@ fn unsupported_diagnostic(
     }
 }
 
+/// What a background import reads, in the order it reads them: setup and
+/// memories first, then every transcript by project folder. Built from file
+/// listings and sizes only; no transcript is opened. Chats Claude Code ran in
+/// the OS temp folder are background runs: counted, and left out.
+pub struct JobWork {
+    pub roots: Vec<PathBuf>,
+    pub artifacts: Vec<DiscoveredArtifact>,
+    pub left_out: u64,
+}
+
+/// The order a job reads in, and its resume cursor: setup and memories, then
+/// transcripts, each by path.
+pub fn job_key(artifact: &DiscoveredArtifact) -> String {
+    let rank = u8::from(artifact.kind == CandidateKind::Conversation);
+    format!("{rank}:{}", artifact.canonical_source_ref)
+}
+
+pub fn job_work(roots: &[PathBuf]) -> Result<JobWork, BridgeError> {
+    let mut artifacts = Vec::new();
+    let mut diagnostics = Vec::new();
+    for root in roots {
+        discover_root(root, true, roots, &mut artifacts, &mut diagnostics)?;
+    }
+    artifacts.sort_by_cached_key(job_key);
+    artifacts.dedup_by(|left, right| left.canonical_source_ref == right.canonical_source_ref);
+    let listed = artifacts.len();
+    artifacts.retain(|artifact| {
+        artifact.kind != CandidateKind::Conversation
+            || !Path::new(&artifact.canonical_source_ref)
+                .parent()
+                .is_some_and(crate::import_sources::is_temp_project)
+    });
+    Ok(JobWork {
+        roots: roots.to_vec(),
+        left_out: (listed - artifacts.len()) as u64,
+        artifacts,
+    })
+}
+
+/// A discovery holding one batch of a job's work, for preview and commit.
+pub fn job_discovery(roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> DiscoveryResult {
+    DiscoveryResult {
+        discovery_id: format!("job_{}", uuid::Uuid::new_v4().simple()),
+        provider: PROVIDER.into(),
+        approved_roots: roots.iter().map(|root| root.to_string_lossy().into_owned()).collect(),
+        source_version: None,
+        format_versions: supported_format_versions(),
+        artifacts,
+        diagnostics: Vec::new(),
+        discovered_at: Utc::now().to_rfc3339(),
+    }
+}
+
+/// The folder a transcript's chat ran in, from its first few KiB.
+pub fn transcript_folder(path: &Path) -> Option<String> {
+    transcript::peek_session(path).cwd
+}
+
 /// Where this daemon's Claude Code keeps its config: the home folder and
 /// `CLAUDE_CONFIG_DIR`. Detection and discovery both read it from here, so a
 /// folder detection advertises is one discovery treats as a config home.

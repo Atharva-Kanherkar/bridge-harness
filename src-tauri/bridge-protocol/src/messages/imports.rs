@@ -297,6 +297,67 @@ pub struct ImportSourcesDetection {
     pub detected_at: String,
 }
 
+/// `imports/start_import`: import everything Bridge can bring over from one
+/// tool, in the background. Returns at once with the job; a job already
+/// running is returned instead of starting a second one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartImportParams {
+    /// Bundle tool id, as in `DetectedImportSource::tool`.
+    pub tool: String,
+}
+
+/// Something that did not come over, with how many times.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportNotCarried {
+    pub text: String,
+    pub count: u64,
+}
+
+/// A background import: how far it has got and what came over so far. Sent
+/// by `imports/import_status` and live as `imports/progress`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJob {
+    pub job_id: String,
+    pub tool: String,
+    /// `running`, `done` or `failed`.
+    pub status: String,
+    /// Files the job reads: transcripts, memories and setup items.
+    pub total: u64,
+    pub processed: u64,
+    /// Chats, memories and setup items written to Bridge.
+    pub imported: u64,
+    /// Memories among `imported`.
+    pub memories: u64,
+    pub already_in_bridge: u64,
+    /// Chats imported before whose source has changed since; kept as they were.
+    pub changed: u64,
+    pub failed: u64,
+    /// Background runs from the OS temp folder, not imported.
+    pub left_out: u64,
+    /// The folder of the chat being read now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_project: Option<String>,
+    #[serde(default)]
+    pub not_carried: Vec<ImportNotCarried>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    pub started_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
+/// `imports/import_status`: the latest import, running or finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJobStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<ImportJob>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

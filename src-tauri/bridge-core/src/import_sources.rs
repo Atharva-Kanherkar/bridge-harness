@@ -185,7 +185,7 @@ fn other(home: &Path, known: &KnownTool) -> wire::DetectedImportSource {
 
 /// Claude names a project folder after its path with `/` as `-`. Sessions
 /// that ran under the OS temp folder are SDK probes and background runs.
-fn is_temp_project(project: &Path) -> bool {
+pub(crate) fn is_temp_project(project: &Path) -> bool {
     project
         .file_name()
         .and_then(|name| name.to_str())

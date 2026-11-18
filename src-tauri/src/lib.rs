@@ -132,6 +132,26 @@ async fn detect_import_sources(
 }
 
 #[tauri::command]
+async fn start_import(
+    tool: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportJob, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Start import", move || {
+        api::start_import(&core, &wire::StartImportParams { tool })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn import_status(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportJobStatus, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Import status", move || api::import_status(&core)).await
+}
+
+#[tauri::command]
 async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh)).await
@@ -3520,6 +3540,7 @@ fn setup_embedded(
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
     bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
     bridge_core::workflow_trigger::start_workflow_maintenance(core.clone());
+    bridge_core::import_job::start_import_maintenance(core.clone());
     bridge_core::trails::live::start_trail_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
@@ -3568,6 +3589,8 @@ pub fn run() -> i32 {
             preview_external_import,
             commit_external_import,
             detect_import_sources,
+            start_import,
+            import_status,
             github_status,
             connector_list,
             connector_inbox,

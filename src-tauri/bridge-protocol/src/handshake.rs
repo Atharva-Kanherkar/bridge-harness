@@ -156,9 +156,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.42 adds `allowOpencodeAppCourier` to app preferences.** A 1.42 client
 /// saving it to a 1.41 daemon would be refused as an unknown field.
+///
+/// **1.43 adds the background import**: `imports/start_import`,
+/// `imports/import_status` and the `imports/progress` event.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 42,
+    minor: 43,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

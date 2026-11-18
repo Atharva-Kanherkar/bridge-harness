@@ -72,6 +72,20 @@
       "resultSchema": "import-sources-detection.json"
     },
     {
+      "command": "start_import",
+      "domain": "imports",
+      "method": "imports/start_import",
+      "paramsSchema": "start-import-params.json",
+      "resultSchema": "import-job.json"
+    },
+    {
+      "command": "import_status",
+      "domain": "imports",
+      "method": "imports/import_status",
+      "paramsSchema": null,
+      "resultSchema": "import-job-status.json"
+    },
+    {
       "command": "github_status",
       "domain": "github",
       "method": "github/github_status",
@@ -2391,7 +2405,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 42
+    "minor": 43
   },
   "reserved": {
     "cancel": "$/cancel",

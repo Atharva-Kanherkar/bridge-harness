@@ -215,6 +215,19 @@ pub fn detect_import_sources(
     })
 }
 
+/// Import everything from one tool in the background; returns at once.
+pub fn start_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::StartImportParams,
+) -> Result<wire::ImportJob, BridgeError> {
+    crate::import_job::start(core, &params.tool)
+}
+
+/// The latest background import, running or finished.
+pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
+    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })
+}
+
 /// Chats written per transaction. A big import commits batch by batch so the
 /// database lock every send waits on is held for one batch at a time.
 const IMPORT_BATCH: usize = 25;
@@ -271,7 +284,7 @@ pub(crate) fn import_batches(
 
 /// Commit `candidates` batch by batch (see [`import_batches`]). A failed batch
 /// rolls back on its own; earlier batches stay and the result says so.
-fn commit_in_batches(
+pub(crate) fn commit_in_batches(
     core: &Arc<BridgeCore>,
     candidates: &[external_import::NormalizedImportCandidate],
     plan: &external_import::ImportPlan,
