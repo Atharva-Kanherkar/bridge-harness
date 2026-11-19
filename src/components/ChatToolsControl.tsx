@@ -106,17 +106,22 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       return;
     }
     if (!sessionId) return;
-    // A save outdates each read that started before it.
+    // A save outdates each read that started before it. A read of the next chat outdates
+    // the save in turn, so its answer never reaches the state of that chat.
     const ticket = ++generation.current;
+    const current = () => ticket === generation.current;
     setPending({ id: item.id, on });
     try {
       const outcome = await bridgeApi.updateChatTools({ sessionId, expectedRevision: data.selection.revision, selection: next });
+      if (!current()) return;
       if (outcome.refusal) {
+        setPending(null);
         setNotice({ tone: "refusal", text: outcome.refusal });
         return;
       }
       const fresh = await bridgeApi.chatTools({ sessionId }).catch(() => null);
-      if (ticket !== generation.current) return;
+      if (!current()) return;
+      setPending(null);
       setView({ key, data: fresh ?? {
         ...data,
         choice: next,
@@ -125,11 +130,11 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       } });
       setNotice({ tone: "saved", text: "Saved. The change applies at the next turn." });
     } catch (error) {
+      if (!current()) return;
+      setPending(null);
       setNotice({ tone: "error", text: errorMessage(error) });
       // A stale revision means another window saved first: show its choice.
       void load();
-    } finally {
-      setPending(null);
     }
   };
 

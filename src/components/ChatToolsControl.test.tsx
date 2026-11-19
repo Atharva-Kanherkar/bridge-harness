@@ -257,6 +257,35 @@ describe("ChatToolsControl", () => {
     expect(onChoiceChange).toHaveBeenCalledWith({ harness: "claude", account: "work", serversOff: [], codexAppsOff: false, claudeSkills: { only: ["review"] }, codexSkillsOff: [] });
   });
 
+  it("keeps a save of one chat out of the state of the next chat", async () => {
+    const read = vi.spyOn(bridgeApi, "chatTools").mockImplementation(async params => codexTools([], params.sessionId === "a" ? 3 : 7));
+    const saveA = deferred<{ revision: number; refusal: null }>();
+    let failA!: (error: Error) => void;
+    const rejected = new Promise<{ revision: number; refusal: null }>((_, reject) => { failA = reject; });
+    vi.spyOn(bridgeApi, "updateChatTools").mockImplementation(params => params.sessionId === "a" ? rejected : saveA.promise);
+    act(() => { root.render(<ChatToolsControl sessionId="a" harness="codex" />); });
+    await settle();
+    await openPanel();
+    act(() => { switchOf("github")!.click(); });
+    expect(switchOf("github")!.disabled).toBe(true);
+
+    // The composer moves to chat b, which starts its own save.
+    act(() => { root.render(<ChatToolsControl sessionId="b" harness="codex" />); });
+    await settle();
+    expect(switchOf("linear")!.disabled).toBe(false);
+    act(() => { switchOf("linear")!.click(); });
+    expect(switchOf("linear")!.disabled).toBe(true);
+    const reads = read.mock.calls.length;
+
+    await act(async () => { failA(new Error("The tool choice changed in another window. Reload it and try again")); await rejected.catch(() => undefined); });
+    await settle();
+    expect(document.querySelector('[role="menu"] [role="alert"]')).toBeNull();
+    expect(read.mock.calls.slice(reads)).toEqual([]);
+    expect(chip()!.getAttribute("aria-label")).toBe("Tools: all on");
+    expect(switchOf("linear")!.disabled).toBe(true);
+    expect(row("linear")!.querySelector('[aria-label="Loading"]')).not.toBeNull();
+  });
+
   it("shows a token figure with its source and none when absent", async () => {
     vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
