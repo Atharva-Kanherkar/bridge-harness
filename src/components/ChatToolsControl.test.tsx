@@ -304,9 +304,10 @@ describe("ChatToolsControl", () => {
     expect(switchOf("github")?.getAttribute("aria-checked")).toBe("false");
   });
 
-  it("keeps the focus on a switch that a key turned", async () => {
+  it("keeps the focus on a focused switch that a click turned", async () => {
     const frames = () => act(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
-    // A key on a focused switch arrives as a click, and the menu stays open.
+    // A browser turns Enter or Space on a focused button into a click, but jsdom does not.
+    // So the test focuses the switch and clicks it, and the menu stays open.
     const press = async (target: HTMLButtonElement) => {
       act(() => { target.focus(); target.click(); });
       await frames();

@@ -38,8 +38,15 @@ describe("the arithmetic of a tool choice", () => {
     expect(removed(codex, skill("gone"))).toMatchObject({ claudeSkills: null, codexSkillsOff: ["pdf"] });
   });
 
-  it("does not branch on a harness name", () => {
+  it("does not compare a harness with a name on either side", () => {
+    const branches = (source: string) => /harness\s*[!=]==\s*["']|["']\s*[!=]==\s*[\w.?]*harness\b/.test(source);
+    // The check finds a comparison in both operand orders.
+    expect(branches('if (base.harness === "claude") return base;')).toBe(true);
+    expect(branches('if ("claude" === base.harness) return base;')).toBe(true);
+    expect(branches("if (choice.harness !== 'codex') return base;")).toBe(true);
+    expect(branches("if ('codex' !== choice?.harness) return base;")).toBe(true);
+    expect(branches("return choice.harness === harness;")).toBe(false);
     const source = readFileSync(fileURLToPath(new URL("./chatToolChoice.ts", import.meta.url)), "utf8");
-    expect(source).not.toMatch(/harness\s*[!=]==\s*["']/);
+    expect(branches(source)).toBe(false);
   });
 });
