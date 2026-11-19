@@ -59,37 +59,51 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const generation = useRef(0);
-  const inFlight = useRef<{ key: string; read: Promise<ChatTools> } | null>(null);
+  // The read in flight of each target. A read that a save can outdate is not shared.
+  const inFlight = useRef(new Map<string, { read: Promise<ChatTools>; shared: boolean }>());
+  // The save in flight of each target, so a return to a chat shows its save.
+  const saves = useRef(new Map<string, Pending>());
+  // The target on screen, or null after the control unmounts.
+  const shown = useRef<string | null>(null);
   const refocus = useRef<string | null>(null);
 
-  const load = useCallback(async () => {
-    const ticket = ++generation.current;
+  const read = useCallback((fresh: boolean): Promise<ChatTools> => {
+    const prior = inFlight.current.get(key);
+    if (prior?.shared && !fresh) return prior.read;
     const params = sessionId ? { sessionId } : { draft: { harness: draftHarness ?? "", account: draftAccount, workspaceId: draftWorkspace } };
+    const start = () => bridgeApi.chatTools(params);
     // A warm Codex read sends three requests under a limit of four for each chat, so
-    // a second read of the same target waits for the read in flight.
-    let read = inFlight.current?.key === key ? inFlight.current.read : null;
-    if (!read) {
-      const entry = { key, read: bridgeApi.chatTools(params) };
-      const release = () => { if (inFlight.current === entry) inFlight.current = null; };
-      entry.read.then(release, release);
-      inFlight.current = entry;
-      read = entry.read;
-    }
+    // a new read of the same target starts when the read in flight ends.
+    const entry = { read: prior ? prior.read.then(start, start) : start(), shared: !saves.current.has(key) };
+    const release = () => { if (inFlight.current.get(key) === entry) inFlight.current.delete(key); };
+    entry.read.then(release, release);
+    inFlight.current.set(key, entry);
+    return entry.read;
+  }, [key, sessionId, draftHarness, draftAccount, draftWorkspace]);
+
+  const load = useCallback(async (fresh = false) => {
+    const ticket = ++generation.current;
     try {
-      const data = await read;
+      const data = await read(fresh);
       if (ticket === generation.current) setView({ key, data });
     } catch (error) {
       // A failed read keeps the last list of this chat on screen.
       if (ticket === generation.current) setView(current => ({ key, data: current.key === key ? current.data : undefined, error: errorMessage(error) }));
     }
-  }, [key, sessionId, draftHarness, draftAccount, draftWorkspace]);
+  }, [key, read]);
 
   useEffect(() => {
-    setPending(null);
+    shown.current = key;
+    setPending(saves.current.get(key) ?? null);
     setNotice(null);
     refocus.current = null;
     void load();
-  }, [load]);
+    return () => {
+      // A late answer for the old target, or after an unmount, changes no state.
+      shown.current = null;
+      generation.current += 1;
+    };
+  }, [key, load]);
 
   // The menu gives the focus to its trigger after a click on an item, but a switch leaves
   // the menu open. The switch takes the focus back once it is enabled again.
@@ -141,26 +155,34 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       return;
     }
     if (!sessionId) return;
-    // A save outdates each read that started before it. A read of the next chat outdates
-    // the save in turn, so its answer never reaches the state of that chat.
-    const ticket = ++generation.current;
-    const current = () => ticket === generation.current;
-    // A read that started before the save cannot show it, so the next read asks again.
-    inFlight.current = null;
-    setPending({ id: item.id, on });
+    // The answer of a save reaches the state only while its chat is on screen, also
+    // after the person left the chat and came back to it.
+    const target = key;
+    const here = () => shown.current === target;
+    const mine: Pending = { id: item.id, on };
+    const end = () => { if (saves.current.get(target) === mine) saves.current.delete(target); };
+    // A save outdates each read that started before it, and no later read shares one.
+    ++generation.current;
+    const prior = inFlight.current.get(target);
+    if (prior) prior.shared = false;
+    saves.current.set(target, mine);
+    setPending(mine);
     try {
       const outcome = await bridgeApi.updateChatTools({ sessionId, expectedRevision: data.selection.revision, selection: next });
-      if (!current()) return;
+      if (!here()) return end();
       if (outcome.refusal) {
+        end();
         setPending(null);
         setNotice({ tone: "refusal", text: outcome.refusal });
         return;
       }
-      const fresh = await bridgeApi.chatTools({ sessionId }).catch(() => null);
-      if (!current()) return;
+      const ticket = ++generation.current;
+      const fresh = await read(true).catch(() => null);
+      end();
+      if (!here()) return;
       setPending(null);
       // The saved choice belongs to the target of the chat, so it applies.
-      setView({ key, data: fresh ?? {
+      if (ticket === generation.current) setView({ key: target, data: fresh ?? {
         ...data,
         choice: next,
         items: overlay(data.items.filter(entry => entry.seen), next),
@@ -168,11 +190,12 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       } });
       setNotice({ tone: "saved", text: "Saved. The change applies at the next turn." });
     } catch (error) {
-      if (!current()) return;
+      end();
+      if (!here()) return;
       setPending(null);
       setNotice({ tone: "error", text: errorMessage(error) });
       // A stale revision means another window saved first: show its choice.
-      void load();
+      void load(true);
     }
   };
 

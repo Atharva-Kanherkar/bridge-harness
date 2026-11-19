@@ -311,6 +311,86 @@ describe("ChatToolsControl", () => {
     expect(row("linear")!.querySelector('[aria-label="Loading"]')).not.toBeNull();
   });
 
+  it("reads a chat again when its own save ends after a return to it", async () => {
+    let committed = false;
+    const read = vi.spyOn(bridgeApi, "chatTools").mockImplementation(async params =>
+      params.sessionId === "b" ? codexTools([], 7) : committed ? codexTools(["github"], 4) : codexTools([], 3));
+    const saveA = deferred<{ revision: number; refusal: null }>();
+    const update = vi.spyOn(bridgeApi, "updateChatTools").mockReturnValueOnce(saveA.promise).mockReturnValue(new Promise(() => undefined));
+    act(() => { root.render(<ChatToolsControl sessionId="a" harness="codex" />); });
+    await settle();
+    await openPanel();
+    act(() => { switchOf("github")!.click(); });
+
+    // The person moves to chat b and back to chat a before the save of a ends.
+    act(() => { root.render(<ChatToolsControl sessionId="b" harness="codex" />); });
+    await settle();
+    act(() => { root.render(<ChatToolsControl sessionId="a" harness="codex" />); });
+    await settle();
+    expect(switchOf("github")!.disabled).toBe(true);
+    const reads = read.mock.calls.length;
+
+    committed = true;
+    await act(async () => { saveA.resolve({ revision: 4, refusal: null }); await saveA.promise; });
+    await settle();
+    expect(read.mock.calls.slice(reads)).toEqual([[{ sessionId: "a" }]]);
+    expect(switchOf("github")!.disabled).toBe(false);
+    expect(switchOf("github")!.getAttribute("aria-checked")).toBe("false");
+    expect(chip()!.getAttribute("aria-label")).toBe("Tools: 1 left out");
+    act(() => { switchOf("linear")!.click(); });
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "a", expectedRevision: 4 }));
+  });
+
+  it("starts the read after a save only when the read in flight ends", async () => {
+    const reopen = deferred<ChatTools>();
+    const read = vi.spyOn(bridgeApi, "chatTools")
+      .mockResolvedValueOnce(codexTools([], 3))
+      .mockReturnValueOnce(reopen.promise)
+      .mockResolvedValue(codexTools(["github"], 4));
+    vi.spyOn(bridgeApi, "updateChatTools").mockResolvedValue({ revision: 4, refusal: null });
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
+    await settle();
+    // A reopen reads the chat again and keeps the last list on screen meanwhile.
+    await openPanel();
+    expect(read).toHaveBeenCalledTimes(2);
+
+    act(() => { switchOf("github")!.click(); });
+    await settle();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(switchOf("github")!.disabled).toBe(true);
+
+    await act(async () => { reopen.resolve(codexTools([], 3)); await reopen.promise; });
+    await settle();
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(switchOf("github")!.disabled).toBe(false);
+    expect(switchOf("github")!.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("changes nothing and reads nothing when a save ends after the control unmounts", async () => {
+    const read = vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools([], 3));
+    let fail!: (error: Error) => void;
+    const failed = new Promise<{ revision: number; refusal: null }>((_, reject) => { fail = reject; });
+    const saved = deferred<{ revision: number; refusal: null }>();
+    vi.spyOn(bridgeApi, "updateChatTools").mockReturnValueOnce(failed).mockReturnValueOnce(saved.promise);
+    const errors = vi.spyOn(console, "error");
+    for (const end of [
+      () => { fail(new Error("The tool choice changed in another window. Reload it and try again")); return failed.catch(() => undefined); },
+      () => { saved.resolve({ revision: 4, refusal: null }); return saved.promise; },
+    ]) {
+      act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
+      await settle();
+      await openPanel();
+      act(() => { switchOf("github")!.click(); });
+      act(() => root.unmount());
+      root = createRoot(container);
+      const reads = read.mock.calls.length;
+      await act(async () => { await end(); });
+      await settle();
+      expect(read.mock.calls.length).toBe(reads);
+    }
+    expect(errors).not.toHaveBeenCalled();
+  });
+
   it("shares one read of a chat between the mount and an early open", async () => {
     const first = deferred<ChatTools>();
     const read = vi.spyOn(bridgeApi, "chatTools").mockReturnValueOnce(first.promise).mockResolvedValue(codexTools(["github"], 4));
