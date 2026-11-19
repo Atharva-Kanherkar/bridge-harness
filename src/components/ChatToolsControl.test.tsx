@@ -257,6 +257,31 @@ describe("ChatToolsControl", () => {
     expect(onChoiceChange).toHaveBeenCalledWith({ harness: "claude", account: "work", serversOff: [], codexAppsOff: false, claudeSkills: { only: ["review"] }, codexSkillsOff: [] });
   });
 
+  it("shows a saved replacement as applied when the read after the save fails", async () => {
+    const reason = "Chosen for Claude Code (account home), not applied";
+    const tools: ChatTools = {
+      harness: "claude",
+      account: "work",
+      choice: { harness: "claude", account: "home", serversOff: ["github"] },
+      items: [item({ id: "github", state: "off" }), item({ id: "linear" })],
+      sources: [],
+      selection: { revision: 2, harness: "claude", account: "home", applies: false, notAppliedReason: reason },
+    };
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValueOnce(tools).mockRejectedValue(new Error("The host did not answer"));
+    vi.spyOn(bridgeApi, "updateChatTools").mockResolvedValue({ revision: 3, refusal: null });
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="claude" account="work" />); });
+    await settle();
+    await openPanel();
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe(reason);
+
+    act(() => { switchOf("linear")!.click(); });
+    await settle();
+    expect(document.querySelector('[role="menu"] [role="status"]')?.textContent).toBe("Saved. The change applies at the next turn.");
+    expect(document.querySelector('[role="menu"] [role="note"]')).toBeNull();
+    expect(chip()!.getAttribute("aria-label")).toBe("Tools: 1 left out");
+    expect(["github", "linear"].map(id => switchOf(id)?.getAttribute("aria-checked"))).toEqual(["true", "false"]);
+  });
+
   it("keeps a save of one chat out of the state of the next chat", async () => {
     const read = vi.spyOn(bridgeApi, "chatTools").mockImplementation(async params => codexTools([], params.sessionId === "a" ? 3 : 7));
     const saveA = deferred<{ revision: number; refusal: null }>();

@@ -159,11 +159,12 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
       const fresh = await bridgeApi.chatTools({ sessionId }).catch(() => null);
       if (!current()) return;
       setPending(null);
+      // The saved choice belongs to the target of the chat, so it applies.
       setView({ key, data: fresh ?? {
         ...data,
         choice: next,
         items: overlay(data.items.filter(entry => entry.seen), next),
-        selection: { ...data.selection, revision: outcome.revision ?? data.selection.revision + 1, harness: next.harness, account: next.account },
+        selection: { revision: outcome.revision ?? data.selection.revision + 1, harness: next.harness, account: next.account, applies: true, notAppliedReason: null },
       } });
       setNotice({ tone: "saved", text: "Saved. The change applies at the next turn." });
     } catch (error) {
