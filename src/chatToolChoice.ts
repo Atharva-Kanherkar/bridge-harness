@@ -59,6 +59,19 @@ export function switched(base: Choice, item: ChatToolItem, on: boolean, items: C
   return { ...base, claudeSkills: { only: marked(only, item.id, on) } };
 }
 
+/**
+ * The choice with each item on. It is the set of a chat with no choice, so a
+ * chat that the harness did not resume with a changed set can return to it.
+ */
+export function allOn(base: Choice): Choice {
+  return { ...base, serversOff: [], codexAppsOff: false, claudeSkills: null, codexSkillsOff: [] };
+}
+
+/** Whether a choice differs from each item on. A skill allowlist leaves out each skill that it does not name. */
+export function leavesOut(choice: Choice): boolean {
+  return choice.serversOff.length > 0 || choice.codexAppsOff || choice.claudeSkills !== null || choice.codexSkillsOff.length > 0;
+}
+
 /** The choice without a saved name that the sources no longer list. */
 export function removed(base: Choice, item: ChatToolItem): Choice {
   if (item.kind === "server") return { ...base, serversOff: without(base.serversOff, item.id) };

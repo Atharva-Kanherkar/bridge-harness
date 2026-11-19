@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { baseChoice, removed, switched } from "./chatToolChoice";
+import { allOn, baseChoice, leavesOut, removed, switched } from "./chatToolChoice";
 import type { ChatToolItem } from "./types";
 
 const skill = (id: string, state: ChatToolItem["state"] = "on"): ChatToolItem =>
@@ -36,6 +36,18 @@ describe("the arithmetic of a tool choice", () => {
 
     const codex = baseChoice({ harness: "codex", codexSkillsOff: ["gone", "pdf"] }, "codex", null);
     expect(removed(codex, skill("gone"))).toMatchObject({ claudeSkills: null, codexSkillsOff: ["pdf"] });
+  });
+
+  it("turns each item on with the set of no choice", () => {
+    const claude = baseChoice({ harness: "claude", account: "home", serversOff: ["github"], claudeSkills: { only: ["review"] } }, "claude", "home");
+    expect(leavesOut(claude)).toBe(true);
+    expect(allOn(claude)).toEqual({ harness: "claude", account: "home", serversOff: [], codexAppsOff: false, claudeSkills: null, codexSkillsOff: [] });
+    expect(leavesOut(allOn(claude))).toBe(false);
+    // A list that names each skill still leaves out a skill that comes later.
+    expect(leavesOut(baseChoice({ harness: "claude", claudeSkills: { only: [] } }, "claude", null))).toBe(true);
+    expect(leavesOut(baseChoice({ harness: "codex", codexAppsOff: true }, "codex", null))).toBe(true);
+    expect(leavesOut(baseChoice({ harness: "codex", codexSkillsOff: ["pdf"] }, "codex", null))).toBe(true);
+    expect(leavesOut(baseChoice(null, "opencode", null))).toBe(false);
   });
 
   it("does not compare a harness with a name on either side", () => {

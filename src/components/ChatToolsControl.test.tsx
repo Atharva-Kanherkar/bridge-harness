@@ -511,6 +511,76 @@ describe("ChatToolsControl", () => {
     expect(cancel).toHaveBeenCalledWith(frame);
   });
 
+  it("turns all items on with one action that saves the set of no choice", async () => {
+    const allOn: ChatToolSelection = { harness: "claude", account: null, serversOff: [], codexAppsOff: false, claudeSkills: null, codexSkillsOff: [] };
+    const claudeTools = (choice: ChatToolSelection | null, revision: number, off: string[]): ChatTools => ({
+      harness: "claude",
+      account: null,
+      choice,
+      items: ["github", "linear"].map(id => item({ id, state: off.includes(id) ? "off" : "on" }))
+        .concat(["review", "simplify"].map(id => item({ id, kind: "skill", group: "Skills", state: off.includes(id) ? "off" : "on" }))),
+      sources: [],
+      selection: { revision, harness: "claude", account: null, applies: true, notAppliedReason: null },
+    });
+    const turnAllOn = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Turn all on");
+    vi.spyOn(bridgeApi, "chatTools")
+      .mockResolvedValueOnce(claudeTools({ harness: "claude", account: null, serversOff: ["github"], claudeSkills: { only: ["review"] } }, 5, ["github", "simplify"]))
+      .mockResolvedValueOnce(claudeTools({ harness: "claude", account: null, serversOff: ["github"], claudeSkills: { only: ["review"] } }, 5, ["github", "simplify"]))
+      .mockResolvedValue(claudeTools(allOn, 6, []));
+    const update = vi.spyOn(bridgeApi, "updateChatTools").mockResolvedValue({ revision: 6, refusal: null });
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="claude" />); });
+    await settle();
+    await openPanel();
+    act(() => { turnAllOn()!.click(); });
+    expect(update).toHaveBeenCalledWith({ sessionId: "s-1", expectedRevision: 5, selection: allOn });
+    await settle();
+    expect(chip()!.getAttribute("aria-label")).toBe("Tools: all on");
+    expect(turnAllOn()).toBeUndefined();
+    act(() => root.unmount());
+
+    // A Claude list that names each skill is not the set of no choice, so the action stays.
+    root = createRoot(container);
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(claudeTools({ harness: "claude", account: null, claudeSkills: { only: ["review", "simplify"] } }, 2, []));
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="claude" />); });
+    await settle();
+    await openPanel();
+    expect(chip()!.getAttribute("aria-label")).toBe("Tools: all on");
+    expect(turnAllOn()).toBeDefined();
+    act(() => root.unmount());
+
+    // A draft drops its choice, which is the same set and fits each target.
+    root = createRoot(container);
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools([], 0));
+    const onChoiceChange = vi.fn();
+    act(() => { root.render(<ChatToolsControl draft={{ harness: "codex", account: null, workspaceId: null }} choice={{ harness: "codex", account: null, codexAppsOff: true }} onChoiceChange={onChoiceChange} />); });
+    await settle();
+    await openPanel();
+    act(() => { turnAllOn()!.click(); });
+    expect(onChoiceChange).toHaveBeenCalledWith(null);
+  });
+
+  it("offers no action to turn all on when each item is on", async () => {
+    const turnAllOn = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Turn all on");
+    for (const tools of [
+      codexTools(),
+      { ...codexTools(), choice: { harness: "codex", account: null, serversOff: [], codexAppsOff: false, codexSkillsOff: [] } },
+    ]) {
+      vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(tools);
+      act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
+      await settle();
+      await openPanel();
+      expect(switchOf("github")).not.toBeNull();
+      expect(turnAllOn()).toBeUndefined();
+      act(() => root.unmount());
+      root = createRoot(container);
+    }
+    act(() => { root.render(<ChatToolsControl draft={{ harness: "codex", account: null, workspaceId: null }} choice={null} onChoiceChange={() => undefined} />); });
+    await settle();
+    await openPanel();
+    expect(switchOf("github")).not.toBeNull();
+    expect(turnAllOn()).toBeUndefined();
+  });
+
   it("shows a token figure with its source and none when absent", async () => {
     vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });

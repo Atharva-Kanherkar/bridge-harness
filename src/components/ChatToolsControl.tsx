@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Lock, RotateCw, Wrench, X } from "lucide-react";
+import { ChevronDown, Lock, RotateCw, ToggleRight, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { bridgeApi } from "../api";
-import { baseChoice, fits, overlay, removed, switched, type Choice } from "../chatToolChoice";
+import { allOn, baseChoice, fits, leavesOut, overlay, removed, switched, type Choice } from "../chatToolChoice";
 import { relativeTime } from "../connectorSurface";
 import { formatTokens } from "../contextBreakdown";
 import { errorMessage } from "../errors";
@@ -168,7 +168,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   const notApplied = draftTarget ?? (data && !data.selection.applies ? data.selection.notAppliedReason ?? "Not applied" : null);
   const choiceNotApplied = !!notApplied && !!saved;
 
-  const change = async (next: Choice, item: ChatToolItem, on: boolean | null) => {
+  const change = async (next: Choice, mine: Pending) => {
     if (!data) return;
     setNotice(null);
     if (props.draft) {
@@ -180,7 +180,6 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
     // after the person left the chat and came back to it.
     const target = key;
     const here = () => shown.current === target;
-    const mine: Pending = { kind: item.kind, id: item.id, on };
     const end = () => { if (saves.current.get(target) === mine) saves.current.delete(target); };
     // A save outdates each read that started before it, and no later read shares one.
     ++generation.current;
@@ -220,6 +219,17 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
     }
   };
 
+  // A chat that the harness did not resume with a changed set needs the exact set of no
+  // choice, and a list of each Claude skill is not that set.
+  const turnAllOn = () => {
+    if (!base) return;
+    if (!props.draft) return void change(allOn(base), { kind: "all", id: "", on: true });
+    // A draft drops its choice: no choice is the same set, and it fits each target.
+    setNotice(null);
+    props.onChoiceChange(null);
+  };
+  const turningAllOn = pending?.kind === "all";
+
   const loading = !data && !loadError;
   const chipLabel = loading ? "Tools: loading" : choiceNotApplied ? "Tools: not applied" : offCount ? `Tools: ${offCount} left out` : "Tools: all on";
   const toggle = () => {
@@ -258,6 +268,14 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
         <p className="text-[11px] leading-4 text-muted-foreground">
           {props.draft ? "Leave out what this chat does not need. The chat starts with this choice." : "Leave out what this chat does not need. A change applies at the next turn."}
         </p>
+        {base && leavesOut(base) && <button
+          type="button"
+          role="menuitem"
+          tabIndex={-1}
+          disabled={!!pending || disabled}
+          onClick={turnAllOn}
+          className="-ml-1.5 mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
+        >{turningAllOn ? <Spinner className="size-3" /> : <ToggleRight size={12} aria-hidden="true" />}Turn all on</button>}
       </div>
       {notApplied && <div className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5">
         <p role="note" className="text-[11px] leading-4 text-warning">{notApplied}</p>
@@ -301,9 +319,9 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
                 busy={!!pending || !!disabled}
                 onSwitch={on => {
                   requestFocus(item);
-                  void change(switched(base, item, on, items), item, on);
+                  void change(switched(base, item, on, items), { kind: item.kind, id: item.id, on });
                 }}
-                onRemove={() => void change(removed(base, item), item, null)}
+                onRemove={() => void change(removed(base, item), { kind: item.kind, id: item.id, on: null })}
               />)}
             </div>)}
           </div>;

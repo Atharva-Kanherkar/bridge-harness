@@ -75,6 +75,21 @@ describe("mock tools of a chat", () => {
     expect(codexSkill("pdf", false)).toMatchObject({ state: "off", fixedReason: null });
   });
 
+  it("accepts a choice with each item on for each harness", async () => {
+    const allOn = { serversOff: [], codexAppsOff: false, claudeSkills: null, codexSkillsOff: [] };
+    for (const harness of ["claude", "codex", "opencode"]) {
+      const { sessionId } = await bridgeApi.createConfiguredChat({
+        overrides: { target: { kind: "direct" }, model: { harness } },
+        expectedRevision: { application: 0, project: 0 },
+        toolSelection: { harness, serversOff: ["linear"] },
+      });
+      await expect(bridgeApi.updateChatTools({ sessionId, expectedRevision: 1, selection: { harness, ...allOn } })).resolves.toEqual({ revision: 2, refusal: null });
+      const tools = await bridgeApi.chatTools({ sessionId });
+      expect(tools.choice).toEqual({ harness, account: null, ...allOn });
+      expect(tools.items.filter(item => item.state === "off")).toEqual([]);
+    }
+  });
+
   it("refuses a worker, a missing chat and two targets", async () => {
     await expect(bridgeApi.chatTools({ sessionId: "session-1w" })).rejects.toThrow("Only a top-level chat can have a tool choice");
     await expect(bridgeApi.chatTools({ sessionId: "missing" })).rejects.toThrow("This chat does not exist");
