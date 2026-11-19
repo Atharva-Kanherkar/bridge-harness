@@ -28,7 +28,6 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Send,
   Sparkles,
   SquareArrowOutUpRight,
   Tag,
@@ -37,6 +36,7 @@ import {
   X,
   MessageSquarePlus,
   MessageSquareDot,
+  Plus,
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
@@ -46,10 +46,14 @@ import { ActionSheet, ActionSheetHost } from "./github/ActionSheet";
 import { MergeBox, initialMergeState, mergeReducer, type MergeState, type OverflowItem } from "./github/MergeBox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton, SkeletonRegion, SkeletonRows, SkeletonText } from "@/components/ui/skeleton";
-import { Markdown } from "./Markdown";
+import { Avatar, AvatarScope, Monogram } from "./github/Avatar";
+import { Composer } from "./github/Composer";
+import { GithubMarkdown } from "./github/GithubMarkdown";
+import { GithubMediaScope } from "./github/Media";
+import { ReviewThreads } from "./github/ReviewThreads";
+import { commentAnchor, parsePatch } from "./github/patch";
 import { ProviderLoginPane } from "./ProviderLoginPane";
 import { relativeTime } from "./workDashboard";
-import { normalizeGithubMarkdown, splitGithubDetails } from "./githubMarkdown";
 import {
   checksNeedPolling,
   filterIssues,
@@ -138,13 +142,6 @@ function SectionLabel({ children, count, className }: { children: React.ReactNod
     {children}
     {count !== undefined && <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] tabular-nums tracking-normal text-muted-foreground">{count}</span>}
   </h3>;
-}
-
-/** An author's initial in a neutral disc, so a list of logins scans by shape
- *  without fetching avatars from the network. */
-function Monogram({ login, className }: { login?: string | null; className?: string }) {
-  const name = login ?? "ghost";
-  return <span aria-hidden="true" className={cn("grid size-5 shrink-0 place-items-center rounded-full bg-muted text-[10px] font-semibold uppercase text-muted-foreground ring-1 ring-border", className)}>{name.replace(/[^a-z0-9]/gi, "").charAt(0) || "?"}</span>;
 }
 
 /** A branch name as a quiet mono chip. */
@@ -263,30 +260,6 @@ function PaneNotice({ icon: Icon, title, spin, children }: { icon: typeof GitPul
     <span className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-xs"><Icon size={19} strokeWidth={1.6} className={cn(spin && "animate-spin")} aria-hidden="true" /></span>
     <p className="mt-2 font-display text-[14px] font-semibold text-foreground">{title}</p>
     <div className="max-w-[26rem] text-[12px] leading-relaxed text-muted-foreground">{children}</div>
-  </div>;
-}
-
-/** GitHub-authored markdown at the pane's compact type scale.
- *
- * Two things happen before the app's renderer sees the text: GitHub-only
- * spellings are normalized (see `githubMarkdown.ts`), and `<details>` sections
- * become real disclosures. Rendering itself still goes through the app's
- * Markdown component — React text nodes only, with fenced HTML confined to a
- * fully sandboxed iframe — so remote content stays inert. */
-function GithubMarkdown({ text, repositoryUrl }: { text: string; repositoryUrl?: string }) {
-  const blocks = useMemo(() => splitGithubDetails(text), [text]);
-  return <div className="gh-md">
-    {blocks.map((block, index) => block.kind === "details"
-      ? <details key={index} className="group my-1.5 overflow-hidden rounded-lg border border-border bg-card">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-accent/50">
-          <ChevronRight size={12} aria-hidden="true" className="shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-90" />
-          <span className="min-w-0 flex-1 truncate">{block.summary}</span>
-        </summary>
-        <div className="border-t border-border px-2.5 py-2">
-          <Markdown text={normalizeGithubMarkdown(block.body, repositoryUrl)} />
-        </div>
-      </details>
-      : <Markdown key={index} text={normalizeGithubMarkdown(block.text, repositoryUrl)} />)}
   </div>;
 }
 
@@ -631,6 +604,8 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }, [intent, openDetail, openIssue]);
 
   const repoLabel = status?.repository ? `${status.repository.owner}/${status.repository.name}` : undefined;
+  const mediaHost = status?.repository?.host ?? "github.com";
+  const mediaScope = useMemo(() => ({ workspaceId, host: mediaHost }), [workspaceId, mediaHost]);
   const repositoryUrl = repositoryOverview?.url
     ?? (status?.repository ? `https://${status.repository.host}/${status.repository.owner}/${status.repository.name}` : undefined);
   const visiblePrs = useMemo(() => prs && filterPullRequests(prs, query, facet), [prs, query, facet]);
@@ -754,7 +729,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
   </button>;
 
-  return <section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
+  return <GithubMediaScope.Provider value={mediaScope}><section data-gh-pane-root="" className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
     {page ? <header className="flex shrink-0 flex-col border-b border-border bg-background px-5">
       <div className="flex h-11 items-end gap-3">
         {/* Labelled tabs with live counts: at full width there is room to say
@@ -861,7 +836,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             >{body}</motion.div>
           </AnimatePresence>
         </div>}
-  </section>;
+  </section></GithubMediaScope.Provider>;
 }
 
 const PR_GRID = "grid-cols-[minmax(0,1fr)_9.5rem_8.5rem_9rem]";
@@ -957,13 +932,48 @@ function PullRequestRow({ pr, index, wide, active, onOpen }: { pr: PullRequestLi
 export const EAGER_PATCH_FILE_LIMIT = 6;
 export const PATCH_LINE_LIMIT = 600;
 
-function PatchView({ patch, fullDiffUrl }: { patch: string; fullDiffUrl: string }) {
-  const lines = patch.split("\n");
+/** Where a new review comment goes, and the write that posts it. */
+type LineComment = (line: number, side: "left" | "right", body: string) => Promise<string | undefined>;
+
+const PATCH_ROW: Record<string, string> = {
+  add: "bg-success/10 text-success",
+  del: "bg-destructive/10 text-destructive",
+  hunk: "bg-muted text-muted-foreground",
+};
+
+function PatchView({ patch, fullDiffUrl, onComment }: { patch: string; fullDiffUrl: string; onComment?: LineComment }) {
+  const lines = useMemo(() => parsePatch(patch), [patch]);
   const shown = lines.length > PATCH_LINE_LIMIT ? lines.slice(0, PATCH_LINE_LIMIT) : lines;
+  // One open composer per file: starting a second comment moves it.
+  const [composing, setComposing] = useState<number>();
   return <>
-    <pre className="max-h-80 overflow-auto bg-background/50 py-2 font-mono text-[11px] leading-5" aria-label="File patch">{shown.map((line, index) => <span key={`${index}-${line}`} className={cn("block whitespace-pre px-3", line.startsWith("+") && !line.startsWith("+++") && "bg-success/10 text-success", line.startsWith("-") && !line.startsWith("---") && "bg-destructive/10 text-destructive", line.startsWith("@@") && "bg-muted text-muted-foreground")}>
-      {line || " "}
-    </span>)}</pre>
+    <div role="group" className="max-h-[28rem] overflow-auto bg-background/50 py-2 font-mono text-[11px] leading-5" aria-label="File patch">{shown.map((line, index) => {
+      const anchor = onComment ? commentAnchor(line) : null;
+      return <div key={index}>
+        <div className={cn("group/line relative flex w-max min-w-full whitespace-pre", PATCH_ROW[line.kind])}>
+          <span aria-hidden="true" className="w-9 shrink-0 select-none pr-1.5 text-right tabular-nums text-muted-foreground/60">{line.oldLine ?? ""}</span>
+          <span aria-hidden="true" className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-muted-foreground/60">{line.newLine ?? ""}</span>
+          {anchor && <button
+            type="button"
+            onClick={() => setComposing(index)}
+            aria-label={`Comment on line ${anchor.line}`}
+            title={`Comment on line ${anchor.line}`}
+            className="absolute left-[4.1rem] top-0.5 grid size-4 -translate-x-1/2 scale-75 place-items-center rounded-[4px] bg-primary text-primary-foreground opacity-0 shadow-xs transition-[opacity,transform] duration-150 hover:scale-110 focus-visible:scale-100 focus-visible:opacity-100 group-hover/line:scale-100 group-hover/line:opacity-100"
+          ><Plus size={11} strokeWidth={2.4} aria-hidden="true" /></button>}
+          <span className="pl-2 pr-3">{line.text || " "}</span>
+        </div>
+        {anchor && onComment && composing === index && <div className="sticky left-0 w-full max-w-full border-y border-border bg-card/80 p-2 font-sans">
+          <Composer
+            autoFocus
+            label={`Comment on line ${anchor.line}`}
+            placeholder={`Comment on line ${anchor.line}…`}
+            submitLabel="Add comment"
+            onSubmit={body => onComment(anchor.line, anchor.side, body)}
+            onCancel={() => setComposing(undefined)}
+          />
+        </div>}
+      </div>;
+    })}</div>
     {shown.length < lines.length && <a href={fullDiffUrl} target="_blank" rel="noreferrer" data-system-browser className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
       <ExternalLink size={11} aria-hidden="true" />
       Patch truncated at {PATCH_LINE_LIMIT} lines — view the full diff on GitHub
@@ -971,10 +981,11 @@ function PatchView({ patch, fullDiffUrl }: { patch: string; fullDiffUrl: string 
   </>;
 }
 
-function FileChange({ file, defaultOpen, fullDiffUrl }: {
+function FileChange({ file, defaultOpen, fullDiffUrl, onComment }: {
   file: GithubPullRequestResult["files"][number];
   defaultOpen: boolean;
   fullDiffUrl: string;
+  onComment?: LineComment;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return <article className="overflow-hidden rounded-lg border border-border bg-card">
@@ -988,7 +999,7 @@ function FileChange({ file, defaultOpen, fullDiffUrl }: {
       </button>
       <CopyButton value={file.path} label={`Copy the path ${file.path}`} className="mr-1.5" />
     </div>
-    {open && (file.patch ? <PatchView patch={file.patch} fullDiffUrl={fullDiffUrl} /> : <p className="px-3 py-4 text-center text-[12px] text-muted-foreground">Binary file or patch unavailable from GitHub.</p>)}
+    {open && (file.patch ? <PatchView patch={file.patch} fullDiffUrl={fullDiffUrl} onComment={onComment} /> : <p className="px-3 py-4 text-center text-[12px] text-muted-foreground">Binary file or patch unavailable from GitHub.</p>)}
   </article>;
 }
 
@@ -996,17 +1007,34 @@ function CommentList({ comments, repositoryUrl }: {
   comments: Array<{ id: string; author?: { login: string } | null; body: string; createdAt: string; url: string }>;
   repositoryUrl?: string;
 }) {
-  return <div className="space-y-2">{comments.map(comment => <article key={comment.id} className="group overflow-hidden rounded-lg border border-border bg-card">
-    <div className="flex items-baseline gap-2 border-b border-border/60 px-3 py-1.5">
-      <span className="text-[11px] font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
-      <CommentTime iso={comment.createdAt} />
-      <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-        <CopyButton value={comment.url} label="Copy the link to this comment" />
-        <OpenOnGithub url={comment.url} what="this comment" />
-      </span>
-    </div>
-    <div className="px-3 py-2"><GithubMarkdown text={comment.body} repositoryUrl={repositoryUrl} /></div>
-  </article>)}</div>;
+  const reduced = useReducedMotion();
+  // The first paint staggers in; a comment that arrives later (the one just
+  // posted) rises on its own without replaying the whole list.
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; }, []);
+  return <div className="space-y-2">
+    <AnimatePresence initial>
+      {comments.map((comment, index) => <motion.article
+        key={comment.id}
+        layout={reduced ? false : "position"}
+        initial={reduced ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1], delay: reduced || mounted.current ? 0 : Math.min(index, 8) * 0.04 }}
+        className="group overflow-hidden rounded-lg border border-border bg-card"
+      >
+        <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5">
+          <Avatar login={comment.author?.login} className="size-[18px] text-[9px]" />
+          <span className="text-[11.5px] font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
+          <CommentTime iso={comment.createdAt} />
+          <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            <CopyButton value={comment.url} label="Copy the link to this comment" />
+            <OpenOnGithub url={comment.url} what="this comment" />
+          </span>
+        </div>
+        <div className="px-3 py-2"><GithubMarkdown text={comment.body} repositoryUrl={repositoryUrl} /></div>
+      </motion.article>)}
+    </AnimatePresence>
+  </div>;
 }
 
 /** Checks, grouped by the workflow that produced them. Each group states its
@@ -1202,32 +1230,6 @@ function StatePill({ icon: Icon, label, merged = false }: { icon: typeof GitPull
       </motion.span>
     </AnimatePresence>
   </motion.span>;
-}
-
-/** A comment composer. Posting still goes through the same confirmation gate
- * as every other write, so the button hands the draft up rather than calling
- * `github/act` itself. */
-function CommentComposer({ disabled, onSubmit }: { disabled: boolean; onSubmit: (body: string) => void }) {
-  const [body, setBody] = useState("");
-  const ready = body.trim().length > 0;
-  return <div className="rounded-lg border border-border bg-card p-2">
-    <textarea
-      value={body}
-      onChange={event => setBody(event.target.value)}
-      aria-label="New comment"
-      placeholder="Write a comment…"
-      className="min-h-20 w-full resize-y bg-transparent text-[12.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
-    />
-    <div className="mt-1 flex items-center justify-end gap-2">
-      <span className="mr-auto text-[11px] text-muted-foreground">Markdown is supported.</span>
-      <button
-        type="button"
-        disabled={disabled || !ready}
-        onClick={() => { onSubmit(body); setBody(""); }}
-        className={ACTION_BUTTON}
-      ><Send size={11} aria-hidden="true" /> Comment</button>
-    </div>
-  </div>;
 }
 
 const TAB_ORDER: ReadonlyArray<PullRequestTab> = ["conversation", "changes", "commits", "checks"];
@@ -1431,6 +1433,32 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     } finally { setBusy(false); }
   };
 
+  // Comments, replies and resolving a conversation post on their own button
+  // press: the button names the write, and none of them needs a second sheet.
+  // The reason for a refusal goes back to the control that asked.
+  const write = useCallback(async (action: GithubAction): Promise<string | undefined> => {
+    try {
+      const outcome = await bridgeApi.githubAct(workspaceId, action, true);
+      if (!outcome.executed) return outcome.message;
+      onActed();
+      return undefined;
+    } catch (value) {
+      return errorMessage(value);
+    }
+  }, [workspaceId, onActed]);
+
+  // Avatars GitHub returned with the review threads, for everyone on the PR.
+  const threads = detail?.result.reviewThreads;
+  const avatars = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const thread of threads ?? []) {
+      for (const comment of thread.comments) {
+        if (comment.author?.avatarUrl) map.set(comment.author.login, comment.author.avatarUrl);
+      }
+    }
+    return map;
+  }, [threads]);
+
   // The merge box reads the repository's strategies when it mounts, not on
   // click, so the split button already shows the repo default. A failed read
   // leaves the button disabled rather than guessing at the repository rules.
@@ -1588,14 +1616,14 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
     }) });
   }
 
-  return <div className="relative flex min-h-0 flex-1 flex-col">
+  return <AvatarScope.Provider value={avatars}><div className="relative flex min-h-0 flex-1 flex-col">
     {header}
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className={cn("animate-page-mount relative border-b border-border px-5 pb-4 pt-4", merge.celebrate && mergedNow && "merge-sweep play")}>
         <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
           <StatePill icon={mergedNow ? GitMerge : StateIcon} label={mergedNow ? "merged" : summary.isDraft ? "draft" : summary.state} merged={mergedNow} />
           <span className="font-mono tabular-nums">#{summary.number}</span>
-          <span className="flex min-w-0 items-center gap-1.5"><Monogram login={summary.author?.login} className="size-4 text-[9px]" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
+          <span className="flex min-w-0 items-center gap-1.5"><Avatar login={summary.author?.login} className="size-4 text-[9px]" /><span className="truncate">{summary.author?.login ?? "ghost"}</span></span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
           <span className="ml-auto flex shrink-0 items-center">
             {sessionId && <ShowInChat sessionId={sessionId} url={summary.url} number={summary.number} />}
@@ -1735,7 +1763,13 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             <span className="ml-auto font-mono text-success">+{pullRequest.additions}</span>
             <span className="font-mono text-destructive">−{pullRequest.deletions}</span>
           </div>
-          {detail.result.files.length ? <div className="space-y-3">{detail.result.files.map(file => <FileChange key={file.path} file={file} defaultOpen={detail.result.files.length <= EAGER_PATCH_FILE_LIMIT} fullDiffUrl={`${summary.url}/files`} />)}</div> : <p className="text-[12px] text-muted-foreground">No changed files reported.</p>}
+          {detail.result.files.length ? <div className="space-y-3">{detail.result.files.map(file => <FileChange
+            key={file.path}
+            file={file}
+            defaultOpen={detail.result.files.length <= EAGER_PATCH_FILE_LIMIT}
+            fullDiffUrl={`${summary.url}/files`}
+            onComment={summary.state === "open" ? (line, side, body) => write({ kind: "reviewComment", number, path: file.path, line, side, body }) : undefined}
+          />)}</div> : <p className="text-[12px] text-muted-foreground">No changed files reported.</p>}
         </section>}
 
         {tab === "conversation" && <>
@@ -1748,72 +1782,25 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           <SectionLabel count={pullRequest.comments.length}>Conversation</SectionLabel>
           {pullRequest.comments.length ? <CommentList comments={pullRequest.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No conversation comments.</p>}
           <div className="mt-2.5">
-            <CommentComposer disabled={busy} onSubmit={body => setPending({
-              title: `Post a comment on #${number}`,
-              consequence: "Posted as you, visible to everyone on the repository.",
-              command: `gh api repos/${repoLabel}/issues/${number}/comments --method POST -f body=…`,
-              tone: "neutral",
-              icon: MessageSquare,
-              requiresBody: true,
-              body,
-              confirmLabel: "Post comment",
-              build: value => ({ kind: "comment", target: "pullRequest", number, body: value }),
-            })} />
+            <Composer
+              label="New comment"
+              placeholder="Write a comment…"
+              submitLabel="Comment"
+              disabled={busy}
+              onSubmit={body => write({ kind: "comment", target: "pullRequest", number, body })}
+            />
           </div>
         </section>
 
-        <section aria-label="Review threads">
-          <SectionLabel count={reviewThreads.length}>Review threads</SectionLabel>
-          {reviewThreads.length ? <div className="space-y-2.5">
-            {reviewThreads.map(thread => {
-              const rootId = thread.comments[0]?.databaseId ?? null;
-              const line = thread.line ?? thread.originalLine ?? undefined;
-              return <article key={thread.id} className="overflow-hidden rounded-lg border border-border bg-card">
-                <div className="flex items-center gap-2 border-b border-border/70 px-3 py-1.5">
-                  <button
-                    type="button"
-                    onClick={() => onJumpToFile(thread.path, line === undefined ? undefined : Number(line), summary.headBranch)}
-                    title={checkedOutHere ? "Open in the editor at this line" : `Open in the editor — ${summary.headBranch} isn’t checked out here`}
-                    className="group inline-flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    <span className="truncate">{thread.path}{line !== undefined ? `:${line}` : ""}</span>
-                    <SquareArrowOutUpRight size={11} className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
-                  </button>
-                  <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                    {thread.isOutdated && <Badge variant="outline" size="sm">Outdated</Badge>}
-                    {thread.isResolved && <Badge variant="success" size="sm">Resolved</Badge>}
-                  </span>
-                </div>
-                <div className="space-y-2.5 px-3 py-2.5">
-                  {thread.comments.map(comment => <div key={comment.id}>
-                    <p className="flex items-baseline gap-2 text-[11px]">
-                      <span className="font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
-                      <CommentTime iso={comment.createdAt} />
-                    </p>
-                    <div className="mt-0.5"><GithubMarkdown text={comment.body} repositoryUrl={repositoryUrl} /></div>
-                  </div>)}
-                  {rootId !== null && <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setPending({
-                      title: "Reply to the review comment",
-                      consequence: "Posted as you, visible to everyone on the repository.",
-                      command: `gh api repos/${repoLabel}/pulls/${number}/comments/${rootId}/replies --method POST -f body=…`,
-                      tone: "neutral",
-                      icon: MessageSquare,
-                      requiresBody: true,
-                      confirmLabel: "Reply",
-                      build: body => ({ kind: "reply", number, commentId: rootId, body }),
-                    })}
-                    className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-                  >
-                    <MessageSquare size={11} aria-hidden="true" /> Reply
-                  </button>}
-                </div>
-              </article>;
-            })}
-          </div> : <p className="text-[12px] text-muted-foreground">No review threads.</p>}
-        </section>
+        <ReviewThreads
+          threads={reviewThreads}
+          number={number}
+          repositoryUrl={repositoryUrl}
+          headBranch={summary.headBranch}
+          checkedOutHere={checkedOutHere}
+          write={write}
+          onJumpToFile={onJumpToFile}
+        />
         </>}
           </motion.div>
         </AnimatePresence>
@@ -1855,9 +1842,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
         onConfirm={() => void runCheckout()}
       />}
     </ActionSheetHost>
-
-
-  </div>;
+  </div></AvatarScope.Provider>;
 }
 
 function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, error, availableLabels, onBack, onActed }: {
@@ -1944,17 +1929,22 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
           <SectionLabel count={issue.comments.length}>Comments</SectionLabel>
           {issue.comments.length ? <CommentList comments={issue.comments} repositoryUrl={repositoryUrl} /> : <p className="text-[12px] text-muted-foreground">No comments.</p>}
           <div className="mt-2.5">
-            <CommentComposer disabled={busy} onSubmit={body => setPending({
-              title: `Post a comment on #${number}`,
-              consequence: "Posted as you, visible to everyone on the repository.",
-              command: `gh api repos/${repoLabel}/issues/${number}/comments --method POST -f body=…`,
-              tone: "neutral",
-              icon: MessageSquare,
-              requiresBody: true,
-              body,
-              confirmLabel: "Post comment",
-              build: value => ({ kind: "comment", target: "issue", number, body: value }),
-            })} />
+            <Composer
+              label="New comment"
+              placeholder="Write a comment…"
+              submitLabel="Comment"
+              disabled={busy}
+              onSubmit={async body => {
+                try {
+                  const outcome = await bridgeApi.githubAct(workspaceId, { kind: "comment", target: "issue", number, body }, true);
+                  if (!outcome.executed) return outcome.message;
+                  onActed();
+                  return undefined;
+                } catch (value) {
+                  return errorMessage(value);
+                }
+              }}
+            />
           </div>
         </section>
       </div>
