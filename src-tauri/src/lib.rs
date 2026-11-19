@@ -144,6 +144,30 @@ async fn start_import(
 }
 
 #[tauri::command]
+async fn import_continuation(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportContinuation, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Import continuation", move || {
+        api::import_continuation(&core, &wire::ImportContinuationParams { session_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn continue_imported_chat(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ContinuedImportedChat, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Continue imported chat", move || {
+        api::continue_imported_chat(&core, &wire::ContinueImportedChatParams { session_id })
+    })
+    .await
+}
+
+#[tauri::command]
 async fn import_status(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ImportJobStatus, BridgeError> {
@@ -3609,6 +3633,8 @@ pub fn run() -> i32 {
             detect_import_sources,
             start_import,
             import_status,
+            import_continuation,
+            continue_imported_chat,
             github_status,
             connector_list,
             connector_inbox,

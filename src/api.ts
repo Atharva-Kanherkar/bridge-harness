@@ -55,6 +55,8 @@ import type {
   ImportSourcesDetection,
   ImportJob,
   ImportJobStatus,
+  ImportContinuation,
+  ContinuedImportedChat,
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
@@ -1865,6 +1867,20 @@ export const bridgeApi = {
     if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messageCount: 14 } }));
     if (selected.has("mock-history-2")) candidates.push(candidate("mock-history-2", { kind: "conversation", title: "Add a README for the discount fix", normalizedPayload: { messageCount: 6 }, diagnostics: [{ code: "excluded_attachment", severity: "warning", classification: "documented", message: "1 attachment: image too large or not an image; the message text was kept", recovery: null, sourceLabel: "projects/demo/session-2.jsonl" }] }));
     return Promise.resolve({ candidates });
+  },
+  /** How an imported chat would continue, before the first send. */
+  importContinuation: (sessionId: string): Promise<ImportContinuation> => {
+    if (hasBackend()) return call("imports/import_continuation", { sessionId });
+    return Promise.resolve({ mode: "history", reason: "Mock mode has no Claude Code sessions to resume." });
+  },
+  /** Continue an imported chat in a new chat that branches from it. */
+  continueImportedChat: async (sessionId: string): Promise<ContinuedImportedChat> => {
+    if (hasBackend()) return call("imports/continue_imported_chat", { sessionId });
+    const source = mockState.sessions.find(session => session.id === sessionId);
+    if (!source) throw new Error("That chat does not exist");
+    const id = crypto.randomUUID();
+    mockState.sessions.unshift({ ...source, id, kind: "direct", status: "idle", forkParentSessionId: sessionId });
+    return { sessionId: id, mode: "history", reason: "Mock mode has no Claude Code sessions to resume." };
   },
   detectImportSources: (): Promise<ImportSourcesDetection> => {
     if (hasBackend()) return call("imports/detect_import_sources");

@@ -1094,7 +1094,21 @@ impl AdapterRegistry {
         let descriptor = adapter.descriptor();
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         request.speed = supported_model_speed(&descriptor, request.model, request.speed);
-        adapter.resume(request)
+        let wanted = request.provider_session_id.to_owned();
+        let fork = request.fork;
+        let mut started = adapter.resume(request)?;
+        // A plain resume must come back on the session it asked for. Anything
+        // else would carry the chat on in another conversation: stop it, and
+        // let the caller's fallback restore from Bridge's own history. A fork
+        // gets a new id by design, and an empty id is one reported later.
+        let reported = started.runtime.provider_session_id().to_owned();
+        if !fork && !reported.is_empty() && reported != wanted {
+            started.runtime.stop(ShutdownReason::Failed);
+            return Err(BridgeError::Invalid(format!(
+                "{id} resumed session {reported} instead of {wanted}"
+            )));
+        }
+        Ok(started)
     }
 
     pub fn supports_native_resume(&self, id: &str) -> bool {
@@ -2250,6 +2264,86 @@ mod tests {
             !registry.supports_native_compaction("not-registered"),
             "an unknown harness answers no rather than panicking"
         );
+    }
+
+    /// A native resume that comes back on another session is not a resume:
+    /// the new process is stopped and the caller's fallback runs, so a chat
+    /// never quietly carries on in someone else's conversation.
+    #[test]
+    fn a_resume_onto_another_session_is_refused_and_stopped() {
+        struct Drifting { reports: &'static str, stopped: Arc<AtomicBool> }
+        impl AdapterRuntime for Drifting {
+            fn process_id(&self) -> u32 { 0 }
+            fn provider_session_id(&self) -> &str { self.reports }
+            fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+            fn send_turn(&self, _text: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+            fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn stop(&mut self, _reason: ShutdownReason) { self.stopped.store(true, Ordering::SeqCst); }
+        }
+        struct Resumer { reports: &'static str, stopped: Arc<AtomicBool> }
+        impl HarnessAdapter for Resumer {
+            fn as_any(&self) -> &dyn Any { self }
+            fn descriptor(&self) -> AdapterDescriptor {
+                AdapterDescriptor {
+                    sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                    id: "claude".into(),
+                    label: "Resumer".into(),
+                    available: true,
+                    auth_state: crate::model::AuthState::Unknown,
+                    version: Some("1".into()),
+                    capabilities: vec!["messages".into()],
+                    unavailable_reason: None,
+                    models: vec![],
+                    default_model: None,
+                    model_catalog: ModelCatalogDiagnostics::curated(),
+                }
+            }
+            fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not launched".into()))
+            }
+            fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Ok(StartedAdapter {
+                    runtime: Box::new(Drifting { reports: self.reports, stopped: self.stopped.clone() }),
+                    reader: Box::new(std::io::Cursor::new(Vec::new())),
+                    startup_messages: vec![],
+                })
+            }
+            fn supports_native_resume(&self) -> bool { true }
+            fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> { vec![] }
+        }
+        let resume = |reports: &'static str, fork: bool| {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let mut registry = AdapterRegistry::empty();
+            registry.register(Box::new(Resumer { reports, stopped: stopped.clone() })).unwrap();
+            let result = registry.resume("claude", ResumeRequest {
+                session_id: None,
+                provider_session_id: "wanted",
+                fork,
+                cwd: "/tmp",
+                model: None,
+                effort: None,
+                speed: None,
+                instructions: None,
+                write_mode: None,
+                read_only_sandbox: None,
+                briefing: None,
+                interactive: false,
+                account: None,
+                on_progress: None,
+            });
+            (result.map(|started| started.runtime.provider_session_id().to_owned()), stopped.load(Ordering::SeqCst))
+        };
+
+        let (result, stopped) = resume("someone-else", false);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("someone-else") && error.contains("wanted"), "{error}");
+        assert!(stopped, "the process that came up on the wrong session is stopped");
+
+        let (result, stopped) = resume("wanted", false);
+        assert_eq!((result.unwrap(), stopped), ("wanted".to_owned(), false));
+        let (result, stopped) = resume("", false);
+        assert_eq!((result.unwrap(), stopped), (String::new(), false), "an id reported later is not a mismatch");
     }
 
     #[test]

@@ -53,6 +53,8 @@ methods![
     (DetectImportSources, "imports", "detect_import_sources"),
     (StartImport, "imports", "start_import"),
     (ImportStatus, "imports", "import_status"),
+    (ImportContinuation, "imports", "import_continuation"),
+    (ContinueImportedChat, "imports", "continue_imported_chat"),
     // github — read-only repository pull-request surface
     (GithubStatus, "github", "github_status"),
     (GithubPullRequests, "github", "github_prs"),

@@ -223,6 +223,24 @@ pub fn start_import(
     crate::import_job::start(core, &params.tool)
 }
 
+/// How an imported chat would continue, before the first send.
+pub fn import_continuation(
+    core: &Arc<BridgeCore>,
+    params: &wire::ImportContinuationParams,
+) -> Result<wire::ImportContinuation, BridgeError> {
+    let plan = crate::import_continue::plan(core, &params.session_id)?;
+    Ok(wire::ImportContinuation { mode: plan.mode.into(), reason: plan.reason })
+}
+
+/// Continue an imported chat in a new chat; the imported one never changes.
+pub fn continue_imported_chat(
+    core: &Arc<BridgeCore>,
+    params: &wire::ContinueImportedChatParams,
+) -> Result<wire::ContinuedImportedChat, BridgeError> {
+    let (session_id, plan) = crate::import_continue::continue_chat(core, &params.session_id)?;
+    Ok(wire::ContinuedImportedChat { session_id, mode: plan.mode.into(), reason: plan.reason })
+}
+
 /// The latest background import, running or finished.
 pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
     Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })

@@ -10,13 +10,13 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, use
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
-import type { ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
+import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
-import { importedChatBadge } from "./importSources";
+import { continuationNotice, importedChatBadge } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -1055,6 +1055,20 @@ function AppContent() {
     };
   }, [forest?.entries, session?.id, session?.kind]);
   useEffect(() => { setAgentDispatchNotice(undefined); }, [session?.id]);
+  // An imported chat is history: the next message continues it in a new chat,
+  // natively when the tool still has the session. Say which before the send.
+  const [importContinuation, setImportContinuation] = useState<{ sessionId: string; plan: ImportContinuation }>();
+  useEffect(() => {
+    if (session?.kind !== "imported") return;
+    let cancelled = false;
+    const sessionId = session.id;
+    bridgeApi.importContinuation(sessionId)
+      .then(plan => { if (!cancelled) setImportContinuation({ sessionId, plan }); })
+      .catch(() => { if (!cancelled) setImportContinuation(undefined); });
+    return () => { cancelled = true; };
+  }, [session?.id, session?.kind]);
+  const continuation = session?.kind === "imported" && importContinuation?.sessionId === session.id
+    ? continuationNotice(importContinuation.plan, importedSource?.tool) : undefined;
 
   // The dock is a workspace possession: width, active pane, and expand state
   // belong to the tree being worked on, so direct chats key by session instead.
@@ -2971,6 +2985,17 @@ function AppContent() {
   /// submit, with optimistic pending bookkeeping. Slash-command handling stays
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
   async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
+    // An imported chat never changes. The message goes to a new chat that
+    // continues it, natively when the tool still has the session.
+    if (target.kind === "imported") {
+      const continued = await bridgeApi.continueImportedChat(target.id);
+      const next = await bridgeApi.state();
+      setState(next);
+      openSession(continued.sessionId);
+      const created = next.sessions.find(item => item.id === continued.sessionId);
+      if (!created) throw new Error("Bridge could not open the chat that continues this one.");
+      return deliverPrompt(created, submittedText, sentAttachments);
+    }
     const key = crypto.randomUUID();
     const latency = beginSend(target.id);
     const flight = sessionStops.beginSend(target.id, () => setPending(current => current.filter(item => item.key !== key)));
@@ -3127,6 +3152,22 @@ function AppContent() {
     }
     const key = crypto.randomUUID();
     let target = session;
+    // An imported chat never changes: the message goes to a new chat that
+    // continues it, natively when the tool still has the session.
+    if (session.kind === "imported") {
+      try {
+        const continued = await bridgeApi.continueImportedChat(session.id);
+        const next = await bridgeApi.state();
+        setState(next);
+        openSession(continued.sessionId);
+        const created = next.sessions.find(item => item.id === continued.sessionId);
+        if (!created) throw new Error("Bridge could not open the chat that continues this one.");
+        target = created;
+      } catch (e) {
+        setError(errorMessage(e));
+        return;
+      }
+    }
     // Stop before submission means the words never left. Their bubble goes
     // and they are back in the composer, as if Send had not been pressed.
     const flight = sessionStops.beginSend(target.id, () => {
@@ -4066,6 +4107,12 @@ function AppContent() {
                   </div>
                 </div>}
                 {!isWorkerView && <LimitRecoveryBanner sessionId={session.id} sessionStatus={session.status} adapters={adapters} onError={message => setError(message)} />}
+                {continuation && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
+                  <div data-import-continuation={importContinuation?.plan.mode} className="u-glass-soft flex max-w-full items-start gap-2 rounded-2xl px-3.5 py-2 text-xs text-muted-foreground" role="status">
+                    <History size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                    <span><span className="font-medium text-foreground">{continuation.headline}</span><span className="block">{continuation.detail}</span></span>
+                  </div>
+                </div>}
                 {fallbackNotice && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <span>{fallbackNotice}</span>
