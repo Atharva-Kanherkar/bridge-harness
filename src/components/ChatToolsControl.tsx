@@ -5,6 +5,7 @@ import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-pan
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { bridgeApi } from "../api";
+import { baseChoice, overlay, removed, switched, type Choice } from "../chatToolChoice";
 import { relativeTime } from "../connectorSurface";
 import { formatTokens } from "../contextBreakdown";
 import { errorMessage } from "../errors";
@@ -24,15 +25,6 @@ export type ChatToolsControlProps = { disabled?: boolean } & (
   | { draft: ChatToolsDraft; choice: ChatToolSelection | null; onChoiceChange: (choice: ChatToolSelection) => void; sessionId?: undefined }
 );
 
-type Choice = {
-  harness: string;
-  account: string | null;
-  serversOff: string[];
-  codexAppsOff: boolean;
-  claudeSkills: { only: string[] } | null;
-  codexSkillsOff: string[];
-};
-
 type Notice = { tone: "saved" | "refusal" | "error"; text: string };
 type Pending = { id: string; on: boolean | null };
 
@@ -45,65 +37,6 @@ const SECTIONS = [
 
 const describeTarget = (harness: string, account: string | null) =>
   `${HARNESS_LABEL[harness] ?? harness} (${account ? `account ${account}` : "own login"})`;
-
-/** The saved choice as a full value for this harness and account. A choice for another harness starts over. */
-function baseChoice(choice: ChatToolSelection | null | undefined, harness: string, account: string | null): Choice {
-  const own = choice?.harness === harness ? choice : null;
-  return {
-    harness,
-    account,
-    serversOff: [...own?.serversOff ?? []],
-    codexAppsOff: own?.codexAppsOff ?? false,
-    claudeSkills: own?.claudeSkills ? { only: [...own.claudeSkills.only] } : null,
-    codexSkillsOff: [...own?.codexSkillsOff ?? []],
-  };
-}
-
-const without = (list: string[], id: string) => list.filter(entry => entry !== id);
-const marked = (list: string[], id: string, present: boolean) => present ? [...without(list, id), id] : without(list, id);
-
-/** The choice after one switch. A first Claude skill switch keeps each listed skill that is on. */
-function switched(base: Choice, item: ChatToolItem, on: boolean, items: ChatToolItem[]): Choice {
-  if (item.kind === "server") return { ...base, serversOff: marked(base.serversOff, item.id, !on) };
-  if (item.kind === "apps") return { ...base, codexAppsOff: !on };
-  if (item.kind !== "skill") return base;
-  if (base.harness !== "claude") return { ...base, codexSkillsOff: marked(base.codexSkillsOff, item.id, !on) };
-  const only = base.claudeSkills?.only ?? items.filter(entry => entry.kind === "skill" && entry.state === "on").map(entry => entry.id);
-  return { ...base, claudeSkills: { only: marked(only, item.id, on) } };
-}
-
-/** The choice without a saved name that the sources no longer list. */
-function removed(base: Choice, item: ChatToolItem): Choice {
-  if (item.kind === "server") return { ...base, serversOff: without(base.serversOff, item.id) };
-  if (item.kind !== "skill") return base;
-  return base.harness === "claude"
-    ? { ...base, claudeSkills: base.claudeSkills && { only: without(base.claudeSkills.only, item.id) } }
-    : { ...base, codexSkillsOff: without(base.codexSkillsOff, item.id) };
-}
-
-/** The listed items as a local choice sets them. Saved names the sources do not list stay visible. */
-function overlay(items: ChatToolItem[], choice: Choice): ChatToolItem[] {
-  const off = new Set(choice.serversOff);
-  const skillsOff = new Set(choice.codexSkillsOff);
-  const only = choice.claudeSkills ? new Set(choice.claudeSkills.only) : null;
-  const state = (on: boolean): ChatToolItem["state"] => on ? "on" : "off";
-  const shown = items.map((item): ChatToolItem => {
-    if (item.state === "fixed") return item;
-    if (item.kind === "server") return { ...item, state: state(!off.has(item.id)) };
-    if (item.kind === "apps") return { ...item, state: state(!choice.codexAppsOff) };
-    if (item.kind === "skill") return { ...item, state: state(only ? only.has(item.id) : !skillsOff.has(item.id)) };
-    return item;
-  });
-  const listed = (kind: ChatToolItem["kind"]) => new Set(items.filter(item => item.kind === kind).map(item => item.id));
-  const servers = listed("server");
-  const skills = listed("skill");
-  const unseen = (kind: ChatToolItem["kind"], id: string, on: boolean): ChatToolItem =>
-    ({ kind, id, label: id, group: kind === "server" ? "MCP servers" : "Skills", state: state(on), fixedReason: null, seen: false, tokens: null });
-  shown.push(...choice.serversOff.filter(id => !servers.has(id)).map(id => unseen("server", id, false)));
-  shown.push(...[...only ?? []].filter(id => !skills.has(id)).map(id => unseen("skill", id, true)));
-  shown.push(...choice.codexSkillsOff.filter(id => !skills.has(id)).map(id => unseen("skill", id, false)));
-  return shown;
-}
 
 /** The items of one section, in the order the host lists them, under their groups. */
 function grouped(items: ChatToolItem[]): [string, ChatToolItem[]][] {
