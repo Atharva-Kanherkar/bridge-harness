@@ -1605,7 +1605,7 @@ function AppContent() {
   function patchDraft(patch: ChatDefaults) {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
   }
-  function setDraftToolSelection(toolSelection: ChatToolSelection) {
+  function setDraftToolSelection(toolSelection: ChatToolSelection | null) {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), toolSelection }));
   }
 

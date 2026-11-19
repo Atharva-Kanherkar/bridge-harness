@@ -1389,4 +1389,57 @@ describe("a new chat's model before the host answers", () => {
     expect(saved.selection).toMatchObject({ revision: 1, applies: true });
     expect(saved.choice?.serversOff).toEqual(["github"]);
   });
+
+  it("lets a draft clear a tool choice that does not fit its model", async () => {
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
+    await mountApp();
+    await settle(2);
+    const chip = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Tools:"]')!;
+    const pick = async (label: string) => {
+      // The picker stays open after a pick that offers an effort.
+      if (pill()!.getAttribute("aria-expanded") !== "true") await click(pill()!);
+      await click([...container.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes(label))!);
+      await settle(2);
+    };
+    const send = async () => {
+      const box = composer()!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, "Plan the next step");
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+      await settle(4);
+    };
+
+    // Apps off in a Codex draft, then the draft moves to OpenCode before its first turn.
+    await pick("GPT Luna");
+    await click(chip());
+    await click(document.querySelector('[data-tool-item="codex_apps"] [role="menuitemcheckbox"]')!);
+    expect(chip().getAttribute("aria-label")).toBe("Tools: 1 left out");
+    await click(chip());
+    await pick("Big Pickle");
+    expect(chip().getAttribute("aria-label")).toBe("Tools: not applied");
+
+    // The create refuses the choice and says why.
+    await send();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0].toolSelection).toMatchObject({ harness: "codex", codexAppsOff: true });
+    expect(document.body.textContent).toContain("The tool choice was made for Codex (own login), but the chat starts on OpenCode (own login)");
+
+    // The panel of the OpenCode draft clears the choice, and the next create starts the chat without one.
+    await click(chip());
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe("Chosen for Codex (own login), not applied");
+    const clear = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Clear this choice");
+    expect(clear, "the panel offers a way to clear the choice").toBeDefined();
+    await click(clear!);
+    expect(chip().getAttribute("aria-label")).toBe("Tools: all on");
+    expect(document.querySelector('[role="menu"] [role="note"]')).toBeNull();
+    await click(chip());
+    await send();
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]![0]).not.toHaveProperty("toolSelection");
+    const created = await create.mock.results[1]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
+    expect(created.state.sessions.find(session => session.id === created.sessionId)?.harness).toBe("opencode");
+  });
 });

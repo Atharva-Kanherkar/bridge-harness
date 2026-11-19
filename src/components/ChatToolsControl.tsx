@@ -22,7 +22,7 @@ import type { ChatToolItem, ChatTools, ChatToolSelection, ChatToolsDraft } from 
  */
 export type ChatToolsControlProps = { disabled?: boolean } & (
   | { sessionId: string; harness: string; account?: string | null; draft?: undefined }
-  | { draft: ChatToolsDraft; choice: ChatToolSelection | null; onChoiceChange: (choice: ChatToolSelection) => void; sessionId?: undefined }
+  | { draft: ChatToolsDraft; choice: ChatToolSelection | null; onChoiceChange: (choice: ChatToolSelection | null) => void; sessionId?: undefined }
 );
 
 type Notice = { tone: "saved" | "refusal" | "error"; text: string };
@@ -172,7 +172,18 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
           {props.draft ? "Leave out what this chat does not need. The chat starts with this choice." : "Leave out what this chat does not need. A change applies at the next turn."}
         </p>
       </div>
-      {notApplied && <p role="note" className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5 text-[11px] leading-4 text-warning">{notApplied}</p>}
+      {notApplied && <div className="mx-1 mb-1 rounded-md bg-accent px-2 py-1.5">
+        <p role="note" className="text-[11px] leading-4 text-warning">{notApplied}</p>
+        {/* The create refuses a draft choice for another target, so the draft can drop it. */}
+        {props.draft && draftTarget && <button
+          type="button"
+          role="menuitem"
+          tabIndex={-1}
+          disabled={disabled}
+          onClick={() => { setNotice(null); props.onChoiceChange(null); }}
+          className="mt-1 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-foreground transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
+        ><X size={12} aria-hidden="true" />Clear this choice</button>}
+      </div>}
       {notice && <p
         role={notice.tone === "saved" ? "status" : "alert"}
         className={cn("mx-1 mb-1 px-1 text-[11px] leading-4", notice.tone === "error" ? "text-destructive" : notice.tone === "refusal" ? "text-warning" : "text-muted-foreground")}
