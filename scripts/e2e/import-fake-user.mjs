@@ -165,7 +165,8 @@ try {
   const found = await text();
   check("Claude Code is found with its chats, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 6 projects · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
-  check("Codex is found and honestly marked as coming", found.includes("Codex chats are next"));
+  check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
+    && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
   check("Tools that are not installed say so", found.includes("Not found on this Mac"));
   await shot("01-found-dark");
 
@@ -226,6 +227,17 @@ try {
   check("Background runs are left out and counted", summary.includes("Background runs left out"));
   await caption(`${imported} items came over; background runs left out`);
   await shot("04-summary-dark");
+
+  await caption("Codex has its own section and its own Import");
+  await click("Import", '[data-import-tool="codex"] button');
+  await waitFor("the Codex import to finish", `!!document.querySelector('[data-import-tool="codex"] [data-import-result="imported"]')`, 60000);
+  const codexImported = Number(await js(`document.querySelector('[data-import-tool="codex"] [data-import-result="imported"]').textContent`));
+  check("Codex imports from its own section", codexImported === 1, `imported=${codexImported}`);
+  const claudeKept = Number((await js(`document.querySelector('[data-import-tool="claude_code"] [data-import-result="imported"]').textContent`)).replace(/,/g, ""));
+  check("Claude Code's section keeps its own result", claudeKept === EXPECTED, `claude=${claudeKept}`);
+  await js(`document.querySelector('[data-import-tool="codex"]').scrollIntoView({ block: "center" })`);
+  await sleep(600);
+  await shot("05-codex-summary-dark");
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");

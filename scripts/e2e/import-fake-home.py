@@ -69,5 +69,18 @@ open(os.path.join(home, ".claude/projects/-work-billing-service/memory/MEMORY.md
 open(os.path.join(home, ".claude/CLAUDE.md"), "w").write("Prefer small commits. Run tests before saying done.\n")
 for folder in [".codex/sessions/2026/11/17", "conductor/workspaces/billing-service/tokyo", "conductor/workspaces/billing-service/lima", "conductor/workspaces/docs-site/paris", ".t3/userdata"]:
     os.makedirs(os.path.join(home, folder), exist_ok=True)
-open(os.path.join(home, ".codex/sessions/2026/11/17/rollout-2026-11-17T10-00-00-abc.jsonl"), "w").write("{}\n")
+# One Codex chat, shaped like a real rollout: what Codex showed is in
+# item_completed events.
+def codex_line(kind, payload): return json.dumps({"timestamp": "2026-11-17T10:00:00Z", "ordinal": 0, "type": kind, "payload": payload})
+def codex_item(item): return codex_line("event_msg", {"type": "item_completed", "item": item})
+with open(os.path.join(home, ".codex/sessions/2026/11/17/rollout-2026-11-17T10-00-00-codex-thread-1.jsonl"), "w") as out:
+    out.write("\n".join([
+        codex_line("session_meta", {"id": "codex-thread-1", "cwd": "/work/billing-service", "timestamp": "2026-11-17T10:00:00Z", "originator": "codex_exec", "source": "exec"}),
+        codex_line("turn_context", {"model": "gpt-6.1", "effort": "medium"}),
+        codex_item({"type": "UserMessage", "id": "cu1", "content": [{"type": "text", "text": "Why is the refund job slow?", "text_elements": []}]}),
+        codex_item({"type": "CommandExecution", "id": "cc1", "command": ["/bin/zsh", "-lc", "rg -n refund jobs/"], "cwd": "/work/billing-service", "aggregated_output": "jobs/refund.py:40: for row in rows:", "exit_code": 0, "status": "completed"}),
+        codex_item({"type": "AgentMessage", "id": "ca1", "content": [{"type": "text", "text": "It loads every row before filtering. Filtering in SQL makes it 30x faster."}]}),
+    ]) + "\n")
+with open(os.path.join(home, ".codex/session_index.jsonl"), "w") as out:
+    out.write(json.dumps({"id": "codex-thread-1", "thread_name": "Speed up the refund job", "updated_at": "2026-11-17T10:05:00Z"}) + "\n")
 print(home)
