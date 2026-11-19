@@ -2057,8 +2057,9 @@ pub(crate) fn fork_session_records(
     }
     // Continue in chat: a workflow run's conversation goes on as an ordinary
     // chat. The run itself stays hidden and refuses user turns; its fork must
-    // do neither.
-    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND { "direct".to_owned() } else { kind };
+    // do neither. An imported chat is the same: it is history that never
+    // starts, and a fork of it is an ordinary chat that can.
+    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND || kind == "imported" { "direct".to_owned() } else { kind };
     let fork_harness = harness.map(|value| store::harness_name(value).into_owned());
     let child_harness = fork_harness.as_deref().unwrap_or(&parent_harness);
     let child_model = match (model, parent_model.as_deref()) {

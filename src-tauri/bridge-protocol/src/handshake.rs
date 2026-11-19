@@ -164,9 +164,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.44 adds the background import**: `imports/start_import`,
 /// `imports/import_status` and the `imports/progress` event.
+///
+/// **1.45 adds continuing an imported chat**: `imports/import_continuation`
+/// and `imports/continue_imported_chat`.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 44,
+    minor: 45,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -477,6 +480,14 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn continue_imported_client_rejects_a_daemon_without_it() {
+        let before = ProtocolVersion { major: 1, minor: 44 };
+        let continuing = ProtocolVersion { major: 1, minor: 45 };
+        assert!(!before.accepts(continuing));
+        assert!(continuing.accepts(before), "a 1.44 client still pairs with a 1.45 daemon");
     }
 
     #[test]

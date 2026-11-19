@@ -260,6 +260,14 @@ pub fn dispatch(
             reply(api::start_import(core, &p))
         }
         MethodName::ImportStatus => reply(api::import_status(core)),
+        MethodName::ImportContinuation => {
+            let p: wire::ImportContinuationParams = decode(method, params)?;
+            reply(api::import_continuation(core, &p))
+        }
+        MethodName::ContinueImportedChat => {
+            let p: wire::ContinueImportedChatParams = decode(method, params)?;
+            reply(api::continue_imported_chat(core, &p))
+        }
 
         MethodName::CreateWorkspace => {
             let p: wire::CreateWorkspaceParams = decode(method, params)?;

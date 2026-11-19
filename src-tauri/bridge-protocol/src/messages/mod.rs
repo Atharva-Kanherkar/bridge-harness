@@ -198,6 +198,8 @@ typed_methods![
     (DetectImportSources, _, ImportSourcesDetection),
     (StartImport, StartImportParams, ImportJob),
     (ImportStatus, _, ImportJobStatus),
+    (ImportContinuation, ImportContinuationParams, ImportContinuation),
+    (ContinueImportedChat, ContinueImportedChatParams, ContinuedImportedChat),
     // github
     (GithubStatus, GithubStatusParams, GithubStatusResult),
     (GithubPullRequests, GithubPrsParams, GithubPullRequestsResult),

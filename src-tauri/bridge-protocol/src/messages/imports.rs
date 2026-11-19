@@ -348,6 +348,41 @@ pub struct ImportJob {
     pub finished_at: Option<String>,
 }
 
+/// `imports/import_continuation`: the imported chat to ask about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportContinuationParams {
+    pub session_id: String,
+}
+
+/// `imports/continue_imported_chat`: the imported chat to continue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinueImportedChatParams {
+    pub session_id: String,
+}
+
+/// How an imported chat continues: `native` resumes the tool's own session,
+/// `history` starts a new chat seeded with the imported history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportContinuation {
+    pub mode: String,
+    /// Why it cannot continue natively, for the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The new chat that continues an imported one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuedImportedChat {
+    pub session_id: String,
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// `imports/import_status`: the latest import, running or finished.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
