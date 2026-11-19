@@ -1,5 +1,6 @@
 // The arithmetic of a tool choice in the picker. It reads the fields that the
 // choice of a harness holds, so a skill switch never asks which harness it is.
+import { normalizeAccount } from "./providerAccounts";
 import type { ChatToolItem, ChatToolSelection } from "./types";
 
 /** A saved choice with each field set, for one harness and account. */
@@ -26,9 +27,14 @@ const CHOICE_FIELDS: Record<string, readonly ChoiceField[]> = {
 
 const holds = (harness: string, field: ChoiceField) => (CHOICE_FIELDS[harness] ?? []).includes(field);
 
-/** The saved choice as a full value for this harness and account. A choice for another harness starts over. */
+/** Whether a saved choice belongs to this harness and this account. */
+export function fits(choice: ChatToolSelection | null | undefined, harness: string, account: string | null): boolean {
+  return !!choice && choice.harness === harness && normalizeAccount(choice.harness, choice.account) === account;
+}
+
+/** The saved choice as a full value for this harness and account. A choice for another harness or account starts over. */
 export function baseChoice(choice: ChatToolSelection | null | undefined, harness: string, account: string | null): Choice {
-  const own = choice?.harness === harness ? choice : null;
+  const own = fits(choice, harness, account) ? choice : null;
   return {
     harness,
     account,

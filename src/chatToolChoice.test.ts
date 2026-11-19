@@ -17,6 +17,14 @@ describe("the arithmetic of a tool choice", () => {
     expect(codex).toMatchObject({ claudeSkills: null, codexSkillsOff: ["simplify"] });
   });
 
+  it("starts over for a choice of another harness or account", () => {
+    const choice = { harness: "claude", account: "home", serversOff: ["github"] };
+    expect(baseChoice(choice, "claude", "home").serversOff).toEqual(["github"]);
+    expect(baseChoice(choice, "claude", "work")).toMatchObject({ account: "work", serversOff: [] });
+    expect(baseChoice(choice, "codex", "home")).toMatchObject({ harness: "codex", serversOff: [] });
+    expect(baseChoice({ harness: "claude", account: "claude" }, "claude", null).account).toBeNull();
+  });
+
   it("leaves a choice without a skill field as it is", () => {
     const base = baseChoice(null, "opencode", null);
     expect(switched(base, skills[0]!, false, skills)).toEqual(base);

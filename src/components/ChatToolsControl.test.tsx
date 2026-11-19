@@ -208,6 +208,55 @@ describe("ChatToolsControl", () => {
     expect(onChoiceChange).toHaveBeenCalledWith(expect.objectContaining({ harness: "codex", account: null, serversOff: ["github"] }));
   });
 
+  it("shows and edits a choice of another account as no choice", async () => {
+    const reason = "Chosen for Claude Code (account home), not applied";
+    const choice: ChatToolSelection = { harness: "claude", account: "home", serversOff: ["chrome-devtools"], claudeSkills: { only: ["review"] } };
+    // The host sets the states from a saved choice of the same harness, whatever its account.
+    const claudeTools = (saved: ChatToolSelection | null, states: Record<string, ChatToolItem["state"]>): ChatTools => ({
+      harness: "claude",
+      account: "work",
+      choice: saved,
+      items: [
+        item({ id: "bridge", state: "fixed", fixedReason: BRIDGE_REASON }),
+        item({ id: "chrome-devtools", state: states["chrome-devtools"] ?? "on" }),
+        item({ id: "github" }),
+        item({ id: "review", kind: "skill", group: "Skills" }),
+        item({ id: "simplify", kind: "skill", group: "Skills", state: states.simplify ?? "on" }),
+      ],
+      sources: [],
+      selection: saved
+        ? { revision: 2, harness: "claude", account: "home", applies: false, notAppliedReason: reason }
+        : { revision: 0, harness: "claude", account: "work", applies: true, notAppliedReason: null },
+    });
+    const ids = ["chrome-devtools", "github", "review", "simplify"];
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(claudeTools(choice, { "chrome-devtools": "off", simplify: "off" }));
+    const update = vi.spyOn(bridgeApi, "updateChatTools").mockReturnValue(new Promise(() => undefined));
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="claude" account="work" />); });
+    await settle();
+    await openPanel();
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe(reason);
+    expect(ids.map(id => switchOf(id)?.getAttribute("aria-checked"))).toEqual(["true", "true", "true", "true"]);
+    act(() => { switchOf("github")!.click(); });
+    expect(update).toHaveBeenCalledWith({
+      sessionId: "s-1",
+      expectedRevision: 2,
+      selection: { harness: "claude", account: "work", serversOff: ["github"], codexAppsOff: false, claudeSkills: null, codexSkillsOff: [] },
+    });
+    act(() => root.unmount());
+
+    // A draft keeps the choice of another account too, and a switch starts a new one.
+    root = createRoot(container);
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(claudeTools(null, {}));
+    const onChoiceChange = vi.fn();
+    act(() => { root.render(<ChatToolsControl draft={{ harness: "claude", account: "work", workspaceId: null }} choice={choice} onChoiceChange={onChoiceChange} />); });
+    await settle();
+    await openPanel();
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe(reason);
+    expect(ids.map(id => switchOf(id)?.getAttribute("aria-checked"))).toEqual(["true", "true", "true", "true"]);
+    act(() => { switchOf("simplify")!.click(); });
+    expect(onChoiceChange).toHaveBeenCalledWith({ harness: "claude", account: "work", serversOff: [], codexAppsOff: false, claudeSkills: { only: ["review"] }, codexSkillsOff: [] });
+  });
+
   it("shows a token figure with its source and none when absent", async () => {
     vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });

@@ -5,7 +5,7 @@ import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-pan
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { bridgeApi } from "../api";
-import { baseChoice, overlay, removed, switched, type Choice } from "../chatToolChoice";
+import { baseChoice, fits, overlay, removed, switched, type Choice } from "../chatToolChoice";
 import { relativeTime } from "../connectorSurface";
 import { formatTokens } from "../contextBreakdown";
 import { errorMessage } from "../errors";
@@ -85,11 +85,14 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
 
   const account = data ? normalizeAccount(data.harness, data.account) : null;
   const saved = props.draft ? props.choice : data?.choice ?? null;
+  const own = !!data && fits(saved, data.harness, account);
   const base = data ? baseChoice(saved, data.harness, account) : null;
-  // The host reads a draft without its choice, so the local choice sets the states.
-  const items = data && base ? props.draft ? overlay(data.items, base) : data.items : [];
+  // The host reads a draft without its choice, so the local choice sets the states. The
+  // host also sets the states from a choice of another account, which the next launch ignores.
+  const local = !!props.draft || (!!saved && !own);
+  const items = !data || !base ? [] : local ? overlay(data.items.filter(entry => entry.seen), base) : data.items;
   const offCount = items.filter(item => item.state === "off").length;
-  const draftTarget = props.draft && saved && (saved.harness !== data?.harness || normalizeAccount(saved.harness, saved.account) !== account)
+  const draftTarget = props.draft && saved && !own
     ? `Chosen for ${describeTarget(saved.harness, normalizeAccount(saved.harness, saved.account))}, not applied`
     : null;
   const notApplied = data ? (!data.selection.applies ? data.selection.notAppliedReason ?? "Not applied" : draftTarget) : null;
