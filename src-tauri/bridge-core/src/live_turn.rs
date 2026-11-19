@@ -12225,7 +12225,7 @@ fn settle_question_resolution(
     Ok(())
 }
 
-/// Durably resolve every unanswered OpenCode question for `session_id`
+/// Durably resolve every unanswered OpenCode or Claude question for `session_id`
 /// without answering it, tagged with why. Best-effort and silent on error —
 /// callers are teardown paths (session stop, provider error) that must not
 /// fail because a bookkeeping write did not land.
@@ -12237,9 +12237,9 @@ fn settle_question_resolution(
 /// permanently unable to accept new input, repeating the same failure).
 fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
     let Ok(mut statement) = db.prepare(
-        "SELECT e.sequence FROM session_entries e
+        "SELECT e.sequence, json_extract(e.payload,'$.data.requestMethod') FROM session_entries e
          WHERE e.session_id=?1 AND e.kind='question.requested'
-           AND json_extract(e.payload,'$.data.requestMethod')=?2
+           AND json_extract(e.payload,'$.data.requestMethod') IN (?2, ?3)
            AND NOT EXISTS (
                SELECT 1 FROM session_entries r
                WHERE r.session_id=e.session_id AND r.kind='question.resolved'
@@ -12250,16 +12250,16 @@ fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
         return;
     };
     let Ok(rows) = statement.query_map(
-        params![session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD],
-        |row| row.get::<_, i64>(0),
+        params![session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD, agent::CLAUDE_QUESTION_REQUEST_METHOD],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
     ) else {
         return;
     };
-    let Ok(pending) = rows.collect::<Result<Vec<i64>, _>>() else {
+    let Ok(pending) = rows.collect::<Result<Vec<(i64, String)>, _>>() else {
         return;
     };
     drop(statement);
-    for event_id in pending {
+    for (event_id, method) in pending {
         let resolved = agent::NormalizedEvent {
             kind: "question.resolved".into(),
             item_id: None,
@@ -12269,11 +12269,12 @@ fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
             text: None,
             data: serde_json::json!({"requestEventId": event_id, "decision": reason}),
         };
+        let adapter = if method == agent::CLAUDE_QUESTION_REQUEST_METHOD { "claude" } else { "opencode" };
         let _ = store::session_event(
             db,
             session_id,
             &resolved,
-            &serde_json::json!({"adapter": "opencode"}),
+            &serde_json::json!({"adapter": adapter}),
         );
     }
 }
@@ -19478,6 +19479,58 @@ mod permission_policy_tests {
                 "{method} must receive its own wire result shape",
             );
         }
+    }
+
+    /// The bug this guards: Claude's `AskUserQuestion` arrived as a
+    /// permission, Full access allowed it with no answers, and Claude went on
+    /// "since you didn't answer". It must wait for the person and then reach
+    /// Claude as answers keyed by question text.
+    #[test]
+    fn full_access_never_answers_a_claude_question_and_the_card_does() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='claude' WHERE id='chat'", []).unwrap();
+        let handles = attach(&core, "chat");
+        deliver_to(&core, "chat", &serde_json::json!({
+            "type": "control_request",
+            "request_id": "root-permission-7",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_use_id": "toolu_q",
+                "tool_name": "AskUserQuestion",
+                "tool_input": {"questions": [
+                    {"question": "Which database?", "header": "Database", "multiSelect": false,
+                     "options": [{"label": "Postgres", "description": ""}, {"label": "SQLite", "description": "", "preview": "app.db"}]},
+                    {"question": "Which features?", "header": "Features", "multiSelect": true,
+                     "options": [{"label": "Auth", "description": ""}, {"label": "Billing", "description": ""}]}
+                ]}
+            }
+        }));
+        assert!(handles.responded.lock().unwrap().is_empty(), "no permission reply may answer a question");
+        assert!(handles.answered.lock().unwrap().is_empty());
+        let (event_id, status): (i64, String) = core.db.lock().unwrap().query_row(
+            "SELECT e.sequence, s.status FROM session_entries e JOIN sessions s ON s.id=e.session_id
+             WHERE e.session_id='chat' AND e.kind='question.requested'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(status, "waiting");
+
+        let answers = std::collections::BTreeMap::from([
+            ("0".to_owned(), vec!["SQLite".to_owned()]),
+            ("1".to_owned(), vec!["Auth".to_owned(), "Something else".to_owned()]),
+        ]);
+        crate::api::resolve_question(&core, "chat", event_id, "answer", answers).unwrap();
+        let answered = handles.answered.lock().unwrap().clone();
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0].0, serde_json::json!("root-permission-7"));
+        assert_eq!(answered[0].1["answers"], serde_json::json!({"Which database?": "SQLite", "Which features?": "Auth, Something else"}));
+        assert_eq!(answered[0].1["annotations"], serde_json::json!({"Which database?": {"preview": "app.db"}}));
+        let submitted: String = core.db.lock().unwrap().query_row(
+            "SELECT json_extract(payload,'$.data.submittedAnswers') FROM session_entries WHERE session_id='chat' AND kind='question.resolved'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&submitted).unwrap(), serde_json::json!({"0": ["SQLite"], "1": ["Auth", "Something else"]}));
     }
 
     /// `session_event` returns sequence 0 for a frame it did not persist, and

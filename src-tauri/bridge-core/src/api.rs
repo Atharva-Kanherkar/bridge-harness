@@ -3320,6 +3320,7 @@ fn claim_interaction(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn finish_interaction(
     core: &Arc<BridgeCore>,
     session_id: &str,
@@ -3333,6 +3334,27 @@ fn finish_interaction(
     is_worker: bool,
     item_id: Option<&str>,
     failure: Option<&str>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    finish_interaction_with_answers(core, session_id, event_id, interaction_kind, decision, option_id, actor, reason, adapter_id, is_worker, item_id, failure, None)
+}
+
+/// `finish_interaction`, also recording what a question was answered with so
+/// the card can say so after a reload. Secret fields never reach this map.
+#[allow(clippy::too_many_arguments)]
+fn finish_interaction_with_answers(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    interaction_kind: &str,
+    decision: &str,
+    option_id: Option<&str>,
+    actor: &str,
+    reason: Option<&str>,
+    adapter_id: &str,
+    is_worker: bool,
+    item_id: Option<&str>,
+    failure: Option<&str>,
+    submitted_answers: Option<&Value>,
 ) -> Result<wire::InteractionResolutionResult, BridgeError> {
     let status = failure.map_or_else(
         || {
@@ -3366,6 +3388,7 @@ fn finish_interaction(
             "resolvedBy": actor,
             "reason": reason,
             "failure": failure,
+            "submittedAnswers": submitted_answers.filter(|_| failure.is_none()),
         }),
     };
     let event = store::session_event_in_transaction(
@@ -3683,6 +3706,13 @@ pub fn resolve_question(
                 runtime.reject_question(request_id)
             }
         }
+        (Some(runtime), agent::CLAUDE_QUESTION_REQUEST_METHOD) => {
+            if action == "answer" {
+                runtime.answer_question(request_id, claude_question_reply(&details, &answers))
+            } else {
+                runtime.reject_question(request_id)
+            }
+        }
         (Some(runtime), "item/tool/requestUserInput") => {
             let mapped = answers
                 .iter()
@@ -3691,16 +3721,11 @@ pub fn resolve_question(
             runtime.answer_question(request_id, serde_json::json!({"answers":mapped}))
         }
         (Some(runtime), "mcpServer/elicitation/request") => {
+            let properties = details.pointer("/requestedSchema/properties").cloned().unwrap_or(Value::Null);
             let content = answers
                 .iter()
-                .map(|(id, values)| {
-                    let value = if values.len() == 1 {
-                        Value::String(values[0].clone())
-                    } else {
-                        Value::Array(values.iter().cloned().map(Value::String).collect())
-                    };
-                    (id.clone(), value)
-                })
+                .filter(|(_, values)| !values.is_empty())
+                .map(|(id, values)| (id.clone(), elicitation_value(properties.get(id), values)))
                 .collect::<serde_json::Map<_, _>>();
             runtime.answer_question(
                 request_id,
@@ -3733,7 +3758,8 @@ pub fn resolve_question(
         );
         return Err(error);
     }
-    finish_interaction(
+    let submitted = (action == "answer").then(|| public_answers(&details, &answers));
+    finish_interaction_with_answers(
         core,
         session_id,
         event_id,
@@ -3746,7 +3772,111 @@ pub fn resolve_question(
         is_worker,
         item_id.as_deref(),
         None,
+        submitted.as_ref(),
     )
+}
+
+/// One elicitation answer typed the way its schema property asks: a boolean
+/// or number as JSON, an array property as an array, anything else a string.
+/// The card sends strings; a schema-checked server would reject `"true"`.
+fn elicitation_value(property: Option<&Value>, values: &[String]) -> Value {
+    let kind = |property: Option<&Value>| property.and_then(|p| p.get("type")).and_then(Value::as_str).map(str::to_owned);
+    let scalar = |kind: Option<&str>, value: &str| -> Value {
+        match kind {
+            Some("boolean") => match value.trim() {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                other => Value::String(other.to_owned()),
+            },
+            Some("integer") => value.trim().parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::String(value.to_owned())),
+            Some("number") => value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .unwrap_or_else(|| Value::String(value.to_owned())),
+            _ => Value::String(value.to_owned()),
+        }
+    };
+    match kind(property).as_deref() {
+        Some("array") => {
+            let item_kind = kind(property.and_then(|p| p.get("items")));
+            Value::Array(values.iter().map(|value| scalar(item_kind.as_deref(), value)).collect())
+        }
+        // No schema to read: keep the old shape, one string or a list.
+        None if values.len() > 1 => Value::Array(values.iter().cloned().map(Value::String).collect()),
+        other => scalar(other, &values[0]),
+    }
+}
+
+/// The field ids a provider marked secret: a Codex `isSecret` question or an
+/// elicitation property with a password format.
+fn secret_question_ids(details: &Value) -> std::collections::BTreeSet<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for (index, question) in details.get("questions").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        if question.get("isSecret").and_then(Value::as_bool) == Some(true) {
+            ids.insert(question.get("id").and_then(Value::as_str).map_or_else(|| index.to_string(), str::to_owned));
+        }
+    }
+    if let Some(properties) = details.pointer("/requestedSchema/properties").and_then(Value::as_object) {
+        for (id, property) in properties {
+            if property.get("format").and_then(Value::as_str) == Some("password") {
+                ids.insert(id.clone());
+            }
+        }
+    }
+    ids
+}
+
+/// What the card shows as the answer once settled: every non-secret field.
+fn public_answers(details: &Value, answers: &std::collections::BTreeMap<String, Vec<String>>) -> Value {
+    let secret = secret_question_ids(details);
+    Value::Object(
+        answers
+            .iter()
+            .filter(|(id, values)| !secret.contains(*id) && !values.is_empty())
+            .map(|(id, values)| (id.clone(), serde_json::json!(values)))
+            .collect(),
+    )
+}
+
+/// Claude's `AskUserQuestion` reply: `answers` keyed by each question's text,
+/// a multi-select joined with ", " as Claude Code joins it, plus the preview
+/// of a chosen option under `annotations` the way Claude Code reports it.
+fn claude_question_reply(details: &Value, answers: &std::collections::BTreeMap<String, Vec<String>>) -> Value {
+    let mut reply = serde_json::Map::new();
+    let mut annotations = serde_json::Map::new();
+    for (index, question) in details.get("questions").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        let id = question.get("id").and_then(Value::as_str).map_or_else(|| index.to_string(), str::to_owned);
+        let Some(text) = question.get("question").and_then(Value::as_str) else { continue };
+        let chosen = answers
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if chosen.is_empty() {
+            continue;
+        }
+        reply.insert(text.to_owned(), Value::String(chosen.join(", ")));
+        if let [only] = chosen.as_slice() {
+            let preview = question
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|option| option.get("label").and_then(Value::as_str) == Some(*only))
+                .and_then(|option| option.get("preview"))
+                .and_then(Value::as_str)
+                .filter(|preview| !preview.is_empty());
+            if let Some(preview) = preview {
+                annotations.insert(text.to_owned(), serde_json::json!({"preview": preview}));
+            }
+        }
+    }
+    serde_json::json!({"answers": reply, "annotations": annotations})
 }
 
 // --- terminal ----------------------------------------------------------------
@@ -7321,6 +7451,59 @@ pub fn execute_automation_action(
     let result = automations::execute(&user_home(), provider, automation_id, action)?;
     core.events.publish(CoreEvent::StateChanged);
     Ok(result)
+}
+
+#[cfg(test)]
+mod question_reply_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn elicitation_answers_take_their_schema_types() {
+        let schema = json!({
+            "confirm": {"type": "boolean"},
+            "count": {"type": "integer"},
+            "ratio": {"type": "number"},
+            "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}},
+            "name": {"type": "string"}
+        });
+        let one = |id: &str, values: &[&str]| elicitation_value(schema.get(id), &values.iter().map(|v| v.to_string()).collect::<Vec<_>>());
+        assert_eq!(one("confirm", &["true"]), json!(true));
+        assert_eq!(one("count", &["3"]), json!(3));
+        assert_eq!(one("ratio", &["0.5"]), json!(0.5));
+        assert_eq!(one("tags", &["a"]), json!(["a"]));
+        assert_eq!(one("name", &["Ada"]), json!("Ada"));
+        assert_eq!(elicitation_value(None, &["x".into(), "y".into()]), json!(["x", "y"]));
+    }
+
+    #[test]
+    fn secret_answers_are_never_recorded() {
+        let details = json!({"questions": [{"id": "token", "isSecret": true}, {"id": "name"}]});
+        let answers = std::collections::BTreeMap::from([
+            ("token".to_owned(), vec!["sk-live".to_owned()]),
+            ("name".to_owned(), vec!["Ada".to_owned()]),
+        ]);
+        assert_eq!(public_answers(&details, &answers), json!({"name": ["Ada"]}));
+        let schema = json!({"requestedSchema": {"properties": {"pw": {"type": "string", "format": "password"}}}});
+        let answers = std::collections::BTreeMap::from([("pw".to_owned(), vec!["hunter2".to_owned()])]);
+        assert_eq!(public_answers(&schema, &answers), json!({}));
+    }
+
+    #[test]
+    fn claude_answers_are_keyed_by_question_text() {
+        let details = json!({"questions": [
+            {"id": "0", "question": "Which?", "options": [{"label": "A", "preview": "aa"}, {"label": "B"}]},
+            {"id": "1", "question": "Also?", "options": [{"label": "C"}]},
+            {"id": "2", "question": "Skipped?"}
+        ]});
+        let answers = std::collections::BTreeMap::from([
+            ("0".to_owned(), vec!["A".to_owned()]),
+            ("1".to_owned(), vec!["C".to_owned(), "  typed  ".to_owned(), " ".to_owned()]),
+        ]);
+        let reply = claude_question_reply(&details, &answers);
+        assert_eq!(reply["answers"], json!({"Which?": "A", "Also?": "C, typed"}));
+        assert_eq!(reply["annotations"], json!({"Which?": {"preview": "aa"}}));
+    }
 }
 
 #[cfg(test)]
