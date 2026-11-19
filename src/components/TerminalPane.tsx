@@ -66,7 +66,12 @@ function ShellHost({ workspaceId, terminalId, active, paneVisible, register }: {
     const previous = scrollbackFor(`${workspaceId}:${terminalId}`); if (previous) term.write(previous);
     else if (backendMode() === "mock") term.writeln("\x1b[90mBridge workspace shell · terminal is isolated from the agent conversation.\x1b[0m\r\n$ ");
     const opened = bridgeApi.openTerminal(workspaceId, terminalId);
-    opened.catch(error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`));
+    // The observer's first size lands before a new PTY exists and is dropped,
+    // leaving the shell at the runtime's default width until the pane moves.
+    opened.then(
+      () => void bridgeApi.resizeTerminal(workspaceId, terminalId, term.rows, term.cols).catch(() => undefined),
+      error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`),
+    );
     register(terminalId, { term, opened });
     const data = term.onData(value => void bridgeApi.writeTerminal(workspaceId, terminalId, value));
     const resize = new ResizeObserver(() => { fit.fit(); void bridgeApi.resizeTerminal(workspaceId, terminalId, term.rows, term.cols); }); resize.observe(host.current);

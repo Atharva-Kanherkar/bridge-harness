@@ -20,6 +20,8 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     id = `term-${terminalSeq++}`;
     options: Record<string, unknown> = {};
+    rows = 24;
+    cols = 32;
     get modes() { return { bracketedPasteMode: bracketedPaste }; }
     focus() { focused.push(this.id); }
     open() {}
@@ -255,6 +257,15 @@ describe("TerminalPane runs from the chat", () => {
     await settled(requestTerminalRun(ws, "pwd"));
     expect(writesTo("t2")).toEqual(["pwd\r"]);
     expect(writesTo("t1")).toEqual([]);
+  });
+
+  it("sizes a shell's PTY to its xterm once the PTY has opened", async () => {
+    let open: () => void = () => undefined;
+    api.openTerminal.mockImplementationOnce(() => new Promise<void>(resolve => { open = resolve; }));
+    await mount();
+    expect(api.resizeTerminal).not.toHaveBeenCalledWith(ws, "t1", 24, 32);
+    await act(async () => { open(); });
+    expect(api.resizeTerminal).toHaveBeenCalledWith(ws, "t1", 24, 32);
   });
 
   it("opens a new shell when the active one has exited", async () => {
