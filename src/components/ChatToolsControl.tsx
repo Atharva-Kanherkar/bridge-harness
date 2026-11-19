@@ -60,6 +60,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const generation = useRef(0);
   const inFlight = useRef<{ key: string; read: Promise<ChatTools> } | null>(null);
+  const refocus = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     const ticket = ++generation.current;
@@ -86,8 +87,28 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   useEffect(() => {
     setPending(null);
     setNotice(null);
+    refocus.current = null;
     void load();
   }, [load]);
+
+  // The menu gives the focus to its trigger after a click on an item, but a switch leaves
+  // the menu open. The switch takes the focus back once it is enabled again.
+  const { panelRef, triggerRef } = menu;
+  const restoreFocus = useCallback(() => {
+    const id = refocus.current;
+    if (id === null) return;
+    const panel = panelRef.current;
+    const target = [...panel?.querySelectorAll<HTMLElement>("[data-tool-item]") ?? []]
+      .find(element => element.dataset.toolItem === id)
+      ?.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]');
+    if (panel && target?.disabled) return;
+    refocus.current = null;
+    const active = document.activeElement;
+    if (target && (active === triggerRef.current || active === document.body || panel?.contains(active))) target.focus();
+  }, [panelRef, triggerRef]);
+  useEffect(() => {
+    if (!pending) restoreFocus();
+  }, [pending, restoreFocus]);
 
   const data = view.key === key ? view.data : undefined;
   const loadError = view.key === key ? view.error : undefined;
@@ -228,7 +249,11 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
                 item={item}
                 pending={pending?.id === item.id ? pending : null}
                 busy={!!pending || !!disabled}
-                onSwitch={on => void change(switched(base, item, on, items), item, on)}
+                onSwitch={on => {
+                  refocus.current = item.id;
+                  window.requestAnimationFrame(restoreFocus);
+                  void change(switched(base, item, on, items), item, on);
+                }}
                 onRemove={() => void change(removed(base, item), item, null)}
               />)}
             </div>)}

@@ -304,6 +304,40 @@ describe("ChatToolsControl", () => {
     expect(switchOf("github")?.getAttribute("aria-checked")).toBe("false");
   });
 
+  it("keeps the focus on a switch that a key turned", async () => {
+    const frames = () => act(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    // A key on a focused switch arrives as a click, and the menu stays open.
+    const press = async (target: HTMLButtonElement) => {
+      act(() => { target.focus(); target.click(); });
+      await frames();
+    };
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools([], 0));
+    const onChoiceChange = vi.fn();
+    act(() => { root.render(<ChatToolsControl draft={{ harness: "codex", account: null, workspaceId: null }} choice={null} onChoiceChange={onChoiceChange} />); });
+    await settle();
+    await openPanel();
+    await press(switchOf("linear")!);
+    expect(onChoiceChange).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(switchOf("linear"));
+    act(() => root.unmount());
+
+    // A chat disables the switch while the save runs, and gives the focus back when it ends.
+    root = createRoot(container);
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
+    const save = deferred<{ revision: number; refusal: null }>();
+    vi.spyOn(bridgeApi, "updateChatTools").mockReturnValue(save.promise);
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
+    await settle();
+    await openPanel();
+    await press(switchOf("linear")!);
+    expect(switchOf("linear")!.disabled).toBe(true);
+    await act(async () => { save.resolve({ revision: 4, refusal: null }); await save.promise; });
+    await settle();
+    await frames();
+    expect(switchOf("linear")!.disabled).toBe(false);
+    expect(document.activeElement).toBe(switchOf("linear"));
+  });
+
   it("shows a token figure with its source and none when absent", async () => {
     vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
