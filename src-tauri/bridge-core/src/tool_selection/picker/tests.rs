@@ -233,6 +233,7 @@ fn a_warm_read_that_confirms_the_config_ends_a_partial_launch() {
         confirmed: true,
         pending: None,
         partial,
+        started_at: "launch".into(),
     };
     for (id, partial) in [("codex-partial", true), ("codex-whole", false)] {
         chat(&core, id, "codex", None, Some("a"));

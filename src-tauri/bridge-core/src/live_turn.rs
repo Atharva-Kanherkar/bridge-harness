@@ -2721,6 +2721,7 @@ fn spawn_reader_thread(
                 }
             }
         }
+        crate::tool_selection::forget_applied_launch(&core, &session_id, &launch_started_at);
         if was_detached
             || switch_summary::is_detached_launch(
                 &core,

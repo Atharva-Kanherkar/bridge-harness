@@ -760,8 +760,8 @@ pub fn remember_codex_config(
 pub const CHANGED_KIND: &str = "session.tool_selection_changed";
 
 /// What the warm runtime of a chat launched with. Only `start_chat` writes an
-/// entry, and `start_session` removes one. The frame path only settles
-/// `pending` and `confirmed`.
+/// entry. `start_session` and the reader exit of the same launch remove one.
+/// The frame path only settles `pending` and `confirmed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedTools {
     /// The stored revision at the launch: 0 for a chat with no row.
@@ -772,6 +772,8 @@ pub struct AppliedTools {
     pub pending: Option<PendingEvent>,
     /// True when the launch applied less than the stored choice.
     pub partial: bool,
+    /// The `started_at` of the launch.
+    pub started_at: String,
 }
 
 /// A Claude event that waits for the first good turn on the same session id.
@@ -928,6 +930,7 @@ impl LaunchRecord {
             confirmed: pending.is_none(),
             pending,
             partial: self.partial,
+            started_at: started_at.to_owned(),
         }
     }
 }
@@ -943,6 +946,15 @@ pub fn record_applied(core: &BridgeCore, session_id: &str, applied: AppliedTools
 /// Remove the entry of a chat whose new runtime launched with no tool choice.
 pub fn forget_applied(core: &BridgeCore, session_id: &str) {
     core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner).remove(session_id);
+}
+
+/// Remove the entry of the launch at `started_at` when its runtime goes away.
+/// The entry of a newer launch stays.
+pub fn forget_applied_launch(core: &BridgeCore, session_id: &str, started_at: &str) {
+    let mut applied = core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner);
+    if applied.get(session_id).is_some_and(|entry| entry.started_at == started_at) {
+        applied.remove(session_id);
+    }
 }
 
 /// Remove the entry of a warm runtime that applied less than the stored

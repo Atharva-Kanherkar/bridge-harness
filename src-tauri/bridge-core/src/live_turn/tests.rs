@@ -194,6 +194,8 @@ struct Script {
     start_error: Option<String>,
     sent: Vec<(usize, String)>,
     stopped: Vec<usize>,
+    /// The output of the next runtime ends at once, as for a process exit.
+    output_ends: bool,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -219,9 +221,11 @@ impl Live {
             ("resume", Some(provider)) => provider.to_owned(),
             _ => format!("thread-{number}"),
         };
+        let reader: Box<dyn std::io::BufRead + Send> =
+            if script.output_ends { Box::new(std::io::Cursor::new(Vec::new())) } else { Box::new(std::io::BufReader::new(Idle)) };
         Ok(StartedAdapter {
             runtime: Box::new(LiveRuntime { number, thread, turn: Arc::default(), script: self.script.clone() }),
-            reader: Box::new(std::io::BufReader::new(Idle)),
+            reader,
             startup_messages: vec![],
         })
     }
@@ -463,6 +467,30 @@ fn a_warm_chat_with_the_same_revision_is_reused() {
     start_chat(&core, chat.clone()).unwrap();
     assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-1"))]);
     assert_eq!(tool_selection::applied_revision(&core, &chat), 1);
+}
+
+#[test]
+fn the_exit_of_a_runtime_removes_its_applied_entry() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "codex", None);
+    save_off(&core, &chat, &["github"]);
+    script.lock().unwrap().output_ends = true;
+    start_chat(&core, chat.clone()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while core.adapters.lock().unwrap().contains_key(&chat) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!core.adapters.lock().unwrap().contains_key(&chat), "the reader exit removes the runtime");
+    assert!(!core.applied_tools.lock().unwrap().contains_key(&chat), "the entry of the gone runtime stays");
+
+    // The exit of an older launch keeps the entry of a newer one.
+    script.lock().unwrap().output_ends = false;
+    start_chat(&core, chat.clone()).unwrap();
+    let started_at = core.applied_tools.lock().unwrap()[&chat].started_at.clone();
+    tool_selection::forget_applied_launch(&core, &chat, "an older launch");
+    assert_eq!(tool_selection::applied_revision(&core, &chat), 1);
+    tool_selection::forget_applied_launch(&core, &chat, &started_at);
+    assert!(!core.applied_tools.lock().unwrap().contains_key(&chat));
 }
 
 #[test]
