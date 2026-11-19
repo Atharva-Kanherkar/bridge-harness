@@ -521,6 +521,50 @@ fn the_before_and_after_figures() {
 }
 
 #[test]
+fn the_largest_default_reply_of_each_read_tool_is_below_its_ceiling() {
+    let size = |result: &Value| serde_json::to_string_pretty(result).unwrap().len();
+    let ceiling = |tool: &str| limit_of(tool).unwrap().ceiling;
+
+    // notes_search: its default 20 summaries, each preview at its 280
+    // characters, each of 3 bytes.
+    let (_notes_dir, notes) = crate::notes::service::tests::service();
+    for index in 0..25 {
+        let page = crate::notes::service::CreatePage { title: Some(format!("Page {index}")), content: Some("漢".repeat(400)), tags: vec!["work".into(), "plan".into()], ..Default::default() };
+        notes.create(page, crate::notes::service::PERSON).unwrap();
+    }
+    let found = crate::notes::tool::run(&notes, crate::notes::tool::Access::ReadOnly, "agent:codex:worker-1", "notes_search", &json!({})).unwrap();
+    let pages = found["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 20);
+    assert!(pages.iter().all(|page| page["preview"].as_str().unwrap().len() == 280 * 3), "{found}");
+    assert!(size(&found) < ceiling("notes_search"), "notes_search: {} bytes", size(&found));
+
+    // settings_read with no key: every setting with its value and options.
+    let core_dir = tempfile::tempdir().unwrap();
+    let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(core_dir.path()));
+    let settings = crate::settings_tools::run(&core, true, crate::settings_tools::READ_TOOL, &json!({})).unwrap();
+    assert!(size(&settings) < ceiling("settings_read"), "settings_read: {} bytes", size(&settings));
+
+    // memory_search with its default limit of 10. Ten records of the largest
+    // body (4,000 characters) are above the ceiling, so that reply pages:
+    // whole records, then next.
+    let db = crate::store::open(&core_dir.path().join("memory.db")).unwrap();
+    let topics = ["kiwi", "mango", "plum", "pear", "fig", "lime", "date", "yuzu", "guava", "lychee", "quince", "melon"];
+    for topic in topics {
+        let body = format!("Deploy rule for {topic}: {}", format!("{topic} rollout step. ").repeat(400));
+        let body: String = body.chars().take(bridge_protocol::messages::MAX_MEMORY_BODY_CHARS).collect();
+        crate::memory_ledger::save(&db, &body, Some("fact"), None).unwrap();
+    }
+    let recalled = crate::memory_tools::run(&db, "chat", false, crate::memory_tools::SEARCH, &json!({"query": "deploy"})).unwrap().result;
+    assert_eq!(recalled["records"].as_array().unwrap().len(), 10);
+    assert!(size(&recalled) > ceiling("memory_search"), "memory_search: {} bytes", size(&recalled));
+    let after = bound_reply("memory_search", &json!({"query": "deploy"}), forwarded(recalled.clone()));
+    assert_bounded("memory_search", &json!({"query": "deploy"}), &forwarded(recalled), &after, LIST_CEILING);
+    let kept = structured(&after)["records"].as_array().unwrap().len();
+    assert!(kept >= 7, "{kept} records");
+    assert_eq!(next_of(&after), kept as u64);
+}
+
+#[test]
 fn the_escape_measure_matches_serde_json() {
     for character in ['a', '"', '\\', '\n', '\r', '\t', '\u{8}', '\u{c}', '\u{1}', '\u{1f}', '\u{7f}', 'é', '漢', '😀'] {
         let encoded = serde_json::to_string(&character.to_string()).unwrap();

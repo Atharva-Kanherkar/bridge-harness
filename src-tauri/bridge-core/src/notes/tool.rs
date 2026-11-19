@@ -516,7 +516,7 @@ pub fn serve_http(route: &str, token: &str, body: &[u8]) -> (u16, String) {
 }
 
 /// One request for a chat whose token already checked out, against `core`.
-fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) -> (u16, String) {
+pub(crate) fn serve_for(core: &Arc<BridgeCore>, session_id: &str, tool: &str, body: &[u8]) -> (u16, String) {
     let reply = |status: u16, value: Value| (status, value.to_string());
     let Some((access, actor)) = session_access(core, session_id) else {
         return reply(404, json!({"error": "unknown chat"}));

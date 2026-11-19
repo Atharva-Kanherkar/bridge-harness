@@ -731,4 +731,69 @@ mod tests {
         let response = server.handle(&request(2, "tools/call", json!({"name": "notes_create", "arguments": {"title": "x"}}))).unwrap();
         assert_eq!(serde_json::to_string(&response["result"]).unwrap(), serde_json::to_string(&refused).unwrap());
     }
+
+    #[test]
+    fn a_large_note_pages_through_the_helper_and_the_route() {
+        use crate::notes::tool::{serve_for, token_for, verify, AUTH_HEADER, URL_PREFIX};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+        core.db.lock().unwrap().execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat','claude','Chat','ready','direct','Plan')", []).unwrap();
+        let content: String = (0..3000).map(|line| format!("Line {line} of the plan: é漢😀 \"quoted\" back\\slash\ttab.\n")).collect();
+        let page = crate::notes::service::CreatePage { title: Some("Plan".into()), ..Default::default() };
+        let id = core.notes.create(page, crate::notes::service::PERSON).unwrap().id;
+        // One append is one insert. A body in `create` is a diff of each
+        // character, which is slow for this size in a debug build.
+        let append = bridge_protocol::messages::NoteAppend { content, position: "end".into() };
+        core.notes.edit(crate::notes::service::EditPage { id: id.clone(), append: Some(append), ..Default::default() }, crate::notes::service::PERSON).unwrap();
+        let (status, body) = serve_for(&core, "chat", "notes_read", json!({"id": id}).to_string().as_bytes());
+        assert_eq!(status, 200, "{body}");
+        let full = serde_json::from_str::<Value>(&body).unwrap()["markdown"].as_str().unwrap().to_owned();
+        assert!(full.len() > 3 * tool_limit::DOCUMENT_CEILING, "{}", full.len());
+
+        // The loopback route of `respond`, against this test's core: `install`
+        // holds one core for the whole process.
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let port = server.server_addr().to_ip().unwrap().port();
+        let (serving, routed) = (server.clone(), core.clone());
+        std::thread::spawn(move || {
+            for mut request in serving.incoming_requests() {
+                let route = request.url().strip_prefix(URL_PREFIX).unwrap_or_default().to_owned();
+                let token = request.headers().iter().find(|header| header.field.equiv(AUTH_HEADER)).map(|header| header.value.as_str().to_owned()).unwrap_or_default();
+                let mut body = Vec::new();
+                request.as_reader().read_to_end(&mut body).unwrap();
+                let (session, tool) = route.split_once('/').unwrap_or_default();
+                let (status, text) = if verify(session, &token) { serve_for(&routed, session, tool, &body) } else { (401, json!({"error": "not authorized"}).to_string()) };
+                request.respond(tiny_http::Response::from_string(text).with_status_code(status)).unwrap();
+            }
+        });
+
+        let link = NotesLink::over_http(format!("http://127.0.0.1:{port}{URL_PREFIX}chat"), token_for("chat")).unwrap();
+        let mut helper = VisualServer::with_notes(Some(link));
+        assert!(tool_names(&mut helper).contains(&"notes_read".to_owned()));
+        let mut arguments = json!({"id": id});
+        let mut joined = String::new();
+        let mut replies = 0;
+        loop {
+            replies += 1;
+            assert!(replies < 50, "never ends");
+            let response = helper.handle(&request(replies, "tools/call", json!({"name": "notes_read", "arguments": arguments}))).unwrap();
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{result}");
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(text.len() <= tool_limit::DOCUMENT_CEILING, "reply {replies}: {} bytes", text.len());
+            let value = &result["structuredContent"];
+            assert_eq!(text, serde_json::to_string_pretty(value).unwrap());
+            joined.push_str(value["markdown"].as_str().unwrap());
+            match value.get("next") {
+                Some(next) => {
+                    assert!(value["cut"].as_str().unwrap().contains("notes_read"), "{value}");
+                    arguments["offset"] = next["offset"].clone();
+                }
+                None => break,
+            }
+        }
+        assert!(replies > 3, "{replies}");
+        assert_eq!(joined, full);
+    }
 }

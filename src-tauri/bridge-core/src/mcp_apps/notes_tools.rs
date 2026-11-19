@@ -58,6 +58,11 @@ impl NotesLink {
     pub fn from_env() -> Option<Self> {
         let base_url = std::env::var(ENV_URL).ok().filter(|value| !value.is_empty())?;
         let token = std::env::var(ENV_TOKEN).ok().filter(|value| !value.is_empty())?;
+        Self::over_http(base_url, token)
+    }
+
+    /// A link to the chat-tools route of one chat at `base_url`.
+    pub fn over_http(base_url: String, token: String) -> Option<Self> {
         let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(60)).build().ok()?;
         Some(Self::new(Box::new(HttpTransport { base_url, token, client })))
     }
