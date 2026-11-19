@@ -813,12 +813,12 @@ impl LaunchRecord {
         self.changed
     }
 
-    /// A failed native resume of Codex or OpenCode with a changed set keeps
-    /// the thread: no fork and no fresh start. A set that changed only
-    /// because the launch drops a part keeps the fallback, so a person can
-    /// always leave a failed chat.
+    /// A failed native resume with a changed set keeps the thread on each
+    /// harness: no fork and no fresh start. A set that changed only because
+    /// the launch drops a part keeps the fallback, so a person can always
+    /// leave a failed chat.
     pub fn keeps_the_thread_on_failure(&self) -> bool {
-        self.changed && self.chosen && matches!(self.harness.as_str(), "codex" | "opencode")
+        self.changed && self.chosen
     }
 
     /// Claude gives no proof at launch. The proof is the first good turn.

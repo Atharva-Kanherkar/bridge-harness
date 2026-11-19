@@ -2253,9 +2253,9 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     let db = state.db.lock().unwrap();
                     restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
                     drop(db);
-                    // Codex and OpenCode with a changed tool set keep the
-                    // thread. A fork or a fresh start would leave the
-                    // conversation that the person continues.
+                    // A changed tool set keeps the thread. A fork or a fresh
+                    // start would leave the conversation that the person
+                    // continues.
                     if tool_record.keeps_the_thread_on_failure() {
                         fail_a_kept_thread(state, &session_id)?;
                         return Err(crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error));

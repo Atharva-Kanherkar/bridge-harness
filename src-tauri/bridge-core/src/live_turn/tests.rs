@@ -541,7 +541,7 @@ fn a_changed_selection_resumes_natively_with_the_same_provider_session_id() {
 fn a_failed_resume_with_a_changed_selection_keeps_the_provider_session_id_and_does_not_fork_or_start_fresh() {
     let (_dir, core, script) = live();
     script.lock().unwrap().resume_error = Some("the thread did not load".into());
-    for harness in ["codex", "opencode"] {
+    for harness in ["claude", "codex", "opencode"] {
         let chat = chat_on(&core, harness, Some("thread-0"));
         save_off(&core, &chat, &["github"]);
         let error = start_chat(&core, chat.clone()).unwrap_err().to_string();
@@ -575,13 +575,10 @@ fn a_failed_resume_without_a_selection_change_keeps_the_existing_fallback() {
     assert_eq!(change_events(&core, &same).len(), 1);
     core.adapters.lock().unwrap().remove(&same);
     assert_eq!(save_off(&core, &same, &["github"]), 2);
-    // Claude keeps no thread, even with a changed set.
-    let claude = chat_on(&core, "claude", Some("thread-0"));
-    save_off(&core, &claude, &["github"]);
     asked(&script);
 
     script.lock().unwrap().resume_error = Some("the thread did not load".into());
-    for chat in [&plain, &same, &claude] {
+    for chat in [&plain, &same] {
         start_chat(&core, chat.clone()).unwrap();
         let launched = asked(&script);
         assert_eq!(launched.iter().map(|launch| launch.verb).collect::<Vec<_>>(), ["resume", "start"], "{launched:?}");
