@@ -8854,7 +8854,7 @@ pub fn resolve_chat_settings(core: &Arc<BridgeCore>, params: &wire::ResolveChatS
     crate::chat_defaults::resolve(&core.db.lock().unwrap(), &core.adapter_registry, params)
 }
 pub fn create_configured_chat(core: &Arc<BridgeCore>, params: &wire::CreateConfiguredChatParams) -> Result<wire::ConfiguredChatResult, BridgeError> {
-    crate::chat_defaults::create(core, params)
+    crate::chat_defaults::create(core, params, None)
 }
 pub fn get_chat_settings(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ChatSessionSettings, BridgeError> {
     crate::chat_defaults::session_settings(&core.db.lock().unwrap(),session_id)
