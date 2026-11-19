@@ -574,7 +574,8 @@ fn a_failed_resume_with_a_changed_selection_keeps_the_provider_session_id_and_do
     let (_dir, core, script) = live();
     script.lock().unwrap().resume_error = Some("the thread did not load".into());
     // The text names the cause and the way out, then the error of the harness.
-    let kept = "The harness did not resume this chat with the changed tools. Turn the tools back to the earlier set, or turn all on, then send again.";
+    // The last good launch of each chat ran with each item on.
+    let kept = "The harness did not resume this chat with the changed tools. Turn all on, then send again.";
     for harness in ["claude", "codex", "opencode"] {
         let chat = chat_on(&core, harness, Some("thread-0"));
         save_off(&core, &chat, &["github"]);
@@ -596,6 +597,28 @@ fn a_failed_resume_with_a_changed_selection_keeps_the_provider_session_id_and_do
         assert_eq!(row_of(&core, &chat).1.as_deref(), Some("thread-0"), "{harness}");
     }
     assert!(script.lock().unwrap().sent.is_empty());
+}
+
+#[test]
+fn a_kept_thread_after_a_launch_with_an_item_off_names_only_the_earlier_set() {
+    let (_dir, core, script) = live();
+    // An all-on choice still differs from the set of the last good launch.
+    let kept = "The harness did not resume this chat with the changed tools. Turn the tools back to the earlier set, then send again.";
+    for harness in ["codex", "opencode"] {
+        let chat = chat_on(&core, harness, Some("thread-0"));
+        save_off(&core, &chat, &["github"]);
+        start_chat(&core, chat.clone()).unwrap();
+        assert_eq!(change_events(&core, &chat).len(), 1, "{harness}");
+        core.adapters.lock().unwrap().remove(&chat);
+        save_off(&core, &chat, &["github", "linear"]);
+        asked(&script);
+        script.lock().unwrap().resume_error = Some("the thread did not load".into());
+        let error = start_chat(&core, chat.clone()).unwrap_err().to_string();
+        assert!(error.starts_with(kept), "{harness}: {error}");
+        assert!(error.contains("the thread did not load"), "{harness}: {error}");
+        assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))], "{harness}");
+        script.lock().unwrap().resume_error = None;
+    }
 }
 
 #[test]

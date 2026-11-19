@@ -722,6 +722,12 @@ impl LaunchRecord {
         self.changed && self.chosen
     }
 
+    /// True when the last good launch ran with each item on: the last event
+    /// has the "all on" hash, or the chat has no event.
+    pub fn last_all_on(&self) -> bool {
+        self.last_hash == all_on_hash(&self.harness)
+    }
+
     /// Claude gives no proof at launch. The proof is the first good turn.
     pub fn waits_for_a_turn(&self) -> bool {
         self.changed && self.harness == "claude"
@@ -888,14 +894,19 @@ pub fn explain_launch_error(tools: Option<&ToolLaunch>, error: BridgeError) -> B
 }
 
 /// The cause and the way out of a failed resume that keeps the thread of a
-/// chat with a changed tool set.
-const KEPT_THREAD_TEXT: &str = "The harness did not resume this chat with the changed tools. Turn the tools back to the earlier set, or turn all on, then send again.";
+/// chat with a changed tool set, when the last good launch ran all on.
+const KEPT_THREAD_ALL_ON_TEXT: &str = "The harness did not resume this chat with the changed tools. Turn all on, then send again.";
+/// The same, when the last good launch had an item off. An all-on choice
+/// then still differs from that set.
+const KEPT_THREAD_EARLIER_TEXT: &str = "The harness did not resume this chat with the changed tools. Turn the tools back to the earlier set, then send again.";
 
-/// The error of a failed resume that keeps the thread: [`KEPT_THREAD_TEXT`],
-/// then the text of [`explain_launch_error`]. The kind of the error stays. A
+/// The error of a failed resume that keeps the thread: the kept thread text,
+/// then the text of [`explain_launch_error`]. `last_all_on` is true when the
+/// last good launch ran with each item on. The kind of the error stays. A
 /// database error is not a refusal of the harness, so it stays as it is.
-pub fn kept_thread_error(tools: Option<&ToolLaunch>, error: BridgeError) -> BridgeError {
-    let with_cause = |detail: String| format!("{KEPT_THREAD_TEXT} {detail}");
+pub fn kept_thread_error(tools: Option<&ToolLaunch>, last_all_on: bool, error: BridgeError) -> BridgeError {
+    let text = if last_all_on { KEPT_THREAD_ALL_ON_TEXT } else { KEPT_THREAD_EARLIER_TEXT };
+    let with_cause = |detail: String| format!("{text} {detail}");
     match explain_launch_error(tools, error) {
         BridgeError::Invalid(detail) => BridgeError::Invalid(with_cause(detail)),
         BridgeError::Git(detail) => BridgeError::Git(with_cause(detail)),
