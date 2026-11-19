@@ -189,7 +189,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
       if (!run.open()) return;
       await bridgeApi.writeTerminal(workspace, target, terminalRunInput(run.command, term.modes.bracketedPasteMode));
       // The browser preview has no shell to echo what it was given.
-      if (backendMode() === "mock") term.write(`${run.command.replace(/\n/g, "\r\n")}\r\n\x1b[90m(browser preview: Bridge desktop runs this in your worktree)\x1b[0m\r\n$ `);
+      if (backendMode() === "mock") term.write(`${run.command.replace(/\n/g, "\r\n")}\r\n\x1b[90m(preview: runs in Bridge desktop)\x1b[0m\r\n$ `);
       born.current.delete(target);
       term.focus();
       run.settle(roster.labels.get(target) ?? target.replace(/^t/, "shell "));
