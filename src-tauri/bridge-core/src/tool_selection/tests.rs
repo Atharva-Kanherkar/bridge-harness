@@ -6,7 +6,8 @@ use bridge_protocol::messages::ChatToolState::{Fixed, Off, On};
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 
-const CHAT: LaunchTarget<'static> = LaunchTarget { harness: "claude", interactive: true, workflow: false, cwd: "/work" };
+const CHAT: LaunchTarget<'static> =
+    LaunchTarget { harness: "claude", interactive: true, workflow: false, cwd: "/work", opencode_config: None };
 
 fn db() -> Connection {
     store::open(std::path::Path::new(":memory:")).unwrap()
@@ -986,7 +987,7 @@ fn skills_chat(db: &Connection, id: &str, account: &str) {
 }
 
 fn codex_target(cwd: &str) -> LaunchTarget<'_> {
-    LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd }
+    LaunchTarget { harness: "codex", cwd, ..CHAT }
 }
 
 #[test]
@@ -1097,4 +1098,31 @@ fn a_codex_skill_that_bridge_cannot_confirm_is_fixed_with_a_reason() {
     assert_eq!((review.state, review.fixed_reason.as_deref()), (Fixed, Some(CODEX_SKILLS_UNCONFIRMED_REASON)));
     let confirmed = CodexSource { unconfirmed: false, ..source };
     assert_eq!(item(&codex_units(&confirmed, None), Skill, "review").state, On);
+}
+
+#[test]
+fn an_opencode_choice_that_the_inherited_config_cannot_hold_claims_nothing() {
+    let db = db();
+    chat(&db, "oc-config", "opencode", None);
+    write_checked(&db, "oc-config", 0, &choice(json!({"harness": "opencode", "serversOff": ["github"]}))).unwrap();
+    let target = |config| LaunchTarget { harness: "opencode", opencode_config: config, ..CHAT };
+    let applied = launch_for(&db, "oc-config", &target(Some(r#"{"theme":"system"}"#))).unwrap().unwrap();
+    assert_eq!(applied.servers_off, ["github"]);
+
+    // The adapter keeps the config of today, so the launch claims no off server.
+    let kept = launch_for(&db, "oc-config", &target(Some("{not json"))).unwrap().unwrap();
+    assert!(kept.servers_off.is_empty(), "{kept:?}");
+    assert_eq!(kept.effective_hash, all_on_hash("opencode"));
+    assert_eq!(kept.stored_hash, applied.effective_hash);
+    let first = LaunchRecord::read(&db, "oc-config", "opencode", Some(&kept), true).unwrap();
+    assert!(!first.changed() && !first.keeps_the_thread_on_failure());
+    assert_eq!(first.event("ses_1"), None, "no event after a first launch");
+
+    // After a launch that applied the choice, the next one that cannot apply
+    // it keeps the fallback of a failed resume, and its event names no server.
+    let event = LaunchRecord::read(&db, "oc-config", "opencode", Some(&applied), true).unwrap().event("ses_1").unwrap();
+    SessionForest::new(&db).append("oc-config", EntryKind::ToolSelectionChanged, event).unwrap();
+    let after = LaunchRecord::read(&db, "oc-config", "opencode", Some(&kept), true).unwrap();
+    assert!(after.changed() && !after.keeps_the_thread_on_failure());
+    assert_eq!(after.event("ses_1").unwrap()["serversOff"], json!([]));
 }

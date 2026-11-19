@@ -501,6 +501,19 @@ impl ToolLaunch {
             hash_of(&self.harness, &self.servers_off, self.codex_apps_off, self.claude_skills.as_deref(), &codex_skills_off);
         Self { codex_skills_off, effective_hash, ..self }
     }
+
+    /// Keep the OpenCode servers choice only when the inherited config can
+    /// hold it. Otherwise the adapter keeps the config of today, so the launch
+    /// leaves no server out and claims none.
+    pub fn with_opencode_config(self, existing: Option<&str>) -> Self {
+        if self.harness != "opencode" || opencode_not_applied_reason(existing, &self.servers_off).is_none() {
+            return self;
+        }
+        let servers_off = Vec::new();
+        let effective_hash =
+            hash_of(&self.harness, &servers_off, self.codex_apps_off, self.claude_skills.as_deref(), &self.codex_skills_off);
+        Self { servers_off, effective_hash, ..self }
+    }
 }
 
 fn sorted<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
@@ -543,6 +556,8 @@ pub struct LaunchTarget<'a> {
     pub workflow: bool,
     /// The folder of the launch.
     pub cwd: &'a str,
+    /// The `OPENCODE_CONFIG_CONTENT` that the launch inherits.
+    pub opencode_config: Option<&'a str>,
 }
 
 /// The tool launch of a chat: `None` for a chat with no stored choice, and
@@ -550,7 +565,8 @@ pub struct LaunchTarget<'a> {
 /// workflow and its stored choice applies. Workers, briefings and workflows
 /// never read the row. A Codex skills choice applies only when a stored
 /// `config/read` fact confirms that the config of this account and folder
-/// has no `skills` key of the user.
+/// has no `skills` key of the user. An OpenCode servers choice applies only
+/// when the inherited config can hold it.
 pub fn launch_for(
     db: &Connection,
     session_id: &str,
@@ -574,7 +590,7 @@ pub fn launch_for(
         let place = CodexPlace::resolve(db, account.as_deref(), target.cwd);
         codex_skills_key(db, session_id, place.as_ref()) == CodexSkillsKey::Known(false)
     };
-    Ok(Some(launch.with_codex_skills_known(no_user_skills_key)))
+    Ok(Some(launch.with_codex_skills_known(no_user_skills_key).with_opencode_config(target.opencode_config)))
 }
 
 // --- the Codex skills config ------------------------------------------------------

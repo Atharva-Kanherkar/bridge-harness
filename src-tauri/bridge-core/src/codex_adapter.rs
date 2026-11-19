@@ -2152,7 +2152,7 @@ mod tests {
         db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES(?1,'codex','Chat','ready','reported','direct')", [&session]).unwrap();
         let choice = serde_json::from_value(json!({"harness": "codex", "serversOff": ["github"], "codexSkillsOff": ["review", "deploy"]})).unwrap();
         write_checked(&db, &session, 0, &choice).unwrap();
-        let target = LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd: &cwd };
+        let target = LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd: &cwd, opencode_config: None };
         let launch = || launch_for(&db, &session, &target).unwrap().unwrap();
         let skills_values = || -> Vec<String> {
             let values = config_values(&launch_args(Some(&bridge_launch()), Some(&launch())));

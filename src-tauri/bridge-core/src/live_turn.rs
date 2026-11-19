@@ -2097,6 +2097,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let account_launch = launch_account(state, &session_id, adapter_id)?;
     // The tool choice of the chat travels beside each request. Workers,
     // briefings and workflows launch with none.
+    let inherited_opencode_config = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
     let tool_launch = crate::tool_selection::launch_for(
         &*state.try_db()?,
         &session_id,
@@ -2105,6 +2106,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             interactive,
             workflow: is_workflow || workflow_policy.is_some(),
             cwd: &launch_cwd,
+            opencode_config: inherited_opencode_config.as_deref(),
         },
     )?;
     // The effective set of this launch, compared with the set of the last

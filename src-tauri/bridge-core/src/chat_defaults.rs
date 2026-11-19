@@ -1232,7 +1232,7 @@ mod tests {
         let created = create_value(&core, "a", json!({"model":{"harness":"codex","model":"standard"}}));
         let db = core.db.lock().unwrap();
         assert_eq!(crate::tool_selection::read(&db, &created.session_id).unwrap(), None);
-        let target = crate::tool_selection::LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd: "/work" };
+        let target = crate::tool_selection::LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd: "/work", opencode_config: None };
         assert_eq!(crate::tool_selection::launch_for(&db, &created.session_id, &target).unwrap(), None);
         drop(db);
         assert_eq!(chat_rows(&core), (1, 0, 1));
