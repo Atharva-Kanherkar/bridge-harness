@@ -377,6 +377,56 @@ fn a_whole_part_with_pages_gets_no_next() {
 }
 
 #[test]
+fn a_lone_shortened_item_gets_no_next() {
+    // One match, with a title above the ceiling: nothing comes after it.
+    let mut source = search_result(1, 50, Style::Plain);
+    source["pages"][0]["title"] = json!(text(Style::Plain, 40_000, 0, 0));
+    let reply = forwarded(source);
+    let after = bound_reply("notes_search", &json!({}), reply.clone());
+    assert_bounded("notes_search", &json!({}), &reply, &after, LIST_CEILING);
+    let kept = structured(&after)["pages"].as_array().unwrap();
+    assert_eq!((kept.len(), &kept[0]["id"]), (1, &json!("p0")));
+    assert!(structured(&after).get("next").is_none(), "{}", cut_of(&after));
+    let cut = cut_of(&after);
+    assert!(cut.contains("/pages/0/title keeps") && cut.contains("holds all 1 item") && !cut.contains("again with offset"), "{cut}");
+}
+
+#[test]
+fn a_part_that_only_has_a_long_text_stays_when_parts_are_removed() {
+    // The names of the properties alone are above half of the ceiling, so
+    // that part goes. The page has the largest size, but only from one text.
+    let mut source = read_result(&text(Style::Plain, 60_000, 8, 0), 0, 0);
+    source["page"]["title"] = json!(text(Style::Plain, 60_000, 0, 1));
+    source["properties"] = Value::Object((0..300).map(|index| (format!("Property {index} {}", "n".repeat(70)), Value::Null)).collect());
+    let reply = forwarded(source.clone());
+    let after = bound_reply("notes_read", &json!({"id": "p0"}), reply.clone());
+    assert_bounded("notes_read", &json!({"id": "p0"}), &reply, &after, DOCUMENT_CEILING);
+    let value = structured(&after);
+    assert_eq!(value["page"]["id"], "p0");
+    assert_eq!(value["page"]["link"], "bridge://p/p0");
+    assert!(value.get("properties").is_none());
+    let cut = cut_of(&after);
+    assert!(cut.contains("/properties is left out") && !cut.contains("/page is left out"), "{cut}");
+    let kept = value["markdown"].as_str().unwrap();
+    assert!(!kept.is_empty() && source["markdown"].as_str().unwrap().starts_with(kept));
+    assert_eq!(next_of(&after), kept.chars().count() as u64);
+}
+
+#[test]
+fn a_database_with_no_text_names_notes_search_for_its_rows() {
+    let reply = forwarded(read_result("", 50, 1000));
+    assert!(text_of(&reply).len() > DOCUMENT_CEILING);
+    let after = bound_reply("notes_read", &json!({"id": "p0"}), reply.clone());
+    assert_bounded("notes_read", &json!({"id": "p0"}), &reply, &after, DOCUMENT_CEILING);
+    assert!(structured(&after).get("next").is_none());
+    let cut = cut_of(&after);
+    assert!(cut.contains("/rows keeps") && cut.ends_with("call notes_search with database."), "{cut}");
+    // A tool with no rows gets no such hint.
+    let settings = bound("settings_read", 2000, &json!({}), forwarded(json!({"settings": (0..200).map(|index| json!({"key": format!("k{index}"), "value": index})).collect::<Vec<_>>()})));
+    assert!(!cut_of(&settings).contains("notes_search"), "{}", cut_of(&settings));
+}
+
+#[test]
 fn large_parts_without_pages_are_shortened_and_named() {
     let markdown = text(Style::Plain, 30_000, 8, 0);
     let after = bound("notes_read", 6000, &json!({"id": "p0"}), forwarded(read_result(&markdown, 50, 300)));

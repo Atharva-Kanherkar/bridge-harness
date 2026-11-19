@@ -252,7 +252,7 @@ fn document_page(pager: &Pager<'_>, settled: &Value, text: &str, parts: &[Part])
 
 /// A tool with no pages: the whole result, shortened.
 fn bound_whole(tool: &str, class: Class, ceiling: usize, value: &Value) -> Value {
-    let notice = |parts: &[Part]| format!("Cut at the ceiling of {ceiling} bytes.{}{}", after_cut(tool, class), shortened(parts));
+    let notice = |parts: &[Part]| format!("Cut at the ceiling of {ceiling} bytes.{}{}{}", after_cut(tool, class), shortened(parts), other_source(tool));
     let shrunk = shrink(value, None, ceiling, &|candidate, parts| pretty_len(&finish(candidate.clone(), notice(parts), None)) <= ceiling);
     if shrunk.fits {
         return finish(shrunk.value, notice(&shrunk.parts), None);
@@ -291,8 +291,11 @@ fn settle(rest: &Value, key: &str, ceiling: usize) -> (Value, Vec<Part>) {
         return (shrunk.value, shrunk.parts);
     }
     // Some parts are too large even with each text and list empty. Whole
-    // parts go, the largest first, so that the part with pages keeps its room.
-    let mut order: Vec<(usize, &String)> = map.iter().filter(|(name, _)| *name != key).map(|(name, part)| (pretty_len(part), name)).collect();
+    // parts go, so that the part with pages keeps its room. `shrunk` holds
+    // each part at the size that it cannot go below, and the largest of those
+    // goes first. A part that only had a long text stays.
+    let floor = |name: &String| shrunk.value.get(name.as_str()).map_or(0, pretty_len);
+    let mut order: Vec<(usize, &String)> = map.keys().filter(|name| *name != key).map(|name| (floor(name), name)).collect();
     order.sort_by_key(|(size, _)| std::cmp::Reverse(*size));
     let probe = |removed: usize| {
         let gone: HashSet<&String> = order[..removed].iter().map(|(_, name)| *name).collect();
@@ -313,11 +316,8 @@ fn settle(rest: &Value, key: &str, ceiling: usize) -> (Value, Vec<Part>) {
 /// `value` with each part that [`settle`] removed left out.
 fn without_removed(mut value: Value, parts: &[Part]) -> Value {
     if let Some(map) = value.as_object_mut() {
-        for part in parts {
-            if let Part::Removed { key } = part {
-                map.shift_remove(key);
-            }
-        }
+        let gone: HashSet<&str> = parts.iter().filter_map(|part| if let Part::Removed { key } = part { Some(key.as_str()) } else { None }).collect();
+        map.retain(|name, _| !gone.contains(name.as_str()));
     }
     value
 }
@@ -382,15 +382,9 @@ impl Pager<'_> {
     fn single(&self, candidate: &Value, settled: &[Part]) -> Option<Value> {
         let removed: Vec<Part> = settled.iter().filter(|part| matches!(part, Part::Removed { .. })).cloned().collect();
         let all = |parts: &[Part]| [parts, &removed].concat();
-        // A shortened unit is not whole, so the next call moves on past it.
-        // A unit that stays whole with only other parts shortened gets no next.
-        let page = |value: Value, parts: &[Part]| {
-            if value.get(self.key) != candidate.get(self.key) {
-                self.paged(value, 1, &all(parts))
-            } else {
-                self.finish(value, 1, &all(parts))
-            }
-        };
+        // The reply gets a next only when it leaves out units of this call.
+        // A lone unit has nothing after it, shortened or not.
+        let page = |value: Value, parts: &[Part]| self.finish(value, 1, &all(parts));
         let shrunk = shrink(candidate, Some(self.key), self.ceiling, &|value, parts| pretty_len(&page(value.clone(), parts)) <= self.ceiling);
         shrunk.fits.then(|| page(shrunk.value, &shrunk.parts))
     }

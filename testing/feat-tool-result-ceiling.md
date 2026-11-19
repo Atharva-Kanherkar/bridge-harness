@@ -47,12 +47,17 @@ paging for Bridge tool results (T2)" on the issue of this change.
   a UTF-8 sequence. The reply keeps at least one character.
 - The text of a `Document` never loses a character between two pages. If the
   parts with no pages cannot become small enough, the limiter removes them,
-  and `cut` names them.
+  and `cut` names them. It removes first the part that stays largest after
+  the limiter shortens that part, so a part with only one long text stays.
 - A cut reply of a tool with pages gets two new keys, last in the object:
   `cut` (text for the model) and `next` (`{"offset": N}`). `N` is the `offset`
   of the call (0 when the call has none) plus the count of units in the reply.
 - If the part with pages is whole and only other parts are shortened, the
   reply gets `cut` and no `next`. A next call has nothing more to return.
+  The same rule applies when a list has one item and the limiter shortens
+  that item.
+- A `notes_read` reply of a database that gets `cut` and no `next` says that
+  `notes_search` with `database` pages the rows.
 - `cut` says: that the reply is cut, the ceiling in bytes, how many units the
   reply holds, how many units of this call are left out, the name of the tool,
   and the `offset` value for the next call.
@@ -165,6 +170,9 @@ reply has no `cut`.
 - `an_item_that_cannot_fit_is_named_in_the_notice`
 - `a_document_keeps_each_character_when_other_parts_are_too_large`
 - `a_whole_part_with_pages_gets_no_next`
+- `a_lone_shortened_item_gets_no_next`
+- `a_part_that_only_has_a_long_text_stays_when_parts_are_removed`
+- `a_database_with_no_text_names_notes_search_for_its_rows`
 - `a_document_page_ends_at_the_last_line_break_that_fits`
 - `large_parts_without_pages_are_shortened_and_named`
 - `a_bounded_reply_over_the_ceiling_loses_whole_items_first`
