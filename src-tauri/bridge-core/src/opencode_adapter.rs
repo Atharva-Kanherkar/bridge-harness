@@ -1871,6 +1871,29 @@ impl AdapterRuntime for OpenCodeRuntime {
                 .map(|_| ()).map_err(http_error("interrupt OpenCode subagent"))
         }))
     }
+    /// `GET /mcp` (V1) or `/api/mcp` (V2) on the server of this chat. The
+    /// exchange runs on its own thread, so the client clone drops off any
+    /// async runtime.
+    fn mcp_list_request(&self) -> Option<crate::adapters::McpListRequest> {
+        let client = self.client.as_ref()?.clone();
+        let path = match self.api {
+            ServerApi::V1 => "/mcp",
+            ServerApi::V2 => "/api/mcp",
+        };
+        let url = self.api.url(&self.base_url, path, &self.directory);
+        Some(Box::new(move || {
+            let action = "list OpenCode MCP servers";
+            thread::Builder::new()
+                .name("opencode-mcp-list".into())
+                .spawn(move || -> Result<Value, BridgeError> {
+                    let response = client.get(url).timeout(Duration::from_secs(10)).send().map_err(http_error(action))?;
+                    checked_json(response, action)
+                })
+                .map_err(|error| BridgeError::Adapter(error.to_string()))?
+                .join()
+                .map_err(|_| BridgeError::Adapter(format!("Failed to {action}")))?
+        }))
+    }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
         let client = self.client.as_ref()?.clone();
         let path = match self.api {

@@ -167,9 +167,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.45 adds continuing an imported chat**: `imports/import_continuation`
 /// and `imports/continue_imported_chat`.
+///
+/// **1.46 adds the tools of a chat**: `sessions/get_chat_tools`,
+/// `sessions/update_chat_tools` and an optional `toolSelection` on
+/// `sessions/create_configured_chat`. A 1.45 client still pairs: it never
+/// sends the field.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 45,
+    minor: 46,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -488,6 +493,16 @@ mod tests {
         let continuing = ProtocolVersion { major: 1, minor: 45 };
         assert!(!before.accepts(continuing));
         assert!(continuing.accepts(before), "a 1.44 client still pairs with a 1.45 daemon");
+    }
+
+    #[test]
+    fn a_1_45_client_pairs_with_a_1_46_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 45 };
+        let tools = ProtocolVersion { major: 1, minor: 46 };
+        assert_eq!(PROTOCOL_VERSION, tools);
+        assert!(tools.accepts(before), "a 1.45 client still pairs with a 1.46 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
+        assert!(!before.accepts(tools), "a 1.46 client needs the tool methods");
     }
 
     #[test]

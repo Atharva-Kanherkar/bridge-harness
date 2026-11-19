@@ -118,6 +118,9 @@ impl NativeCompaction {
 }
 
 pub type InterruptRequest = Box<dyn FnOnce() -> Result<(), BridgeError> + Send>;
+/// One read of the MCP servers of a warm chat, run after the adapter map is
+/// released.
+pub type McpListRequest = Box<dyn FnOnce() -> Result<Value, BridgeError> + Send>;
 
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
@@ -189,6 +192,12 @@ pub trait AdapterRuntime: Send {
     /// Inventory or a preview read on this chat's existing MCP connection.
     fn app_control(&self, _id: &str, _request: &Value) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid("This provider cannot preview personal apps".into()))
+    }
+    /// A snapshot read of the MCP server list of this chat, for the tools
+    /// picker. It runs without the adapter map. `None` when the provider has
+    /// no such list.
+    fn mcp_list_request(&self) -> Option<McpListRequest> {
+        None
     }
     /// Whether this provider can take a user message while one of its own
     /// turns is still running, and fold it into that turn.

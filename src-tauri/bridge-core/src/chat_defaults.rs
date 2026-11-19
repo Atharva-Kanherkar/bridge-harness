@@ -926,6 +926,7 @@ mod tests {
                 overrides: defaults(value),
                 expected_revision: settings.revision,
                 title: None,
+                tool_selection: None,
             },
             None,
         )
@@ -1178,6 +1179,7 @@ mod tests {
                 overrides: defaults(value),
                 expected_revision: settings.revision,
                 title: None,
+                tool_selection: None,
             },
             Some(&choice),
         )
@@ -1246,7 +1248,8 @@ mod tests {
                 workspace_id: Some("a".into()),
                 overrides: ChatDefaults::default(),
                 expected_revision: reviewed.revision,
-                title: None
+                title: None,
+                tool_selection: None,
             },
             None
         )
@@ -1386,7 +1389,8 @@ mod tests {
                 workspace_id: Some("a".into()),
                 overrides: ChatDefaults::default(),
                 expected_revision: resolved.revision,
-                title: None
+                title: None,
+                tool_selection: None,
             },
             None
         )
@@ -1758,7 +1762,8 @@ mod tests {
                             workspace_id: Some("a".into()),
                             overrides: defaults(value),
                             expected_revision: settings.revision,
-                            title: None
+                            title: None,
+                            tool_selection: None,
                         },
                         None
                     )

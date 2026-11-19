@@ -241,10 +241,34 @@ fn cached_in(
 /// and can act on — settings, workflow surfaces — asks
 /// [`claude_sdk_configuration`] instead.
 pub fn cached_claude_sdk_configuration(discovery: ClaudeDiscovery) -> ClaudeSdkConfiguration {
+    cached_in(discovery_cache(), discovery, CLAUDE_DISCOVERY_TTL, claude_sdk_configuration_for)
+}
+
+fn discovery_cache() -> &'static std::sync::Mutex<DiscoveryCache> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<DiscoveryCache>> =
         std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(DiscoveryCache::default()));
-    cached_in(cache, discovery, CLAUDE_DISCOVERY_TTL, claude_sdk_configuration_for)
+    CACHE.get_or_init(|| std::sync::Mutex::new(DiscoveryCache::default()))
+}
+
+/// The newest cached answer that holds connectors, at any age, with its age.
+/// It never probes. While a probe holds the cache it returns `None` and does
+/// not wait, so a read that must start no process stays fast.
+pub fn peek_claude_connectors() -> Option<(ClaudeSdkConfiguration, Duration)> {
+    peek_in(discovery_cache())
+}
+
+fn peek_in(cache: &std::sync::Mutex<DiscoveryCache>) -> Option<(ClaudeSdkConfiguration, Duration)> {
+    let cache = match cache.try_lock() {
+        Ok(cache) => cache,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    cache
+        .entries
+        .iter()
+        .filter(|((_, connectors), _)| *connectors)
+        .max_by_key(|(_, cached)| cached.at)
+        .map(|(_, cached)| (cached.configuration.clone(), cached.at.elapsed()))
 }
 
 /// Discover only the parts of Claude's configuration `discovery` asks for.
@@ -2199,6 +2223,25 @@ mod tests {
             },
         );
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The tools picker reads the cache and never probes. A plugins-only
+    /// answer is not a connector answer, and an expired answer still counts.
+    #[test]
+    fn a_peek_reads_only_a_cached_connector_answer_and_never_probes() {
+        let cache = std::sync::Mutex::new(DiscoveryCache::default());
+        assert!(peek_in(&cache).is_none());
+        cached_in(&cache, ClaudeDiscovery { plugins: true, connectors: false }, CLAUDE_DISCOVERY_TTL, plugins_only);
+        assert!(peek_in(&cache).is_none(), "a plugins-only answer holds no connectors");
+        cached_in(&cache, ClaudeDiscovery::ALL, Duration::ZERO, |_| ClaudeSdkConfiguration {
+            connector_health: BTreeMap::from([("claude.ai Gmail".to_owned(), Some(true))]),
+            ..Default::default()
+        });
+        let (peeked, _age) = peek_in(&cache).unwrap();
+        assert_eq!(peeked.connector_health.get("claude.ai Gmail"), Some(&Some(true)));
+        let held = cache.lock().unwrap();
+        assert!(peek_in(&cache).is_none(), "a probe that holds the cache makes the peek return at once");
+        drop(held);
     }
 
     fn plugins_only(discovery: ClaudeDiscovery) -> ClaudeSdkConfiguration {

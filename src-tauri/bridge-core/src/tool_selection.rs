@@ -1307,5 +1307,7 @@ pub(crate) fn parse_codex_off(value: &str) -> Option<CodexOff> {
     }
 }
 
+pub mod picker;
+
 #[cfg(test)]
 mod tests;

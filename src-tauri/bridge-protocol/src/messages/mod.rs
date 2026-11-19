@@ -429,6 +429,8 @@ typed_methods![
     (CreateConfiguredChat, CreateConfiguredChatParams, ConfiguredChatResult),
     (GetChatSettings, GetChatSettingsParams, ChatSessionSettings),
     (UpdateChatOptions, UpdateChatOptionsParams, ChatSessionSettings),
+    (GetChatTools, GetChatToolsParams, GetChatToolsResult),
+    (UpdateChatTools, UpdateChatToolsParams, UpdateChatToolsResult),
     (GetReviewerSettings, _, ReviewerSettingsResult),
     (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (GetAttributionSettings, _, AttributionSettings),

@@ -504,24 +504,29 @@ pub fn connector_list(
     refresh: bool,
 ) -> Result<wire::ConnectorListResult, BridgeError> {
     let _ = (core, refresh);
-    let connectors = crate::connector_surface::resolve_availability(
-        &crate::connector_runs_live::discover_harness_connectors(),
-    )
-    .into_iter()
-    .map(|entry| wire::ConnectorDescriptor {
-        explanation: entry.reason.as_ref().map(|reason| reason.explanation(entry.family)),
-        reason: entry.reason.as_ref().map(connector_reason_wire),
-        family: entry.family.as_str().into(),
-        display_name: entry.family.display_name().into(),
-        // Carried to the UI so a pane can say where a connection lives, and so
-        // no client has to keep its own table of which harness owns what.
-        harness: entry.harness,
-        has_inbox: entry.family.has_inbox_support(),
-        server: entry.server,
-        available: entry.available,
-    })
-    .collect();
+    let connectors = connector_descriptors(&crate::connector_runs_live::discover_harness_connectors());
     Ok(wire::ConnectorListResult { connectors })
+}
+
+/// The wire form of the connectors that `harnesses` report.
+pub(crate) fn connector_descriptors(
+    harnesses: &[crate::connector_surface::HarnessConnectors],
+) -> Vec<wire::ConnectorDescriptor> {
+    crate::connector_surface::resolve_availability(harnesses)
+        .into_iter()
+        .map(|entry| wire::ConnectorDescriptor {
+            explanation: entry.reason.as_ref().map(|reason| reason.explanation(entry.family)),
+            reason: entry.reason.as_ref().map(connector_reason_wire),
+            family: entry.family.as_str().into(),
+            display_name: entry.family.display_name().into(),
+            // Carried to the UI so a pane can say where a connection lives, and so
+            // no client has to keep its own table of which harness owns what.
+            harness: entry.harness,
+            has_inbox: entry.family.has_inbox_support(),
+            server: entry.server,
+            available: entry.available,
+        })
+        .collect()
 }
 
 fn connector_reason_wire(
@@ -8984,13 +8989,23 @@ pub fn resolve_chat_settings(core: &Arc<BridgeCore>, params: &wire::ResolveChatS
     crate::chat_defaults::resolve(&core.db.lock().unwrap(), &core.adapter_registry, params)
 }
 pub fn create_configured_chat(core: &Arc<BridgeCore>, params: &wire::CreateConfiguredChatParams) -> Result<wire::ConfiguredChatResult, BridgeError> {
-    crate::chat_defaults::create(core, params, None)
+    crate::chat_defaults::create(core, params, params.tool_selection.as_ref())
 }
 pub fn get_chat_settings(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ChatSessionSettings, BridgeError> {
     crate::chat_defaults::session_settings(&core.db.lock().unwrap(),session_id)
 }
 pub fn update_chat_options(core: &Arc<BridgeCore>, params: &wire::UpdateChatOptionsParams) -> Result<wire::ChatSessionSettings, BridgeError> {
     crate::chat_defaults::update_options(core,params)
+}
+/// The tools of a chat or a draft. It reads only free sources and starts no
+/// process, but a warm Codex read can wait on its runtime.
+pub fn get_chat_tools(core: &Arc<BridgeCore>, params: &wire::GetChatToolsParams) -> Result<wire::GetChatToolsResult, BridgeError> {
+    crate::tool_selection::picker::get(core, params)
+}
+/// Save the tool choice of a chat. A busy chat gets a refusal. The save can
+/// wait up to 2 s for the input lease, so a host calls it off the UI thread.
+pub fn update_chat_tools(core: &Arc<BridgeCore>, params: &wire::UpdateChatToolsParams) -> Result<wire::UpdateChatToolsResult, BridgeError> {
+    crate::tool_selection::picker::update(core, params)
 }
 
 // ---- notes ---------------------------------------------------------------

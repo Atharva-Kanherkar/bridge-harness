@@ -99,3 +99,81 @@ pub struct ChatToolSelectionStatus {
     pub applies: bool,
     pub not_applied_reason: Option<String>,
 }
+
+/// A chat that does not exist yet: the composer of a new chat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatToolsDraft {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    pub harness: String,
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+/// Exactly one of `sessionId` and `draft`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetChatToolsParams {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub draft: Option<ChatToolsDraft>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatToolSourceKind {
+    /// The connector catalog that Bridge already cached.
+    Catalog,
+    /// The init message of a Claude chat.
+    ClaudeInit,
+    /// A context reading that measured the tokens of each item.
+    ContextReading,
+    /// The warm runtime of the chat.
+    Runtime,
+}
+
+/// One source that the list read, and when. A source that Bridge could not
+/// read has `available` false and a `note` that says why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatToolSource {
+    pub kind: ChatToolSourceKind,
+    pub label: String,
+    pub at: Option<String>,
+    pub available: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetChatToolsResult {
+    pub harness: String,
+    pub account: Option<String>,
+    pub items: Vec<ChatToolItem>,
+    /// The saved choice. Absent when the chat has none or the row does not
+    /// parse.
+    pub choice: Option<ChatToolSelection>,
+    /// Revision 0 means that the chat has no saved choice yet.
+    pub selection: ChatToolSelectionStatus,
+    pub sources: Vec<ChatToolSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatToolsParams {
+    pub session_id: String,
+    /// 0 for the first choice of a chat.
+    pub expected_revision: u32,
+    pub selection: ChatToolSelection,
+}
+
+/// Exactly one field is present. A refusal leaves the saved choice as it
+/// was. A stale revision or a choice that is not valid is an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateChatToolsResult {
+    pub revision: Option<u32>,
+    pub refusal: Option<String>,
+}
