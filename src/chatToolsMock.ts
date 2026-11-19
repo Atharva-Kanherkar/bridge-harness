@@ -29,7 +29,6 @@ const BUSY: Record<string, string> = {
 const STATUS_BUSY = "This chat is busy. Try again when it is idle.";
 const SAVE_STATUSES = ["ready", "idle", "stopped", "failed"];
 const CLAUDE_FIGURES = "claude.getContextUsage";
-const CODEX_SERVER_FIGURES = "codex.mcpServerStatus bytes_div4_v1";
 const CODEX_SKILL_FIGURES = "codex.skills/list bytes_div4_v1";
 
 // The sample world of the preview: what each warm harness lists, with a token figure where the harness gives one.
@@ -37,8 +36,8 @@ const CLAUDE_CATALOG: Record<string, string> = { "claude.ai Gmail": "Gmail", "cl
 const CLAUDE_SERVERS: [string, number][] = [["bridge", 1210], ["claude.ai Gmail", 2140], ["claude.ai Google Calendar", 1630], ["chrome-devtools", 5320], ["plugin:vercel-plugin:vercel", 880]];
 const CLAUDE_SKILLS: [string, number][] = [["review", 410], ["simplify", 220], ["superpowers:brainstorming", 640], ["superpowers:writing-plans", 530]];
 const CLAUDE_PLUGINS = ["superpowers"];
-const CODEX_SERVERS: [string, number][] = [["bridge", 980], ["github", 4120], ["linear", 2310]];
-const CODEX_APPS: [number, string[]] = [3560, ["Gmail", "Notion"]];
+const CODEX_SERVERS = ["bridge", "github", "linear"];
+const CODEX_APPS = ["Gmail", "Notion"];
 const CODEX_SKILLS: [string, number][] = [["imagegen", 140], ["pdf", 180], ["playwright", 260]];
 const OPENCODE_SERVERS = ["bridge", "context7", "sentry"];
 // A Claude chat outside the mock state. A draft on the own login borrows its init when no mock Claude chat started.
@@ -103,10 +102,11 @@ function codexList(warm: boolean, row: Choice | null): Listed {
   const at = new Date().toISOString();
   const off = new Set(row?.serversOff ?? []);
   const servers = warm ? CODEX_SERVERS : [];
-  const items = servers.map(([name, value]) => serverState({ ...unit("server", name, "MCP servers"), tokens: figure(value, CODEX_SERVER_FIGURES, at) }, off));
-  items.push(...savedServers(off, new Set(servers.map(([name]) => name)), () => "MCP servers"));
-  items.push(switched({ ...unit("apps", "codex_apps", "Apps", "Apps"), tokens: warm ? figure(CODEX_APPS[0], CODEX_SERVER_FIGURES, at) : null }, !row?.codexAppsOff));
-  items.push(...(warm ? CODEX_APPS[1] : []).map(app => fixed(unit("app", app, "Apps"), CODEX_APP_REASON)));
+  // A server and codex_apps have no figure: the size of the status reply is not what the model receives.
+  const items = servers.map(name => serverState(unit("server", name, "MCP servers"), off));
+  items.push(...savedServers(off, new Set(servers), () => "MCP servers"));
+  items.push(switched(unit("apps", "codex_apps", "Apps", "Apps"), !row?.codexAppsOff));
+  items.push(...(warm ? CODEX_APPS : []).map(app => fixed(unit("app", app, "Apps"), CODEX_APP_REASON)));
   const skillsOff = new Set(row?.codexSkillsOff ?? []);
   const skills = warm ? CODEX_SKILLS : [];
   items.push(...skills.map(([name, value]) => ({ ...codexSkill(name, !skillsOff.has(name)), tokens: figure(value, CODEX_SKILL_FIGURES, at) })));

@@ -184,7 +184,7 @@ Claude (one server S and one skill K that the user has):
 
 Codex (one server X in `~/.codex/config.toml`, no `skills` key):
 
-1. Send one turn. Run `$B --method sessions/get_chat_tools --params '{"sessionId":"'$ID'"}'`. Expected: X, `codex_apps` and the skills are listed, each figure with the source `codex.mcpServerStatus` or `codex.skills/list`.
+1. Send one turn. Run `$B --method sessions/get_chat_tools --params '{"sessionId":"'$ID'"}'`. Expected: X, `codex_apps` and the skills are listed. Each skill figure has the source `codex.skills/list`. X and `codex_apps` have no figure.
 2. Turn X and one skill off. Send a turn. Run `ps -ww -axo pid,args | grep 'app-server' | grep -v grep`. Expected: `-c mcp_servers.X.enabled=false` and `-c skills.config=[{name="<skill>",enabled=false}]`. The provider session id is the same.
 3. Run the `get_chat_tools` call again. Expected: X reports no tools, and the skill reports `enabled` false.
 4. Turn `codex_apps` off and send. Expected: `-c features.apps=false` in the arguments, and `codex_apps` is absent from the status list.

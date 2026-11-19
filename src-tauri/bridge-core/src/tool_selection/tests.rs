@@ -490,17 +490,17 @@ fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table(
         ids,
         [(Server, "bridge"), (Server, "github"), (Server, "empty"), (Apps, "codex_apps"), (App, "drive"), (App, "gmail"), (Skill, "review")]
     );
+    // The size of the status reply is not what the model receives, so a
+    // server and `codex_apps` show no figure.
     let github = item(&items, Server, "github");
-    assert_eq!(github.state, On);
-    let figure = github.tokens.clone().unwrap();
-    assert_eq!(figure.value, u64::try_from(tools.to_string().len() / 4).unwrap());
-    assert_eq!((figure.source.as_str(), figure.at.as_deref()), (CODEX_SERVER_SOURCE, Some("2026-11-19T10:00:00Z")));
+    assert_eq!((github.state, github.tokens.as_ref()), (On, None));
     assert_eq!(item(&items, Server, "empty").tokens, None);
-    assert_eq!(item(&items, Apps, "codex_apps").state, On);
-    assert!(item(&items, Apps, "codex_apps").tokens.is_some());
+    let apps = item(&items, Apps, "codex_apps");
+    assert_eq!((apps.state, apps.tokens.as_ref()), (On, None));
     let review = item(&items, Skill, "review");
     assert_eq!(review.state, On);
-    assert_eq!(review.tokens.as_ref().map(|t| (t.value, t.source.as_str())), Some((4, CODEX_SKILL_SOURCE)));
+    let figure = review.tokens.clone().unwrap();
+    assert_eq!((figure.value, figure.source.as_str(), figure.at.as_deref()), (4, CODEX_SKILL_SOURCE, Some("2026-11-19T10:00:00Z")));
 
     let saved = row(json!({"harness": "codex", "serversOff": ["github"], "codexAppsOff": true, "codexSkillsOff": ["review"]}));
     let items = codex_units(&source, Some(&saved));

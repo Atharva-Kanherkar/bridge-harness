@@ -209,15 +209,15 @@ fn a_warm_codex_chat_reads_servers_skills_and_config_from_its_runtime() {
     kinds.sort();
     assert_eq!(kinds, ["config", "servers", "skills"], "three reads and no write");
     let github = item(&result, Server, "github");
-    assert_eq!((github.state, github.seen), (On, true));
-    let tokens = github.tokens.as_ref().unwrap();
-    assert_eq!((tokens.value, tokens.source.as_str()), (1200, crate::tool_selection::CODEX_SERVER_SOURCE));
-    assert!(tokens.at.is_some(), "each figure names its time");
+    assert_eq!((github.state, github.seen, github.tokens.as_ref()), (On, true, None), "a server shows no figure");
     assert_eq!(item(&result, Server, "bridge").state, Fixed);
-    assert_eq!(item(&result, Apps, "codex_apps").state, On);
+    let apps = item(&result, Apps, "codex_apps");
+    assert_eq!((apps.state, apps.tokens.as_ref()), (On, None));
     assert_eq!(item(&result, App, "Gmail").state, Fixed);
     let lint = item(&result, Skill, "lint");
-    assert_eq!((lint.state, lint.tokens.as_ref().unwrap().source.as_str()), (On, crate::tool_selection::CODEX_SKILL_SOURCE));
+    let tokens = lint.tokens.as_ref().unwrap();
+    assert_eq!((lint.state, tokens.value, tokens.source.as_str()), (On, 25, crate::tool_selection::CODEX_SKILL_SOURCE));
+    assert!(tokens.at.is_some(), "each figure names its time");
     assert_eq!(result.sources.iter().filter(|source| source.kind == Kind::Runtime && source.available).count(), 3);
 }
 

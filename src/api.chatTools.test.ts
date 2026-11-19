@@ -9,9 +9,9 @@ const find = (items: ChatToolItem[], id: string) => items.find(item => item.id =
 describe("mock tools of a chat", () => {
   it("lists believable items for each harness with the source of each figure", async () => {
     const codex = await bridgeApi.chatTools({ sessionId: "session-2" });
-    expect(find(codex.items, "github")).toMatchObject({ kind: "server", state: "on", tokens: { source: "codex.mcpServerStatus bytes_div4_v1" } });
+    expect(find(codex.items, "github")).toMatchObject({ kind: "server", state: "on", tokens: null });
     expect(find(codex.items, "bridge")?.state).toBe("fixed");
-    expect(find(codex.items, "codex_apps")).toMatchObject({ kind: "apps", label: "Apps", state: "on" });
+    expect(find(codex.items, "codex_apps")).toMatchObject({ kind: "apps", label: "Apps", state: "on", tokens: null });
     expect(find(codex.items, "Notion")).toMatchObject({ kind: "app", state: "fixed" });
     expect(find(codex.items, "pdf")?.tokens?.source).toBe("codex.skills/list bytes_div4_v1");
     expect(codex.sources.map(source => source.available)).toEqual([true, true, true]);

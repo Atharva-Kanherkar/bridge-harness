@@ -28,7 +28,6 @@ const MAX_SERVERS: usize = 128;
 const MAX_SKILLS: usize = 384;
 const BRIDGE: &str = crate::mcp_apps::tool::SERVER_NAME;
 
-pub const CODEX_SERVER_SOURCE: &str = "codex.mcpServerStatus bytes_div4_v1";
 pub const CODEX_SKILL_SOURCE: &str = "codex.skills/list bytes_div4_v1";
 
 const BRIDGE_REASON: &str = "Bridge owns this server. It stays as attached today.";
@@ -1298,17 +1297,13 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
         if !listed.insert(name) {
             continue;
         }
-        let item = ChatToolItem {
-            tokens: reply_figure(server, CODEX_SERVER_SOURCE, at),
-            ..unit(ChatToolKind::Server, name, name, "MCP servers")
-        };
+        // A server and `codex_apps` have no figure: the size of the status
+        // reply is not what the model receives.
+        let item = unit(ChatToolKind::Server, name, name, "MCP servers");
         items.push(if is_bridge(name) || codex_key_is_safe(name) { server_state(item, &off) } else { fixed(item, CODEX_KEY_REASON) });
     }
     items.extend(saved_servers(&off, &listed, |_| "MCP servers"));
-    let apps_item = ChatToolItem {
-        tokens: apps.and_then(|server| reply_figure(server, CODEX_SERVER_SOURCE, at)),
-        ..unit(ChatToolKind::Apps, CODEX_APPS, "Apps", "Apps")
-    };
+    let apps_item = unit(ChatToolKind::Apps, CODEX_APPS, "Apps", "Apps");
     items.push(switch(apps_item, !row.is_some_and(|row| row.codex_apps_off)));
     for app in codex_apps_inside(apps) {
         items.push(fixed(unit(ChatToolKind::App, &app, &app, "Apps"), CODEX_APP_REASON));

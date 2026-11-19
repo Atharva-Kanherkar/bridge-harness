@@ -26,10 +26,10 @@ function codexTools(off: string[] = [], revision = 3): ChatTools {
     choice: off.length ? { harness: "codex", account: null, serversOff: off.filter(id => id !== "pdf"), codexSkillsOff: off.filter(id => id === "pdf") } : null,
     items: [
       item({ id: "bridge", state: "fixed", fixedReason: BRIDGE_REASON }),
-      item({ id: "github", state: state("github"), tokens: { value: 4120, source: "codex.mcpServerStatus bytes_div4_v1", at: null } }),
+      item({ id: "github", state: state("github") }),
       item({ id: "linear", state: state("linear") }),
       item({ id: "Notion", kind: "app", group: "Apps", state: "fixed", fixedReason: APP_REASON }),
-      item({ id: "pdf", kind: "skill", group: "Skills", state: state("pdf") }),
+      item({ id: "pdf", kind: "skill", group: "Skills", state: state("pdf"), tokens: { value: 4120, source: "codex.skills/list bytes_div4_v1", at: null } }),
     ],
     sources: [{ kind: "runtime", label: "Codex mcpServerStatus/list", available: true, at: new Date().toISOString(), note: null }],
     selection: { revision, harness: "codex", account: null, applies: true, notAppliedReason: null },
@@ -586,9 +586,9 @@ describe("ChatToolsControl", () => {
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
     await settle();
     await openPanel();
-    expect(row("github")!.textContent).toContain("4,120 tokens · codex.mcpServerStatus bytes_div4_v1");
+    expect(row("pdf")!.textContent).toContain("4,120 tokens · codex.skills/list bytes_div4_v1");
     // The row cuts a long source, so the full text stays on the element.
-    expect(row("github")!.querySelector('[title="4,120 tokens · codex.mcpServerStatus bytes_div4_v1"]')?.textContent).toBe("4,120 tokens · codex.mcpServerStatus bytes_div4_v1");
+    expect(row("pdf")!.querySelector('[title="4,120 tokens · codex.skills/list bytes_div4_v1"]')?.textContent).toBe("4,120 tokens · codex.skills/list bytes_div4_v1");
     expect(row("linear")!.textContent).toBe("linear");
     expect(row("linear")!.textContent).not.toContain("tokens");
   });
