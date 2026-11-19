@@ -831,6 +831,28 @@ fn a_save_is_refused_while_the_chat_is_working_or_checkpointing() {
 }
 
 #[test]
+fn a_save_that_waits_for_the_database_does_not_hold_the_lifecycle_claim() {
+    let (_dir, core) = core();
+    chat(&core.db.lock().unwrap(), "c", "claude", None);
+    set(&core, "UPDATE sessions SET status='working',active_turn_id='turn-1' WHERE id='c'");
+    std::thread::scope(|scope| {
+        let db = core.db.lock().unwrap();
+        let saver = scope.spawn(|| busy(&core, "c"));
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut claimed = false;
+        while Instant::now() < deadline {
+            claimed |= core.lifecycle_claims.lock().unwrap().contains_key("c");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // A cancel of the turn takes the claim while the save waits.
+        assert!(!claimed, "the save holds the lifecycle claim while it waits for the database");
+        drop(core.claim_session_lifecycle("c", "cancel turn").unwrap());
+        drop(db);
+        assert_eq!(saver.join().unwrap(), SaveOutcome::Busy(TURN_BUSY));
+    });
+}
+
+#[test]
 fn a_save_is_refused_with_queued_input_a_waiting_subagent_or_a_pending_worker_result() {
     let (_dir, core) = core();
     chat(&core.db.lock().unwrap(), "c", "claude", None);

@@ -370,11 +370,32 @@ fn busy_reason(activity: &crate::runtime_budget::Activity) -> &'static str {
     }
 }
 
+/// The refusal of a save for a chat that is busy now, or `None` for an idle
+/// chat: the shared idle check under the database lock, then the turn of a
+/// warm runtime.
+fn busy_now(core: &BridgeCore, db: &Connection, session_id: &str) -> Result<Option<&'static str>, BridgeError> {
+    let activity = crate::runtime_budget::activity(db, session_id, SAVE_STATUSES)?
+        .ok_or_else(|| invalid("This chat does not exist"))?;
+    if !activity.chat || !chat_defaults::is_top_level_chat(db, session_id)? {
+        return Err(invalid("Only a top-level chat can have a tool choice"));
+    }
+    if !activity.idle() {
+        return Ok(Some(busy_reason(&activity)));
+    }
+    let turn_runs = core
+        .adapters
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(session_id)
+        .is_some_and(|runtime| runtime.current_turn().lock().unwrap_or_else(PoisonError::into_inner).is_some());
+    Ok(turn_runs.then_some(TURN_BUSY))
+}
+
 /// Save a new choice for a chat that exists. The save takes the guard of the
 /// idle release in the same order: the input lease, the lifecycle claim of
-/// the session, the shared idle check under the database lock, and the turn
-/// of a warm runtime. A busy chat gets a refusal, and nothing changes. The
-/// save never stops the process: the next turn applies the new revision.
+/// the session, then [`busy_now`]. A busy chat gets a refusal, and nothing
+/// changes. The save never stops the process: the next turn applies the new
+/// revision.
 pub fn save(
     core: &BridgeCore,
     session_id: &str,
@@ -385,26 +406,17 @@ pub fn save(
     let Some(lease) = write_lease(core) else {
         return Ok(SaveOutcome::Busy(SEND_BUSY));
     };
+    // A first check without the claim refuses a busy chat early, so a cancel
+    // of its turn never fails because a save waits for the database.
+    if let Some(reason) = busy_now(core, &*core.try_db()?, session_id)? {
+        return Ok(SaveOutcome::Busy(reason));
+    }
     let Ok(claim) = core.claim_session_lifecycle(session_id, "tool selection") else {
         return Ok(SaveOutcome::Busy(LIFECYCLE_BUSY));
     };
     let db = core.try_db()?;
-    let activity = crate::runtime_budget::activity(&db, session_id, SAVE_STATUSES)?
-        .ok_or_else(|| invalid("This chat does not exist"))?;
-    if !activity.chat || !chat_defaults::is_top_level_chat(&db, session_id)? {
-        return Err(invalid("Only a top-level chat can have a tool choice"));
-    }
-    if !activity.idle() {
-        return Ok(SaveOutcome::Busy(busy_reason(&activity)));
-    }
-    let turn_runs = core
-        .adapters
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(session_id)
-        .is_some_and(|runtime| runtime.current_turn().lock().unwrap_or_else(PoisonError::into_inner).is_some());
-    if turn_runs {
-        return Ok(SaveOutcome::Busy(TURN_BUSY));
+    if let Some(reason) = busy_now(core, &db, session_id)? {
+        return Ok(SaveOutcome::Busy(reason));
     }
     let transaction = db.unchecked_transaction()?;
     let row = write_checked(&transaction, session_id, expected_revision, selection)?;
