@@ -219,7 +219,34 @@ fn a_warm_codex_chat_reads_servers_skills_and_config_from_its_runtime() {
     let lint = item(&result, Skill, "lint");
     assert_eq!((lint.state, lint.tokens.as_ref().unwrap().source.as_str()), (On, crate::tool_selection::CODEX_SKILL_SOURCE));
     assert_eq!(result.sources.iter().filter(|source| source.kind == Kind::Runtime && source.available).count(), 3);
-    assert_eq!(crate::tool_selection::codex_user_skills_key("codex-chat"), Some(false), "the config read is kept");
+    let place = CodexPlace::resolve(&core.db.lock().unwrap(), None, "/tmp/a").unwrap();
+    let kept = codex_skills_key(&core.db.lock().unwrap(), "codex-chat", Some(&place));
+    assert_eq!(kept, CodexSkillsKey::Known(false), "the config read is kept");
+}
+
+#[test]
+fn a_warm_read_that_confirms_the_config_ends_a_partial_launch() {
+    let (_dir, core) = core();
+    let applied = |partial: bool| crate::tool_selection::AppliedTools {
+        revision: 1,
+        effective_hash: "hash".into(),
+        confirmed: true,
+        pending: None,
+        partial,
+    };
+    for (id, partial) in [("codex-partial", true), ("codex-whole", false)] {
+        chat(&core, id, "codex", None, Some("a"));
+        save_row(&core, id, json!({"harness": "codex", "codexSkillsOff": ["lint"]}));
+        crate::tool_selection::record_applied(&core, id, applied(partial));
+        let owner = if partial { "codex-partial" } else { "codex-whole" };
+        core.adapters.lock().unwrap().insert(id.to_owned(), Box::new(Codex { owner, asked: Arc::default(), fail: false }));
+        let result = of_session(&core, id);
+        assert_eq!(item(&result, Skill, "lint").state, Off, "{id}");
+    }
+    // The runtime that dropped the skills part relaunches at the next send.
+    assert_eq!(crate::tool_selection::applied_revision(&core, "codex-partial"), 0);
+    assert!(crate::tool_selection::stale(&core, "codex-partial"));
+    assert_eq!(crate::tool_selection::applied_revision(&core, "codex-whole"), 1);
 }
 
 #[test]

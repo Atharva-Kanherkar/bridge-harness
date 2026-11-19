@@ -594,6 +594,39 @@ fn a_failed_resume_without_a_selection_change_keeps_the_existing_fallback() {
 }
 
 #[test]
+fn a_dropped_codex_skills_part_writes_no_claim_and_keeps_the_fallback() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "codex", Some("thread-0"));
+    let stored_hash = {
+        let db = core.db.lock().unwrap();
+        let choice: ChatToolSelection = serde_json::from_value(json!({"harness": "codex", "codexSkillsOff": ["review"]})).unwrap();
+        let row = tool_selection::write_checked(&db, &chat, 0, &choice).unwrap();
+        let stored_hash = ToolLaunch::from_row(&row).effective_hash;
+        // An earlier launch applied the whole choice.
+        let payload = json!({"revision": 1, "harness": "codex", "effectiveHash": stored_hash, "codexSkillsOff": ["review"]});
+        crate::session_forest::SessionForest::new(&db)
+            .append(&chat, crate::session_forest::EntryKind::ToolSelectionChanged, payload)
+            .unwrap();
+        stored_hash
+    };
+    // No stored config read confirms the folder of this launch, so it drops
+    // the skills part. The person did not change the set, so the failed
+    // resume keeps the fallback.
+    script.lock().unwrap().resume_error = Some("the thread did not load".into());
+    start_chat(&core, chat.clone()).unwrap();
+    let launched = asked(&script);
+    assert_eq!(launched.iter().map(|launch| launch.verb).collect::<Vec<_>>(), ["resume", "start"], "{launched:?}");
+    assert!(launched.iter().all(|launch| launch.tools.as_ref().is_some_and(|tools| tools.codex_skills_off.is_empty())));
+    assert_eq!(row_of(&core, &chat).0, "ready");
+    // The event names the set that the launch applied, not the stored choice.
+    let events = change_events(&core, &chat);
+    let last = events.last().unwrap();
+    assert_eq!(last["codexSkillsOff"], json!([]));
+    assert_eq!(last["effectiveHash"], json!(tool_selection::all_on_hash("codex")));
+    assert_ne!(last["effectiveHash"], json!(stored_hash));
+}
+
+#[test]
 fn a_removed_codex_key_fails_the_launch_with_the_key_in_the_message() {
     let (_dir, core, script) = live();
     let refused = "Codex closed its output. Provider process exit status: 1. Stderr tail:\nError: invalid transport in mcp_servers.github";

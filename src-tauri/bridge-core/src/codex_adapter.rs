@@ -2144,13 +2144,15 @@ mod tests {
 
     #[test]
     fn the_skills_override_is_absent_when_the_config_has_a_skills_key() {
-        use crate::tool_selection::{launch_for, remember_codex_config, write_checked, LaunchTarget};
+        use crate::tool_selection::{launch_for, remember_codex_config, write_checked, CodexPlace, LaunchTarget};
         let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let cwd = folder.path().to_string_lossy().into_owned();
         let session = format!("codex-skills-{}", Uuid::new_v4());
         db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES(?1,'codex','Chat','ready','reported','direct')", [&session]).unwrap();
         let choice = serde_json::from_value(json!({"harness": "codex", "serversOff": ["github"], "codexSkillsOff": ["review", "deploy"]})).unwrap();
         write_checked(&db, &session, 0, &choice).unwrap();
-        let target = LaunchTarget { harness: "codex", interactive: true, workflow: false };
+        let target = LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd: &cwd };
         let launch = || launch_for(&db, &session, &target).unwrap().unwrap();
         let skills_values = || -> Vec<String> {
             let values = config_values(&launch_args(Some(&bridge_launch()), Some(&launch())));
@@ -2161,21 +2163,23 @@ mod tests {
             let frame = json!({"id": "bridge-app:config:c1", "result": {"config": {"skills": {"config": []}}, "origins": {}, "layers": layers}});
             crate::apps::codex::translate(&frame).unwrap()["result"].clone()
         };
+        let place = CodexPlace::resolve(&db, None, &cwd).unwrap();
+        let remember = |reply: &Value| remember_codex_config(&db, &session, &place, &place.fingerprint(), reply).unwrap();
 
         // No `config/read` yet: Bridge does not know the config, so the skills stay as they are.
         assert!(skills_values().is_empty());
         // A skills key of the user: a `skills.config` value would replace it.
-        remember_codex_config(&session, &config_read(json!([layer("user", json!({"skills": {"config": [{"path": "/s", "enabled": false}]}}))])));
+        assert!(remember(&config_read(json!([layer("user", json!({"skills": {"config": [{"path": "/s", "enabled": false}]}}))]))));
         assert!(skills_values().is_empty());
         let without = launch();
         assert_eq!(without.servers_off, ["github"]);
         assert!(without.codex_skills_off.is_empty());
         // Only the own `-c` value of Bridge holds the key, so the override applies.
-        remember_codex_config(&session, &config_read(json!([layer("sessionFlags", json!({"skills": {"config": []}})), layer("user", json!({"model": "gpt"}))])));
+        assert!(remember(&config_read(json!([layer("sessionFlags", json!({"skills": {"config": []}})), layer("user", json!({"model": "gpt"}))]))));
         assert_eq!(skills_values(), [r#"skills.config=[{name="deploy",enabled=false},{name="review",enabled=false}]"#]);
         assert_ne!(launch().effective_hash, without.effective_hash, "the hash follows the applied set");
-        // A reply without the fact forgets it.
-        remember_codex_config(&session, &json!({}));
+        // A reply without the fact removes it.
+        assert!(!remember(&json!({})));
         assert!(skills_values().is_empty());
     }
 

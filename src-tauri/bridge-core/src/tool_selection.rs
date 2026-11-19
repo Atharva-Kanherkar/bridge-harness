@@ -1,7 +1,8 @@
 //! The tool choice of a chat: the connectors and skills that its launches
-//! leave out. Bridge stores only the choice (kind `chat_tool_selection_v1`),
-//! never an inventory. A choice only removes items, so nothing here can add
-//! an allow rule, remove a deny or change a permission.
+//! leave out. Bridge stores the choice (kind `chat_tool_selection_v1`) and
+//! for Codex one `config/read` fact (kind `codex_skills_config_v1`), never an
+//! inventory. A choice only removes items, so nothing here can add an allow
+//! rule, remove a deny or change a permission.
 use crate::session_forest::{self, EntryKind, SessionForest};
 use crate::{chat_defaults, provider_accounts, runtime::BridgeCore, BridgeError};
 use bridge_protocol::messages::{
@@ -12,9 +13,10 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Mutex, OnceLock, PoisonError, RwLockWriteGuard, TryLockError};
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::{PoisonError, RwLockWriteGuard, TryLockError};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 pub const KIND: &str = "chat_tool_selection_v1";
 /// Half of the 128 KiB cap of `chat_defaults::read`, so a stored row always
@@ -44,6 +46,8 @@ const CODEX_SKILLS_TABLE_REASON: &str =
     "The Codex config has a skills key. Bridge does not change it.";
 const CODEX_SKILLS_UNKNOWN_REASON: &str =
     "Bridge can check the Codex config for a skills key only after a turn of this chat.";
+pub const CODEX_SKILLS_UNCONFIRMED_REASON: &str =
+    "Bridge cannot confirm the Codex skills config now. Open this list while the chat runs.";
 const OPENCODE_SKILLS_REASON: &str = "OpenCode has no verified switch for one skill.";
 
 /// The stored row: the choice and its own revision.
@@ -441,6 +445,9 @@ pub struct ToolLaunch {
     pub codex_skills_off: Vec<String>,
     /// Stable for equal effective sets. The revision is not part of it.
     pub effective_hash: String,
+    /// The hash of the stored choice. It differs from `effective_hash` when
+    /// the launch cannot apply a part of the choice.
+    pub stored_hash: String,
 }
 
 impl ToolLaunch {
@@ -462,17 +469,18 @@ impl ToolLaunch {
             codex_apps_off: row.codex_apps_off,
             claude_skills,
             codex_skills_off,
+            stored_hash: effective_hash.clone(),
             effective_hash,
         }
     }
 
-    /// Keep the Codex skills choice only when the last `config/read` of the
-    /// chat showed no `skills` key of the user (`Some(false)`). A
-    /// `skills.config` value replaces that key, so with a key or with no
-    /// knowledge the launch leaves the skills as they are. The hash follows
+    /// Keep the Codex skills choice only when a stored `config/read` fact
+    /// confirms that the config of the launch has no `skills` key of the
+    /// user. A `skills.config` value replaces that key, so in each other case
+    /// the launch leaves the skills as they are. The effective hash follows
     /// the set that the launch applies.
-    pub fn with_codex_skills_known(self, user_skills_key: Option<bool>) -> Self {
-        if self.harness != "codex" || self.codex_skills_off.is_empty() || user_skills_key == Some(false) {
+    pub fn with_codex_skills_known(self, no_user_skills_key: bool) -> Self {
+        if self.harness != "codex" || self.codex_skills_off.is_empty() || no_user_skills_key {
             return self;
         }
         let codex_skills_off = Vec::new();
@@ -520,13 +528,16 @@ pub struct LaunchTarget<'a> {
     pub interactive: bool,
     /// A workflow run, or a launch under a briefing policy.
     pub workflow: bool,
+    /// The folder of the launch.
+    pub cwd: &'a str,
 }
 
 /// The tool launch of a chat: `None` for a chat with no stored choice, and
 /// `None` unless the session is an interactive top-level chat outside a
 /// workflow and its stored choice applies. Workers, briefings and workflows
-/// never read the row. A Codex skills choice applies only after a
-/// `config/read` of the chat showed no `skills` key of the user.
+/// never read the row. A Codex skills choice applies only when a stored
+/// `config/read` fact confirms that the config of this account and folder
+/// has no `skills` key of the user.
 pub fn launch_for(
     db: &Connection,
     session_id: &str,
@@ -541,39 +552,163 @@ pub fn launch_for(
         params![session_id],
         |r| r.get(0),
     )?;
-    Ok(status(&row, target.harness, account.as_deref())
-        .applies
-        .then(|| ToolLaunch::from_row(&row).with_codex_skills_known(codex_user_skills_key(session_id))))
-}
-
-/// The last `config/read` fact of each Codex chat: `true` when a config
-/// layer of the user holds a `skills` key. It lives in memory and never on
-/// the frame path, so a restart forgets it until the next read.
-fn codex_configs() -> &'static Mutex<HashMap<String, bool>> {
-    static CONFIGS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    CONFIGS.get_or_init(Mutex::default)
-}
-
-const MAX_KNOWN_CONFIGS: usize = 1024;
-
-/// Keep the fact of a translated `config` reply of a Codex chat (the
-/// `userSkillsKey` flag of `apps::codex`). A reply without the flag forgets
-/// the chat, so the next launch leaves the skills as they are.
-pub fn remember_codex_config(session_id: &str, reply: &Value) {
-    let mut configs = codex_configs().lock().unwrap_or_else(PoisonError::into_inner);
-    let Some(user_skills_key) = reply.get("userSkillsKey").and_then(Value::as_bool) else {
-        configs.remove(session_id);
-        return;
-    };
-    if configs.len() >= MAX_KNOWN_CONFIGS && !configs.contains_key(session_id) {
-        configs.clear();
+    if !status(&row, target.harness, account.as_deref()).applies {
+        return Ok(None);
     }
-    configs.insert(session_id.to_owned(), user_skills_key);
+    let launch = ToolLaunch::from_row(&row);
+    // The file reads run only for a choice that has a skills part.
+    let no_user_skills_key = launch.harness == "codex" && !launch.codex_skills_off.is_empty() && {
+        let place = CodexPlace::resolve(db, account.as_deref(), target.cwd);
+        codex_skills_key(db, session_id, place.as_ref()) == CodexSkillsKey::Known(false)
+    };
+    Ok(Some(launch.with_codex_skills_known(no_user_skills_key)))
 }
 
-/// The fact that [`remember_codex_config`] kept for a chat, or `None`.
-pub fn codex_user_skills_key(session_id: &str) -> Option<bool> {
-    codex_configs().lock().unwrap_or_else(PoisonError::into_inner).get(session_id).copied()
+// --- the Codex skills config ------------------------------------------------------
+
+/// The kind of the stored `config/read` fact of a Codex chat.
+pub const CODEX_CONFIG_KIND: &str = "codex_skills_config_v1";
+const MAX_LAYER_FILES: usize = 64;
+const MAX_PATH_BYTES: usize = 4096;
+
+/// The account and the folder of a Codex chat, and the config files that
+/// Codex reads for them: `config.toml` in the Codex home of the account and
+/// each `.codex/config.toml` from the folder up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexPlace {
+    account: Option<String>,
+    cwd: String,
+    files: BTreeSet<PathBuf>,
+}
+
+impl CodexPlace {
+    /// `None` when the account is no longer in Settings.
+    pub fn resolve(db: &Connection, account: Option<&str>, cwd: &str) -> Option<Self> {
+        let account = provider_accounts::normalize_choice("codex", account);
+        let record = match &account {
+            Some(id) => Some(crate::agent_config::account(db, "codex", id).ok()?),
+            None => None,
+        };
+        let layout = provider_accounts::codex_home_layout(record.as_ref(), &provider_accounts::HostHomes::from_env());
+        let homes = std::iter::once(layout.shared_home_path).chain(layout.effective_home_path);
+        let mut files: BTreeSet<PathBuf> = homes.map(|home| home.join("config.toml")).collect();
+        files.extend(Path::new(cwd).ancestors().map(|folder| folder.join(".codex").join("config.toml")));
+        Some(Self { account, cwd: cwd.to_owned(), files })
+    }
+
+    /// The fingerprint of the files of the place.
+    pub fn fingerprint(&self) -> String {
+        fingerprint(&self.files)
+    }
+
+    fn with(&self, layer_files: &[String]) -> BTreeSet<PathBuf> {
+        let mut files = self.files.clone();
+        files.extend(layer_files.iter().map(PathBuf::from));
+        files
+    }
+}
+
+/// The length and the modification time of each file, or `absent`.
+fn fingerprint(files: &BTreeSet<PathBuf>) -> String {
+    let mut digest = Sha256::new();
+    for file in files {
+        let state = match std::fs::metadata(file) {
+            Ok(metadata) => {
+                let modified = metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok());
+                format!("{}:{}", metadata.len(), modified.map_or(0, |time| time.as_nanos()))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
+            Err(error) => format!("unreadable:{:?}", error.kind()),
+        };
+        digest.update(file.as_os_str().as_encoded_bytes());
+        digest.update([0]);
+        digest.update(state.as_bytes());
+        digest.update([b'\n']);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+/// One `config/read` of a Codex chat, bound to what Codex read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexConfigFact {
+    account: Option<String>,
+    cwd: String,
+    user_skills_key: bool,
+    /// The files of the layers of the reply.
+    files: Vec<String>,
+    /// The fingerprint of the files of the place and of the layers.
+    fingerprint: String,
+}
+
+/// What Bridge knows about a `skills` key of the user in the Codex config of
+/// a chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexSkillsKey {
+    /// No `config/read` of the chat is stored.
+    Unknown,
+    /// The stored read is for another account or folder, or a config file
+    /// changed after it.
+    Unconfirmed,
+    /// The stored read still holds: `true` when the config has the key.
+    Known(bool),
+}
+
+/// The stored fact of a chat, checked against a place. A fresh fingerprint
+/// must equal the stored one.
+pub fn codex_skills_key(db: &Connection, session_id: &str, place: Option<&CodexPlace>) -> CodexSkillsKey {
+    let fact = match chat_defaults::read::<CodexConfigFact>(db, CODEX_CONFIG_KIND, session_id) {
+        Ok(Some(fact)) => fact,
+        Ok(None) => return CodexSkillsKey::Unknown,
+        Err(_) => return CodexSkillsKey::Unconfirmed,
+    };
+    let Some(place) = place.filter(|place| place.account == fact.account && place.cwd == fact.cwd) else {
+        return CodexSkillsKey::Unconfirmed;
+    };
+    if fingerprint(&place.with(&fact.files)) != fact.fingerprint {
+        return CodexSkillsKey::Unconfirmed;
+    }
+    CodexSkillsKey::Known(fact.user_skills_key)
+}
+
+/// Store the fact of a translated `config` reply (`userSkillsKey` and
+/// `files` of `apps::codex`) for a place. `before` is the fingerprint of
+/// the place before the read. A reply without the flag removes the stored
+/// fact. The result is true when the fact is stored.
+pub fn remember_codex_config(
+    db: &Connection,
+    session_id: &str,
+    place: &CodexPlace,
+    before: &str,
+    reply: &Value,
+) -> Result<bool, BridgeError> {
+    let Some(user_skills_key) = reply.get("userSkillsKey").and_then(Value::as_bool) else {
+        db.execute(
+            "DELETE FROM configuration_entries WHERE kind=?1 AND id=?2",
+            params![CODEX_CONFIG_KIND, session_id],
+        )?;
+        return Ok(false);
+    };
+    // A file that changed during the read can hold what the reply missed.
+    if place.fingerprint() != before {
+        return Ok(false);
+    }
+    let files: Vec<String> = reply_list(Some(reply), "files")
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|file| file.len() <= MAX_PATH_BYTES)
+        .take(MAX_LAYER_FILES)
+        .map(str::to_owned)
+        .collect();
+    let fact = CodexConfigFact {
+        account: place.account.clone(),
+        cwd: place.cwd.clone(),
+        user_skills_key,
+        fingerprint: fingerprint(&place.with(&files)),
+        files,
+    };
+    chat_defaults::write(db, CODEX_CONFIG_KIND, session_id, &fact)?;
+    Ok(true)
 }
 
 // --- the choice that a warm runtime applies ---------------------------------------
@@ -592,6 +727,8 @@ pub struct AppliedTools {
     /// False while a Claude event waits for its proof.
     pub confirmed: bool,
     pub pending: Option<PendingEvent>,
+    /// True when the launch applied less than the stored choice.
+    pub partial: bool,
 }
 
 /// A Claude event that waits for the first good turn on the same session id.
@@ -612,6 +749,11 @@ pub struct LaunchRecord {
     tools: Option<ToolLaunch>,
     effective_hash: String,
     changed: bool,
+    /// The stored choice differs from the last event too, so the person
+    /// changed the set. A launch that only drops a part that it cannot apply
+    /// is not a choice of the person.
+    chosen: bool,
+    partial: bool,
     prefix_rewritten: bool,
 }
 
@@ -642,11 +784,14 @@ impl LaunchRecord {
             Some((Some(last_harness), Some(hash))) if last_harness == harness => hash,
             _ => all_on_hash(harness),
         };
+        let stored_hash = tools.map_or(effective_hash.as_str(), |tools| tools.stored_hash.as_str());
         Ok(Self {
             revision,
             harness: harness.to_owned(),
             tools: tools.cloned(),
             changed: effective_hash != last_hash,
+            chosen: stored_hash != last_hash,
+            partial: stored_hash != effective_hash,
             effective_hash,
             prefix_rewritten,
         })
@@ -657,9 +802,11 @@ impl LaunchRecord {
     }
 
     /// A failed native resume of Codex or OpenCode with a changed set keeps
-    /// the thread: no fork and no fresh start.
+    /// the thread: no fork and no fresh start. A set that changed only
+    /// because the launch drops a part keeps the fallback, so a person can
+    /// always leave a failed chat.
     pub fn keeps_the_thread_on_failure(&self) -> bool {
-        self.changed && matches!(self.harness.as_str(), "codex" | "opencode")
+        self.changed && self.chosen && matches!(self.harness.as_str(), "codex" | "opencode")
     }
 
     /// Claude gives no proof at launch. The proof is the first good turn.
@@ -725,6 +872,7 @@ impl LaunchRecord {
             effective_hash: self.effective_hash.clone(),
             confirmed: pending.is_none(),
             pending,
+            partial: self.partial,
         }
     }
 }
@@ -740,6 +888,15 @@ pub fn record_applied(core: &BridgeCore, session_id: &str, applied: AppliedTools
 /// Remove the entry of a chat whose new runtime launched with no tool choice.
 pub fn forget_applied(core: &BridgeCore, session_id: &str) {
     core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner).remove(session_id);
+}
+
+/// Remove the entry of a warm runtime that applied less than the stored
+/// choice, so the next send relaunches it with the whole choice.
+pub fn forget_partial(core: &BridgeCore, session_id: &str) {
+    let mut applied = core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner);
+    if applied.get(session_id).is_some_and(|entry| entry.partial) {
+        applied.remove(session_id);
+    }
 }
 
 /// The revision that the warm runtime of a chat applies: 0 with no entry.
@@ -1133,8 +1290,10 @@ pub struct CodexSource {
     pub status: Option<Value>,
     /// The `skills` reply: `{skills:[{name, enabled, tokens}]}`.
     pub skills: Option<Value>,
-    /// The `config` reply: `{userSkillsKey, plugins}`.
+    /// The `config` reply: `{userSkillsKey, plugins, files}`.
     pub config: Option<Value>,
+    /// Bridge cannot confirm the `config` fact for the next launch.
+    pub unconfirmed: bool,
     /// When the runtime answered.
     pub at: Option<String>,
 }
@@ -1150,11 +1309,13 @@ fn codex_apps_inside(server: Option<&Value>) -> Vec<String> {
 }
 
 /// `None` when the skills are units. Otherwise the reason that they are
-/// fixed: a `skills` key of the user, or a config that Bridge has not read.
-fn codex_skill_reason(config: Option<&Value>) -> Option<&'static str> {
-    match config.and_then(|reply| reply.get("userSkillsKey")).and_then(Value::as_bool) {
-        Some(false) => None,
+/// fixed: a `skills` key of the user, a read that Bridge cannot confirm for
+/// the next launch, or a config that Bridge has not read.
+fn codex_skill_reason(source: &CodexSource) -> Option<&'static str> {
+    match source.config.as_ref().and_then(|reply| reply.get("userSkillsKey")).and_then(Value::as_bool) {
         Some(true) => Some(CODEX_SKILLS_TABLE_REASON),
+        _ if source.unconfirmed => Some(CODEX_SKILLS_UNCONFIRMED_REASON),
+        Some(false) => None,
         None => Some(CODEX_SKILLS_UNKNOWN_REASON),
     }
 }
@@ -1193,7 +1354,7 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
     for app in codex_apps_inside(apps) {
         items.push(fixed(unit(ChatToolKind::App, &app, &app, "Apps"), CODEX_APP_REASON));
     }
-    let reason = codex_skill_reason(source.config.as_ref());
+    let reason = codex_skill_reason(source);
     let skills_off = off_set(row, |row| &row.codex_skills_off);
     let mut skills = BTreeSet::new();
     for skill in reply_list(source.skills.as_ref(), "skills") {

@@ -2528,6 +2528,7 @@ mod tests {
             claude_skills: Some(vec![]),
             codex_skills_off: vec![],
             effective_hash: "hash".into(),
+            stored_hash: "hash".into(),
         };
         let calls = Arc::new(Mutex::new(Vec::new()));
         let plain = PlainAdapter { calls: calls.clone() };

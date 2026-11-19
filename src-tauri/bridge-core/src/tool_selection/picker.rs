@@ -2,9 +2,9 @@
 //! catalog that Bridge cached, the last Claude init, the latest context
 //! reading and the warm runtime of the chat. Nothing here starts a process.
 use super::{
-    claude_units, codex_units, codex_user_skills_key, invalid, opencode_not_applied_reason, opencode_units, read,
-    remember_codex_config, save, status, stored_revision, ClaudeSource, CodexSource, OpenCodeSource, SaveOutcome,
-    TokenFigures, ToolSelectionRow,
+    claude_units, codex_skills_key, codex_units, forget_partial, invalid, opencode_not_applied_reason, opencode_units,
+    read, remember_codex_config, save, status, stored_revision, ClaudeSource, CodexPlace, CodexSkillsKey, CodexSource,
+    OpenCodeSource, SaveOutcome, TokenFigures, ToolSelectionRow,
 };
 use crate::{chat_defaults, provider_accounts, runtime::BridgeCore, BridgeError};
 use bridge_protocol::messages::{
@@ -342,9 +342,32 @@ fn runtime_source(label: &str, at: Option<&str>, read: &Result<Value, BridgeErro
     }
 }
 
-/// The last `config/read` fact of the chat, as a reply that holds only it.
-fn remembered_config(session_id: &str) -> Option<Value> {
-    codex_user_skills_key(session_id).map(|key| json!({"userSkillsKey": key}))
+/// The account and the folder of a Codex chat, as its launch resolves them.
+fn codex_place(core: &BridgeCore, session_id: &str) -> Option<CodexPlace> {
+    let db = core.try_db().ok()?;
+    let (account, cwd, workspace): (Option<String>, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT s.account,s.cwd,w.path FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok()?;
+    let cwd = cwd
+        .filter(|cwd| !cwd.is_empty())
+        .or(workspace)
+        .unwrap_or_else(|| core.chat_scratch_dir(session_id).to_string_lossy().into_owned());
+    CodexPlace::resolve(&db, account.as_deref(), &cwd)
+}
+
+/// The stored `config/read` fact of the chat, checked against its place:
+/// a reply that holds only the fact, and whether Bridge cannot confirm it.
+fn stored_config(core: &BridgeCore, session_id: &str, place: Option<&CodexPlace>) -> (Option<Value>, bool) {
+    let Ok(db) = core.try_db() else { return (None, true) };
+    match codex_skills_key(&db, session_id, place) {
+        CodexSkillsKey::Unknown => (None, false),
+        CodexSkillsKey::Unconfirmed => (None, true),
+        CodexSkillsKey::Known(key) => (Some(json!({"userSkillsKey": key})), false),
+    }
 }
 
 fn joined(handle: std::thread::ScopedJoinHandle<'_, Result<Value, BridgeError>>) -> Result<Value, BridgeError> {
@@ -355,9 +378,15 @@ fn joined(handle: std::thread::ScopedJoinHandle<'_, Result<Value, BridgeError>>)
 /// is a JSON-RPC request on the open connection, so no process starts.
 fn codex_list(core: &Arc<BridgeCore>, session_id: Option<&str>, row: Option<&ToolSelectionRow>) -> Listed {
     let Some(session_id) = session_id.filter(|id| has_runtime(core, id)) else {
-        let cold = CodexSource { config: session_id.and_then(remembered_config), ..CodexSource::default() };
+        let (config, unconfirmed) = match session_id {
+            Some(id) => stored_config(core, id, codex_place(core, id).as_ref()),
+            None => (None, false),
+        };
+        let cold = CodexSource { config, unconfirmed, ..CodexSource::default() };
         return (codex_units(&cold, row), vec![missing(ChatToolSourceKind::Runtime, "Codex app-server", COLD_NOTE.to_owned())]);
     };
+    let place = codex_place(core, session_id);
+    let before = place.as_ref().map(CodexPlace::fingerprint);
     let (servers, skills, config) = std::thread::scope(|scope| {
         let ask = |kind: &'static str| {
             scope.spawn(move || crate::apps::control::request(core, session_id, &json!({ "kind": kind })))
@@ -366,20 +395,28 @@ fn codex_list(core: &Arc<BridgeCore>, session_id: Option<&str>, row: Option<&Too
         (joined(servers), joined(skills), joined(config))
     });
     let at = chrono::Utc::now().to_rfc3339();
-    if let Ok(config) = &config {
-        remember_codex_config(session_id, config);
+    let stored = match (&config, &place, &before) {
+        (Ok(reply), Some(place), Some(before)) => core
+            .try_db()
+            .and_then(|db| remember_codex_config(&db, session_id, place, before, reply))
+            .unwrap_or(false),
+        _ => false,
+    };
+    // A runtime that dropped the skills part relaunches at the next send,
+    // now that a read confirms the config.
+    if stored && config.as_ref().is_ok_and(|reply| reply.get("userSkillsKey") == Some(&Value::Bool(false))) {
+        forget_partial(core, session_id);
     }
     let sources = vec![
         runtime_source("Codex mcpServerStatus/list", Some(&at), &servers),
         runtime_source("Codex skills/list", Some(&at), &skills),
         runtime_source("Codex config/read", Some(&at), &config),
     ];
-    let warm = CodexSource {
-        status: servers.ok(),
-        skills: skills.ok(),
-        config: config.ok().or_else(|| remembered_config(session_id)),
-        at: Some(at),
+    let (config, unconfirmed) = match config {
+        Ok(reply) => (Some(reply), !stored),
+        Err(_) => stored_config(core, session_id, place.as_ref()),
     };
+    let warm = CodexSource { status: servers.ok(), skills: skills.ok(), config, unconfirmed, at: Some(at) };
     (codex_units(&warm, row), sources)
 }
 
