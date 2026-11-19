@@ -401,6 +401,25 @@ pub fn launch_for(
         .then(|| ToolLaunch::from_row(&row)))
 }
 
+// --- launch translations ----------------------------------------------------------
+
+/// The `toolSelection` value of the Claude sidecar config: the servers to
+/// deny and the skills to keep. The skill list is absent when the chat keeps
+/// every skill. The deny list never names the Bridge server. The sidecar
+/// adds the names to its deny list and never removes an entry.
+pub fn claude_sidecar_selection(tools: &ToolLaunch) -> Option<Value> {
+    if tools.harness != "claude" {
+        return None;
+    }
+    let denied: Vec<&str> = tools.servers_off.iter().map(String::as_str).filter(|id| !is_bridge(id)).collect();
+    let mut selection = serde_json::Map::new();
+    selection.insert("deniedMcpServers".into(), Value::from(denied));
+    if let Some(skills) = &tools.claude_skills {
+        selection.insert("skills".into(), Value::from(skills.clone()));
+    }
+    Some(Value::Object(selection))
+}
+
 // --- units ------------------------------------------------------------------------
 
 /// Token figures of one reading, by item id, with the name of their source.
