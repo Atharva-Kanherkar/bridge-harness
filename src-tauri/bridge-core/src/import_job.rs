@@ -79,6 +79,23 @@ fn save(core: &BridgeCore, job: &wire::ImportJob, cursor: Option<&str>) -> Resul
     Ok(())
 }
 
+/// The latest import from each tool, newest first.
+pub fn status_by_tool(core: &BridgeCore) -> Result<Vec<wire::ImportJob>, BridgeError> {
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    install(&db)?;
+    let mut statement = db.prepare("SELECT state FROM import_jobs ORDER BY rowid DESC")?;
+    let states = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut seen = HashSet::new();
+    let mut jobs = Vec::new();
+    for state in states {
+        let Ok(job) = serde_json::from_str::<wire::ImportJob>(&state?) else { continue };
+        if seen.insert(job.tool.clone()) {
+            jobs.push(job);
+        }
+    }
+    Ok(jobs)
+}
+
 /// The latest import, running or finished.
 pub fn status(core: &BridgeCore) -> Result<Option<wire::ImportJob>, BridgeError> {
     let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -252,7 +252,7 @@ pub fn continue_imported_chat(
 
 /// The latest background import, running or finished.
 pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
-    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })
+    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)?, jobs: crate::import_job::status_by_tool(core)? })
 }
 
 /// Chats written per transaction. A big import commits batch by batch so the

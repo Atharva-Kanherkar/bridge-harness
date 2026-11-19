@@ -536,3 +536,25 @@ fn measure_claude_discovery_on_this_machine() {
     let bytes = serde_json::to_vec(&discovery).unwrap().len();
     println!("MEASURE discover_secs={:.1} artifacts={} json_mb={:.1}", started.elapsed().as_secs_f64(), discovery.artifacts.len(), bytes as f64 / 1e6);
 }
+
+/// Each tool's section shows its own last import: a Codex import after a
+/// Claude Code one does not hide the Claude Code result.
+#[test]
+fn the_latest_import_of_each_tool_is_kept() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut first = new_job();
+    first.status = "done".into();
+    save(&core, &first, None).unwrap();
+    let mut codex = new_job();
+    codex.tool = crate::codex_import::PROVIDER.into();
+    save(&core, &codex, None).unwrap();
+    let mut second = new_job();
+    second.status = "done".into();
+    save(&core, &second, None).unwrap();
+
+    let jobs = status_by_tool(&core).unwrap();
+
+    let ids: Vec<(&str, &str)> = jobs.iter().map(|job| (job.tool.as_str(), job.job_id.as_str())).collect();
+    assert_eq!(ids, vec![(claude_import::PROVIDER, second.job_id.as_str()), (crate::codex_import::PROVIDER, codex.job_id.as_str())]);
+}

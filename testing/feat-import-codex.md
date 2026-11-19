@@ -12,7 +12,8 @@ Facts this is built on, from a real `~/.codex` (codex-cli 0.159.3; counts only):
 
 ## Functional Behavior
 
-- The Import page offers Import for Codex when a Codex home is found (`CODEX_HOME`, else `~/.codex`). It runs the same background job as Claude Code: progress, the transfer animation, the finish notice and the summary.
+- The Import page gives every tool its own section: its mark (Claude Code, Codex and OpenCode have Bridge's marks; the others an initial), what it holds, and its own Import button where Bridge can import it, else "Coming" or "Not found". A tool's import shows its progress and, afterwards, its last result inside its own section; each tool keeps its own last result. One import runs at a time, and another tool's button says it waits for it.
+- Codex is offered when a Codex home is found (`CODEX_HOME`, else `~/.codex`). It runs the same background job as Claude Code: progress, the transfer animation with Codex's tile, the finish notice naming Codex, and the summary.
 - Each rollout under `sessions/**/rollout-*.jsonl` and `archived_sessions/` becomes a chat:
   - title from `session_index.jsonl`, else derived from the first message;
   - cwd, model and effort;
@@ -52,6 +53,9 @@ Facts this is built on, from a real `~/.codex` (codex-cli 0.159.3; counts only):
 - A Bridge-run thread (`sessions.provider_session_id` = the thread id) is counted as already in Bridge.
 - Continuation plan for Codex: native when everything holds; each history reason otherwise.
 - Detection marks Codex supported, with counts.
+- `import_status` returns the latest import of each tool.
+- `MoveToBridge.test.tsx`: each tool's section, mark and button; progress in the importing tool's section and the others waiting; each tool keeping its own last result; a Codex import drawn in Codex's section.
+- Scripted fake user: imports Claude Code, then Codex from Codex's own section, and both sections keep their results.
 
 ## Smoke Tests
 

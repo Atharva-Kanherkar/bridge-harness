@@ -134,6 +134,14 @@
           "type": "null"
         }
       ]
+    },
+    "jobs": {
+      "default": [],
+      "description": "The latest import from each tool, so each tool's section shows its own.",
+      "items": {
+        "$ref": "#/definitions/ImportJob"
+      },
+      "type": "array"
     }
   },
   "title": "ImportJobStatus",
