@@ -1686,6 +1686,9 @@ pub fn start_session(
         )?;
     }
     drop(db);
+    // This launch carries no tool choice. With no entry, a stored choice
+    // makes the next send relaunch through `start_chat`.
+    crate::tool_selection::forget_applied(state, &session_id);
     state
         .adapters
         .lock()
@@ -1983,7 +1986,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 &hot_check_prompt,
             )
         });
-        if hot_prompt_compatible {
+        // A saved tool choice applies at the next launch. The warm process
+        // keeps the revision that it launched with, so it stops here.
+        let runs_the_stored_choice = !crate::tool_selection::stale(state, &session_id);
+        if hot_prompt_compatible && runs_the_stored_choice {
             let db = state.db.lock().unwrap();
             restoration::set_head_state(
                 &db,
@@ -2100,6 +2106,15 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             workflow: is_workflow || workflow_policy.is_some(),
         },
     )?;
+    // The effective set of this launch, compared with the set of the last
+    // change event of the chat.
+    let tool_record = crate::tool_selection::LaunchRecord::read(
+        &*state.try_db()?,
+        &session_id,
+        adapter_id,
+        tool_launch.as_ref(),
+        provider_id.is_some() || has_prior_history,
+    )?;
     let start_fresh = |instructions: &str| {
         registry.start_chat(
             &launch_adapter_id,
@@ -2119,6 +2134,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             },
             tool_launch.as_ref(),
         )
+        .map_err(|error| crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error))
     };
     let checkpoint_instructions = checkpoint_context
         .as_deref()
@@ -2236,6 +2252,13 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     let db = state.db.lock().unwrap();
                     restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
                     drop(db);
+                    // Codex and OpenCode with a changed tool set keep the
+                    // thread. A fork or a fresh start would leave the
+                    // conversation that the person continues.
+                    if tool_record.keeps_the_thread_on_failure() {
+                        fail_a_kept_thread(state, &session_id)?;
+                        return Err(crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error));
+                    }
                     match restoration::fallback_after_failure(
                         restoration::RestorationPlan::Native,
                         checkpoint_instructions.is_some(),
@@ -2317,8 +2340,11 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let process_id = started.runtime.process_id();
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
-    {
+    let after_sequence = {
         let db = state.db.lock().unwrap();
+        // The change event of a tool set commits with the row of the launch
+        // that applied it.
+        let transaction = db.unchecked_transaction()?;
         // `ready`, not `working`: the provider is up and nothing is running yet.
         // Claiming `working` here was a lie about a turn that did not exist, and
         // `turn_is_active` reads that as a turn in flight — so on any provider
@@ -2328,16 +2354,18 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         // `active_turn_id` for a `ready` session precisely because a ready
         // session has no turn.
         if is_orchestrator {
-            db.execute(
+            transaction.execute(
                 "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN NULL ELSE context_percent END,status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL, STARTED_IDLE_STATUS],
             )?;
         } else {
-            db.execute(
+            transaction.execute(
                 "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN NULL ELSE context_percent END,status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, STARTED_IDLE_STATUS],
             )?;
         }
+        tool_record.write_launch_event(&transaction, &session_id, &thread_id)?;
+        transaction.commit()?;
         launch_plan.commit(&db, &session_id)?;
         if let Err(error) = persist_prompt_compilation(
             &db,
@@ -2441,7 +2469,11 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 message,
             )?;
         }
-    }
+        crate::tool_selection::last_sequence(&db, &session_id)?
+    };
+    // Before the runtime is visible, so a send never finds a warm runtime with
+    // an old applied revision.
+    crate::tool_selection::record_applied(state, &session_id, tool_record.applied(&thread_id, after_sequence));
     state
         .adapters
         .lock()
@@ -4264,6 +4296,12 @@ fn handle_agent_value_timed(
     }
     if let Some(reason) = &pending_invalid_wait {
         refuse_orchestrator_wait(core, session_id, reason);
+    }
+    // A Claude launch proves a changed tool set with its first good turn on
+    // the same session id. The event goes in before the queued input starts
+    // the next turn.
+    if turn_completed {
+        crate::tool_selection::settle_after_turn(core, session_id, turn_failed);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -12089,6 +12127,17 @@ pub fn dispatch_agent_shortcut(
     })
 }
 
+/// True for a chat with no runtime, and for a warm runtime that applies an
+/// old tool choice. The adapters lock ends before the revision read.
+fn needs_a_launch_for_send(core: &Arc<BridgeCore>, session_id: &str) -> bool {
+    let warm = core
+        .adapters
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(session_id);
+    !warm || crate::tool_selection::stale(core, session_id)
+}
+
 /// Relaunch a session's adapter so a user-initiated send can be delivered,
 /// naming the send as the reason when the resume itself fails.
 fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
@@ -12455,14 +12504,15 @@ fn submit_input_internal(
             has_live_runtime,
         )
         .map_err(|refusal| BridgeError::Invalid(refusal.message().into()))?;
-    } else if !state.adapters.lock().unwrap().contains_key(&session_id) {
+    } else if needs_a_launch_for_send(core, &session_id) {
         // A send into a session whose adapter is gone — the app restarted, or the
         // provider process died — is explicit consent to bring it back. Resume
         // through the same seam the UI uses before routing; without this the
         // delivery dead-ends on "Structured adapter session is not running" and
         // the person just sees a toast (#252). Never for a worker: the gate above
         // already refused a worker with no live runtime, because launching one is
-        // the pool's decision, not a side effect of typing.
+        // the pool's decision, not a side effect of typing. A warm runtime with
+        // an old tool choice relaunches too, so it never takes the turn.
         resume_for_send(core, &session_id)?;
         resumed = true;
         timing.mark("resume");
@@ -13167,6 +13217,16 @@ pub(crate) fn publish_attention_if_moved(core: &Arc<BridgeCore>, seen: &mut i64)
     *seen = revision;
     core.events.publish(CoreEvent::AttentionChanged);
     true
+}
+
+/// The end of a failed native resume that keeps the thread. The row keeps
+/// its provider session id, and `failed` lets a save roll the choice back.
+fn fail_a_kept_thread(state: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    state.try_db()?.execute(
+        "UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1",
+        params![session_id, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
 }
 
 fn record_recoverable_adapter_failure(

@@ -350,7 +350,10 @@ fn launch(
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Handshake);
     }
-    let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
+    // A config that Codex refuses ends the process before this reply, and
+    // only stderr names the reason.
+    let (_, mut startup_messages) = wait_for_response(&mut reader, 1)
+        .map_err(|error| crate::adapters::with_startup_stderr(error, child.child_mut(), &stderr_tail))?;
     crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned_at);
     write_value(&writer, &json!({"method":"initialized"}))?;
     startup_messages.append(&mut verify_credential_policy(

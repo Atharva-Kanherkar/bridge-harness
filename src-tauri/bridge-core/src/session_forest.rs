@@ -42,6 +42,10 @@ pub enum EntryKind {
     SessionStatus,
     SessionResumeFailed,
     ArtifactCreated,
+    /// A launch applied another effective tool set
+    /// (`tool_selection::CHANGED_KIND`). Stored hidden, so it never reaches
+    /// a projection or a recall hit.
+    ToolSelectionChanged,
     Legacy(String),
 }
 
@@ -139,6 +143,10 @@ mod tests {
                 json!({"reason":"thread expired"}),
             ),
             (EntryKind::ArtifactCreated, json!({"path":"result.json"})),
+            (
+                EntryKind::ToolSelectionChanged,
+                json!({"revision":1,"harness":"codex","effectiveHash":"abc"}),
+            ),
         ];
         for (kind, valid_payload) in cases {
             assert!(
@@ -563,6 +571,30 @@ mod tests {
         assert_eq!(typed.payload[TYPED_SCHEMA_MARKER], TYPED_SCHEMA_VERSION);
         assert_eq!(forest.active_branch("s").unwrap().len(), 2);
     }
+
+    #[test]
+    fn a_tool_selection_change_is_hidden_and_leaves_the_projection_as_it_was() {
+        use crate::context::ContextProjector;
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, message("question")).unwrap();
+        forest.append("s", EntryKind::AssistantMessage, message("answer")).unwrap();
+        let before = ContextProjector::project(&forest.active_branch("s").unwrap(), 100_000).unwrap();
+
+        let change = json!({"revision":2,"harness":"codex","effectiveHash":"abc","serversOff":["github"]});
+        let appended = forest.append("s", EntryKind::ToolSelectionChanged, change.clone()).unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        let in_transaction = append_in_transaction(&transaction, "s", EntryKind::ToolSelectionChanged, change).unwrap();
+        transaction.commit().unwrap();
+        for entry in [&appended, &in_transaction] {
+            assert_eq!((entry.kind.as_str(), entry.context_visibility.as_str()), ("session.tool_selection_changed", "hidden"));
+        }
+
+        let branch = forest.active_branch("s").unwrap();
+        assert_eq!(branch.len(), 4, "both entries are on the active branch");
+        let after = ContextProjector::project(&branch, 100_000).unwrap();
+        assert_eq!(after, before, "the change reaches no projection");
+    }
 }
 
 impl EntryKind {
@@ -591,6 +623,7 @@ impl EntryKind {
             Self::SessionStatus => "session.status",
             Self::SessionResumeFailed => "session.resume_failed",
             Self::ArtifactCreated => "artifact.created",
+            Self::ToolSelectionChanged => "session.tool_selection_changed",
             Self::Legacy(value) => value,
         }
     }
@@ -620,7 +653,17 @@ impl EntryKind {
             "session.status" => Self::SessionStatus,
             "session.resume_failed" => Self::SessionResumeFailed,
             "artifact.created" => Self::ArtifactCreated,
+            "session.tool_selection_changed" => Self::ToolSelectionChanged,
             other => Self::Legacy(other.to_owned()),
+        }
+    }
+
+    /// The `context_visibility` of a new entry. A control record is
+    /// `hidden`: the projector admits only `eligible` entries.
+    pub fn context_visibility(&self) -> &'static str {
+        match self {
+            Self::ToolSelectionChanged => "hidden",
+            _ => "eligible",
         }
     }
 
@@ -704,6 +747,10 @@ impl EntryKind {
             }
             Self::ArtifactCreated => {
                 require_string(payload, self, &["path"])?;
+            }
+            Self::ToolSelectionChanged => {
+                require_string(payload, self, &["harness", "effectiveHash"])?;
+                require_number(payload, self, "revision")?;
             }
             Self::Legacy(_) => unreachable!("legacy kinds are rejected before validation"),
         }
@@ -874,7 +921,7 @@ impl<'connection> SessionForest<'connection> {
             kind.as_str(),
             &payload,
             None,
-            "eligible",
+            kind.context_visibility(),
             None,
         )?;
         transaction.commit()?;
@@ -1251,7 +1298,7 @@ pub(crate) fn append_in_transaction(
         kind.as_str(),
         &mark_typed_payload(payload),
         None,
-        "eligible",
+        kind.context_visibility(),
         None,
     )?)
 }

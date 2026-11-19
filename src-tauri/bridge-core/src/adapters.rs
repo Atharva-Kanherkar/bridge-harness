@@ -316,6 +316,8 @@ const STDERR_LINE_MAX_BYTES: usize = 500;
 #[derive(Clone, Default)]
 pub struct StderrTail {
     lines: Arc<Mutex<std::collections::VecDeque<String>>>,
+    /// True when the reader thread read the end of the pipe.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl StderrTail {
@@ -324,9 +326,11 @@ impl StderrTail {
     pub fn capture(child: &mut std::process::Child) -> StderrTail {
         let tail = StderrTail::default();
         let Some(stderr) = child.stderr.take() else {
+            tail.closed.store(true, std::sync::atomic::Ordering::SeqCst);
             return tail;
         };
         let lines = tail.lines.clone();
+        let closed = tail.closed.clone();
         let _ = thread::Builder::new()
             .name("adapter-stderr-tail".into())
             .spawn(move || {
@@ -350,8 +354,14 @@ impl StderrTail {
                     }
                     lines.push_back(line);
                 }
+                closed.store(true, std::sync::atomic::Ordering::SeqCst);
             });
         tail
+    }
+
+    /// True when the tail holds the last line that the process wrote.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn snapshot(&self) -> Option<String> {
@@ -381,6 +391,32 @@ pub fn process_failure_context(
         (Some(status), None) => Some(format!("Provider process {status} with no stderr output")),
         (None, Some(tail)) => Some(format!("Provider stderr tail:\n{tail}")),
         (None, None) => None,
+    }
+}
+
+/// The longest wait of [`with_startup_stderr`] for the exit and for the
+/// last stderr lines.
+const STARTUP_STDERR_WAIT: Duration = Duration::from_secs(1);
+
+/// The error of a handshake that failed, with the exit status and the stderr
+/// tail of the process. A config that a provider refuses shows only on
+/// stderr, for example a Codex server key that left the config.
+pub fn with_startup_stderr(
+    error: BridgeError,
+    child: &mut std::process::Child,
+    stderr_tail: &StderrTail,
+) -> BridgeError {
+    let deadline = std::time::Instant::now() + STARTUP_STDERR_WAIT;
+    // The first line can arrive before the line that names the reason. The
+    // pipe closes only after the last line.
+    while std::time::Instant::now() < deadline
+        && !(stderr_tail.is_closed() && matches!(child.try_wait(), Ok(Some(_))))
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    match process_failure_context(child, stderr_tail) {
+        Some(context) => BridgeError::Invalid(format!("{error}. {context}")),
+        None => error,
     }
 }
 
@@ -3051,6 +3087,35 @@ mod tests {
             context.contains("API error: connection refused"),
             "{context}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_handshake_carries_the_last_stderr_line() {
+        // The reason comes after a pause, so a wait for the first line alone
+        // would lose it.
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "echo boot >&2; sleep 0.2; echo 'Error: invalid transport in mcp_servers.github' >&2; exit 1",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = StderrTail::capture(&mut child);
+        let error = with_startup_stderr(BridgeError::Adapter("the handshake ended".into()), &mut child, &tail).to_string();
+        assert!(error.contains("the handshake ended"), "{error}");
+        assert!(error.contains("exit status: 1"), "{error}");
+        assert!(error.contains("invalid transport in mcp_servers.github"), "{error}");
+
+        // A process that does not stop keeps the first error after the wait.
+        let mut silent = Command::new("/bin/sh").args(["-c", "sleep 5"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+        let tail = StderrTail::capture(&mut silent);
+        let error = with_startup_stderr(BridgeError::Adapter("no reply".into()), &mut silent, &tail).to_string();
+        silent.kill().unwrap();
+        silent.wait().unwrap();
+        assert!(error.contains("no reply") && !error.contains("Stderr tail"), "{error}");
     }
 
     #[cfg(unix)]

@@ -2,12 +2,13 @@
 //! leave out. Bridge stores only the choice (kind `chat_tool_selection_v1`),
 //! never an inventory. A choice only removes items, so nothing here can add
 //! an allow rule, remove a deny or change a permission.
+use crate::session_forest::{self, EntryKind, SessionForest};
 use crate::{chat_defaults, provider_accounts, runtime::BridgeCore, BridgeError};
 use bridge_protocol::messages::{
     ChatModelChoice, ChatToolItem, ChatToolKind, ChatToolSelection, ChatToolSelectionStatus,
     ChatToolState, ChatToolTokens, ClaudeSkillChoice, ConnectorDescriptor,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -573,6 +574,262 @@ pub fn remember_codex_config(session_id: &str, reply: &Value) {
 /// The fact that [`remember_codex_config`] kept for a chat, or `None`.
 pub fn codex_user_skills_key(session_id: &str) -> Option<bool> {
     codex_configs().lock().unwrap_or_else(PoisonError::into_inner).get(session_id).copied()
+}
+
+// --- the choice that a warm runtime applies ---------------------------------------
+
+/// The entry kind that records a changed effective set.
+pub const CHANGED_KIND: &str = "session.tool_selection_changed";
+
+/// What the warm runtime of a chat launched with. Only `start_chat` writes an
+/// entry, and `start_session` removes one. The frame path only settles
+/// `pending` and `confirmed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedTools {
+    /// The stored revision at the launch: 0 for a chat with no row.
+    pub revision: u32,
+    pub effective_hash: String,
+    /// False while a Claude event waits for its proof.
+    pub confirmed: bool,
+    pub pending: Option<PendingEvent>,
+}
+
+/// A Claude event that waits for the first good turn on the same session id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEvent {
+    pub payload: Value,
+    pub provider_session_id: String,
+    /// The last entry sequence of the chat at the launch. The proof is an
+    /// init entry after it.
+    pub after_sequence: i64,
+}
+
+/// The effective set of one launch, read before the launch starts.
+#[derive(Debug, Clone)]
+pub struct LaunchRecord {
+    revision: u32,
+    harness: String,
+    tools: Option<ToolLaunch>,
+    effective_hash: String,
+    changed: bool,
+    prefix_rewritten: bool,
+}
+
+impl LaunchRecord {
+    /// "Changed" compares the effective hash with the last event of the chat
+    /// for the same harness, or with the "all on" hash when there is none.
+    /// `prefix_rewritten` is false only for the first launch of a chat.
+    pub fn read(
+        db: &Connection,
+        session_id: &str,
+        harness: &str,
+        tools: Option<&ToolLaunch>,
+        prefix_rewritten: bool,
+    ) -> Result<Self, BridgeError> {
+        let revision = match tools {
+            Some(tools) => tools.revision,
+            None => stored_revision(db, session_id)?,
+        };
+        let effective_hash = tools.map_or_else(|| all_on_hash(harness), |tools| tools.effective_hash.clone());
+        let last: Option<(Option<String>, Option<String>)> = db
+            .query_row(
+                "SELECT json_extract(payload,'$.harness'),json_extract(payload,'$.effectiveHash') FROM session_entries WHERE session_id=?1 AND kind=?2 ORDER BY sequence DESC LIMIT 1",
+                params![session_id, CHANGED_KIND],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let last_hash = match last {
+            Some((Some(last_harness), Some(hash))) if last_harness == harness => hash,
+            _ => all_on_hash(harness),
+        };
+        Ok(Self {
+            revision,
+            harness: harness.to_owned(),
+            tools: tools.cloned(),
+            changed: effective_hash != last_hash,
+            effective_hash,
+            prefix_rewritten,
+        })
+    }
+
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// A failed native resume of Codex or OpenCode with a changed set keeps
+    /// the thread: no fork and no fresh start.
+    pub fn keeps_the_thread_on_failure(&self) -> bool {
+        self.changed && matches!(self.harness.as_str(), "codex" | "opencode")
+    }
+
+    /// Claude gives no proof at launch. The proof is the first good turn.
+    pub fn waits_for_a_turn(&self) -> bool {
+        self.changed && self.harness == "claude"
+    }
+
+    /// The payload of the event, or `None` for an unchanged set.
+    pub fn event(&self, provider_session_id: &str) -> Option<Value> {
+        if !self.changed {
+            return None;
+        }
+        let tools = self.tools.as_ref();
+        let none: &[String] = &[];
+        let claude_skills = match tools.and_then(|tools| tools.claude_skills.as_ref()) {
+            Some(skills) => serde_json::json!(skills),
+            None => serde_json::json!("all"),
+        };
+        Some(serde_json::json!({
+            "revision": self.revision,
+            "harness": self.harness,
+            "effectiveHash": self.effective_hash,
+            "serversOff": tools.map_or(none, |tools| tools.servers_off.as_slice()),
+            "codexAppsOff": tools.is_some_and(|tools| tools.codex_apps_off),
+            "codexSkillsOff": tools.map_or(none, |tools| tools.codex_skills_off.as_slice()),
+            "claudeSkills": claude_skills,
+            "providerSessionId": provider_session_id,
+            "prefixRewritten": self.prefix_rewritten,
+        }))
+    }
+
+    /// Write the event of a changed set in the transaction of the `sessions`
+    /// update of a launch that succeeded. Claude waits for its first turn.
+    pub fn write_launch_event(
+        &self,
+        transaction: &Transaction<'_>,
+        session_id: &str,
+        provider_session_id: &str,
+    ) -> Result<(), BridgeError> {
+        if self.waits_for_a_turn() {
+            return Ok(());
+        }
+        let Some(payload) = self.event(provider_session_id) else { return Ok(()) };
+        session_forest::append_in_transaction(transaction, session_id, EntryKind::ToolSelectionChanged, payload)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        Ok(())
+    }
+
+    /// The entry of a launch that succeeded. `after_sequence` is the last
+    /// entry sequence once the startup frames are stored.
+    pub fn applied(&self, provider_session_id: &str, after_sequence: i64) -> AppliedTools {
+        let pending = self
+            .waits_for_a_turn()
+            .then(|| self.event(provider_session_id))
+            .flatten()
+            .map(|payload| PendingEvent {
+                payload,
+                provider_session_id: provider_session_id.to_owned(),
+                after_sequence,
+            });
+        AppliedTools {
+            revision: self.revision,
+            effective_hash: self.effective_hash.clone(),
+            confirmed: pending.is_none(),
+            pending,
+        }
+    }
+}
+
+/// Keep the entry of a launch that succeeded.
+pub fn record_applied(core: &BridgeCore, session_id: &str, applied: AppliedTools) {
+    core.applied_tools
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(session_id.to_owned(), applied);
+}
+
+/// Remove the entry of a chat whose new runtime launched with no tool choice.
+pub fn forget_applied(core: &BridgeCore, session_id: &str) {
+    core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner).remove(session_id);
+}
+
+/// The revision that the warm runtime of a chat applies: 0 with no entry.
+pub fn applied_revision(core: &BridgeCore, session_id: &str) -> u32 {
+    core.applied_tools
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(session_id)
+        .map_or(0, |applied| applied.revision)
+}
+
+/// True when the warm runtime of a chat applies another revision than the
+/// stored one. It reads one row and one map entry. A failed read keeps the
+/// warm runtime.
+pub fn stale(core: &BridgeCore, session_id: &str) -> bool {
+    let Ok(stored) = core.try_db().and_then(|db| stored_revision(&db, session_id)) else {
+        return false;
+    };
+    applied_revision(core, session_id) != stored
+}
+
+/// Settle the Claude event of the last launch at the end of a turn. A failed
+/// turn keeps the event in wait. A good turn writes it when an init entry of
+/// the launch has the same session id, and drops it when not.
+pub fn settle_after_turn(core: &BridgeCore, session_id: &str, turn_failed: bool) {
+    if turn_failed {
+        return;
+    }
+    // The map lock comes before the database lock here and nowhere after it.
+    let mut applied = core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(entry) = applied.get_mut(session_id) else { return };
+    let Some(pending) = entry.pending.take() else { return };
+    let written = core.try_db().and_then(|db| write_when_proved(&db, session_id, &pending));
+    match written {
+        Ok(proved) => entry.confirmed = proved,
+        Err(error) => crate::diagnostics::record(&format!(
+            "tool_selection: the change event of session {session_id} was not written: {error}"
+        )),
+    }
+}
+
+fn write_when_proved(db: &Connection, session_id: &str, pending: &PendingEvent) -> Result<bool, BridgeError> {
+    let init: Option<Option<String>> = db
+        .query_row(
+            "SELECT json_extract(payload,'$.data.session_id') FROM session_entries WHERE session_id=?1 AND kind='session.started' AND sequence>?2 AND json_extract(payload,'$.data.subtype')='init' ORDER BY sequence DESC LIMIT 1",
+            params![session_id, pending.after_sequence],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if init.flatten().as_deref() != Some(pending.provider_session_id.as_str()) {
+        return Ok(false);
+    }
+    SessionForest::new(db)
+        .append(session_id, EntryKind::ToolSelectionChanged, pending.payload.clone())
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    Ok(true)
+}
+
+/// The last entry sequence of a chat, or 0.
+pub fn last_sequence(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
+    Ok(db.query_row(
+        "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Name the server key of a Codex launch that failed because the key left
+/// the config. Codex refuses `-c mcp_servers.<key>.enabled=false` for such a
+/// key with "invalid transport in mcp_servers.<key>" on stderr.
+pub fn explain_launch_error(tools: Option<&ToolLaunch>, error: BridgeError) -> BridgeError {
+    let Some(tools) = tools.filter(|tools| tools.harness == "codex") else { return error };
+    let text = error.to_string();
+    if !text.contains("invalid transport") {
+        return error;
+    }
+    match tools.servers_off.iter().find(|key| names_codex_key(&text, key)) {
+        Some(key) => invalid(format!("The saved tool choice names a Codex server that is no longer configured: {key}")),
+        None => error,
+    }
+}
+
+fn names_codex_key(text: &str, key: &str) -> bool {
+    let needle = format!("mcp_servers.{key}");
+    text.match_indices(&needle).any(|(at, _)| {
+        text[at + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_ascii_alphanumeric() || next == '_' || next == '-'))
+    })
 }
 
 // --- launch translations ----------------------------------------------------------
