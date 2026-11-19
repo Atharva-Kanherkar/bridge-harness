@@ -1457,9 +1457,11 @@ fn observe_claude_request(
 /// `total_cost_usd` and `modelUsage` as cumulative across the turns of one
 /// query — "read the latest result rather than summing" — while the ledger
 /// wants one turn's worth per row, so each result is reported as its
-/// difference from the frame before it. A figure that goes backwards means the
-/// process started fresh (a resume, a `/clear`, a crash restart) and the
-/// frame is taken as-is. `usage` is per-turn already and passes through.
+/// difference from the frame before it. The SDK also sends `init` at each
+/// turn and in a `/compact`, so `init` does not clear these totals. A figure
+/// that goes backwards means the session totals started again from zero (a
+/// `/clear`, a new session), and the frame is taken as it is. `usage` is
+/// per-turn already and passes through.
 #[derive(Debug, Default, Clone)]
 struct ClaudeUsageCumulative {
     total_cost_usd: Option<f64>,
@@ -1976,13 +1978,9 @@ fn normalize_claude_message_inner(message: &Value, state: &mut ClaudeStreamState
         return events;
     }
     match kind {
-        "system" => {
-            // A new process starts its running totals from zero.
-            if message.get("subtype").and_then(Value::as_str) == Some("init") {
-                state.usage_cumulative = ClaudeUsageCumulative::default();
-            }
-            normalize_claude_system(message)
-        }
+        // The SDK sends `init` at the start of each turn of one query and in a
+        // `/compact`, so it keeps the session totals (see `ClaudeUsageCumulative`).
+        "system" => normalize_claude_system(message),
         "tool_progress" => {
             let mut event = with_data("tool.progress", message, message.clone());
             event.item_id = message.get("tool_use_id").and_then(Value::as_str).map(str::to_owned);
@@ -2465,6 +2463,13 @@ fn normalize_claude_result(
                         "model": request.model,
                         "contextUsedTokens": request.context_used_tokens(),
                     })),
+                // The raw session totals of the SDK, beside the share of the
+                // turn above. A stored entry keeps the exact totals.
+                "cumulative": {
+                    "sessionId": message.get("session_id"),
+                    "totalCostUsd": message.get("total_cost_usd"),
+                    "modelUsage": message.get("modelUsage"),
+                },
             }),
         ));
     }
@@ -4294,11 +4299,123 @@ mod tests {
         );
         assert_eq!(usage_data(&added)["modelUsage"]["m"]["inputTokens"], json!(2));
         assert_eq!(usage_data(&added)["modelUsage"]["haiku"]["inputTokens"], json!(50));
-        // `system/init` marks a new process, whose totals begin at zero again.
+        // An `init` keeps the totals. These smaller totals start a new run by
+        // the rule above.
         normalize_claude_message_with_state(&json!({"type":"system","subtype":"init","session_id":"s","tools":[]}), &mut state);
         let fresh = normalize_claude_message_with_state(&claude_result(0.05, json!({"m":{"inputTokens":3,"costUSD":0.05}})), &mut state);
         assert_eq!(usage_data(&fresh)["totalCostUsd"], json!(0.05));
         assert_eq!(usage_data(&fresh)["modelUsage"]["m"]["inputTokens"], json!(3));
+    }
+
+    const HAIKU: &str = "claude-haiku-5-5";
+    const HAIKU_COUNTERS: [&str; 4] = ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"];
+
+    /// A result frame of the haiku chat below. `model` holds the
+    /// `modelUsage` counters in the order of `HAIKU_COUNTERS`.
+    fn haiku_result(usage: [i64; 4], model: [i64; 4], cost: f64) -> Value {
+        json!({
+            "type":"result","subtype":"success","session_id":"s",
+            "usage":{"input_tokens":usage[0],"cache_read_input_tokens":usage[1],"cache_creation_input_tokens":usage[2],"output_tokens":usage[3]},
+            "total_cost_usd": cost,
+            "modelUsage":{HAIKU:{"inputTokens":model[0],"outputTokens":model[1],"cacheReadInputTokens":model[2],"cacheCreationInputTokens":model[3],"costUSD":cost}}
+        })
+    }
+
+    /// The three results of one process of a real chat: turn 1, a `/compact`
+    /// and turn 2. The SDK sent `init` before each of them.
+    fn haiku_session() -> [Value; 3] {
+        [
+            haiku_result([4, 56239, 42275, 861], [2255, 878, 56239, 42275], 0.00968189),
+            haiku_result([0, 0, 0, 0], [16681, 1801, 99046, 42746], 0.012072935),
+            haiku_result([2, 17254, 26368, 81], [16683, 1882, 116300, 69114], 0.017559775),
+        ]
+    }
+
+    /// The share of one turn of each result above, and its cost.
+    const HAIKU_SHARES: [([i64; 4], f64); 3] = [
+        ([2255, 878, 56239, 42275], 0.00968189),
+        ([14426, 923, 42807, 471], 0.002391045),
+        ([2, 81, 17254, 26368], 0.00548684),
+    ];
+
+    fn claude_init_frame() -> Value {
+        json!({"type":"system","subtype":"init","session_id":"s","tools":[]})
+    }
+
+    /// Check that `data` holds `share` as its haiku share and its cost.
+    fn assert_haiku_share(data: &Value, (share, cost): ([i64; 4], f64)) {
+        let model = &data["modelUsage"][HAIKU];
+        for (key, expected) in HAIKU_COUNTERS.iter().zip(share) {
+            assert_eq!(model[*key], json!(expected), "{key} of {data}");
+        }
+        assert!((model["costUSD"].as_f64().unwrap() - cost).abs() < 1e-12, "{data}");
+        assert!((data["totalCostUsd"].as_f64().unwrap() - cost).abs() < 1e-12, "{data}");
+    }
+
+    #[test]
+    fn claude_init_before_each_result_keeps_the_session_totals() {
+        let mut state = ClaudeStreamState::default();
+        let mut tokens = [0_i64; 4];
+        let mut cost = 0.0;
+        for (frame, share) in haiku_session().iter().zip(HAIKU_SHARES) {
+            // The SDK sends `init` at the start of each turn of one query.
+            normalize_claude_message_with_state(&claude_init_frame(), &mut state);
+            let events = normalize_claude_message_with_state(frame, &mut state);
+            let data = usage_data(&events);
+            assert_haiku_share(data, share);
+            for (sum, key) in tokens.iter_mut().zip(HAIKU_COUNTERS) {
+                *sum += data["modelUsage"][HAIKU][key].as_i64().unwrap();
+            }
+            cost += data["totalCostUsd"].as_f64().unwrap();
+        }
+        // The shares sum to the last session totals.
+        assert_eq!(tokens, [16683, 1882, 116300, 69114]);
+        assert!((cost - 0.017559775).abs() < 1e-12, "{cost}");
+    }
+
+    #[test]
+    fn a_compaction_result_with_zero_usage_reports_its_real_share() {
+        let mut state = ClaudeStreamState::default();
+        let [turn, compact, _] = haiku_session();
+        normalize_claude_message_with_state(&claude_init_frame(), &mut state);
+        normalize_claude_message_with_state(&turn, &mut state);
+        normalize_claude_message_with_state(&claude_init_frame(), &mut state);
+        let events = normalize_claude_message_with_state(&compact, &mut state);
+        let data = usage_data(&events);
+        // The summary request of the compaction is in the session totals only.
+        assert_haiku_share(data, HAIKU_SHARES[1]);
+        assert_eq!(data["usage"], compact["usage"]);
+        assert_eq!(data["usage"]["input_tokens"], json!(0));
+    }
+
+    #[test]
+    fn the_usage_event_keeps_the_raw_session_totals() {
+        let mut state = ClaudeStreamState::default();
+        let [turn, compact, _] = haiku_session();
+        normalize_claude_message_with_state(&claude_init_frame(), &mut state);
+        let first = normalize_claude_message_with_state(&turn, &mut state);
+        assert_eq!(
+            usage_data(&first)["cumulative"],
+            json!({"sessionId":"s","totalCostUsd":0.00968189,"modelUsage":turn["modelUsage"]})
+        );
+        normalize_claude_message_with_state(&claude_init_frame(), &mut state);
+        let events = normalize_claude_message_with_state(&compact, &mut state);
+        let data = usage_data(&events);
+        assert_eq!(
+            data["cumulative"],
+            json!({"sessionId":"s","totalCostUsd":0.012072935,"modelUsage":compact["modelUsage"]})
+        );
+        // The fields that existed keep their values: the share and the turn usage.
+        let mut keys: Vec<&str> = data.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["cumulative", "durationApiMs", "durationMs", "lastRequest", "modelUsage", "numTurns", "totalCostUsd", "usage"]);
+        assert_haiku_share(data, HAIKU_SHARES[1]);
+        assert_eq!(data["usage"], compact["usage"]);
+
+        // A result with no session id and no totals keeps nulls there.
+        let bare = normalize_claude_message(&json!({"type":"result","subtype":"success","usage":{"input_tokens":1}}));
+        assert_eq!(usage_data(&bare)["cumulative"], json!({"sessionId":null,"totalCostUsd":null,"modelUsage":null}));
+        assert!(usage_data(&bare)["totalCostUsd"].is_null());
     }
 
     #[test]
