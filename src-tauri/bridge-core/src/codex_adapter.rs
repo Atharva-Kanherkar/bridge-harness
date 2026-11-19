@@ -502,7 +502,21 @@ fn checked_config(spawned: Spawned, cwd: &str, wait: std::time::Duration) -> Opt
     std::thread::Builder::new()
         .name("codex-config-read".into())
         .spawn(move || {
-            let reply = wait_for_response(&mut reader, CONFIG_READ_ID);
+            // A request of the server is not the reply, also with the same id.
+            // It stays with the startup frames.
+            let mut frames = Vec::new();
+            let reply = loop {
+                match wait_for_response(&mut reader, CONFIG_READ_ID) {
+                    Ok((frame, mut before)) => {
+                        frames.append(&mut before);
+                        if frame.get("method").is_none() {
+                            break Ok((frame, frames));
+                        }
+                        frames.push(frame);
+                    }
+                    Err(error) => break Err(error),
+                }
+            };
             // The send fails only when the launch stopped the wait.
             sender.send((reader, reply))
         })
@@ -2465,6 +2479,20 @@ done"#;
         both["error"] = json!({"code": -32603, "message": "config/read failed"});
         let (opened, processes) = gate_launch(Some(&tools), &both.to_string(), GATE_WAIT);
         assert_dropped(opened, &processes, "an error beside a result");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_server_request_with_the_id_of_the_config_read_is_not_its_reply() {
+        let tools = gate_tools(&["review"]);
+        let request = json!({"id": 4, "method": "item/tool/requestUserInput", "params": {}});
+        let replies = format!("{request}\n{}", config_reply(json!({"model": "gpt"})));
+        let (opened, processes) = gate_launch(Some(&tools), &replies, GATE_WAIT);
+        let opened = opened.unwrap();
+        assert!(!opened.skills_dropped);
+        assert_eq!(processes.len(), 1, "{processes:#?}");
+        // The request stays in the startup frames.
+        assert!(opened.startup_messages.contains(&request), "{:?}", opened.startup_messages);
     }
 
     #[cfg(unix)]
