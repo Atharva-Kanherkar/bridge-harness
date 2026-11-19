@@ -7,7 +7,8 @@
 //! the text divided by four, rounded up. No tokenizer.
 //!
 //! Only the text a model reads is counted: message prose, a tool call's
-//! input, a tool's output, and the summaries Bridge itself injects. The JSON
+//! input, a tool's output, the summaries Bridge itself injects, and the
+//! summary of an imported harness compaction. The JSON
 //! envelope, ids, `providerMeta`, `_bridgeRepoState` and image attachments are
 //! not. Every adapter shapes its payload differently, so each kind lists the
 //! fields it reads in order and takes the first one present.
@@ -59,8 +60,15 @@ pub fn estimate(kind: &str, payload: &Value) -> Option<i64> {
 /// kind carries none or its shape is unknown.
 pub fn model_readable_bytes(kind: &str, payload: &Value) -> Option<usize> {
     match kind {
-        "user.message" | "assistant.message" | "reasoning.completed" | "session.context"
-        | "delegation.result" => first_text(payload, &["/text", "/data/text"]),
+        // An import writes the kind `reasoning` for the text that a live
+        // adapter stores as `reasoning.completed`.
+        "user.message" | "assistant.message" | "reasoning.completed" | "reasoning"
+        | "session.context" | "delegation.result" => first_text(payload, &["/text", "/data/text"]),
+        // The compaction of a harness. A live boundary has only the token
+        // figures from the provider, so it stores `NULL`. An imported boundary
+        // also has the summary that replaced the window, and a model reads
+        // that summary. Root `text` is the label of the transcript card.
+        "context.compacted" => first_text(payload, &["/data/summary"]),
         // The call's input is counted where the call starts and its output
         // where it completes, so neither is counted twice. Claude reattaches
         // the command to the completion; that copy is ignored.
@@ -229,6 +237,26 @@ mod tests {
             Some(3)
         );
         assert_eq!(estimate("reasoning.completed", &json!({"text": null, "data": {}})), None);
+        // An import stores the same text with the typed kind `reasoning`.
+        assert_eq!(estimate("reasoning", &json!({"text": "x".repeat(12)})), Some(3));
+    }
+
+    #[test]
+    fn a_harness_compaction_counts_only_an_imported_summary() {
+        // An imported boundary: root `text` repeats the summary for the card.
+        let imported = json!({
+            "title": "Context compacted",
+            "text": "s".repeat(40),
+            "data": {"harness": "claude", "summary": "s".repeat(40)},
+        });
+        assert_eq!(estimate("context.compacted", &imported), Some(10));
+        // A live boundary has figures and a label, but no summary.
+        let live = json!({
+            "title": "Context compacted",
+            "text": "Context compacted",
+            "data": {"harness": "claude", "preTokens": 150_000, "postTokens": 30_000},
+        });
+        assert_eq!(estimate("context.compacted", &live), None);
     }
 
     #[test]

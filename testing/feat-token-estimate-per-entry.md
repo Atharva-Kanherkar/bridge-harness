@@ -19,11 +19,12 @@ reader treats `NULL` as unknown.
 
 | Kind | Bytes counted |
 | --- | --- |
-| `user.message`, `assistant.message`, `reasoning.completed`, `session.context`, `delegation.result` | root `text`, else `data.text` |
-| `tool.started`, `command.started`, `file_change.started` (the call's input) | first present of `data.input`, `data.state.input`, `data.arguments`, `data.changes`, `data.command`, `data.patch` (strings by length, other JSON by compact serialized length) |
+| `user.message`, `assistant.message`, `reasoning.completed`, `reasoning` (the typed kind that an import writes), `session.context`, `delegation.result` | root `text`, else `data.text` |
+| `tool.started`, `command.started`, `file_change.started` (the call's input) | first present of `data.input`, `data.state.input`, `data.arguments`, `data.changes`, `data.command`, `data.query`, `data.patch` (strings by length, other JSON by compact serialized length) |
 | `tool.completed`, `command.completed`, `file_change.completed` (the call's output) | root `text`, else `data.aggregatedOutput`, `data.state.output`, `data.output`, `data.content` (string, or the `text` of its blocks), `data.result` |
 | `checkpoint`, `compaction` | `summary` + `decisions[]` + `filesTouched[]` + `openWork[]` |
 | `branch.summary` | `summary` |
+| `context.compacted` (the compaction of a harness) | `data.summary`, which only an imported boundary has. A live boundary has no summary and stores `NULL`. |
 | `handoff.brief` | `text`, else `summary` |
 | `worker.result` | `summary` + `suggestedNextAction` + `decisions[]` + `risks[]` + `remainingWork[]` + `filesChanged[]` |
 
