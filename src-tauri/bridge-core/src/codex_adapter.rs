@@ -489,7 +489,7 @@ fn open_thread(
 
 /// Send `config/read` to a process before its thread request. The result is
 /// the process and the frames that came before the reply, only when the reply
-/// shows no `skills` key of the user. A user key, an error, a reply that
+/// shows no `skills` key of the user. A user key, an error reply, a reply that
 /// Bridge cannot read and no reply in `wait` give `None`. Then the process
 /// drops, and its guard stops and reaps it.
 fn checked_config(spawned: Spawned, cwd: &str, wait: std::time::Duration) -> Option<(Spawned, Vec<Value>)> {
@@ -509,7 +509,9 @@ fn checked_config(spawned: Spawned, cwd: &str, wait: std::time::Duration) -> Opt
         .ok()?;
     let (reader, reply) = receiver.recv_timeout(wait).ok()?;
     let (response, frames) = reply.ok()?;
-    let no_user_key = response.get("result").and_then(crate::apps::codex::user_skills_key) == Some(false);
+    // A frame with an `error` member is an error reply, also beside a `result`.
+    let no_user_key = response.get("error").is_none()
+        && response.get("result").and_then(crate::apps::codex::user_skills_key) == Some(false);
     no_user_key.then(|| (Spawned { child, writer, reader, stderr_tail, spawned_at }, frames))
 }
 
@@ -2449,6 +2451,20 @@ done"#;
         // No reply: the wait ends the first process.
         let (opened, processes) = gate_launch(Some(&tools), "", std::time::Duration::from_millis(300));
         assert_dropped(opened, &processes, "no reply");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_layer_list_or_an_error_beside_a_result_drops_the_skills_part() {
+        let tools = gate_tools(&["review"]);
+        // The effective config holds the own value of Bridge. With no layers, it can only count too much.
+        let no_layers = json!({"id": 4, "result": {"config": {"model": "gpt", "skills": {"config": []}}, "origins": {}, "layers": []}});
+        let (opened, processes) = gate_launch(Some(&tools), &no_layers.to_string(), GATE_WAIT);
+        assert_dropped(opened, &processes, "an empty layer list");
+        let mut both: Value = serde_json::from_str(&config_reply(json!({"model": "gpt"}))).unwrap();
+        both["error"] = json!({"code": -32603, "message": "config/read failed"});
+        let (opened, processes) = gate_launch(Some(&tools), &both.to_string(), GATE_WAIT);
+        assert_dropped(opened, &processes, "an error beside a result");
     }
 
     #[cfg(unix)]

@@ -217,12 +217,12 @@ fn skills(result: &Value) -> Option<Value> {
 /// True when the `result` of a `config/read` reply has a `skills` key of the
 /// user: a layer other than the `-c` values of the launch holds the key, so
 /// the own `skills.config` value of Bridge does not count. A layer config
-/// that is not an object counts as a key. Without layers the effective config
-/// decides, which can only count too much. `None` for a result with no
-/// `config` object.
+/// that is not an object counts as a key. Without layers, or with an empty
+/// list, the effective config decides, which can only count too much. `None`
+/// for a result with no `config` object.
 pub fn user_skills_key(result: &Value) -> Option<bool> {
     let effective = result.get("config")?.as_object()?;
-    Some(match result.get("layers").and_then(Value::as_array) {
+    Some(match result.get("layers").and_then(Value::as_array).filter(|layers| !layers.is_empty()) {
         Some(layers) => layers.iter().any(|layer| {
             layer.pointer("/name/type").and_then(Value::as_str) != Some("sessionFlags")
                 && layer.get("config").and_then(Value::as_object).is_none_or(|config| config.contains_key("skills"))
@@ -397,5 +397,12 @@ mod tests {
         assert_eq!(unreadable["result"]["userSkillsKey"], true, "a layer without a config counts as a key");
         assert_eq!(read(None)["result"]["userSkillsKey"], true, "without layers the effective config decides");
         assert_eq!(translate(&json!({"id": "bridge-app:config:c1", "result": {"origins": {}}})).unwrap()["ok"], false);
+    }
+
+    #[test]
+    fn an_empty_layer_list_is_no_evidence_so_the_effective_config_decides() {
+        let result = |effective: Value| json!({"config": effective, "origins": {}, "layers": []});
+        assert_eq!(user_skills_key(&result(json!({"model": "gpt", "skills": {"config": []}}))), Some(true));
+        assert_eq!(user_skills_key(&result(json!({"model": "gpt"}))), Some(false));
     }
 }
