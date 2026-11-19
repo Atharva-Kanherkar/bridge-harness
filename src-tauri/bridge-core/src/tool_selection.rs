@@ -2,7 +2,7 @@
 //! leave out. Bridge stores only the choice (kind `chat_tool_selection_v1`),
 //! never an inventory. A choice only removes items, so nothing here can add
 //! an allow rule, remove a deny or change a permission.
-use crate::{chat_defaults, provider_accounts, BridgeError};
+use crate::{chat_defaults, provider_accounts, runtime::BridgeCore, BridgeError};
 use bridge_protocol::messages::{
     ChatModelChoice, ChatToolItem, ChatToolKind, ChatToolSelection, ChatToolSelectionStatus,
     ChatToolState, ChatToolTokens, ClaudeSkillChoice, ConnectorDescriptor,
@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError, RwLockWriteGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 pub const KIND: &str = "chat_tool_selection_v1";
 /// Half of the 128 KiB cap of `chat_defaults::read`, so a stored row always
@@ -270,6 +271,130 @@ pub fn write_first(
         )));
     }
     write_checked(db, session_id, 0, &checked)
+}
+
+// --- save for a chat that exists --------------------------------------------------
+
+/// The statuses in which a chat takes a new choice. `failed` is in the list,
+/// so a person can roll a choice back after a failed launch.
+const SAVE_STATUSES: &[&str] = &["ready", "idle", "stopped", "failed"];
+const LEASE_RETRY: Duration = Duration::from_millis(50);
+const LEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// The refusal while a send holds the input lease.
+pub const SEND_BUSY: &str = "A message is on its way. Try again when it lands.";
+const LIFECYCLE_BUSY: &str = "Another change to this chat runs now. Try again when it is done.";
+const TURN_BUSY: &str = "A turn of this chat runs now. Try again when it ends.";
+const CHECKPOINT_BUSY: &str = "This chat makes a checkpoint now. Try again when it is done.";
+const APPROVAL_BUSY: &str = "This chat waits for your answer. Answer it, then try again.";
+const START_BUSY: &str = "This chat starts now. Try again when it is ready.";
+const STATUS_BUSY: &str = "This chat is busy. Try again when it is idle.";
+const QUEUED_BUSY: &str = "A queued message waits for this chat. Try again after it goes out.";
+const WORKER_BUSY: &str = "A worker result waits for this chat. Try again after it arrives.";
+const SUBAGENT_BUSY: &str = "A subagent of this chat runs or waits for an answer. Try again when it is done.";
+const TASK_BUSY: &str = "A background task of this chat runs. Try again when it ends.";
+
+/// The result of [`save`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// The new row. Its revision is one more than the expected revision.
+    Saved(ToolSelectionRow),
+    /// The chat is busy, and nothing changed. The text tells the person why.
+    Busy(&'static str),
+}
+
+/// The global input lease in write mode. A send holds the read lease from
+/// its route to its provider write, so a save never lands between the two.
+/// `None` when a send still holds it after the wait.
+fn write_lease(core: &BridgeCore) -> Option<RwLockWriteGuard<'_, ()>> {
+    let start = Instant::now();
+    loop {
+        match core.input_activity.try_write() {
+            Ok(lease) => return Some(lease),
+            // The lease guards no data, so a panic under it left nothing half
+            // written.
+            Err(TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let waited = start.elapsed();
+        if waited >= LEASE_WAIT {
+            return None;
+        }
+        std::thread::sleep(LEASE_RETRY.min(LEASE_WAIT - waited));
+    }
+}
+
+/// The text for a chat that the shared idle check does not pass.
+fn busy_reason(activity: &crate::runtime_budget::Activity) -> &'static str {
+    if !activity.status_fits {
+        return match activity.status.as_str() {
+            "working" => TURN_BUSY,
+            "checkpointing" => CHECKPOINT_BUSY,
+            "waiting" => APPROVAL_BUSY,
+            "starting" => START_BUSY,
+            _ => STATUS_BUSY,
+        };
+    }
+    if activity.active_turn {
+        TURN_BUSY
+    } else if activity.queued_input {
+        QUEUED_BUSY
+    } else if activity.worker_result {
+        WORKER_BUSY
+    } else if activity.subagent {
+        SUBAGENT_BUSY
+    } else if activity.background_task {
+        TASK_BUSY
+    } else {
+        STATUS_BUSY
+    }
+}
+
+/// Save a new choice for a chat that exists. The save takes the guard of the
+/// idle release in the same order: the input lease, the lifecycle claim of
+/// the session, the shared idle check under the database lock, and the turn
+/// of a warm runtime. A busy chat gets a refusal, and nothing changes. The
+/// save never stops the process: the next turn applies the new revision.
+pub fn save(
+    core: &BridgeCore,
+    session_id: &str,
+    expected_revision: u32,
+    selection: &ChatToolSelection,
+) -> Result<SaveOutcome, BridgeError> {
+    check(selection)?;
+    let Some(lease) = write_lease(core) else {
+        return Ok(SaveOutcome::Busy(SEND_BUSY));
+    };
+    let Ok(claim) = core.claim_session_lifecycle(session_id, "tool selection") else {
+        return Ok(SaveOutcome::Busy(LIFECYCLE_BUSY));
+    };
+    let db = core.try_db()?;
+    let activity = crate::runtime_budget::activity(&db, session_id, SAVE_STATUSES)?
+        .ok_or_else(|| invalid("This chat does not exist"))?;
+    if !activity.chat || !chat_defaults::is_top_level_chat(&db, session_id)? {
+        return Err(invalid("Only a top-level chat can have a tool choice"));
+    }
+    if !activity.idle() {
+        return Ok(SaveOutcome::Busy(busy_reason(&activity)));
+    }
+    let turn_runs = core
+        .adapters
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(session_id)
+        .is_some_and(|runtime| runtime.current_turn().lock().unwrap_or_else(PoisonError::into_inner).is_some());
+    if turn_runs {
+        return Ok(SaveOutcome::Busy(TURN_BUSY));
+    }
+    let transaction = db.unchecked_transaction()?;
+    let row = write_checked(&transaction, session_id, expected_revision, selection)?;
+    transaction.commit()?;
+    // The claim goes before the lease, so a send that waits on the lease
+    // finds the session free when it starts the chat.
+    drop(db);
+    drop(claim);
+    drop(lease);
+    Ok(SaveOutcome::Saved(row))
 }
 
 fn describe(harness: &str, account: Option<&str>) -> String {

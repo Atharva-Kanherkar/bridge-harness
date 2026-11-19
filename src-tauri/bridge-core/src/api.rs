@@ -8612,6 +8612,136 @@ mod tests {
             crate::events::CoreEvent::StateChanged
         ));
     }
+
+    type ToolLaunches = std::sync::Arc<std::sync::Mutex<Vec<Option<crate::tool_selection::ToolLaunch>>>>;
+    /// The end of a gate that a start signals, and the end it waits on.
+    type LaunchGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+    /// A Claude adapter that records the tool launch of each start and starts
+    /// nothing. The first start that finds a gate waits at it.
+    struct LaunchRecorder {
+        launches: ToolLaunches,
+        gate: std::sync::Mutex<Option<LaunchGate>>,
+    }
+
+    impl LaunchRecorder {
+        fn record(&self, tools: Option<&crate::tool_selection::ToolLaunch>, verb: &str) -> Result<crate::adapters::StartedAdapter, crate::BridgeError> {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            self.launches.lock().unwrap().push(tools.cloned());
+            Err(crate::BridgeError::Invalid(format!("recorded {verb}")))
+        }
+    }
+
+    impl crate::adapters::HarnessAdapter for LaunchRecorder {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> crate::model::AdapterDescriptor {
+            serde_json::from_value(serde_json::json!({
+                "id": "claude", "label": "Claude", "available": true, "authState": "unknown",
+                "capabilities": ["messages"],
+                "sandboxModes": ["read_only", "workspace_write", "danger_full_access"],
+                "defaultModel": "sonnet",
+                "models": [{"id": "sonnet", "label": "Sonnet", "tier": "standard", "defaultForTier": true, "supportedEffortLevels": []}]
+            }))
+            .unwrap()
+        }
+        fn start(&self, _: crate::adapters::StartRequest<'_>) -> Result<crate::adapters::StartedAdapter, crate::BridgeError> {
+            Err(crate::BridgeError::Invalid("start without start_chat".into()))
+        }
+        fn resume(&self, _: crate::adapters::ResumeRequest<'_>) -> Result<crate::adapters::StartedAdapter, crate::BridgeError> {
+            Err(crate::BridgeError::Invalid("resume without resume_chat".into()))
+        }
+        fn start_chat(&self, _: crate::adapters::StartRequest<'_>, tools: Option<&crate::tool_selection::ToolLaunch>) -> Result<crate::adapters::StartedAdapter, crate::BridgeError> {
+            self.record(tools, "start")
+        }
+        fn resume_chat(&self, _: crate::adapters::ResumeRequest<'_>, tools: Option<&crate::tool_selection::ToolLaunch>) -> Result<crate::adapters::StartedAdapter, crate::BridgeError> {
+            self.record(tools, "resume")
+        }
+        fn supports_native_resume(&self) -> bool {
+            true
+        }
+        fn normalize(&self, _: &serde_json::Value) -> Vec<crate::agent::NormalizedEvent> {
+            vec![]
+        }
+    }
+
+    fn spawn_send(
+        core: &std::sync::Arc<crate::runtime::BridgeCore>,
+        chat: &str,
+    ) -> std::thread::JoinHandle<Result<wire::SubmitInputResult, crate::BridgeError>> {
+        let core = std::sync::Arc::clone(core);
+        let chat = chat.to_owned();
+        std::thread::spawn(move || super::submit_input(&core, chat, "Reply with ok.".into()))
+    }
+
+    #[test]
+    fn a_send_and_a_save_cannot_both_win() {
+        use crate::tool_selection::{self, SaveOutcome};
+        use std::time::{Duration, Instant};
+        let scratch = tempfile::tempdir().unwrap();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let launches = ToolLaunches::default();
+        let mut core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        let mut registry = crate::adapters::AdapterRegistry::empty();
+        let gate = std::sync::Mutex::new(Some((entered_tx, release_rx)));
+        registry.register(Box::new(LaunchRecorder { launches: launches.clone(), gate })).unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        let core = std::sync::Arc::new(core);
+        let chat = core.create_chat_id(&crate::model::Harness::Claude, None, None).unwrap();
+        let github_off: bridge_protocol::messages::ChatToolSelection =
+            serde_json::from_value(serde_json::json!({"harness": "claude", "serversOff": ["github"]})).unwrap();
+
+        // A send holds the input lease from its route to its launch. A save in
+        // that window retries the lease, then gets the refusal and stores nothing.
+        let send = spawn_send(&core, &chat);
+        entered.recv_timeout(Duration::from_secs(30)).unwrap();
+        let asked = Instant::now();
+        assert_eq!(tool_selection::save(&core, &chat, 0, &github_off).unwrap(), SaveOutcome::Busy(tool_selection::SEND_BUSY));
+        assert!(asked.elapsed() >= Duration::from_millis(1500), "the save gave up after {:?}", asked.elapsed());
+        release.send(()).unwrap();
+        let error = send.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("recorded start"), "{error}");
+        assert_eq!(std::mem::take(&mut *launches.lock().unwrap()), [None], "the send launched with no choice");
+        assert_eq!(tool_selection::read(&core.db.lock().unwrap(), &chat).unwrap(), None);
+
+        // A save holds the write lease while it waits for the database. A send
+        // that starts in that window waits, then launches with the new revision.
+        let db = core.db.lock().unwrap();
+        let save = {
+            let core = std::sync::Arc::clone(&core);
+            let (chat, choice) = (chat.clone(), github_off.clone());
+            std::thread::spawn(move || tool_selection::save(&core, &chat, 0, &choice))
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while core.input_activity.try_read().is_ok() {
+            assert!(Instant::now() < deadline, "the save never took the write lease");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let send = spawn_send(&core, &chat);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!send.is_finished() && !save.is_finished());
+        assert!(core.input_activity.try_read().is_err(), "the save still holds the write lease");
+        assert!(launches.lock().unwrap().is_empty(), "no launch while the save holds the lease");
+        drop(db);
+        let saved = match save.join().unwrap().unwrap() {
+            SaveOutcome::Saved(row) => row,
+            other => panic!("the save lost to the send: {other:?}"),
+        };
+        assert_eq!((saved.revision, saved.servers_off.as_slice()), (1, ["github".to_owned()].as_slice()));
+        let error = send.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("recorded start"), "{error}");
+        let launched = std::mem::take(&mut *launches.lock().unwrap());
+        assert!(
+            launched.len() == 1 && launched[0].as_ref().is_some_and(|tools| tools.revision == 1 && tools.servers_off == ["github"]),
+            "{launched:?}"
+        );
+    }
 }
 
 // ---- agents: the managed runtime lifecycle -------------------------------

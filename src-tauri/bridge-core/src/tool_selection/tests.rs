@@ -3,6 +3,8 @@ use crate::store;
 use serde_json::json;
 use bridge_protocol::messages::ChatToolKind::{AllSkills, App, Apps, Plugin, Server, Skill};
 use bridge_protocol::messages::ChatToolState::{Fixed, Off, On};
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::Arc;
 
 const CHAT: LaunchTarget<'static> = LaunchTarget { harness: "claude", interactive: true, workflow: false };
 
@@ -667,4 +669,273 @@ fn no_selection_widens_a_permission_on_any_harness() {
     // without the Bridge server, apps on and off, and each skill choice.
     assert!(seen.len() > 500, "{}", seen.len());
     assert_eq!(shapes.len(), 12, "{shapes:?}");
+}
+
+// --- save for a chat that exists --------------------------------------------------
+
+fn core() -> (tempfile::TempDir, BridgeCore) {
+    let dir = tempfile::tempdir().unwrap();
+    let core = BridgeCore::for_tests(dir.path());
+    (dir, core)
+}
+
+fn github() -> ChatToolSelection {
+    choice(json!({"harness": "claude", "serversOff": ["github"]}))
+}
+
+fn set(core: &BridgeCore, sql: &str) {
+    core.db.lock().unwrap().execute(sql, []).unwrap();
+}
+
+fn stored(core: &BridgeCore, id: &str) -> Option<ToolSelectionRow> {
+    read(&core.db.lock().unwrap(), id).unwrap()
+}
+
+fn busy(core: &BridgeCore, id: &str) -> SaveOutcome {
+    save(core, id, 0, &github()).unwrap()
+}
+
+/// The first save of the chat goes through and stores revision 1.
+fn assert_saved(core: &BridgeCore, id: &str) {
+    let outcome = save(core, id, 0, &github()).unwrap();
+    let SaveOutcome::Saved(row) = outcome else { panic!("expected a save, got {outcome:?}") };
+    assert_eq!((row.revision, row.servers_off.clone()), (1, vec!["github".to_owned()]));
+    assert_eq!(stored(core, id), Some(row));
+}
+
+#[derive(Default)]
+struct Calls {
+    send: AtomicUsize,
+    interrupt: AtomicUsize,
+    stop: AtomicUsize,
+}
+
+/// A warm runtime that counts each call that could disturb the process.
+#[derive(Default)]
+struct Warm {
+    turn: Arc<Mutex<Option<String>>>,
+    calls: Arc<Calls>,
+}
+
+impl crate::adapters::AdapterRuntime for Warm {
+    fn process_id(&self) -> u32 {
+        4242
+    }
+    fn provider_session_id(&self) -> &str {
+        "provider-1"
+    }
+    fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+        Arc::clone(&self.turn)
+    }
+    fn send_turn(&self, _: &str) -> Result<(), BridgeError> {
+        self.calls.send.fetch_add(1, SeqCst);
+        Ok(())
+    }
+    fn interrupt(&self) -> Result<(), BridgeError> {
+        self.calls.interrupt.fetch_add(1, SeqCst);
+        Ok(())
+    }
+    fn respond(&self, _: Value, _: &str) -> Result<(), BridgeError> {
+        Ok(())
+    }
+    fn stop(&mut self, _: crate::adapters::ShutdownReason) {
+        self.calls.stop.fetch_add(1, SeqCst);
+    }
+}
+
+#[test]
+fn a_save_is_refused_while_the_chat_is_working_or_checkpointing() {
+    let (_dir, core) = core();
+    chat(&core.db.lock().unwrap(), "c", "claude", None);
+    for (status, reason) in [
+        ("working", TURN_BUSY),
+        ("checkpointing", CHECKPOINT_BUSY),
+        ("waiting", APPROVAL_BUSY),
+        ("starting", START_BUSY),
+        ("completed", STATUS_BUSY),
+    ] {
+        core.db.lock().unwrap().execute("UPDATE sessions SET status=?1 WHERE id='c'", [status]).unwrap();
+        assert_eq!(busy(&core, "c"), SaveOutcome::Busy(reason), "{status}");
+    }
+
+    // A ready row with an active turn still runs that turn.
+    set(&core, "UPDATE sessions SET status='ready',active_turn_id='turn-1' WHERE id='c'");
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(TURN_BUSY));
+
+    // A warm runtime can run a turn that the row does not show yet.
+    set(&core, "UPDATE sessions SET active_turn_id=NULL WHERE id='c'");
+    let warm = Warm::default();
+    *warm.turn.lock().unwrap() = Some("turn-2".to_owned());
+    let turn = Arc::clone(&warm.turn);
+    core.adapters.lock().unwrap().insert("c".to_owned(), Box::new(warm));
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(TURN_BUSY));
+
+    // Another change to the chat holds its lifecycle claim.
+    *turn.lock().unwrap() = None;
+    let claim = core.claim_session_lifecycle("c", "session start").unwrap();
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(LIFECYCLE_BUSY));
+    drop(claim);
+
+    // No refusal stored a row or kept the claim, so the idle chat saves.
+    assert_eq!(stored(&core, "c"), None);
+    assert!(core.input_activity.try_write().is_ok());
+    assert_saved(&core, "c");
+}
+
+#[test]
+fn a_save_is_refused_with_queued_input_a_waiting_subagent_or_a_pending_worker_result() {
+    let (_dir, core) = core();
+    chat(&core.db.lock().unwrap(), "c", "claude", None);
+
+    crate::session_input::enqueue(&core.db.lock().unwrap(), "c", "next", "next").unwrap();
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(QUEUED_BUSY));
+    set(&core, "DELETE FROM queued_session_input");
+
+    // A native subagent waits for an answer, however long ago it started.
+    set(&core, "INSERT INTO sessions(id,harness,label,status,metric_source,kind,parent_session_id,started_at) VALUES('sub','claude','Subagent','waiting','reported','harness_subagent','c','2020-01-01T00:00:00+00:00')");
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(SUBAGENT_BUSY));
+    set(&core, "UPDATE sessions SET status='completed' WHERE id='sub'");
+
+    // A worker finished, but its result did not reach the chat.
+    set(&core, "INSERT INTO sessions(id,harness,label,status,metric_source,kind,parent_session_id) VALUES('worker','claude','Worker','completed','reported','direct','c')");
+    set(&core, "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('worker','c','completed','research','key','pending','now')");
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(WORKER_BUSY));
+    set(&core, "UPDATE worker_runtime SET result_status='reported' WHERE session_id='worker'");
+
+    // The same result can wait in the outbox.
+    let payload = json!({"report": {"parent_session_id": "c"}}).to_string();
+    core.db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO durable_outbox(id,destination,event_type,payload,idempotency_key,status,next_attempt_at,created_at) VALUES('result','parent','worker.result',?1,'result','pending','now','now')",
+            [payload],
+        )
+        .unwrap();
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(WORKER_BUSY));
+    set(&core, "UPDATE durable_outbox SET status='delivered'");
+
+    set(&core, "INSERT INTO session_background_tasks(session_id,item_id,sequence,in_progress) VALUES('c','task',1,1)");
+    assert_eq!(busy(&core, "c"), SaveOutcome::Busy(TASK_BUSY));
+    set(&core, "UPDATE session_background_tasks SET in_progress=0");
+
+    assert_eq!(stored(&core, "c"), None);
+    assert_saved(&core, "c");
+}
+
+#[test]
+fn a_save_is_refused_for_a_worker_or_a_child_session() {
+    let (_dir, core) = core();
+    {
+        let db = core.db.lock().unwrap();
+        chat(&db, "c", "claude", None);
+        for (id, kind, parent) in [
+            ("child", "direct", Some("c")),
+            ("subagent", "harness_subagent", Some("c")),
+            ("flow", "workflow", None),
+        ] {
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,kind,parent_session_id) VALUES(?1,'claude','Other','ready','reported',?2,?3)",
+                params![id, kind, parent],
+            )
+            .unwrap();
+        }
+        // A worker row has no parent column, but its runtime row names it.
+        chat(&db, "worker", "claude", None);
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('worker','c','ready','research','key','reported','now')", []).unwrap();
+    }
+    for id in ["child", "subagent", "flow", "worker"] {
+        assert_eq!(message(save(&core, id, 0, &github())), "Only a top-level chat can have a tool choice", "{id}");
+        assert_eq!(stored(&core, id), None, "{id}");
+        assert!(core.claim_session_lifecycle(id, "session start").is_ok(), "{id}");
+    }
+    assert_eq!(message(save(&core, "missing", 0, &github())), "This chat does not exist");
+    assert!(core.input_activity.try_write().is_ok());
+    assert_saved(&core, "c");
+}
+
+#[test]
+fn a_save_is_accepted_after_a_failed_launch() {
+    let (_dir, core) = core();
+    {
+        let db = core.db.lock().unwrap();
+        chat(&db, "c", "claude", None);
+        write_checked(&db, "c", 0, &github()).unwrap();
+        // The launch with that choice failed. These are the columns that a
+        // recoverable adapter failure writes.
+        db.execute(
+            "UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at='2026-11-19T00:00:00+00:00',provider_session_id='provider-1' WHERE id='c'",
+            [],
+        )
+        .unwrap();
+        // The idle release keeps its list, so it does not take a failed chat.
+        assert!(!crate::runtime_budget::idle_for_change(&db, "c", &["ready", "idle", "stopped"]));
+        assert!(crate::runtime_budget::idle_for_change(&db, "c", SAVE_STATUSES));
+    }
+
+    // The person turns the server on again, and the save goes through.
+    let outcome = save(&core, "c", 1, &choice(json!({"harness": "claude"}))).unwrap();
+    let SaveOutcome::Saved(row) = outcome else { panic!("expected a save, got {outcome:?}") };
+    assert_eq!((row.revision, row.servers_off.clone()), (2, Vec::<String>::new()));
+    assert_eq!(stored(&core, "c"), Some(row));
+    let session: (String, Option<String>) = core
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT status,provider_session_id FROM sessions WHERE id='c'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(session, ("failed".to_owned(), Some("provider-1".to_owned())));
+
+    // A save on the old revision still fails.
+    assert!(message(save(&core, "c", 1, &github())).contains("changed in another window"));
+}
+
+#[test]
+fn a_save_does_not_stop_the_process() {
+    let (_dir, core) = core();
+    {
+        let db = core.db.lock().unwrap();
+        chat(&db, "c", "claude", None);
+        db.execute("UPDATE sessions SET status='idle',adapter_pid=4242,provider_session_id='provider-1' WHERE id='c'", []).unwrap();
+    }
+    let warm = Warm::default();
+    let calls = Arc::clone(&warm.calls);
+    core.adapters.lock().unwrap().insert("c".to_owned(), Box::new(warm));
+    let count = |table: &str| -> i64 {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    };
+    let before = (count("events"), count("session_entries"));
+
+    assert_saved(&core, "c");
+    let outcome = save(&core, "c", 1, &choice(json!({"harness": "claude", "serversOff": ["github", "linear"]}))).unwrap();
+    assert!(matches!(&outcome, SaveOutcome::Saved(row) if row.revision == 2), "{outcome:?}");
+
+    // No call reached the process, and the runtime stays warm.
+    let counts = (calls.send.load(SeqCst), calls.interrupt.load(SeqCst), calls.stop.load(SeqCst));
+    assert_eq!(counts, (0, 0, 0));
+    {
+        let adapters = core.adapters.lock().unwrap();
+        let runtime = adapters.get("c").expect("the warm runtime stays");
+        assert_eq!((runtime.process_id(), runtime.provider_session_id()), (4242, "provider-1"));
+    }
+    let session: (String, Option<i64>, Option<String>) = core
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT status,adapter_pid,provider_session_id FROM sessions WHERE id='c'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(session, ("idle".to_owned(), Some(4242), Some("provider-1".to_owned())));
+
+    // The save wrote no event and no entry, and it left the guard free.
+    assert_eq!((count("events"), count("session_entries")), before);
+    assert!(core.input_activity.try_write().is_ok());
+    assert!(core.claim_session_lifecycle("c", "session start").is_ok());
 }
