@@ -270,6 +270,13 @@ fn after_cut(tool: &str, class: Class) -> &'static str {
     }
 }
 
+/// Where the agent gets a part with no pages that a paged tool shortened.
+/// `notes_read` shows the first rows of a database, and `notes_search` pages
+/// each row.
+fn other_source(tool: &str) -> &'static str {
+    if tool == "notes_read" { " For the rows of a database, call notes_search with database." } else { "" }
+}
+
 /// The parts with no pages, shortened to half of the ceiling when they are
 /// above it. The part with pages under `key` gets the remaining space.
 fn settle(rest: &Value, key: &str, ceiling: usize) -> (Value, Vec<Part>) {
@@ -359,7 +366,7 @@ impl Pager<'_> {
     /// parts are shortened, and a next call has nothing more to return.
     fn finish(&self, value: Value, kept: usize, parts: &[Part]) -> Value {
         if kept == self.full {
-            let notice = format!("Cut at the ceiling of {} bytes: this reply holds all {}, and no call with offset returns more.{}", self.ceiling, count(kept, self.unit), shortened(parts));
+            let notice = format!("Cut at the ceiling of {} bytes: this reply holds all {}, and no call with offset returns more.{}{}", self.ceiling, count(kept, self.unit), shortened(parts), other_source(self.tool));
             return finish(value, notice, None);
         }
         self.paged(value, kept, parts)

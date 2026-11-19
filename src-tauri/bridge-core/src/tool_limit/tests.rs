@@ -362,6 +362,7 @@ fn a_whole_part_with_pages_gets_no_next() {
     assert!(structured(&after).get("next").is_none(), "{}", cut_of(&after));
     let cut = cut_of(&after);
     assert!(cut.contains("/rows keeps") && cut.contains("holds all 12 characters") && !cut.contains("again with offset"), "{cut}");
+    assert!(cut.ends_with("call notes_search with database."), "{cut}");
     // A list whose items all fit, with a large part that has no pages.
     let mut source = search_result(3, 50, Style::Plain);
     source["note"] = json!(text(Style::Plain, 40_000, 0, 0));
@@ -372,6 +373,7 @@ fn a_whole_part_with_pages_gets_no_next() {
     assert!(structured(&after).get("next").is_none(), "{}", cut_of(&after));
     let cut = cut_of(&after);
     assert!(cut.contains("/note keeps") && cut.contains("holds all 3 items") && !cut.contains("again with offset"), "{cut}");
+    assert!(!cut.contains("notes_search with database"), "{cut}");
 }
 
 #[test]
