@@ -25,6 +25,7 @@ export type BridgeMethod =
   | "github/github_issue"
   | "github/github_repository"
   | "github/github_merge_config"
+  | "github/github_media"
   | "github/github_act"
   | "github/github_review"
   | "github/github_checkout"
@@ -370,6 +371,7 @@ export const BRIDGE_METHODS = [
   { method: "github/github_issue", domain: "github", command: "github_issue" },
   { method: "github/github_repository", domain: "github", command: "github_repository" },
   { method: "github/github_merge_config", domain: "github", command: "github_merge_config" },
+  { method: "github/github_media", domain: "github", command: "github_media" },
   { method: "github/github_act", domain: "github", command: "github_act" },
   { method: "github/github_review", domain: "github", command: "github_review" },
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
@@ -808,6 +810,7 @@ export interface BridgeMethodParams {
   "github/github_issue": GithubIssueParams;
   "github/github_repository": GithubRepositoryParams;
   "github/github_merge_config": GithubMergeConfigParams;
+  "github/github_media": GithubMediaParams;
   "github/github_act": GithubActParams;
   "github/github_review": GithubReviewParams;
   "github/github_checkout": GithubCheckoutParams;
@@ -1155,6 +1158,7 @@ export interface BridgeMethodResults {
   "github/github_issue": GithubIssueResult;
   "github/github_repository": GithubRepositoryResult;
   "github/github_merge_config": GithubMergeConfigResult;
+  "github/github_media": GithubMediaResult;
   "github/github_act": GithubActResult;
   "github/github_review": GithubReviewResult;
   "github/github_checkout": GithubCheckoutResult;
@@ -2165,9 +2169,10 @@ export type ExternalImportStability = "stable" | "version_gated" | "experimental
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
 
-export type GithubAction = { body?: string | null; deleteBranch?: boolean | null; kind: "merge"; number: number; strategy: MergeStrategy; subject?: string | null } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: GithubTarget } | { body: string; kind: "comment"; number: number; target: GithubTarget } | { kind: "setState"; number: number; operation: StateOperation; target: GithubTarget } | { kind: "ready"; number: number } | { branch: string; kind: "restoreBranch"; number: number };
+export type GithubAction = { body?: string | null; deleteBranch?: boolean | null; kind: "merge"; number: number; strategy: MergeStrategy; subject?: string | null } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: GithubTarget } | { body: string; kind: "comment"; number: number; target: GithubTarget } | { kind: "setState"; number: number; operation: StateOperation; target: GithubTarget } | { kind: "ready"; number: number } | { branch: string; kind: "restoreBranch"; number: number } | { kind: "resolveThread"; number: number; resolved: boolean; threadId: string } | { body: string; kind: "reviewComment"; line: number; number: number; path: string; side: GithubDiffSide };
 
 export interface GithubActor {
+  avatarUrl?: string | null;
   login: string;
 }
 
@@ -2184,6 +2189,8 @@ export interface GithubComment {
   id: string;
   url: string;
 }
+
+export type GithubDiffSide = "left" | "right";
 
 export interface GithubLabel {
   color: string;
@@ -3018,12 +3025,16 @@ export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
 export interface ReviewThread {
   comments: ReviewComment[];
+  diffHunk?: string | null;
   id: string;
   isOutdated: boolean;
   isResolved: boolean;
   line?: number | null;
   originalLine?: number | null;
   path: string;
+  viewerCanReply?: boolean;
+  viewerCanResolve?: boolean;
+  viewerCanUnresolve?: boolean;
 }
 
 export interface ReviewerHarnessSettings {
@@ -4284,6 +4295,16 @@ export interface GithubMergeConfigParams {
 export interface GithubMergeConfigResult {
   defaultStrategy: MergeStrategy;
   strategies: MergeStrategies;
+}
+
+export interface GithubMediaParams {
+  url: string;
+  workspaceId: string;
+}
+
+export interface GithubMediaResult {
+  data: string;
+  mimeType: string;
 }
 
 export interface GithubActParams {

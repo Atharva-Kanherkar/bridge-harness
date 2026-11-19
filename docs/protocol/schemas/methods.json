@@ -128,6 +128,13 @@
       "resultSchema": "github-merge-config-result.json"
     },
     {
+      "command": "github_media",
+      "domain": "github",
+      "method": "github/github_media",
+      "paramsSchema": "github-media-params.json",
+      "resultSchema": "github-media-result.json"
+    },
+    {
       "command": "github_act",
       "domain": "github",
       "method": "github/github_act",

@@ -370,7 +370,10 @@ fn j4_off_by_default_changes_nothing() {
     wait_log(&running.daemon, &session, "the limited turn", |log| !log.is_empty());
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(rpc.recovery(&session), Value::Null);
-    assert_eq!(turn_log(&running.daemon, &session).len(), 1);
+    // Name the turns on failure: a second line is a prompt Bridge sent on its
+    // own, and which prompt it was is the only clue to who sent it.
+    let log = turn_log(&running.daemon, &session);
+    assert_eq!(log.len(), 1, "with recovery off nothing follows the limited turn: {log:?}");
     running.stop();
 }
 

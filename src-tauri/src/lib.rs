@@ -216,6 +216,12 @@ async fn github_merge_config(workspace_id: String, state: State<'_, Arc<BridgeCo
 }
 
 #[tauri::command]
+async fn github_media(workspace_id: String, url: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubMediaResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub media", move || api::github_media(&core, &workspace_id, &url)).await
+}
+
+#[tauri::command]
 async fn github_act(workspace_id: String, action: wire::GithubAction, confirmed: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubActResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub action", move || api::github_act(&core, &workspace_id, action, confirmed)).await
@@ -3594,6 +3600,7 @@ pub fn run() -> i32 {
             github_issue,
             github_repository,
             github_merge_config,
+            github_media,
             github_act,
             github_review,
             github_checkout,

@@ -205,6 +205,7 @@ typed_methods![
     (GithubIssue, GithubIssueParams, GithubIssueResult),
     (GithubRepository, GithubRepositoryParams, GithubRepositoryResult),
     (GithubMergeConfig, GithubMergeConfigParams, GithubMergeConfigResult),
+    (GithubMedia, GithubMediaParams, GithubMediaResult),
     (GithubAct, GithubActParams, GithubActResult),
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),

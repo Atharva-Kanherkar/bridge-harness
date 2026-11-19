@@ -548,7 +548,7 @@ pub(crate) mod tests {
         let comments = (0..7)
             .map(|index| crate::github_surface::GithubComment {
                 id: format!("c{index}"),
-                author: Some(crate::github_surface::GithubActor { login: format!("u{index}") }),
+                author: Some(crate::github_surface::GithubActor { login: format!("u{index}"), avatar_url: None }),
                 body: format!("comment {index}"),
                 created_at: format!("2026-11-1{index}T00:00:00Z"),
                 url: String::new(),

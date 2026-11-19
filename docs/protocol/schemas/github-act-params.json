@@ -271,8 +271,88 @@
             "number"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve (`resolved: true`) or reopen one review conversation.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "resolveThread"
+              ],
+              "type": "string"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "resolved": {
+              "type": "boolean"
+            },
+            "threadId": {
+              "description": "The conversation's node id, as returned with the pull request.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "number",
+            "resolved",
+            "threadId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open a new review conversation on one line of the diff.",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "reviewComment"
+              ],
+              "type": "string"
+            },
+            "line": {
+              "description": "The line in the file: the new file for `right`, the old for `left`.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            },
+            "side": {
+              "$ref": "#/definitions/GithubDiffSide"
+            }
+          },
+          "required": [
+            "body",
+            "kind",
+            "line",
+            "number",
+            "path",
+            "side"
+          ],
+          "type": "object"
         }
       ]
+    },
+    "GithubDiffSide": {
+      "description": "Which side of a diff a new review comment sits on: the old file or the new.",
+      "enum": [
+        "left",
+        "right"
+      ],
+      "type": "string"
     },
     "GithubTarget": {
       "enum": [

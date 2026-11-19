@@ -70,6 +70,10 @@ pub fn dispatch(
             let p: wire::GithubChecksParams = decode(method, params)?;
             reply(api::github_checks(core, &p.workspace_id, p.number))
         }
+        MethodName::GithubMedia => {
+            let p: wire::GithubMediaParams = decode(method, params)?;
+            reply(api::github_media(core, &p.workspace_id, &p.url))
+        }
         MethodName::GithubMergeConfig => {
             let p: wire::GithubMergeConfigParams = decode(method, params)?;
             reply(api::github_merge_config(core, &p.workspace_id))

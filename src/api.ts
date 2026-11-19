@@ -99,6 +99,7 @@ import type {
   ConnectorRefreshResult,
   ConnectorSetSettingsResult,
   GithubIssuesResult,
+  GithubMediaResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
   GithubPullRequestsResult,
@@ -1896,6 +1897,10 @@ export const bridgeApi = {
     hasBackend() ? call("github/github_repository", { workspaceId }) : Promise.resolve(mockGithubRepository()),
   githubMergeConfig: (workspaceId: string): Promise<GithubMergeConfigResult> =>
     hasBackend() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
+  /** One image or video from a GitHub body, fetched with the signed-in
+   *  account. Only for media the webview could not load on its own. */
+  githubMedia: (workspaceId: string, url: string): Promise<GithubMediaResult> =>
+    hasBackend() ? call("github/github_media", { workspaceId, url }) : mockGithubMedia(url),
   githubAct: (workspaceId: string, action: GithubAction, confirmed: boolean): Promise<GithubActResult> =>
     hasBackend() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
   githubReview: (workspaceId: string, number: number, harness: string, sessionId?: string): Promise<GithubReviewResult> =>
@@ -4113,8 +4118,45 @@ async function mockGithubAttachPr(sessionId: string, reference: string): Promise
   return { attached: true, message: `Attached PR #${number}.`, pullRequest: mockChatPrView(entry) };
 }
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
-const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
-  confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
+// Browser-mode writes land in these so `bun run dev` shows a reply appearing
+// and a conversation resolving without GitHub.
+const mockPostedComments: string[] = [];
+const mockThreadResolved = new Map<string, boolean>([["thread-2", true]]);
+const mockThreadReplies = new Map<number, string[]>();
+const mockLineThreads: Array<{ path: string; line: number; body: string }> = [];
+const mockShot = (fill: string, ink: string) => btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="${fill}"/><rect x="32" y="32" width="200" height="14" rx="7" fill="${ink}" opacity=".8"/><rect x="32" y="64" width="576" height="120" rx="10" fill="${ink}" opacity=".12"/><rect x="32" y="204" width="576" height="120" rx="10" fill="${ink}" opacity=".12"/></svg>`);
+const MOCK_SHOT_DARK = "https://raw.githubusercontent.com/Atharva-Kanherkar/bridge-harness/pr-assets/mock/pane-dark.png";
+const MOCK_SHOT_LIGHT = "https://raw.githubusercontent.com/Atharva-Kanherkar/bridge-harness/pr-assets/mock/pane-light.png";
+/** The mock screenshots do not exist on GitHub, so the pane's direct load
+ *  fails and it falls back to `githubMedia`, which serves these. That is the
+ *  same path a private attachment takes against a real backend. */
+const MOCK_GITHUB_MEDIA: Readonly<Record<string, string>> = {
+  [MOCK_SHOT_DARK]: mockShot("rgb(19 19 22)", "rgb(244 244 245)"),
+  [MOCK_SHOT_LIGHT]: mockShot("rgb(246 245 242)", "rgb(24 24 27)"),
+};
+const mockGithubMedia = (url: string): Promise<GithubMediaResult> => MOCK_GITHUB_MEDIA[url]
+  ? Promise.resolve({ mimeType: "image/svg+xml", data: MOCK_GITHUB_MEDIA[url] })
+  : Promise.reject(new Error("Media needs a GitHub connection."));
+const mockReviewThreads = (prUrl: string): GithubPullRequestResult["reviewThreads"] => {
+  const reply = (rootId: number) => (mockThreadReplies.get(rootId) ?? []).map((body, index) => ({ id: `reply-${rootId}-${index}`, databaseId: rootId * 100 + index, author: { login: "atharva" }, body, createdAt: new Date().toISOString(), url: prUrl, replyToId: null }));
+  const thread = (id: string, rootId: number, path: string, line: number, author: string, body: string, diffHunk: string, isOutdated = false) => {
+    const isResolved = mockThreadResolved.get(id) ?? false;
+    return { id, isResolved, isOutdated, path, line, originalLine: null, diffHunk, viewerCanResolve: !isResolved, viewerCanUnresolve: isResolved, viewerCanReply: true, comments: [{ id: `comment-${rootId}`, databaseId: rootId, author: { login: author }, body, createdAt: now, url: prUrl, replyToId: null }, ...reply(rootId)] };
+  };
+  return [
+    thread("thread-1", 1, "src/api.ts", 42, "reviewer", "Please keep <b>remote HTML</b> inert.", "@@ -40,3 +40,4 @@ export const bridgeApi = {\n   githubStatus,\n-  render: html => html,\n+  render: text => escape(text),\n+  media: loadMedia,"),
+    thread("thread-2", 2, "src/components/GitHubPane.tsx", 128, "maintainer", "This selector re-renders the whole list on every poll. Memoize it?", "@@ -126,2 +126,3 @@\n const rows = useRows();\n+const visible = rows.filter(matches);", true),
+    ...mockLineThreads.map((entry, index) => thread(`line-${index}`, 50 + index, entry.path, entry.line, "atharva", entry.body, "")),
+  ];
+};
+const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult => {
+  if (!confirmed) return { executed: false, message: `Declined: ${action.kind}` };
+  if (action.kind === "comment" && action.target === "pullRequest") mockPostedComments.push(action.body);
+  else if (action.kind === "resolveThread") mockThreadResolved.set(action.threadId, action.resolved);
+  else if (action.kind === "reply") mockThreadReplies.set(action.commentId, [...(mockThreadReplies.get(action.commentId) ?? []), action.body]);
+  else if (action.kind === "reviewComment") mockLineThreads.push({ path: action.path, line: action.line, body: action.body });
+  return { executed: true, message: `Ran ${action.kind}.` };
+};
 const mockGithubReview = (number: number, harness: string): GithubReviewResult =>
   ({ status: "launched", sessionId: "mock-review", message: `Review started with ${harness} — comments will post to PR #${number} shortly.` });
 const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [
@@ -4139,9 +4181,18 @@ const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullR
         "GitHub content remains plain text, including <script>alert('inert')</script>.",
         "",
         "A disguised link — <a href=\"javascript:void%200\">click for the logs</a> — renders as text, not an anchor.",
+        "",
+        "## Screenshots",
+        "",
+        "| Dark | Light |",
+        "|---|---|",
+        `| ![The pane, dark](${MOCK_SHOT_DARK}) | ![The pane, light](${MOCK_SHOT_LIGHT}) |`,
       ].join("\n"),
       baseBranch: "main",
-      comments: [{ id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.\n\n<details><summary>CI output</summary>\n\n```\nok 12 passed\n```\n\n</details>", createdAt: now, url: `${summary.url}#issuecomment-1` }],
+      comments: [
+        { id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.\n\n<details><summary>CI output</summary>\n\n```\nok 12 passed\n```\n\n</details>", createdAt: now, url: `${summary.url}#issuecomment-1` },
+        ...mockPostedComments.map((body, index) => ({ id: `posted-${index}`, author: { login: "atharva" }, body, createdAt: new Date().toISOString(), url: `${summary.url}#issuecomment-${index + 2}` })),
+      ],
       labels: [{ name: "enhancement", color: "a2eeef", description: "New feature" }],
       commits: [
         { oid: "8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192", abbreviatedOid: "8f2a1c9", messageHeadline: "feat(github): render the read surface", messageBody: "The pane owns its own height now.", committedAt: now, authors: [{ login: "atharva" }] },
@@ -4151,7 +4202,7 @@ const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullR
       deletions: 4,
       changedFiles: 2,
     },
-    reviewThreads: [{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/api.ts", line: 42, originalLine: null, comments: [{ id: "comment-1", databaseId: 1, author: { login: "reviewer" }, body: "Please keep <b>remote HTML</b> inert.", createdAt: now, url: summary.url, replyToId: null }] }],
+    reviewThreads: mockReviewThreads(summary.url),
     files: [
       { path: "src/api.ts", previousPath: null, status: "modified", additions: 14, deletions: 4, patch: "@@ -1,2 +1,3 @@\n-old line\n+new line\n context" },
       { path: "assets/github.png", previousPath: null, status: "added", additions: 0, deletions: 0, patch: null },
