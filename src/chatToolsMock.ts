@@ -13,6 +13,7 @@ export const MOCK_COLD_NOTE = "Available after the first turn";
 const BRIDGE_REASON = "Bridge owns this server. It stays as attached today.";
 const CLAUDE_PLUGIN_REASON = "A plugin is not a unit. Choose its servers and skills instead.";
 const CODEX_APP_REASON = "Codex has no verified switch for one app. The Apps switch turns all apps on or off.";
+const CODEX_SKILL_NAME_REASON = "This skill name has a quote or a backslash. Bridge cannot turn it off safely.";
 const CODEX_SKILLS_UNKNOWN_REASON = "Bridge can check the Codex config for a skills key only after a turn of this chat.";
 const OPENCODE_SKILLS_REASON = "OpenCode has no verified switch for one skill.";
 const NO_UNITS_REASON = "This harness has no tool choice";
@@ -48,6 +49,7 @@ const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).
 const harnessName = (harness: string) => ({ claude: "Claude Code", codex: "Codex", opencode: "OpenCode" } as Record<string, string>)[harness] ?? harness;
 const describe = (harness: string, account: string | null) => `${harnessName(harness)} (${account ? `account ${account}` : "own login"})`;
 const isBridge = (id: string) => id.trim().toLowerCase() === "bridge";
+const unquotable = (name: string) => name.includes('"') || name.includes("\\");
 
 const unit = (kind: ChatToolItem["kind"], id: string, group: string, label = id): ChatToolItem => ({ kind, id, label, group, state: "on", fixedReason: null, seen: true, tokens: null });
 const fixed = (item: ChatToolItem, reason: string): ChatToolItem => ({ ...item, state: "fixed", fixedReason: reason });
@@ -91,6 +93,12 @@ function claudeList(init: ClaudeInit | null, row: Choice | null): Listed {
   return { items, sources };
 }
 
+/** A Codex skill row as the host lists it. A name that a config value cannot hold stays fixed. */
+export function codexSkill(name: string, on: boolean): ChatToolItem {
+  const item = unit("skill", name, "Skills");
+  return unquotable(name) ? fixed(item, CODEX_SKILL_NAME_REASON) : switched(item, on);
+}
+
 function codexList(warm: boolean, row: Choice | null): Listed {
   const at = new Date().toISOString();
   const off = new Set(row?.serversOff ?? []);
@@ -101,10 +109,10 @@ function codexList(warm: boolean, row: Choice | null): Listed {
   items.push(...(warm ? CODEX_APPS[1] : []).map(app => fixed(unit("app", app, "Apps"), CODEX_APP_REASON)));
   const skillsOff = new Set(row?.codexSkillsOff ?? []);
   const skills = warm ? CODEX_SKILLS : [];
-  items.push(...skills.map(([name, value]) => switched({ ...unit("skill", name, "Skills"), tokens: figure(value, CODEX_SKILL_FIGURES, at) }, !skillsOff.has(name))));
+  items.push(...skills.map(([name, value]) => ({ ...codexSkill(name, !skillsOff.has(name)), tokens: figure(value, CODEX_SKILL_FIGURES, at) })));
   // A cold chat has no config read, so the host cannot tell whether a skill switch works.
   items.push(...[...skillsOff].filter(name => !skills.some(([listed]) => listed === name)).map(name => {
-    const item = unseen(switched(unit("skill", name, "Skills"), false));
+    const item = unseen(codexSkill(name, false));
     return warm ? item : fixed(item, CODEX_SKILLS_UNKNOWN_REASON);
   }));
   const sources = warm
@@ -184,6 +192,8 @@ function check(choice: ChatToolSelection): Choice {
   if (harness === "claude" && (checked.codexAppsOff || checked.codexSkillsOff.length)) throw new Error("A Claude tool choice cannot hold Codex items");
   if (harness === "codex" && checked.claudeSkills) throw new Error("A Codex tool choice cannot hold Claude skills");
   if (harness === "codex" && checked.serversOff.includes("codex_apps")) throw new Error("Use the Apps switch to leave out codex_apps");
+  const unsafe = harness === "codex" ? checked.codexSkillsOff.find(unquotable) : undefined;
+  if (unsafe !== undefined) throw new Error(`The Codex skill name ${JSON.stringify(unsafe)} cannot go in a config value`);
   if (harness === "opencode" && (checked.claudeSkills || checked.codexAppsOff || checked.codexSkillsOff.length)) throw new Error("An OpenCode tool choice can leave out servers only");
   return checked;
 }

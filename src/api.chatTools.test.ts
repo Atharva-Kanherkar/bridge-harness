@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { bridgeApi } from "./api";
+import { codexSkill } from "./chatToolsMock";
 import type { ChatToolItem } from "./protocol/generated/protocol";
 
 const find = (items: ChatToolItem[], id: string) => items.find(item => item.id === id);
@@ -62,6 +63,16 @@ describe("mock tools of a chat", () => {
     const count = created.state.sessions.length;
     await expect(create("opencode")).rejects.toThrow("The tool choice was made for OpenCode (own login), but the chat starts on Codex (own login)");
     expect((await bridgeApi.state()).sessions).toHaveLength(count);
+  });
+
+  it("fixes and refuses a Codex skill name that a config value cannot hold", async () => {
+    for (const name of ['say"hi', "back\\slash"]) {
+      expect(codexSkill(name, true)).toMatchObject({ id: name, state: "fixed", fixedReason: "This skill name has a quote or a backslash. Bridge cannot turn it off safely." });
+      const { selection } = await bridgeApi.chatTools({ sessionId: "session-2" });
+      await expect(bridgeApi.updateChatTools({ sessionId: "session-2", expectedRevision: selection.revision, selection: { harness: "codex", codexSkillsOff: [name] } }))
+        .rejects.toThrow(`The Codex skill name ${JSON.stringify(name)} cannot go in a config value`);
+    }
+    expect(codexSkill("pdf", false)).toMatchObject({ state: "off", fixedReason: null });
   });
 
   it("refuses a worker, a missing chat and two targets", async () => {
