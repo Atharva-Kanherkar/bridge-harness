@@ -260,7 +260,10 @@ fn ids_with_control_characters_duplicates_or_too_many_bytes_are_refused() {
 
 #[test]
 fn claude_skill_names_that_the_sdk_rejects_are_refused() {
-    for name in ["", " ", " review", "review ", "a(b", "a)b", "a,b", "a\u{1}b", "*", "plugin:*", "review *", "/review", "a\\\\b", "review\\"] {
+    for name in [
+        "", " ", " review", "review ", "a(b", "a)b", "a,b", "a\u{1}b", "*", "plugin:*", "review *", "/review", "a\\\\b",
+        "review\\", "\u{FEFF}review", "review\u{FEFF}", "\u{FEFF}", "\u{3000}review", "review\u{2029}",
+    ] {
         assert!(!claude_sdk_accepts(name), "{name:?}");
         let message = refused(json!({"harness": "claude", "claudeSkills": {"only": ["review", name]}}));
         assert!(!message.is_empty(), "{name:?}");

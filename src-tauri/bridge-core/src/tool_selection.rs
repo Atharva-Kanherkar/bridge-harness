@@ -102,8 +102,10 @@ fn is_bridge(id: &str) -> bool {
 /// The skill name rules of the Claude Agent SDK (`WXe` in sdk.mjs 0.3.322).
 /// The SDK refuses a list that holds a name that fails them.
 pub fn claude_sdk_accepts(name: &str) -> bool {
-    !(name.trim().is_empty()
-        || name.trim() != name
+    // JavaScript `trim` also removes U+FEFF, and Rust `trim` keeps it.
+    let trimmed = name.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
+    !(trimmed.is_empty()
+        || trimmed != name
         || name.contains(['(', ')', ','])
         || name.chars().any(char::is_control)
         || name == "*"
