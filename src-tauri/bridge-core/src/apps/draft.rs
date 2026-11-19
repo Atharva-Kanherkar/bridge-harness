@@ -77,7 +77,7 @@ fn check_inventory(manifest: &Manifest, inventory: &Value) -> Result<(), BridgeE
         let tool = tools
             .iter()
             .find(|tool| tool["name"].as_str() == Some(name))
-            .ok_or_else(|| invalid(format!("The MCP server has no tool named {name}")))?;
+            .ok_or_else(|| invalid(format!("The MCP server has no tool named {name}. {}", tool_listing(tools))))?;
         if manifest.reads.contains(name)
             && (tool["readOnly"] == false || tool["destructive"] == true)
         {
@@ -87,6 +87,29 @@ fn check_inventory(manifest: &Manifest, inventory: &Value) -> Result<(), BridgeE
         }
     }
     Ok(())
+}
+
+/// The server's real tools, for a chat that guessed a name: a chat on one
+/// agent cannot see the tools of a server another agent holds, so the
+/// refusal is how it learns them. Names and read/write only, capped.
+fn tool_listing(tools: &[Value]) -> String {
+    const SHOWN: usize = 60;
+    let names: Vec<String> = tools
+        .iter()
+        .filter_map(|tool| {
+            let name = tool["name"].as_str()?;
+            // What a draft may list it as: a read needs a read word and no
+            // write or destructive annotation, as `check_inventory` and
+            // `personal::validate` require.
+            let read = crate::briefing_policy::is_read_tool_name(name) && tool["readOnly"] != false && tool["destructive"] != true;
+            let kind = if read { "read" } else { "write" };
+            Some(format!("{name} ({kind})"))
+        })
+        .take(SHOWN)
+        .collect();
+    let more = tools.len().saturating_sub(SHOWN);
+    let suffix = if more > 0 { format!(" and {more} more") } else { String::new() };
+    format!("Its tools: {}{suffix}", names.join(", "))
 }
 
 pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Value, BridgeError> {
@@ -423,6 +446,27 @@ mod tests {
         assert!(check_inventory(&manifest(), &json!({"status":"failed","tools":null,"verified":false})).is_err());
         inventory["status"] = json!("failed");
         assert!(check_inventory(&manifest(), &inventory).is_err());
+    }
+
+    #[test]
+    fn a_guessed_tool_name_is_answered_with_the_servers_real_tools() {
+        // A chat on one agent cannot see a server another agent holds; the
+        // refusal is how it learns the names, marked as it may list them.
+        let inventory = json!({"status":"connected","tools":[
+            {"name":"search_openai_docs","readOnly":true,"destructive":null},
+            {"name":"fetch_openai_doc","readOnly":null,"destructive":null},
+            {"name":"delete_doc","readOnly":null,"destructive":true},
+            {"name":"get_and_purge","readOnly":false,"destructive":null},
+        ]});
+        let mut guessed = manifest();
+        guessed.reads = vec!["docs_search".into()];
+        guessed.writes = vec![];
+        let error = check_inventory(&guessed, &inventory).unwrap_err().to_string();
+        assert!(error.contains("no tool named docs_search"), "{error}");
+        assert!(error.contains("Its tools: search_openai_docs (read), fetch_openai_doc (read), delete_doc (write), get_and_purge (write)"), "{error}");
+        let many: Vec<Value> = (0..70).map(|i| json!({"name": format!("get_{i}")})).collect();
+        let error = check_inventory(&guessed, &json!({"status":"connected","tools":many})).unwrap_err().to_string();
+        assert!(error.ends_with("get_59 (read) and 10 more"), "capped: {error}");
     }
     #[test]
     fn write_preview_never_needs_a_live_runtime() {

@@ -89,6 +89,13 @@ describe("McpAppFrame", () => {
       const doc = viewDocument(html);
       expect(doc.indexOf("Content-Security-Policy")).toBeLessThan(doc.indexOf(html.replace(/^<!doctype html>/i, "")));
     }
+    // Both schemes are declared before any model markup, so a view that
+    // paints no background shows Bridge's card in dark mode, not a white
+    // canvas with black text. A view's own color-scheme still overrides it.
+    const themed = viewDocument("<p>hi</p>");
+    expect(themed).toContain('<meta name="color-scheme" content="light dark">');
+    expect(themed.indexOf('name="color-scheme"')).toBeLessThan(themed.indexOf("<p>hi</p>"));
+    expect(themed.indexOf("host-context-changed")).toBeLessThan(themed.indexOf("<p>hi</p>"));
     const nested = personalViewDocument("</script><script>hostile()</script>");
     expect(nested).toContain('sandbox="allow-scripts"');
     expect(nested).toContain("event.source===inner.contentWindow");
@@ -163,4 +170,33 @@ describe("McpAppFrame", () => {
     await request("ui/open-link", { url: "javascript:alert(1)" });
     expect(open).toHaveBeenCalledTimes(1);
   });
+});
+
+it("a view that never initializes still starts in the host's theme, and nothing escapes the style rule", () => {
+  const doc = viewDocument("<p>hi</p>", { theme: "dark", variables: { "--color-text-primary": "#e4e4e4", "--evil": "red}</style><script>x()</script>", "bad name": "x" } });
+  expect(doc).toContain("<style>:root{color-scheme:dark;--color-text-primary:#e4e4e4}</style>");
+  expect(doc).not.toContain("x()");
+  expect(doc.indexOf(":root{color-scheme")).toBeLessThan(doc.indexOf("<p>hi</p>"));
+  expect(viewDocument("<p>hi</p>")).not.toContain(":root{color-scheme");
+  const nested = personalViewDocument("<p>hi</p>", { theme: "light", variables: {} });
+  expect(nested).toContain("color-scheme:light");
+});
+
+it("the theme prelude applies the host's variables and scheme inside the view, and ignores anything else", () => {
+  const doc = viewDocument("<p>hi</p>");
+  const script = /<script>(\(\(\)=>\{const apply[\s\S]*?)<\/script>/.exec(doc)![1];
+  const style = new Map<string, string>();
+  const root = { style: { setProperty: (name: string, value: string) => style.set(name, value), colorScheme: "" } };
+  const listeners: ((event: { source: unknown; data: unknown }) => void)[] = [];
+  const parent = {};
+  new Function("document", "addEventListener", "parent", script)({ documentElement: root }, (_: string, listener: (event: { source: unknown; data: unknown }) => void) => listeners.push(listener), parent);
+  const send = (data: unknown, source: unknown = parent) => listeners.forEach(listener => listener({ source, data }));
+  send({ jsonrpc: "2.0", id: 1, result: { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#e4e4e4", "not-a-var": "x" } } } } });
+  expect(style.get("--color-text-primary")).toBe("#e4e4e4");
+  expect(style.has("not-a-var")).toBe(false);
+  expect(root.style.colorScheme).toBe("dark");
+  send({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "light", styles: { variables: { "--color-text-primary": "#111" } } } });
+  expect([style.get("--color-text-primary"), root.style.colorScheme]).toEqual(["#111", "light"]);
+  send({ method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-text-primary": "red" } } } }, {});
+  expect(style.get("--color-text-primary"), "only the host's own messages count").toBe("#111");
 });

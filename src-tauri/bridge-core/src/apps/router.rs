@@ -318,12 +318,34 @@ pub fn candidates(chat_harness: &str, chat_account: Option<&str>, chat_cwd: Opti
     list
 }
 
-/// The first candidate with `server` connected, and its inventory.
+/// The first candidate with `server` connected, and its inventory. A name
+/// no agent has is corrected when exactly one connected server matches it
+/// ignoring case and punctuation (`openai-developer-docs` for
+/// `openaiDeveloperDocs`); otherwise the refusal names what each agent has
+/// connected, so the chat can ask again with a real name.
 pub fn choose(core: &Arc<BridgeCore>, chat: &str, server: &str) -> Result<(Connection, Value), BridgeError> {
     let identity = chat_identity(core, chat)?;
     let opencode = opencode_allowed(&*core.try_db()?);
+    let list = candidates(&identity.harness, identity.account.as_deref(), identity.cwd.as_deref(), server, opencode);
+    let missing = match choose_among(core, chat, &list) {
+        Ok(found) => return Ok(found),
+        Err(error) => error,
+    };
+    let connected = connected_servers(core, chat, &list);
+    match correct_name(server, &connected) {
+        NameMatch::One(name) => {
+            let renamed: Vec<Connection> = list.iter().map(|candidate| Connection { server: name.clone(), ..candidate.clone() }).collect();
+            choose_among(core, chat, &renamed)
+        }
+        NameMatch::None if !connected.is_empty() => Err(invalid(format!("{missing}. Connected servers: {}", listing(&connected)))),
+        NameMatch::Several(names) => Err(invalid(format!("{missing}. Did you mean one of: {}?", names.join(", ")))),
+        NameMatch::None => Err(missing),
+    }
+}
+
+fn choose_among(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) -> Result<(Connection, Value), BridgeError> {
     choose_with(
-        &candidates(&identity.harness, identity.account.as_deref(), identity.cwd.as_deref(), server, opencode),
+        list,
         |connection| {
             let found = inventory(core, Caller::Chat(chat), connection);
             // A runtime started only to look for a server that is not there
@@ -339,6 +361,64 @@ pub fn choose(core: &Arc<BridgeCore>, chat: &str, server: &str) -> Result<(Conne
             found
         },
     )
+}
+
+/// The connected servers each direct agent among `list` has, by agent:
+/// names only. Runtimes started just to ask are stopped again.
+fn connected_servers(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) -> Vec<(String, String)> {
+    let mut seen = Vec::new();
+    let mut connected = Vec::new();
+    for candidate in list.iter().filter(|candidate| capability(&candidate.harness, Op::Inventory) == Capability::Direct) {
+        let agent = (candidate.harness.clone(), candidate.account.clone(), candidate.cwd.clone());
+        if seen.contains(&agent) {
+            continue;
+        }
+        seen.push(agent);
+        let answer = send(core, Caller::Chat(chat), candidate, &json!({"kind": "servers"}));
+        runtimes::retire(&key_for(candidate));
+        let Ok(answer) = answer else { continue };
+        for listed in answer["servers"].as_array().into_iter().flatten() {
+            if listed["status"] == "connected" {
+                if let Some(name) = listed["name"].as_str().filter(|name| *name != "bridge") {
+                    connected.push((candidate.harness.clone(), name.to_owned()));
+                }
+            }
+        }
+    }
+    connected
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum NameMatch {
+    One(String),
+    Several(Vec<String>),
+    None,
+}
+
+/// A connected server whose name equals `requested` ignoring case and
+/// everything but letters and digits.
+pub fn correct_name(requested: &str, connected: &[(String, String)]) -> NameMatch {
+    let fold = |name: &str| name.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+    let wanted = fold(requested);
+    let mut names: Vec<String> = connected.iter().map(|(_, name)| name.clone()).filter(|name| !wanted.is_empty() && fold(name) == wanted).collect();
+    names.sort();
+    names.dedup();
+    match names.len() {
+        0 => NameMatch::None,
+        1 => NameMatch::One(names.remove(0)),
+        _ => NameMatch::Several(names),
+    }
+}
+
+fn listing(connected: &[(String, String)]) -> String {
+    let mut by_agent: Vec<(String, Vec<String>)> = Vec::new();
+    for (harness, name) in connected {
+        match by_agent.iter_mut().find(|(agent, _)| agent == harness) {
+            Some((_, names)) => names.push(name.clone()),
+            None => by_agent.push((harness.clone(), vec![name.clone()])),
+        }
+    }
+    by_agent.into_iter().map(|(harness, names)| format!("in {}: {}", agent_label(&harness), names.join(", "))).collect::<Vec<_>>().join("; ")
 }
 
 pub fn choose_with(
@@ -423,6 +503,18 @@ mod tests {
         let user_wide = Connection { cwd: None, ..same.clone() };
         assert!(identity.harness == same.harness && identity.account == same.account && identity.cwd == same.cwd);
         assert!(identity.cwd != user_wide.cwd, "a user-wide connection never rides a project chat's process");
+    }
+
+    #[test]
+    fn a_misspelled_server_name_is_corrected_only_when_one_server_matches() {
+        let connected = vec![("codex".to_owned(), "openaiDeveloperDocs".to_owned()), ("codex".to_owned(), "railway".to_owned()), ("claude".to_owned(), "claude.ai Claude Docs".to_owned())];
+        assert_eq!(correct_name("openai-developer-docs", &connected), NameMatch::One("openaiDeveloperDocs".into()));
+        assert_eq!(correct_name("Claude Docs", &connected), NameMatch::None, "a partial name is not guessed");
+        assert_eq!(correct_name("claude.ai claude docs", &connected), NameMatch::One("claude.ai Claude Docs".into()));
+        assert_eq!(correct_name("---", &connected), NameMatch::None);
+        let twins = vec![("codex".to_owned(), "my-docs".to_owned()), ("claude".to_owned(), "My Docs".to_owned())];
+        assert_eq!(correct_name("mydocs", &twins), NameMatch::Several(vec!["My Docs".into(), "my-docs".into()]), "an ambiguous name is never picked");
+        assert_eq!(listing(&connected), "in Codex: openaiDeveloperDocs, railway; in Claude Code: claude.ai Claude Docs");
     }
 
     #[test]
