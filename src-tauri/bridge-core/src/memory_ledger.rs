@@ -924,7 +924,7 @@ pub fn search(
     scope_key: &str,
     query: &str,
     limit: Option<u32>,
-    offset: u32,
+    offset: u64,
 ) -> Result<Vec<MemoryRecord>, BridgeError> {
     let scope_key = parse_scope_key(scope_key)?;
     let match_query = crate::session_recall::fts_match_query(query)
@@ -951,7 +951,7 @@ pub fn search(
     )?;
     let records = statement
         .query_map(
-            params![scope_key, match_query, STATUS_ACTIVE, limit, i64::from(offset)],
+            params![scope_key, match_query, STATUS_ACTIVE, limit, i64::try_from(offset).unwrap_or(i64::MAX)],
             map_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;

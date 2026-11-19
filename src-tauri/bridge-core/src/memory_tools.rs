@@ -83,7 +83,7 @@ struct SearchArgs {
     /// Records to skip. Absent is 0, and null is refused like any other value
     /// that is not a non-negative integer.
     #[serde(default)]
-    offset: u32,
+    offset: u64,
 }
 
 /// Exactly the three fields the tool offers. A `status`, `scope`,
@@ -476,11 +476,24 @@ mod tests {
     fn a_bad_offset_is_refused() {
         let (_dir, db) = tools_db();
         memory_ledger::save(&db, "Deploys go out on Tuesdays", None, None).unwrap();
-        for offset in [json!(-1), json!(1.5), json!("3"), json!(null), json!(true), json!(u64::from(u32::MAX) + 1)] {
+        for offset in [json!(-1), json!(1.5), json!("3"), json!(null), json!(true)] {
             let error = run(&db, "chat", false, SEARCH, &json!({"query": "deploys", "offset": offset})).unwrap_err();
             assert_eq!(error.status, 400, "{offset}");
             assert!(error.message.contains("offset?"), "{}", error.message);
         }
         assert_eq!(run(&db, "chat", false, SEARCH, &json!({"query": "deploys", "offset": 0})).unwrap().result["records"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_offset_past_the_end_returns_no_records() {
+        let (_dir, db) = tools_db();
+        for topic in ["kiwi", "mango", "plum"] {
+            memory_ledger::save(&db, &format!("Deploy notes for the {topic} service"), Some("fact"), None).unwrap();
+        }
+        let records = |offset: u64| run(&db, "chat", false, SEARCH, &json!({"query": "deploy", "offset": offset})).unwrap().result["records"].as_array().unwrap().len();
+        assert_eq!(records(2), 1);
+        for offset in [4, u64::from(u32::MAX) + 1, u64::MAX] {
+            assert_eq!(records(offset), 0, "{offset}");
+        }
     }
 }
