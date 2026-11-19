@@ -3726,7 +3726,7 @@ export const bridgeApi = {
   resolveQuestion: async (sessionId: string, eventId: number, action: QuestionAction, answers: Record<string, string[]> = {}): Promise<InteractionResolutionResult> => {
     if (hasBackend()) return call("approvals/resolve_question", { sessionId, eventId, action, answers });
     const request = mockState.agentEvents.find(item => item.id === eventId);
-    if (request) appendAgent(request.sessionId, "question.resolved", { status: action === "answer" ? "answered" : action, data: { requestEventId: eventId, decision: action, resolvedBy: "human" } });
+    if (request) appendAgent(request.sessionId, "question.resolved", { status: action === "answer" ? "answered" : action, data: { requestEventId: eventId, decision: action, resolvedBy: "human", ...(action === "answer" ? { submittedAnswers: answers } : {}) } });
     emitState();
     return { disposition: "resolved", interactionKind: "question", status: action === "answer" ? "answered" : action, resolvedBy: "human", decision: action };
   },

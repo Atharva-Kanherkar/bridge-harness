@@ -39,12 +39,12 @@ import { backgroundOutcome, backgroundTaskKey, type BackgroundWork } from "../ba
 import { CHECK_LABEL } from "../transcript/checks";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
+import { QuestionCard, type ResolveQuestion } from "./QuestionCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
-type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
 // React warns when a layout effect is reached by `react-dom/server`. The effect
 // is still layout-only on the client, where the transcript actually lives.
@@ -1710,7 +1710,7 @@ const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, rea
     ? <PromptMutationApprovalCard item={item} onResolve={onResolve}/>
     : <ApprovalCard item={item} onResolve={onResolve}/>)
     : item.type === "permission" ? <PermissionCard item={item} onResolve={onResolve}/>
-    : item.type === "question" ? <QuestionCard item={item} onResolve={onAnswerQuestion}/> : null;
+    : item.type === "question" ? <QuestionCard item={item} onResolve={onAnswerQuestion} resolvedCopy={resolutionCopy(item)}/> : null;
   if (interaction) return readOnly
     ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
     : interaction;
@@ -2086,93 +2086,6 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
       >{action.decision === "decline" ? <X size={12} aria-hidden="true" /> : action.decision === "accept" ? <Check size={12} aria-hidden="true" /> : null}{busy === (action.optionId ?? action.decision) ? "Applying…" : action.label}</button>)}
     </div>}
     {pending && actions.length === 0 && <p className="px-3.5 py-3 text-[12px] text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
-    {!pending && <p className={`px-3.5 py-3 text-[12px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
-  </div>;
-}
-
-type QuestionField = { id: string; prompt: string; options: string[]; multiple: boolean };
-
-function questionFields(data: Record<string, unknown>): QuestionField[] {
-  if (Array.isArray(data.questions)) {
-    return data.questions.flatMap((value, index) => {
-      if (!value || typeof value !== "object") return [];
-      const question = value as Record<string, unknown>;
-      const options = Array.isArray(question.options)
-        ? question.options.flatMap(option => typeof option === "string" ? [option] : option && typeof option === "object" && typeof (option as Record<string, unknown>).label === "string" ? [String((option as Record<string, unknown>).label)] : [])
-        : [];
-      return [{
-        id: typeof question.id === "string" ? question.id : String(index),
-        prompt: String(question.question ?? question.header ?? "Answer"),
-        options,
-        multiple: question.multiple === true || question.multiSelect === true,
-      }];
-    });
-  }
-  const schema = data.requestedSchema && typeof data.requestedSchema === "object" ? data.requestedSchema as Record<string, unknown> : {};
-  const properties = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : {};
-  return Object.entries(properties).map(([id, value]) => {
-    const property = value && typeof value === "object" ? value as Record<string, unknown> : {};
-    return {
-      id,
-      prompt: String(property.title ?? property.description ?? id),
-      options: Array.isArray(property.enum) ? property.enum.map(String) : [],
-      multiple: property.type === "array",
-    };
-  });
-}
-
-function QuestionCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolveQuestion }) {
-  const fields = questionFields(item.data);
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [busy, setBusy] = useState<QuestionAction | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const pending = item.status === "pending";
-  const setAnswer = (field: QuestionField, value: string) => setAnswers(current => ({
-    ...current,
-    [field.id]: field.multiple
-      ? (current[field.id] ?? []).includes(value) ? (current[field.id] ?? []).filter(option => option !== value) : [...(current[field.id] ?? []), value]
-      : [value],
-  }));
-  const act = async (action: QuestionAction) => {
-    setBusy(action);
-    setError(null);
-    try { await onResolve(item.eventId, action, answers); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setBusy(null); }
-  };
-  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-x-info`}>
-    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
-      <b className="text-[13px] font-semibold text-foreground">{item.title || "Question"}</b>
-      {pending && <small className="text-[11px] tracking-[0.03em] text-info">waiting for your answer</small>}
-    </header>
-    {item.text && <p className="mt-1.5 px-3.5 text-[13px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
-    {pending && <div className="space-y-3 px-3.5 py-3 sm:px-4">
-      {fields.map(field => <fieldset key={field.id} className="space-y-2">
-        <legend className="text-[12px] font-medium text-foreground">{field.prompt}</legend>
-        {field.options.length > 0 ? <div className="flex flex-wrap gap-1.5">{field.options.map(option => <button
-          type="button"
-          key={option}
-          disabled={!!busy}
-          aria-pressed={(answers[field.id] ?? []).includes(option)}
-          className={(answers[field.id] ?? []).includes(option) ? BTN_PRIMARY : BTN_SECONDARY}
-          onClick={() => setAnswer(field, option)}
-        >{option}</button>)}</div> : <input
-          aria-label={field.prompt}
-          disabled={!!busy}
-          value={answers[field.id]?.[0] ?? ""}
-          onChange={event => setAnswers(current => ({ ...current, [field.id]: [event.target.value] }))}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
-          placeholder="Type your answer"
-        />}
-      </fieldset>)}
-      {fields.length === 0 && <p className="text-[12px] text-muted-foreground">This provider did not supply an answerable question shape.</p>}
-      <div className="flex flex-wrap justify-end gap-[7px] pt-1">
-        <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Declining…" : "Decline"}</button>
-        <button disabled={!!busy || fields.length === 0 || !Object.values(answers).some(values => values.some(value => value.trim()))} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : "Send answer"}</button>
-      </div>
-    </div>}
     {!pending && <p className={`px-3.5 py-3 text-[12px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
     {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
     {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}

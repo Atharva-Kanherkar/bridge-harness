@@ -941,6 +941,42 @@ fn approval_response(request_id: Value, decision: &str) -> Value {
     })
 }
 
+/// The `control_response` that answers an `AskUserQuestion` prompt.
+///
+/// `reply` carries `answers` (question text → chosen label, several joined
+/// with ", " the way Claude Code joins a multi-select) and optional
+/// `annotations`. The sidecar folds both into the tool's `updatedInput`, which
+/// is how the SDK expects a host to answer this tool; a bare allow would run
+/// it with no answers at all.
+fn question_response(request_id: Value, reply: &Value) -> Value {
+    let mut response = json!({"behavior": "allow", "decision": "accept"});
+    response["answers"] = reply.get("answers").cloned().unwrap_or_else(|| json!({}));
+    if let Some(annotations) = reply.get("annotations").filter(|value| value.as_object().is_some_and(|map| !map.is_empty())) {
+        response["annotations"] = annotations.clone();
+    }
+    json!({
+        "type": "control_response",
+        "response": {"subtype": "success", "request_id": request_id, "response": response}
+    })
+}
+
+/// A declined `AskUserQuestion`: the tool is denied with a message Claude
+/// reads as the person choosing not to answer, not as silence.
+fn question_decline(request_id: Value) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "behavior": "deny",
+                "decision": "decline",
+                "message": "The user declined to answer these questions. Ask how they want to proceed instead of assuming defaults."
+            }
+        }
+    })
+}
+
 /// The `/compact` line a harness reads off its input stream.
 ///
 /// A blank focus is dropped rather than sent as a trailing space, so a bare
@@ -1029,6 +1065,12 @@ impl AdapterRuntime for ClaudeRuntime {
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         ClaudeRuntime::respond(self, request_id, decision)
+    }
+    fn answer_question(&self, request_id: Value, answers: Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &question_response(request_id, &answers))
+    }
+    fn reject_question(&self, request_id: Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &question_decline(request_id))
     }
     fn failure_context(&mut self) -> Option<String> {
         crate::adapters::process_failure_context(&mut self.child, &self.stderr_tail)
@@ -1325,6 +1367,25 @@ mod tests {
                 "the sidecar needs the duration, not only the behavior"
             );
         }
+    }
+
+    #[test]
+    fn a_question_answer_rides_the_control_channel_as_answers() {
+        let frame = question_response(
+            json!("root-permission-3"),
+            &json!({"answers": {"Which database?": "Postgres"}, "annotations": {"Which database?": {"preview": "pg"}}}),
+        );
+        assert_eq!(frame["type"], "control_response");
+        assert_eq!(frame["response"]["request_id"], "root-permission-3");
+        assert_eq!(frame["response"]["response"]["behavior"], "allow");
+        assert_eq!(frame["response"]["response"]["answers"]["Which database?"], "Postgres");
+        assert_eq!(frame["response"]["response"]["annotations"]["Which database?"]["preview"], "pg");
+        let bare = question_response(json!("r"), &json!({"answers": {"Q?": "A"}, "annotations": {}}));
+        assert!(bare["response"]["response"].get("annotations").is_none());
+
+        let declined = question_decline(json!("root-permission-3"));
+        assert_eq!(declined["response"]["response"]["behavior"], "deny");
+        assert!(declined["response"]["response"]["message"].as_str().unwrap().contains("declined"));
     }
 
     #[test]
