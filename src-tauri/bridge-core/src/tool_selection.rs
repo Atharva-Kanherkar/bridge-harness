@@ -1267,8 +1267,19 @@ fn claude_skill_group(name: &str) -> &str {
     name.split_once(':').map_or("Skills", |(plugin, _)| plugin)
 }
 
+/// The listed skill that also keeps `name`: the SDK keeps a skill whose name
+/// is a kept name or ends with `:` and a kept name. The shortest one wins.
+fn claude_skill_leader<'a>(name: &str, skills: &'a [String]) -> Option<&'a str> {
+    skills
+        .iter()
+        .map(String::as_str)
+        .filter(|lead| claude_sdk_accepts(lead) && name.strip_suffix(lead).is_some_and(|rest| rest.ends_with(':')))
+        .min_by_key(|lead| lead.len())
+}
+
 /// Claude units: each MCP server and each skill. Servers use the off list,
 /// and skills use the allowlist, so a skill that appears later is left out.
+/// A skill that a shorter listed name also keeps follows that name.
 pub fn claude_units(source: &ClaudeSource, row: Option<&ToolSelectionRow>) -> Vec<ChatToolItem> {
     let row = row.filter(|row| row.harness == "claude");
     let off = off_set(row, |row| &row.servers_off);
@@ -1300,10 +1311,12 @@ pub fn claude_units(source: &ClaudeSource, row: Option<&ToolSelectionRow>) -> Ve
         }
         let item = unit(ChatToolKind::Skill, name, name, claude_skill_group(name));
         let item = ChatToolItem { tokens: figure(source.figures.as_ref(), true, name), ..item };
-        items.push(if claude_sdk_accepts(name) {
-            switch(item, only.as_ref().is_none_or(|kept| kept.contains(name.as_str())))
-        } else {
+        items.push(if !claude_sdk_accepts(name) {
             fixed(item, CLAUDE_SKILL_NAME_REASON)
+        } else if let Some(lead) = claude_skill_leader(name, &source.skills) {
+            fixed(item, &format!("This skill follows the skill {lead}. The Claude SDK keeps it when the chat keeps {lead}."))
+        } else {
+            switch(item, only.as_ref().is_none_or(|kept| kept.contains(name.as_str())))
         });
     }
     for name in only.iter().flatten().filter(|name| !skills.contains(*name)) {

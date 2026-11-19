@@ -180,6 +180,32 @@ fn a_new_claude_skill_shows_as_left_out() {
 }
 
 #[test]
+fn a_plugin_skill_with_the_short_name_of_a_listed_skill_follows_that_skill() {
+    // The SDK keeps a skill whose name is a kept name or ends with ":" and a
+    // kept name, so "review" in the list also keeps "superpowers:review".
+    let skills = ["review", "superpowers:review", "a:superpowers:review", "deploy", "ops:deploy-two", "/pdf", "p:/pdf"];
+    let source = ClaudeSource { skills: skills.map(str::to_owned).to_vec(), ..ClaudeSource::default() };
+    for saved in [None, Some(row(json!({"harness": "claude", "claudeSkills": {"only": ["review"]}})))] {
+        let items = claude_units(&source, saved.as_ref());
+        for name in ["superpowers:review", "a:superpowers:review"] {
+            let follower = item(&items, Skill, name);
+            assert_eq!(follower.state, Fixed, "{name} {saved:?}");
+            assert_eq!(
+                follower.fixed_reason.as_deref(),
+                Some("This skill follows the skill review. The Claude SDK keeps it when the chat keeps review."),
+            );
+        }
+        assert_eq!(item(&items, Skill, "review").state, On);
+        assert_eq!(item(&items, Skill, "deploy").state, if saved.is_some() { Off } else { On });
+        assert_eq!(item(&items, Skill, "ops:deploy-two").state, if saved.is_some() { Off } else { On });
+        // A bare name that the SDK refuses is never in the list, so it keeps
+        // no other skill.
+        assert_eq!(item(&items, Skill, "/pdf").state, Fixed);
+        assert_eq!(item(&items, Skill, "p:/pdf").state, if saved.is_some() { Off } else { On });
+    }
+}
+
+#[test]
 fn an_omission_of_bridge_is_refused() {
     for harness in ["claude", "codex", "opencode"] {
         for name in ["bridge", "Bridge", " bridge "] {
