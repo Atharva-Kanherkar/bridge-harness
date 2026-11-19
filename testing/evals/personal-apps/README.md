@@ -43,46 +43,49 @@ Every ask is read-only, because Codex calls MCP tools without asking even in Ask
 
 Raw runs (`results/`) hold live read output from your accounts and are gitignored. Never commit them.
 
-## Results (2026-11-19, five runs)
+## Results (2026-11-19, six runs)
 
 **Servers:**
 
-- Codex: OpenAI Developer Docs (HTTP), Railway, agentic-memory.
+- Codex: OpenAI Developer Docs (HTTP), Railway, agentic-memory, and Notion through Codex's bundled `codex_apps` server.
 - Claude Code: claude.ai Claude Docs.
 - Firestore could not connect, because its credentials file is missing. Every Firestore case is a correct "not connected" refusal.
 - Slack is excluded.
 
-### Build: apps drafted, of the 6 cases whose server connects
+### Build: apps drafted, of the cases whose server connects
 
 | Run | Change | Drafted |
 |---|---|---|
-| 1 (baseline) | none | 1 |
-| 2 | `apps_draft` says when to use it | 2 |
-| 3 | plus a chat-level apps note, and router name correction | 3 (stopped before OpenCode finished) |
-| 4 and 5 | plus a guessed tool name is answered with the server's real tools | 6 |
+| 1 (baseline) | none | 1 of 6 |
+| 2 | `apps_draft` says when to use it | 2 of 6 |
+| 3 | plus a chat-level apps note, and router name correction | 3 of 6 (stopped before OpenCode finished) |
+| 4 and 5 | plus a guessed tool name is answered with the server's real tools | 6 of 6 |
+| 6 | plus Notion (Codex's bundled connectors) | 7 of 8. Claude's Notion case built in 1 of 2 tries after the start-up fix. |
 
-Final checks (run 5, after the frame fixes below):
+Checks per app (run 6, after the frame and start-up fixes):
 
 | Case | Agent | Score | Still failing |
 |---|---|---|---|
+| docs | Codex | 11/11 | none |
 | docs | Claude | 11/11 | none |
-| memory | Codex | 11/11 | none |
+| docs | OpenCode | 11/11 | none (in run 5 its view had the handshake backwards) |
 | Railway | Codex | 11/11 | none |
-| docs | Codex | 10/11 | its `sample_args` do not fit the search tool (its own search works) |
-| docs | OpenCode | 10/11 | its view waits for the host to send `ui/initialize`, so it never initializes. The description now says the view sends it; not yet re-measured. |
+| Notion | Codex | 11/11 | none |
+| Notion | Claude | 10/11 | (separate re-run) the view's own call |
+| memory | Codex | 9/11 | its read tool `recall_memories` is not annotated read-only, and "recall" is not in Bridge's read vocabulary, so the chat listed it as a write and the app has no reads |
 | Claude Docs | Claude | 9/11 | the app needs a doc link, and there is no sample link |
 
-### Routing (run 5)
+### Routing (run 6)
 
 | Agent | Should open | Opened | False opens (of 8) | Drafted a new app instead | Answered with the server's own tools |
 |---|---|---|---|---|---|
-| Claude | 10 | 4 | 0 | 0 | 1 |
-| Codex | 10 | 5 | 0 | 0 | 1 |
+| Codex | 12 | 6 | 0 | 0 | 1 |
+| Claude | 12 | 6 | 0 | 0 | 1 |
 
-- **Explicit asks open the right app on both agents.** For example: "Open my memory search app", or "Pull up the app for searching OpenAI documentation, prefilled with…".
-- **Indirect asks mostly do not.** For example: "I want to look something up in the docs myself", or "Show me my Railway deployment logs". The chat answers or does nothing instead.
+- **Explicit asks open the right app on both agents,** including "Let me search my Notion pages" on Codex.
+- **Indirect asks still often do not.** For example: "I want to look something up in the docs myself", or "Show me my Railway deployment logs".
 - **No unrelated ask opened an app.**
-- **Run 4 regressed and was fixed.** It showed Codex drafting a new app when asked to open a saved one; run 5, with `apps_open` and `apps_draft` separated in the guidance, shows none.
+- **Run 4 regressed and was fixed.** It showed Codex drafting a new app when asked to open a saved one; runs 5 and 6, with `apps_open` and `apps_draft` separated in the guidance, show none.
 
 ## What the evals found, and what changed
 
@@ -95,8 +98,12 @@ Final checks (run 5, after the frame fixes below):
 | The stronger note made Codex draft a new app when asked to open a saved one. | The guidance separates `apps_open` (open or use a saved app) from `apps_draft` (build or revise). |
 | Views using Bridge's theme variables came out black on white in dark mode. Some never send `ui/initialize`; others never apply the variables. | Every view document declares both color schemes. Bridge writes the current theme into it. A small prelude applies later theme changes. |
 | A generated view had the MCP Apps handshake backwards. | The description says the view sends `ui/initialize` first. |
+| Notion was out of reach. Codex serves it inside the bundled `codex_apps` server as `notion.<tool>`, and Bridge rejected dotted tool names. | Apps accept one connector-qualified tool name, judged as read or write by its own part. A connector's name ("notion") finds its bundle. A guessed tool lists that connector's tools first. |
+| A fresh Codex runtime listed `codex_apps` as missing while it was still starting (hundreds of remote tools). | Bridge asks again for up to 12 s while a Codex server is `starting` or `notStarted`: when choosing a connection, listing servers and checking a read. |
 
 Not fixed here:
+
+- **"recall" is not a read verb.** It is shared with other connector gates, so changing it needs its own review.
 
 - **Write previews can look like successes.** A view showed "Redeploy started: queued" for Bridge's "Preview only, nothing was sent" answer. Nothing was sent, but a preview should be impossible to present as a success.
 - **Indirect asks route poorly.**

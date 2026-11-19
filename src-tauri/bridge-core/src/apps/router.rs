@@ -218,7 +218,15 @@ pub fn read(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection,
         // A read changes nothing, so whether it was dispatched does not matter.
         return super::courier::opencode_call(core, &key_for(connection), tool, arguments, &Dispatch::default());
     }
-    read_with(connection, tool, arguments, |request| send(core, caller, connection, request))
+    // A fresh Codex runtime may still be starting the server when the read
+    // checks its tools; that check waits, the read itself is sent once.
+    read_with(connection, tool, arguments, |request| {
+        if request["kind"] == "inventory" && connection.harness == "codex" {
+            until_settled(|| send(core, caller, connection, request), |answer| settling(&answer["status"]))
+        } else {
+            send(core, caller, connection, request)
+        }
+    })
 }
 
 /// The read itself, after the server's *current* inventory says the tool is
