@@ -2059,7 +2059,8 @@ pub(crate) fn fork_session_records(
     // chat. The run itself stays hidden and refuses user turns; its fork must
     // do neither. An imported chat is the same: it is history that never
     // starts, and a fork of it is an ordinary chat that can.
-    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND || kind == "imported" { "direct".to_owned() } else { kind };
+    let from_import = kind == "imported";
+    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND || from_import { "direct".to_owned() } else { kind };
     let fork_harness = harness.map(|value| store::harness_name(value).into_owned());
     let child_harness = fork_harness.as_deref().unwrap_or(&parent_harness);
     let child_model = match (model, parent_model.as_deref()) {
@@ -2130,6 +2131,14 @@ pub(crate) fn fork_session_records(
         // verbatim; `provider_event_id` is cleared because the fork owns no
         // provider-adjacent events yet.
         let entry_copy_id = Uuid::new_v4().to_string();
+        // Imported history is stored for display only (`visible`), so it
+        // never enters a model's context. The chat that continues it is a
+        // conversation with that history, and gives it to the model.
+        let context_visibility = if from_import && entry.context_visibility == "visible" {
+            "eligible"
+        } else {
+            entry.context_visibility.as_str()
+        };
         transaction.execute(
             "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,?10)",
@@ -2141,7 +2150,7 @@ pub(crate) fn fork_session_records(
                 entry.semantic_schema_version,
                 entry.kind,
                 entry.payload.to_string(),
-                entry.context_visibility,
+                context_visibility,
                 entry.token_estimate,
                 entry.created_at,
             ],

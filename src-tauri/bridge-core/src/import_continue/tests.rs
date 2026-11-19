@@ -236,6 +236,26 @@ fn a_history_continuation_starts_fresh_from_the_copied_history() {
     assert_eq!(f.entries(&id), f.entries(&f.imported));
 }
 
+/// The copied history reaches the model: a history continuation's first
+/// start injects it as restoration context, and so does a native one that
+/// has to fall back. Found by the real Claude Code run, where the new chat
+/// answered "this is the first message in our conversation".
+#[test]
+fn the_continuation_gives_the_imported_conversation_to_the_model() {
+    let f = fixture();
+    fs::remove_file(f.transcript()).unwrap();
+    let plan = f.plan(&f.own_login());
+    let id = continue_in(&f.core.db.lock().unwrap(), &f.imported, &plan).unwrap();
+
+    let context = crate::restoration::checkpoint_context(&f.core.db.lock().unwrap(), &id).unwrap();
+
+    let context = context.expect("the continuation has restoration context");
+    assert!(context.contains("fix the login"), "{context}");
+    assert!(context.contains("the token was read before it was set"), "{context}");
+    let imported = crate::restoration::checkpoint_context(&f.core.db.lock().unwrap(), &f.imported).unwrap();
+    assert!(imported.is_none_or(|text| !text.contains("fix the login")), "the imported chat itself stays out of any context");
+}
+
 #[test]
 fn a_continuation_keeps_its_session_and_mode_across_a_restart() {
     let f = fixture();
