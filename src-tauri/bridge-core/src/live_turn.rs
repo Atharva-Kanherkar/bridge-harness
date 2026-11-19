@@ -11085,9 +11085,9 @@ pub fn prepare_turn(
     text: String,
 ) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     let state = core;
-    if text.trim().is_empty() {
-        return Err(BridgeError::Invalid("Message cannot be empty".into()));
-    }
+    // Empty text is not refused here. An image-only send prepares "" and then
+    // submits the images, and only `submit_input` sees the attachments, so it
+    // alone decides whether a message is empty.
     let exists: bool = state.db.lock().unwrap().query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
         params![session_id],
@@ -15673,6 +15673,57 @@ mod submit_input_tests {
         let payload = latest_user_message_payload(&core).unwrap();
         assert_eq!(payload["text"], "");
         assert_eq!(payload["data"]["attachments"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn preparing_an_image_only_turn_accepts_empty_text() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+
+        for text in ["", "   "] {
+            let prepared = prepare_turn(&core, "chat".into(), text.into())
+                .unwrap_or_else(|error| panic!("prepare refused {text:?}: {error}"));
+            assert_eq!(prepared.text, text);
+            assert!(prepared.interceptions.is_empty());
+        }
+    }
+
+    #[test]
+    fn preparing_a_turn_for_a_missing_session_is_still_refused() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+
+        let error = prepare_turn(&core, "no-such-chat".into(), String::new()).unwrap_err();
+
+        assert!(error.to_string().contains("does not exist"), "{error}");
+    }
+
+    /// The composer's real sequence for a pasted image and no words: prepare
+    /// the empty text, then submit it with the image.
+    #[test]
+    fn an_image_only_send_prepares_then_delivers() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        let prepared = prepare_turn(&core, "chat".into(), String::new()).unwrap();
+        let outcome =
+            submit_input_with_attachments(&core, "chat".into(), prepared.text, vec![png_image()])
+                .unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert!(!handles.sent_images.lock().unwrap().is_empty(), "the image reached the provider");
+    }
+
+    #[test]
+    fn an_empty_send_without_images_is_refused_at_submit() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        let prepared = prepare_turn(&core, "chat".into(), String::new()).unwrap();
+        let error = submit_input_with_attachments(&core, "chat".into(), prepared.text, Vec::new())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Message cannot be empty"), "{error}");
+        assert!(handles.sent.lock().unwrap().is_empty(), "nothing reached the provider");
+        assert!(latest_user_message_payload(&core).is_none(), "nothing persisted");
     }
 
     #[test]
