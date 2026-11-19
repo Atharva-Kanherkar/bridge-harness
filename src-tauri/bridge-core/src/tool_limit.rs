@@ -29,6 +29,15 @@ pub const WRITE_CEILING: usize = 32 * 1024;
 /// The ceiling of the text of an error reply, for each tool.
 pub const ERROR_CEILING: usize = 8 * 1024;
 
+/// The smallest ceiling that holds each fallback. The last fallback needs
+/// about 15 bytes, and the fallback of a list about 45 bytes.
+const MIN_CEILING: usize = 1024;
+const _: () = assert!(LIST_CEILING >= MIN_CEILING);
+const _: () = assert!(DOCUMENT_CEILING >= MIN_CEILING);
+const _: () = assert!(BOUNDED_CEILING >= MIN_CEILING);
+const _: () = assert!(WRITE_CEILING >= MIN_CEILING);
+const _: () = assert!(ERROR_CEILING >= MIN_CEILING);
+
 /// The fewest bytes that a shortened text keeps.
 const MIN_TEXT: usize = 256;
 /// The most shortened parts that `cut` names one by one.
@@ -110,6 +119,7 @@ pub fn bound_reply(tool: &str, arguments: &Value, reply: Value) -> Value {
 }
 
 /// [`bound_reply`] with the ceilings given, so that a test can use small ones.
+/// A ceiling below 1024 bytes is not supported.
 pub fn bound_reply_within(tool: &str, limit: Limit, error_ceiling: usize, arguments: &Value, mut reply: Value) -> Value {
     let ceiling = if reply.get("isError").and_then(Value::as_bool) == Some(true) { error_ceiling } else { limit.ceiling };
     let Some(size) = reply.pointer("/content/0/text").and_then(Value::as_str).map(str::len) else {
@@ -366,8 +376,9 @@ impl Pager<'_> {
         let removed: Vec<Part> = settled.iter().filter(|part| matches!(part, Part::Removed { .. })).cloned().collect();
         let all = |parts: &[Part]| [parts, &removed].concat();
         // A shortened unit is not whole, so the next call moves on past it.
+        // A unit that stays whole with only other parts shortened gets no next.
         let page = |value: Value, parts: &[Part]| {
-            if parts.iter().any(|part| part.is_under(self.key)) {
+            if value.get(self.key) != candidate.get(self.key) {
                 self.paged(value, 1, &all(parts))
             } else {
                 self.finish(value, 1, &all(parts))
@@ -458,7 +469,9 @@ fn only_cut(text: String, next: Option<u64>, ceiling: usize) -> Value {
     finish(Value::Object(Map::new()), text[..end].to_owned(), next)
 }
 
-/// A part with no pages that the limiter shortened, by JSON pointer.
+/// A part with no pages that the limiter shortened, by JSON pointer. `cut`
+/// names only the first [`NAMED_PARTS`], so the parts after them have an empty
+/// pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Part {
     Items { pointer: String, kept: usize, full: usize },
@@ -475,14 +488,6 @@ impl Part {
             Part::Removed { key } => return format!("{} is left out", char_start(&escape_key(key), POINTER_BYTES)),
         };
         format!("{} keeps {kept} of {full} {unit}", char_start(pointer, POINTER_BYTES))
-    }
-
-    /// Whether the part is inside the top-level part `key`.
-    fn is_under(&self, key: &str) -> bool {
-        match self {
-            Part::Items { pointer, .. } | Part::Text { pointer, .. } => pointer.strip_prefix(&escape_key(key)).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')),
-            Part::Removed { .. } => false,
-        }
     }
 }
 
@@ -604,7 +609,11 @@ impl<'a> Cutter<'a> {
         matches!((self.path.as_slice(), self.protected), ([Step::Key(key)], Some(protected)) if *key == protected)
     }
 
-    fn pointer(&self) -> String {
+    /// The pointer of the next part, or an empty one when `cut` only counts it.
+    fn named(&self) -> String {
+        if self.parts.len() >= NAMED_PARTS {
+            return String::new();
+        }
         self.path
             .iter()
             .map(|step| match step {
@@ -619,7 +628,7 @@ impl<'a> Cutter<'a> {
             Value::Array(items) => {
                 let kept = if self.exempt() { items.len() } else { items.len().min(self.caps.items) };
                 if kept < items.len() {
-                    self.parts.push(Part::Items { pointer: self.pointer(), kept, full: items.len() });
+                    self.parts.push(Part::Items { pointer: self.named(), kept, full: items.len() });
                 }
                 let mut out = Vec::with_capacity(kept);
                 for (index, item) in items.iter().take(kept).enumerate() {
@@ -641,7 +650,7 @@ impl<'a> Cutter<'a> {
             Value::String(text) if text.len() > self.caps.bytes && !self.exempt() => {
                 let kept = cut_text(text, self.caps.bytes, MIN_TEXT);
                 if kept.len() < text.len() {
-                    self.parts.push(Part::Text { pointer: self.pointer(), kept: kept.len(), full: text.len() });
+                    self.parts.push(Part::Text { pointer: self.named(), kept: kept.len(), full: text.len() });
                 }
                 Value::String(kept.to_owned())
             }

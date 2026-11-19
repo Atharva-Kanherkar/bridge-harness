@@ -710,10 +710,11 @@ fn the_largest_default_memory_search_reply_pages_in_whole_records() {
     assert_eq!(recalled["records"].as_array().unwrap().len(), 10);
     assert!(size(&recalled) > ceiling("memory_search"), "memory_search: {} bytes", size(&recalled));
     let after = bound_reply("memory_search", &json!({"query": "deploy"}), forwarded(recalled.clone()));
-    assert_bounded("memory_search", &json!({"query": "deploy"}), &forwarded(recalled), &after, LIST_CEILING);
-    let kept = structured(&after)["records"].as_array().unwrap().len();
-    assert!(kept >= 7, "{kept} records");
-    assert_eq!(next_of(&after), kept as u64);
+    assert_bounded("memory_search", &json!({"query": "deploy"}), &forwarded(recalled.clone()), &after, LIST_CEILING);
+    let kept = structured(&after)["records"].as_array().unwrap();
+    assert!(kept.len() >= 7, "{} records", kept.len());
+    assert_eq!(kept[..], recalled["records"].as_array().unwrap()[..kept.len()], "whole records, no shortened body");
+    assert_eq!(next_of(&after), kept.len() as u64);
 }
 
 #[test]
