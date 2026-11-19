@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 
 const CHAT: LaunchTarget<'static> =
-    LaunchTarget { harness: "claude", interactive: true, workflow: false, cwd: "/work", opencode_config: None };
+    LaunchTarget { harness: "claude", interactive: true, workflow: false, opencode_config: None };
 
 fn db() -> Connection {
     store::open(std::path::Path::new(":memory:")).unwrap()
@@ -481,7 +481,6 @@ fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table(
         ]}))),
         skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": "Review a diff", "enabled": true}]}]}))),
         config: Some(via("config", json!({"config": {"model": "gpt"}, "origins": {}}))),
-        unconfirmed: false,
         at: Some("2026-11-19T10:00:00Z".into()),
     };
     let items = codex_units(&source, None);
@@ -545,7 +544,6 @@ fn an_item_without_a_verified_lever_is_fixed_with_a_reason() {
         status: Some(via("servers", json!({"data": [{"name": "my.server", "tools": {}}, {"name": "codex_apps", "tools": {"gmail.send": {}}}]}))),
         skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": ""}]}]}))),
         config: Some(via("config", json!({"config": {"skills": {}, "plugins": {"github@openai-curated": {"enabled": true}}}}))),
-        unconfirmed: false,
         at: None,
     };
     let unknown = CodexSource { config: None, ..codex.clone() };
@@ -1030,147 +1028,6 @@ fn a_save_does_not_stop_the_process() {
     assert_eq!((count("events"), count("session_entries")), before);
     assert!(core.input_activity.try_write().is_ok());
     assert!(core.claim_session_lifecycle("c", "session start").is_ok());
-}
-
-/// Two Codex accounts, each with its own home under `root`.
-fn codex_accounts(db: &Connection, root: &std::path::Path) {
-    let mut codex = crate::agent_config::state(db).unwrap().harnesses.into_iter().find(|item| item.id == "codex").unwrap();
-    codex.advanced = json!({"accounts": [
-        {"id": "work", "label": "Work", "homePath": root.join("work")},
-        {"id": "home", "label": "Home", "homePath": root.join("home")}
-    ]});
-    crate::agent_config::save_harness(db, codex).unwrap();
-}
-
-/// A translated `config/read` reply with no `skills` key of the user.
-fn no_skills_key(layers: Value) -> Value {
-    via("config", json!({"config": {}, "origins": {}, "layers": layers}))
-}
-
-/// Store a `config/read` reply of a chat for an account and a folder.
-fn read_config(db: &Connection, id: &str, account: Option<&str>, cwd: &str, reply: &Value) -> bool {
-    let place = CodexPlace::resolve(db, account, cwd).unwrap();
-    remember_codex_config(db, id, &place, &place.fingerprint(), reply).unwrap()
-}
-
-fn skills_chat(db: &Connection, id: &str, account: &str) {
-    chat(db, id, "codex", Some(account));
-    let choice = choice(json!({"harness": "codex", "account": account, "codexSkillsOff": ["review"]}));
-    write_checked(db, id, 0, &choice).unwrap();
-}
-
-fn codex_target(cwd: &str) -> LaunchTarget<'_> {
-    LaunchTarget { harness: "codex", cwd, ..CHAT }
-}
-
-#[test]
-fn a_codex_skills_fact_of_one_account_is_not_used_for_another() {
-    let db = db();
-    let root = tempfile::tempdir().unwrap();
-    codex_accounts(&db, root.path());
-    let cwd = root.path().join("repo").to_string_lossy().into_owned();
-    skills_chat(&db, "skills-account", "work");
-    assert!(read_config(&db, "skills-account", Some("work"), &cwd, &no_skills_key(json!([]))));
-    let work = launch_for(&db, "skills-account", &codex_target(&cwd)).unwrap().unwrap();
-    assert_eq!(work.codex_skills_off, ["review"]);
-
-    // The chat moves to the other account. The read of "work" says nothing
-    // about the config of "home".
-    db.execute("UPDATE sessions SET account='home' WHERE id='skills-account'", []).unwrap();
-    let moved = choice(json!({"harness": "codex", "account": "home", "codexSkillsOff": ["review"]}));
-    write_checked(&db, "skills-account", 1, &moved).unwrap();
-    let home = launch_for(&db, "skills-account", &codex_target(&cwd)).unwrap().unwrap();
-    assert!(home.codex_skills_off.is_empty(), "{home:?}");
-    assert_eq!(home.effective_hash, all_on_hash("codex"), "the hash covers only what the launch applies");
-    assert_ne!(home.stored_hash, home.effective_hash);
-    assert!(codex_overrides(&home).is_empty());
-    let place = CodexPlace::resolve(&db, Some("home"), &cwd).unwrap();
-    assert_eq!(codex_skills_key(&db, "skills-account", Some(&place)), CodexSkillsKey::Unconfirmed);
-
-    // A read for "home" confirms its config.
-    assert!(read_config(&db, "skills-account", Some("home"), &cwd, &no_skills_key(json!([]))));
-    assert_eq!(launch_for(&db, "skills-account", &codex_target(&cwd)).unwrap().unwrap().codex_skills_off, ["review"]);
-    // Another folder has other project layers.
-    let other = root.path().join("other").to_string_lossy().into_owned();
-    assert!(launch_for(&db, "skills-account", &codex_target(&other)).unwrap().unwrap().codex_skills_off.is_empty());
-}
-
-#[test]
-fn a_codex_skills_key_added_after_the_read_stops_the_override() {
-    let db = db();
-    let root = tempfile::tempdir().unwrap();
-    codex_accounts(&db, root.path());
-    let repo = root.path().join("repo");
-    std::fs::create_dir_all(repo.join(".codex")).unwrap();
-    let cwd = repo.to_string_lossy().into_owned();
-    skills_chat(&db, "skills-key", "work");
-    let skills_off = || launch_for(&db, "skills-key", &codex_target(&cwd)).unwrap().unwrap().codex_skills_off;
-    assert!(read_config(&db, "skills-key", Some("work"), &cwd, &no_skills_key(json!([]))));
-    assert_eq!(skills_off(), ["review"]);
-
-    // The user adds a skills table to the project config after the read.
-    let project = repo.join(".codex").join("config.toml");
-    std::fs::write(&project, "[[skills.config]]\npath = \"/s\"\nenabled = false\n").unwrap();
-    assert!(skills_off().is_empty());
-    let place = CodexPlace::resolve(&db, Some("work"), &cwd).unwrap();
-    assert_eq!(codex_skills_key(&db, "skills-key", Some(&place)), CodexSkillsKey::Unconfirmed);
-
-    // The file of a layer outside the folder and the home counts too.
-    std::fs::remove_file(&project).unwrap();
-    let system = root.path().join("system.toml");
-    std::fs::write(&system, "model = \"gpt\"\n").unwrap();
-    let layers = json!([{"name": {"type": "system", "file": system}, "version": "v1", "config": {"model": "gpt"}}]);
-    assert!(read_config(&db, "skills-key", Some("work"), &cwd, &no_skills_key(layers)));
-    assert_eq!(skills_off(), ["review"]);
-    std::fs::write(&system, "model = \"gpt\"\n[skills]\n").unwrap();
-    assert!(skills_off().is_empty());
-
-    // A file that changes during the read stores no fact.
-    let before = place.fingerprint();
-    std::fs::write(&project, "model = \"gpt\"\n").unwrap();
-    assert!(!remember_codex_config(&db, "skills-key", &place, &before, &no_skills_key(json!([]))).unwrap());
-    assert!(skills_off().is_empty());
-}
-
-#[test]
-fn a_codex_skills_fact_survives_a_restart() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("bridge.db");
-    let cwd = root.path().join("repo").to_string_lossy().into_owned();
-    {
-        let db = store::open(&path).unwrap();
-        codex_accounts(&db, root.path());
-        skills_chat(&db, "skills-restart", "work");
-        assert!(read_config(&db, "skills-restart", Some("work"), &cwd, &no_skills_key(json!([]))));
-    }
-    let db = store::open(&path).unwrap();
-    let facts: i64 = db
-        .query_row("SELECT COUNT(*) FROM configuration_entries WHERE kind=?1 AND id='skills-restart'", [CODEX_CONFIG_KIND], |row| row.get(0))
-        .unwrap();
-    assert_eq!(facts, 1, "the fact has a kind of its own");
-    assert_eq!(launch_for(&db, "skills-restart", &codex_target(&cwd)).unwrap().unwrap().codex_skills_off, ["review"]);
-    // The stored choice keeps its form.
-    let stored: String = db
-        .query_row("SELECT payload FROM configuration_entries WHERE kind=?1 AND id='skills-restart'", [KIND], |row| row.get(0))
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&stored).unwrap(),
-        json!({"revision": 1, "harness": "codex", "account": "work", "serversOff": [], "codexAppsOff": false, "claudeSkills": null, "codexSkillsOff": ["review"]})
-    );
-}
-
-#[test]
-fn a_codex_skill_that_bridge_cannot_confirm_is_fixed_with_a_reason() {
-    let source = CodexSource {
-        skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": ""}]}]}))),
-        config: Some(no_skills_key(json!([]))),
-        unconfirmed: true,
-        ..CodexSource::default()
-    };
-    let review = codex_units(&source, None).into_iter().find(|item| item.id == "review").unwrap();
-    assert_eq!((review.state, review.fixed_reason.as_deref()), (Fixed, Some(CODEX_SKILLS_UNCONFIRMED_REASON)));
-    let confirmed = CodexSource { unconfirmed: false, ..source };
-    assert_eq!(item(&codex_units(&confirmed, None), Skill, "review").state, On);
 }
 
 #[test]

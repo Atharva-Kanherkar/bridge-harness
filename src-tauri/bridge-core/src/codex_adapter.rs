@@ -55,6 +55,43 @@ pub struct StartedCodex {
     pub runtime: CodexRuntime,
     pub reader: BufReader<ChildStdout>,
     pub startup_messages: Vec<Value>,
+    /// True when the launch dropped the skills part of its tool launch.
+    pub skills_dropped: bool,
+}
+
+/// One `codex app-server` process before its thread request.
+struct Spawned {
+    child: SpawnedChildGuard,
+    writer: Arc<Mutex<ChildStdin>>,
+    reader: BufReader<ChildStdout>,
+    stderr_tail: crate::adapters::StderrTail,
+    spawned_at: std::time::Instant,
+}
+
+impl Spawned {
+    fn new(child: Child, spawned_at: std::time::Instant) -> Result<Self, BridgeError> {
+        let mut child = SpawnedChildGuard::new(child);
+        let stderr_tail = crate::adapters::StderrTail::capture(child.child_mut());
+        let stdin = child
+            .child_mut()
+            .stdin
+            .take()
+            .ok_or_else(|| BridgeError::Invalid("Codex app-server stdin unavailable".into()))?;
+        let stdout = child
+            .child_mut()
+            .stdout
+            .take()
+            .ok_or_else(|| BridgeError::Invalid("Codex app-server stdout unavailable".into()))?;
+        Ok(Self { child, writer: Arc::new(Mutex::new(stdin)), reader: BufReader::new(stdout), stderr_tail, spawned_at })
+    }
+}
+
+/// A process whose thread request has its reply.
+struct Opened {
+    spawned: Spawned,
+    response: Value,
+    startup_messages: Vec<Value>,
+    skills_dropped: bool,
 }
 
 struct SpawnedChildGuard {
@@ -289,68 +326,48 @@ fn launch(
     let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
         .then(|| crate::mcp_apps::ServerLaunch::for_session(bridge_session_id.filter(|_| interactive)))
         .flatten();
-    let mut command = app_server_command(&binary, cwd, outer_sandbox, visualize.as_ref(), tools)?;
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        // Piped and tail-captured: a worker that dies before its typed result
-        // reports the provider's own error, not a generic exit.
-        .stderr(Stdio::piped());
-    // An extra account signs in from its own Codex home. A read-only sandbox
-    // below replaces it with its own isolated one.
-    crate::provider_accounts::apply_account(&mut command, account);
-    if let Some(sandbox) = read_only_sandbox {
-        let codex_home = prepare_isolated_codex_home(sandbox)?;
+    let spawn = |tools: Option<&ToolLaunch>| -> Result<Spawned, BridgeError> {
+        let mut command = app_server_command(&binary, cwd, outer_sandbox, visualize.as_ref(), tools)?;
         command
-            .env("CODEX_HOME", codex_home)
-            .env("HOME", sandbox.output_dir())
-            .env("TMPDIR", sandbox.output_dir())
-            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        // The seatbelt cannot use the host keychain; a networked worker (e.g. a
-        // PR review) needs the host token or every `gh` call returns 401.
-        if sandbox.network_allowed() {
-            if let Some(token) = crate::worker_sandbox::github_cli_token() {
-                command.env("GH_TOKEN", token);
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            // Piped and tail-captured: a worker that dies before its typed result
+            // reports the provider's own error, not a generic exit.
+            .stderr(Stdio::piped());
+        // An extra account signs in from its own Codex home. A read-only sandbox
+        // below replaces it with its own isolated one.
+        crate::provider_accounts::apply_account(&mut command, account);
+        if let Some(sandbox) = read_only_sandbox {
+            let codex_home = prepare_isolated_codex_home(sandbox)?;
+            command
+                .env("CODEX_HOME", codex_home)
+                .env("HOME", sandbox.output_dir())
+                .env("TMPDIR", sandbox.output_dir())
+                .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
+            // The seatbelt cannot use the host keychain; a networked worker (e.g. a
+            // PR review) needs the host token or every `gh` call returns 401.
+            if sandbox.network_allowed() {
+                if let Some(token) = crate::worker_sandbox::github_cli_token() {
+                    command.env("GH_TOKEN", token);
+                }
             }
         }
-    }
-    // Build output belongs to the repository, not to this checkout. Skipped for
-    // a read-only worker: its seatbelt permits writes only under its own output
-    // directory, and widening that to reach a shared cache would trade away part
-    // of the read-only guarantee for the speed of a worker that is not meant to
-    // be building.
-    if read_only_sandbox.is_none() {
-        crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
-    }
-    crate::credential_broker::apply_proxy_pass(&mut command);
-    crate::adapters::configure_process_group(&mut command);
-    if let Some(on_progress) = on_progress {
-        on_progress(crate::adapters::StartupPhase::Spawning);
-    }
-    let spawned_at = std::time::Instant::now();
-    let mut child = SpawnedChildGuard::new(command.spawn()?);
-    let stderr_tail = crate::adapters::StderrTail::capture(child.child_mut());
-    let stdin = child
-        .child_mut()
-        .stdin
-        .take()
-        .ok_or_else(|| BridgeError::Invalid("Codex app-server stdin unavailable".into()))?;
-    let stdout = child
-        .child_mut()
-        .stdout
-        .take()
-        .ok_or_else(|| BridgeError::Invalid("Codex app-server stdout unavailable".into()))?;
-    let writer = Arc::new(Mutex::new(stdin));
-    let mut reader = BufReader::new(stdout);
-    let realtime_voice = supports_realtime_voice();
-    let mut startup_messages = initialize(child.child_mut(), &writer, &mut reader, &stderr_tail, on_progress)?;
-    crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned_at);
-    write_value(&writer, &json!({"method":"initialized"}))?;
-    startup_messages.append(&mut verify_credential_policy(
-        &writer,
-        &mut reader,
-        crate::credential_policy::active().credential_policy,
-    )?);
+        // Build output belongs to the repository, not to this checkout. Skipped for
+        // a read-only worker: its seatbelt permits writes only under its own output
+        // directory, and widening that to reach a shared cache would trade away part
+        // of the read-only guarantee for the speed of a worker that is not meant to
+        // be building.
+        if read_only_sandbox.is_none() {
+            crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
+        }
+        crate::credential_broker::apply_proxy_pass(&mut command);
+        crate::adapters::configure_process_group(&mut command);
+        if let Some(on_progress) = on_progress {
+            on_progress(crate::adapters::StartupPhase::Spawning);
+        }
+        let spawned_at = std::time::Instant::now();
+        Spawned::new(command.spawn()?, spawned_at)
+    };
     let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id.filter(|_| fork) {
         (
             "thread/fork",
@@ -372,9 +389,11 @@ fn launch(
     };
     let mut params = params;
     apply_thread_service_tier(&mut params, speed);
-    write_value(&writer, &json!({"method":method,"id":2,"params":params}))?;
-    let (response, mut later_messages) = wait_for_response(&mut reader, 2)?;
-    startup_messages.append(&mut later_messages);
+    let thread_request = json!({"method":method,"id":2,"params":params});
+    let Opened { spawned, response, startup_messages, skills_dropped } =
+        open_thread(spawn, tools, cwd, &thread_request, on_progress, CONFIG_READ_WAIT)?;
+    let realtime_voice = supports_realtime_voice();
+    let Spawned { child, writer, reader, stderr_tail, .. } = spawned;
     let thread_id = response
         .pointer("/result/thread/id")
         .and_then(Value::as_str)
@@ -406,7 +425,92 @@ fn launch(
         },
         reader,
         startup_messages,
+        skills_dropped,
     })
+}
+
+/// The longest wait of a launch for the `config/read` reply of its process.
+const CONFIG_READ_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `initialize`, `initialized` and the credential check of one process. The
+/// result is the unrelated frames that came first.
+fn handshake(spawned: &mut Spawned, on_progress: Option<crate::adapters::StartupProgress<'_>>) -> Result<Vec<Value>, BridgeError> {
+    let mut messages =
+        initialize(spawned.child.child_mut(), &spawned.writer, &mut spawned.reader, &spawned.stderr_tail, on_progress)?;
+    crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned.spawned_at);
+    write_value(&spawned.writer, &json!({"method":"initialized"}))?;
+    messages.append(&mut verify_credential_policy(
+        &spawned.writer,
+        &mut spawned.reader,
+        crate::credential_policy::active().credential_policy,
+    )?);
+    Ok(messages)
+}
+
+/// The id of the `config/read` request of the skills check.
+const CONFIG_READ_ID: i64 = 4;
+
+/// Spawn the app-server with `tools`, run its handshake and send
+/// `thread_request` (id 2). A `skills.config` value replaces a `skills` key
+/// of the user, so a launch with a skills part first reads the config of its
+/// own process. When the reply does not show that no such key exists, the
+/// process stops before a thread starts, and one more process starts with no
+/// skills part. The result reports the drop.
+fn open_thread(
+    mut spawn: impl FnMut(Option<&ToolLaunch>) -> Result<Spawned, BridgeError>,
+    tools: Option<&ToolLaunch>,
+    cwd: &str,
+    thread_request: &Value,
+    on_progress: Option<crate::adapters::StartupProgress<'_>>,
+    wait: std::time::Duration,
+) -> Result<Opened, BridgeError> {
+    let mut spawned = spawn(tools)?;
+    let mut startup_messages = handshake(&mut spawned, on_progress)?;
+    let mut skills_dropped = false;
+    if tools.is_some_and(ToolLaunch::has_codex_skills) {
+        match checked_config(spawned, cwd, wait) {
+            Some((checked, mut frames)) => {
+                spawned = checked;
+                startup_messages.append(&mut frames);
+            }
+            None => {
+                let without = tools.map(ToolLaunch::without_codex_skills);
+                spawned = spawn(without.as_ref())?;
+                startup_messages = handshake(&mut spawned, on_progress)?;
+                skills_dropped = true;
+            }
+        }
+    }
+    write_value(&spawned.writer, thread_request)?;
+    let (response, mut later_messages) = wait_for_response(&mut spawned.reader, 2)?;
+    startup_messages.append(&mut later_messages);
+    Ok(Opened { spawned, response, startup_messages, skills_dropped })
+}
+
+/// Send `config/read` to a process before its thread request. The result is
+/// the process and the frames that came before the reply, only when the reply
+/// shows no `skills` key of the user. A user key, an error, a reply that
+/// Bridge cannot read and no reply in `wait` give `None`. Then the process
+/// drops, and its guard stops and reaps it.
+fn checked_config(spawned: Spawned, cwd: &str, wait: std::time::Duration) -> Option<(Spawned, Vec<Value>)> {
+    let request = json!({"method": "config/read", "id": CONFIG_READ_ID, "params": {"cwd": cwd, "includeLayers": true}});
+    write_value(&spawned.writer, &request).ok()?;
+    let Spawned { child, writer, mut reader, stderr_tail, spawned_at } = spawned;
+    // The read runs on its own thread, so the wait has a limit. The thread
+    // ends at the end of the output when the guard stops the process.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("codex-config-read".into())
+        .spawn(move || {
+            let reply = wait_for_response(&mut reader, CONFIG_READ_ID);
+            // The send fails only when the launch stopped the wait.
+            sender.send((reader, reply))
+        })
+        .ok()?;
+    let (reader, reply) = receiver.recv_timeout(wait).ok()?;
+    let (response, frames) = reply.ok()?;
+    let no_user_key = response.get("result").and_then(crate::apps::codex::user_skills_key) == Some(false);
+    no_user_key.then(|| (Spawned { child, writer, reader, stderr_tail, spawned_at }, frames))
 }
 
 /// The `codex app-server` command before its pipes and environment. Root
@@ -2180,45 +2284,188 @@ mod tests {
         assert!(apps_on.iter().all(|value| !value.starts_with("features.")), "{apps_on:?}");
     }
 
+    /// A stand-in app-server for the launch gate. It writes its pid and each
+    /// line that it reads to `$LOG`, and it answers `initialize`, the thread
+    /// request and `config/read`. An empty `$CONFIG_REPLY` gives no answer.
+    #[cfg(unix)]
+    const GATE_SCRIPT: &str = r#"while IFS= read -r line; do
+  printf '%s %s\n' "$$" "$line" >> "$LOG"
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"config/read"'*) if [ -n "$CONFIG_REPLY" ]; then printf '%s\n' "$CONFIG_REPLY"; fi ;;
+    *'"method":"thread/'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
+  esac
+done"#;
+
+    /// One process of [`gate_launch`]: its pid, the `-c` values that the
+    /// launch gives it and the requests that it read, in order.
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct GateProcess {
+        pid: u32,
+        values: Vec<String>,
+        requests: Vec<Value>,
+    }
+
+    #[cfg(unix)]
+    impl GateProcess {
+        fn methods(&self) -> Vec<&str> {
+            self.requests.iter().filter_map(|request| request["method"].as_str()).collect()
+        }
+
+        fn skills_value(&self) -> Option<&String> {
+            self.values.iter().find(|value| value.starts_with("skills."))
+        }
+    }
+
+    #[cfg(unix)]
+    const GATE_CWD: &str = "/work/repo";
+
+    /// Run [`open_thread`] on stand-in app-servers that answer `config/read`
+    /// with `config_reply`.
+    #[cfg(unix)]
+    fn gate_launch(tools: Option<&ToolLaunch>, config_reply: &str, wait: std::time::Duration) -> (Result<Opened, BridgeError>, Vec<GateProcess>) {
+        let folder = tempfile::tempdir().unwrap();
+        let log = folder.path().join("requests.log");
+        let spawned = Mutex::new(Vec::new());
+        let spawn = |tools: Option<&ToolLaunch>| -> Result<Spawned, BridgeError> {
+            let mut command = Command::new("sh");
+            command.args(["-c", GATE_SCRIPT]).env("LOG", &log).env("CONFIG_REPLY", config_reply);
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            crate::adapters::configure_process_group(&mut command);
+            let child = command.spawn()?;
+            spawned.lock().unwrap().push((child.id(), config_values(&launch_args(None, tools))));
+            Spawned::new(child, std::time::Instant::now())
+        };
+        let thread_request = json!({"method": "thread/start", "id": 2, "params": {"cwd": GATE_CWD}});
+        let opened = open_thread(spawn, tools, GATE_CWD, &thread_request, None, wait);
+        let log = std::fs::read_to_string(&log).unwrap_or_default();
+        let processes = spawned
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .map(|(pid, values)| {
+                let requests = log
+                    .lines()
+                    .filter_map(|line| line.split_once(' '))
+                    .filter(|(id, _)| id.parse() == Ok(pid))
+                    .map(|(_, request)| serde_json::from_str(request).unwrap())
+                    .collect();
+                GateProcess { pid, values, requests }
+            })
+            .collect();
+        (opened, processes)
+    }
+
+    /// True when the child `pid` of this process is gone and reaped.
+    #[cfg(unix)]
+    fn reaped(pid: u32) -> bool {
+        // SAFETY: `waitpid` with WNOHANG and a null status pointer only asks the kernel.
+        unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) == -1 }
+    }
+
+    /// A `config/read` reply (id 4) with the `sessionFlags` layer of the
+    /// `-c` values and one more layer.
+    #[cfg(unix)]
+    fn config_reply(user_layer: Value) -> String {
+        json!({"id": 4, "result": {
+            "config": {"model": "gpt", "skills": {"config": []}},
+            "origins": {},
+            "layers": [
+                {"name": {"type": "sessionFlags"}, "version": "v1", "config": {"skills": {"config": []}}},
+                {"name": {"type": "user", "file": "/home/a/.codex/config.toml"}, "version": "v1", "config": user_layer}
+            ]
+        }})
+        .to_string()
+    }
+
+    #[cfg(unix)]
+    const GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_with_a_skills_part_reads_the_config_before_the_thread_request() {
+        let tools = gate_tools(&["review"]);
+        let (opened, processes) = gate_launch(Some(&tools), &config_reply(json!({"model": "gpt"})), GATE_WAIT);
+        let opened = opened.unwrap();
+        assert!(!opened.skills_dropped);
+        assert_eq!(opened.response["result"]["thread"]["id"], "thread-1");
+        assert_eq!(processes.len(), 1, "{processes:#?}");
+        assert_eq!(processes[0].methods(), ["initialize", "initialized", "config/read", "thread/start"]);
+        assert_eq!(processes[0].requests[2], json!({"method": "config/read", "id": 4, "params": {"cwd": GATE_CWD, "includeLayers": true}}));
+        assert_eq!(processes[0].skills_value().map(String::as_str), Some(r#"skills.config=[{name="review",enabled=false}]"#));
+    }
+
+    /// A choice that leaves out the `github` server and `skills`.
+    #[cfg(unix)]
+    fn gate_tools(skills: &[&str]) -> ToolLaunch {
+        codex_tools(&["github"], false, skills)
+    }
+
+    /// The checks of a launch whose first process did not confirm the config:
+    /// that process starts no thread and is reaped, and one more process
+    /// starts the thread with the same values but no skills part.
+    #[cfg(unix)]
+    fn assert_dropped(opened: Result<Opened, BridgeError>, processes: &[GateProcess], case: &str) {
+        let opened = opened.unwrap_or_else(|error| panic!("{case}: {error}"));
+        assert!(opened.skills_dropped, "{case}");
+        assert_eq!(processes.len(), 2, "{case}: {processes:#?}");
+        let (first, second) = (&processes[0], &processes[1]);
+        assert_eq!(first.methods(), ["initialize", "initialized", "config/read"], "{case}: no thread on the first process");
+        assert!(first.skills_value().is_some(), "{case}");
+        assert!(reaped(first.pid), "{case}: the first process is reaped");
+        assert_eq!(second.methods(), ["initialize", "initialized", "thread/start"], "{case}");
+        assert_eq!(second.skills_value(), None, "{case}");
+        let kept: Vec<&String> = first.values.iter().filter(|value| !value.starts_with("skills.")).collect();
+        assert_eq!(second.values.iter().collect::<Vec<_>>(), kept, "{case}: the other values stay");
+        assert_eq!(opened.response["result"]["thread"]["id"], "thread-1", "{case}");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn the_skills_override_is_absent_when_the_config_has_a_skills_key() {
-        use crate::tool_selection::{launch_for, remember_codex_config, write_checked, CodexPlace, LaunchTarget};
-        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
-        let folder = tempfile::tempdir().unwrap();
-        let cwd = folder.path().to_string_lossy().into_owned();
-        let session = format!("codex-skills-{}", Uuid::new_v4());
-        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES(?1,'codex','Chat','ready','reported','direct')", [&session]).unwrap();
-        let choice = serde_json::from_value(json!({"harness": "codex", "serversOff": ["github"], "codexSkillsOff": ["review", "deploy"]})).unwrap();
-        write_checked(&db, &session, 0, &choice).unwrap();
-        let target = LaunchTarget { harness: "codex", interactive: true, workflow: false, cwd: &cwd, opencode_config: None };
-        let launch = || launch_for(&db, &session, &target).unwrap().unwrap();
-        let skills_values = || -> Vec<String> {
-            let values = config_values(&launch_args(Some(&bridge_launch()), Some(&launch())));
-            values.into_iter().filter(|value| value.starts_with("skills.")).collect()
-        };
-        let layer = |kind: &str, config: Value| json!({"name": {"type": kind}, "version": "v1", "config": config});
-        let config_read = |layers: Value| {
-            let frame = json!({"id": "bridge-app:config:c1", "result": {"config": {"skills": {"config": []}}, "origins": {}, "layers": layers}});
-            crate::apps::codex::translate(&frame).unwrap()["result"].clone()
-        };
-        let place = CodexPlace::resolve(&db, None, &cwd).unwrap();
-        let remember = |reply: &Value| remember_codex_config(&db, &session, &place, &place.fingerprint(), reply).unwrap();
+        let tools = gate_tools(&["review", "deploy"]);
+        let key = config_reply(json!({"skills": {"config": [{"path": "/s", "enabled": false}]}}));
+        let (opened, processes) = gate_launch(Some(&tools), &key, GATE_WAIT);
+        assert_dropped(opened, &processes, "a skills key of the user");
+        // A layer config that is not an object counts as a key too.
+        let (opened, processes) = gate_launch(Some(&tools), &config_reply(json!("unreadable")), GATE_WAIT);
+        assert_dropped(opened, &processes, "a layer config that is not an object");
+    }
 
-        // No `config/read` yet: Bridge does not know the config, so the skills stay as they are.
-        assert!(skills_values().is_empty());
-        // A skills key of the user: a `skills.config` value would replace it.
-        assert!(remember(&config_read(json!([layer("user", json!({"skills": {"config": [{"path": "/s", "enabled": false}]}}))]))));
-        assert!(skills_values().is_empty());
-        let without = launch();
-        assert_eq!(without.servers_off, ["github"]);
-        assert!(without.codex_skills_off.is_empty());
-        // Only the own `-c` value of Bridge holds the key, so the override applies.
-        assert!(remember(&config_read(json!([layer("sessionFlags", json!({"skills": {"config": []}})), layer("user", json!({"model": "gpt"}))]))));
-        assert_eq!(skills_values(), [r#"skills.config=[{name="deploy",enabled=false},{name="review",enabled=false}]"#]);
-        assert_ne!(launch().effective_hash, without.effective_hash, "the hash follows the applied set");
-        // A reply without the fact removes it.
-        assert!(!remember(&json!({})));
-        assert!(skills_values().is_empty());
+    #[cfg(unix)]
+    #[test]
+    fn an_error_an_unreadable_reply_or_no_reply_drops_the_skills_part() {
+        let tools = gate_tools(&["review"]);
+        let cases = [
+            ("an error reply", json!({"id": 4, "error": {"code": -32600, "message": "config/read failed"}}).to_string()),
+            ("a reply with no config", json!({"id": 4, "result": {"origins": {}}}).to_string()),
+            ("a reply that is not JSON", "not json".to_owned()),
+        ];
+        for (case, reply) in cases {
+            let (opened, processes) = gate_launch(Some(&tools), &reply, GATE_WAIT);
+            assert_dropped(opened, &processes, case);
+        }
+        // No reply: the wait ends the first process.
+        let (opened, processes) = gate_launch(Some(&tools), "", std::time::Duration::from_millis(300));
+        assert_dropped(opened, &processes, "no reply");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_with_no_skills_part_sends_no_config_read() {
+        let thread_request = json!({"method": "thread/start", "id": 2, "params": {"cwd": GATE_CWD}});
+        let claude = ToolLaunch { harness: "claude".into(), ..gate_tools(&["review"]) };
+        for tools in [None, Some(gate_tools(&[])), Some(claude)] {
+            let (opened, processes) = gate_launch(tools.as_ref(), &config_reply(json!({})), GATE_WAIT);
+            assert!(!opened.unwrap().skills_dropped, "{tools:?}");
+            assert_eq!(processes.len(), 1, "{tools:?}");
+            // The same requests in the same order as a launch before the gate.
+            assert_eq!(processes[0].methods(), ["initialize", "initialized", "thread/start"], "{tools:?}");
+            assert_eq!(processes[0].requests[1], json!({"method": "initialized"}));
+            assert_eq!(processes[0].requests[2], thread_request);
+            assert_eq!(processes[0].skills_value(), None, "{tools:?}");
+        }
     }
 
     #[test]

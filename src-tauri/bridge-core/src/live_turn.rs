@@ -2105,7 +2105,6 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             harness: adapter_id,
             interactive,
             workflow: is_workflow || workflow_policy.is_some(),
-            cwd: &launch_cwd,
             opencode_config: inherited_opencode_config.as_deref(),
         },
     )?;
@@ -2338,6 +2337,8 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         restoration::RestorationPlan::Hot => unreachable!("hot sessions returned above"),
     };
     timing.mark("spawn");
+    // The event and the applied entry follow the set that the launch applied.
+    let tool_record = tool_record.after_launch(started.skills_dropped);
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();

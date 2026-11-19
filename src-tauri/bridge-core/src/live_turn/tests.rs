@@ -196,6 +196,9 @@ struct Script {
     stopped: Vec<usize>,
     /// The output of the next runtime ends at once, as for a process exit.
     output_ends: bool,
+    /// A launch with a Codex skills part reports that it dropped the part,
+    /// as for a config with a `skills` key of the user.
+    drops_codex_skills: bool,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -227,6 +230,7 @@ impl Live {
             runtime: Box::new(LiveRuntime { number, thread, turn: Arc::default(), script: self.script.clone() }),
             reader,
             startup_messages: vec![],
+            skills_dropped: script.drops_codex_skills && tools.is_some_and(ToolLaunch::has_codex_skills),
         })
     }
 }
@@ -634,14 +638,18 @@ fn a_dropped_codex_skills_part_writes_no_claim_and_keeps_the_fallback() {
             .unwrap();
         stored_hash
     };
-    // No stored config read confirms the folder of this launch, so it drops
-    // the skills part. The person did not change the set, so the failed
-    // resume keeps the fallback.
-    script.lock().unwrap().resume_error = Some("the thread did not load".into());
+    // The config of this launch has a `skills` key of the user, so the
+    // launch drops the skills part. The person did not change the set, so
+    // the failed resume keeps the fallback.
+    {
+        let mut script = script.lock().unwrap();
+        script.drops_codex_skills = true;
+        script.resume_error = Some("the thread did not load".into());
+    }
     start_chat(&core, chat.clone()).unwrap();
     let launched = asked(&script);
     assert_eq!(launched.iter().map(|launch| launch.verb).collect::<Vec<_>>(), ["resume", "start"], "{launched:?}");
-    assert!(launched.iter().all(|launch| launch.tools.as_ref().is_some_and(|tools| tools.codex_skills_off.is_empty())));
+    assert!(launched.iter().all(|launch| launch.tools.as_ref().is_some_and(|tools| tools.codex_skills_off == ["review"])), "{launched:?}");
     assert_eq!(row_of(&core, &chat).0, "ready");
     // The event names the set that the launch applied, not the stored choice.
     let events = change_events(&core, &chat);
@@ -649,6 +657,47 @@ fn a_dropped_codex_skills_part_writes_no_claim_and_keeps_the_fallback() {
     assert_eq!(last["codexSkillsOff"], json!([]));
     assert_eq!(last["effectiveHash"], json!(tool_selection::all_on_hash("codex")));
     assert_ne!(last["effectiveHash"], json!(stored_hash));
+}
+
+#[test]
+fn a_dropped_codex_skills_part_writes_no_claim_and_the_next_send_does_not_relaunch() {
+    let (_dir, core, script) = live();
+    script.lock().unwrap().drops_codex_skills = true;
+    let save = |chat: &str, choice: Value| {
+        let db = core.db.lock().unwrap();
+        let choice: ChatToolSelection = serde_json::from_value(choice).unwrap();
+        ToolLaunch::from_row(&tool_selection::write_checked(&db, chat, 0, &choice).unwrap())
+    };
+    let chat = chat_on(&core, "codex", None);
+    let stored = save(&chat, json!({"harness": "codex", "serversOff": ["github"], "codexSkillsOff": ["review"]}));
+    start_chat(&core, chat.clone()).unwrap();
+    let launched = asked(&script);
+    assert_eq!(verbs(&launched), [("start", None)]);
+    assert_eq!(launched[0].tools.as_ref().unwrap().codex_skills_off, ["review"], "the launch gets the skills part");
+
+    // The launch reported the drop, so the event and the entry name the set that it applied.
+    let applied = stored.without_codex_skills();
+    assert_ne!(applied.effective_hash, stored.effective_hash);
+    let events = change_events(&core, &chat);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!((&events[0]["serversOff"], &events[0]["codexSkillsOff"]), (&json!(["github"]), &json!([])));
+    assert_eq!(events[0]["effectiveHash"], json!(applied.effective_hash));
+    let entry = core.applied_tools.lock().unwrap()[&chat].clone();
+    assert_eq!((entry.revision, entry.effective_hash), (1, applied.effective_hash));
+
+    // The entry keeps the stored revision, so the next send reuses the runtime.
+    assert!(!tool_selection::stale(&core, &chat));
+    submit_input(&core, chat.clone(), "hello".into()).unwrap();
+    assert!(asked(&script).is_empty(), "no relaunch");
+    assert!(script.lock().unwrap().stopped.is_empty());
+
+    // A choice that only turns a skill off makes no claim.
+    let skills = chat_on(&core, "codex", None);
+    save(&skills, json!({"harness": "codex", "codexSkillsOff": ["review"]}));
+    start_chat(&core, skills.clone()).unwrap();
+    assert_eq!(asked(&script).len(), 1);
+    assert!(change_events(&core, &skills).is_empty());
+    assert_eq!(core.applied_tools.lock().unwrap()[&skills].effective_hash, tool_selection::all_on_hash("codex"));
 }
 
 #[test]

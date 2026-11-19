@@ -219,35 +219,44 @@ fn a_warm_codex_chat_reads_servers_skills_and_config_from_its_runtime() {
     let lint = item(&result, Skill, "lint");
     assert_eq!((lint.state, lint.tokens.as_ref().unwrap().source.as_str()), (On, crate::tool_selection::CODEX_SKILL_SOURCE));
     assert_eq!(result.sources.iter().filter(|source| source.kind == Kind::Runtime && source.available).count(), 3);
-    let place = CodexPlace::resolve(&core.db.lock().unwrap(), None, "/tmp/a").unwrap();
-    let kept = codex_skills_key(&core.db.lock().unwrap(), "codex-chat", Some(&place));
-    assert_eq!(kept, CodexSkillsKey::Known(false), "the config read is kept");
 }
 
 #[test]
-fn a_warm_read_that_confirms_the_config_ends_a_partial_launch() {
+fn the_picker_stores_nothing_and_changes_no_launch_state() {
     let (_dir, core) = core();
-    let applied = |partial: bool| crate::tool_selection::AppliedTools {
+    chat(&core, "codex-warm", "codex", None, Some("a"));
+    save_row(&core, "codex-warm", json!({"harness": "codex", "codexSkillsOff": ["lint"]}));
+    // The warm runtime dropped the skills part at its launch.
+    let applied = crate::tool_selection::AppliedTools {
         revision: 1,
-        effective_hash: "hash".into(),
+        effective_hash: crate::tool_selection::all_on_hash("codex"),
         confirmed: true,
         pending: None,
-        partial,
         started_at: "launch".into(),
     };
-    for (id, partial) in [("codex-partial", true), ("codex-whole", false)] {
-        chat(&core, id, "codex", None, Some("a"));
-        save_row(&core, id, json!({"harness": "codex", "codexSkillsOff": ["lint"]}));
-        crate::tool_selection::record_applied(&core, id, applied(partial));
-        let owner = if partial { "codex-partial" } else { "codex-whole" };
-        core.adapters.lock().unwrap().insert(id.to_owned(), Box::new(Codex { owner, asked: Arc::default(), fail: false }));
-        let result = of_session(&core, id);
-        assert_eq!(item(&result, Skill, "lint").state, Off, "{id}");
-    }
-    // The runtime that dropped the skills part relaunches at the next send.
-    assert_eq!(crate::tool_selection::applied_revision(&core, "codex-partial"), 0);
-    assert!(crate::tool_selection::stale(&core, "codex-partial"));
-    assert_eq!(crate::tool_selection::applied_revision(&core, "codex-whole"), 1);
+    crate::tool_selection::record_applied(&core, "codex-warm", applied.clone());
+    let rows = || -> Vec<(String, String)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT kind,payload FROM configuration_entries ORDER BY kind,id").unwrap();
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect()
+    };
+    let before = rows();
+    core.adapters.lock().unwrap().insert("codex-warm".to_owned(), Box::new(Codex { owner: "codex-warm", asked: Arc::default(), fail: false }));
+
+    // A read that shows no `skills` key of the user lists the skills as units.
+    let warm = of_session(&core, "codex-warm");
+    assert_eq!(item(&warm, Skill, "lint").state, Off);
+    assert_eq!(rows(), before, "the picker stores nothing");
+    assert_eq!(core.applied_tools.lock().unwrap().get("codex-warm"), Some(&applied), "the applied entry stays");
+    assert!(!crate::tool_selection::stale(&core, "codex-warm"));
+
+    // A cold chat keeps nothing of the warm read.
+    core.adapters.lock().unwrap().clear();
+    let cold = of_session(&core, "codex-warm");
+    let lint = item(&cold, Skill, "lint");
+    assert_eq!((lint.state, lint.fixed_reason.as_deref()), (Fixed, Some(crate::tool_selection::CODEX_SKILLS_UNKNOWN_REASON)));
+    assert_eq!(source_of(&cold, Kind::Runtime).note.as_deref(), Some(COLD_NOTE));
+    assert_eq!(rows(), before);
 }
 
 #[test]

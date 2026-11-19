@@ -214,35 +214,29 @@ fn skills(result: &Value) -> Option<Value> {
     (value.to_string().len() <= 256 * 1024).then_some(value)
 }
 
-/// `{userSkillsKey, plugins, files}` from a `config/read` reply. Only these
-/// facts cross: the config can hold credentials. `userSkillsKey` is true when
-/// a layer other than the `-c` values of the launch holds a `skills` key, so
-/// the own `skills.config` value of Bridge does not count. Without layers the
-/// effective config decides, which can only count too much. `files` names
-/// the config file of each layer, so Bridge can see a later change.
-fn config(result: &Value) -> Option<Value> {
+/// True when the `result` of a `config/read` reply has a `skills` key of the
+/// user: a layer other than the `-c` values of the launch holds the key, so
+/// the own `skills.config` value of Bridge does not count. A layer config
+/// that is not an object counts as a key. Without layers the effective config
+/// decides, which can only count too much. `None` for a result with no
+/// `config` object.
+pub fn user_skills_key(result: &Value) -> Option<bool> {
     let effective = result.get("config")?.as_object()?;
-    let layers = result.get("layers").and_then(Value::as_array);
-    let user_skills_key = match layers {
+    Some(match result.get("layers").and_then(Value::as_array) {
         Some(layers) => layers.iter().any(|layer| {
             layer.pointer("/name/type").and_then(Value::as_str) != Some("sessionFlags")
                 && layer.get("config").and_then(Value::as_object).is_none_or(|config| config.contains_key("skills"))
         }),
         None => effective.contains_key("skills"),
-    };
-    let files: Vec<String> = layers
-        .into_iter()
-        .flatten()
-        .filter_map(|layer| {
-            let name = layer.get("name")?;
-            match name.get("dotCodexFolder").and_then(Value::as_str) {
-                Some(folder) => Some(std::path::Path::new(folder).join("config.toml").to_string_lossy().into_owned()),
-                None => name.get("file")?.as_str().map(str::to_owned),
-            }
-        })
-        .filter(|file| file.len() <= 4096)
-        .take(64)
-        .collect();
+    })
+}
+
+/// `{userSkillsKey, plugins}` from a `config/read` reply. Only these facts
+/// cross: the config can hold credentials. [`user_skills_key`] gives the
+/// first fact.
+fn config(result: &Value) -> Option<Value> {
+    let user_skills_key = user_skills_key(result)?;
+    let effective = result.get("config")?.as_object()?;
     let mut plugins: Vec<&str> = effective
         .get("plugins")
         .and_then(Value::as_object)
@@ -250,7 +244,7 @@ fn config(result: &Value) -> Option<Value> {
         .unwrap_or_default();
     plugins.sort_unstable();
     plugins.truncate(200);
-    Some(json!({"userSkillsKey": user_skills_key, "plugins": plugins, "files": files}))
+    Some(json!({"userSkillsKey": user_skills_key, "plugins": plugins}))
 }
 
 fn read(result: &Value) -> Option<Value> {
@@ -395,14 +389,7 @@ mod tests {
         };
         // The own `-c` skills value of Bridge is in the session flags layer: it is not a key of the user.
         let ours = read(Some(json!([layer("sessionFlags", json!({"skills": {"config": []}})), layer("user", json!({"model": "gpt"}))])));
-        assert_eq!(ours["result"], json!({"userSkillsKey": false, "plugins": ["github@openai-curated", "visualize@openai-bundled"], "files": []}));
-        // The file of each layer crosses, so a launch can see a later change of it.
-        let named = read(Some(json!([
-            {"name": {"type": "user", "file": "/home/a/.codex/config.toml", "profile": null}, "version": "v1", "config": {}},
-            {"name": {"type": "project", "dotCodexFolder": "/work/repo/.codex"}, "version": "v1", "config": {}},
-            {"name": {"type": "mdm", "domain": "com.openai.codex", "key": "config"}, "version": "v1", "config": {}}
-        ])));
-        assert_eq!(named["result"]["files"], json!(["/home/a/.codex/config.toml", "/work/repo/.codex/config.toml"]));
+        assert_eq!(ours["result"], json!({"userSkillsKey": false, "plugins": ["github@openai-curated", "visualize@openai-bundled"]}));
         assert!(!ours.to_string().contains("sk-secret"));
         let theirs = read(Some(json!([layer("sessionFlags", json!({})), layer("project", json!({"skills": {}}))])));
         assert_eq!(theirs["result"]["userSkillsKey"], true);

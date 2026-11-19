@@ -804,6 +804,10 @@ pub struct StartedAdapter {
     pub runtime: Box<dyn AdapterRuntime>,
     pub reader: Box<dyn BufRead + Send>,
     pub startup_messages: Vec<Value>,
+    /// True when the launch dropped the skills part of its tool launch. Only
+    /// a Codex launch drops it, when its config has a `skills` key of the
+    /// user or Bridge cannot read that config.
+    pub skills_dropped: bool,
 }
 
 pub trait HarnessAdapter: Send + Sync + Any {
@@ -1666,19 +1670,20 @@ impl HarnessAdapter for OpenCodeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn start_app_courier(&self, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
         let started = opencode_adapter::start_courier_with_settings(request, &self.settings(), permission, server)?;
         Ok(StartedAdapter {
-            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages, skills_dropped: false,
         })
     }
     fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let started = opencode_adapter::start_completion_with_settings(request, &self.settings())?;
         Ok(StartedAdapter {
-            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages, skills_dropped: false,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1692,6 +1697,7 @@ impl HarnessAdapter for OpenCodeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn supports_native_resume(&self) -> bool {
@@ -2005,6 +2011,7 @@ impl HarnessAdapter for CodexAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: started.skills_dropped,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -2016,6 +2023,7 @@ impl HarnessAdapter for CodexAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: started.skills_dropped,
         })
     }
     fn supports_native_resume(&self) -> bool {
@@ -2164,6 +2172,7 @@ impl HarnessAdapter for ClaudeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -2175,6 +2184,7 @@ impl HarnessAdapter for ClaudeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+            skills_dropped: false,
         })
     }
     fn supports_native_resume(&self) -> bool {
@@ -2413,6 +2423,7 @@ mod tests {
                     runtime: Box::new(Drifting { reports: self.reports, stopped: self.stopped.clone() }),
                     reader: Box::new(std::io::Cursor::new(Vec::new())),
                     startup_messages: vec![],
+                    skills_dropped: false,
                 })
             }
             fn supports_native_resume(&self) -> bool { true }
