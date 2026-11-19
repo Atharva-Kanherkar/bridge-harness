@@ -1,0 +1,97 @@
+# feat/run-in-terminal — Test Contract
+
+A shell code block an agent writes in chat gets a **Run** button. One click
+opens the dock's Terminal pane and runs the command in the chat's active shell.
+
+## Functional Behavior
+
+- Shell fences are `bash`, `sh`, `zsh`, `shell`, `console`, `shell-session`,
+  `shellsession` and `terminal` (case-insensitive). Every other language
+  (`ts`, `python`, `fish`, `powershell`, no language) gets no Run button.
+- The Run button sits in the code block header, before Copy: a play icon and
+  the label "Run". Its accessible name says where it runs ("Run in terminal").
+- It renders only when the host provides a terminal (the main chat with a
+  repository and workspace). Notes, previews, worker feeds and repo-less chats
+  render no Run button; Copy is unchanged everywhere.
+- It renders only on a **closed** fence. A fence still streaming (no closing
+  ```` ``` ```` yet) has Copy but no Run, so a half-written command can never run.
+- What runs:
+  - `bash`/`sh`/`zsh`/`shell`: the body. If every non-blank line starts with a
+    `$ ` or `% ` prompt, the prompts are stripped.
+  - `console`/`shell-session`/`shellsession`/`terminal`: only prompt lines
+    (`$ `, `% `), prompts stripped, plus continuation lines after a line ending
+    in `\`; output lines are dropped. With no prompt lines, the whole body runs.
+  - Leading and trailing blank lines are dropped. C0/C1 control characters
+    other than tab and newline are stripped (what you see is what runs).
+  - A body that reduces to nothing gets no Run button.
+- Click flow: the dock opens on the Terminal pane; the command is written to
+  the workspace's **active** shell in one `write_terminal` call, followed by
+  Enter. Multi-line commands keep their line structure (`\n` → `\r`). When
+  the shell enabled bracketed paste, the text is wrapped in
+  `ESC[200~ … ESC[201~` so the shell takes it as one edit; Enter follows the
+  closing marker.
+- No shell yet, or the active shell exited: a new shell opens and the command
+  runs there once its prompt has drawn (first output, then 150 ms of quiet,
+  capped at 4 s).
+- A run requested before the lazy Terminal pane has mounted is queued and runs
+  when the pane mounts. A request no pane picks up within 10 s fails.
+- Button states: idle "Run" → "Running…" while waiting → "Ran in shell 1"
+  (shell label) with a check for ~2 s → idle. On failure: "Couldn't run" with
+  the error in its title for ~3 s → idle. The button is disabled while running.
+- The shell gets focus after the run.
+
+## Unit Tests
+
+`src/terminal/runCommand.test.ts`
+- `isShellFence` accepts the eight languages in any case, rejects others.
+- `commandFromFence` strips uniform `$ ` prompts in bash, keeps mixed bodies.
+- `commandFromFence` keeps only prompt lines and continuations for `console`.
+- `commandFromFence` returns the whole console body when it has no prompts.
+- `commandFromFence` strips control characters and trims blank edges; returns
+  `null` for an empty result.
+- `terminalRunInput` without bracketed paste: `\n` → `\r`, trailing `\r`.
+- `terminalRunInput` with bracketed paste: wrapped, Enter after `ESC[201~`,
+  and an embedded `ESC[201~` cannot survive (control chars stripped first).
+
+`src/terminal/runQueue.test.ts`
+- A request with no listener waits; a listener attached later drains it.
+- A live listener receives a request immediately.
+- Requests for another workspace are not delivered.
+- An undrained request rejects after the timeout.
+- `settle` resolves the requester's promise with the shell label.
+
+`src/components/Markdown.test.tsx` (`splitBlocks`)
+- A closed fence is `closed: true`; an unclosed trailing fence is `closed: false`.
+
+## Integration / Functional Tests
+
+`src/components/RunInTerminal.test.tsx` (jsdom)
+- A `bash` block inside `RunInTerminalContext` renders a "Run in terminal"
+  button; a `ts` block does not; without the context no button renders.
+- An unclosed bash fence renders Copy but no Run.
+- Clicking Run calls the context with the extracted command, shows
+  "Running…", then "Ran in shell 1" when it resolves, then returns to "Run".
+- A rejected run shows "Couldn't run" with the error message as the title.
+
+`src/components/TerminalPane.test.tsx` (jsdom, mocked `bridgeApi` + xterm)
+- A run queued before mount is written to the active shell as one
+  `writeTerminal` call ending in `\r`, after `openTerminal`, and resolves with
+  the shell label.
+- With the active shell marked exited, the run opens a new shell and writes there.
+
+## Smoke Tests
+
+- `bun run build` green.
+- `bun run test` green (vitest + cargo + sidecar). No Rust change is expected.
+
+## E2E Tests
+
+- Mock mode (`bun run dev`): open a chat, click Run on a bash block → the dock
+  opens on Terminal and the command echoes in the preview shell.
+- Real app (manual): ask an agent for `echo hello && pwd` in a bash block,
+  click Run → dock Terminal shows the command executing in the worktree.
+
+## Manual / cURL Tests
+
+N/A for cURL: no wire method changes. Manual steps above; screenshots of the
+button in dark and light, and of the sent state with the terminal open.
