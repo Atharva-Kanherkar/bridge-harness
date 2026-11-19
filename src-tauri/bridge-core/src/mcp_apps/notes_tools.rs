@@ -176,8 +176,8 @@ pub fn all_definitions() -> Vec<Value> {
                 "name":{"type":"string","minLength":1,"maxLength":60},
                 "intent":{"type":"string","minLength":1,"maxLength":300},
                 "server":{"type":"string","minLength":1,"maxLength":100},
-                "reads":{"type":"array","maxItems":40,"items":{"type":"string","pattern":"^[a-z0-9_-]{1,64}$"}},
-                "writes":{"type":"array","maxItems":40,"items":{"type":"string","pattern":"^[a-z0-9_-]{1,64}$"}},
+                "reads":{"type":"array","maxItems":40,"items":{"type":"string","maxLength":64,"pattern":"^[a-z0-9_-]+(\\.[a-z0-9_-]+)?$"}},
+                "writes":{"type":"array","maxItems":40,"items":{"type":"string","maxLength":64,"pattern":"^[a-z0-9_-]+(\\.[a-z0-9_-]+)?$"}},
                 "view_html":{"type":"string","minLength":1,"maxLength":262144},
                 "sample_args":{"type":"object","description":"Initial preview arguments, at most 32 KiB."},
                 "app_id":{"type":"string","description":"Existing personal app id for a revision."}

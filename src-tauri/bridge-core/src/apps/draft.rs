@@ -77,7 +77,7 @@ fn check_inventory(manifest: &Manifest, inventory: &Value) -> Result<(), BridgeE
         let tool = tools
             .iter()
             .find(|tool| tool["name"].as_str() == Some(name))
-            .ok_or_else(|| invalid(format!("The MCP server has no tool named {name}. {}", tool_listing(tools))))?;
+            .ok_or_else(|| invalid(format!("The MCP server has no tool named {name}. {}", tool_listing(tools, &listing_hint(manifest)))))?;
         if manifest.reads.contains(name)
             && (tool["readOnly"] == false || tool["destructive"] == true)
         {
@@ -92,16 +92,34 @@ fn check_inventory(manifest: &Manifest, inventory: &Value) -> Result<(), BridgeE
 /// The server's real tools, for a chat that guessed a name: a chat on one
 /// agent cannot see the tools of a server another agent holds, so the
 /// refusal is how it learns them. Names and read/write only, capped.
-fn tool_listing(tools: &[Value]) -> String {
+/// What the app is about, for putting a bundled server's matching
+/// connector first: its name, intent and the tools it guessed.
+fn listing_hint(manifest: &Manifest) -> String {
+    let mut hint = format!("{} {}", manifest.name, manifest.intent);
+    for tool in manifest.reads.iter().chain(&manifest.writes) {
+        hint.push(' ');
+        hint.push_str(tool);
+    }
+    hint.to_lowercase()
+}
+
+fn tool_listing(tools: &[Value], hint: &str) -> String {
     const SHOWN: usize = 60;
-    let names: Vec<String> = tools
-        .iter()
+    // A bundled server (`<connector>.<tool>`) can hold hundreds of tools;
+    // the connector the app is about comes first, so it is never cut off.
+    let mut ordered: Vec<&Value> = tools.iter().collect();
+    ordered.sort_by_key(|tool| {
+        let prefix = tool["name"].as_str().and_then(|name| name.split_once('.')).map(|(prefix, _)| prefix.to_lowercase());
+        !prefix.is_some_and(|prefix| hint.contains(&prefix))
+    });
+    let names: Vec<String> = ordered
+        .into_iter()
         .filter_map(|tool| {
             let name = tool["name"].as_str()?;
             // What a draft may list it as: a read needs a read word and no
             // write or destructive annotation, as `check_inventory` and
             // `personal::validate` require.
-            let read = crate::briefing_policy::is_read_tool_name(name) && tool["readOnly"] != false && tool["destructive"] != true;
+            let read = super::personal::is_app_read_tool(name) && tool["readOnly"] != false && tool["destructive"] != true;
             let kind = if read { "read" } else { "write" };
             Some(format!("{name} ({kind})"))
         })
@@ -252,7 +270,7 @@ fn preview_kind(
         ));
     }
     if !draft.reads.iter().any(|name| name == tool)
-        || !crate::briefing_policy::is_read_tool_name(tool)
+        || !super::personal::is_app_read_tool(tool)
     {
         return Err(invalid(
             "This tool is outside the preview's read/write allowlist",
@@ -467,6 +485,15 @@ mod tests {
         let many: Vec<Value> = (0..70).map(|i| json!({"name": format!("get_{i}")})).collect();
         let error = check_inventory(&guessed, &json!({"status":"connected","tools":many})).unwrap_err().to_string();
         assert!(error.ends_with("get_59 (read) and 10 more"), "capped: {error}");
+        // A bundled server: the connector the app is about comes first.
+        let mut bundle: Vec<Value> = (0..80).map(|i| json!({"name": format!("gmail.get_{i}")})).collect();
+        bundle.push(json!({"name":"notion.search","readOnly":true}));
+        let mut notion = manifest();
+        notion.name = "Notion pages".into();
+        notion.reads = vec!["notion-search".into()];
+        notion.writes = vec![];
+        let error = check_inventory(&notion, &json!({"status":"connected","tools":bundle})).unwrap_err().to_string();
+        assert!(error.contains("Its tools: notion.search (read), gmail."), "{error}");
     }
     #[test]
     fn write_preview_never_needs_a_live_runtime() {

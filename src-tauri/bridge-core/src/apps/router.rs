@@ -212,7 +212,7 @@ pub fn read(core: &Arc<BridgeCore>, caller: Caller<'_>, connection: &Connection,
     if capability(&connection.harness, Op::Read) == Capability::GatedCourier {
         // No annotations exist to recheck; the read vocabulary still applies,
         // and the courier holds the agent to exactly this call.
-        if !crate::briefing_policy::is_read_tool_name(tool) {
+        if !super::personal::is_app_read_tool(tool) {
             return Err(invalid("This tool is not a read"));
         }
         // A read changes nothing, so whether it was dispatched does not matter.
@@ -231,7 +231,7 @@ pub fn read_with(
     arguments: &Value,
     mut send: impl FnMut(&Value) -> Result<Value, BridgeError>,
 ) -> Result<Value, BridgeError> {
-    if !crate::briefing_policy::is_read_tool_name(tool) {
+    if !super::personal::is_app_read_tool(tool) {
         return Err(invalid("This tool is not a read"));
     }
     let inventory = send(&json!({"kind": "inventory", "server": connection.server}))?;
@@ -343,11 +343,36 @@ pub fn choose(core: &Arc<BridgeCore>, chat: &str, server: &str) -> Result<(Conne
     }
 }
 
+/// How long a fresh Codex runtime's servers get to finish starting. A
+/// remote bundle (`codex_apps`, hundreds of connector tools) connects
+/// seconds after a local server does; asked too early it is `starting`.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// A Codex server that is still coming up. Claude defers its servers to the
+/// first turn, so waiting on Claude would never end; only Codex's statuses
+/// count.
+fn settling(status: &Value) -> bool {
+    matches!(status.as_str(), Some("starting" | "notStarted"))
+}
+
+/// Ask again while the answer says a server is still starting, until
+/// [`SETTLE`] passes.
+fn until_settled(mut ask: impl FnMut() -> Result<Value, BridgeError>, still_starting: impl Fn(&Value) -> bool) -> Result<Value, BridgeError> {
+    let started = std::time::Instant::now();
+    loop {
+        let answer = ask();
+        match &answer {
+            Ok(value) if still_starting(value) && started.elapsed() < SETTLE => std::thread::sleep(std::time::Duration::from_millis(750)),
+            _ => return answer,
+        }
+    }
+}
+
 fn choose_among(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) -> Result<(Connection, Value), BridgeError> {
     choose_with(
         list,
         |connection| {
-            let found = inventory(core, Caller::Chat(chat), connection);
+            let found = until_settled(|| inventory(core, Caller::Chat(chat), connection), |answer| connection.harness == "codex" && settling(&answer["status"]));
             // A runtime started only to look for a server that is not there
             // is stopped now, not kept warm for ten minutes.
             if !found.as_ref().is_ok_and(|inventory| inventory["status"] == "connected") {
@@ -365,7 +390,16 @@ fn choose_among(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) -> Resu
 
 /// The connected servers each direct agent among `list` has, by agent:
 /// names only. Runtimes started just to ask are stopped again.
-fn connected_servers(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) -> Vec<(String, String)> {
+/// A connected server one agent has, and the connectors a bundled server
+/// (Codex's `codex_apps`) serves under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub harness: String,
+    pub name: String,
+    pub connectors: Vec<String>,
+}
+
+fn connected_servers(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) -> Vec<Listed> {
     let mut seen = Vec::new();
     let mut connected = Vec::new();
     for candidate in list.iter().filter(|candidate| capability(&candidate.harness, Op::Inventory) == Capability::Direct) {
@@ -374,13 +408,18 @@ fn connected_servers(core: &Arc<BridgeCore>, chat: &str, list: &[Connection]) ->
             continue;
         }
         seen.push(agent);
-        let answer = send(core, Caller::Chat(chat), candidate, &json!({"kind": "servers"}));
+        let codex = candidate.harness == "codex";
+        let answer = until_settled(
+            || send(core, Caller::Chat(chat), candidate, &json!({"kind": "servers"})),
+            |answer| codex && answer["servers"].as_array().is_some_and(|servers| servers.iter().any(|server| settling(&server["status"]))),
+        );
         runtimes::retire(&key_for(candidate));
         let Ok(answer) = answer else { continue };
         for listed in answer["servers"].as_array().into_iter().flatten() {
             if listed["status"] == "connected" {
                 if let Some(name) = listed["name"].as_str().filter(|name| *name != "bridge") {
-                    connected.push((candidate.harness.clone(), name.to_owned()));
+                    let connectors = listed["connectors"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+                    connected.push(Listed { harness: candidate.harness.clone(), name: name.to_owned(), connectors });
                 }
             }
         }
@@ -396,11 +435,15 @@ pub enum NameMatch {
 }
 
 /// A connected server whose name equals `requested` ignoring case and
-/// everything but letters and digits.
-pub fn correct_name(requested: &str, connected: &[(String, String)]) -> NameMatch {
+/// everything but letters and digits; failing that, the one server that
+/// serves a connector by that name ("notion" in Codex's `codex_apps`).
+pub fn correct_name(requested: &str, connected: &[Listed]) -> NameMatch {
     let fold = |name: &str| name.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
     let wanted = fold(requested);
-    let mut names: Vec<String> = connected.iter().map(|(_, name)| name.clone()).filter(|name| !wanted.is_empty() && fold(name) == wanted).collect();
+    let mut names: Vec<String> = connected.iter().map(|listed| listed.name.clone()).filter(|name| !wanted.is_empty() && fold(name) == wanted).collect();
+    if names.is_empty() && !wanted.is_empty() {
+        names = connected.iter().filter(|listed| listed.connectors.iter().any(|connector| fold(connector) == wanted)).map(|listed| listed.name.clone()).collect();
+    }
     names.sort();
     names.dedup();
     match names.len() {
@@ -410,12 +453,13 @@ pub fn correct_name(requested: &str, connected: &[(String, String)]) -> NameMatc
     }
 }
 
-fn listing(connected: &[(String, String)]) -> String {
+fn listing(connected: &[Listed]) -> String {
     let mut by_agent: Vec<(String, Vec<String>)> = Vec::new();
-    for (harness, name) in connected {
-        match by_agent.iter_mut().find(|(agent, _)| agent == harness) {
-            Some((_, names)) => names.push(name.clone()),
-            None => by_agent.push((harness.clone(), vec![name.clone()])),
+    for listed in connected {
+        let shown = if listed.connectors.is_empty() { listed.name.clone() } else { format!("{} (connectors: {})", listed.name, listed.connectors.join(", ")) };
+        match by_agent.iter_mut().find(|(agent, _)| *agent == listed.harness) {
+            Some((_, names)) => names.push(shown),
+            None => by_agent.push((listed.harness.clone(), vec![shown])),
         }
     }
     by_agent.into_iter().map(|(harness, names)| format!("in {}: {}", agent_label(&harness), names.join(", "))).collect::<Vec<_>>().join("; ")
@@ -507,14 +551,33 @@ mod tests {
 
     #[test]
     fn a_misspelled_server_name_is_corrected_only_when_one_server_matches() {
-        let connected = vec![("codex".to_owned(), "openaiDeveloperDocs".to_owned()), ("codex".to_owned(), "railway".to_owned()), ("claude".to_owned(), "claude.ai Claude Docs".to_owned())];
+        let listed = |harness: &str, name: &str, connectors: &[&str]| Listed { harness: harness.into(), name: name.into(), connectors: connectors.iter().map(|c| (*c).to_owned()).collect() };
+        let connected = vec![listed("codex", "openaiDeveloperDocs", &[]), listed("codex", "railway", &[]), listed("claude", "claude.ai Claude Docs", &[])];
         assert_eq!(correct_name("openai-developer-docs", &connected), NameMatch::One("openaiDeveloperDocs".into()));
         assert_eq!(correct_name("Claude Docs", &connected), NameMatch::None, "a partial name is not guessed");
         assert_eq!(correct_name("claude.ai claude docs", &connected), NameMatch::One("claude.ai Claude Docs".into()));
         assert_eq!(correct_name("---", &connected), NameMatch::None);
-        let twins = vec![("codex".to_owned(), "my-docs".to_owned()), ("claude".to_owned(), "My Docs".to_owned())];
+        let twins = vec![listed("codex", "my-docs", &[]), listed("claude", "My Docs", &[])];
         assert_eq!(correct_name("mydocs", &twins), NameMatch::Several(vec!["My Docs".into(), "my-docs".into()]), "an ambiguous name is never picked");
         assert_eq!(listing(&connected), "in Codex: openaiDeveloperDocs, railway; in Claude Code: claude.ai Claude Docs");
+        // Codex bundles connectors into one server; a connector's name finds it.
+        let bundled = vec![listed("codex", "codex_apps", &["gmail", "notion"]), listed("codex", "railway", &[])];
+        assert_eq!(correct_name("Notion", &bundled), NameMatch::One("codex_apps".into()));
+        assert_eq!(correct_name("railway", &bundled), NameMatch::One("railway".into()), "a real server name wins");
+        assert_eq!(correct_name("linear", &bundled), NameMatch::None);
+        assert!(listing(&bundled).contains("codex_apps (connectors: gmail, notion)"));
+    }
+
+    #[test]
+    fn a_starting_server_is_asked_again_until_it_settles() {
+        let mut answers = vec![json!({"status": "starting"}), json!({"status": "notStarted"}), json!({"status": "connected"})].into_iter();
+        let mut asked = 0;
+        let settled = until_settled(|| { asked += 1; Ok(answers.next().unwrap()) }, |answer| settling(&answer["status"])).unwrap();
+        assert_eq!((settled["status"].as_str(), asked), (Some("connected"), 3));
+        let mut asked = 0;
+        let failed = until_settled(|| { asked += 1; Ok(json!({"status": "failed"})) }, |answer| settling(&answer["status"])).unwrap();
+        assert_eq!((failed["status"].as_str(), asked), (Some("failed"), 1), "a final status is not retried");
+        assert!(!settling(&json!("pending")), "Claude's deferred servers are never waited on");
     }
 
     #[test]

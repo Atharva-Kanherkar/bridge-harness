@@ -50,6 +50,23 @@ export const BUILD_CASES = [
     prompt: "Make me a personal app for my Railway MCP server: list my projects and services, show recent deployment logs for a service, and a button to redeploy it.",
     needsWrites: true,
   },
+  // Notion reaches agents as one connector inside Codex's bundled
+  // `codex_apps` server (tools named `notion.<tool>`); there is no server
+  // called "notion" that is signed in.
+  {
+    id: "notion-codex",
+    chat: "codex",
+    server: "codex_apps",
+    prompt: "Make me a personal app for my Notion: search my pages and read one right here in the chat.",
+    needsWrites: false,
+  },
+  {
+    id: "notion-claude",
+    chat: "claude",
+    server: "codex_apps",
+    prompt: "Make me a personal app for my Notion: search my pages and read one right here in the chat.",
+    needsWrites: false,
+  },
   {
     id: "claude-docs-claude",
     chat: "claude",
@@ -78,6 +95,8 @@ export const ROUTING_ASKS = [
   { id: "r-rw-2", ask: "Open the app for my Railway services.", expect: "railway-codex" },
   { id: "r-cd-1", ask: "Open my Claude Docs reader.", expect: "claude-docs-claude" },
   { id: "r-cd-2", ask: "I want to find and read one of my Claude docs.", expect: "claude-docs-claude" },
+  { id: "r-notion-1", ask: "Open my Notion search app.", expect: "notion-codex" },
+  { id: "r-notion-2", ask: "Let me search my Notion pages.", expect: "notion-codex" },
   { id: "r-docs-4", ask: "Pull up the app for searching OpenAI documentation, prefilled with 'structured outputs'.", expect: "docs-codex" },
   { id: "r-neg-1", ask: "What is 17 times 23?", expect: null },
   { id: "r-neg-2", ask: "Write a haiku about autumn.", expect: null },

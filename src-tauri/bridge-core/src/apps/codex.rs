@@ -147,7 +147,20 @@ fn servers(result: &Value) -> Option<Value> {
                 Some(status) => status == "connected",
                 None => server.get("tools").and_then(Value::as_object).is_some_and(|tools| !tools.is_empty()),
             };
-            Some(json!({"name": name, "status": if connected { "connected" } else { "unavailable" }}))
+            // A bundled server (Codex's connectors) names its tools
+            // `<connector>.<tool>`: its connectors let "notion" find it.
+            let mut connectors: Vec<&str> = server
+                .get("tools")
+                .and_then(Value::as_object)
+                .map(|tools| tools.keys().filter_map(|key| key.split_once('.').map(|(prefix, _)| prefix)).collect())
+                .unwrap_or_default();
+            connectors.sort_unstable();
+            connectors.dedup();
+            connectors.truncate(50);
+            // Not yet connected keeps Codex's own word (`starting`), so the
+            // router can wait for a fresh runtime's slower servers.
+            let status = if connected { "connected" } else { server.get("runtimeStatus").and_then(Value::as_str).unwrap_or("unavailable") };
+            Some(json!({"name": name, "status": status, "connectors": connectors}))
         })
         .collect();
     Some(json!({"servers": listed}))
