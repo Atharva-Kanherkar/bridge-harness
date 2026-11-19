@@ -543,10 +543,16 @@ fn the_largest_default_reply_of_each_read_tool_is_below_its_ceiling() {
     let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(core_dir.path()));
     let settings = crate::settings_tools::run(&core, true, crate::settings_tools::READ_TOOL, &json!({})).unwrap();
     assert!(size(&settings) < ceiling("settings_read"), "settings_read: {} bytes", size(&settings));
+}
 
-    // memory_search with its default limit of 10. Ten records of the largest
-    // body (4,000 characters) are above the ceiling, so that reply pages:
-    // whole records, then next.
+// memory_search has a default limit of 10, and one body can hold 4,000
+// characters. Ten records of that size are above the ceiling, so the reply
+// pages: whole records, then next.
+#[test]
+fn the_largest_default_memory_search_reply_pages_in_whole_records() {
+    let size = |result: &Value| serde_json::to_string_pretty(result).unwrap().len();
+    let ceiling = |tool: &str| limit_of(tool).unwrap().ceiling;
+    let core_dir = tempfile::tempdir().unwrap();
     let db = crate::store::open(&core_dir.path().join("memory.db")).unwrap();
     let topics = ["kiwi", "mango", "plum", "pear", "fig", "lime", "date", "yuzu", "guava", "lychee", "quince", "melon"];
     for topic in topics {

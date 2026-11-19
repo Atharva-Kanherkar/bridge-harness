@@ -203,7 +203,11 @@ reply has no `cut`.
 
 - `the_largest_default_reply_of_each_read_tool_is_below_its_ceiling`
   (`notes_search` with 20 summaries and previews of 280 characters of 3
-  bytes, `memory_search` with the default limit, `settings_read` with no key)
+  bytes, `settings_read` with no key)
+- `the_largest_default_memory_search_reply_pages_in_whole_records` (10
+  records with bodies of 4,000 characters are about 40 KB, above the ceiling.
+  The reply keeps 7 or more whole records, and `next.offset` is the count of
+  the kept records.)
 
 ## Integration / Functional Tests
 
@@ -212,8 +216,8 @@ reply has no `cut`.
   note above the ceiling comes back with `cut` and `next`. The next calls
   continue it. The joined text equals the source. The text block of each reply
   is at or below the ceiling.
-- `history_tools::eval::offline_history_eval` stays green: no change of
-  retrieval and no leak.
+- `history_tools_eval::offline` stays green: no change of retrieval and no
+  leak.
 - `apps::builtin::tests::every_bridge_tool_is_owned_by_one_app_or_core` stays
   green.
 
