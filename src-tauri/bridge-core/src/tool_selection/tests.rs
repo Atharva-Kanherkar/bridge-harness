@@ -528,3 +528,143 @@ fn the_bridge_server_is_fixed_on_for_each_harness() {
         assert!(ToolLaunch::from_row(&forged(harness)).servers_off.is_empty(), "{harness}");
     }
 }
+
+/// A fixed generator (xorshift64 from one seed): the same choices on each run.
+struct Choices(u64);
+
+impl Choices {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn pick(&mut self, pool: &[&str]) -> Vec<String> {
+        let mask = self.next();
+        let picked: Vec<String> = pool.iter().enumerate().filter(|(at, _)| (mask >> at) & 1 == 1).map(|(_, name)| (*name).to_owned()).collect();
+        sorted(picked.iter())
+    }
+
+    /// A launch that skipped the checks: it can hold the Bridge server,
+    /// unsafe keys, quotes and items of another harness.
+    fn launch(&mut self, harness: &str) -> ToolLaunch {
+        const SERVERS: [&str; 10] = ["github", "sentry", "linear", "bridge", "Bridge", "codex_apps", "my.server", "a\"b", "x.enabled=true", "approval_policy"];
+        const SKILLS: [&str; 8] = ["review", "deploy", "plugin:skill", "say \"hi\"", "back\\slash", "tab\tname", "x\",enabled=true}", "é"];
+        let servers_off = self.pick(&SERVERS);
+        let codex_apps_off = self.next() & 1 == 1;
+        let claude_skills = match self.next() % 3 {
+            0 => None,
+            1 => Some(Vec::new()),
+            _ => Some(self.pick(&SKILLS)),
+        };
+        let codex_skills_off = self.pick(&SKILLS);
+        ToolLaunch { revision: 1, harness: harness.to_owned(), servers_off, codex_apps_off, claude_skills, codex_skills_off, effective_hash: String::new() }
+    }
+}
+
+/// Claude: the selection holds only a deny list of left-out servers and a
+/// skill list. The sidecar adds the deny names to its own list as a union,
+/// and a skill list gives `Skill(<name>)` rules in place of `Skill`, so the
+/// allow set shrinks and the deny set grows. No other key can carry a mode,
+/// a hook, a sandbox, a write scope or an approval.
+fn assert_claude_narrows(tools: &ToolLaunch) {
+    let Some(selection) = claude_sidecar_selection(tools) else {
+        assert_ne!(tools.harness, "claude");
+        return;
+    };
+    let keys: Vec<&str> = selection.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(keys.iter().all(|key| matches!(*key, "deniedMcpServers" | "skills")), "{selection}");
+    let denied: Vec<String> = serde_json::from_value(selection["deniedMcpServers"].clone()).unwrap();
+    let expected: Vec<&String> = tools.servers_off.iter().filter(|name| !is_bridge(name)).collect();
+    assert_eq!(denied.iter().collect::<Vec<_>>(), expected, "{selection}");
+    match selection.get("skills") {
+        None => assert_eq!(tools.claude_skills, None),
+        // Always a list, never the "all" value or a pattern of the baseline.
+        Some(skills) => assert_eq!(Some(serde_json::from_value::<Vec<String>>(skills.clone()).unwrap()), tools.claude_skills, "{selection}"),
+    }
+}
+
+/// Codex: each value has one of the three forms and only turns a thing off.
+fn assert_codex_narrows(tools: &ToolLaunch) {
+    let values = codex_overrides(tools);
+    if tools.harness != "codex" {
+        assert!(values.is_empty(), "{values:?}");
+        return;
+    }
+    let mut skills = Vec::new();
+    for value in &values {
+        let key = value.split_once('=').map_or(value.as_str(), |(key, _)| key).to_ascii_lowercase();
+        for prefix in ["approval", "sandbox", "permissions", "mcp_servers.bridge"] {
+            assert!(!key.starts_with(prefix), "{value}");
+        }
+        match parse_codex_off(value) {
+            Some(CodexOff::Server(key)) => {
+                assert!(value.ends_with(".enabled=false") && tools.servers_off.contains(&key), "{value}");
+                assert!(!is_bridge(&key) && key != CODEX_APPS, "{value}");
+            }
+            Some(CodexOff::Apps) => assert!(tools.codex_apps_off && value == CODEX_APPS_OFF),
+            Some(CodexOff::Skills(names)) => skills.push(names),
+            None => panic!("{value} has none of the three forms"),
+        }
+    }
+    assert_eq!(values.iter().filter(|value| *value == CODEX_APPS_OFF).count(), usize::from(tools.codex_apps_off));
+    let expected: Vec<Vec<String>> = (!tools.codex_skills_off.is_empty()).then(|| tools.codex_skills_off.clone()).into_iter().collect();
+    assert_eq!(skills, expected);
+}
+
+/// OpenCode: the content equals the input plus `enabled: false` leaves, and
+/// the permission object and the Bridge entry equal the baseline.
+fn assert_opencode_narrows(tools: &ToolLaunch, baseline: &Value) {
+    let OpenCodeMerge::Applied(content) = merge_opencode(Some(&baseline.to_string()), &tools.servers_off) else {
+        panic!("a JSON object always merges");
+    };
+    let mut content: Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(content["permission"], baseline["permission"]);
+    assert_eq!(content["mcp"]["bridge"], baseline["mcp"]["bridge"]);
+    let servers = content["mcp"].as_object_mut().unwrap();
+    for name in tools.servers_off.iter().filter(|name| !is_bridge(name)) {
+        let entry = servers.get_mut(name.as_str()).and_then(Value::as_object_mut).unwrap();
+        assert_eq!(entry.remove("enabled"), Some(Value::Bool(false)), "{name}");
+        match baseline["mcp"].get(name.as_str()) {
+            Some(before) => {
+                if let Some(enabled) = before.get("enabled") {
+                    entry.insert("enabled".into(), enabled.clone());
+                }
+            }
+            None => {
+                assert!(entry.is_empty(), "{name}");
+                servers.remove(name.as_str());
+            }
+        }
+    }
+    assert_eq!(&content, baseline);
+}
+
+#[test]
+fn no_selection_widens_a_permission_on_any_harness() {
+    let baseline = json!({
+        "theme": "system",
+        "permission": {"edit": "ask", "bash": {"*": "ask"}, "github_*": "deny"},
+        "mcp": {
+            "bridge": {"type": "local", "command": ["/Applications/Bridge.app/Contents/MacOS/bridged", "--bridge-mcp-visualize"], "enabled": true},
+            "github": {"type": "local", "command": ["gh-mcp"]},
+            "sentry": {"type": "remote", "url": "https://sentry.example", "enabled": true}
+        }
+    });
+    let mut choices = Choices(0x9E37_79B9_7F4A_7C15);
+    let mut seen = BTreeSet::new();
+    let mut shapes = BTreeSet::new();
+    for round in 0..600 {
+        let tools = choices.launch(["claude", "codex", "opencode"][round % 3]);
+        seen.insert((tools.harness.clone(), tools.servers_off.clone(), tools.codex_skills_off.clone()));
+        shapes.insert((tools.servers_off.iter().any(|name| is_bridge(name)), tools.codex_apps_off, tools.claude_skills.as_ref().map(Vec::is_empty)));
+        assert_claude_narrows(&tools);
+        assert_codex_narrows(&tools);
+        assert_opencode_narrows(&tools, &baseline);
+    }
+    // The generator gives many distinct choices and each shape: with and
+    // without the Bridge server, apps on and off, and each skill choice.
+    assert!(seen.len() > 500, "{}", seen.len());
+    assert_eq!(shapes.len(), 12, "{shapes:?}");
+}
