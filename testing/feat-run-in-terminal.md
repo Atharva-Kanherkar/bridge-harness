@@ -46,6 +46,10 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
   (shell label) with a check for ~2 s → idle. On failure: "Couldn't run" with
   the error in its title for ~3 s → idle. The button is disabled while running.
 - The shell gets focus after the run.
+- A shell's PTY is sized to its xterm once it has opened. Found in the real
+  E2E: the first resize fired before the PTY existed and was dropped, so a
+  fresh shell ran 120 columns wide in a narrow dock and zsh garbled the echo
+  of a pasted command.
 
 ## Unit Tests
 
@@ -93,6 +97,8 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
   `writeTerminal` call ending in `\r`, after `openTerminal`, and resolves with
   the shell label.
 - With the active shell marked exited, the run opens a new shell and writes there.
+- Once `openTerminal` resolves, the shell sends `resizeTerminal` with its
+  xterm's rows and columns.
 
 ## Smoke Tests
 
