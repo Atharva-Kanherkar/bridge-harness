@@ -5,17 +5,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { TerminalChunk, TerminalExit } from "../types";
 import { TerminalPane, type TerminalActivity } from "./TerminalPane";
+import { requestTerminalRun } from "../terminal/runQueue";
 
 // Contract: testing/feat-dock-terminal.md §3. xterm paints to canvas, which
 // jsdom lacks; the terminals are mocked and the pane's wiring is the subject.
 
 const written = new Map<string, string[]>();
 let terminalSeq = 0;
+let bracketedPaste = false;
+let mode = "mock";
+const focused: string[] = [];
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     id = `term-${terminalSeq++}`;
     options: Record<string, unknown> = {};
+    get modes() { return { bracketedPasteMode: bracketedPaste }; }
+    focus() { focused.push(this.id); }
     open() {}
     loadAddon() {}
     dispose() {}
@@ -33,7 +39,7 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 vi.mock("../api", () => ({
-  backendMode: () => "mock",
+  backendMode: () => mode,
   bridgeApi: {
     openTerminal: vi.fn().mockResolvedValue(undefined),
     writeTerminal: vi.fn().mockResolvedValue(undefined),
@@ -84,6 +90,9 @@ beforeEach(() => {
   ws = `w${++wsSeq}`;
   vi.clearAllMocks();
   written.clear();
+  focused.length = 0;
+  bracketedPaste = false;
+  mode = "mock";
   chunkHandler = undefined;
   exitHandler = undefined;
   api.listTerminals.mockResolvedValue([]);
@@ -212,3 +221,83 @@ describe("TerminalPane multi-shell", () => {
     expect(container.textContent).toContain("1 MB scrollback");
   });
 });
+
+// Contract: testing/feat-run-in-terminal.md §Integration (TerminalPane).
+describe("TerminalPane runs from the chat", () => {
+  /** Let React render between awaits until the run settles: a run that opens
+   *  a shell needs that shell's host to mount, which never happens while a
+   *  single act scope is still awaiting the run. */
+  async function settled<T>(run: Promise<T>): Promise<T> {
+    let done = false;
+    void run.then(() => { done = true; }, () => { done = true; });
+    for (let turn = 0; turn < 100 && !done; turn += 1) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    }
+    return run;
+  }
+  const writesTo = (terminalId: string) => api.writeTerminal.mock.calls.filter(call => call[1] === terminalId).map(call => call[2]);
+
+  it("takes a run queued before it mounted and types it into the shell in one write", async () => {
+    const result = requestTerminalRun(ws, "bun install\nbun test");
+    await mount();
+    await settled(result);
+    expect(api.openTerminal).toHaveBeenCalledWith(ws, "t1");
+    expect(writesTo("t1")).toEqual(["bun install\rbun test\r"]);
+    expect(api.openTerminal.mock.invocationCallOrder[0]).toBeLessThan(api.writeTerminal.mock.invocationCallOrder[0]);
+    await expect(result).resolves.toEqual({ shell: "shell 1" });
+    expect(focused).toHaveLength(1);
+  });
+
+  it("runs in the active shell, not the first one", async () => {
+    api.listTerminals.mockResolvedValue(["t1", "t2"]);
+    await mount();
+    await click(tabButtons()[1]);
+    await settled(requestTerminalRun(ws, "pwd"));
+    expect(writesTo("t2")).toEqual(["pwd\r"]);
+    expect(writesTo("t1")).toEqual([]);
+  });
+
+  it("opens a new shell when the active one has exited", async () => {
+    api.listTerminals.mockResolvedValue(["t1"]);
+    await mount();
+    await act(async () => { exitHandler?.({ sessionId: ws, terminalId: "t1" }); });
+    const result = await settled(requestTerminalRun(ws, "ls"));
+    expect(api.openTerminal).toHaveBeenLastCalledWith(ws, "t2");
+    expect(writesTo("t2")).toEqual(["ls\r"]);
+    expect(writesTo("t1")).toEqual([]);
+    expect(result).toEqual({ shell: "shell 2" });
+    expect(tabButtons()).toHaveLength(2);
+    expect(hostFor("t2")!.className).not.toContain("hidden");
+  });
+
+  it("pastes as one edit when the shell asked for bracketed paste", async () => {
+    bracketedPaste = true;
+    api.listTerminals.mockResolvedValue(["t1"]);
+    await mount();
+    await settled(requestTerminalRun(ws, "cd app\nmake"));
+    expect(writesTo("t1")).toEqual(["\x1b[200~cd app\rmake\x1b[201~\r"]);
+  });
+
+  it("waits for a shell it just spawned to draw its prompt", async () => {
+    mode = "desktop";
+    await mount();
+    const result = requestTerminalRun(ws, "echo hi");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)); });
+    expect(writesTo("t1")).toEqual([]);
+    await emitChunk("t1", "~/app $ ");
+    await settled(result);
+    expect(writesTo("t1")).toEqual(["echo hi\r"]);
+  });
+
+  it("does not wait on a shell that was already alive", async () => {
+    mode = "desktop";
+    api.listTerminals.mockResolvedValue(["t1"]);
+    await mount();
+    const started = Date.now();
+    await settled(requestTerminalRun(ws, "echo hi"));
+    expect(writesTo("t1")).toEqual(["echo hi\r"]);
+    expect(Date.now() - started).toBeLessThan(PROMPT_FREE_MS);
+  });
+});
+
+const PROMPT_FREE_MS = 1_000;

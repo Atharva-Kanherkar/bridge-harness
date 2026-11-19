@@ -6,6 +6,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { backendMode, bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { SCROLLBACK_PER_SESSION_LIMIT, rememberScrollback, scrollbackFor } from "../terminalScrollback";
+import { terminalRunInput } from "../terminal/runCommand";
+import { onTerminalRun, type TerminalRun } from "../terminal/runQueue";
 
 // The terminal pane: several real shells per workspace, each a PTY in the
 // workspace's worktree. A dev server, a test watcher, and an ad-hoc prompt
@@ -16,6 +18,16 @@ import { SCROLLBACK_PER_SESSION_LIMIT, rememberScrollback, scrollbackFor } from 
 type ShellMark = "output" | "exited";
 
 export type TerminalActivity = { running: number; attention: boolean };
+
+type RegisterShell = (terminalId: string, shell: { term: Terminal; opened: Promise<void> } | null) => void;
+
+/** How long a shell this pane just spawned may take to draw its first prompt
+ *  before a run is typed anyway, and the quiet that means it has drawn. */
+const PROMPT_WAIT_MS = 4_000;
+const PROMPT_QUIET_MS = 150;
+const SHELL_MOUNT_WAIT_MS = 5_000;
+
+const sleep = (ms: number) => new Promise<void>(resolve => { window.setTimeout(resolve, ms); });
 
 /** Which shells each workspace has, surviving pane unmounts the way
  *  scrollback does — the roster is UI memory, the PTYs live in the runtime. */
@@ -35,7 +47,7 @@ function ShellHost({ workspaceId, terminalId, active, paneVisible, register }: {
   terminalId: string;
   active: boolean;
   paneVisible: boolean;
-  register: (terminalId: string, term: Terminal | null) => void;
+  register: RegisterShell;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const fitRef = useRef<FitAddon>();
@@ -49,12 +61,13 @@ function ShellHost({ workspaceId, terminalId, active, paneVisible, register }: {
     });
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
     fitRef.current = fit;
-    register(terminalId, term);
     const theme = new MutationObserver(() => { term.options.theme = terminalTheme(); });
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
     const previous = scrollbackFor(`${workspaceId}:${terminalId}`); if (previous) term.write(previous);
     else if (backendMode() === "mock") term.writeln("\x1b[90mBridge workspace shell · terminal is isolated from the agent conversation.\x1b[0m\r\n$ ");
-    void bridgeApi.openTerminal(workspaceId, terminalId).catch(error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`));
+    const opened = bridgeApi.openTerminal(workspaceId, terminalId);
+    opened.catch(error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`));
+    register(terminalId, { term, opened });
     const data = term.onData(value => void bridgeApi.writeTerminal(workspaceId, terminalId, value));
     const resize = new ResizeObserver(() => { fit.fit(); void bridgeApi.resizeTerminal(workspaceId, terminalId, term.rows, term.cols); }); resize.observe(host.current);
     return () => { register(terminalId, null); theme.disconnect(); resize.disconnect(); data.dispose(); term.dispose(); };
@@ -90,14 +103,30 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
 
-  const register = useCallback((terminalId: string, term: Terminal | null) => {
-    if (term) terms.current.set(terminalId, term);
-    else terms.current.delete(terminalId);
+  // What a chat run needs from each shell: its xterm, the promise its PTY
+  // opened with, when this pane spawned it, and when it last spoke.
+  const opened = useRef(new Map<string, Promise<void>>());
+  const shellWaiters = useRef(new Map<string, () => void>());
+  const born = useRef(new Map<string, number>());
+  const spokeAt = useRef(new Map<string, number>());
+  const marksRef = useRef(marks);
+  marksRef.current = marks;
+  const runs = useRef(Promise.resolve());
+
+  const register = useCallback<RegisterShell>((terminalId, shell) => {
+    if (shell) {
+      terms.current.set(terminalId, shell.term);
+      opened.current.set(terminalId, shell.opened);
+      shellWaiters.current.get(terminalId)?.();
+    } else {
+      terms.current.delete(terminalId);
+      opened.current.delete(terminalId);
+    }
   }, []);
 
   const openShell = useCallback((workspace: string, terminalId: string, activate = true) => {
     const roster = rosterFor(workspace);
-    if (!roster.ids.includes(terminalId)) roster.ids.push(terminalId);
+    if (!roster.ids.includes(terminalId)) { roster.ids.push(terminalId); born.current.set(terminalId, Date.now()); }
     const ordinal = Number(/^t(\d+)$/.exec(terminalId)?.[1] ?? NaN);
     if (Number.isFinite(ordinal)) roster.counter = Math.max(roster.counter, ordinal);
     if (activate) roster.active = terminalId;
@@ -114,11 +143,74 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
     }
   }, []);
 
+  /** The shell's xterm once its host has mounted. */
+  const shellFor = useCallback((terminalId: string) => {
+    const mounted = terms.current.get(terminalId);
+    if (mounted) return Promise.resolve(mounted);
+    return new Promise<Terminal>((resolve, reject) => {
+      const timer = window.setTimeout(() => { shellWaiters.current.delete(terminalId); reject(new Error("The shell did not start.")); }, SHELL_MOUNT_WAIT_MS);
+      shellWaiters.current.set(terminalId, () => {
+        window.clearTimeout(timer);
+        shellWaiters.current.delete(terminalId);
+        resolve(terms.current.get(terminalId)!);
+      });
+    });
+  }, []);
+
+  /** A shell this pane just spawned is still sourcing its rc files: typing
+   *  into it now races the prompt. Wait for it to speak and fall quiet. */
+  const promptDrawn = useCallback(async (terminalId: string) => {
+    const birth = born.current.get(terminalId);
+    if (birth === undefined || backendMode() === "mock") return;
+    while (Date.now() - birth < PROMPT_WAIT_MS) {
+      const spoke = spokeAt.current.get(terminalId);
+      if (spoke !== undefined && Date.now() - spoke >= PROMPT_QUIET_MS) return;
+      await sleep(50);
+    }
+  }, []);
+
+  /** A run the chat asked for: typed into the active shell, or a new one when
+   *  there is none or it has exited, then Enter. One write, so the paste and
+   *  the Enter cannot arrive out of order. */
+  const takeRun = useCallback(async (workspace: string, run: TerminalRun) => {
+    const roster = rosterFor(workspace);
+    let target = roster.ids.includes(roster.active) ? roster.active : "";
+    if (!target || marksRef.current.get(target) === "exited") {
+      roster.counter += 1;
+      target = `t${roster.counter}`;
+      openShell(workspace, target);
+    } else if (activeRef.current !== target) {
+      openShell(workspace, target);
+    }
+    try {
+      const term = await shellFor(target);
+      await opened.current.get(target);
+      await promptDrawn(target);
+      if (!run.open()) return;
+      await bridgeApi.writeTerminal(workspace, target, terminalRunInput(run.command, term.modes.bracketedPasteMode));
+      // The browser preview has no shell to echo what it was given.
+      if (backendMode() === "mock") term.write(`${run.command.replace(/\n/g, "\r\n")}\r\n\x1b[90m(browser preview: Bridge desktop runs this in your worktree)\x1b[0m\r\n$ `);
+      born.current.delete(target);
+      term.focus();
+      run.settle(roster.labels.get(target) ?? target.replace(/^t/, "shell "));
+    } catch (error) {
+      run.fail(error);
+    }
+  }, [openShell, shellFor, promptDrawn]);
+
   // Reattach instead of respawn: the runtime knows which shells are still
   // alive; the roster remembers which the user had. Their union is the strip.
+  // Runs from the chat are taken only once the roster is known, so a run can
+  // never spawn a shell beside live ones the list had not returned yet.
   useEffect(() => {
     if (!workspaceId) return;
     let live = true;
+    let offRuns: (() => void) | undefined;
+    const takeRuns = () => {
+      offRuns = onTerminalRun(workspaceId, run => {
+        runs.current = runs.current.then(() => takeRun(workspaceId, run));
+      });
+    };
     const roster = rosterFor(workspaceId);
     void bridgeApi.listTerminals(workspaceId).then(alive => {
       if (!live) return;
@@ -132,15 +224,17 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
       if (roster.ids.length === 0) {
         roster.counter += 1;
         openShell(workspaceId, `t${roster.counter}`);
+        takeRuns();
         return;
       }
       if (!roster.ids.includes(roster.active)) roster.active = roster.ids[0];
       setShells([...roster.ids]);
       setLabels(new Map(roster.labels));
       setActive(roster.active);
+      takeRuns();
     });
-    return () => { live = false; };
-  }, [workspaceId, openShell]);
+    return () => { live = false; offRuns?.(); };
+  }, [workspaceId, openShell, takeRun]);
 
   // One subscription for the whole pane: chunks route to their shell's xterm,
   // and bytes for a shell that is not on screen mark its tab instead.
@@ -151,6 +245,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
     void bridgeApi.onTerminal(chunk => {
       if (chunk.sessionId !== workspaceId) return;
       rememberScrollback(`${chunk.sessionId}:${chunk.terminalId}`, chunk.data);
+      spokeAt.current.set(chunk.terminalId, Date.now());
       terms.current.get(chunk.terminalId)?.write(chunk.data);
       setMarks(previous => {
         const background = chunk.terminalId !== activeRef.current || !visibleRef.current;
