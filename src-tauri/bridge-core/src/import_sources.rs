@@ -22,14 +22,6 @@ struct KnownTool {
 
 const OTHER_TOOLS: &[KnownTool] = &[
     KnownTool {
-        tool: "codex",
-        label: "Codex",
-        supported: false,
-        markers: &[".codex/sessions"],
-        worktree_roots: &[],
-        note: "Codex chats are next. Nothing is read until then.",
-    },
-    KnownTool {
         tool: "opencode",
         label: "OpenCode",
         supported: false,
@@ -202,9 +194,52 @@ pub fn detect(
     claude_config_dir: Option<&Path>,
     accounts: &[PathBuf],
 ) -> Vec<wire::DetectedImportSource> {
-    std::iter::once(claude(home, claude_config_dir, accounts))
+    detect_with(home, claude_config_dir, accounts, None)
+}
+
+/// [`detect`], with the Codex home named (`CODEX_HOME`) instead of `~/.codex`.
+pub fn detect_with(
+    home: &Path,
+    claude_config_dir: Option<&Path>,
+    accounts: &[PathBuf],
+    codex_home: Option<&Path>,
+) -> Vec<wire::DetectedImportSource> {
+    [claude(home, claude_config_dir, accounts), codex(home, codex_home)]
+        .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
         .collect()
+}
+
+/// Codex: each rollout is a chat, counted from its first line only. One that
+/// ran in the OS temp folder is a background run; a subagent's thread comes
+/// over under its parent and is not counted on its own.
+fn codex(home: &Path, codex_home: Option<&Path>) -> wire::DetectedImportSource {
+    let root = codex_home.map(Path::to_path_buf).unwrap_or_else(|| home.join(".codex"));
+    let installed = root.join("sessions").is_dir() || root.join("archived_sessions").is_dir();
+    let mut counts = wire::ImportSourceCounts::default();
+    let mut folders = std::collections::HashSet::new();
+    if installed {
+        for path in crate::codex_import::list_rollouts(&root) {
+            let meta = crate::codex_import::rollout::read_meta(&path).unwrap_or_default();
+            let cwd = meta.cwd.unwrap_or_default();
+            if crate::codex_import::is_temp_folder(&cwd) {
+                counts.background += 1;
+            } else if meta.parent_thread_id.is_none() {
+                counts.chats += 1;
+                folders.insert(cwd);
+            }
+        }
+        counts.projects = folders.len() as u64;
+    }
+    wire::DetectedImportSource {
+        tool: crate::codex_import::PROVIDER.into(),
+        label: "Codex".into(),
+        installed,
+        supported: true,
+        roots: if installed { vec![root.canonicalize().unwrap_or(root).to_string_lossy().into_owned()] } else { Vec::new() },
+        counts,
+        note: Some("Chats with their commands, edits and MCP calls. Codex keeps using its own memory.".into()),
+    }
 }
 
 #[cfg(test)]
@@ -233,7 +268,8 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.installed));
-        assert!(sources[0].supported && sources.iter().skip(1).all(|source| !source.supported));
+        assert!(sources[0].supported && sources[1].supported, "Claude Code and Codex import today");
+        assert!(sources.iter().skip(2).all(|source| !source.supported));
     }
 
     #[test]
@@ -263,6 +299,29 @@ mod tests {
             ),
             (3, 2, 1, 2)
         );
+    }
+
+    #[test]
+    fn codex_counts_chats_from_first_lines_leaving_background_runs_and_subagents_out() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        let rollout = |rel: &str, cwd: &str, parent: Option<&str>| {
+            let source = parent.map_or(serde_json::json!("exec"), |parent| serde_json::json!({ "subagent": { "thread_spawn": { "parent_thread_id": parent } } }));
+            let line = serde_json::json!({ "timestamp": "t", "type": "session_meta", "payload": { "id": rel, "cwd": cwd, "source": source } });
+            let path = codex.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("{line}\n")).unwrap();
+        };
+        rollout("sessions/2026/11/01/rollout-a.jsonl", "/work/app", None);
+        rollout("sessions/2026/11/01/rollout-b.jsonl", "/work/api", None);
+        rollout("sessions/2026/11/01/rollout-c.jsonl", "/work/app", Some("a"));
+        rollout("sessions/2026/11/02/rollout-d.jsonl", "/private/var/folders/xy/T/probe", None);
+        rollout("archived_sessions/rollout-e.jsonl", "/work/app", None);
+
+        let codex = detect(home.path(), None, &[]).into_iter().find(|source| source.tool == "codex").unwrap();
+
+        assert!(codex.installed && codex.supported);
+        assert_eq!((codex.counts.chats, codex.counts.projects, codex.counts.background), (3, 2, 1));
     }
 
     #[test]

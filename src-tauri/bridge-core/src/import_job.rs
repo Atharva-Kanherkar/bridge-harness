@@ -10,6 +10,7 @@
 //! by the importer and not imported twice.
 
 use crate::claude_import::{self, ClaudeCodeImporter};
+use crate::codex_import::{self, CodexImporter};
 use crate::BridgeError;
 use crate::events::CoreEvent;
 use crate::external_import::{
@@ -84,13 +85,74 @@ pub fn status(core: &BridgeCore) -> Result<Option<wire::ImportJob>, BridgeError>
     Ok(latest(&db)?.map(|(job, _)| job))
 }
 
+/// A tool the job can import from, and how it reads that tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    Claude,
+    Codex,
+}
+
+impl Source {
+    pub(crate) fn of(tool: &str) -> Option<Self> {
+        match tool {
+            claude_import::PROVIDER => Some(Self::Claude),
+            codex_import::PROVIDER => Some(Self::Codex),
+            _ => None,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+    /// The folders this machine keeps the tool's data in.
+    fn machine_roots(self) -> Vec<PathBuf> {
+        match self {
+            Self::Claude => claude_import::machine_config_roots(),
+            Self::Codex => codex_import::machine_codex_homes(),
+        }
+    }
+    fn work(self, roots: &[PathBuf]) -> Result<claude_import::JobWork, BridgeError> {
+        match self {
+            Self::Claude => claude_import::job_work(roots),
+            Self::Codex => codex_import::job_work(roots),
+        }
+    }
+    fn key(self, artifact: &DiscoveredArtifact) -> String {
+        match self {
+            Self::Claude => claude_import::job_key(artifact),
+            Self::Codex => codex_import::job_key(artifact),
+        }
+    }
+    fn folder(self, path: &Path) -> Option<String> {
+        match self {
+            Self::Claude => claude_import::transcript_folder(path),
+            Self::Codex => codex_import::transcript_folder(path),
+        }
+    }
+    fn preview(self, roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> Result<Vec<ImportCandidate>, BridgeError> {
+        let selection = DiscoverySelection {
+            artifact_ids: artifacts.iter().map(|artifact| artifact.artifact_id.clone()).collect(),
+        };
+        match self {
+            Self::Claude => ClaudeCodeImporter.preview(&claude_import::job_discovery(roots, artifacts), &selection),
+            Self::Codex => CodexImporter.preview(&codex_import::job_discovery(roots, artifacts), &selection),
+        }
+    }
+    fn normalize(self, candidate: ImportCandidate) -> Result<crate::external_import::NormalizedImportCandidate, BridgeError> {
+        match self {
+            Self::Claude => ClaudeCodeImporter.normalize(candidate),
+            Self::Codex => CodexImporter.normalize(candidate),
+        }
+    }
+}
+
 /// Start importing everything from `tool` in the background, and return at
 /// once. While a job runs, it is returned instead of starting another.
 pub fn start(core: &Arc<BridgeCore>, tool: &str) -> Result<wire::ImportJob, BridgeError> {
-    if tool != claude_import::PROVIDER {
-        return Err(BridgeError::Invalid(format!("Bridge cannot import from '{tool}' yet")));
-    }
-    start_with_roots(core, tool, claude_import::machine_config_roots())
+    let source = Source::of(tool).ok_or_else(|| BridgeError::Invalid(format!("Bridge cannot import from '{tool}' yet")))?;
+    start_with_roots(core, tool, source.machine_roots())
 }
 
 pub(crate) fn start_with_roots(
@@ -101,9 +163,13 @@ pub(crate) fn start_with_roots(
     if core.import_job_running.swap(true, Ordering::SeqCst) {
         return status(core)?.ok_or_else(|| BridgeError::Invalid("An import is starting".into()));
     }
+    let Some(source) = Source::of(tool) else {
+        core.import_job_running.store(false, Ordering::SeqCst);
+        return Err(BridgeError::Invalid(format!("Bridge cannot import from '{tool}' yet")));
+    };
     if roots.is_empty() {
         core.import_job_running.store(false, Ordering::SeqCst);
-        return Err(BridgeError::Invalid("Claude Code was not found on this Mac".into()));
+        return Err(BridgeError::Invalid(format!("{} was not found on this Mac", source.label())));
     }
     let now = Utc::now().to_rfc3339();
     let job = wire::ImportJob {
@@ -122,14 +188,20 @@ pub(crate) fn start_with_roots(
     Ok(job)
 }
 
-/// On startup: carry on with an import Bridge quit in the middle of.
+/// On startup: carry on with an import Bridge quit in the middle of, from
+/// the tool it was importing.
 pub fn start_import_maintenance(core: Arc<BridgeCore>) {
-    if let Err(error) = resume_with_roots(&core, claude_import::machine_config_roots()) {
+    if let Err(error) = resume_with(&core, |source| source.machine_roots()) {
         eprintln!("bridge: could not resume the import: {error}");
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resume_with_roots(core: &Arc<BridgeCore>, roots: Vec<PathBuf>) -> Result<bool, BridgeError> {
+    resume_with(core, |_| roots.clone())
+}
+
+fn resume_with(core: &Arc<BridgeCore>, roots_for: impl Fn(Source) -> Vec<PathBuf>) -> Result<bool, BridgeError> {
     let saved = {
         let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         latest(&db)?
@@ -137,10 +209,13 @@ pub(crate) fn resume_with_roots(core: &Arc<BridgeCore>, roots: Vec<PathBuf>) -> 
     let Some((job, cursor)) = saved.filter(|(job, _)| job.status == "running") else {
         return Ok(false);
     };
+    let Some(source) = Source::of(&job.tool) else {
+        return Ok(false);
+    };
     if core.import_job_running.swap(true, Ordering::SeqCst) {
         return Ok(false);
     }
-    spawn(core.clone(), job, roots, cursor);
+    spawn(core.clone(), job, roots_for(source), cursor);
     Ok(true)
 }
 
@@ -156,7 +231,8 @@ fn spawn(core: Arc<BridgeCore>, job: wire::ImportJob, roots: Vec<PathBuf>, curso
 
 /// Run a job to the end, then record how it ended. Runs on its own thread.
 pub(crate) fn run(core: &Arc<BridgeCore>, mut job: wire::ImportJob, roots: &[PathBuf], cursor: Option<String>) {
-    let outcome = Runner { core, job: &mut job, last_publish: None }.run(roots, cursor);
+    let source = Source::of(&job.tool).unwrap_or(Source::Claude);
+    let outcome = Runner { core, source, job: &mut job, last_publish: None }.run(roots, cursor);
     job.status = if outcome.is_ok() { "done" } else { "failed" }.into();
     if let Err(error) = outcome {
         job.errors.push(error.to_string());
@@ -174,13 +250,14 @@ pub(crate) fn run(core: &Arc<BridgeCore>, mut job: wire::ImportJob, roots: &[Pat
 
 struct Runner<'a> {
     core: &'a Arc<BridgeCore>,
+    source: Source,
     job: &'a mut wire::ImportJob,
     last_publish: Option<Instant>,
 }
 
 impl Runner<'_> {
     fn run(&mut self, roots: &[PathBuf], cursor: Option<String>) -> Result<(), BridgeError> {
-        let work = claude_import::job_work(roots)?;
+        let work = self.source.work(roots)?;
         self.run_work(work, cursor)
     }
 
@@ -188,21 +265,21 @@ impl Runner<'_> {
         let remaining: Vec<DiscoveredArtifact> = work
             .artifacts
             .into_iter()
-            .filter(|artifact| cursor.as_deref().is_none_or(|cursor| claude_import::job_key(artifact).as_str() > cursor))
+            .filter(|artifact| cursor.as_deref().is_none_or(|cursor| self.source.key(artifact).as_str() > cursor))
             .collect();
         self.job.total = self.job.processed + remaining.len() as u64;
         self.job.left_out = work.left_out;
         self.checkpoint(cursor.as_deref())?;
         for batch in batches(remaining) {
-            let Some(last) = batch.last().map(claude_import::job_key) else {
+            let Some(last) = batch.last().map(|artifact| self.source.key(artifact)) else {
                 continue;
             };
             let files = batch.len() as u64;
             self.job.current_project = batch
                 .iter()
                 .find(|artifact| artifact.kind == CandidateKind::Conversation)
-                .and_then(|artifact| claude_import::transcript_folder(Path::new(&artifact.canonical_source_ref)));
-            match import_batch(self.core, &work.roots, batch) {
+                .and_then(|artifact| self.source.folder(Path::new(&artifact.canonical_source_ref)));
+            match import_batch(self.core, self.source, &work.roots, batch) {
                 Ok(outcome) => {
                     add_batch(self.job, &outcome.candidates, outcome.commit.as_ref());
                     for refusal in &outcome.refusals {
@@ -274,24 +351,21 @@ struct Refusal {
 /// transaction, so one item Bridge refuses never costs the rest of the batch.
 fn import_batch(
     core: &Arc<BridgeCore>,
+    source: Source,
     roots: &[PathBuf],
     artifacts: Vec<DiscoveredArtifact>,
 ) -> Result<BatchOutcome, BridgeError> {
-    let selection = DiscoverySelection {
-        artifact_ids: artifacts.iter().map(|artifact| artifact.artifact_id.clone()).collect(),
-    };
-    let discovery = claude_import::job_discovery(roots, artifacts);
     // The report needs each candidate's id, kind and diagnostics, never its
     // messages: keep a copy without the payload, and move the payload on to
     // the commit instead of holding a second copy of every chat.
     let mut previewed = Vec::new();
     let mut normalized = Vec::new();
-    for mut candidate in ClaudeCodeImporter.preview(&discovery, &selection)? {
+    for mut candidate in source.preview(roots, artifacts)? {
         let payload = std::mem::take(&mut candidate.normalized_payload);
         previewed.push(candidate.clone());
         if candidate.kind != CandidateKind::Unsupported {
             candidate.normalized_payload = payload;
-            normalized.push(ClaudeCodeImporter.normalize(candidate)?);
+            normalized.push(source.normalize(candidate)?);
         }
     }
     if normalized.is_empty() {
@@ -447,6 +521,10 @@ fn skipped_record_text(reason: &str) -> Option<String> {
     }
     Some(if let Some(kind) = reason.strip_prefix("record:") {
         format!("records of a kind Bridge does not know ({kind})")
+    } else if let Some(kind) = reason.strip_prefix("item:") {
+        format!("items of a kind Bridge does not show ({kind})")
+    } else if let Some(kind) = reason.strip_prefix("event:") {
+        format!("events of a kind Bridge does not know ({kind})")
     } else if let Some(kind) = reason.strip_prefix("system:") {
         format!("system records of a kind Bridge does not know ({kind})")
     } else if let Some(kind) = reason.strip_prefix("content:") {
