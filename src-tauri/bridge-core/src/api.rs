@@ -1214,6 +1214,18 @@ pub fn github_merge_config(core: &Arc<BridgeCore>, workspace_id: &str) -> Result
     github_wire(config)
 }
 
+/// One image or video from a GitHub body, for media the webview cannot load on
+/// its own (a private attachment, or a video served without a media type).
+pub fn github_media(core: &Arc<BridgeCore>, workspace_id: &str, url: &str) -> Result<wire::GithubMediaResult, BridgeError> {
+    use base64::Engine as _;
+    let path = locked_workspace_path(core, workspace_id)?;
+    let media = core.github_surface.media(Path::new(&path), url).map_err(github_error)?;
+    Ok(wire::GithubMediaResult {
+        mime_type: media.mime_type,
+        data: base64::engine::general_purpose::STANDARD.encode(media.bytes),
+    })
+}
+
 /// Perform one mutating GitHub action. The approval gate is consulted *before*
 /// the surface is touched: a denied action returns without resolving the
 /// repository or spawning any subprocess. Only an approved action reaches `gh`.
@@ -7826,7 +7838,7 @@ mod tests {
             .join("../../testing/fixtures/github-act-policy.json");
         let cases: Vec<PolicyReplayCase> =
             serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        assert_eq!(cases.len(), 20, "approve and deny for PR and issue action kinds");
+        assert_eq!(cases.len(), 24, "approve and deny for PR and issue action kinds");
         let scratch = tempfile::tempdir().unwrap();
         let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
         for case in cases {

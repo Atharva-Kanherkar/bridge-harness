@@ -60,6 +60,7 @@ methods![
     (GithubIssue, "github", "github_issue"),
     (GithubRepository, "github", "github_repository"),
     (GithubMergeConfig, "github", "github_merge_config"),
+    (GithubMedia, "github", "github_media"),
     (GithubAct, "github", "github_act"),
     (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),

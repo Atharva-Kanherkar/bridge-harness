@@ -83,6 +83,9 @@ pub enum Mergeability {
 #[serde(rename_all = "camelCase")]
 pub struct GithubActor {
     pub login: String,
+    /// The account's avatar, present on reads that asked GitHub for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -190,7 +193,46 @@ pub struct ReviewThread {
     pub path: String,
     pub line: Option<u64>,
     pub original_line: Option<u64>,
+    /// The diff hunk the conversation was opened on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_hunk: Option<String>,
+    /// Whether the signed-in account may resolve this conversation.
+    #[serde(default)]
+    pub viewer_can_resolve: bool,
+    /// Whether the signed-in account may reopen this conversation.
+    #[serde(default)]
+    pub viewer_can_unresolve: bool,
+    /// Whether the signed-in account may reply in this conversation.
+    #[serde(default)]
+    pub viewer_can_reply: bool,
     pub comments: Vec<ReviewComment>,
+}
+
+/// Which side of a diff a new review comment sits on: the old file or the new.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GithubDiffSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubMediaParams {
+    pub workspace_id: String,
+    /// An https address on a GitHub-owned host. Anything else is refused.
+    pub url: String,
+}
+
+/// One image or video, fetched with the signed-in account so an attachment on
+/// a private repository can be shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubMediaResult {
+    /// Sniffed from the bytes; always `image/*` or `video/*`.
+    pub mime_type: String,
+    /// The file, base64-encoded.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -432,6 +474,23 @@ pub enum GithubAction {
         number: u64,
         /// The branch name to recreate.
         branch: String,
+    },
+    /// Resolve (`resolved: true`) or reopen one review conversation.
+    ResolveThread {
+        number: u64,
+        /// The conversation's node id, as returned with the pull request.
+        #[serde(rename = "threadId")]
+        thread_id: String,
+        resolved: bool,
+    },
+    /// Open a new review conversation on one line of the diff.
+    ReviewComment {
+        number: u64,
+        path: String,
+        /// The line in the file: the new file for `right`, the old for `left`.
+        line: u64,
+        side: GithubDiffSide,
+        body: String,
     },
 }
 
@@ -838,7 +897,7 @@ mod tests {
             message_headline: "feat(github): show commits".into(),
             message_body: "The pane never listed them.".into(),
             committed_at: "2026-09-09T10:00:00Z".into(),
-            authors: vec![GithubActor { login: "atharva".into() }],
+            authors: vec![GithubActor { login: "atharva".into(), avatar_url: None }],
         };
         assert_eq!(
             serde_json::to_value(&commit).unwrap()["abbreviatedOid"],
