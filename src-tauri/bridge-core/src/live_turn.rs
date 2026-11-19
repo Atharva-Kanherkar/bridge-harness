@@ -1704,6 +1704,7 @@ pub fn start_session(
         process_id,
         current_turn,
         reader,
+        None,
     );
     core.events.publish(CoreEvent::StateChanged);
     store::state(&state.db.lock().unwrap())
@@ -2344,6 +2345,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let process_id = started.runtime.process_id();
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
+    let mut usage_replay = None;
     {
         let db = state.db.lock().unwrap();
         // The change event of a tool set commits with the row of the launch
@@ -2466,13 +2468,21 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         }
         // A native resume restores the Claude session totals in the new
         // process. The normalizer starts from the last stored totals, before
-        // the first frame of the launch.
-        if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native && adapter_id == "claude" {
+        // the first frame of the launch. A resumed Codex thread sends its last
+        // usage again, so the launch keeps that usage to drop the repeat.
+        if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native && matches!(adapter_id, "claude" | "codex") {
             if let Some(usage_event) = last_usage_event(&db, &session_id) {
-                state.adapter_registry.seed_usage_totals(adapter_id, &thread_id, &usage_event);
+                if adapter_id == "claude" {
+                    state.adapter_registry.seed_usage_totals(adapter_id, &thread_id, &usage_event);
+                } else {
+                    usage_replay = CodexUsageReplay::from_usage_event(&usage_event, &thread_id);
+                }
             }
         }
         for message in &started.startup_messages {
+            if !passes_usage_replay(&mut usage_replay, message) {
+                continue;
+            }
             persist_agent_value(
                 &db,
                 &state.adapter_registry,
@@ -2499,6 +2509,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         process_id,
         current_turn,
         reader,
+        usage_replay,
     );
     // Workspace open is the one place a network fetch is affordable, so the
     // stale-base check runs against a freshly fetched ref here and against the
@@ -2653,6 +2664,7 @@ fn spawn_reader_thread(
     launch_process_id: u32,
     current_turn: Arc<Mutex<Option<String>>>,
     mut reader: Box<dyn BufRead + Send>,
+    mut usage_replay: Option<CodexUsageReplay>,
 ) {
     let launch_gate = Arc::new(Mutex::new(true));
     core.reader_launches
@@ -2703,6 +2715,11 @@ fn spawn_reader_thread(
                         // heartbeat before normalization so tool-run and
                         // reasoning frames all count.
                         record_session_activity(&core, &session_id, tracks_worker);
+                        // The repeat of the last usage of a resumed Codex
+                        // thread makes no entry, no ledger row and no reading.
+                        if !passes_usage_replay(&mut usage_replay, &value) {
+                            continue;
+                        }
                         // A detached model-switch summary runtime shares this
                         // session id with the incoming model. Its frames drive
                         // only the checkpoint pipeline and must never reach the
@@ -2891,6 +2908,55 @@ fn last_usage_event(db: &Connection, session_id: &str) -> Option<serde_json::Val
     )
     .ok()
     .and_then(|payload| serde_json::from_str(&payload).ok())
+}
+
+/// The last usage of a resumed Codex thread. After `thread/resume`, Codex
+/// sends the usage of the last turn again. That repeat is no new usage.
+struct CodexUsageReplay {
+    thread_id: String,
+    turn_id: String,
+    token_usage: serde_json::Value,
+}
+
+impl CodexUsageReplay {
+    /// The seed of a native resume of `thread_id`, from the stored payload of
+    /// the last `usage.updated` entry of the chat. An entry of another adapter
+    /// gives nothing.
+    fn from_usage_event(usage_event: &serde_json::Value, thread_id: &str) -> Option<Self> {
+        if usage_event.pointer("/providerMeta/adapter").and_then(serde_json::Value::as_str) != Some("codex") {
+            return None;
+        }
+        let data = usage_event.get("data")?;
+        Some(Self {
+            thread_id: thread_id.to_owned(),
+            turn_id: data.get("turnId")?.as_str()?.to_owned(),
+            token_usage: data.get("tokenUsage").filter(|usage| usage.is_object())?.clone(),
+        })
+    }
+}
+
+/// False for a root usage frame with the turn id and the `tokenUsage` of the
+/// seed. The first root `turn/started` retires the seed, so each later frame
+/// passes. The check reads memory only.
+fn passes_usage_replay(seed: &mut Option<CodexUsageReplay>, frame: &serde_json::Value) -> bool {
+    let Some(replay) = seed.as_ref() else {
+        return true;
+    };
+    let params = frame.get("params");
+    let field = |name: &str| params.and_then(|params| params.get(name));
+    let thread = field("threadId").and_then(serde_json::Value::as_str);
+    match frame.get("method").and_then(serde_json::Value::as_str) {
+        Some("turn/started") if thread.is_none_or(|thread| thread == replay.thread_id) => {
+            *seed = None;
+            true
+        }
+        Some("thread/tokenUsage/updated") => {
+            thread != Some(replay.thread_id.as_str())
+                || field("turnId").and_then(serde_json::Value::as_str) != Some(replay.turn_id.as_str())
+                || field("tokenUsage") != Some(&replay.token_usage)
+        }
+        _ => true,
+    }
 }
 
 fn persist_agent_value(
@@ -6755,6 +6821,7 @@ pub fn launch_worker_outcome(
         process_id,
         current_turn,
         reader,
+        None,
     );
     if let Err(error) = deliver_worker_objective(&state, &session_id, &directive.objective)
     {
@@ -16549,6 +16616,7 @@ mod submit_input_tests {
             0,
             Arc::new(Mutex::new(Some("turn-1".into()))),
             Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            None,
         );
 
         for _ in 0..100 {
@@ -20444,6 +20512,7 @@ mod retry_settlement_tests {
             0,
             Arc::new(Mutex::new(Some("turn-1".into()))),
             Box::new(FedLines(lines, Vec::new(), 0)),
+            None,
         );
         // The launch seeds a baseline; age it so a refresh is observable.
         thread::sleep(Duration::from_millis(50));

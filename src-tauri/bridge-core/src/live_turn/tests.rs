@@ -201,6 +201,10 @@ struct Script {
     drops_codex_skills: bool,
     /// Each usage seed: the harness, the provider id and the stored payload.
     seeds: Vec<(&'static str, String, Value)>,
+    /// The buffered startup frames of the next launch.
+    startup: Vec<Value>,
+    /// The lines that the reader of the next launch reads before it waits.
+    output: Vec<Value>,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -226,12 +230,16 @@ impl Live {
             ("resume", Some(provider)) => provider.to_owned(),
             _ => format!("thread-{number}"),
         };
-        let reader: Box<dyn std::io::BufRead + Send> =
-            if script.output_ends { Box::new(std::io::Cursor::new(Vec::new())) } else { Box::new(std::io::BufReader::new(Idle)) };
+        let lines: String = std::mem::take(&mut script.output).iter().map(|line| format!("{line}\n")).collect();
+        let reader: Box<dyn std::io::BufRead + Send> = if script.output_ends {
+            Box::new(std::io::Cursor::new(Vec::new()))
+        } else {
+            Box::new(std::io::BufReader::new(std::io::Read::chain(std::io::Cursor::new(lines.into_bytes()), Idle)))
+        };
         Ok(StartedAdapter {
             runtime: Box::new(LiveRuntime { number, thread, turn: Arc::default(), script: self.script.clone() }),
             reader,
-            startup_messages: vec![],
+            startup_messages: std::mem::take(&mut script.startup),
             skills_dropped: script.drops_codex_skills && tools.is_some_and(ToolLaunch::has_codex_skills),
         })
     }
@@ -274,10 +282,10 @@ impl HarnessAdapter for Live {
         true
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
-        if self.id == "claude" {
-            agent::normalize_claude_message(value)
-        } else {
-            vec![]
+        match self.id {
+            "claude" => agent::normalize_claude_message(value),
+            "codex" => agent::normalize_codex_message(value),
+            _ => vec![],
         }
     }
     fn seed_usage_totals(&self, provider_session_id: &str, usage_event: &Value) {
@@ -1049,4 +1057,180 @@ fn a_fresh_claude_start_gets_no_seed() {
     start_chat(&core, failed).unwrap();
     assert_eq!(asked(&script).iter().map(|launch| launch.verb).collect::<Vec<_>>(), ["resume", "start"]);
     assert!(seeds(&script).is_empty());
+}
+
+const D_THREAD: &str = "D-thread";
+
+/// A Codex usage frame of `thread` with the totals and the last request of a
+/// turn: input, cached input and output tokens.
+fn codex_usage(thread: &str, turn: &str, total: [i64; 3], last: [i64; 3]) -> Value {
+    let breakdown = |[input, cached, output]: [i64; 3]| json!({
+        "totalTokens": input + output, "inputTokens": input, "cachedInputTokens": cached,
+        "cacheWriteInputTokens": 0, "outputTokens": output, "reasoningOutputTokens": 0
+    });
+    json!({"method": "thread/tokenUsage/updated", "params": {
+        "threadId": thread, "turnId": turn,
+        "tokenUsage": {"total": breakdown(total), "last": breakdown(last), "modelContextWindow": 475000}
+    }})
+}
+
+/// The real usage frame of the second turn D2 of a Codex chat. Codex sent it
+/// again after `thread/resume` in a new process.
+fn d2_usage(thread: &str) -> Value {
+    codex_usage(thread, "D2", [64142, 31872, 10], [32080, 31872, 5])
+}
+
+/// The real usage frame of the third turn D3, the first turn after the resume.
+fn d3_usage(thread: &str) -> Value {
+    codex_usage(thread, "D3", [96969, 63744, 15], [32827, 31872, 5])
+}
+
+fn codex_turn(method: &str, thread: &str, turn: &str) -> Value {
+    json!({"method": method, "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}})
+}
+
+/// The `usage.updated` entries, the ledger rows and the context readings of a chat.
+fn usage_counts(core: &BridgeCore, chat: &str) -> (i64, i64, i64) {
+    let db = core.db.lock().unwrap();
+    let count = |sql: &str| db.query_row(sql, [chat], |row| row.get::<_, i64>(0)).unwrap();
+    (
+        count("SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='usage.updated'"),
+        count("SELECT COUNT(*) FROM usage_ledger WHERE session_id=?1"),
+        count("SELECT COUNT(*) FROM context_readings WHERE session_id=?1"),
+    )
+}
+
+/// A Codex chat on `thread` whose turn D2 recorded its usage in this daemon.
+fn codex_chat_after_d2(core: &Arc<BridgeCore>, thread: &str) -> String {
+    let chat = chat_on(core, "codex", Some(thread));
+    for value in [codex_turn("turn/started", thread, "D2"), d2_usage(thread), codex_turn("turn/completed", thread, "D2")] {
+        frame(core, &chat, value);
+    }
+    assert_eq!(usage_counts(core, &chat), (1, 1, 1));
+    chat
+}
+
+/// Wait until the reader of a chat stored `count` entries of `kind`.
+fn wait_for_entries(core: &BridgeCore, chat: &str, kind: &str, count: i64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while entry_count(core, chat, kind) < count {
+        assert!(std::time::Instant::now() < deadline, "the reader stored no {kind} entry");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_resumed_codex_thread_drops_the_replay_of_its_last_usage() {
+    let (_dir, core, script) = live();
+    // A daemon that still holds the old turn id, and a new daemon that holds
+    // none. The replay is a buffered startup frame or a line of the reader.
+    for (thread, new_daemon, buffered) in [("D-1", false, true), ("D-2", false, false), ("D-3", true, true), ("D-4", true, false)] {
+        let chat = codex_chat_after_d2(&core, thread);
+        let mut delegations = core.delegations.lock().unwrap();
+        if new_daemon {
+            delegations.last_turn_by_session.remove(&chat);
+        } else {
+            assert_eq!(delegations.last_turn_by_session.get(&chat).map(String::as_str), Some("D2"));
+        }
+        drop(delegations);
+        {
+            let mut script = script.lock().unwrap();
+            if buffered {
+                script.startup = vec![d2_usage(thread)];
+            } else {
+                script.output = vec![d2_usage(thread)];
+            }
+            // The next turn starts after the replay, so its entry shows that
+            // the reader read the replay.
+            script.output.push(codex_turn("turn/started", thread, "D3"));
+        }
+        start_chat(&core, chat.clone()).unwrap();
+        assert_eq!(verbs(&asked(&script)), [("resume", Some(thread))]);
+        wait_for_entries(&core, &chat, "turn.started", 2);
+        assert_eq!(usage_counts(&core, &chat), (1, 1, 1), "{thread}");
+    }
+}
+
+#[test]
+fn the_first_usage_of_the_next_turn_records_after_a_codex_resume() {
+    let (_dir, core, script) = live();
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    script.lock().unwrap().output = vec![
+        d2_usage(D_THREAD),
+        codex_turn("turn/started", D_THREAD, "D3"),
+        d3_usage(D_THREAD),
+        codex_turn("turn/completed", D_THREAD, "D3"),
+    ];
+    start_chat(&core, chat.clone()).unwrap();
+    wait_for_entries(&core, &chat, "turn.completed", 2);
+    assert_eq!(usage_counts(&core, &chat), (2, 2, 2));
+    let db = core.db.lock().unwrap();
+    let row: (Option<String>, i64, i64, i64, i64) = db
+        .query_row(
+            "SELECT turn_id,input_tokens,cache_read_tokens,uncached_input_tokens,output_tokens FROM usage_ledger WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+            [&chat],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (Some("D3".into()), 32827, 31872, 955, 5));
+    let reading: (Option<String>, i64, i64) = db
+        .query_row(
+            "SELECT turn_id,used_tokens,window_tokens FROM context_readings WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+            [&chat],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(reading, (Some("D3".into()), 32832, 475000));
+    let entry: String = db
+        .query_row(
+            "SELECT payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' ORDER BY sequence DESC LIMIT 1",
+            [&chat],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&entry).unwrap()["data"]["turnId"], "D3");
+}
+
+#[test]
+fn a_codex_usage_frame_that_differs_from_the_seed_still_records() {
+    let (_dir, core, script) = live();
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    // The same turn id with other figures, and the same figures with another turn id.
+    let other_figures = codex_usage(D_THREAD, "D2", [64142, 31872, 11], [32080, 31872, 6]);
+    let mut other_turn = d2_usage(D_THREAD);
+    other_turn["params"]["turnId"] = json!("D1");
+    script.lock().unwrap().output = vec![
+        d2_usage(D_THREAD),
+        other_figures,
+        other_turn,
+        // After the first turn starts, the seed is gone and an equal frame records.
+        codex_turn("turn/started", D_THREAD, "D3"),
+        d2_usage(D_THREAD),
+        codex_turn("turn/completed", D_THREAD, "D3"),
+    ];
+    start_chat(&core, chat.clone()).unwrap();
+    wait_for_entries(&core, &chat, "turn.completed", 2);
+    // D2 before the resume, then the two frames that differ and the late equal frame.
+    assert_eq!(usage_counts(&core, &chat), (4, 4, 4));
+}
+
+#[test]
+fn a_new_codex_thread_and_a_chat_with_no_stored_usage_get_no_seed() {
+    let (_dir, core, script) = live();
+    // The chat has stored Codex usage, but its next launch starts a new thread.
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id=NULL WHERE id=?1", [&chat]).unwrap();
+    script.lock().unwrap().output = vec![d2_usage("thread-1"), codex_turn("turn/started", "thread-1", "E1")];
+    start_chat(&core, chat.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)]);
+    wait_for_entries(&core, &chat, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &chat), (2, 2, 2));
+
+    // A native resume of a chat with no stored usage.
+    let empty = chat_on(&core, "codex", Some("E-thread"));
+    script.lock().unwrap().output = vec![d2_usage("E-thread"), codex_turn("turn/started", "E-thread", "E1")];
+    start_chat(&core, empty.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("E-thread"))]);
+    wait_for_entries(&core, &empty, "turn.started", 1);
+    assert_eq!(usage_counts(&core, &empty), (1, 1, 1));
 }

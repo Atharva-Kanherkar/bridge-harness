@@ -47,7 +47,9 @@ The Claude Agent SDK reports usage and cost as totals of the session. A Claude
 `usage.updated` entry holds the share of one turn in `modelUsage` and
 `totalCostUsd`, and the raw totals in `cumulative`. After a native resume in a
 new process, the normalizer starts from the totals of the last stored entry of
-the chat.
+the chat. After `thread/resume`, Codex sends the usage of the last turn again.
+Until the first turn starts, Bridge drops a frame equal to the last stored
+entry, so the repeat adds no ledger row.
 
 ### What is never stored
 
