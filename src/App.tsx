@@ -94,6 +94,7 @@ import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type 
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
+import { requestTerminalRun } from "./terminal/runQueue";
 import { TasksPane, activeAgentRows, type AgentFocus } from "./components/TasksPane";
 import { usePinnedAgents } from "./pinnedAgents";
 import { useAgentSpawns } from "./agentSpawns";
@@ -1169,6 +1170,14 @@ function AppContent() {
       setHighlightEntryId(current => current === entryId ? null : current);
     }, 3000);
   }
+  // A shell block's Run: the dock shows the terminal and its active shell
+  // takes the command. Stable per workspace so code blocks don't re-render.
+  const runWorkspaceId = hasRepo ? workspace?.id : undefined;
+  const runInTerminal = useCallback((command: string) => {
+    if (!runWorkspaceId) return Promise.reject(new Error("This chat has no terminal."));
+    dispatchDock({ type: "open-pane", pane: "terminal" });
+    return requestTerminalRun(runWorkspaceId, command);
+  }, [runWorkspaceId, dispatchDock]);
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
@@ -3995,6 +4004,7 @@ function AppContent() {
                    }}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
+                  onRunInTerminal={runWorkspaceId ? runInTerminal : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                   onForkSession={(snapshotSessionId, entryId) => {
