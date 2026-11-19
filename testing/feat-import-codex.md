@@ -62,7 +62,7 @@ Facts this is built on, from a real `~/.codex` (codex-cli 0.159.3; counts only):
 ## E2E Tests
 
 - Real Codex CLI: make two real sessions with `codex exec` in a scratch folder, each told a code word. Import them through the app against a real `bridged`. Continue the first: the reply comes from the same Codex thread. Delete the second's rollout and continue it: a new chat answers from the history. The imported chats are unchanged.
-- Real store: the job over this Mac's `~/.codex`, into a scratch database, with aggregate numbers only.
+- Real store: the job over this Mac's `~/.codex`, into a scratch database, with aggregate numbers only. Memory is measured on the test binary run directly. Under `cargo test`, `/usr/bin/time` also counts the compiler when the test crate rebuilds.
 
 ## Manual Tests
 

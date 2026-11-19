@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Continue an imported chat with the real Claude Code CLI (#1061). It drives
+// Continue an imported chat with the real Claude Code or Codex CLI (#1061,
+// #1054; TOOL=claude_code or codex). It drives
 // the real app in a browser tab attached to a real `bridged` that signs in as
-// the person, imports two real Claude Code sessions made with `claude -p`,
+// the person, imports two real sessions (made with `claude -p` or `codex exec`),
 // and then, like a person would:
-//   1. opens the first, sees "Continues the Claude Code session", asks for the
-//      code word it was told, and gets it from the same Claude Code session,
+//   1. opens the first, sees "Continues the <tool> session", asks for the
+//      code word it was told, and gets it from the same native session,
 //      whose transcript grows by the new turn;
 //   2. deletes the second session's transcript, opens it, sees "Starts a new
 //      chat with this history" and why, asks again, and gets the word from
@@ -115,6 +116,12 @@ async function click(label, selector = "button, a, [role=button], [role=switch]"
   await sleep(1200);
 }
 
+const TOOL = process.env.TOOL ?? "claude_code";
+const LABEL = { claude_code: "Claude Code", codex: "Codex" }[TOOL];
+const NATIVE = { claude_code: "claude", codex: "codex" }[TOOL];
+if (!LABEL) throw new Error(`TOOL must be claude_code or codex, not ${TOOL}`);
+// The second session's copy in IMPORT_HOME, removed with the real one.
+const SECOND_LINK = process.env.SECOND_LINK;
 const DB = process.env.DB;
 const IMPORT_HOME = process.env.IMPORT_HOME;
 const [first, second] = (process.env.SESSIONS ?? "").split(",").map(item => { const [id, word] = item.trim().split(/\s+/); return { id, word }; });
@@ -151,37 +158,37 @@ try {
       const { bridgeApi } = await import("/src/api.ts");
       const { recommendedProfileDrafts } = await import("/src/modelProfiles.ts");
       const health = await bridgeApi.health();
-      const setup = await bridgeApi.saveModelProfiles(recommendedProfileDrafts(health.adapters.filter(a => a.id === "claude"), { allowAvailableFallback: true }));
+      const setup = await bridgeApi.saveModelProfiles(recommendedProfileDrafts(health.adapters.filter(a => a.id === ${JSON.stringify(NATIVE)}), { allowAvailableFallback: true }));
       return setup.complete;
     })()`);
-    check("Setup completes for a Claude Code user", done === true);
+    check(`Setup completes for a ${LABEL} user`, done === true);
   }
 
   // The two real sessions, imported the way a folder import does.
   const imported = await js(`(async () => {
     const { bridgeApi } = await import("/src/api.ts");
-    const discovery = await bridgeApi.discoverExternalImport({ provider: "claude_code", approvedRoots: [${JSON.stringify(IMPORT_HOME)}], selectedExport: null, sourceVersion: null, schemaVersion: null, formatVersions: {} });
+    const discovery = await bridgeApi.discoverExternalImport({ provider: ${JSON.stringify(TOOL)}, approvedRoots: [${JSON.stringify(IMPORT_HOME)}], selectedExport: null, sourceVersion: null, schemaVersion: null, formatVersions: {} });
     const ids = discovery.artifacts.filter(a => a.kind === "conversation").map(a => a.artifactId);
     const preview = await bridgeApi.previewExternalImport(discovery, ids);
     const chosen = preview.candidates.filter(c => c.kind === "conversation").map(c => c.candidateId);
     const commit = await bridgeApi.commitExternalImport(discovery.discoveryId, preview.candidates, { selectedCandidateIds: chosen, conflictPolicy: "skip", setupActivationPolicy: "disabled", memoryScope: null, dryRun: false, createdAt: new Date().toISOString() }, ids);
     return commit.imported;
   })()`);
-  check("Both real Claude Code sessions are imported", imported === 2, `imported=${imported}`);
-  const importedId = sid => sql(`SELECT session_id FROM import_native_sessions WHERE native_key='claude:${sid}'`)[0]?.session_id;
+  check(`Both real ${LABEL} sessions are imported`, imported === 2, `imported=${imported}`);
+  const importedId = sid => sql(`SELECT session_id FROM import_native_sessions WHERE native_key='${NATIVE}:${sid}'`)[0]?.session_id;
   const firstImported = importedId(first.id);
   const secondImported = importedId(second.id);
-  check("Bridge recorded each Claude Code session id", !!firstImported && !!secondImported);
+  check(`Bridge recorded each ${LABEL} session id`, !!firstImported && !!secondImported);
   const before = { first: entries(firstImported), second: entries(secondImported) };
   await send("Page.navigate", { url: LINK });
   await waitFor("the app to load", `!!document.querySelector('button[aria-label^="Open settings for"]')`, 30000);
   await sleep(1500);
 
-  await caption("An imported Claude Code chat: Claude Code still has the session");
+  await caption(`An imported ${LABEL} chat: ${LABEL} still has the session`);
   await click(first.word, "[data-session-id], button, a, [role=button]");
   await waitFor("the continuation notice", `!!document.querySelector("[data-import-continuation]")`, 15000);
   const nativeNotice = await js(`document.querySelector("[data-import-continuation]").innerText`);
-  check("The composer says the next message continues the Claude Code session", /Continues the Claude Code session/.test(nativeNotice) && /stay behind/.test(nativeNotice), nativeNotice.replace(/\n+/g, " | "));
+  check(`The composer says the next message continues the ${LABEL} session`, nativeNotice.includes(`Continues the ${LABEL} session`) && /stay behind/.test(nativeNotice), nativeNotice.replace(/\n+/g, " | "));
   check("It says so before anything is sent", await js(`document.querySelector("[data-import-continuation]").dataset.importContinuation === "native"`));
   await shot("01-native-notice-dark");
   const linesBefore = lines(firstTranscript);
@@ -190,23 +197,23 @@ try {
   await ask(QUESTION);
   // Lowercase: the copied history shows the word only in capitals, so only a
   // real answer can match.
-  await waitFor("the reply from the same Claude Code session", `document.body.innerText.includes(${JSON.stringify(first.word.toLowerCase())})`, 180000);
+  await waitFor(`the reply from the same ${LABEL} session`, `document.body.innerText.includes(${JSON.stringify(first.word.toLowerCase())})`, 180000);
   await sleep(2500);
   const firstContinuation = sql(`SELECT id, kind, provider_session_id FROM sessions WHERE fork_parent_session_id='${firstImported}'`);
   check("A new chat continues it", firstContinuation.length === 1 && firstContinuation[0].kind === "direct", JSON.stringify(firstContinuation));
-  check("It resumed the same Claude Code session", firstContinuation[0]?.provider_session_id === first.id, firstContinuation[0]?.provider_session_id);
+  check(`It resumed the same ${LABEL} session`, firstContinuation[0]?.provider_session_id === first.id, firstContinuation[0]?.provider_session_id);
   const linesAfter = lines(firstTranscript);
-  check("Claude Code's own transcript gained the new turn", linesAfter > linesBefore, `${linesBefore} -> ${linesAfter}`);
+  check(`${LABEL}'s own transcript gained the new turn`, linesAfter > linesBefore, `${linesBefore} -> ${linesAfter}`);
   check("The answer came from that session's memory", (await text()).includes(first.word.toLowerCase()));
   await shot("02-native-reply-dark");
 
-  await caption("Claude Code no longer has the second session");
+  await caption(`${LABEL} no longer has the second session`);
   rmSync(secondTranscript, { force: true });
-  rmSync(join(IMPORT_HOME, "projects", secondTranscript.split("/").at(-2), secondTranscript.split("/").at(-1)), { force: true });
+  rmSync(SECOND_LINK ?? join(IMPORT_HOME, "projects", secondTranscript.split("/").at(-2), secondTranscript.split("/").at(-1)), { force: true });
   await click(second.word, "[data-session-id], button, a, [role=button]");
   await waitFor("the continuation notice", `document.querySelector("[data-import-continuation]")?.dataset.importContinuation === "history"`, 15000);
   const historyNotice = await js(`document.querySelector("[data-import-continuation]").innerText`);
-  check("The composer says it starts a new chat with this history, and why", /Starts a new chat with this history/.test(historyNotice) && /Claude Code no longer has this session/.test(historyNotice), historyNotice.replace(/\n+/g, " | "));
+  check("The composer says it starts a new chat with this history, and why", /Starts a new chat with this history/.test(historyNotice) && historyNotice.includes(`${LABEL} no longer has this session`), historyNotice.replace(/\n+/g, " | "));
   await shot("03-history-notice-dark");
 
   await caption("Ask again: the history carries the word");
@@ -216,7 +223,7 @@ try {
   const secondContinuation = sql(`SELECT id, kind, provider_session_id FROM sessions WHERE fork_parent_session_id='${secondImported}'`);
   check("A new chat continues it from the history", secondContinuation.length === 1 && secondContinuation[0].kind === "direct");
   check("The answer came from the imported history", (await text()).includes(second.word.toLowerCase()));
-  check("It did not claim the gone Claude Code session", secondContinuation[0]?.provider_session_id !== second.id, String(secondContinuation[0]?.provider_session_id));
+  check(`It did not claim the gone ${LABEL} session`, secondContinuation[0]?.provider_session_id !== second.id, String(secondContinuation[0]?.provider_session_id));
   await shot("04-history-reply-dark");
 
   check("Both imported chats are unchanged, entry for entry", entries(firstImported) === before.first && entries(secondImported) === before.second);

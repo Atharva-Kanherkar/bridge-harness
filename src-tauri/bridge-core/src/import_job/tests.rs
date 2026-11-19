@@ -489,3 +489,50 @@ mod codex {
         assert_eq!(parent.as_deref(), Some("bridge-chat"), "the subagent joins the chat Bridge ran");
     }
 }
+
+/// The Codex job against this Mac's real Codex home, into a scratch
+/// database. Prints aggregate numbers only.
+#[test]
+#[ignore = "reads the real ~/.codex; run by hand to measure"]
+fn measure_the_codex_job_on_this_machine() {
+    let roots = crate::codex_import::machine_codex_homes();
+    let started = Instant::now();
+    let work = crate::codex_import::job_work(&roots).unwrap();
+    println!("MEASURE work_list_secs={:.1} files={} left_out={}", started.elapsed().as_secs_f64(), work.artifacts.len(), work.left_out);
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let started = Instant::now();
+    let job = codex::run_codex(&core, &roots);
+    println!(
+        "MEASURE job_secs={:.1} status={} processed={} imported={} already={} failed={} left_out={} errors={}",
+        started.elapsed().as_secs_f64(), job.status, job.processed, job.imported, job.already_in_bridge, job.failed, job.left_out, job.errors.len()
+    );
+    for item in &job.not_carried {
+        println!("MEASURE not_carried: {} x {}", item.count, item.text.chars().take(120).collect::<String>());
+    }
+    for error in &job.errors {
+        println!("MEASURE error: {}", error.chars().take(200).collect::<String>());
+    }
+    let tools: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE kind='tool.completed'", [], |row| row.get(0)).unwrap();
+    let children: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported' AND parent_session_id IS NOT NULL", [], |row| row.get(0)).unwrap();
+    println!("MEASURE tool_rows={tools} child_chats={children}");
+}
+
+/// What the removed Review step cost: Claude Code discovery over this Mac's
+/// real store, as Review ran it. Prints aggregate numbers only.
+#[test]
+#[ignore = "reads the real ~/.claude; run by hand to measure"]
+fn measure_claude_discovery_on_this_machine() {
+    use crate::external_import::{DiscoveryRequest, ExternalHarnessImporter};
+    let roots = claude_import::machine_config_roots();
+    let request = DiscoveryRequest {
+        provider: claude_import::PROVIDER.into(),
+        approved_roots: roots.iter().map(|r| r.to_string_lossy().into_owned()).collect(),
+        selected_export: None, source_version: None, schema_version: None,
+        format_versions: std::collections::BTreeMap::new(),
+    };
+    let started = Instant::now();
+    let discovery = ClaudeCodeImporter.discover(&request).unwrap();
+    let bytes = serde_json::to_vec(&discovery).unwrap().len();
+    println!("MEASURE discover_secs={:.1} artifacts={} json_mb={:.1}", started.elapsed().as_secs_f64(), discovery.artifacts.len(), bytes as f64 / 1e6);
+}
