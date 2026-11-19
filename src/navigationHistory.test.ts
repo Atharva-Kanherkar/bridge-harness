@@ -37,10 +37,19 @@ describe("placesEqual", () => {
   });
 
   it("keeps workflows and contextual tools separate from the marketplace", () => {
-    const views: Record<AppView, true> = { workspace: true, "agent-fleet": true, "mission-control": true, work: true, projects: true, memory: true, notes: true, trails: true, marketplace: true, usage: true, pulls: true, settings: true, workflows: true, archives: true, "saved-setups": true, "briefing-settings": true };
+    const views: Record<AppView, true> = { workspace: true, "agent-fleet": true, "mission-control": true, work: true, projects: true, memory: true, notes: true, trails: true, marketplace: true, usage: true, pulls: true, settings: true, workflows: true, archives: true, "saved-setups": true, "briefing-settings": true, "personal-app": true };
     expect(Object.keys(views)).toContain("workflows");
     const marketplace: AppPlace = { view: "marketplace", sessionId: null, paradigm: "single" };
     const scheduled: AppPlace = { ...marketplace, view: "workflows" };
     expect(recordPlace([marketplace], 0, scheduled).stack).toEqual([marketplace, scheduled]);
+  });
+
+  it("tells two personal apps apart, so back returns to the right one", () => {
+    const first: AppPlace = { view: "personal-app", sessionId: null, paradigm: "single", appId: "slack-dm" };
+    const second: AppPlace = { ...first, appId: "linear-triage" };
+    expect(placesEqual(first, second)).toBe(false);
+    expect(placesEqual(first, { ...first })).toBe(true);
+    expect(placesEqual({ view: "notes", sessionId: null, paradigm: "single" }, { view: "notes", sessionId: null, paradigm: "single", appId: null })).toBe(true);
+    expect(recordPlace([first], 0, second).stack).toEqual([first, second]);
   });
 });

@@ -113,6 +113,50 @@ Writes always ask, in every access mode, as Outgoing does. Each call leaves an
 results. Protocol 1.41 adds `apps/get_personal_app_open` and
 `apps/call_personal_app_tool`.
 
+## My apps: the Store, the launcher and the app's own pane
+
+Locked apps are listed under **My apps** in the Store's Apps tab and in the
+⌘K launcher. They pin to the sidebar alongside built-in apps (three pins in
+all) and can be turned off or deleted. Core keys them by id; the client names
+them `personal:<id>` so one key covers every app.
+
+**Opening one outside a chat** creates a *Surface* open
+(`apps/open_personal_app_surface`, protocol 1.43). Its rules:
+
+- **Who:** only the Bridge UI calls that method. No `bridge` MCP tool or settings
+  key reaches it, and `apps_open` always makes a chat open.
+- **Owner:** each open stores its owner, chat or surface. Get and call name it with
+  `sessionId`, or none for a surface, and it must equal the stored owner, so a caller
+  cannot pick the more permissive one.
+- **Reads:** allowed, because the person opened the app themselves. Writes still
+  always ask, and the OpenCode opt-in still applies.
+- **Runtime:** calls use the connection's warm runtime, or Claude's one-shot exact
+  write. They never use a chat's process.
+- **Lifetime:** one per app. Opening it again replaces the previous one and revokes
+  its pending write. Closing the pane (`apps/close_personal_app_surface`) removes it,
+  and a daemon restart clears them all.
+
+**Off, delete and generations.**
+
+- **Turning an app off:** in one transaction it unpins the app, revokes every write
+  waiting on it and closes its surface. Chat opens are refused until it is on again.
+- **Deleting:** it removes every version, open, approval, on/off row and pin.
+- **Generations:** every locked app has a generation, minted at its first lock and
+  removed on delete (migration 85). Opens and ledger rows carry it, so an app
+  recreated with the same id, even with identical content, never inherits old
+  opens, pins or ledger rows.
+- **Write claims:** a write's token is claimed in the same transaction that checks
+  the app is on and current, so off and delete either refuse it or come after it was
+  already sent.
+
+**Ledger outcomes.** Each call's row records `outcome`:
+
+- `confirmed`: the server answered without `isError`.
+- `failed`: the call was refused before sending, or the server answered `isError: true`.
+  Adapters return that inside `Ok`, so `Ok` alone is not success.
+- `unknown`: the transport failed after a write began. The card then says Bridge
+  could not confirm whether it was sent.
+
 ## Verification
 
 Focused tests are listed in `testing/feat-personal-app-drafts.md`. The real-browser

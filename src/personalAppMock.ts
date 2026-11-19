@@ -1,8 +1,9 @@
-import type { CallPersonalAppToolParams, GetPersonalAppDraftParams, GetPersonalAppOpenParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppCallResult, PersonalAppDraft, PersonalAppOpen, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
+import type { ClosePersonalAppSurfaceResult, PersonalAppSurfaceOpen, CallPersonalAppToolParams, GetPersonalAppDraftParams, GetPersonalAppOpenParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppCallResult, PersonalAppDraft, PersonalAppOpen, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
 
 export const MOCK_APP_DRAFT_ID = "personal-app-demo";
 export const MOCK_APP_HASH = `sha256:${"a".repeat(64)}`;
 export const MOCK_APP_OPEN_ID = "personal-app-open-demo";
+export const MOCK_APP_SURFACE_ID = "personal-app-surface-demo";
 const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 body{margin:0;padding:20px;font:13px system-ui;color:var(--color-text-primary,CanvasText);background:var(--color-background-primary,Canvas)}
 h2{font-size:17px;margin:0 0 6px}p{margin:0 0 18px;opacity:.65}label{display:block;margin:12px 0 6px}
@@ -42,9 +43,21 @@ export function mockPreviewPersonalAppTool(params: PreviewPersonalAppToolParams)
 
 /** The locked demo app, opened in the demo chat: reads answer, writes ask first. */
 export function mockGetPersonalAppOpen(params: GetPersonalAppOpenParams): PersonalAppOpen {
-  if (params.sessionId !== "session-1" || params.openId !== MOCK_APP_OPEN_ID || params.contentHash !== MOCK_APP_HASH) throw new Error("This app is unavailable in this chat");
+  const inChat = params.sessionId === "session-1" && params.openId === MOCK_APP_OPEN_ID;
+  const surface = params.sessionId === undefined && params.openId === MOCK_APP_SURFACE_ID;
+  if (!(inChat || surface) || params.contentHash !== MOCK_APP_HASH) throw new Error("This app is unavailable here");
   const draft = mockGetPersonalAppDraft({ sessionId: "session-1", draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH });
-  return { openId: MOCK_APP_OPEN_ID, appId: draft.appId, version: 1, contentHash: MOCK_APP_HASH, name: draft.name, intent: draft.intent, harness: draft.harness, server: draft.server, reads: draft.reads, writes: draft.writes, viewHtml: html, prefill: { query: "Ada" } };
+  return { openId: params.openId, appId: draft.appId, version: 1, contentHash: MOCK_APP_HASH, name: draft.name, intent: draft.intent, harness: draft.harness, server: draft.server, reads: draft.reads, writes: draft.writes, viewHtml: html, prefill: surface ? undefined : { query: "Ada" } };
+}
+
+/** The demo app opened by the person in its own pane. */
+export function mockOpenPersonalAppSurface(appId: string): PersonalAppSurfaceOpen {
+  if (appId !== "slack-dm") throw new Error(`There is no personal app "${appId}"`);
+  return { openId: MOCK_APP_SURFACE_ID, appId, version: 1, contentHash: MOCK_APP_HASH };
+}
+
+export function mockClosePersonalAppSurface(openId: string): ClosePersonalAppSurfaceResult {
+  return { closed: openId === MOCK_APP_SURFACE_ID };
 }
 const mockApprovals = new Map<string, { tool: string; argumentsJson: string }>();
 const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`

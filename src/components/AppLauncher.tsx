@@ -10,7 +10,7 @@ import { MessageSquare, Pin, PinOff, Search, TextSearch } from "lucide-react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
-import { appMatches, badgeText, type AppBadges, type AppId, type BadgeText, type BuiltinApp } from "../apps/registry";
+import { appMatches, badgeText, builtinEntry, isAppId, type AppBadges, type AppKey, type BadgeText, type BuiltinApp, type LaunchEntry } from "../apps/registry";
 import type { PinResult } from "../apps/pins";
 import { CHAT_SEARCH_MIN_CHARS } from "../chatSearch";
 import { chordLabel } from "../keymap";
@@ -23,38 +23,41 @@ export type AppLauncherProps = {
   onClose: () => void;
   /** The apps that are on, in launcher order. An app that is off is not here. */
   apps: readonly BuiltinApp[];
+  /** The person's own apps that are on ("My apps"). */
+  personal?: readonly LaunchEntry[];
   badges: AppBadges;
-  pins: readonly AppId[];
+  pins: readonly AppKey[];
   /** Top-level chats, most recent first. The launcher shows at most five. */
   chats: readonly LauncherChat[];
   /** A chat is on screen, so "Search this chat" means something. */
   chatOpen: boolean;
-  onOpenApp: (id: AppId) => void;
+  onOpenApp: (key: AppKey) => void;
   onOpenChat: (id: string) => void;
   onSearchThisChat: () => void;
   /** Hand the query to the sidebar's chat search, deep stage included. */
   onSearchChats: (query: string) => void;
-  onTogglePin: (id: AppId) => Promise<PinResult>;
+  onTogglePin: (key: AppKey) => Promise<PinResult>;
 };
 
 const MAX_CHATS = 5;
 const PIN_CHORD = formatShortcut({ meta: true }, "P");
 
 type Item =
-  | { key: string; kind: "needs"; app: BuiltinApp; badge: BadgeText }
-  | { key: string; kind: "app"; app: BuiltinApp }
+  | { key: string; kind: "needs"; app: LaunchEntry; badge: BadgeText }
+  | { key: string; kind: "app"; app: LaunchEntry }
   | { key: string; kind: "chat"; chat: LauncherChat }
   | { key: string; kind: "search-chat" }
   | { key: string; kind: "search-all"; query: string };
 
 type Section = { id: string; label: string; items: Item[] };
 
-export function launcherSections({ query, apps: available, badges, chats, chatOpen }: { query: string; apps: readonly BuiltinApp[]; badges: AppBadges; chats: readonly LauncherChat[]; chatOpen: boolean }): Section[] {
+export function launcherSections({ query, apps: available, personal = [], badges, chats, chatOpen }: { query: string; apps: readonly BuiltinApp[]; personal?: readonly LaunchEntry[]; badges: AppBadges; chats: readonly LauncherChat[]; chatOpen: boolean }): Section[] {
   const needle = query.trim().toLowerCase();
-  const apps = available.filter(app => appMatches(app, needle));
+  const apps = available.map(builtinEntry).filter(app => appMatches(app, needle));
+  const mine = personal.filter(app => appMatches(app, needle));
   const needs = apps.flatMap(app => {
-    const badge = badgeText(badges[app.id]);
-    return badge ? [{ key: `needs:${app.id}`, kind: "needs" as const, app, badge }] : [];
+    const badge = isAppId(app.key) ? badgeText(badges[app.key]) : undefined;
+    return badge ? [{ key: `needs:${app.key}`, kind: "needs" as const, app, badge }] : [];
   });
   const recent = chats.filter(chat => !needle || chat.title.toLowerCase().includes(needle)).slice(0, MAX_CHATS);
   const actions: Item[] = [];
@@ -62,7 +65,8 @@ export function launcherSections({ query, apps: available, badges, chats, chatOp
   if (needle.length >= CHAT_SEARCH_MIN_CHARS) actions.push({ key: "search-all", kind: "search-all", query: query.trim() });
   return [
     { id: "needs", label: "Needs you", items: needs },
-    { id: "apps", label: "Apps", items: apps.map(app => ({ key: `app:${app.id}`, kind: "app" as const, app })) },
+    { id: "apps", label: "Apps", items: apps.map(app => ({ key: `app:${app.key}`, kind: "app" as const, app })) },
+    { id: "mine", label: "My apps", items: mine.map(app => ({ key: `app:${app.key}`, kind: "app" as const, app })) },
     { id: "chats", label: "Recent chats", items: recent.map(chat => ({ key: `chat:${chat.id}`, kind: "chat" as const, chat })) },
     { id: "actions", label: "Search", items: actions },
   ].filter(section => section.items.length > 0);
@@ -77,14 +81,14 @@ export function AppLauncher(props: AppLauncherProps) {
   );
 }
 
-function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp, onOpenChat, onSearchThisChat, onSearchChats, onTogglePin }: AppLauncherProps) {
+function LauncherPanel({ onClose, apps, personal, badges, pins, chats, chatOpen, onOpenApp, onOpenChat, onSearchThisChat, onSearchChats, onTogglePin }: AppLauncherProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const baseId = useId();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
 
-  const sections = useMemo(() => launcherSections({ query, apps, badges, chats, chatOpen }), [query, apps, badges, chats, chatOpen]);
+  const sections = useMemo(() => launcherSections({ query, apps, personal, badges, chats, chatOpen }), [query, apps, personal, badges, chats, chatOpen]);
   const items = useMemo(() => sections.flatMap(section => section.items), [sections]);
   const current = items[Math.min(active, items.length - 1)];
   const optionId = (item: Item) => `${baseId}-${item.key}`;
@@ -99,7 +103,7 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
 
   const run = (item: Item) => {
     onClose();
-    if (item.kind === "needs" || item.kind === "app") onOpenApp(item.app.id);
+    if (item.kind === "needs" || item.kind === "app") onOpenApp(item.app.key);
     else if (item.kind === "chat") onOpenChat(item.chat.id);
     else if (item.kind === "search-chat") onSearchThisChat();
     else onSearchChats(item.query);
@@ -110,9 +114,9 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
     pinApp(item.app);
   };
 
-  const pinApp = (app: BuiltinApp) => {
-    const wasPinned = pins.includes(app.id);
-    void onTogglePin(app.id).then(result => {
+  const pinApp = (app: LaunchEntry) => {
+    const wasPinned = pins.includes(app.key);
+    void onTogglePin(app.key).then(result => {
       setStatus(!result.ok ? result.message : wasPinned ? `Unpinned ${app.name}.` : `Pinned ${app.name} to the sidebar.`);
     });
   };
@@ -181,8 +185,8 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
         {sections.map(section => (
           <div key={section.id} role="group" aria-labelledby={`${baseId}-${section.id}`} data-launcher-section={section.id} className="border-b border-border px-2 py-2.5 last:border-b-0">
             <p id={`${baseId}-${section.id}`} className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">{section.label}</p>
-            {section.id === "apps"
-              ? <div className="grid grid-cols-4 gap-1 sm:grid-cols-5">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.id)} badge={badgeText(badges[item.app.id])} active={item === current} onPin={() => pinApp(item.app)} {...optionProps(item)} />)}</div>
+            {section.id === "apps" || section.id === "mine"
+              ? <div className="grid grid-cols-4 gap-1 sm:grid-cols-5">{section.items.map(item => item.kind === "app" && <AppTile key={item.key} app={item.app} pinned={pins.includes(item.app.key)} badge={isAppId(item.app.key) ? badgeText(badges[item.app.key]) : undefined} active={item === current} onPin={() => pinApp(item.app)} {...optionProps(item)} />)}</div>
               : section.items.map(item => <Row key={item.key} item={item} active={item === current} {...optionProps(item)} />)}
           </div>
         ))}
@@ -204,7 +208,7 @@ function LauncherPanel({ onClose, apps, badges, pins, chats, chatOpen, onOpenApp
 
 type OptionProps = { id: string; role: "option"; "aria-selected": boolean; "data-active"?: string; onMouseMove: () => void; onClick: () => void };
 
-function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: BuiltinApp; pinned: boolean; badge?: BadgeText; active: boolean; onPin: () => void } & OptionProps) {
+function AppTile({ app, pinned, badge, active, onPin, ...option }: { app: LaunchEntry; pinned: boolean; badge?: BadgeText; active: boolean; onPin: () => void } & OptionProps) {
   const Icon = app.icon;
   return (
     <div {...option} aria-label={`${app.name}${pinned ? ", pinned" : ""}${badge ? `, ${badge.label}` : ""}`} className={cn("group/tile relative flex cursor-default flex-col items-center gap-2 rounded-xl px-1 pb-2.5 pt-3 text-center", active ? "bg-selection text-selection-foreground" : "text-foreground/90")}>

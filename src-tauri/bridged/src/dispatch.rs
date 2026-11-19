@@ -152,6 +152,14 @@ pub fn dispatch(
             let p: wire::DeletePersonalAppParams = decode(method, params)?;
             reply(api::delete_personal_app(core, &p))
         }
+        MethodName::OpenPersonalAppSurface => {
+            let p: wire::OpenPersonalAppSurfaceParams = decode(method, params)?;
+            reply(api::open_personal_app_surface(core, &p))
+        }
+        MethodName::ClosePersonalAppSurface => {
+            let p: wire::ClosePersonalAppSurfaceParams = decode(method, params)?;
+            reply(api::close_personal_app_surface(core, &p))
+        }
         MethodName::SetAppPinned => {
             let p: wire::SetAppPinnedParams = decode(method, params)?;
             reply(api::set_app_pinned(core, &p))

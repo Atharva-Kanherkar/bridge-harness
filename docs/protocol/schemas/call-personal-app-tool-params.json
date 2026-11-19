@@ -18,7 +18,11 @@
       "type": "string"
     },
     "sessionId": {
-      "type": "string"
+      "description": "The chat owner, or none for the person's own app surface.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "tool": {
       "type": "string"
@@ -28,7 +32,6 @@
     "arguments",
     "contentHash",
     "openId",
-    "sessionId",
     "tool"
   ],
   "title": "CallPersonalAppToolParams",

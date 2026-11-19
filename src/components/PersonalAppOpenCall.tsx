@@ -30,11 +30,12 @@ const asToolResult = (value: unknown): CallToolResult => {
 };
 
 /**
- * A locked personal app opened in this chat. Reads answer at once; a write
- * returns the exact canonical JSON it would send, shown in the sheet, and runs
- * only when the person sends it. One write waits at a time.
+ * A locked personal app, opened in a chat or (with no `sessionId`) by the
+ * person in its own pane. Reads answer at once; a write returns the exact
+ * canonical JSON it would send, shown in the sheet, and runs only when the
+ * person sends it. One write waits at a time.
  */
-export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }: { sessionId: string; openId: string; contentHash: string; readOnly: boolean }) {
+export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }: { sessionId?: string; openId: string; contentHash: string; readOnly: boolean }) {
   const [app, setApp] = useState<PersonalAppOpen>();
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Pending>();
@@ -113,8 +114,8 @@ export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }
     {pending && <ConnectorApprovalSheet inFlow busy={busy} onApprove={() => void approve()} onDeny={deny}
       effect={`${pending.tool} on ${pending.server} via ${connectionLabel(pending.harness)}. Nothing is sent until you send it.`}
       detail={pending.argumentsJson} />}
-    <div className="flex items-center gap-2 border-t border-border px-4 py-3">
+    {sessionId && <div className="flex items-center gap-2 border-t border-border px-4 py-3">
       <Button size="sm" variant="ghost" disabled={readOnly || !actions?.ask} onClick={() => actions?.ask?.(`Revise the personal app “${app.name}” (app_id: ${app.appId}), starting from version ${app.version}. Keep its current server and tool access unless I ask to change them. `)}><Pencil aria-hidden="true" />Revise</Button>
-    </div>
+    </div>}
   </div>;
 }

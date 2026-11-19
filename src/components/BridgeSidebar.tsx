@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Archive, AtSign, Blocks, Check, CheckCheck, ChevronRight, CircleDot, Clock, Copy, Folder, FolderPlus, GitFork, Home, MoreHorizontal, PinOff, Plus, Search, Settings2, SquarePen, Workflow as WorkflowIcon, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
-import { appById, type AppId, type BadgeText } from "../apps/registry";
+import type { AppKey, BadgeText, LaunchEntry } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
 import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
@@ -519,12 +519,12 @@ export type BridgeSidebarProps = {
   /** Everything every app is waiting on, summed. Hidden when absent. */
   appsBadge?: BadgeText;
   /** Apps the person pinned, in pin order, drawn as rows under Apps. */
-  pinnedApps?: readonly { id: AppId; badge?: BadgeText }[];
+  pinnedApps?: readonly { app: Pick<LaunchEntry, "key" | "name" | "icon">; badge?: BadgeText }[];
   /** The app on screen, so its pin reads as current. */
-  activeApp?: AppId | null;
-  onOpenApp: (id: AppId) => void;
+  activeApp?: AppKey | null;
+  onOpenApp: (key: AppKey) => void;
   /** Absent when the host cannot unpin: the pinned rows then show no Unpin. */
-  onUnpinApp?: (id: AppId) => void;
+  onUnpinApp?: (key: AppKey) => void;
   /** Drawn at the end of the bottom rail, after Settings: the usage dot. */
   railTrailing?: React.ReactNode;
   onOpenSettings: () => void;
@@ -892,17 +892,17 @@ export function BridgeSidebar({
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Blocks} label="Apps" chord="open-launcher" onClick={onOpenApps} badge={appsBadge} />
           {pinnedApps.map(pin => {
-            const app = appById(pin.id);
-            const row = <ActionRow icon={app.icon} label={app.name} onClick={() => onOpenApp(app.id)} active={activeApp === app.id} badge={pin.badge} unpinnable={Boolean(onUnpinApp)} />;
-            if (!onUnpinApp) return <div key={app.id}>{row}</div>;
+            const { app } = pin;
+            const row = <ActionRow icon={app.icon} label={app.name} onClick={() => onOpenApp(app.key)} active={activeApp === app.key} badge={pin.badge} unpinnable={Boolean(onUnpinApp)} />;
+            if (!onUnpinApp) return <div key={app.key}>{row}</div>;
             // Unpin sits beside the row, never inside it: a <button> inside a
             // <button> is invalid HTML. It shows on hover and keyboard focus.
             return (
-              <div key={app.id} className="group/pin relative">
+              <div key={app.key} className="group/pin relative">
                 {row}
                 <button
                   type="button"
-                  onClick={() => onUnpinApp(app.id)}
+                  onClick={() => onUnpinApp(app.key)}
                   title={`Unpin ${app.name}`}
                   aria-label={`Unpin ${app.name}`}
                   className="absolute right-1 top-1 grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover/pin:opacity-100"

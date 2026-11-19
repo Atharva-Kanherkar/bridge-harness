@@ -13,6 +13,7 @@
 //! The caller has already authorized the call: an allowlisted read with the
 //! chat's access mode checked, or a write whose approval token was claimed.
 
+use super::control::Dispatch;
 use super::runtimes::{self, Key};
 use crate::adapters::{ShutdownReason, StartRequest, StartedAdapter};
 use crate::{runtime::BridgeCore, BridgeError};
@@ -69,8 +70,10 @@ pub fn opencode_inventory(core: &Arc<BridgeCore>, key: &Key) -> Result<Value, Br
 }
 
 /// One call through an OpenCode courier session.
-pub fn opencode_call(core: &Arc<BridgeCore>, key: &Key, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
-    opencode_call_with(key, tool, arguments, |permission| launch(core, key, Some(permission)))
+/// `dispatch` is marked when Bridge lets the call run (it accepts the exact
+/// prompt) or finds the agent ran one without asking.
+pub fn opencode_call(core: &Arc<BridgeCore>, key: &Key, tool: &str, arguments: &Value, dispatch: &Dispatch) -> Result<Value, BridgeError> {
+    opencode_call_with(key, tool, arguments, |permission| launch(core, key, Some(permission)), dispatch)
 }
 
 /// [`opencode_call`] with the launch supplied, so a live test can use real adapters.
@@ -79,6 +82,7 @@ pub fn opencode_call_with(
     tool: &str,
     arguments: &Value,
     launch: impl Fn(&str) -> Result<StartedAdapter, BridgeError>,
+    dispatch: &Dispatch,
 ) -> Result<Value, BridgeError> {
     if !arguments.is_object() || arguments.to_string().len() > 64 * 1024 {
         return Err(invalid("Tool arguments must be an object within 64 KiB"));
@@ -88,10 +92,15 @@ pub fn opencode_call_with(
     // A model sometimes ends without asking at all. Nothing was approved or
     // sent then, so one fresh session may try again; any other failure ends
     // the call.
-    match attempt(key, tool, &permission, &canonical, &launch) {
-        Err(Outcome::NoCall) => attempt(key, tool, &permission, &canonical, &launch).map_err(Outcome::into_error),
-        other => other.map_err(Outcome::into_error),
+    let first = attempt(key, tool, &permission, &canonical, &launch, dispatch);
+    let result = match first {
+        Err(Outcome::NoCall) => attempt(key, tool, &permission, &canonical, &launch, dispatch),
+        other => other,
+    };
+    if matches!(result, Err(Outcome::RanUnasked(_))) {
+        dispatch.mark();
     }
+    result.map_err(Outcome::into_error)
 }
 
 /// Why a courier attempt ended without a result.
@@ -99,6 +108,8 @@ pub fn opencode_call_with(
 pub(crate) enum Outcome {
     /// The agent never asked to make any call: nothing ran.
     NoCall,
+    /// The agent ran a call Bridge never approved: it may have written.
+    RanUnasked(BridgeError),
     Failed(BridgeError),
 }
 
@@ -106,7 +117,7 @@ impl Outcome {
     fn into_error(self) -> BridgeError {
         match self {
             Outcome::NoCall => failed("the agent ended without making the call"),
-            Outcome::Failed(error) => error,
+            Outcome::RanUnasked(error) | Outcome::Failed(error) => error,
         }
     }
 }
@@ -123,6 +134,7 @@ fn attempt(
     permission: &str,
     canonical: &str,
     launch: &dyn Fn(&str) -> Result<StartedAdapter, BridgeError>,
+    dispatch: &Dispatch,
 ) -> Result<Value, Outcome> {
     let started = launch(permission)?;
     let mut runtime = started.runtime;
@@ -134,7 +146,13 @@ fn attempt(
         server = key.server,
     );
     let outcome = match runtime.send_turn(&prompt) {
-        Ok(()) => drive(&lines, permission, canonical, Instant::now() + DEADLINE, &mut |id, decision| runtime.respond(id, decision)),
+        Ok(()) => drive(&lines, permission, canonical, Instant::now() + DEADLINE, &mut |id, decision| {
+            // Accepting lets the call run.
+            if decision == "accept" {
+                dispatch.mark();
+            }
+            runtime.respond(id, decision)
+        }),
         Err(error) => Err(Outcome::Failed(error)),
     };
     runtime.stop(ShutdownReason::Completed);
@@ -218,7 +236,7 @@ pub(crate) fn drive(
                     // anything ran without asking (a saved approval, say):
                     // it may have written, so it is never retried.
                     if settled("completed") || settled("error") {
-                        return Err(Outcome::Failed(failed("OpenCode ran a call without asking Bridge first")));
+                        return Err(Outcome::RanUnasked(failed("OpenCode ran a call without asking Bridge first")));
                     }
                     continue;
                 };
@@ -330,13 +348,13 @@ mod tests {
         status.runtime.stop(ShutdownReason::Completed);
         assert!(connected, "OpenCode reports the fake server connected");
         let arguments = json!({"to": "Ada", "text": "hi from the courier"});
-        let sent = opencode_call_with(&key, "send_note", &arguments, |permission| start(&registry, &cwd, permission)).unwrap();
+        let sent = opencode_call_with(&key, "send_note", &arguments, |permission| start(&registry, &cwd, permission), &Dispatch::default()).unwrap();
         assert!(sent.to_string().contains("Sent"), "{sent}");
         let calls: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0]["name"], "send_note");
         assert_eq!(crate::mcp_apps::canonical_json(&calls[0]["arguments"]), crate::mcp_apps::canonical_json(&arguments));
-        let read = opencode_call_with(&key, "search_people", &json!({"query": "Ada"}), |permission| start(&registry, &cwd, permission)).unwrap();
+        let read = opencode_call_with(&key, "search_people", &json!({"query": "Ada"}), |permission| start(&registry, &cwd, permission), &Dispatch::default()).unwrap();
         assert!(read.to_string().contains("Found Ada Lovelace"), "{read}");
         assert!(!home.path().join("colliding.log").exists(), "the colliding server was set aside and never called");
     }
@@ -405,7 +423,7 @@ mod tests {
         let ran = tool_with("call_1", "completed", "Sent", json!({"toolCalls": [{"tool": "fake.send_note", "status": "completed"}]}));
         let idle = json!({"type":"session.status","properties":{"status":{"type":"idle"}}}).to_string();
         let (result, replies) = run(vec![ran, idle]);
-        assert!(matches!(result, Err(Outcome::Failed(_))), "it may have written: no second attempt");
+        assert!(matches!(result, Err(Outcome::RanUnasked(_))), "it may have written: no second attempt, and never reported as a plain failure");
         assert!(replies.is_empty());
     }
 }

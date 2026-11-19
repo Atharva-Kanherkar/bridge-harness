@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 84;
+const LATEST_SCHEMA_VERSION: i64 = 85;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -801,6 +801,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Imported native sessions, the tools that pointed at them, and the
             // native sessions Bridge itself ran.
             84 => crate::external_import::install_import_native_identity(&transaction)?,
+            // Personal app opens get an owner (chat or the person's surface)
+            // and every locked app a generation.
+            85 => crate::apps::open::install_owners(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

@@ -368,6 +368,8 @@ typed_methods![
     (CallPersonalAppTool, CallPersonalAppToolParams, PersonalAppCallResult),
     (LockPersonalApp, LockPersonalAppParams, LockPersonalAppResult),
     (DeletePersonalApp, DeletePersonalAppParams, ListPersonalAppsResult),
+    (OpenPersonalAppSurface, OpenPersonalAppSurfaceParams, PersonalAppSurfaceOpen),
+    (ClosePersonalAppSurface, ClosePersonalAppSurfaceParams, ClosePersonalAppSurfaceResult),
     // trails: one page per piece of work
     (ListTrails, ListTrailsParams, ListTrailsResult),
     (ReadTrail, ReadTrailParams, ReadTrailResult),

@@ -1,7 +1,18 @@
-//! Opening a locked personal app in a chat, and every call its view makes.
+//! Opening a locked personal app, and every call its view makes.
 //!
-//! `apps_open` binds one chat to one exact locked version (its content hash)
-//! and the model's prefill. The card reloads that binding, never the model's
+//! An open has an owner, stored with it:
+//! - a **chat**: `apps_open` binds one chat to one exact locked version (its
+//!   content hash) and the model's prefill. Reads follow the chat's access
+//!   mode, and the chat's own process may carry calls;
+//! - a **Surface**: the person opened the app from the Store or the launcher
+//!   (`apps/open_personal_app_surface`, a protocol method only the Bridge UI
+//!   calls; no MCP tool reaches it). Reads are allowed, calls never ride a
+//!   chat's process, and there is at most one per app.
+//!
+//! A caller names the owner by passing a session id or none, and it must equal
+//! the stored one, so no caller can pick the more permissive owner. Every open
+//! carries the app's generation; a deleted and recreated app is a new
+//! generation, and old opens never attach to it. The card reloads that binding, never the model's
 //! tool input. Each call from the view comes back here, where the binding,
 //! the hash and the allowlist are rechecked:
 //! - a read goes through the router (access mode, current annotations);
@@ -14,10 +25,11 @@
 
 use super::{
     personal::{self, LockedVersion},
-    router::{self, Connection},
+    registry,
+    router::{self, Caller, Connection},
 };
 use crate::{runtime::BridgeCore, BridgeError};
-use bridge_protocol::messages::{CallPersonalAppToolParams, GetPersonalAppOpenParams, PersonalAppCallResult, PersonalAppOpen};
+use bridge_protocol::messages::{CallPersonalAppToolParams, GetPersonalAppOpenParams, PersonalAppCallResult, PersonalAppOpen, PersonalAppSurfaceOpen};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection as Db, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -52,10 +64,45 @@ pub fn install_store(tx: &Transaction<'_>) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// Migration 84: opens get an owner and a generation, and every locked app a
+/// generation. Pending approvals are dropped; they live ten minutes at most.
+pub fn install_owners(tx: &Transaction<'_>) -> Result<(), BridgeError> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS personal_app_generations(
+            app_id TEXT PRIMARY KEY, generation TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO personal_app_generations(app_id, generation, created_at)
+            SELECT DISTINCT app_id, lower(hex(randomblob(16))), datetime('now') FROM personal_app_versions;
+        DROP TABLE IF EXISTS personal_app_write_approvals;
+        CREATE TABLE personal_app_opens_v2(
+            open_id TEXT PRIMARY KEY,
+            owner TEXT NOT NULL CHECK(owner IN ('chat','surface')),
+            session_id TEXT,
+            app_id TEXT NOT NULL, generation TEXT NOT NULL,
+            version INTEGER NOT NULL, content_hash TEXT NOT NULL, prefill TEXT, created_at TEXT NOT NULL,
+            CHECK((owner='chat' AND session_id IS NOT NULL) OR (owner='surface' AND session_id IS NULL))
+        );
+        INSERT INTO personal_app_opens_v2
+            SELECT o.open_id, 'chat', o.session_id, o.app_id, g.generation, o.version, o.content_hash, o.prefill, o.created_at
+            FROM personal_app_opens o JOIN personal_app_generations g ON g.app_id = o.app_id;
+        DROP TABLE personal_app_opens;
+        ALTER TABLE personal_app_opens_v2 RENAME TO personal_app_opens;
+        CREATE INDEX personal_app_opens_session ON personal_app_opens(session_id);
+        CREATE INDEX personal_app_opens_app ON personal_app_opens(app_id);
+        CREATE TABLE personal_app_write_approvals(
+            token TEXT PRIMARY KEY, open_id TEXT NOT NULL UNIQUE,
+            tool TEXT NOT NULL, arguments TEXT NOT NULL, digest TEXT NOT NULL, created_at TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
 /// The locked apps a chat's `apps_open` description names: id, name, intent.
+/// Apps that are off are left out.
 pub fn listing(db: &Db) -> Result<Vec<Value>, BridgeError> {
     Ok(personal::list(db)?
         .into_iter()
+        .filter(|app| registry::is_enabled(db, &app.id).unwrap_or(false))
         .take(LISTED_APPS)
         .map(|app| json!({"id": app.id, "name": app.name, "intent": app.intent}))
         .collect())
@@ -110,28 +157,16 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
     if input.prefill.as_ref().is_some_and(|prefill| !prefill.is_object() || prefill.to_string().len() > MAX_PREFILL_BYTES) {
         return Err(invalid("prefill must be an object within 32 KiB"));
     }
-    let version = {
-        let db = core.try_db()?;
-        let found = personal::latest_locked(&db, &input.app_id)?;
-        found.ok_or_else(|| unknown_app(&db, &input.app_id))?
-    };
-    let version = verified(version)?;
-    let connection = connection(&version.manifest);
-    let inventory = router::inventory(core, session, &connection)?;
-    if inventory["status"] != "connected" {
-        return Err(invalid(format!(
-            "{} is not connected in {}; connect it there, then ask again",
-            connection.server,
-            router::agent_label(&connection.harness)
-        )));
-    }
+    let (version, generation) = openable(core, &input.app_id, Caller::Chat(session))?;
     let open_id = uuid::Uuid::new_v4().to_string();
     core.try_db()?.execute(
-        "INSERT INTO personal_app_opens(open_id,session_id,app_id,version,content_hash,prefill,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO personal_app_opens(open_id,owner,session_id,app_id,generation,version,content_hash,prefill,created_at)
+         VALUES(?1,'chat',?2,?3,?4,?5,?6,?7,?8)",
         params![
             open_id,
             session,
             version.app_id,
+            generation,
             version.version,
             version.content_hash,
             input.prefill.as_ref().map(Value::to_string),
@@ -148,31 +183,146 @@ pub fn create(core: &Arc<BridgeCore>, session: &str, args: Value) -> Result<Valu
     }))
 }
 
+/// The latest locked, hash-verified version of an app that is on, its current
+/// generation, and proof its server is connected for `caller` to open it.
+fn openable(core: &Arc<BridgeCore>, app_id: &str, caller: Caller<'_>) -> Result<(LockedVersion, String), BridgeError> {
+    let (version, generation) = {
+        let db = core.try_db()?;
+        let found = personal::latest_locked(&db, app_id)?;
+        let version = found.ok_or_else(|| unknown_app(&db, app_id))?;
+        if !registry::is_enabled(&db, app_id)? {
+            return Err(invalid(TURNED_OFF));
+        }
+        let generation = personal::generation(&db, app_id)?.ok_or_else(|| invalid(DELETED))?;
+        (version, generation)
+    };
+    let version = verified(version)?;
+    let connection = connection(&version.manifest);
+    let inventory = router::inventory(core, caller, &connection)?;
+    if inventory["status"] != "connected" {
+        return Err(invalid(format!(
+            "{} is not connected in {}; connect it there, then try again",
+            connection.server,
+            router::agent_label(&connection.harness)
+        )));
+    }
+    Ok((version, generation))
+}
+
+const TURNED_OFF: &str = "This app is turned off. Turn it on in the Store to use it";
+const DELETED: &str = "This app was deleted";
+
+/// `apps/open_personal_app_surface`: the person opens an app themselves. It
+/// replaces the app's previous Surface open, and with it any write waiting
+/// on that open.
+pub fn open_surface(core: &Arc<BridgeCore>, app_id: &str) -> Result<PersonalAppSurfaceOpen, BridgeError> {
+    personal::validate_id(app_id).map_err(invalid)?;
+    let (version, generation) = openable(core, app_id, Caller::Surface)?;
+    let open_id = uuid::Uuid::new_v4().to_string();
+    let db = core.try_db()?;
+    let tx = db.unchecked_transaction()?;
+    // The app may have been turned off or deleted while its server was asked.
+    if personal::generation(&tx, app_id)?.as_deref() != Some(generation.as_str()) {
+        return Err(invalid(DELETED));
+    }
+    if !registry::is_enabled(&tx, app_id)? {
+        return Err(invalid(TURNED_OFF));
+    }
+    remove_surfaces(&tx, Some(app_id))?;
+    tx.execute(
+        "INSERT INTO personal_app_opens(open_id,owner,session_id,app_id,generation,version,content_hash,prefill,created_at)
+         VALUES(?1,'surface',NULL,?2,?3,?4,?5,NULL,?6)",
+        params![open_id, version.app_id, generation, version.version, version.content_hash, Utc::now().to_rfc3339()],
+    )?;
+    tx.commit()?;
+    Ok(PersonalAppSurfaceOpen { open_id, app_id: version.app_id, version: version.version, content_hash: version.content_hash })
+}
+
+/// `apps/close_personal_app_surface`: the pane closed. `true` when it was open.
+pub fn close_surface(db: &Db, open_id: &str) -> Result<bool, BridgeError> {
+    let tx = db.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM personal_app_write_approvals WHERE open_id IN (SELECT open_id FROM personal_app_opens WHERE open_id=?1 AND owner='surface')",
+        [open_id],
+    )?;
+    let removed = tx.execute("DELETE FROM personal_app_opens WHERE open_id=?1 AND owner='surface'", [open_id])? > 0;
+    tx.commit()?;
+    Ok(removed)
+}
+
+/// Surface opens and their pending writes, for one app or (at daemon start)
+/// all of them.
+pub fn remove_surfaces(db: &Db, app_id: Option<&str>) -> Result<(), BridgeError> {
+    db.execute(
+        "DELETE FROM personal_app_write_approvals WHERE open_id IN
+         (SELECT open_id FROM personal_app_opens WHERE owner='surface' AND (?1 IS NULL OR app_id=?1))",
+        [app_id],
+    )?;
+    db.execute("DELETE FROM personal_app_opens WHERE owner='surface' AND (?1 IS NULL OR app_id=?1)", [app_id])?;
+    Ok(())
+}
+
+/// The app was turned off: every write waiting on it is revoked and its
+/// Surface open closed, in the caller's transaction. Chat opens stay, and
+/// are refused until it is on again.
+pub fn revoke_app(db: &Db, app_id: &str) -> Result<(), BridgeError> {
+    db.execute(
+        "DELETE FROM personal_app_write_approvals WHERE open_id IN (SELECT open_id FROM personal_app_opens WHERE app_id=?1)",
+        [app_id],
+    )?;
+    remove_surfaces(db, Some(app_id))
+}
+
+fn caller(session: Option<&str>) -> Caller<'_> {
+    session.map_or(Caller::Surface, Caller::Chat)
+}
+
 struct Opened {
     version: LockedVersion,
+    generation: String,
     prefill: Option<Value>,
 }
 
-fn load(db: &Db, session: &str, open_id: &str, content_hash: &str) -> Result<Opened, BridgeError> {
-    if !super::draft::eligible(db, session)? {
-        return Err(invalid("Personal apps need a top-level chat in Claude Code, Codex, OpenCode or Cursor"));
+/// The app an open is for must still be this generation and on.
+fn still_usable(db: &Db, app_id: &str, generation: &str) -> Result<(), BridgeError> {
+    if personal::generation(db, app_id)?.as_deref() != Some(generation) {
+        return Err(invalid(DELETED));
     }
-    let (app_id, prefill): (String, Option<String>) = db
+    if !registry::is_enabled(db, app_id)? {
+        return Err(invalid(TURNED_OFF));
+    }
+    Ok(())
+}
+
+fn load(db: &Db, owner: Caller<'_>, open_id: &str, content_hash: &str) -> Result<Opened, BridgeError> {
+    let session = match owner {
+        Caller::Chat(session) => {
+            if !super::draft::eligible(db, session)? {
+                return Err(invalid("Personal apps need a top-level chat in Claude Code, Codex, OpenCode or Cursor"));
+            }
+            Some(session)
+        }
+        Caller::Surface => None,
+    };
+    let (app_id, generation, prefill): (String, String, Option<String>) = db
         .query_row(
-            "SELECT app_id, prefill FROM personal_app_opens WHERE open_id=?1 AND session_id=?2 AND content_hash=?3",
-            params![open_id, session, content_hash],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            "SELECT app_id, generation, prefill FROM personal_app_opens
+             WHERE open_id=?1 AND content_hash=?2
+               AND ((owner='chat' AND session_id=?3) OR (owner='surface' AND ?3 IS NULL))",
+            params![open_id, content_hash, session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| invalid("This app is unavailable in this chat"))?;
+        .ok_or_else(|| invalid("This app is unavailable here"))?;
+    still_usable(db, &app_id, &generation)?;
     let version = personal::locked_with_hash(db, &app_id, content_hash)?
         .ok_or_else(|| invalid("This app version was deleted"))?;
     let prefill = prefill.map(|text| serde_json::from_str(&text)).transpose().map_err(|_| invalid("This app's prefill is unreadable"))?;
-    Ok(Opened { version: verified(version)?, prefill })
+    Ok(Opened { version: verified(version)?, generation, prefill })
 }
 
 pub fn get(db: &Db, p: &GetPersonalAppOpenParams) -> Result<PersonalAppOpen, BridgeError> {
-    let Opened { version, prefill } = load(db, &p.session_id, &p.open_id, &p.content_hash)?;
+    let Opened { version, prefill, .. } = load(db, caller(p.session_id.as_deref()), &p.open_id, &p.content_hash)?;
     let manifest = version.manifest;
     Ok(PersonalAppOpen {
         open_id: p.open_id.clone(),
@@ -196,19 +346,21 @@ fn digest(text: &str) -> String {
 
 /// One call from an opened app's view.
 pub fn call(core: &Arc<BridgeCore>, p: &CallPersonalAppToolParams) -> Result<PersonalAppCallResult, BridgeError> {
-    let opened = load(&*core.try_db()?, &p.session_id, &p.open_id, &p.content_hash)?;
+    let owner = caller(p.session_id.as_deref());
+    let opened = load(&*core.try_db()?, owner, &p.open_id, &p.content_hash)?;
     let manifest = &opened.version.manifest;
     let connection = connection(manifest);
     let started = Instant::now();
-    let ledger = |kind: &str, ok: bool| record(core, kind, &opened.version, &p.tool, ok, started);
+    let ledger = |kind: &str, outcome: Outcome| record(core, kind, &opened, &p.tool, outcome, started);
     if manifest.reads.contains(&p.tool) {
         check_arguments(&p.arguments)?;
-        let result = router::read(core, &p.session_id, &connection, &p.tool, &p.arguments);
-        ledger("read", result.is_ok());
+        let result = router::read(core, owner, &connection, &p.tool, &p.arguments);
+        // A read changes nothing, so a read that errored simply failed.
+        ledger("read", Outcome::of(&result, false));
         return result.map(|result| PersonalAppCallResult::Result { result });
     }
     if !manifest.writes.contains(&p.tool) {
-        ledger("refused", false);
+        ledger("refused", Outcome::Failed);
         return Err(invalid("This tool is not part of the app"));
     }
     match &p.approval_token {
@@ -225,9 +377,15 @@ pub fn call(core: &Arc<BridgeCore>, p: &CallPersonalAppToolParams) -> Result<Per
         }
         Some(token) => {
             let arguments = claim(&*core.try_db()?, p, token, now())?;
-            let result = router::write(core, &p.session_id, &connection, &p.tool, &arguments);
-            ledger("write", result.is_ok());
-            result.map(|result| PersonalAppCallResult::Result { result })
+            let dispatch = super::control::Dispatch::default();
+            let result = router::write(core, owner, &connection, &p.tool, &arguments, &dispatch);
+            let outcome = Outcome::of(&result, dispatch.began());
+            ledger("write", outcome);
+            match result {
+                Ok(result) => Ok(PersonalAppCallResult::Result { result }),
+                Err(error) if outcome == Outcome::Unknown => Err(invalid(format!("Bridge could not confirm whether this was sent: {error}"))),
+                Err(error) => Err(error),
+            }
         }
     }
 }
@@ -253,28 +411,39 @@ fn offer(core: &Arc<BridgeCore>, p: &CallPersonalAppToolParams, now: DateTime<Ut
     let tx = db.unchecked_transaction()?;
     tx.execute("DELETE FROM personal_app_write_approvals WHERE open_id=?1", [&p.open_id])?;
     tx.execute(
-        "INSERT INTO personal_app_write_approvals(token,open_id,session_id,tool,arguments,digest,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        params![token, p.open_id, p.session_id, p.tool, canonical, digest(&canonical), now.to_rfc3339()],
+        "INSERT INTO personal_app_write_approvals(token,open_id,tool,arguments,digest,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![token, p.open_id, p.tool, canonical, digest(&canonical), now.to_rfc3339()],
     )?;
     tx.commit()?;
     Ok((token, canonical))
 }
 
-/// Use a token once: it must be this open's, this chat's and this tool's, be
-/// fresh, and hold arguments that still hash to their digest. Returns the
-/// arguments parsed from the stored canonical text.
+/// Use a token once: it must be this open's, this owner's and this tool's, be
+/// fresh, and hold arguments that still hash to their digest. The app must
+/// still be this generation and on, checked in the same transaction that
+/// uses the token, so turning it off or deleting it either comes first and
+/// refuses this, or comes after the write was already let through. Returns
+/// the arguments parsed from the stored canonical text.
 fn claim(db: &Db, p: &CallPersonalAppToolParams, token: &str, now: DateTime<Utc>) -> Result<Value, BridgeError> {
     let tx = db.unchecked_transaction()?;
-    let row: Option<(String, String, String, String)> = tx
+    let row: Option<(String, String, String, String, String, String)> = tx
         .query_row(
-            "SELECT tool, arguments, digest, created_at FROM personal_app_write_approvals WHERE token=?1 AND open_id=?2 AND session_id=?3",
+            "SELECT a.tool, a.arguments, a.digest, a.created_at, o.app_id, o.generation
+             FROM personal_app_write_approvals a JOIN personal_app_opens o ON o.open_id = a.open_id
+             WHERE a.token=?1 AND a.open_id=?2
+               AND ((o.owner='chat' AND o.session_id=?3) OR (o.owner='surface' AND ?3 IS NULL))",
             params![token, p.open_id, p.session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .optional()?;
     tx.execute("DELETE FROM personal_app_write_approvals WHERE token=?1", [token])?;
+    let usable = match &row {
+        Some((.., app_id, generation)) => still_usable(&tx, app_id, generation),
+        None => Ok(()),
+    };
     tx.commit()?;
-    let (tool, arguments, stored_digest, created) = row.ok_or_else(|| invalid("This approval was already used or no longer exists"))?;
+    usable?;
+    let (tool, arguments, stored_digest, created, ..) = row.ok_or_else(|| invalid("This approval was already used or no longer exists"))?;
     let created = DateTime::parse_from_rfc3339(&created).map_err(|_| invalid("This approval is unreadable"))?.with_timezone(&Utc);
     if now - created > Duration::seconds(APPROVAL_TTL_SECS) {
         return Err(invalid("This approval expired; try the action again"));
@@ -285,11 +454,47 @@ fn claim(db: &Db, p: &CallPersonalAppToolParams, token: &str, now: DateTime<Utc>
     serde_json::from_str(&arguments).map_err(|_| invalid("This approval is unreadable"))
 }
 
-fn record(core: &Arc<BridgeCore>, kind: &str, version: &LockedVersion, tool: &str, ok: bool, started: Instant) {
+/// What became of a call, as far as Bridge can know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The server answered without an MCP error.
+    Confirmed,
+    /// Refused before anything was sent, or the server answered `isError`.
+    Failed,
+    /// Sending began and then the transport failed: it may have run.
+    Unknown,
+}
+
+impl Outcome {
+    /// Adapters return a server's MCP error inside `Ok`, so `Ok` alone does
+    /// not mean it worked. `dispatched` is whether sending began (see
+    /// [`super::control::Dispatch`]): an `Err` before it sent nothing.
+    pub fn of(result: &Result<Value, BridgeError>, dispatched: bool) -> Self {
+        match result {
+            Ok(value) if value.get("isError") == Some(&Value::Bool(true)) => Self::Failed,
+            Ok(_) => Self::Confirmed,
+            Err(_) if dispatched => Self::Unknown,
+            Err(_) => Self::Failed,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn record(core: &Arc<BridgeCore>, kind: &str, opened: &Opened, tool: &str, outcome: Outcome, started: Instant) {
+    let version = &opened.version;
     let body = json!({
         "version": version.version,
+        "generation": opened.generation,
         "tool": tool,
-        "ok": ok,
+        "outcome": outcome.as_str(),
+        "ok": outcome == Outcome::Confirmed,
         "elapsedMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     });
     let recorded = core.try_db().and_then(|db| {

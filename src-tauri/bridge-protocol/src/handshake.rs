@@ -156,9 +156,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// **1.42 adds `allowOpencodeAppCourier` to app preferences.** A 1.42 client
 /// saving it to a 1.41 daemon would be refused as an unknown field.
+///
+/// **1.43 adds "My apps": `apps/open_personal_app_surface` and
+/// `apps/close_personal_app_surface`, `personal` in `apps/list_apps`, and an
+/// optional `sessionId` on opened-app calls (none means the person's own app
+/// surface).** A 1.42 client still pairs: it always sends a session id.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 42,
+    minor: 43,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -469,6 +474,14 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn my_apps_client_rejects_a_daemon_without_surfaces() {
+        let before = ProtocolVersion { major: 1, minor: 42 };
+        let surfaces = ProtocolVersion { major: 1, minor: 43 };
+        assert!(!before.accepts(surfaces));
+        assert!(surfaces.accepts(before), "a 1.42 client still pairs with a 1.43 daemon");
     }
 
     #[test]
