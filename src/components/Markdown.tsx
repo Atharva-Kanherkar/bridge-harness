@@ -12,9 +12,11 @@ import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
+import { RunButton } from "./RunInTerminal";
 
 type Block =
-  | { kind: "code"; lang: string; body: string }
+  /** `closed` is false while a streaming fence still lacks its closing line. */
+  | { kind: "code"; lang: string; body: string; closed: boolean }
   | { kind: "diagram"; spec: string }
   | { kind: "mermaid"; code: string }
   | { kind: "storage-plan"; body: string }
@@ -54,15 +56,15 @@ export function richFenceKind(lang: string): RichFenceKind | null {
 /** Classify a fenced block by its info string into a rich-content block
  *  kind. Without rich fences every fence is code, as GitHub and Slack show
  *  it: a preview of text bound elsewhere must not run chat-only widgets. */
-function fencedBlock(lang: string, body: string, richFences = true): Block {
-  if (!richFences) return { kind: "code", lang, body };
+function fencedBlock(lang: string, body: string, closed: boolean, richFences = true): Block {
+  if (!richFences) return { kind: "code", lang, body, closed };
   if (lang.trim().toLowerCase() === "storage-plan") return { kind: "storage-plan", body };
   const kind = richFenceKind(lang);
   if (kind === "diagram") return { kind, spec: body };
   if (kind === "mermaid") return { kind, code: body };
   if (kind === "math") return { kind, tex: body };
   if (kind === "html") return { kind, html: body };
-  return { kind: "code", lang, body };
+  return { kind: "code", lang, body, closed };
 }
 
 export function splitBlocks(source: string, { richFences = true }: { richFences?: boolean } = {}): Block[] {
@@ -78,8 +80,9 @@ export function splitBlocks(source: string, { richFences = true }: { richFences?
       const body: string[] = [];
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
+      const closed = index < lines.length;
       index += 1;
-      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n"), richFences));
+      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n"), closed, richFences));
       continue;
     }
     if (trimmed.startsWith("$$")) {
@@ -357,7 +360,7 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
   });
 }
 
-function CodeBlock({ lang, body }: { lang: string; body: string }) {
+function CodeBlock({ lang, body, closed = true }: { lang: string; body: string; closed?: boolean }) {
   // `html` is derived at render time, not reset by an effect: an effect only
   // runs after commit, so for one real paint a naive `useEffect`-driven reset
   // would show the *previous* block's coloured HTML under the *new* body.
@@ -386,7 +389,10 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
     <div ref={blockRef} className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
-        <CopyButton text={body} className="code-block-copy" />
+        <div className="flex items-center gap-0.5">
+          <RunButton lang={lang} body={body} closed={closed} />
+          <CopyButton text={body} className="code-block-copy" />
+        </div>
       </div>
       <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
     </div>
@@ -585,7 +591,7 @@ export const Markdown = memo(function Markdown({ text, richFences = true }: { te
   return (
     <div className="md">
       {splitBlocks(text, { richFences }).map((block, index) => {
-        if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
+        if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} closed={block.closed} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
         if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
         if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;
