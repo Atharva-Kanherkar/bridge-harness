@@ -156,7 +156,7 @@ function ImportSummary({ job }: { job: ImportJob }) {
     <SettingsRow label="Came over" description="Imported chats are in the sidebar, under their project when Bridge knows the folder." control={<Count value={job.imported} tone="plain" result="imported" />} />
     <SettingsRow label="Already in Bridge" description="Imported before, or chats Bridge ran itself." control={<Count value={job.alreadyInBridge} result="skipped" />} />
     {job.changed > 0 && <SettingsRow label="Changed since the last import" description="Kept as they were imported." control={<Count value={job.changed} />} />}
-    {job.leftOut > 0 && <SettingsRow label="Background runs left out" description="Sessions Claude Code ran in a temporary folder, such as SDK probes. Not chats you had." control={<Count value={job.leftOut} />} />}
+    {job.leftOut > 0 && <SettingsRow label="Background runs left out" description="Sessions that ran in a temporary folder, such as SDK probes and Bridge's own background work. Not chats you had." control={<Count value={job.leftOut} />} />}
     {job.failed > 0 && <SettingsRow label="Could not be imported" control={<Count value={job.failed} tone="warning" />} />}
     {notCarried.length > 0 && <SettingsRow
       label="What did not come over"

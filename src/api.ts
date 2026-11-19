@@ -1749,7 +1749,7 @@ function mockImportSources(): ImportSourcesDetection {
     detectedAt: new Date().toISOString(),
     sources: [
       { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory." },
-      { tool: "codex", label: "Codex", installed: true, supported: false, roots: ["/mock/.codex/sessions"], counts: { chats: 12, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note: "Codex chats are next. Nothing is read until then." },
+      { tool: "codex", label: "Codex", installed: true, supported: true, roots: ["/mock/.codex"], counts: { chats: 12, projects: 2, workspaces: 0, memories: 0, setup: 0, background: 4 }, note: "Chats with their commands, edits and MCP calls. Codex keeps using its own memory." },
       absent("opencode", "OpenCode", "OpenCode chats are coming. Nothing is read until then."),
       { tool: "conductor", label: "Conductor", installed: true, supported: false, roots: ["/mock/conductor/workspaces"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming." },
       absent("t3code", "T3 Code", "T3 Code runs Claude Code, so its Claude chats come over with the Claude Code import. Thread titles and projects are coming."),

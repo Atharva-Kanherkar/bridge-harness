@@ -34,6 +34,6 @@ describe("ImportHarnessSection", () => {
       expect(text).not.toContain(gone);
     }
     const buttons = [...container.querySelectorAll("button")].map(button => button.textContent?.trim());
-    expect(buttons).toEqual(["Import"]);
+    expect(buttons).toEqual(["Import", "Import"]);
   });
 });

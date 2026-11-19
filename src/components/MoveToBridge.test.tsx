@@ -61,8 +61,11 @@ describe("MoveToBridge", () => {
     expect(text).toContain("Claude Code keeps using its own memory");
     expect(text).toContain("Not found on this Mac");
     expect(text).not.toContain("Review");
-    expect(container.querySelectorAll("button").length).toBe(1);
+    // Claude Code and Codex import today; the rest say they are coming.
+    expect(container.querySelectorAll("button").length).toBe(2);
     expect(button(container, "Import").disabled).toBe(false);
+    expect(text).toContain("Codex keeps using its own memory");
+    expect(text).not.toContain("Codex chats are next");
   });
 
   it("starts the import in the background and shows its progress live", async () => {
@@ -98,6 +101,15 @@ describe("MoveToBridge", () => {
     expect(stage.querySelectorAll(".import-transfer-card").length).toBe(6);
     expect(stage.querySelector(".import-transfer-check")).toBeNull();
     expect(container.querySelector("[data-import-time-left]")?.textContent).toBe("Less than a minute left");
+  });
+
+  it("draws a Codex import from Codex's tile", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ job: job({ tool: "codex", total: 40, processed: 10, imported: 10, updatedAt: "2026-11-19T10:00:03Z" }) });
+    await render();
+    const stage = container.querySelector("[data-transfer]")!;
+    expect(stage.textContent).toContain("Codex");
+    expect(stage.textContent).not.toContain("Claude Code");
+    expect(stage.querySelector("[data-harness='codex']")).not.toBeNull();
   });
 
   it("lands the transfer with a check when the import ends", async () => {

@@ -16,7 +16,7 @@ import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, typ
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
-import { continuationNotice, importedChatBadge } from "./importSources";
+import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
@@ -1233,7 +1233,7 @@ function AppContent() {
     void bridgeApi.onImportProgress(job => {
       if (job.status === "running") return;
       setImportToast(job);
-      const notice = importNotice(job);
+      const notice = importNotice(job, importSourceLabel(job.tool));
       void notifyAttention(notice.title, notice.body);
     }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; });
     return () => { disposed = true; stop?.(); };

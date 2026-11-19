@@ -1,6 +1,7 @@
 import { CircleAlert, CircleCheck } from "lucide-react";
 import type { ImportJob } from "../protocol/generated/protocol";
 import { importNotice } from "../moveToBridge";
+import { importSourceLabel } from "../importSources";
 import { ToastCard } from "./ToastCard";
 
 // Shown when a background import ends, wherever the person is in Bridge. The
@@ -9,7 +10,7 @@ import { ToastCard } from "./ToastCard";
 export const IMPORT_TOAST_TTL_MS = 15_000;
 
 export function ImportToast({ job, onOpen, onDismiss }: { job: ImportJob; onOpen: () => void; onDismiss: () => void }) {
-  const notice = importNotice(job);
+  const notice = importNotice(job, importSourceLabel(job.tool));
   const Icon = notice.failed ? CircleAlert : CircleCheck;
   return <div className="pointer-events-none flex flex-col items-end gap-2">
     <ToastCard
