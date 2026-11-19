@@ -367,7 +367,13 @@ fn codex_list(core: &Arc<BridgeCore>, session_id: Option<&str>, row: Option<&Too
         runtime_source("Codex skills/list", Some(&at), &skills),
         runtime_source("Codex config/read", Some(&at), &config),
     ];
-    let warm = CodexSource { status: servers.ok(), skills: skills.ok(), config: config.ok(), at: Some(at) };
+    let skills_dropped = core
+        .applied_tools
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(session_id)
+        .is_some_and(|applied| applied.skills_dropped);
+    let warm = CodexSource { status: servers.ok(), skills: skills.ok(), config: config.ok(), at: Some(at), skills_dropped };
     (codex_units(&warm, row), sources)
 }
 

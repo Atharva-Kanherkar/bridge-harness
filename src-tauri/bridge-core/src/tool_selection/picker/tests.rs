@@ -233,6 +233,7 @@ fn the_picker_stores_nothing_and_changes_no_launch_state() {
         confirmed: true,
         pending: None,
         started_at: "launch".into(),
+        skills_dropped: true,
     };
     crate::tool_selection::record_applied(&core, "codex-warm", applied.clone());
     let rows = || -> Vec<(String, String)> {
@@ -243,12 +244,22 @@ fn the_picker_stores_nothing_and_changes_no_launch_state() {
     let before = rows();
     core.adapters.lock().unwrap().insert("codex-warm".to_owned(), Box::new(Codex { owner: "codex-warm", asked: Arc::default(), fail: false }));
 
-    // A read that shows no `skills` key of the user lists the skills as units.
+    // The read shows no `skills` key of the user, but the process runs each
+    // skill on, so the saved skill is fixed with the reason.
     let warm = of_session(&core, "codex-warm");
-    assert_eq!(item(&warm, Skill, "lint").state, Off);
+    let lint = item(&warm, Skill, "lint");
+    assert_eq!((lint.state, lint.fixed_reason.as_deref()), (Fixed, Some(crate::tool_selection::CODEX_SKILLS_DROPPED_REASON)));
     assert_eq!(rows(), before, "the picker stores nothing");
     assert_eq!(core.applied_tools.lock().unwrap().get("codex-warm"), Some(&applied), "the applied entry stays");
     assert!(!crate::tool_selection::stale(&core, "codex-warm"));
+
+    // A launch that applied the skills part lists the skills as units.
+    let stored = crate::tool_selection::read(&core.db.lock().unwrap(), "codex-warm").unwrap().unwrap();
+    let effective_hash = crate::tool_selection::ToolLaunch::from_row(&stored).effective_hash;
+    let applied = crate::tool_selection::AppliedTools { skills_dropped: false, effective_hash, ..applied };
+    crate::tool_selection::record_applied(&core, "codex-warm", applied);
+    assert_eq!(item(&of_session(&core, "codex-warm"), Skill, "lint").state, Off);
+    assert_eq!(rows(), before);
 
     // A cold chat keeps nothing of the warm read.
     core.adapters.lock().unwrap().clear();

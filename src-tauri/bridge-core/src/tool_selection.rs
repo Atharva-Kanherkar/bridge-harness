@@ -45,6 +45,8 @@ const CODEX_SKILLS_TABLE_REASON: &str =
     "The Codex config has a skills key. Bridge does not change it.";
 const CODEX_SKILLS_UNKNOWN_REASON: &str =
     "Bridge can check the Codex config for a skills key only after a turn of this chat.";
+const CODEX_SKILLS_DROPPED_REASON: &str =
+    "Codex did not confirm its skills config when this chat started. Each skill stays on until the next start of the chat.";
 const OPENCODE_SKILLS_REASON: &str = "OpenCode has no verified switch for one skill.";
 const OPENCODE_MARKER_REASON: &str =
     "This server name has { or }. OpenCode can expand it to another server, so Bridge cannot turn it off safely.";
@@ -617,6 +619,8 @@ pub struct AppliedTools {
     pub pending: Option<PendingEvent>,
     /// The `started_at` of the launch.
     pub started_at: String,
+    /// The launch dropped the Codex skills part, so each skill runs on.
+    pub skills_dropped: bool,
 }
 
 /// A Claude event that waits for the first good turn on the same session id.
@@ -656,6 +660,7 @@ pub struct LaunchRecord {
     /// The effective hash of the last change event, or the "all on" hash.
     last_hash: String,
     prefix_rewritten: bool,
+    skills_dropped: bool,
 }
 
 impl LaunchRecord {
@@ -695,6 +700,7 @@ impl LaunchRecord {
             effective_hash,
             last_hash,
             prefix_rewritten,
+            skills_dropped: false,
         })
     }
 
@@ -707,7 +713,7 @@ impl LaunchRecord {
             return self;
         };
         let tools = tools.without_codex_skills();
-        Self { changed: tools.effective_hash != self.last_hash, effective_hash: tools.effective_hash.clone(), tools: Some(tools), ..self }
+        Self { changed: tools.effective_hash != self.last_hash, effective_hash: tools.effective_hash.clone(), tools: Some(tools), skills_dropped: true, ..self }
     }
 
     pub fn changed(&self) -> bool {
@@ -792,6 +798,7 @@ impl LaunchRecord {
             confirmed: pending.is_none(),
             pending,
             started_at: started_at.to_owned(),
+            skills_dropped: self.skills_dropped,
         }
     }
 }
@@ -1246,6 +1253,8 @@ pub struct CodexSource {
     pub config: Option<Value>,
     /// When the runtime answered.
     pub at: Option<String>,
+    /// The launch of the runtime dropped the skills part of the choice.
+    pub skills_dropped: bool,
 }
 
 fn reply_list<'a>(reply: Option<&'a Value>, key: &str) -> &'a [Value] {
@@ -1259,11 +1268,13 @@ fn codex_apps_inside(server: Option<&Value>) -> Vec<String> {
 }
 
 /// `None` when the skills are units. Otherwise the reason that they are
-/// fixed: a `skills` key of the user, or a config that Bridge has not read.
-fn codex_skill_reason(config: Option<&Value>) -> Option<&'static str> {
+/// fixed: a `skills` key of the user, a launch that dropped the skills part,
+/// or a config that Bridge has not read.
+fn codex_skill_reason(config: Option<&Value>, skills_dropped: bool) -> Option<&'static str> {
     match config.and_then(|reply| reply.get("userSkillsKey")).and_then(Value::as_bool) {
-        Some(false) => None,
         Some(true) => Some(CODEX_SKILLS_TABLE_REASON),
+        _ if skills_dropped => Some(CODEX_SKILLS_DROPPED_REASON),
+        Some(false) => None,
         None => Some(CODEX_SKILLS_UNKNOWN_REASON),
     }
 }
@@ -1302,7 +1313,7 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
     for app in codex_apps_inside(apps) {
         items.push(fixed(unit(ChatToolKind::App, &app, &app, "Apps"), CODEX_APP_REASON));
     }
-    let reason = codex_skill_reason(source.config.as_ref());
+    let reason = codex_skill_reason(source.config.as_ref(), source.skills_dropped);
     let skills_off = off_set(row, |row| &row.codex_skills_off);
     let mut skills = BTreeSet::new();
     for skill in reply_list(source.skills.as_ref(), "skills") {

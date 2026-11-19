@@ -482,6 +482,7 @@ fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table(
         skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": "Review a diff", "enabled": true}]}]}))),
         config: Some(via("config", json!({"config": {"model": "gpt"}, "origins": {}}))),
         at: Some("2026-11-19T10:00:00Z".into()),
+        skills_dropped: false,
     };
     let items = codex_units(&source, None);
     let ids: Vec<(ChatToolKind, &str)> = items.iter().map(|i| (i.kind, i.id.as_str())).collect();
@@ -520,6 +521,11 @@ fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table(
         ..source.clone()
     };
     assert_eq!(item(&codex_units(&ours, Some(&saved)), Skill, "review").state, Off);
+    // A launch that dropped the skills part fixes each skill. A key of the user keeps its own reason.
+    let dropped = codex_units(&CodexSource { skills_dropped: true, ..ours.clone() }, Some(&saved));
+    assert_eq!(item(&dropped, Skill, "review").fixed_reason.as_deref(), Some(CODEX_SKILLS_DROPPED_REASON));
+    let dropped_with_key = codex_units(&CodexSource { skills_dropped: true, ..table.clone() }, Some(&saved));
+    assert_eq!(item(&dropped_with_key, Skill, "review").fixed_reason.as_deref(), Some(CODEX_SKILLS_TABLE_REASON));
 }
 
 #[test]
@@ -545,6 +551,7 @@ fn an_item_without_a_verified_lever_is_fixed_with_a_reason() {
         skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": ""}]}]}))),
         config: Some(via("config", json!({"config": {"skills": {}, "plugins": {"github@openai-curated": {"enabled": true}}}}))),
         at: None,
+        skills_dropped: false,
     };
     let unknown = CodexSource { config: None, ..codex.clone() };
     let items: Vec<ChatToolItem> = [

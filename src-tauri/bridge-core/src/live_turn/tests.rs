@@ -709,6 +709,7 @@ fn a_dropped_codex_skills_part_writes_no_claim_and_the_next_send_does_not_relaun
     assert_eq!((&events[0]["serversOff"], &events[0]["codexSkillsOff"]), (&json!(["github"]), &json!([])));
     assert_eq!(events[0]["effectiveHash"], json!(applied.effective_hash));
     let entry = core.applied_tools.lock().unwrap()[&chat].clone();
+    assert!(entry.skills_dropped, "the entry records the drop for the tool picker");
     assert_eq!((entry.revision, entry.effective_hash), (1, applied.effective_hash));
 
     // The entry keeps the stored revision, so the next send reuses the runtime.
