@@ -1056,3 +1056,19 @@ fn an_opencode_choice_that_the_inherited_config_cannot_hold_claims_nothing() {
     assert!(after.changed() && !after.keeps_the_thread_on_failure());
     assert_eq!(after.event("ses_1").unwrap()["serversOff"], json!([]));
 }
+
+#[test]
+fn an_all_on_choice_has_the_hash_of_no_choice() {
+    let db = db();
+    for harness in ["claude", "codex", "opencode"] {
+        let id = format!("all-on-{harness}");
+        chat(&db, &id, harness, None);
+        let row = write_checked(&db, &id, 0, &choice(json!({"harness": harness}))).unwrap();
+        let launch = ToolLaunch::from_row(&row);
+        assert_eq!(launch.effective_hash, all_on_hash(harness), "{harness}");
+        assert_eq!(launch.stored_hash, launch.effective_hash, "{harness}");
+        // A launch with the all-on row and a launch with no choice compare equal.
+        assert!(!LaunchRecord::read(&db, &id, harness, Some(&launch), true).unwrap().changed(), "{harness}");
+        assert!(!LaunchRecord::read(&db, &id, harness, None, true).unwrap().changed(), "{harness}");
+    }
+}

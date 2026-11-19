@@ -2259,7 +2259,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     // continues.
                     if tool_record.keeps_the_thread_on_failure() {
                         fail_a_kept_thread(state, &session_id)?;
-                        return Err(crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error));
+                        return Err(crate::tool_selection::kept_thread_error(tool_launch.as_ref(), error));
                     }
                     match restoration::fallback_after_failure(
                         restoration::RestorationPlan::Native,

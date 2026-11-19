@@ -573,10 +573,13 @@ fn a_changed_selection_resumes_natively_with_the_same_provider_session_id() {
 fn a_failed_resume_with_a_changed_selection_keeps_the_provider_session_id_and_does_not_fork_or_start_fresh() {
     let (_dir, core, script) = live();
     script.lock().unwrap().resume_error = Some("the thread did not load".into());
+    // The text names the cause and the way out, then the error of the harness.
+    let kept = "The harness did not resume this chat with the changed tools. Turn the tools back to the earlier set, or turn all on, then send again.";
     for harness in ["claude", "codex", "opencode"] {
         let chat = chat_on(&core, harness, Some("thread-0"));
         save_off(&core, &chat, &["github"]);
         let error = start_chat(&core, chat.clone()).unwrap_err().to_string();
+        assert!(error.starts_with(kept), "{harness}: {error}");
         assert!(error.contains("the thread did not load"), "{harness}: {error}");
         let launched = asked(&script);
         assert_eq!(verbs(&launched), [("resume", Some("thread-0"))], "{harness}: one resume, no fork, no start");

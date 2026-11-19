@@ -887,6 +887,26 @@ pub fn explain_launch_error(tools: Option<&ToolLaunch>, error: BridgeError) -> B
     }
 }
 
+/// The cause and the way out of a failed resume that keeps the thread of a
+/// chat with a changed tool set.
+const KEPT_THREAD_TEXT: &str = "The harness did not resume this chat with the changed tools. Turn the tools back to the earlier set, or turn all on, then send again.";
+
+/// The error of a failed resume that keeps the thread: [`KEPT_THREAD_TEXT`],
+/// then the text of [`explain_launch_error`]. The kind of the error stays. A
+/// database error is not a refusal of the harness, so it stays as it is.
+pub fn kept_thread_error(tools: Option<&ToolLaunch>, error: BridgeError) -> BridgeError {
+    let with_cause = |detail: String| format!("{KEPT_THREAD_TEXT} {detail}");
+    match explain_launch_error(tools, error) {
+        BridgeError::Invalid(detail) => BridgeError::Invalid(with_cause(detail)),
+        BridgeError::Git(detail) => BridgeError::Git(with_cause(detail)),
+        BridgeError::Adapter(detail) => BridgeError::Adapter(with_cause(detail)),
+        BridgeError::Pty(detail) => BridgeError::Pty(with_cause(detail)),
+        BridgeError::CredentialPolicy(detail) => BridgeError::CredentialPolicy(with_cause(detail)),
+        BridgeError::Io(error) => BridgeError::Io(std::io::Error::new(error.kind(), with_cause(error.to_string()))),
+        error @ BridgeError::Db(_) => error,
+    }
+}
+
 fn names_codex_key(text: &str, key: &str) -> bool {
     let needle = format!("mcp_servers.{key}");
     text.match_indices(&needle).any(|(at, _)| {
