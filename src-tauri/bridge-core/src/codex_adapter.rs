@@ -1,5 +1,6 @@
 use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
+    tool_selection::ToolLaunch,
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -82,7 +83,7 @@ impl Drop for SpawnedChildGuard {
 }
 
 pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
-    launch(request, None, false)
+    launch(request, None, false, None)
 }
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
@@ -90,7 +91,18 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
         request.as_start(),
         Some(request.provider_session_id),
         request.fork,
+        None,
     )
+}
+
+/// `start` for an interactive chat, with the tool launch of the chat.
+pub fn start_chat(request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedCodex, BridgeError> {
+    launch(request, None, false, tools)
+}
+
+/// `resume` for an interactive chat, with the tool launch of the chat.
+pub fn resume_chat(request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedCodex, BridgeError> {
+    launch(request.as_start(), Some(request.provider_session_id), request.fork, tools)
 }
 
 /// One `model/list` row. Hidden rows are skipped. An omitted effort ladder is
@@ -216,6 +228,7 @@ fn launch(
     request: StartRequest<'_>,
     resume_thread_id: Option<&str>,
     fork: bool,
+    _tools: Option<&ToolLaunch>,
 ) -> Result<StartedCodex, BridgeError> {
     let StartRequest {
         session_id: bridge_session_id,

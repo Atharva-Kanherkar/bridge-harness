@@ -2089,8 +2089,19 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         });
     };
     let account_launch = launch_account(state, &session_id, adapter_id)?;
+    // The tool choice of the chat travels beside each request. Workers,
+    // briefings and workflows launch with none.
+    let tool_launch = crate::tool_selection::launch_for(
+        &*state.try_db()?,
+        &session_id,
+        &crate::tool_selection::LaunchTarget {
+            harness: adapter_id,
+            interactive,
+            workflow: is_workflow || workflow_policy.is_some(),
+        },
+    )?;
     let start_fresh = |instructions: &str| {
-        registry.start(
+        registry.start_chat(
             &launch_adapter_id,
             adapters::StartRequest {
                 session_id: Some(session_id.as_str()),
@@ -2106,6 +2117,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 account: account_launch.as_ref(),
                 on_progress: Some(&on_startup_progress),
             },
+            tool_launch.as_ref(),
         )
     };
     let checkpoint_instructions = checkpoint_context
@@ -2125,7 +2137,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             let provider = provider_id
                 .as_deref()
                 .expect("native-fork plan has a provider id");
-            match registry.resume(
+            match registry.resume_chat(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
                     session_id: Some(session_id.as_str()),
@@ -2143,6 +2155,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
+                tool_launch.as_ref(),
             ) {
                 // The fork IS the aside's own thread from here: the runtime
                 // hands back the new forked thread id, which the persistence
@@ -2198,7 +2211,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             let provider = provider_id
                 .as_deref()
                 .expect("native plan has a provider id");
-            match registry.resume(
+            match registry.resume_chat(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
                     session_id: Some(session_id.as_str()),
@@ -2216,6 +2229,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
+                tool_launch.as_ref(),
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
                 Err(error) => {
@@ -22008,3 +22022,6 @@ mod chat_reference_turn_tests {
         assert_eq!(prepared.provider_text, "look at brio_deadbeef");
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,6 +7,7 @@ use crate::{
     model::{AdapterDescriptor, CapabilityTier, SandboxMode},
     model_catalog::{self, CatalogCandidate},
     opencode_adapter, pi_adapter,
+    tool_selection::ToolLaunch,
     worker_sandbox::ReadOnlySandbox,
     BridgeError,
 };
@@ -766,6 +767,16 @@ pub trait HarnessAdapter: Send + Sync + Any {
         Err(BridgeError::Invalid(format!("{} cannot run a personal app courier", self.descriptor().label)))
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
+    /// Start an interactive chat. The tool launch travels beside the request.
+    /// The default ignores it, so an adapter without tool levers starts as
+    /// before.
+    fn start_chat(&self, request: StartRequest<'_>, _tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        self.start(request)
+    }
+    /// Resume an interactive chat, with its tool launch beside the request.
+    fn resume_chat(&self, request: ResumeRequest<'_>, _tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        self.resume(request)
+    }
     fn supports_native_resume(&self) -> bool;
     /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
     /// a new one. Defaults to false: only harnesses with an explicit fork verb
@@ -1030,7 +1041,18 @@ impl AdapterRegistry {
     pub fn start(
         &self,
         id: &str,
+        request: StartRequest<'_>,
+    ) -> Result<StartedAdapter, BridgeError> {
+        self.start_chat(id, request, None)
+    }
+
+    /// `start` for an interactive chat, with its tool launch beside the
+    /// request.
+    pub fn start_chat(
+        &self,
+        id: &str,
         mut request: StartRequest<'_>,
+        tools: Option<&ToolLaunch>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -1047,7 +1069,7 @@ impl AdapterRegistry {
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         request.speed = supported_model_speed(&descriptor, request.model, request.speed);
-        adapter.start(request)
+        adapter.start_chat(request, tools)
     }
 
     pub fn start_app_courier(&self, id: &str, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
@@ -1075,7 +1097,18 @@ impl AdapterRegistry {
     pub fn resume(
         &self,
         id: &str,
+        request: ResumeRequest<'_>,
+    ) -> Result<StartedAdapter, BridgeError> {
+        self.resume_chat(id, request, None)
+    }
+
+    /// `resume` for an interactive chat, with its tool launch beside the
+    /// request.
+    pub fn resume_chat(
+        &self,
+        id: &str,
         mut request: ResumeRequest<'_>,
+        tools: Option<&ToolLaunch>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -1096,7 +1129,7 @@ impl AdapterRegistry {
         request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         let wanted = request.provider_session_id.to_owned();
         let fork = request.fork;
-        let mut started = adapter.resume(request)?;
+        let mut started = adapter.resume_chat(request, tools)?;
         // A plain resume must come back on the session it asked for. Anything
         // else would carry the chat on in another conversation: stop it, and
         // let the caller's fallback restore from Bridge's own history. A fork
@@ -1568,9 +1601,12 @@ impl HarnessAdapter for OpenCodeAdapter {
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.start_chat(request, None)
+    }
+    fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
-        let started = opencode_adapter::start_with_settings(request, &settings)?;
+        let started = opencode_adapter::start_chat_with_settings(request, &settings, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -1591,9 +1627,12 @@ impl HarnessAdapter for OpenCodeAdapter {
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.resume_chat(request, None)
+    }
+    fn resume_chat(&self, request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
-        let started = opencode_adapter::resume_with_settings(request, &settings)?;
+        let started = opencode_adapter::resume_chat_with_settings(request, &settings, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -1903,7 +1942,10 @@ impl HarnessAdapter for CodexAdapter {
         });
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::start(request)?;
+        self.start_chat(request, None)
+    }
+    fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::start_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -1911,7 +1953,10 @@ impl HarnessAdapter for CodexAdapter {
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::resume(request)?;
+        self.resume_chat(request, None)
+    }
+    fn resume_chat(&self, request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::resume_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -2056,7 +2101,10 @@ impl HarnessAdapter for ClaudeAdapter {
         });
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = claude_adapter::start(request)?;
+        self.start_chat(request, None)
+    }
+    fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::start_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -2064,7 +2112,10 @@ impl HarnessAdapter for ClaudeAdapter {
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = claude_adapter::resume(request)?;
+        self.resume_chat(request, None)
+    }
+    fn resume_chat(&self, request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::resume_chat(request, tools)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -2344,6 +2395,134 @@ mod tests {
         assert_eq!((result.unwrap(), stopped), ("wanted".to_owned(), false));
         let (result, stopped) = resume("", false);
         assert_eq!((result.unwrap(), stopped), (String::new(), false), "an id reported later is not a mismatch");
+    }
+
+    /// A harness without tool levers that records each start and resume.
+    struct PlainAdapter {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl HarnessAdapter for PlainAdapter {
+        fn as_any(&self) -> &dyn Any { self }
+        fn descriptor(&self) -> AdapterDescriptor {
+            AdapterDescriptor {
+                sandbox_modes: vec![crate::model::SandboxMode::WorkspaceWrite],
+                id: "claude".into(),
+                label: "Plain".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("1".into()),
+                capabilities: vec!["messages".into()],
+                unavailable_reason: None,
+                models: vec![],
+                default_model: None,
+                model_catalog: ModelCatalogDiagnostics::curated(),
+            }
+        }
+        fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            let call = format!("start {:?} {} {:?} {}", request.session_id, request.cwd, request.instructions, request.interactive);
+            self.calls.lock().unwrap().push(call);
+            Err(BridgeError::Invalid("plain start".into()))
+        }
+        fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            let call = format!("resume {:?} {} {} {}", request.session_id, request.provider_session_id, request.fork, request.interactive);
+            self.calls.lock().unwrap().push(call);
+            Err(BridgeError::Invalid("plain resume".into()))
+        }
+        fn supports_native_resume(&self) -> bool { true }
+        fn supports_native_fork(&self) -> bool { true }
+        fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> { vec![] }
+    }
+
+    fn plain_start<'a>(write_mode: Option<WriteMode>) -> StartRequest<'a> {
+        StartRequest {
+            session_id: Some("chat-1"),
+            cwd: "/tmp/chat",
+            model: None,
+            effort: None,
+            speed: None,
+            instructions: Some("system"),
+            write_mode,
+            read_only_sandbox: None,
+            briefing: None,
+            interactive: true,
+            account: None,
+            on_progress: None,
+        }
+    }
+
+    fn plain_resume<'a>(fork: bool) -> ResumeRequest<'a> {
+        ResumeRequest {
+            session_id: Some("chat-1"),
+            provider_session_id: "thread-1",
+            fork,
+            cwd: "/tmp/chat",
+            model: None,
+            effort: None,
+            speed: None,
+            instructions: Some("system"),
+            write_mode: None,
+            read_only_sandbox: None,
+            briefing: None,
+            interactive: true,
+            account: None,
+            on_progress: None,
+        }
+    }
+
+    /// A harness without tool levers starts and resumes as before: the default
+    /// `start_chat` and `resume_chat` hand the same request to `start` and
+    /// `resume`, and the registry keeps each of its checks.
+    #[test]
+    fn the_default_start_chat_and_resume_chat_ignore_the_tool_launch() {
+        let tools = ToolLaunch {
+            revision: 3,
+            harness: "claude".into(),
+            servers_off: vec!["github".into()],
+            codex_apps_off: false,
+            claude_skills: Some(vec![]),
+            codex_skills_off: vec![],
+            effective_hash: "hash".into(),
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let plain = PlainAdapter { calls: calls.clone() };
+        let error = |result: Result<StartedAdapter, BridgeError>| result.err().map(|error| error.to_string());
+        let mut registry = AdapterRegistry::empty();
+        registry.register(Box::new(PlainAdapter { calls: calls.clone() })).unwrap();
+
+        let with_tools = [
+            error(plain.start_chat(plain_start(None), Some(&tools))),
+            error(plain.resume_chat(plain_resume(false), Some(&tools))),
+            error(registry.start_chat("claude", plain_start(None), Some(&tools))),
+            error(registry.resume_chat("claude", plain_resume(true), Some(&tools))),
+        ];
+        let recorded = std::mem::take(&mut *calls.lock().unwrap());
+        let without = [
+            error(plain.start(plain_start(None))),
+            error(plain.resume(plain_resume(false))),
+            error(registry.start("claude", plain_start(None))),
+            error(registry.resume("claude", plain_resume(true))),
+        ];
+        assert_eq!(with_tools, without);
+        assert_eq!(*calls.lock().unwrap(), recorded);
+        assert_eq!(
+            recorded,
+            [
+                "start Some(\"chat-1\") /tmp/chat Some(\"system\") true",
+                "resume Some(\"chat-1\") thread-1 false true",
+                "start Some(\"chat-1\") /tmp/chat Some(\"system\") true",
+                "resume Some(\"chat-1\") thread-1 true true",
+            ]
+        );
+        assert_eq!(with_tools[0].as_deref(), Some("plain start"));
+        assert_eq!(with_tools[3].as_deref(), Some("plain resume"));
+
+        // A tool launch does not skip a registry check: a sandbox that the
+        // harness cannot enforce still refuses before the adapter runs.
+        calls.lock().unwrap().clear();
+        let refusal = error(registry.start_chat("claude", plain_start(Some(WriteMode::Full)), Some(&tools))).unwrap();
+        assert!(refusal.contains("cannot enforce"), "{refusal}");
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     #[test]

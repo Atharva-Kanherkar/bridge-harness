@@ -1,6 +1,7 @@
 use crate::{
     agent,
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
+    tool_selection::ToolLaunch,
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -169,7 +170,17 @@ pub fn start_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, SessionKind::Chat)
+    launch(request, None, settings, SessionKind::Chat, None)
+}
+
+/// `start_with_settings` for an interactive chat, with the tool launch of
+/// the chat.
+pub fn start_chat_with_settings(
+    request: StartRequest<'_>,
+    settings: &OpenCodeSettings,
+    tools: Option<&ToolLaunch>,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request, None, settings, SessionKind::Chat, tools)
 }
 
 /// A standalone draft completion, with every provider tool family denied.
@@ -179,7 +190,7 @@ pub fn start_completion_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, SessionKind::Completion)
+    launch(request, None, settings, SessionKind::Completion, None)
 }
 
 /// A personal-app courier: a session whose only authority is to ask for one
@@ -193,7 +204,7 @@ pub fn start_courier_with_settings(
     permission: &str,
     server: &str,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, SessionKind::Courier { permission, server })
+    launch(request, None, settings, SessionKind::Courier { permission, server }, None)
 }
 
 #[derive(Clone, Copy)]
@@ -212,7 +223,18 @@ pub fn resume_with_settings(
         Some(request.provider_session_id),
         settings,
         SessionKind::Chat,
+        None,
     )
+}
+
+/// `resume_with_settings` for an interactive chat, with the tool launch of
+/// the chat.
+pub fn resume_chat_with_settings(
+    request: ResumeRequest<'_>,
+    settings: &OpenCodeSettings,
+    tools: Option<&ToolLaunch>,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request.as_start(), Some(request.provider_session_id), settings, SessionKind::Chat, tools)
 }
 
 /// The `OPENCODE_CONFIG_CONTENT` a session runs with: unchanged for a worker,
@@ -229,6 +251,7 @@ fn launch(
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
     kind: SessionKind<'_>,
+    _tools: Option<&ToolLaunch>,
 ) -> Result<StartedOpenCode, BridgeError> {
     ensure_read_only_transport_supported(request.read_only_sandbox)?;
     // OpenCode's permission rules are coarse families, so admitting one reviewed

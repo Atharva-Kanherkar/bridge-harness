@@ -1,5 +1,6 @@
 use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
+    tool_selection::ToolLaunch,
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextObservedSize,
@@ -165,14 +166,25 @@ pub struct StartedClaude {
 }
 
 pub fn start(request: StartRequest<'_>) -> Result<StartedClaude, BridgeError> {
-    launch(request, None)
+    launch(request, None, None)
 }
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> {
     launch(
         request.as_start(),
         Some(request.provider_session_id),
+        None,
     )
+}
+
+/// `start` for an interactive chat, with the tool launch of the chat.
+pub fn start_chat(request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedClaude, BridgeError> {
+    launch(request, None, tools)
+}
+
+/// `resume` for an interactive chat, with the tool launch of the chat.
+pub fn resume_chat(request: ResumeRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedClaude, BridgeError> {
+    launch(request.as_start(), Some(request.provider_session_id), tools)
 }
 
 /// The discovery parts one launch needs, from the authority it runs under.
@@ -220,6 +232,7 @@ fn sdk_configuration_for_launch(
 fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
+    _tools: Option<&ToolLaunch>,
 ) -> Result<StartedClaude, BridgeError> {
     let StartRequest {
         session_id: bridge_session_id,
