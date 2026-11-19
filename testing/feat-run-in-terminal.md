@@ -1,4 +1,4 @@
-# feat/run-in-terminal — Test Contract
+# feat/run-in-terminal: test contract
 
 A shell code block an agent writes in chat gets a **Run** button. One click
 opens the dock's Terminal pane and runs the command in the chat's active shell.
