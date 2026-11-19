@@ -28,7 +28,9 @@ cuts the reply on a boundary of the structure: a list keeps whole items, and a
 document ends after a line break, else at a character boundary. Two keys come
 last in the object. `cut` tells the model the ceiling, the units kept and left
 out, the tool and the next `offset`. `next` is `{"offset": N}`, where N is the
-`offset` of the call plus the units kept. A `Bounded` or `Write` reply gets
+`offset` of the call plus the units kept. If the part with pages is whole and
+only other parts are shortened, the reply gets `cut` and no `next`, because a
+next call has nothing more to return. A `Bounded` or `Write` reply gets
 `cut` and no `next`. Its `cut` says how to narrow the call, or that the change
 is complete and that the agent must not send it again.
 

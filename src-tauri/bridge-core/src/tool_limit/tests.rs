@@ -350,6 +350,31 @@ fn a_document_keeps_each_character_when_other_parts_are_too_large() {
 }
 
 #[test]
+fn a_whole_part_with_pages_gets_no_next() {
+    let markdown = "# Plan\n\nok.\n";
+    assert_eq!(markdown.chars().count(), 12);
+    let source = read_result(markdown, 50, 800);
+    let reply = forwarded(source);
+    assert!(text_of(&reply).len() > DOCUMENT_CEILING);
+    let after = bound_reply("notes_read", &json!({"id": "p0"}), reply.clone());
+    assert_bounded("notes_read", &json!({"id": "p0"}), &reply, &after, DOCUMENT_CEILING);
+    assert_eq!(structured(&after)["markdown"], markdown);
+    assert!(structured(&after).get("next").is_none(), "{}", cut_of(&after));
+    let cut = cut_of(&after);
+    assert!(cut.contains("/rows keeps") && cut.contains("holds all 12 characters") && !cut.contains("again with offset"), "{cut}");
+    // A list whose items all fit, with a large part that has no pages.
+    let mut source = search_result(3, 50, Style::Plain);
+    source["note"] = json!(text(Style::Plain, 40_000, 0, 0));
+    let reply = forwarded(source.clone());
+    let after = bound_reply("notes_search", &json!({"offset": 6}), reply.clone());
+    assert_bounded("notes_search", &json!({"offset": 6}), &reply, &after, LIST_CEILING);
+    assert_eq!(structured(&after)["pages"], source["pages"]);
+    assert!(structured(&after).get("next").is_none(), "{}", cut_of(&after));
+    let cut = cut_of(&after);
+    assert!(cut.contains("/note keeps") && cut.contains("holds all 3 items") && !cut.contains("again with offset"), "{cut}");
+}
+
+#[test]
 fn large_parts_without_pages_are_shortened_and_named() {
     let markdown = text(Style::Plain, 30_000, 8, 0);
     let after = bound("notes_read", 6000, &json!({"id": "p0"}), forwarded(read_result(&markdown, 50, 300)));

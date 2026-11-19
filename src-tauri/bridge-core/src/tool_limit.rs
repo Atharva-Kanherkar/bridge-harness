@@ -345,7 +345,17 @@ impl Pager<'_> {
         )
     }
 
+    /// A page of `kept` units. When the part with pages is whole, only other
+    /// parts are shortened, and a next call has nothing more to return.
     fn finish(&self, value: Value, kept: usize, parts: &[Part]) -> Value {
+        if kept == self.full {
+            let notice = format!("Cut at the ceiling of {} bytes: this reply holds all {}, and no call with offset returns more.{}", self.ceiling, count(kept, self.unit), shortened(parts));
+            return finish(value, notice, None);
+        }
+        self.paged(value, kept, parts)
+    }
+
+    fn paged(&self, value: Value, kept: usize, parts: &[Part]) -> Value {
         finish(value, self.notice(kept, parts), Some(self.next(kept)))
     }
 
@@ -355,8 +365,16 @@ impl Pager<'_> {
     fn single(&self, candidate: &Value, settled: &[Part]) -> Option<Value> {
         let removed: Vec<Part> = settled.iter().filter(|part| matches!(part, Part::Removed { .. })).cloned().collect();
         let all = |parts: &[Part]| [parts, &removed].concat();
-        let shrunk = shrink(candidate, Some(self.key), self.ceiling, &|value, parts| pretty_len(&self.finish(value.clone(), 1, &all(parts))) <= self.ceiling);
-        shrunk.fits.then(|| self.finish(shrunk.value, 1, &all(&shrunk.parts)))
+        // A shortened unit is not whole, so the next call moves on past it.
+        let page = |value: Value, parts: &[Part]| {
+            if parts.iter().any(|part| part.is_under(self.key)) {
+                self.paged(value, 1, &all(parts))
+            } else {
+                self.finish(value, 1, &all(parts))
+            }
+        };
+        let shrunk = shrink(candidate, Some(self.key), self.ceiling, &|value, parts| pretty_len(&page(value.clone(), parts)) <= self.ceiling);
+        shrunk.fits.then(|| page(shrunk.value, &shrunk.parts))
     }
 
     /// The first item is above the ceiling even with each of its texts and
@@ -457,6 +475,14 @@ impl Part {
             Part::Removed { key } => return format!("{} is left out", char_start(&escape_key(key), POINTER_BYTES)),
         };
         format!("{} keeps {kept} of {full} {unit}", char_start(pointer, POINTER_BYTES))
+    }
+
+    /// Whether the part is inside the top-level part `key`.
+    fn is_under(&self, key: &str) -> bool {
+        match self {
+            Part::Items { pointer, .. } | Part::Text { pointer, .. } => pointer.strip_prefix(&escape_key(key)).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')),
+            Part::Removed { .. } => false,
+        }
     }
 }
 
