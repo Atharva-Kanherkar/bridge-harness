@@ -171,6 +171,35 @@ fn a_document_over_the_ceiling_is_cut_after_a_line_break() {
     assert!(text_of(&after).len() <= 3000);
 }
 
+/// Whether the first `kept` characters of `markdown` fit in one `notes_read`
+/// page at the real ceiling, with the notice of that page.
+fn page_fits(markdown: &str, kept: usize) -> bool {
+    let pager = Pager { tool: "notes_read", key: "markdown", unit: "character", ceiling: DOCUMENT_CEILING, offset: 0, full: markdown.chars().count() };
+    let start: String = markdown.chars().take(kept).collect();
+    pretty_len(&pager.finish(read_result(&start, 0, 0), kept, &[])) <= DOCUMENT_CEILING
+}
+
+#[test]
+fn a_document_page_ends_at_the_last_line_break_that_fits() {
+    const LENGTH: usize = 40_000;
+    // Each page with a notice is larger than the page with no text.
+    let upper = DOCUMENT_CEILING - pretty_len(&read_result("", 0, 0));
+    // The longest run whose line still fits, and the start that ends after it.
+    let shaped = |run: usize| format!("\n{}\n\n{}", "a".repeat(run), "b".repeat(LENGTH - run - 3));
+    let run = (0..upper).rev().find(|run| page_fits(&shaped(*run), run + 2)).unwrap();
+    let markdown = shaped(run);
+    let after = bound_reply("notes_read", &json!({"id": "p0"}), forwarded(read_result(&markdown, 0, 0)));
+    let kept = structured(&after)["markdown"].as_str().unwrap();
+    assert_eq!(kept.len(), run + 2, "the page ends after the last line break that fits");
+    assert_eq!(kept, &markdown[..run + 2]);
+    assert_eq!(next_of(&after), (run + 2) as u64);
+    // One long line: the longest start that fits, to the byte.
+    let line = "a".repeat(LENGTH);
+    let longest = (0..upper).rev().find(|kept| page_fits(&line, *kept)).unwrap();
+    let after = bound_reply("notes_read", &json!({"id": "p0"}), forwarded(read_result(&line, 0, 0)));
+    assert_eq!(structured(&after)["markdown"].as_str().unwrap().len(), longest);
+}
+
 #[test]
 fn a_cut_never_splits_a_multi_byte_character() {
     for style in [Style::Wide, Style::Hostile] {
@@ -189,6 +218,9 @@ fn a_cut_never_splits_a_multi_byte_character() {
         let snippet = structured(&after)["chats"][0]["snippet"].as_str().unwrap();
         assert!(snippet.len() >= MIN_TEXT && markdown.starts_with(snippet), "{style:?}");
     }
+    // A shortened text of 3-byte characters keeps the floor, at a character.
+    let (value, _) = apply(&json!({"text": "漢".repeat(200)}), Caps { items: 1, bytes: MIN_TEXT }, None);
+    assert_eq!(value["text"].as_str().unwrap().len(), 258);
 }
 
 #[test]

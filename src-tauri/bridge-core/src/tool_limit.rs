@@ -138,9 +138,9 @@ pub fn bound_reply_within(tool: &str, limit: Limit, error_ceiling: usize, argume
 /// with the full size.
 fn bound_text(text: &str, ceiling: usize) -> String {
     let last = format!("Cut at the ceiling of {ceiling} bytes. The full text has {} bytes.", text.len());
-    let kept = cut_text(text, ceiling.saturating_sub(last.len() + 1), 1);
+    let kept = cut_text(text, ceiling.saturating_sub(last.len() + 1), 0);
     if kept.is_empty() {
-        return cut_text(&last, ceiling, last.len()).to_owned();
+        return char_start(&last, ceiling).to_owned();
     }
     let separator = if kept.ends_with('\n') { "" } else { "\n" };
     format!("{kept}{separator}{last}")
@@ -204,27 +204,40 @@ fn bound_document(mut pager: Pager<'_>, mut rest: Value) -> Value {
     pager.single(&with_part(without_removed(rest, &parts), key, Value::String(first)), &parts).unwrap_or_else(|| pager.none_fits())
 }
 
+/// The page of the longest start that fits. The notice length depends on the
+/// count of kept characters, so each round measures the notice for the count
+/// of the round before. With the exact count, the measure is exact.
 fn document_page(pager: &Pager<'_>, settled: &Value, text: &str, parts: &[Part]) -> Option<Value> {
     let mut guess = pager.full;
     let mut slack = 0;
+    let mut best: Option<(usize, Value)> = None;
     for _ in 0..ROUNDS {
         // `settled` holds an empty string under the key, so this is the page
         // with no text and the notice for `guess` characters.
         let overhead = pretty_len(&pager.finish(settled.clone(), guess, parts));
-        let end = prefix_end(text, pager.ceiling.checked_sub(overhead + slack)?);
-        if end == 0 {
-            return None;
-        }
+        let Some(room) = pager.ceiling.checked_sub(overhead + slack) else { break };
+        let end = prefix_end(text, room);
         let kept = text[..end].chars().count();
+        if end == 0 || best.as_ref().is_some_and(|(longest, _)| *longest >= kept) {
+            break;
+        }
         let page = pager.finish(with_part(settled.clone(), pager.key, Value::String(text[..end].to_owned())), kept, parts);
         let size = pretty_len(&page);
         if size <= pager.ceiling {
-            return Some(page);
+            if kept == guess {
+                return Some(page);
+            }
+            // The notice of `guess` can be longer than the notice of `kept`,
+            // so a round with the exact count can keep more.
+            best = Some((kept, page));
+        } else if kept == guess {
+            // Not reached while the measure is exact. The slack keeps the
+            // rounds from a loop in any case.
+            slack += size - pager.ceiling;
         }
-        slack += size - pager.ceiling;
         guess = kept;
     }
-    None
+    best.map(|(_, page)| page)
 }
 
 /// A tool with no pages: the whole result, shortened.
@@ -441,9 +454,9 @@ impl Part {
         let (pointer, kept, full, unit) = match self {
             Part::Items { pointer, kept, full } => (pointer, kept, full, "items"),
             Part::Text { pointer, kept, full } => (pointer, kept, full, "bytes"),
-            Part::Removed { key } => return format!("{} is left out", cut_text(&escape_key(key), POINTER_BYTES, POINTER_BYTES)),
+            Part::Removed { key } => return format!("{} is left out", char_start(&escape_key(key), POINTER_BYTES)),
         };
-        format!("{} keeps {kept} of {full} {unit}", cut_text(pointer, POINTER_BYTES, POINTER_BYTES))
+        format!("{} keeps {kept} of {full} {unit}", char_start(pointer, POINTER_BYTES))
     }
 }
 
@@ -613,19 +626,32 @@ impl<'a> Cutter<'a> {
 
 /// The longest start of `text` of at most `max_bytes` bytes. It ends just
 /// after a line break when one keeps at least `min_keep` bytes, else at a
-/// character boundary.
+/// character boundary. When `max_bytes` is at least `min_keep`, the start
+/// keeps at least `min_keep` bytes, so it can end up to 3 bytes after
+/// `max_bytes` in a text of wide characters.
 fn cut_text(text: &str, max_bytes: usize, min_keep: usize) -> &str {
     if text.len() <= max_bytes {
         return text;
     }
-    let mut end = max_bytes;
+    let start = char_start(text, max_bytes);
+    match start.rfind('\n') {
+        Some(at) if at + 1 >= min_keep => &text[..=at],
+        _ if start.len() < min_keep && max_bytes >= min_keep => {
+            let end = (min_keep..=text.len()).find(|end| text.is_char_boundary(*end)).unwrap_or(text.len());
+            &text[..end]
+        }
+        _ => start,
+    }
+}
+
+/// The longest start of `text` of at most `max_bytes` bytes that ends at a
+/// character boundary.
+fn char_start(text: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    match text[..end].rfind('\n') {
-        Some(at) if at + 1 >= min_keep => &text[..=at],
-        _ => &text[..end],
-    }
+    &text[..end]
 }
 
 /// The byte end of the longest start of `text` whose JSON escape fits in
