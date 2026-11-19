@@ -89,7 +89,7 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
       </DialogHeader>
       {(phase === "signing-in" || phase === "checking") && provider && <DialogPanel scrollFade={false}>
         {phase === "checking"
-          ? <p className="flex items-center gap-2 text-[12px] text-muted-foreground" role="status">
+          ? <p className="flex items-center gap-2 text-meta text-muted-foreground" role="status">
             <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> Checking your {label} sign-in…
           </p>
           : <ProviderLoginPane key={attempt} bare provider={provider} label={label} onClose={close} onExited={output => check(output, true)} />}

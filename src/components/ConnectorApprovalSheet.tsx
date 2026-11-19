@@ -38,13 +38,13 @@ export function ConnectorApprovalSheet({ effect, detail, busy, onApprove, onDeny
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     }} className="u-glass-popover connector-approval-in m-2.5 w-[calc(100%-1.25rem)] rounded-xl border border-border p-3.5 shadow-2xl">
-      <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
+      <div className="flex items-center gap-2 text-ui font-semibold text-foreground">
         <Send size={14} aria-hidden="true" className="shrink-0" />Send this?
       </div>
-      <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/60 p-2 text-[12px] leading-relaxed text-foreground">
+      <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/60 p-2 text-meta leading-relaxed text-foreground">
         {effect}
       </p>
-      {detail !== undefined && <pre aria-label="Exact arguments" className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/60 p-2 font-mono text-[11px] leading-relaxed text-foreground">{detail}</pre>}
+      {detail !== undefined && <pre aria-label="Exact arguments" className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/60 p-2 font-mono text-caption leading-relaxed text-foreground">{detail}</pre>}
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onDeny} disabled={busy}><X size={12} />Cancel</Button>
         <Button size="sm" loading={busy} onClick={onApprove}><Send size={12} />Send</Button>

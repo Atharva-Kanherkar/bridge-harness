@@ -42,13 +42,13 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
   if (!steerable && starting) {
     return <div className={cn(className, "flex items-center gap-2")} role="status">
       <LoaderCircle size={12} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-      <span className="flex-1 text-[11px] text-muted-foreground">Starting up. You can steer this worker once it is running.</span>
+      <span className="flex-1 text-caption text-muted-foreground">Starting up. You can steer this worker once it is running.</span>
       {trailing}
     </div>;
   }
   if (!steerable) {
     return <div className={cn(className, "flex items-center gap-2")} role="status">
-      <span className="flex-1 text-[11px] text-muted-foreground">This worker has finished. Its typed result is final — ask the orchestrator to delegate a follow-up.</span>
+      <span className="flex-1 text-caption text-muted-foreground">This worker has finished. Its typed result is final — ask the orchestrator to delegate a follow-up.</span>
       {trailing}
     </div>;
   }
@@ -76,12 +76,12 @@ function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "St
         rows={1}
         placeholder={label}
         aria-label={label}
-        className="min-h-[34px] max-h-32 flex-1 resize-none rounded-xl border border-border bg-card px-3 py-2 text-[12px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        className="min-h-[34px] max-h-32 flex-1 resize-none rounded-xl border border-border bg-card px-3 py-2 text-meta text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
       />
       <Button type="submit" size="sm" disabled={busy || !draft.trim()}><Navigation size={12}/>{busy ? "Sending…" : "Steer"}</Button>
       {trailing}
     </div>
-    <p role={busy ? "status" : undefined} className="mt-1.5 text-[11px] text-muted-foreground">{busy ? "Sending guidance…" : "Guidance refines this worker’s task. It is delivered during the turn when supported, or held for its next turn."}</p>
-    {failure && <p role="alert" className="mt-1.5 text-[11px] text-destructive">{failure}</p>}
+    <p role={busy ? "status" : undefined} className="mt-1.5 text-caption text-muted-foreground">{busy ? "Sending guidance…" : "Guidance refines this worker’s task. It is delivered during the turn when supported, or held for its next turn."}</p>
+    {failure && <p role="alert" className="mt-1.5 text-caption text-destructive">{failure}</p>}
   </form>;
 }

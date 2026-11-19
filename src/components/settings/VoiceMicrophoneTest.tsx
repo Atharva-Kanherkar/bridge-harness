@@ -60,7 +60,7 @@ export function VoiceMicrophoneTest({ onActiveChange }: { onActiveChange(active:
         className="block min-h-14 w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring" />
       <VoiceStatus {...voice} />
       <div className="mt-1 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-muted-foreground">Audio stays on this Mac.</span>
+        <span className="text-caption text-muted-foreground">Audio stays on this Mac.</span>
         <div className="flex items-center gap-1">
           {text && !voice.active && <TextButton onClick={() => update("")}>Clear test</TextButton>}
           <VoiceControls state={voice.state} available={voice.available} unavailableReason={voice.unavailableReason}

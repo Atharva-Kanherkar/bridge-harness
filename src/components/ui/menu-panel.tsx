@@ -185,7 +185,7 @@ export function MenuItem({
       tabIndex={-1}
       onClick={onClick}
       className={cn(
-        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40",
+        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40",
         destructive ? "text-destructive hover:bg-destructive/10" : "hover:bg-accent",
       )}
     >

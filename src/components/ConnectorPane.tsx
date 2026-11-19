@@ -129,8 +129,8 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
     <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border bg-muted/25 px-3 py-2">
       <Inbox size={15} aria-hidden="true" className="shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[11px] font-medium text-foreground">Inbox</div>
-        <div className="truncate text-[11px] text-muted-foreground">
+        <div className="truncate text-caption font-medium text-foreground">Inbox</div>
+        <div className="truncate text-caption text-muted-foreground">
           {connector?.available ? `${connector.displayName} · via your harness` : "No connector available"}
         </div>
       </div>
@@ -223,7 +223,7 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
 }
 
 function ConnectorHint({ connector }: { connector: ConnectorDescriptor }) {
-  return <div className="flex items-start gap-2 border-b border-border bg-muted/20 px-3 py-2 text-[11px] leading-4 text-muted-foreground">
+  return <div className="flex items-start gap-2 border-b border-border bg-muted/20 px-3 py-2 text-caption leading-4 text-muted-foreground">
     <PlugZap size={13} aria-hidden="true" className="mt-0.5 shrink-0" />
     <span>{connector.explanation ?? `${connector.displayName} is not available.`}</span>
   </div>;
@@ -239,7 +239,7 @@ function EmptyState({ state }: { state: NonNullable<ReturnType<typeof emptyState
         className={cn("mx-auto", state.tone === "degraded" ? "text-warning" : "text-muted-foreground", state.tone === "waiting" && "animate-spin")}
       />
       <h2 className="mt-3 font-display text-sm font-semibold text-foreground">{state.title}</h2>
-      <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">{state.detail}</p>
+      <p className="mt-1.5 text-caption leading-5 text-muted-foreground">{state.detail}</p>
     </div>
   </div>;
 }
@@ -271,10 +271,10 @@ function ItemRow({ item, index, active, onSelect }: {
       />}
     </span>
     <span className="min-w-0 flex-1">
-      <span className={cn("block truncate text-[12px] font-medium", !active && "text-foreground")}>
+      <span className={cn("block truncate text-meta font-medium", !active && "text-foreground")}>
         {item.card?.headline ?? `${item.author} · ${item.channelLabel}`}
       </span>
-      <span className={cn("block truncate text-[11px]", active ? "opacity-80" : "text-muted-foreground")}>
+      <span className={cn("block truncate text-caption", active ? "opacity-80" : "text-muted-foreground")}>
         {itemSubtitle(item)}
       </span>
     </span>
@@ -295,8 +295,8 @@ function CardView({ item }: { item: ConnectorInboxItem }) {
   if (!card) return <PendingCard item={item} />;
   return <article key={card.itemKey} className="connector-settle space-y-3 p-3.5">
     <header className="space-y-1">
-      <h2 className="font-display text-[15px] font-semibold leading-snug text-foreground">{card.headline}</h2>
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+      <h2 className="font-display text-message font-semibold leading-snug text-foreground">{card.headline}</h2>
+      <div className="flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
         <span>{itemSubtitle(item)}</span>
         {card.harnessRendered && <Badge variant="outline" size="sm" className="gap-1">
           <Sparkles size={9} aria-hidden="true" />Rendered by your harness
@@ -312,7 +312,7 @@ function CardView({ item }: { item: ConnectorInboxItem }) {
       </div>
     </header>
 
-    {item.renderRejection && <p className="flex items-start gap-1.5 rounded-lg bg-muted/60 px-2 py-1.5 text-[11px] leading-4 text-muted-foreground">
+    {item.renderRejection && <p className="flex items-start gap-1.5 rounded-lg bg-muted/60 px-2 py-1.5 text-caption leading-4 text-muted-foreground">
       <ShieldAlert size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
       <span>Bridge wrote this card itself — {item.renderRejection}</span>
     </p>}
@@ -337,22 +337,22 @@ function Block({ block }: { block: ConnectorCardBlock }) {
     case "message":
       return <div className="u-glass-soft rounded-xl p-2.5">
         <div className="flex items-baseline gap-2">
-          <b className="text-[12px] font-semibold text-foreground">{block.author}</b>
-          {block.timestamp && <span className="text-[10px] text-muted-foreground">{messageTime(block.timestamp)}</span>}
+          <b className="text-meta font-semibold text-foreground">{block.author}</b>
+          {block.timestamp && <span className="text-micro text-muted-foreground">{messageTime(block.timestamp)}</span>}
         </div>
         {/* Untrusted third-party text, rendered as text. */}
-        <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-foreground">{block.text}</p>
+        <p className="mt-1 whitespace-pre-wrap break-words text-meta leading-relaxed text-foreground">{block.text}</p>
       </div>;
     case "summary":
-      return <p className="flex items-start gap-1.5 text-[12px] leading-relaxed text-muted-foreground">
+      return <p className="flex items-start gap-1.5 text-meta leading-relaxed text-muted-foreground">
         <Sparkles size={11} aria-hidden="true" className="mt-1 shrink-0" />
         <span>{block.text}</span>
       </p>;
     case "context":
-      return <p className="text-[11px] leading-relaxed text-muted-foreground">{block.text}</p>;
+      return <p className="text-caption leading-relaxed text-muted-foreground">{block.text}</p>;
     case "fact":
-      return <div className="flex items-baseline gap-2 text-[11px]">
-        <span className="shrink-0 uppercase tracking-wider text-muted-foreground">{block.label}</span>
+      return <div className="flex items-baseline gap-2 text-caption">
+        <span className="shrink-0 text-muted-foreground font-medium">{block.label}</span>
         <span className="min-w-0 flex-1 truncate text-foreground">{block.value}</span>
       </div>;
     default:
@@ -373,7 +373,7 @@ function UnknownBlock({ block }: { block: ConnectorCardBlock }) {
     .filter((value): value is string => typeof value === "string" && value.trim() !== "")
     .join(" · ");
   if (!text) return null;
-  return <p className="text-[12px] leading-relaxed text-muted-foreground">{text}</p>;
+  return <p className="text-meta leading-relaxed text-muted-foreground">{text}</p>;
 }
 
 /**
@@ -386,14 +386,14 @@ function UnknownBlock({ block }: { block: ConnectorCardBlock }) {
 function PendingCard({ item }: { item: ConnectorInboxItem }) {
   return <article className="space-y-3 p-3.5">
     <header className="space-y-1">
-      <h2 className="connector-shimmer font-display text-[15px] font-semibold leading-snug">
+      <h2 className="connector-shimmer font-display text-message font-semibold leading-snug">
         {item.author} sent you a message
       </h2>
-      <p className="text-[11px] text-muted-foreground">{itemSubtitle(item)}</p>
+      <p className="text-caption text-muted-foreground">{itemSubtitle(item)}</p>
     </header>
     <div className="u-glass-soft rounded-xl p-2.5">
-      <b className="text-[12px] font-semibold text-foreground">{item.author}</b>
-      <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-foreground">{item.text}</p>
+      <b className="text-meta font-semibold text-foreground">{item.author}</b>
+      <p className="mt-1 whitespace-pre-wrap break-words text-meta leading-relaxed text-foreground">{item.text}</p>
     </div>
   </article>;
 }
@@ -416,12 +416,12 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
         key={reply}
         type="button"
         onClick={() => onDraft(reply)}
-        className="max-w-full truncate rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-[0.98]"
+        className="max-w-full truncate rounded-full border border-border px-2.5 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-[0.98]"
       >
         {reply}
       </button>)}
     </div>}
-    {error && <p className="flex items-start gap-1.5 text-[11px] leading-4 text-destructive">
+    {error && <p className="flex items-start gap-1.5 text-caption leading-4 text-destructive">
       <TriangleAlert size={11} aria-hidden="true" className="mt-0.5 shrink-0" />{error}
     </p>}
     <div className="flex items-end gap-1.5">
@@ -435,18 +435,18 @@ function Composer({ item, draft, busy, error, onDraft, onSend, onReact, onDismis
         rows={2}
         aria-label={`Reply to ${item.author}`}
         placeholder={ready ? `Reply to ${item.author}…` : "Waiting for the card…"}
-        className="min-h-[3.25rem] min-w-0 flex-1 resize-none rounded-lg border border-input bg-card px-2 py-1.5 text-[12.5px] leading-relaxed outline-none transition-colors focus:border-ring disabled:opacity-50"
+        className="min-h-[3.25rem] min-w-0 flex-1 resize-none rounded-lg border border-input bg-card px-2 py-1.5 text-meta leading-relaxed outline-none transition-colors focus:border-ring disabled:opacity-50"
       />
       <div className="flex shrink-0 flex-col gap-1.5">
         <Button size="icon-xs" disabled={!ready || !draft.trim()} loading={busy} onClick={onSend} aria-label="Send reply">
           <Send size={12} />
         </Button>
         <Button variant="ghost" size="icon-xs" disabled={!ready} onClick={() => onReact("eyes")} aria-label="React with eyes">
-          <span aria-hidden="true" className="text-[12px] leading-none">👀</span>
+          <span aria-hidden="true" className="text-meta leading-none">👀</span>
         </Button>
       </div>
     </div>
-    <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+    <div className="flex items-center justify-between text-micro text-muted-foreground">
       <span>Sending asks you to confirm first.</span>
       <button type="button" onClick={onDismiss} className="underline-offset-2 hover:text-foreground hover:underline">
         Dismiss

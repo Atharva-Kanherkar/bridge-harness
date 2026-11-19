@@ -41,7 +41,7 @@ const SLIDER_PREVIEW = <span className="relative block h-full w-full">
   <span className="absolute left-3 top-1/2 h-1 w-[55%] -translate-y-1/2 rounded-full bg-foreground/55" />
   <span className="absolute left-[calc(3*0.25rem+55%)] top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-background bg-foreground" />
 </span>;
-const SENTENCE_PREVIEW = <span className="flex h-full items-center justify-center gap-1 text-[11px] text-muted-foreground">
+const SENTENCE_PREVIEW = <span className="flex h-full items-center justify-center gap-1 text-caption text-muted-foreground">
   Think <span className="rounded border border-border bg-muted px-1 font-semibold text-foreground">deeply</span>
 </span>;
 const LIST_PREVIEW = <span className="flex h-full flex-col justify-center gap-1 px-3">
@@ -101,9 +101,9 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
             "grid size-3 shrink-0 place-items-center rounded-full border",
             selected ? "border-foreground" : "border-border",
           )}>{selected && <span className="size-1.5 rounded-full bg-foreground" />}</span>
-          <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">{tile.label}</span>
+          <span className="min-w-0 flex-1 truncate text-ui text-foreground">{tile.label}</span>
         </span>
-        <span className="mt-0.5 block text-[12px] text-muted-foreground">{tile.hint}</span>
+        <span className="mt-0.5 block text-meta text-muted-foreground">{tile.hint}</span>
       </button>;
     })}
   </div>;
@@ -116,7 +116,7 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
 function ZoomControl({ level, onChange }: { level: number; onChange: (next: number) => void }) {
   return <div className="flex items-center gap-1">
     <TextButton onClick={() => onChange(stepZoom(level, -1))} disabled={!canZoom(level, -1)} ariaLabel="Zoom out">&minus;</TextButton>
-    <span aria-live="polite" className="min-w-11 text-center text-[13px] tabular-nums text-foreground">{Math.round(level * 100)}%</span>
+    <span aria-live="polite" className="min-w-11 text-center text-ui tabular-nums text-foreground">{Math.round(level * 100)}%</span>
     <TextButton onClick={() => onChange(stepZoom(level, 1))} disabled={!canZoom(level, 1)} ariaLabel="Zoom in">+</TextButton>
   </div>;
 }

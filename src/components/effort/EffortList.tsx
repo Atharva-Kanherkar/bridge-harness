@@ -35,7 +35,7 @@ export function EffortList({ levels, value, onChange, disabled }: EffortControlP
         data-active={on}
         onClick={() => onChange?.(level.value)}
         className={cn(
-          "grid w-full grid-cols-[14px_1fr_auto] items-center gap-2 rounded-[7px] px-2 py-1.5 text-left transition-colors disabled:cursor-default",
+          "grid w-full grid-cols-[14px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors disabled:cursor-default",
           on ? "bg-accent" : "hover:bg-accent",
         )}
       >
@@ -43,10 +43,10 @@ export function EffortList({ levels, value, onChange, disabled }: EffortControlP
           {on && <span className="size-1.5 rounded-full bg-foreground" />}
         </span>
         <span className="min-w-0">
-          <span className="block text-[12px] font-medium text-foreground">{level.label}</span>
-          {meaning && <span className="block text-[11px] text-muted-foreground">{meaning}</span>}
+          <span className="block text-meta font-medium text-foreground">{level.label}</span>
+          {meaning && <span className="block text-caption text-muted-foreground">{meaning}</span>}
         </span>
-        {i < 9 && <kbd aria-hidden="true" className="rounded border border-border px-1 font-mono text-[11px] text-faint">{i + 1}</kbd>}
+        {i < 9 && <kbd aria-hidden="true" className="rounded border border-border px-1 font-mono text-caption text-faint">{i + 1}</kbd>}
       </button>;
     })}
   </div>;

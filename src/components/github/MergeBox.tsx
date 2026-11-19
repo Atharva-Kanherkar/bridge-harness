@@ -146,8 +146,8 @@ function ReadinessRow({ tone, icon: Icon, title, note, trailing, live }: {
         <Icon size={12} strokeWidth={1.9} aria-hidden="true" className={cn(live && "github-check-live")} />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[12.5px] leading-snug text-foreground">{title}</span>
-        {note && <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{note}</span>}
+        <span className="block text-meta leading-snug text-foreground">{title}</span>
+        {note && <span className="mt-0.5 block truncate text-caption text-muted-foreground">{note}</span>}
       </span>
       {trailing}
     </div>
@@ -330,7 +330,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 data-merge-button
                 onClick={() => dispatch({ type: "open", subject: defaultMergeSubject(summary, state.strategy) })}
                 disabled={busy || !config}
-                className="inline-flex h-[30px] items-center gap-1.5 px-3 text-[12.5px] font-medium transition-colors hover:bg-primary-foreground/10 disabled:opacity-50"
+                className="inline-flex h-[30px] items-center gap-1.5 px-3 text-meta font-medium transition-colors hover:bg-primary-foreground/10 disabled:opacity-50"
               >
                 <GitMerge size={12} aria-hidden="true" />
                 {config ? MERGE_BUTTON_LABEL[state.strategy] : "Merge"}
@@ -348,10 +348,10 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
               </button>
             </span>
             <span className="flex-1" />
-            <button type="button" onClick={onApprove} disabled={busy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+            <button type="button" onClick={onApprove} disabled={busy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <ThumbsUp size={12} aria-hidden="true" /> Approve
             </button>
-            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+            <button type="button" onClick={onToggleReview} disabled={busy || reviewBusy} className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={12} aria-hidden="true" /> {reviewBusy ? "Starting review…" : "Review"}
             </button>
             {overflow.length > 0 && (
@@ -385,7 +385,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                           role="menuitem"
                           onClick={() => { setOverflowOpen(false); item.onSelect(); }}
                           className={cn(
-                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition-colors",
+                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-meta transition-colors",
                             item.destructive ? "text-destructive hover:bg-destructive/10" : "text-foreground hover:bg-accent",
                           )}
                         >
@@ -404,23 +404,23 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
         {/* Confirm step */}
         <div className={cn("u-collapse", !showConfirm && "shut")} aria-hidden={!showConfirm} {...inertWhen(!showConfirm)}>
           <div className="px-3.5 pb-3.5 pt-2">
-            <div className="flex items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-[11.5px] text-muted-foreground">
+            <div className="flex items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-caption text-muted-foreground">
               <FileDiff size={13} className="shrink-0" aria-hidden="true" />
               <span>{lands}</span>
             </div>
             {state.strategy !== "rebase" && (
               <label className="mt-2.5 block">
-                <span className="mb-1 block text-[11px] text-muted-foreground">Commit message</span>
+                <span className="mb-1 block text-caption text-muted-foreground">Commit message</span>
                 <input
                   value={state.subject}
                   onChange={event => dispatch({ type: "subject", subject: event.target.value })}
                   disabled={merging}
                   aria-label="Commit message"
-                  className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-[12.5px] text-foreground outline-none focus-visible:border-ring disabled:opacity-45"
+                  className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-meta text-foreground outline-none focus-visible:border-ring disabled:opacity-45"
                 />
               </label>
             )}
-            <label className="mt-2.5 flex items-center gap-2 text-[12px] text-foreground">
+            <label className="mt-2.5 flex items-center gap-2 text-meta text-foreground">
               <input
                 type="checkbox"
                 checked={state.deleteBranch}
@@ -429,10 +429,10 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 aria-label={`Delete ${headBranch} after merge`}
                 className="size-[15px] shrink-0"
               />
-              Delete <span className="rounded-[5px] bg-muted px-1.5 py-px font-mono text-[11px] text-foreground/80">{headBranch}</span> after merge
+              Delete <span className="rounded-sm bg-muted px-1.5 py-px font-mono text-caption text-foreground/80">{headBranch}</span> after merge
             </label>
             {failed && state.message && (
-              <div role="alert" className="mt-2.5 flex items-start gap-2 rounded-lg bg-destructive/10 px-2.5 py-2 text-[11.5px] leading-relaxed text-destructive">
+              <div role="alert" className="mt-2.5 flex items-start gap-2 rounded-lg bg-destructive/10 px-2.5 py-2 text-caption leading-relaxed text-destructive">
                 <CircleX size={13} className="mt-px shrink-0" aria-hidden="true" />
                 <span><b className="font-semibold">GitHub refused the merge.</b> {state.message}</span>
               </div>
@@ -442,9 +442,9 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 type="button"
                 onClick={() => dispatch({ type: "collapse" })}
                 disabled={merging}
-                className="inline-flex min-h-7 items-center rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                className="inline-flex min-h-7 items-center rounded-md px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >Cancel</button>
-              <span className="flex items-center gap-1 text-[10.5px] text-muted-foreground">
+              <span className="flex items-center gap-1 text-micro text-muted-foreground">
                 <Kbd className="border border-border bg-transparent">{modKey("↵")}</Kbd> to merge
               </span>
               <span className="flex-1" />
@@ -455,7 +455,7 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 disabled={merging || busy}
                 onAnimationEnd={() => setShaking(false)}
                 className={cn(
-                  "relative inline-flex h-[30px] items-center overflow-hidden rounded-lg bg-primary px-3 text-[12.5px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50",
+                  "relative inline-flex h-[30px] items-center overflow-hidden rounded-lg bg-primary px-3 text-meta font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50",
                   shaking && "merge-shake",
                 )}
               >
@@ -491,8 +491,8 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 </svg>
               </span>
               <span className="min-w-0">
-                <span className="block text-[13px] font-semibold text-foreground">Merged into {baseBranch}</span>
-                <span className="mt-0.5 block text-[11.5px] text-muted-foreground">{receiptLine}{celebrate ? " · just now" : ""}</span>
+                <span className="block text-ui font-semibold text-foreground">Merged into {baseBranch}</span>
+                <span className="mt-0.5 block text-caption text-muted-foreground">{receiptLine}{celebrate ? " · just now" : ""}</span>
               </span>
             </div>
             <div className={cn("mt-3 flex items-center gap-1.5", celebrate && "merge-rise d2")}>
@@ -501,20 +501,20 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
                 data-system-browser
                 aria-label="Open the revert flow on GitHub"
                 title="Revert on GitHub"
-                className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+                className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-meta font-medium text-foreground transition-colors hover:bg-accent"
               ><RotateCcw size={12} aria-hidden="true" /> Revert</a>
               <a
                 href={`${prUrl}/commits`}
                 data-system-browser
                 aria-label="View the commit on GitHub"
                 title="View commit on GitHub"
-                className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+                className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 text-meta font-medium text-foreground transition-colors hover:bg-accent"
               ><Eye size={12} aria-hidden="true" /> View commit</a>
               <button
                 type="button"
                 onClick={onRestore}
                 disabled={busy}
-                className="inline-flex min-h-7 items-center rounded-md px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                className="inline-flex min-h-7 items-center rounded-md px-2 text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >Restore branch</button>
             </div>
           </div>
@@ -547,8 +547,8 @@ export function MergeBox({ summary, checks, commitCount, baseBranch, headBranch,
               >
                 <StrategyGlyph kind={strategy} />
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[12.5px] font-medium text-foreground">{MERGE_BUTTON_LABEL[strategy]}</span>
-                  <span className="mt-0.5 block text-[11px] leading-[1.4] text-muted-foreground">
+                  <span className="block text-meta font-medium text-foreground">{MERGE_BUTTON_LABEL[strategy]}</span>
+                  <span className="mt-0.5 block text-caption leading-[1.4] text-muted-foreground">
                     {menuNote(strategy, commitCount, baseBranch, config?.defaultStrategy === strategy)}
                   </span>
                 </span>

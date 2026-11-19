@@ -32,7 +32,7 @@ export function DrawingBlock({ body, title, onSave }: { body: string; title?: st
         ? <Suspense fallback={<div className="h-40" />}><DrawingPreview scene={scene} dark={dark} /></Suspense>
         : <span className="flex h-40 flex-col items-center justify-center gap-2 text-ui text-muted-foreground"><PenLine size={18} aria-hidden="true" />Empty drawing. Click to draw.</span>}
     </button>
-    {count > 0 && <span className="pointer-events-none absolute right-2 top-2 inline-flex h-7 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[12px] text-muted-foreground opacity-0 transition-opacity group-hover/drawing:opacity-100">
+    {count > 0 && <span className="pointer-events-none absolute right-2 top-2 inline-flex h-7 items-center gap-1.5 rounded-full bg-muted px-2.5 text-meta text-muted-foreground opacity-0 transition-opacity group-hover/drawing:opacity-100">
       <PenLine size={13} aria-hidden="true" />Edit drawing
     </span>}
     {editing && <Suspense fallback={null}>

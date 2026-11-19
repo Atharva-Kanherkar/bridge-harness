@@ -64,7 +64,7 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
     type="button"
     disabled={disabled}
     onClick={() => setOpen(true)}
-    className={cn("flex h-8 w-full items-center rounded-md border border-border bg-background/60 px-2.5 text-left text-[12px] text-muted-foreground transition-colors hover:border-foreground/25 hover:bg-background disabled:opacity-50", className)}
+    className={cn("flex h-8 w-full items-center rounded-md border border-border bg-background/60 px-2.5 text-left text-meta text-muted-foreground transition-colors hover:border-foreground/25 hover:bg-background disabled:opacity-50", className)}
   >{placeholder}</button>;
 
   return <motion.div
@@ -84,7 +84,7 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
       }}
       aria-label={label}
       placeholder={placeholder}
-      className="min-h-16 w-full resize-y bg-transparent text-[12.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
+      className="min-h-16 w-full resize-y bg-transparent text-meta leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
     />
     <AnimatePresence initial={false}>
       {error !== undefined && <motion.p
@@ -92,17 +92,17 @@ export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, 
         initial={reduced ? false : { opacity: 0, height: 0 }}
         animate={{ opacity: 1, height: "auto" }}
         exit={reduced ? undefined : { opacity: 0, height: 0 }}
-        className="overflow-hidden rounded-md bg-destructive/10 px-2 py-1 text-[11.5px] text-destructive"
+        className="overflow-hidden rounded-md bg-destructive/10 px-2 py-1 text-caption text-destructive"
       >{error}</motion.p>}
     </AnimatePresence>
     <div className="mt-1 flex items-center justify-end gap-1.5">
-      <span className="mr-auto flex items-center gap-1 text-[11px] text-muted-foreground">Markdown · <Kbd>{modKey("↵")}</Kbd></span>
-      {(collapsed || onCancel) && <button type="button" disabled={busy} onClick={dismiss} className="inline-flex min-h-7 items-center rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">Cancel</button>}
+      <span className="mr-auto flex items-center gap-1 text-caption text-muted-foreground">Markdown · <Kbd>{modKey("↵")}</Kbd></span>
+      {(collapsed || onCancel) && <button type="button" disabled={busy} onClick={dismiss} className="inline-flex min-h-7 items-center rounded-md px-2 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">Cancel</button>}
       <button
         type="button"
         disabled={!ready}
         onClick={() => void send()}
-        className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-[12px] font-medium text-primary-foreground shadow-xs transition-[background-color,transform,opacity] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-meta font-medium text-primary-foreground shadow-xs transition-[background-color,transform,opacity] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
       >
         {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : <Send size={11} aria-hidden="true" />}
         {submitLabel}

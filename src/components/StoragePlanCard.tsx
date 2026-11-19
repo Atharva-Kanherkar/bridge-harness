@@ -87,7 +87,7 @@ export function StoragePlanCard({ body }: { body: string }) {
               aria-label={`Include ${name}`}
               disabled={gone}
               onClick={() => toggle(item)}
-              className={cn("mt-0.5 grid size-4 shrink-0 place-items-center rounded-[5px] outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring", ticked ? (item.safety === "safe" ? "bg-success ring-success" : "bg-warning ring-warning") : "ring-border hover:ring-muted-foreground")}
+              className={cn("mt-0.5 grid size-4 shrink-0 place-items-center rounded-sm outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring", ticked ? (item.safety === "safe" ? "bg-success ring-success" : "bg-warning ring-warning") : "ring-border hover:ring-muted-foreground")}
             >{ticked && <Check size={11} strokeWidth={3} className="text-background" aria-hidden="true" />}</button>
             : <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", item.safety === "safe" ? "bg-success" : "bg-warning")} />}
           <div className="min-w-0 flex-1">
@@ -98,7 +98,7 @@ export function StoragePlanCard({ body }: { body: string }) {
                 : <StatusPill tone={item.safety === "safe" ? "success" : "warning"}>{item.safety === "safe" ? "Rebuilds" : "Review"}</StatusPill>}
             </p>
             {item.why && <p className="mt-0.5 text-caption text-muted-foreground">{item.why}</p>}
-            <p className="mt-0.5 truncate font-mono text-[11px] text-faint" title={item.path}>{displayPath(item.path, host?.home)}</p>
+            <p className="mt-0.5 truncate font-mono text-caption text-faint" title={item.path}>{displayPath(item.path, host?.home)}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <span className="tabular-nums text-foreground">{diskBytes(item.sizeBytes)}</span>
@@ -114,7 +114,7 @@ export function StoragePlanCard({ body }: { body: string }) {
         return <li key={command.run} className="flex items-start gap-3 px-4 py-2.5">
           <Terminal size={14} className="mt-0.5 shrink-0 text-info" aria-hidden="true" />
           <div className="min-w-0 flex-1">
-            <code className="block truncate font-mono text-[12px] text-foreground" title={command.run}>{command.run}</code>
+            <code className="block truncate font-mono text-meta text-foreground" title={command.run}>{command.run}</code>
             {command.why && <p className="mt-0.5 text-caption text-muted-foreground">{command.why}</p>}
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">

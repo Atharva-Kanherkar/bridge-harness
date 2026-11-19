@@ -76,17 +76,17 @@ export function SelectionToolbar({ editor, onMath }: { editor: Editor; onMath: (
           placeholder="Paste a link"
           onChange={event => setLinking(event.target.value)}
           onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); setLinking(null); editor.commands.focus(); } }}
-          className="h-7 w-56 rounded-md bg-transparent px-2 text-[13px] text-foreground outline-none placeholder:text-faint"
+          className="h-7 w-56 rounded-md bg-transparent px-2 text-ui text-foreground outline-none placeholder:text-faint"
         />
-        {active.link && <button type="button" onClick={() => applyLink("")} className="h-7 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground">Remove</button>}
+        {active.link && <button type="button" onClick={() => applyLink("")} className="h-7 rounded-md px-2 text-meta text-muted-foreground hover:bg-accent hover:text-foreground">Remove</button>}
       </form>
       : <>
         <div className="relative">
-          <button type="button" aria-label="Turn into" aria-expanded={turning} onMouseDown={event => event.preventDefault()} onClick={() => setTurning(open => !open)} className="flex h-7 items-center gap-1 rounded-md px-2 text-[12.5px] text-foreground hover:bg-accent">
+          <button type="button" aria-label="Turn into" aria-expanded={turning} onMouseDown={event => event.preventDefault()} onClick={() => setTurning(open => !open)} className="flex h-7 items-center gap-1 rounded-md px-2 text-meta text-foreground hover:bg-accent">
             {current}<ChevronDown size={12} aria-hidden="true" className="text-faint" />
           </button>
           {turning && <div role="menu" aria-label="Turn into" className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl bg-popover p-1 shadow-lg ring-1 ring-border">
-            {TURN_INTO.map(choice => <button key={choice.id} type="button" role="menuitem" onMouseDown={event => event.preventDefault()} onClick={() => { choice.run(editor); setTurning(false); }} className={clsx("flex h-7 w-full items-center rounded-md px-2 text-left text-[12.5px] hover:bg-accent", choice.label === current ? "text-foreground" : "text-muted-foreground")}>{choice.label}</button>)}
+            {TURN_INTO.map(choice => <button key={choice.id} type="button" role="menuitem" onMouseDown={event => event.preventDefault()} onClick={() => { choice.run(editor); setTurning(false); }} className={clsx("flex h-7 w-full items-center rounded-md px-2 text-left text-meta hover:bg-accent", choice.label === current ? "text-foreground" : "text-muted-foreground")}>{choice.label}</button>)}
           </div>}
         </div>
         <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />

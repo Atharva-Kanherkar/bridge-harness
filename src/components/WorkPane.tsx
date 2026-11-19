@@ -16,8 +16,8 @@ import { useBackgroundTasks } from "./useBackgroundTasks";
 
 export type WorkFocus = { number?: number; nonce: number };
 
-const SECTION = "flex items-center gap-2 px-2 pb-1 pt-3 text-[10.5px] font-medium uppercase tracking-[0.08em] text-faint";
-const ACTION = "inline-flex h-7 items-center gap-1 rounded-md border border-border-card px-2.5 text-[12px] text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const SECTION = "flex items-center gap-2 px-2 pb-1 pt-3 text-caption font-medium text-faint";
+const ACTION = "inline-flex h-7 items-center gap-1 rounded-md border border-border-card px-2.5 text-meta text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 function useClock(intervalMs: number | null) {
   const [now, setNow] = useState(() => Date.now());
@@ -41,10 +41,10 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
   const ordered = orderChecks(pr.checkDetails);
   const failing = pr.state === "open" && chatPrStatus(pr).phase === "failing";
   return <div data-work-pr-detail className="mb-2 ml-[1.15rem] border-l border-border pl-3">
-    {pr.stale && <div role="status" className="my-1.5 flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-[11.5px] text-muted-foreground">
+    {pr.stale && <div role="status" className="my-1.5 flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-caption text-muted-foreground">
       <CloudOff size={12} className="shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{pr.error ? <span className="block truncate text-[10.5px] text-faint" title={pr.error}>{pr.error}</span> : null}</span>
-      <button type="button" onClick={onRetry} disabled={retrying} className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border-card px-2 text-[11.5px] text-foreground transition-colors hover:bg-accent disabled:opacity-60">
+      <span className="min-w-0 flex-1">GitHub didn’t answer, so this is the last state Bridge saw{pr.error ? <span className="block truncate text-micro text-faint" title={pr.error}>{pr.error}</span> : null}</span>
+      <button type="button" onClick={onRetry} disabled={retrying} className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border-card px-2 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-60">
         <RotateCw size={11} className={cn(retrying && "animate-spin")} aria-hidden="true" /> Retry
       </button>
     </div>}
@@ -53,11 +53,11 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
         {ordered.map((check, index) => {
           const tone = checkTone(check);
           const { icon: Icon, className, label } = CHECK_ICON[tone];
-          return <li key={`${check.workflow}/${check.name}/${index}`} className="group/check flex h-7 min-w-0 items-center gap-2 text-[12px]">
+          return <li key={`${check.workflow}/${check.name}/${index}`} className="group/check flex h-7 min-w-0 items-center gap-2 text-meta">
             <Icon size={13} className={cn("shrink-0", className)} aria-label={label} />
             <span className="min-w-0 flex-1 truncate text-body">{check.name}</span>
-            <span className="shrink-0 truncate text-[11px] text-faint">{tone === "skipped" ? "skipped" : check.workflow}</span>
-            {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Logs for ${check.name}`} className={cn("inline-flex w-[2.6rem] shrink-0 items-center justify-end gap-0.5 rounded px-1 text-[11px] transition-colors hover:bg-accent hover:text-foreground", tone === "failed" ? "text-destructive" : "text-muted-foreground opacity-0 group-hover/check:opacity-100 focus-visible:opacity-100")}>
+            <span className="shrink-0 truncate text-caption text-faint">{tone === "skipped" ? "skipped" : check.workflow}</span>
+            {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Logs for ${check.name}`} className={cn("inline-flex w-[2.6rem] shrink-0 items-center justify-end gap-0.5 rounded px-1 text-caption transition-colors hover:bg-accent hover:text-foreground", tone === "failed" ? "text-destructive" : "text-muted-foreground opacity-0 group-hover/check:opacity-100 focus-visible:opacity-100")}>
               Logs <ArrowUpRight size={10} aria-hidden="true" />
             </a>}
             {/* Every row keeps the Logs slot, so the workflow column lines up
@@ -66,14 +66,14 @@ function PullRequestDetail({ pr, now, onFix, onOpenGithub, onRetry, retrying }: 
           </li>;
         })}
       </ul>
-      : <p className="py-1.5 text-[12px] text-faint">{pr.state === "open" ? "No checks reported yet." : "Checks no longer matter on a settled pull request."}</p>}
+      : <p className="py-1.5 text-meta text-faint">{pr.state === "open" ? "No checks reported yet." : "Checks no longer matter on a settled pull request."}</p>}
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
       {failing && onFix && <button type="button" onClick={() => onFix(pr)} className={cn(ACTION, "border-transparent bg-primary text-primary-foreground hover:bg-primary/90")}>Fix the failing check</button>}
       {onOpenGithub && <button type="button" onClick={() => onOpenGithub(pr.number, failing ? "checks" : "conversation")} className={ACTION}>
         <PanelRight size={12} aria-hidden="true" /> Open in GitHub pane
       </button>}
       <a href={pr.url} target="_blank" rel="noreferrer" className={ACTION}>GitHub <ArrowUpRight size={11} aria-hidden="true" /></a>
-      <span className="ml-auto text-[11px] tabular-nums text-faint" title={pr.fetchedAt ?? undefined}>{pr.stale ? "last known · " : "updated "}{freshness(pr.fetchedAt, now)}</span>
+      <span className="ml-auto text-caption tabular-nums text-faint" title={pr.fetchedAt ?? undefined}>{pr.stale ? "last known · " : "updated "}{freshness(pr.fetchedAt, now)}</span>
     </div>
   </div>;
 }
@@ -101,12 +101,12 @@ function PullRequestRow({ pr, open, onToggle, rowRef, ...detail }: {
       className={cn("grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", open && "bg-accent")}
     >
       <PullRequestGlyph pr={pr} />
-      <span className="flex min-w-0 items-baseline gap-1.5 text-[13px]">
+      <span className="flex min-w-0 items-baseline gap-1.5 text-ui">
         <span className="shrink-0 tabular-nums text-muted-foreground">#{pr.number}</span>
         <span className="min-w-0 truncate text-foreground">{pr.title}</span>
       </span>
-      <span className={cn("shrink-0 text-[12px]", SHELF_TONE[phrase.tone])}>{phrase.text}</span>
-      <span className="col-start-2 flex min-w-0 items-center gap-2 font-mono text-[11px] text-faint">
+      <span className={cn("shrink-0 text-meta", SHELF_TONE[phrase.tone])}>{phrase.text}</span>
+      <span className="col-start-2 flex min-w-0 items-center gap-2 font-mono text-caption text-faint">
         <span className="min-w-0 truncate">{pr.headBranch}</span>
         {pr.headSha && <span className="shrink-0">{pr.headSha.slice(0, 7)}</span>}
         {pr.stale && <CloudOff size={11} className="shrink-0" aria-label="Last known state" />}
@@ -126,14 +126,14 @@ function TaskRow({ task, harness, open, onToggle }: { task: BackgroundTaskView; 
       className={cn("grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", open && "bg-accent")}
     >
       <span className="grid place-items-center"><TaskKindGlyph kind={task.kind} harness={harness} /></span>
-      <span className="min-w-0 truncate text-[13px] text-foreground">{task.label}</span>
-      <span className="shrink-0 text-[12px] tabular-nums text-faint">{task.elapsedMs !== undefined ? formatElapsed(task.elapsedMs) : ""}</span>
-      <span className="col-start-2 min-w-0 truncate text-[11px] text-faint">
+      <span className="min-w-0 truncate text-ui text-foreground">{task.label}</span>
+      <span className="shrink-0 text-meta tabular-nums text-faint">{task.elapsedMs !== undefined ? formatElapsed(task.elapsedMs) : ""}</span>
+      <span className="col-start-2 min-w-0 truncate text-caption text-faint">
         {task.kind === "watching" ? "Watching" : "Running"}{task.detail ? <span className="font-mono"> · {task.detail}</span> : null}
       </span>
     </button>
     {/* Opens in place, like a PR's detail: the pane is for reading, not motion. */}
-    {open && <div data-work-task-output className="mb-2 ml-[1.15rem] rounded-md border border-border bg-code px-3 py-2 font-mono text-[11px] leading-relaxed">
+    {open && <div data-work-task-output className="mb-2 ml-[1.15rem] rounded-md border border-border bg-code px-3 py-2 font-mono text-caption leading-relaxed">
       {task.outputTail.length > 0
         ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">{task.outputTail.join("\n")}</pre>
         : <p className="text-muted-foreground">{task.logFiles.length
@@ -190,8 +190,8 @@ export function WorkPane({ prs, tasks, harness, refreshing, focus, onAttach, onR
   const empty = ordered.length === 0 && tasks.length === 0;
   return <div data-work-pane onKeyDown={onKeyDown} className="h-full overflow-y-auto overscroll-contain px-2 pb-4">
     {empty && <div className="px-2 pb-2 pt-6">
-      <p className="text-[13px] font-medium text-foreground">Nothing running</p>
-      <p className="mt-1 max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">Pull requests this chat opens and work its agent leaves running show up here, and in one line above the composer.</p>
+      <p className="text-ui font-medium text-foreground">Nothing running</p>
+      <p className="mt-1 max-w-sm text-meta leading-relaxed text-muted-foreground">Pull requests this chat opens and work its agent leaves running show up here, and in one line above the composer.</p>
     </div>}
     <section aria-label="Pull requests">
       {!empty && <h3 className={SECTION}>Pull requests<span className="tabular-nums">{ordered.length || ""}</span></h3>}

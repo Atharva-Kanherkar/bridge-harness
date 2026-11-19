@@ -191,7 +191,7 @@ export function NotePageView(props: NotePageViewProps) {
 
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">
-      <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
+      <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-ui">
         {onToggleList && !listOpen && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
         <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
         {ancestors.map(ancestor => <Fragment key={ancestor.id}>
@@ -201,7 +201,7 @@ export function NotePageView(props: NotePageViewProps) {
         <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
         <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{noteDisplayTitle({ title: note.title, preview: draft.text || note.preview })}</span>
       </nav>
-      <span role="status" aria-label="Save status" className="shrink-0 px-2 text-[12px] text-muted-foreground">{draft.status === "saved" ? editedLabel(note.updatedAt) : STATUS_COPY[draft.status]}</span>
+      <span role="status" aria-label="Save status" className="shrink-0 px-2 text-meta text-muted-foreground">{draft.status === "saved" ? editedLabel(note.updatedAt) : STATUS_COPY[draft.status]}</span>
       {onToggleChat && <Pill aria-pressed={!!chatOpen} active={!!chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
       <MoreMenu
         note={note}
@@ -240,7 +240,7 @@ export function NotePageView(props: NotePageViewProps) {
           </PropertyMenu>
         </Property>
         {note.tags.length > 0 && <Property label="Tags">
-          <span className="flex flex-wrap gap-1 py-1">{note.tags.map(tag => <span key={tag} className="rounded-md bg-muted px-1.5 py-0.5 text-[12px] text-foreground">{tag}</span>)}</span>
+          <span className="flex flex-wrap gap-1 py-1">{note.tags.map(tag => <span key={tag} className="rounded-md bg-muted px-1.5 py-0.5 text-meta text-foreground">{tag}</span>)}</span>
         </Property>}
         <Author note={note} chatTitle={chatTitle} onOpenChat={onOpenChat} />
         {page.databaseId && <RowProperties page={page} workspaces={workspaces} notes={notes} chatTitle={chatTitle} onOpenChat={onOpenChat} onChanged={onChanged} onError={onError} />}
@@ -253,7 +253,7 @@ export function NotePageView(props: NotePageViewProps) {
       <div className="mt-6 flex flex-wrap items-center gap-1 border-b border-border pb-3">
         <div role="tablist" aria-label="Views" className="mr-auto inline-flex rounded-full bg-muted p-0.5">
           {([["words", "Your words"], ["structured", "Structured"]] as const).map(([id, label]) =>
-            <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors", view === id ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:text-foreground")}>
+            <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)} className={clsx("inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-ui transition-colors", view === id ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:text-foreground")}>
               {label}{id === "structured" && page.structured?.stale && <span aria-label="stale" className="size-1.5 rounded-full bg-warning" />}
             </button>)}
         </div>
@@ -263,7 +263,7 @@ export function NotePageView(props: NotePageViewProps) {
         <PopoverAction label="Turn into tasks" busy={busy(tasksJob)} busyLabel={PASS_COPY.tasks.busy} panelLabel="Turn into tasks options" align="end">
           {close => <PassPicker label="Turn into tasks" what="Finds the work this page asks for and adds each piece as a task below, quoting the words it came from. Existing tasks are kept." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("tasks", harness); }} />}
         </PopoverAction>
-        {note.kind === "task" && <span role="status" className="px-2 text-[12px] text-muted-foreground">{noteTaskStatus(note, sessions.find(session => session.id === note.sessionIds.at(-1)))}</span>}
+        {note.kind === "task" && <span role="status" className="px-2 text-meta text-muted-foreground">{noteTaskStatus(note, sessions.find(session => session.id === note.sessionIds.at(-1)))}</span>}
         {(note.kind !== "task" || (note.state !== "done" && note.state !== "archived")) && <PopoverAction label={note.sessionIds.length ? "New chat" : "Start a chat"} panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
           {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? startersParent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
         </PopoverAction>}
@@ -272,15 +272,15 @@ export function NotePageView(props: NotePageViewProps) {
 
       {(["structure", "tasks"] as const).map(kind => {
         const job = kind === "structure" ? structureJob : tasksJob;
-        return job?.status === "failed" && <p key={kind} role="alert" className="m-0 mt-3 text-[13px] text-destructive">{PASS_COPY[kind].failed}: {job.detail ?? "it failed without a reason."}</p>;
+        return job?.status === "failed" && <p key={kind} role="alert" className="m-0 mt-3 text-ui text-destructive">{PASS_COPY[kind].failed}: {job.detail ?? "it failed without a reason."}</p>;
       })}
-      {notice && <p role="status" className="m-0 mt-3 text-[13px] text-muted-foreground">{notice}</p>}
+      {notice && <p role="status" className="m-0 mt-3 text-ui text-muted-foreground">{notice}</p>}
 
       {/* A database's words are its description: one line until there are some. */}
-      {page.database && !describing && !draft.text.trim() && view === "words" && <button type="button" onClick={() => setDescribing(true)} className="-ml-1.5 mt-4 inline-flex h-8 items-center rounded-md px-1.5 text-[13px] text-faint transition-colors hover:bg-accent hover:text-foreground">Add a description</button>}
+      {page.database && !describing && !draft.text.trim() && view === "words" && <button type="button" onClick={() => setDescribing(true)} className="-ml-1.5 mt-4 inline-flex h-8 items-center rounded-md px-1.5 text-ui text-faint transition-colors hover:bg-accent hover:text-foreground">Add a description</button>}
       {/* Hidden rather than unmounted, so the editor keeps its place and undo. */}
       <div hidden={view !== "words" || (!!page.database && !describing && !draft.text.trim())} className="mt-6">
-        {draft.changedUnderneath && <p role="status" className="m-0 mb-4 rounded-lg bg-muted px-3 py-2 text-[13px] text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
+        {draft.changedUnderneath && <p role="status" className="m-0 mb-4 rounded-lg bg-muted px-3 py-2 text-ui text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
         <NoteEditor
           ref={editor}
           text={draft.text}
@@ -305,14 +305,14 @@ export function NotePageView(props: NotePageViewProps) {
 
       {childPages.length > 0 && <section aria-label="Pages" className="mt-12">
         <div className="flex items-baseline gap-2 border-b border-border pb-2">
-          <h3 className="m-0 text-[13px] font-semibold text-foreground">Pages</h3>
-          <span className="text-[12px] text-muted-foreground">{childPages.length}</span>
+          <h3 className="m-0 text-ui font-semibold text-foreground">Pages</h3>
+          <span className="text-meta text-muted-foreground">{childPages.length}</span>
         </div>
         <ul className="m-0 list-none divide-y divide-border p-0">
           {childPages.map(child => <li key={child.id}>
             <button type="button" onClick={() => onOpenPage(child.id)} className="flex w-full items-baseline gap-3 py-2.5 text-left">
-              <span className="min-w-0 flex-1 truncate text-[14px] text-foreground hover:underline hover:decoration-border hover:underline-offset-4">{noteDisplayTitle(child)}</span>
-              <span className="shrink-0 text-[12px] text-faint">{relativeTime(child.updatedAt)}</span>
+              <span className="min-w-0 flex-1 truncate text-body text-foreground hover:underline hover:decoration-border hover:underline-offset-4">{noteDisplayTitle(child)}</span>
+              <span className="shrink-0 text-meta text-faint">{relativeTime(child.updatedAt)}</span>
             </button>
           </li>)}
         </ul>
@@ -335,8 +335,8 @@ export function NotePageView(props: NotePageViewProps) {
 
       {page.backlinks.length > 0 && <section aria-label="Backlinks" className="my-12">
         <div className="flex items-baseline gap-2 border-b border-border pb-2">
-          <h3 className="m-0 text-[13px] font-semibold text-foreground">Backlinks</h3>
-          <span className="text-[12px] text-muted-foreground">{page.backlinks.length}</span>
+          <h3 className="m-0 text-ui font-semibold text-foreground">Backlinks</h3>
+          <span className="text-meta text-muted-foreground">{page.backlinks.length}</span>
         </div>
         <ul className="m-0 list-none divide-y divide-border p-0">
           {page.backlinks.map((backlink, index) => <li key={`${backlink.pageId}-${index}`}>
@@ -347,12 +347,12 @@ export function NotePageView(props: NotePageViewProps) {
             >
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-2">
-                  <span className="min-w-0 truncate text-[14px] text-foreground">{backlink.title || "Untitled"}</span>
-                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{capital(backlink.kind)}</span>
+                  <span className="min-w-0 truncate text-body text-foreground">{backlink.title || "Untitled"}</span>
+                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{capital(backlink.kind)}</span>
                 </span>
-                <blockquote className="m-0 mt-0.5 truncate text-[12.5px] text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(backlink.excerpt)}</blockquote>
+                <blockquote className="m-0 mt-0.5 truncate text-meta text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(backlink.excerpt)}</blockquote>
               </span>
-              <span className="shrink-0 text-[12px] text-faint">{relativeTime(backlink.updatedAt)}</span>
+              <span className="shrink-0 text-meta text-faint">{relativeTime(backlink.updatedAt)}</span>
             </button>
           </li>)}
         </ul>
@@ -383,7 +383,7 @@ function TitleField({ note, onCommit, onEnter }: { note: Note; onCommit: (title:
 
 function Property({ label, children }: { label: string; children: ReactNode }) {
   return <div className="flex min-h-8 items-start gap-2">
-    <dt className="w-28 shrink-0 py-1.5 text-[13px] text-muted-foreground">{label}</dt>
+    <dt className="w-28 shrink-0 py-1.5 text-ui text-muted-foreground">{label}</dt>
     <dd className="m-0 min-w-0 flex-1">{children}</dd>
   </div>;
 }
@@ -398,20 +398,20 @@ function PropertyMenu({ label, value, children }: { label: string; value: ReactN
       aria-haspopup="listbox"
       aria-expanded={open}
       onClick={() => setOpen(current => !current)}
-      className={clsx("-ml-1.5 inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-[13px] transition-colors hover:bg-accent", open && "bg-accent", value === null ? "text-faint" : "text-foreground")}
+      className={clsx("-ml-1.5 inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-ui transition-colors hover:bg-accent", open && "bg-accent", value === null ? "text-faint" : "text-foreground")}
     >{value ?? "Empty"}</button>
     <Popover open={open} onClose={() => setOpen(false)} label={`${label} choices`} width="w-60">{children(() => setOpen(false))}</Popover>
   </div>;
 }
 
 function Author({ note, chatTitle, onOpenChat }: { note: Note; chatTitle: (id: string) => string | undefined; onOpenChat: (id: string) => void }) {
-  if (note.lastActor === "file-import") return <Property label="Edited"><span className="inline-block py-1.5 text-[13px] text-foreground">Outside Bridge</span></Property>;
+  if (note.lastActor === "file-import") return <Property label="Edited"><span className="inline-block py-1.5 text-ui text-foreground">Outside Bridge</span></Property>;
   const actor = /^agent:([^:]+):(.+)$/.exec(note.lastActor) ?? (note.lastActor === "person" ? null : /^agent:([^:]+):(.+)$/.exec(note.createdBy));
   if (!actor) return null;
   const [, harness, sessionId] = actor;
   const title = chatTitle(sessionId);
   return <Property label="Written by">
-    <span className="inline-flex max-w-full items-center gap-1.5 py-1.5 text-[13px] text-foreground">
+    <span className="inline-flex max-w-full items-center gap-1.5 py-1.5 text-ui text-foreground">
       <HarnessMark harness={harness} size={14} />
       <span className="sr-only">Written by </span>{harnessLabel(harness)}{" "}
       <span className="text-faint">in</span>{" "}
@@ -443,19 +443,19 @@ function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, 
     <Popover open={open} onClose={close} label="Page actions" align="end" width="w-64">
       {confirming
         ? <div role="alertdialog" aria-label="Delete note" className="p-1.5">
-          <p className="m-0 text-[13px] leading-snug text-foreground">{taskCount ? `Delete this note and its ${taskCount} task${taskCount === 1 ? "" : "s"}?` : "Delete this note?"}</p>
-          <p className="m-0 mt-1 text-[12px] text-muted-foreground">Its Markdown file moves to the notes trash folder.</p>
+          <p className="m-0 text-ui leading-snug text-foreground">{taskCount ? `Delete this note and its ${taskCount} task${taskCount === 1 ? "" : "s"}?` : "Delete this note?"}</p>
+          <p className="m-0 mt-1 text-meta text-muted-foreground">Its Markdown file moves to the notes trash folder.</p>
           <div className="mt-3 flex justify-end gap-1">
             <Pill onClick={() => setConfirming(false)}>Cancel</Pill>
-            <button type="button" onClick={() => { close(); onDelete(); }} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-[13px] font-medium text-destructive-foreground hover:opacity-90">Delete</button>
+            <button type="button" onClick={() => { close(); onDelete(); }} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-ui font-medium text-destructive-foreground hover:opacity-90">Delete</button>
           </div>
         </div>
         : moving
           ? <div aria-label="Move this page" className="p-1.5">
-            <p className="m-0 px-1 pb-1.5 pt-1 text-[11px] font-medium text-faint">Move {noteDisplayTitle(note)}</p>
+            <p className="m-0 px-1 pb-1.5 pt-1 text-caption font-medium text-faint">Move {noteDisplayTitle(note)}</p>
             {note.parentId != null && onMove && <MenuButton onClick={() => { onMove(null); close(); }}>Page top level</MenuButton>}
             {moveTargets.map(target => <MenuButton key={target.id} onClick={() => { onMove?.(target.id); close(); }}>{noteDisplayTitle(target)}</MenuButton>)}
-            {!moveTargets.length && note.parentId == null && <p className="m-0 px-1.5 py-2 text-[12.5px] text-muted-foreground">No other page to move under.</p>}
+            {!moveTargets.length && note.parentId == null && <p className="m-0 px-1.5 py-2 text-meta text-muted-foreground">No other page to move under.</p>}
           </div>
           : <>
             <MenuButton onClick={() => { close(); onHistory(); }}>History</MenuButton>
@@ -471,43 +471,43 @@ function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, 
 }
 
 function MenuButton({ destructive = false, onClick, children }: { destructive?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" onClick={onClick} className={clsx("flex h-8 w-full items-center rounded-lg px-2.5 text-left text-[13px] transition-colors hover:bg-accent", destructive ? "text-destructive" : "text-foreground")}>{children}</button>;
+  return <button type="button" onClick={onClick} className={clsx("flex h-8 w-full items-center rounded-lg px-2.5 text-left text-ui transition-colors hover:bg-accent", destructive ? "text-destructive" : "text-foreground")}>{children}</button>;
 }
 
 function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredView | null; busy: boolean; streaming: StreamingStructure | null; onSplit: (index: number) => void }) {
   if (streaming?.title || streaming?.summary) return <StreamingPanel view={streaming} />;
   if (busy) {
     return <div role="status" className="mt-10 text-center">
-      <p className="m-0 inline-flex items-center gap-2 text-[15px] font-medium text-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Reading your words…</p>
-      <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-muted-foreground">The structured view fills in here as it is written. Your words stay exactly as they are.</p>
+      <p className="m-0 inline-flex items-center gap-2 text-message font-medium text-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Reading your words…</p>
+      <p className="mx-auto mt-1.5 max-w-sm text-ui leading-relaxed text-muted-foreground">The structured view fills in here as it is written. Your words stay exactly as they are.</p>
     </div>;
   }
   if (!view) {
     return <div className="mt-10 text-center">
-      <p className="m-0 text-[15px] font-medium text-foreground">No structured view yet</p>
-      <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-muted-foreground">Structure is opt-in. Click Structure above and it builds a second view from your words, without changing them.</p>
+      <p className="m-0 text-message font-medium text-foreground">No structured view yet</p>
+      <p className="mx-auto mt-1.5 max-w-sm text-ui leading-relaxed text-muted-foreground">Structure is opt-in. Click Structure above and it builds a second view from your words, without changing them.</p>
     </div>;
   }
   return <section aria-label="Structured view" className="mt-6">
-    {view.stale && <p role="status" className="m-0 mb-5 flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-[13px] text-foreground">
+    {view.stale && <p role="status" className="m-0 mb-5 flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-ui text-foreground">
       <span className="size-1.5 shrink-0 rounded-full bg-warning" aria-hidden="true" />
       Your words changed since this was built. Re-structure to refresh it.
     </p>}
     <h2 className="m-0 text-[1.375rem] font-semibold leading-snug tracking-[-0.015em] text-foreground">{view.title}</h2>
-    <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+    <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
       <span className="text-foreground">{capital(view.kind)}</span>
       {view.tags.map(tag => <span key={tag}>#{tag}</span>)}
       {view.harness && <span className="text-faint">· {view.model ?? view.harness}</span>}
     </p>
-    {view.summary && <p className="m-0 mt-4 text-[15px] leading-[1.7] text-foreground">{view.summary}</p>}
+    {view.summary && <p className="m-0 mt-4 text-message leading-[1.7] text-foreground">{view.summary}</p>}
     {view.items.length > 0 && <ol className="m-0 mt-6 list-none divide-y divide-border border-t border-border p-0">
       {view.items.map((item, index) => <li key={`${index}-${item.excerpt}`} className="group flex items-start gap-3 py-3">
-        <span className="w-14 shrink-0 pt-0.5 text-[12px] text-muted-foreground">{capital(item.kind)}</span>
+        <span className="w-14 shrink-0 pt-0.5 text-meta text-muted-foreground">{capital(item.kind)}</span>
         <div className="min-w-0 flex-1">
-          <p className="m-0 text-[14px] font-medium leading-6 text-foreground">{item.title}</p>
-          <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>
+          <p className="m-0 text-body font-medium leading-6 text-foreground">{item.title}</p>
+          <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-ui leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>
         </div>
-        <button type="button" aria-label={`Split "${item.title}" into a note`} onClick={() => onSplit(index)} className="shrink-0 rounded-full px-2.5 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Split into note</button>
+        <button type="button" aria-label={`Split "${item.title}" into a note`} onClick={() => onSplit(index)} className="shrink-0 rounded-full px-2.5 py-1 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Split into note</button>
       </li>)}
     </ol>}
   </section>;
@@ -518,19 +518,19 @@ function StreamingPanel({ view }: { view: StreamingStructure }) {
   const caret = <span aria-hidden="true" className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] animate-pulse bg-foreground" />;
   const writing = !view.items.length;
   return <section aria-label="Structured view" aria-busy="true" className="mt-6">
-    <p role="status" className="m-0 mb-4 inline-flex items-center gap-2 text-[12px] text-muted-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Structuring…</p>
+    <p role="status" className="m-0 mb-4 inline-flex items-center gap-2 text-meta text-muted-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Structuring…</p>
     {view.title && <h2 className="m-0 text-[1.375rem] font-semibold leading-snug tracking-[-0.015em] text-foreground">{view.title}{!view.summary && caret}</h2>}
-    {(view.kind || view.tags.length > 0) && <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+    {(view.kind || view.tags.length > 0) && <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
       {view.kind && <span className="text-foreground">{capital(view.kind)}</span>}
       {view.tags.map(tag => <span key={tag}>#{tag}</span>)}
     </p>}
-    {view.summary && <p className="m-0 mt-4 text-[15px] leading-[1.7] text-foreground">{view.summary}{writing && caret}</p>}
+    {view.summary && <p className="m-0 mt-4 text-message leading-[1.7] text-foreground">{view.summary}{writing && caret}</p>}
     {view.items.length > 0 && <ol className="m-0 mt-6 list-none divide-y divide-border border-t border-border p-0">
       {view.items.map((item, index) => <li key={index} className="flex items-start gap-3 py-3">
-        <span className="w-14 shrink-0 pt-0.5 text-[12px] text-muted-foreground">{capital(item.kind)}</span>
+        <span className="w-14 shrink-0 pt-0.5 text-meta text-muted-foreground">{capital(item.kind)}</span>
         <div className="min-w-0 flex-1">
-          <p className="m-0 text-[14px] font-medium leading-6 text-foreground">{item.title}{index === view.items.length - 1 && caret}</p>
-          {item.excerpt && <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>}
+          <p className="m-0 text-body font-medium leading-6 text-foreground">{item.title}{index === view.items.length - 1 && caret}</p>
+          {item.excerpt && <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-ui leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>}
         </div>
       </li>)}
     </ol>}

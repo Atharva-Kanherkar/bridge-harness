@@ -504,6 +504,6 @@ describe("browser context attachments", () => {
   it("keeps the dock layout's controls below the textarea", () => {
     render({ working: true, activeAction: "steer", onStop: () => {} });
     expect(textarea().closest("div.flex.items-end")).toBeNull();
-    expect(textarea().className).toContain("text-[15px]");
+    expect(textarea().className).toContain("text-message");
   });
 });

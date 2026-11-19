@@ -18,7 +18,7 @@ const TONE_DOT: Record<Tone, string> = {
 };
 
 export function StatusChip({ label, tone }: { label: string; tone: Tone }) {
-  return <span className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-caption font-medium uppercase tracking-[0.04em] ${TONE_CHIP[tone]}`}>{label}</span>;
+  return <span className={`inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-caption font-medium ${TONE_CHIP[tone]}`}>{label}</span>;
 }
 
 export function Dot({ tone }: { tone: Tone }) {
@@ -27,7 +27,7 @@ export function Dot({ tone }: { tone: Tone }) {
 
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return <section className="border-t border-border py-4 first:border-t-0 first:pt-0 last:pb-0">
-    <h3 className="mb-2 text-caption font-medium uppercase tracking-[0.06em] text-muted-foreground">{title}</h3>
+    <h3 className="mb-2 text-caption font-medium text-muted-foreground">{title}</h3>
     {children}
   </section>;
 }

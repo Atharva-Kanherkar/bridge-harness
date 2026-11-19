@@ -53,8 +53,8 @@ function activeOmarchy(skin: ThemeSkin): OmarchyThemePayload | null {
 function themeColorFor(resolved: ResolvedTheme, skin: ThemeSkin): string {
   const omarchy = activeOmarchy(skin);
   if (omarchy) return omarchy.colors.background;
-  if (resolved === "light") return "#fafaf9";
-  return skin === "vibrancy" ? "#111111" : "#000000";
+  if (resolved === "light") return "#fbfbfa";
+  return skin === "vibrancy" ? "#111111" : "#0c0c0d";
 }
 
 /** Reads the skin already stamped on the document, defaulting when absent. */

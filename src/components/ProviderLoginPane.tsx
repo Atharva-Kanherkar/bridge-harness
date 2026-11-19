@@ -124,22 +124,22 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
   const optionKeys = provider === "opencode" && <div className="mt-2 flex flex-wrap gap-2">{([
     ["Previous option", "\u001b[A"], ["Next option", "\u001b[B"], ["Choose option", "\r"],
   ] as const).map(([name, key]) => <button key={name} type="button" onClick={() => void writeReply(key)} className="min-h-8 rounded-md border border-border px-2 text-xs text-foreground">{name}</button>)}</div>;
-  const outputPane = <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>;
+  const outputPane = <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-caption leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>;
   if (bare) return <div className="grid gap-4" aria-label={`${label} sign-in`}>
-    {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">{error}</div> : <div className="grid gap-3 rounded-xl border border-border-card bg-background/50 p-4">
+    {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-meta text-destructive">{error}</div> : <div className="grid gap-3 rounded-xl border border-border-card bg-background/50 p-4">
       {progress}
       {linkPlaceholder && <Skeleton className="h-9 w-full rounded-lg" />}
-      {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">
+      {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90">
         Open sign-in page <ExternalLink size={13} aria-hidden="true" />
       </a>}
-      {loginCode && <p className="text-[12px] text-muted-foreground">Enter this code on the sign-in page: <code aria-label="One-time code" className="select-all rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[13px] font-medium text-foreground">{loginCode}</code></p>}
+      {loginCode && <p className="text-meta text-muted-foreground">Enter this code on the sign-in page: <code aria-label="One-time code" className="select-all rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-ui font-medium text-foreground">{loginCode}</code></p>}
       {loginUrl && !loginCode && <div className="grid gap-1.5">
-        <p className="text-[11px] text-muted-foreground">If the page shows a code, paste it here.</p>
+        <p className="text-caption text-muted-foreground">If the page shows a code, paste it here.</p>
         {replyField}
       </div>}
     </div>}
     <details open={provider === "opencode" || (!!cleanOutput && !loginUrl)} className="group">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground">
         <Terminal size={12} aria-hidden="true" /> {loginUrl ? "Show details" : "Agent sign-in instructions"}
         <ChevronDown className="transition-transform group-open:rotate-180" size={12} aria-hidden="true" />
       </summary>
@@ -156,33 +156,33 @@ export function ProviderLoginPane({ provider, label, account, onClose, onExited,
         <ShieldCheck size={17} aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">
-        <h3 className="text-[13px] font-medium text-foreground">Connect {label}</h3>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">{label} handles authentication; Bridge does not store your credentials.</p>
+        <h3 className="text-ui font-medium text-foreground">Connect {label}</h3>
+        <p className="mt-0.5 text-caption text-muted-foreground">{label} handles authentication; Bridge does not store your credentials.</p>
       </div>
-      <button type="button" onClick={cancel} className="min-h-7 rounded-lg px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
+      <button type="button" onClick={cancel} className="min-h-7 rounded-lg px-2.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
     </header>
     <div className="grid gap-3 px-4 py-4">
-      {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">{error}</div> : <div className="grid gap-3">
+      {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-meta text-destructive">{error}</div> : <div className="grid gap-3">
         {progress}
         <div className="min-w-0">
-          <p className="text-[12px] leading-relaxed text-muted-foreground">{loginUrl ? "Open the sign-in page below. When the agent finishes, Bridge checks its sign-in status again." : launched ? "A browser link appears here as soon as the agent supplies one. Some agents first ask you to choose an account or provider below." : account ? "Bridge is creating this account's folder and starting the agent in it." : "Bridge is starting the agent's own sign-in."}</p>
-          {loginCode && <p className="mt-3 text-[12px] text-muted-foreground">Enter this code on the sign-in page: <code aria-label="One-time code" className="select-all rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[13px] font-medium text-foreground">{loginCode}</code></p>}
+          <p className="text-meta leading-relaxed text-muted-foreground">{loginUrl ? "Open the sign-in page below. When the agent finishes, Bridge checks its sign-in status again." : launched ? "A browser link appears here as soon as the agent supplies one. Some agents first ask you to choose an account or provider below." : account ? "Bridge is creating this account's folder and starting the agent in it." : "Bridge is starting the agent's own sign-in."}</p>
+          {loginCode && <p className="mt-3 text-meta text-muted-foreground">Enter this code on the sign-in page: <code aria-label="One-time code" className="select-all rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-ui font-medium text-foreground">{loginCode}</code></p>}
           {linkPlaceholder && <Skeleton className="mt-3 h-8 w-36 rounded-lg" />}
-          {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-8 items-center gap-2 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">
+          {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-8 items-center gap-2 rounded-lg bg-primary px-3 text-meta font-medium text-primary-foreground transition-colors hover:bg-primary/90">
             Open sign-in page <ExternalLink size={12} aria-hidden="true" />
           </a>}
         </div>
       </div>}
 
       <details open={provider === "opencode" || (!!cleanOutput && !loginUrl)} className="group rounded-lg border border-border-card bg-background/60">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-caption font-medium text-muted-foreground transition-colors hover:text-foreground">
           <Terminal size={13} aria-hidden="true" /> {loginUrl ? "Sign-in details" : "Agent sign-in instructions"}
           <ChevronDown className="ml-auto transition-transform group-open:rotate-180" size={13} aria-hidden="true" />
         </summary>
         <div className="border-t border-border-card p-2.5">
           {outputPane}
           {optionKeys}
-          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Only use this field when {label} asks for a code or response.</p>
+          <p className="mt-2 text-caption leading-relaxed text-muted-foreground">Only use this field when {label} asks for a code or response.</p>
           <div className="mt-2">{replyField}</div>
         </div>
       </details>

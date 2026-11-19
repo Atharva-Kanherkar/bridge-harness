@@ -32,10 +32,10 @@ export function TrailToasts({ toasts, onOpen, onUndo, onDismiss }: {
       onOpen={() => onOpen(toast)}
       openLabel={`Added to a trail — open “${toast.added.trailTitle}”`}
       body={<>
-        <span className="block text-[13px] font-medium leading-snug text-foreground">Added to a trail</span>
-        <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">{toast.added.label} is now on “{toast.added.trailTitle}”.</span>
+        <span className="block text-ui font-medium leading-snug text-foreground">Added to a trail</span>
+        <span className="mt-0.5 block text-meta leading-relaxed text-muted-foreground">{toast.added.label} is now on “{toast.added.trailTitle}”.</span>
       </>}
-      footer={<div className="mt-2 flex gap-3 text-[12px] font-medium">
+      footer={<div className="mt-2 flex gap-3 text-meta font-medium">
         <button type="button" onClick={() => onOpen(toast)} className="text-foreground hover:underline">Open trail</button>
         <button type="button" onClick={() => onUndo(toast)} className="text-muted-foreground hover:text-foreground">Undo</button>
       </div>}

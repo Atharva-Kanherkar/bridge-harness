@@ -50,7 +50,7 @@ export function UsageChart({ series, periods, resolution, timeZone, metric, clas
 
   return <figure className={cn("min-w-0", className)}>
     <div className="flex gap-2">
-      <div className="relative w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
+      <div className="relative w-14 shrink-0 text-right text-caption tabular-nums text-muted-foreground" aria-hidden="true">
         {scale.ticks.map(tick => <span key={tick} className="absolute right-0 -translate-y-1/2" style={{ top: `${(chartY(tick, scale.max) / height) * 100}%` }}>{tick === 0 ? "0" : format(tick)}</span>)}
       </div>
       <div ref={plotRef} className="relative h-56 min-w-0 flex-1" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
@@ -64,14 +64,14 @@ export function UsageChart({ series, periods, resolution, timeZone, metric, clas
         {hovered !== null && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute top-2 z-10 min-w-40 rounded-xl px-3 py-2 text-caption", tooltipLeft > 60 ? "-translate-x-[calc(100%+12px)]" : "translate-x-3")} style={{ left: `${tooltipLeft}%` }}>
           <div className="mb-1 font-medium text-foreground">{formatPeriodLabel(periods[hovered], resolution, timeZone)}</div>
           {series.map(entry => <div key={entry.harness} className="flex items-center justify-between gap-4 text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5"><span className={cn("size-2 rounded-[3px]", seriesDotClass(entry.harness))} /><HarnessMark harness={entry.harness} size={11} />{harnessLabel(entry.harness)}</span>
+            <span className="inline-flex items-center gap-1.5"><span className={cn("size-2 rounded-sm", seriesDotClass(entry.harness))} /><HarnessMark harness={entry.harness} size={11} />{harnessLabel(entry.harness)}</span>
             <span className="tabular-nums text-foreground">{format(entry.values[hovered] ?? 0)}</span>
           </div>)}
           <div className="mt-1 flex items-center justify-between gap-4 border-t border-border pt-1 font-medium text-foreground"><span>Total</span><span className="tabular-nums">{format(hoverTotal)}</span></div>
         </div>}
       </div>
     </div>
-    <div className="mt-1.5 flex justify-between pl-16 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
+    <div className="mt-1.5 flex justify-between pl-16 text-caption tabular-nums text-muted-foreground" aria-hidden="true">
       {labels.map(index => <span key={index}>{formatPeriodLabel(periods[index], resolution, timeZone)}</span>)}
     </div>
   </figure>;

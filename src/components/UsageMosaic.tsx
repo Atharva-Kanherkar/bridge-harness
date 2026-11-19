@@ -75,7 +75,7 @@ export function UsageMosaic({ report, window, metric, partial }: UsageLayoutProp
             <defs>{columns.map((column, index) => <clipPath key={column.period} id={`${id}-c${index}`}><rect x={COLUMNS.left + index * slot + (slot - bar) / 2} y={y(column.total)} width={bar} height={Math.max(0, y(0) - y(column.total))} rx={Math.min(3, bar / 2)} /></clipPath>)}</defs>
             {scale.ticks.map(tick => <g key={tick}>
               <line x1={COLUMNS.left} x2={COLUMNS.width} y1={y(tick)} y2={y(tick)} className={tick === 0 ? "stroke-border" : "stroke-border/60"} />
-              <text x={COLUMNS.left - 8} y={y(tick) + 4} textAnchor="end" className="fill-muted-foreground/70 text-[11px] tabular-nums">{tick === 0 ? "0" : format(tick)}</text>
+              <text x={COLUMNS.left - 8} y={y(tick) + 4} textAnchor="end" className="fill-muted-foreground/70 text-caption tabular-nums">{tick === 0 ? "0" : format(tick)}</text>
             </g>)}
             {columns.map((column, index) => <g key={column.period} clipPath={`url(#${id}-c${index})`} className={cn("transition-opacity", hovered !== null && hovered !== index && "opacity-45")}>
               {column.segments.map(segment => <rect key={segment.harness} x={COLUMNS.left + index * slot + (slot - bar) / 2} y={y(segment.end)} width={bar} height={Math.max(0.6, y(segment.start) - y(segment.end) - 1.2)} className={harnessChartFill(segment.harness)} />)}
@@ -108,9 +108,9 @@ export function UsageMosaic({ report, window, metric, partial }: UsageLayoutProp
                 <title>{`${harnessLabel(model.harness)} · ${model.model}: ${format(modelValue(model, metric))}${model.costSource === "unpriced" ? " (unpriced)" : ""}`}</title>
               </rect>
               {w > 70 && h > 40 ? <>
-                <text x={x + 9} y={top + 18} className="pointer-events-none fill-foreground font-mono text-[11.5px]">{model.model.length > Math.floor(w / 7.2) ? `${model.model.slice(0, Math.max(3, Math.floor(w / 7.2) - 1))}…` : model.model}</text>
-                <text x={x + 9} y={top + 34} className="pointer-events-none fill-foreground/70 text-[11.5px] tabular-nums">{format(modelValue(model, metric))}{metric === "tokens" ? ` · ${formatUsd(model.costMicrousd)}` : ""}</text>
-              </> : w > 44 && h > 22 ? <text x={x + 7} y={top + 15} className="pointer-events-none fill-foreground/80 text-[10.5px] tabular-nums">{format(modelValue(model, metric))}</text> : null}
+                <text x={x + 9} y={top + 18} className="pointer-events-none fill-foreground font-mono text-caption">{model.model.length > Math.floor(w / 7.2) ? `${model.model.slice(0, Math.max(3, Math.floor(w / 7.2) - 1))}…` : model.model}</text>
+                <text x={x + 9} y={top + 34} className="pointer-events-none fill-foreground/70 text-caption tabular-nums">{format(modelValue(model, metric))}{metric === "tokens" ? ` · ${formatUsd(model.costMicrousd)}` : ""}</text>
+              </> : w > 44 && h > 22 ? <text x={x + 7} y={top + 15} className="pointer-events-none fill-foreground/80 text-micro tabular-nums">{format(modelValue(model, metric))}</text> : null}
             </g>;
           }))}
         </svg>}
@@ -119,14 +119,14 @@ export function UsageMosaic({ report, window, metric, partial }: UsageLayoutProp
 
     <section aria-label="Token composition" className={cn(LAYOUT_CARD, "grid grid-cols-2 gap-0 p-0 sm:grid-cols-5")}>
       {TOKEN_KINDS.map(kind => <div key={kind.key} className="border-border px-5 py-4 sm:border-l sm:first:border-l-0">
-        <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground"><span className={cn("size-2 rounded-[2px]", KIND_SHADE[kind.key].bg)} aria-hidden="true" />{kind.label}</div>
+        <div className="flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-2 rounded-sm", KIND_SHADE[kind.key].bg)} aria-hidden="true" />{kind.label}</div>
         <div className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{formatTokens(report.totals[kind.key])}</div>
-        <div className="text-[11.5px] tabular-nums text-muted-foreground/70">{formatPercent(report.totals.processedTokens > 0 ? report.totals[kind.key] / report.totals.processedTokens : 0)} of processed</div>
+        <div className="text-caption tabular-nums text-muted-foreground/70">{formatPercent(report.totals.processedTokens > 0 ? report.totals[kind.key] / report.totals.processedTokens : 0)} of processed</div>
       </div>)}
       <div className="border-border px-5 py-4 sm:border-l">
-        <div className="text-[11.5px] text-muted-foreground">Cache saved</div>
+        <div className="text-caption text-muted-foreground">Cache saved</div>
         <div className="mt-1 text-lg tracking-tight tabular-nums text-foreground">{formatUsd(report.totals.cacheSavingsMicrousd)}</div>
-        <div className="text-[11.5px] text-muted-foreground/70">reasoning {formatTokens(report.totals.reasoningTokens)}, inside output</div>
+        <div className="text-caption text-muted-foreground/70">reasoning {formatTokens(report.totals.reasoningTokens)}, inside output</div>
       </div>
     </section>
   </div>;

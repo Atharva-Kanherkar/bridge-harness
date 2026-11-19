@@ -97,7 +97,7 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
                 <li key={item.id} className="u-glass-soft flex gap-3 rounded-xl border border-border p-4">
                   {Logo && <span className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true"><Logo size={16} /></span>}
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
                       <span>{sourceLabel(item)}</span>
                       <time dateTime={item.sourceActivityAt!}>{new Date(item.sourceActivityAt!).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
                     </div>

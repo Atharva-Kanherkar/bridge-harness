@@ -41,7 +41,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
           terse because the header has to survive a 360pt panel. */}
       <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no limits" : `${Math.round(worst)}% worst`}</span>
       <span className="ml-auto flex shrink-0 items-center gap-1">
-        {onOpenBridge && <button type="button" onClick={onOpenBridge} className="rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open Bridge</button>}
+        {onOpenBridge && <button type="button" onClick={onOpenBridge} className="rounded-md px-2 py-1 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open Bridge</button>}
         <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh meter" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
           <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
         </button>
@@ -56,7 +56,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
       {awaiting.map(entry => <section key={entry.id} aria-label={`${entry.label} usage`} className="flex items-center gap-2 border-b border-border py-3 last:border-0">
         <HarnessMark harness={entry.id} size={12} />
         <span className="font-medium text-foreground">{entry.label}</span>
-        <span className="ml-auto text-[11px] text-muted-foreground">Awaiting live usage</span>
+        <span className="ml-auto text-caption text-muted-foreground">Awaiting live usage</span>
       </section>)}
     </div>
   </div>;

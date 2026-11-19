@@ -49,11 +49,11 @@ export function WorkflowDetail({ workflow, runs, projects, nextRunAt, busy, onBa
       </>}/>
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
       <Card>
-        <Section title="Instructions"><p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{step.instructions}</p></Section>
-        {definition.expectedResult && <Section title="Expected result"><p className="text-[12px] text-muted-foreground">{definition.expectedResult}</p></Section>}
+        <Section title="Instructions"><p className="whitespace-pre-wrap text-ui leading-relaxed text-foreground">{step.instructions}</p></Section>
+        {definition.expectedResult && <Section title="Expected result"><p className="text-meta text-muted-foreground">{definition.expectedResult}</p></Section>}
         <Section title="Last runs">
           {runs.length === 0 && <p className="text-caption text-muted-foreground">No runs yet.</p>}
-          <div className="divide-y divide-border">{runs.map(run => <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="flex w-full items-center gap-3 py-2 text-left text-[12px] hover:bg-accent">
+          <div className="divide-y divide-border">{runs.map(run => <button type="button" key={run.id} onClick={() => onOpenRun(run)} className="flex w-full items-center gap-3 py-2 text-left text-meta hover:bg-accent">
             <Dot tone={runTone(run.status)}/>
             <span className="w-32 text-foreground">{RUN_STATUS_LABEL[run.status]}</span>
             <span className="w-24 text-muted-foreground">{relativeTime(run.createdAt, now)}</span>
@@ -65,13 +65,13 @@ export function WorkflowDetail({ workflow, runs, projects, nextRunAt, busy, onBa
       </Card>
       <div className="space-y-4">
         <Card><Section title="Trigger">
-          <p className="text-[13px] text-foreground">{triggerSummary(definition.trigger)}</p>
+          <p className="text-ui text-foreground">{triggerSummary(definition.trigger)}</p>
           {definition.trigger.kind === "schedule" && <p className="mt-0.5 font-mono text-caption text-muted-foreground">{definition.trigger.cron} · {definition.trigger.timezone}</p>}
         </Section></Card>
         <Card><Section title="Can use">
-          {definition.files === "worktree" && <p className="text-[12px] text-foreground">Its own worktree of {project}</p>}
+          {definition.files === "worktree" && <p className="text-meta text-foreground">Its own worktree of {project}</p>}
           {(definition.grants ?? []).length === 0 && definition.files === "none" && <p className="text-caption text-muted-foreground">No connectors. It can only answer from what it knows.</p>}
-          {(definition.grants ?? []).map(grant => <div key={grant.server} className="flex flex-wrap items-center gap-2 py-1 text-[12px]">
+          {(definition.grants ?? []).map(grant => <div key={grant.server} className="flex flex-wrap items-center gap-2 py-1 text-meta">
             <span className="font-mono text-foreground">{grant.server}</span>
             {grant.read && <span className={CHIP}>read</span>}
             {grant.write === "ask" && <span className={CHIP}>write · asks</span>}
@@ -79,7 +79,7 @@ export function WorkflowDetail({ workflow, runs, projects, nextRunAt, busy, onBa
           {(definition.alwaysAllow ?? []).length > 0 && <p className="mt-2 text-caption text-muted-foreground">Always allowed: {(definition.alwaysAllow ?? []).map(identity => identity.split("__").pop()).join(", ")}</p>}
         </Section></Card>
         <Card><Section title="Budget">
-          <p className="text-[12px] text-muted-foreground">{Math.round(budget.maxWallSeconds / 60)} min · {budget.maxToolCalls} tool calls per run</p>
+          <p className="text-meta text-muted-foreground">{Math.round(budget.maxWallSeconds / 60)} min · {budget.maxToolCalls} tool calls per run</p>
         </Section></Card>
       </div>
     </div>

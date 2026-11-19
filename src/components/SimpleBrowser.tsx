@@ -250,9 +250,9 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       <button type="button" className={cn(control, inspecting && "bg-selection text-selection-foreground")} aria-label="Select page element" aria-pressed={inspecting} disabled={!active.url || !!pageError} title="Select an element to edit" onClick={() => inspecting ? cancelSelection() : act("inspect")}><MousePointer2 size={14} /></button>
       <button type="button" className={control} aria-label="Open in system browser" title="Open in system browser" disabled={!active.url} onClick={() => void run(() => openExternalUrl(live?.url || active.url))}><ExternalLink size={13} /></button>
     </form>
-    {!hasNativeBrowser() && <p className="border-b border-border px-3 py-1.5 text-[11px] leading-4 text-muted-foreground">Web preview: some pages cannot be embedded. Full navigation and element selection are available in the desktop app.</p>}
+    {!hasNativeBrowser() && <p className="border-b border-border px-3 py-1.5 text-caption leading-4 text-muted-foreground">Web preview: some pages cannot be embedded. Full navigation and element selection are available in the desktop app.</p>}
     {error && <div role="alert" className="flex items-start gap-2 border-b border-border px-3 py-1.5 text-xs text-destructive"><span className="flex-1 leading-4">{error}</span><button type="button" className="grid size-5 shrink-0 place-items-center rounded-sm text-destructive/70 transition-colors hover:text-destructive" onClick={() => setError(undefined)} aria-label="Dismiss browser error"><X size={12} /></button></div>}
-    {slow && <div role="status" className="border-b border-border px-3 py-1.5 text-[11px] leading-4 text-muted-foreground">Still loading. You can wait, stop loading, or open this page in your browser.</div>}
+    {slow && <div role="status" className="border-b border-border px-3 py-1.5 text-caption leading-4 text-muted-foreground">Still loading. You can wait, stop loading, or open this page in your browser.</div>}
     {inspecting && <div role="status" className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground"><span>Select an element in the page. Escape cancels.</span><button type="button" onClick={cancelSelection} className="shrink-0 rounded-sm px-1.5 py-0.5 transition-colors hover:bg-accent hover:text-foreground">Cancel</button></div>}
     <div className="relative min-h-0 flex-1">
       {workspace.tabs.map(tab => <div key={tab.id} id={`browser-page-${tab.id}`} role="tabpanel" aria-labelledby={`browser-tab-${tab.id}`} className={cn("h-full", tab.id !== active.id && "hidden")}>
@@ -263,12 +263,12 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       {selection && <section aria-label="Selected page element" className="absolute inset-0 flex flex-col gap-3 overflow-auto bg-background p-4">
         <h3 className="font-display text-sm font-semibold">Selected element</h3>
         <p className="break-all text-xs leading-4 text-muted-foreground">{selection.url}</p>
-        <code className="whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-[11px] leading-4">{selection.selector}</code>
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-[11px] leading-4">{selection.snippet}</pre>
+        <code className="whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-caption leading-4">{selection.selector}</code>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-2.5 py-2 font-mono text-caption leading-4">{selection.snippet}</pre>
         <p className="text-xs leading-4 text-muted-foreground">The element’s outline and your annotation will be attached as page context. Write the change you want in the composer.</p>
         <label className="flex flex-col gap-1.5 text-xs">Annotation<textarea aria-label="Selection annotation" maxLength={1000} value={annotation} onChange={event => setAnnotation(event.target.value)} placeholder="Describe the area or mark what should change…" className="u-glass-soft min-h-24 resize-y rounded-lg p-2.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring" /></label>
         <div className="flex gap-2"><button type="button" disabled={!onAttachSelection || attaching} onClick={() => void attach()} className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">{attaching ? "Attaching…" : "Attach to prompt"}</button><button type="button" onClick={cancelSelection} className="u-glass-soft rounded-md px-3 py-2 text-xs transition-colors hover:bg-accent">Cancel</button></div>
-        <p className="text-[11px] text-muted-foreground">Select the element again after navigating to a different page.</p>
+        <p className="text-caption text-muted-foreground">Select the element again after navigating to a different page.</p>
       </section>}
     </div>
   </div>;

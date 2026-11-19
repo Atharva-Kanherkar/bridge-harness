@@ -181,7 +181,7 @@ export function ComposerPill({
   const attachmentInput = useRef<HTMLInputElement>(null);
   const isHero = layout === "hero";
   const isInline = layout === "inline";
-  const textSize = isInline ? "text-sm" : "text-[15px]";
+  const textSize = isInline ? "text-sm" : "text-message";
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
   // at all (`activeAction` omitted) the old behaviour stands.
@@ -253,7 +253,7 @@ export function ComposerPill({
                   <span
                     key={chip.token}
                     className={cn(
-                      "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] leading-4",
+                      "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-caption leading-4",
                       unknown ? "border-warning/40 bg-warning/10 text-warning" : "border-border bg-accent/60 text-foreground",
                     )}
                     title={chip.token}
@@ -274,7 +274,7 @@ export function ComposerPill({
             </div>
           )}
           {browserSelections.length > 0 && <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached browser selections">
-            {browserSelections.map(selection => <div key={selection.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-2 py-1.5 text-[11px]" title={`${selection.url}\n${selection.selector}`}>
+            {browserSelections.map(selection => <div key={selection.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-2 py-1.5 text-caption" title={`${selection.url}\n${selection.selector}`}>
               <span className="min-w-0"><span className="block truncate font-medium">{selection.title || "Selected element"}</span><span className="block truncate text-muted-foreground">Page element · {selection.selector}</span></span>
               {onRemoveBrowserSelection && <button type="button" aria-label="Remove browser selection" onClick={() => onRemoveBrowserSelection(selection.id)} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><X size={12} aria-hidden="true" /></button>}
             </div>)}
@@ -426,7 +426,7 @@ export function ComposerPill({
                   disabled={!canSend}
                   className={cn(
                     "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
-                    steerable ? "px-3 text-[13px] font-medium" : "w-8",
+                    steerable ? "px-3 text-ui font-medium" : "w-8",
                     canSend
                       ? "bg-primary text-primary-foreground hover:opacity-90"
                       : "bg-accent text-muted-foreground/70",

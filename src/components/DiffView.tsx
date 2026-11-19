@@ -51,7 +51,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
       numbered && !band && !style.edge && "border-r border-border/60",
     )}>
       {numbered && (
-        <span className="w-6 text-right text-[11px] tabular-nums text-muted-foreground/70">{line ?? ""}</span>
+        <span className="w-6 text-right text-caption tabular-nums text-muted-foreground/70">{line ?? ""}</span>
       )}
       <span className={cn("w-3 text-center", style.markerClass)}>
         {style.marker}
@@ -65,7 +65,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
         onClick={() => onQuoteHunk?.(range)}
         aria-label={`Reference lines ${range.start}-${range.end} in the composer`}
         title="Reference this hunk in the composer"
-        className="ml-2 inline-flex h-4 items-center gap-1 rounded px-1 align-middle text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/hunk:opacity-100"
+        className="ml-2 inline-flex h-4 items-center gap-1 rounded px-1 align-middle text-caption text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/hunk:opacity-100"
       >
         <Quote size={9} strokeWidth={1.8} aria-hidden="true" />
         quote
@@ -139,7 +139,7 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   const shown = fold === null ? rows : hunks.slice(0, fold).flat();
   const hiddenHunks = fold === null ? 0 : hunks.length - fold;
   if (!rows.length) return null;
-  return <div className={cn("stx flex flex-col overflow-hidden bg-card font-mono text-[12px] leading-[1.6]", className)}>
+  return <div className={cn("stx flex flex-col overflow-hidden bg-card font-mono text-meta leading-[1.6]", className)}>
     <div className="min-h-0 flex-1 overflow-auto p-1">
       <div className="min-w-0 overflow-hidden rounded-sm border border-border bg-card">
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}
@@ -148,7 +148,7 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
     {hiddenHunks > 0 && <button
       type="button"
       onClick={() => setUnfoldedFor(patch)}
-      className="flex w-full items-center gap-2 bg-card px-3 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:text-muted-foreground"
+      className="flex w-full items-center gap-2 bg-card px-3 py-1 text-left text-caption text-muted-foreground transition-colors hover:text-muted-foreground"
     >
       <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {hiddenHunks} more hunk{hiddenHunks === 1 ? "" : "s"} — expand

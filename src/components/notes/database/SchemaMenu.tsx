@@ -23,13 +23,13 @@ export interface ColumnActions {
 }
 
 function Item({ icon, destructive, onClick, children }: { icon?: ReactNode; destructive?: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" role="menuitem" onClick={onClick} className={clsx("flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none", destructive ? "text-destructive" : "text-foreground")}>
+  return <button type="button" role="menuitem" onClick={onClick} className={clsx("flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none", destructive ? "text-destructive" : "text-foreground")}>
     {icon && <span className="grid w-4 shrink-0 place-items-center text-muted-foreground">{icon}</span>}
     <span className="min-w-0 flex-1 truncate">{children}</span>
   </button>;
 }
 
-const field = "h-8 w-full min-w-0 rounded-lg bg-muted px-2.5 text-[13px] text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring";
+const field = "h-8 w-full min-w-0 rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring";
 
 /** The menu a column header opens. `rowsWithValue` counts loaded rows that
  *  hold a value, for the delete confirmation. */
@@ -53,8 +53,8 @@ export function ColumnMenu({ column, rowsWithValue, actions, onClose }: { column
         onClick={() => done(() => { if (type !== property.type) actions.retype(property, type); })}
         className="flex w-full flex-col items-start rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent"
       >
-        <span className={clsx("text-[13px] text-foreground", property.type === type && "font-medium")}>{TYPE_LABELS[type]}</span>
-        <span className="text-[11.5px] text-muted-foreground">{retypeNote(property.type, type)}</span>
+        <span className={clsx("text-ui text-foreground", property.type === type && "font-medium")}>{TYPE_LABELS[type]}</span>
+        <span className="text-caption text-muted-foreground">{retypeNote(property.type, type)}</span>
       </button>)}
     </div>;
   }
@@ -63,11 +63,11 @@ export function ColumnMenu({ column, rowsWithValue, actions, onClose }: { column
   }
   if (page === "delete" && property) {
     return <div role="alertdialog" aria-label={`Delete ${property.name}`} className="p-1.5">
-      <p className="m-0 text-[13px] leading-snug text-foreground">Delete {property.name}? {rowsWithValue ? `${rowsWithValue} row${rowsWithValue === 1 ? " has" : "s have"} a value.` : "No row has a value."}</p>
-      <p className="m-0 mt-1 text-[12px] text-muted-foreground">Its values stay in page history.</p>
+      <p className="m-0 text-ui leading-snug text-foreground">Delete {property.name}? {rowsWithValue ? `${rowsWithValue} row${rowsWithValue === 1 ? " has" : "s have"} a value.` : "No row has a value."}</p>
+      <p className="m-0 mt-1 text-meta text-muted-foreground">Its values stay in page history.</p>
       <div className="mt-3 flex justify-end gap-1">
-        <button type="button" onClick={() => setPage("main")} className="inline-flex h-8 items-center rounded-full px-3 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
-        <button type="button" onClick={() => done(() => actions.remove(property))} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-[13px] font-medium text-destructive-foreground hover:opacity-90">Delete</button>
+        <button type="button" onClick={() => setPage("main")} className="inline-flex h-8 items-center rounded-full px-3 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
+        <button type="button" onClick={() => done(() => actions.remove(property))} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-ui font-medium text-destructive-foreground hover:opacity-90">Delete</button>
       </div>
     </div>;
   }
@@ -99,7 +99,7 @@ export function ColumnMenu({ column, rowsWithValue, actions, onClose }: { column
 }
 
 function Back({ onClick, children }: { onClick: () => void; children: ReactNode }) {
-  return <button type="button" onClick={onClick} className="mb-1 flex h-7 w-full items-center gap-1.5 rounded-lg px-1.5 text-left text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+  return <button type="button" onClick={onClick} className="mb-1 flex h-7 w-full items-center gap-1.5 rounded-lg px-1.5 text-left text-meta font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
     <ArrowLeft size={13} aria-hidden="true" />{children}
   </button>;
 }
@@ -139,7 +139,7 @@ export function OptionsEditor({ property, onSave, onBack }: { property: NoteProp
     <ol className="m-0 flex max-h-72 list-none flex-col gap-1 overflow-y-auto p-0">
       {drafts.map((draft, index) => <li key={draft.key} className="flex items-center gap-1">
         <input aria-label={`Option ${index + 1} name`} value={draft.name} onChange={event => patch(draft.key, { name: event.target.value })} className={field} />
-        {status && <select aria-label={`Option ${index + 1} group`} value={draft.group ?? "todo"} onChange={event => patch(draft.key, { group: event.target.value })} className="h-8 shrink-0 rounded-lg bg-muted px-1.5 text-[12px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {status && <select aria-label={`Option ${index + 1} group`} value={draft.group ?? "todo"} onChange={event => patch(draft.key, { group: event.target.value })} className="h-8 shrink-0 rounded-lg bg-muted px-1.5 text-meta text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {STATUS_GROUPS.map(([group, label]) => <option key={group} value={group}>{label}</option>)}
         </select>}
         <IconButton label={`Move ${draft.name || "option"} up`} disabled={index === 0} onClick={() => move(index, -1)}><ArrowUp size={13} aria-hidden="true" /></IconButton>
@@ -155,9 +155,9 @@ export function OptionsEditor({ property, onSave, onBack }: { property: NoteProp
       onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); add(); } }}
       className={clsx(field, "mt-1.5")}
     />
-    {problem && <p role="alert" className="m-0 mt-1.5 px-1 text-[12px] text-destructive">{problem}</p>}
+    {problem && <p role="alert" className="m-0 mt-1.5 px-1 text-meta text-destructive">{problem}</p>}
     <div className="mt-2 flex justify-end">
-      <button type="button" onClick={save} disabled={!!problem} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Save options</button>
+      <button type="button" onClick={save} disabled={!!problem} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Save options</button>
     </div>
   </div>;
 }
@@ -192,18 +192,18 @@ export function AddProperty({ hidden, onAdd, onShow }: { hidden: Column[]; onAdd
         role="radio"
         aria-checked={type === candidate}
         onClick={() => setType(candidate)}
-        className={clsx("h-7 truncate rounded-md px-1.5 text-[12px] transition-colors", type === candidate ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
+        className={clsx("h-7 truncate rounded-md px-1.5 text-meta transition-colors", type === candidate ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
       >{TYPE_LABELS[candidate]}</button>)}
     </div>
     <div className="mt-2 flex justify-end">
-      <button type="button" onClick={submit} disabled={!name.trim()} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Add</button>
+      <button type="button" onClick={submit} disabled={!name.trim()} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Add</button>
     </div>
     {hidden.length > 0 && onShow && <>
       <MenuDivider />
       <MenuLabel>Hidden</MenuLabel>
-      {hidden.map(column => <div key={column.id} className="flex min-h-8 items-center gap-2 px-2.5 text-[13px]">
+      {hidden.map(column => <div key={column.id} className="flex min-h-8 items-center gap-2 px-2.5 text-ui">
         <span className="min-w-0 flex-1 truncate text-muted-foreground">{column.name}</span>
-        <button type="button" aria-label={`Show ${column.name}`} onClick={() => onShow(column)} className="rounded-md px-1.5 py-0.5 text-[12px] text-foreground transition-colors hover:bg-accent">Show</button>
+        <button type="button" aria-label={`Show ${column.name}`} onClick={() => onShow(column)} className="rounded-md px-1.5 py-0.5 text-meta text-foreground transition-colors hover:bg-accent">Show</button>
       </div>)}
     </>}
   </div>;

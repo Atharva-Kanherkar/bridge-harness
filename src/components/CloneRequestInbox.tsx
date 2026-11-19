@@ -22,8 +22,8 @@ export function SignInToggle({ value, onChange, disabled }: { value: CloneSignIn
 function OptionRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return <div className="flex items-center justify-between gap-3 px-3 py-2.5">
     <div className="min-w-0">
-      <div className="text-[12px] text-foreground">{label}</div>
-      {hint && <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{hint}</div>}
+      <div className="text-meta text-foreground">{label}</div>
+      {hint && <div className="mt-0.5 text-caption leading-4 text-muted-foreground">{hint}</div>}
     </div>
     {children}
   </div>;
@@ -59,22 +59,22 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
     <div className="flex items-center gap-3">
       <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-muted/60"><Globe size={16} className="text-foreground" aria-hidden="true" /></div>
       <div className="min-w-0">
-        <p className="truncate text-[11px] text-muted-foreground">{label ?? "The agent wants a browser"}</p>
-        <p className="truncate font-mono text-[13px] font-medium text-foreground">{request.domain}</p>
+        <p className="truncate text-caption text-muted-foreground">{label ?? "The agent wants a browser"}</p>
+        <p className="truncate font-mono text-ui font-medium text-foreground">{request.domain}</p>
       </div>
     </div>
-    <p className="mt-3 text-[12px] leading-5 text-muted-foreground">
+    <p className="mt-3 text-meta leading-5 text-muted-foreground">
       The agent opens this site in a private Chromium browser{blank ? "" : ", signed in as you"}. It can see the page, click, and type. The browser is wiped when the turn ends.
     </p>
-    <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Waypoints size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">
+    <p className="mt-2 flex items-start gap-1.5 text-caption leading-4 text-muted-foreground"><Waypoints size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">
       {blank ? "Connects to " : "Copies cookies from and connects to "}
       <span className="font-mono text-foreground">{[...new Set([request.domain, ...(request.additionalDomains ?? [])])].join(", ")}</span>
       {" and their subdomains. "}{blank ? "No cookies are copied." : "Parent domains are included only when listed."}
     </span></p>
-    {request.extensionPath && <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Package size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">Loads extension <span className="font-mono text-foreground">{request.extensionPath}</span></span></p>}
+    {request.extensionPath && <p className="mt-2 flex items-start gap-1.5 text-caption leading-4 text-muted-foreground"><Package size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">Loads extension <span className="font-mono text-foreground">{request.extensionPath}</span></span></p>}
     {settings && <div className="mt-3 divide-y divide-border rounded-lg border border-border bg-background/60">
       <OptionRow label="Source browser"><Select label="Source browser" value={settings.defaultBrowser ?? "chrome"} options={CLONE_BROWSERS} disabled={busy} onChange={browser => setSettings(selectCloneBrowser(settings, browser))} /></OptionRow>
-      {settings.defaultBrowser === "safari" ? <OptionRow label="Fresh sign-in" hint={SAFARI_SIGN_IN_HINT}><span className="text-[11px] text-muted-foreground">No import</span></OptionRow> : <OptionRow label="Sign-in"><SignInToggle value={settings.defaultSignInPath} disabled={busy} onChange={path => setSettings({ ...settings, defaultSignInPath: path })} /></OptionRow>}
+      {settings.defaultBrowser === "safari" ? <OptionRow label="Fresh sign-in" hint={SAFARI_SIGN_IN_HINT}><span className="text-caption text-muted-foreground">No import</span></OptionRow> : <OptionRow label="Sign-in"><SignInToggle value={settings.defaultSignInPath} disabled={busy} onChange={path => setSettings({ ...settings, defaultSignInPath: path })} /></OptionRow>}
       <OptionRow label="Agent sees screenshots" hint={settings.agentVision ? undefined : "It reads page text only"}>
         <Switch label="Agent sees screenshots" checked={settings.agentVision ?? true} disabled={busy} onChange={agentVision => setSettings({ ...settings, agentVision })} />
       </OptionRow>

@@ -160,8 +160,8 @@ export const WikiMenu = forwardRef<WikiMenuHandle, { state: WikiState }>(functio
         <span className="grid size-7 shrink-0 place-items-center rounded-md bg-card text-muted-foreground ring-1 ring-border">
           {choice.create ? <Plus size={15} strokeWidth={1.75} aria-hidden="true" /> : <FileText size={15} strokeWidth={1.75} aria-hidden="true" />}
         </span>
-        <span className="min-w-0 truncate text-[13px] text-foreground">{choice.create ? `Make "${choice.target}"` : choice.target}</span>
+        <span className="min-w-0 truncate text-ui text-foreground">{choice.create ? `Make "${choice.target}"` : choice.target}</span>
       </button>)
-      : <p className="m-0 px-2.5 py-2 text-[12.5px] text-muted-foreground">No pages match “{state.query}”.</p>}
+      : <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No pages match “{state.query}”.</p>}
   </div>, document.body);
 });

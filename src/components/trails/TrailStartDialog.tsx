@@ -123,7 +123,7 @@ export function TrailStartDialog({ trail, harnesses, defaultHarness, initialText
 
           <div className="min-h-0">
             <div className="mb-1 flex items-baseline justify-between gap-2">
-              <h3 className="text-caption font-medium uppercase tracking-wide text-faint">This chat starts with</h3>
+              <h3 className="text-caption font-medium text-faint">This chat starts with</h3>
               {preview && (
                 <span className={cn("font-mono text-caption", over ? "text-destructive" : "text-faint")} data-testid="brief-total">
                   {formatTokens(total)} of {formatTokens(preview.budgetTokens)} tokens

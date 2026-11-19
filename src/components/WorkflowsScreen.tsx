@@ -224,7 +224,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       <div className="u-segmented w-fit" role="tablist" aria-label="Workflows sections">
         <button type="button" role="tab" data-active={tab === "workflows"} aria-selected={tab === "workflows"} className="u-segmented-item" onClick={() => setTab("workflows")}>Workflows</button>
         <button type="button" role="tab" data-active={tab === "inbox"} aria-selected={tab === "inbox"} className="u-segmented-item" onClick={() => setTab("inbox")}>
-          <span className="inline-flex items-center gap-1.5">Inbox{needsYouCount(allRuns) > 0 && <span aria-label={`${needsYouCount(allRuns)} need you`} className="rounded-full bg-foreground px-1.5 text-[10px] font-semibold leading-4 text-background">{needsYouCount(allRuns)}</span>}</span>
+          <span className="inline-flex items-center gap-1.5">Inbox{needsYouCount(allRuns) > 0 && <span aria-label={`${needsYouCount(allRuns)} need you`} className="rounded-full bg-foreground px-1.5 text-micro font-semibold leading-4 text-background">{needsYouCount(allRuns)}</span>}</span>
         </button>
         <button type="button" role="tab" data-active={tab === "native"} aria-selected={tab === "native"} className="u-segmented-item" onClick={() => setTab("native")}>Native schedules</button>
       </div>
@@ -235,7 +235,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
         : rows.length === 0
           ? <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-border px-6 py-12 text-center">
             <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-border bg-accent text-muted-foreground"><WorkflowIcon size={18}/></div>
-            <h2 className="mt-4 text-[15px] font-semibold text-foreground">Automate a job you do every day</h2>
+            <h2 className="mt-4 text-message font-semibold text-foreground">Automate a job you do every day</h2>
             <p className="mt-1 max-w-md text-ui leading-relaxed text-muted-foreground">It runs on the plan you already pay for, through the connectors your agent already has. No project needed.</p>
             <Button size="sm" className="mt-5" onClick={() => setEditing({ workflow: null })}><Plus size={13}/>New workflow</Button>
           </div>
@@ -246,12 +246,12 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
             const needsYou = !row.approved || last?.status === "waiting_approval" || last?.status === "failed";
             return <article key={row.id} className="flex items-start gap-3.5 px-4 py-3.5 hover:bg-accent">
               <button type="button" onClick={() => open(row.id)} className="flex min-w-0 flex-1 items-start gap-3.5 text-left">
-                <div className="relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] border border-border bg-accent text-muted-foreground">
+                <div className="relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-accent text-muted-foreground">
                   <WorkflowIcon size={15}/>{needsYou && <span aria-label="Needs you" className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-foreground ring-2 ring-card"/>}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2"><h3 className="truncate text-[13.5px] font-semibold tracking-[-0.008em] text-foreground">{row.name}</h3><StatusChip label={status.label} tone={status.tone}/></div>
-                  <p className="mt-1 text-[12px] text-muted-foreground">{triggerSummary(row.trigger)}{row.files === "worktree" ? " · worktree" : ""}</p>
+                  <div className="flex items-center gap-2"><h3 className="truncate text-ui font-semibold tracking-[-0.008em] text-foreground">{row.name}</h3><StatusChip label={status.label} tone={status.tone}/></div>
+                  <p className="mt-1 text-meta text-muted-foreground">{triggerSummary(row.trigger)}{row.files === "worktree" ? " · worktree" : ""}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
                     <span className={CHIP}>{row.projectId ? <span className="inline-flex items-center gap-1"><FolderGit2 size={10}/>{projectName.get(row.projectId) ?? "missing project"}</span> : "No project"}</span>
                     <span className={CHIP}>{row.harness} · {row.model}</span>
@@ -310,7 +310,7 @@ function WorkflowSettingsDialog({ open, snapshot, onClose, onSaved }: {
   return <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>{open && <DialogContent>
     <DialogHeader><DialogTitle>Workflow settings</DialogTitle><DialogDescription>These apply to every workflow.</DialogDescription></DialogHeader>
     <DialogPanel className="space-y-3">
-      <label className="flex items-center gap-2 text-[13px] text-foreground"><input type="checkbox" aria-label="Pause all workflows" checked={paused} onChange={event => setPaused(event.target.checked)} className="size-3.5 accent-foreground"/>Pause all workflows</label>
+      <label className="flex items-center gap-2 text-ui text-foreground"><input type="checkbox" aria-label="Pause all workflows" checked={paused} onChange={event => setPaused(event.target.checked)} className="size-3.5 accent-foreground"/>Pause all workflows</label>
       <label className="block text-caption font-medium text-muted-foreground">Keep this much of each plan for my own chats (percent)
         <Input aria-label="Quota reserve" type="number" min={0} max={90} className="mt-1 w-28" value={reserve} onChange={event => setReserve(Number(event.target.value))}/>
       </label>
