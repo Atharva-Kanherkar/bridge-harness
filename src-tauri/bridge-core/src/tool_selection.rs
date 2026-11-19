@@ -11,13 +11,16 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 pub const KIND: &str = "chat_tool_selection_v1";
 /// Half of the 128 KiB cap of `chat_defaults::read`, so a stored row always
 /// reads back.
 pub const MAX_ROW_BYTES: usize = 64 * 1024;
 pub const CODEX_APPS: &str = "codex_apps";
+/// The one Codex value that turns off `codex_apps`, with each app inside it.
+pub const CODEX_APPS_OFF: &str = "features.apps=false";
 const MAX_ID_BYTES: usize = 128;
 const MAX_SERVERS: usize = 128;
 const MAX_SKILLS: usize = 384;
@@ -336,6 +339,21 @@ impl ToolLaunch {
             effective_hash,
         }
     }
+
+    /// Keep the Codex skills choice only when the last `config/read` of the
+    /// chat showed no `skills` key of the user (`Some(false)`). A
+    /// `skills.config` value replaces that key, so with a key or with no
+    /// knowledge the launch leaves the skills as they are. The hash follows
+    /// the set that the launch applies.
+    pub fn with_codex_skills_known(self, user_skills_key: Option<bool>) -> Self {
+        if self.harness != "codex" || self.codex_skills_off.is_empty() || user_skills_key == Some(false) {
+            return self;
+        }
+        let codex_skills_off = Vec::new();
+        let effective_hash =
+            hash_of(&self.harness, &self.servers_off, self.codex_apps_off, self.claude_skills.as_deref(), &codex_skills_off);
+        Self { codex_skills_off, effective_hash, ..self }
+    }
 }
 
 fn sorted<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
@@ -381,7 +399,8 @@ pub struct LaunchTarget<'a> {
 /// The tool launch of a chat: `None` for a chat with no stored choice, and
 /// `None` unless the session is an interactive top-level chat outside a
 /// workflow and its stored choice applies. Workers, briefings and workflows
-/// never read the row.
+/// never read the row. A Codex skills choice applies only after a
+/// `config/read` of the chat showed no `skills` key of the user.
 pub fn launch_for(
     db: &Connection,
     session_id: &str,
@@ -398,7 +417,37 @@ pub fn launch_for(
     )?;
     Ok(status(&row, target.harness, account.as_deref())
         .applies
-        .then(|| ToolLaunch::from_row(&row)))
+        .then(|| ToolLaunch::from_row(&row).with_codex_skills_known(codex_user_skills_key(session_id))))
+}
+
+/// The last `config/read` fact of each Codex chat: `true` when a config
+/// layer of the user holds a `skills` key. It lives in memory and never on
+/// the frame path, so a restart forgets it until the next read.
+fn codex_configs() -> &'static Mutex<HashMap<String, bool>> {
+    static CONFIGS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    CONFIGS.get_or_init(Mutex::default)
+}
+
+const MAX_KNOWN_CONFIGS: usize = 1024;
+
+/// Keep the fact of a translated `config` reply of a Codex chat (the
+/// `userSkillsKey` flag of `apps::codex`). A reply without the flag forgets
+/// the chat, so the next launch leaves the skills as they are.
+pub fn remember_codex_config(session_id: &str, reply: &Value) {
+    let mut configs = codex_configs().lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(user_skills_key) = reply.get("userSkillsKey").and_then(Value::as_bool) else {
+        configs.remove(session_id);
+        return;
+    };
+    if configs.len() >= MAX_KNOWN_CONFIGS && !configs.contains_key(session_id) {
+        configs.clear();
+    }
+    configs.insert(session_id.to_owned(), user_skills_key);
+}
+
+/// The fact that [`remember_codex_config`] kept for a chat, or `None`.
+pub fn codex_user_skills_key(session_id: &str) -> Option<bool> {
+    codex_configs().lock().unwrap_or_else(PoisonError::into_inner).get(session_id).copied()
 }
 
 // --- launch translations ----------------------------------------------------------
@@ -420,6 +469,49 @@ pub fn claude_sidecar_selection(tools: &ToolLaunch) -> Option<Value> {
     Some(Value::Object(selection))
 }
 
+/// A TOML basic string. A quote, a backslash and each control character
+/// get an escape, so a name cannot close the string or add a key.
+fn toml_string(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            ch if ch.is_control() => quoted.push_str(&format!("\\u{:04X}", u32::from(ch))),
+            ch => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// The root `-c` values of a Codex launch, in three forms only: one
+/// `mcp_servers.<key>.enabled=false` for each off server, `features.apps=false`,
+/// and one `skills.config` list of `enabled=false` entries. No value turns a
+/// thing on or names the Bridge server. A key outside the safe set gets no
+/// value, because the checks refuse it and a quote must never reach the key.
+pub fn codex_overrides(tools: &ToolLaunch) -> Vec<String> {
+    if tools.harness != "codex" {
+        return Vec::new();
+    }
+    let mut values: Vec<String> = tools
+        .servers_off
+        .iter()
+        .filter(|key| !is_bridge(key) && key.as_str() != CODEX_APPS && codex_key_is_safe(key))
+        .map(|key| format!("mcp_servers.{key}.enabled=false"))
+        .collect();
+    if tools.codex_apps_off {
+        values.push(CODEX_APPS_OFF.to_owned());
+    }
+    if !tools.codex_skills_off.is_empty() {
+        let entries: Vec<String> =
+            tools.codex_skills_off.iter().map(|name| format!("{{name={},enabled=false}}", toml_string(name))).collect();
+        values.push(format!("skills.config=[{}]", entries.join(",")));
+    }
+    values
+}
+
 // --- units ------------------------------------------------------------------------
 
 /// Token figures of one reading, by item id, with the name of their source.
@@ -438,12 +530,26 @@ fn figure(figures: Option<&TokenFigures>, skill: bool, id: &str) -> Option<ChatT
     Some(ChatToolTokens { value: *value, source: figures.source.clone(), at: figures.at.clone() })
 }
 
-fn estimate(bytes: usize, source: &str, at: Option<&str>) -> ChatToolTokens {
-    ChatToolTokens {
-        value: u64::try_from(bytes / 4).unwrap_or(u64::MAX),
-        source: source.to_owned(),
-        at: at.map(str::to_owned),
-    }
+fn bytes_div4(bytes: usize) -> u64 {
+    u64::try_from(bytes / 4).unwrap_or(u64::MAX)
+}
+
+/// The `bytes_div4_v1` figure of one server of a `mcpServerStatus/list`
+/// reply: a quarter of the bytes of its `tools` map. `None` for a server
+/// with no tools, such as a server that is off.
+pub fn codex_tools_tokens(server: &Value) -> Option<u64> {
+    let tools = server.get("tools")?.as_object().filter(|tools| !tools.is_empty())?;
+    Some(bytes_div4(serde_json::to_string(tools).ok()?.len()))
+}
+
+/// The `bytes_div4_v1` figure of one skill of a `skills/list` reply: a
+/// quarter of the bytes of its name and description.
+pub fn codex_skill_tokens(name: &str, description: &str) -> u64 {
+    bytes_div4(name.len() + description.len())
+}
+
+fn reply_figure(entry: &Value, source: &str, at: Option<&str>) -> Option<ChatToolTokens> {
+    Some(ChatToolTokens { value: entry.get("tokens")?.as_u64()?, source: source.to_owned(), at: at.map(str::to_owned) })
 }
 
 fn unit(kind: ChatToolKind, id: &str, label: &str, group: &str) -> ChatToolItem {
@@ -595,44 +701,34 @@ pub fn claude_units(source: &ClaudeSource, row: Option<&ToolSelectionRow>) -> Ve
     items
 }
 
-/// The replies of the warm Codex runtime of a chat. `None` is a read that
-/// did not answer.
+/// The replies of the app-control path of a Codex chat, as
+/// `apps::codex::translate` gives them. `None` is a read that did not answer.
 #[derive(Debug, Clone, Default)]
 pub struct CodexSource {
-    /// The `mcpServerStatus/list` result for the chat thread.
+    /// The `servers` reply: `{servers:[{name, status, connectors, tokens}]}`.
     pub status: Option<Value>,
-    /// The `skills/list` result.
+    /// The `skills` reply: `{skills:[{name, enabled, tokens}]}`.
     pub skills: Option<Value>,
-    /// The `config/read` result.
+    /// The `config` reply: `{userSkillsKey, plugins}`.
     pub config: Option<Value>,
     /// When the runtime answered.
     pub at: Option<String>,
 }
 
-fn tools_estimate(server: &Value, at: Option<&str>) -> Option<ChatToolTokens> {
-    let tools = server.get("tools")?.as_object().filter(|tools| !tools.is_empty())?;
-    let bytes = serde_json::to_string(tools).ok()?.len();
-    Some(estimate(bytes, CODEX_SERVER_SOURCE, at))
+fn reply_list<'a>(reply: Option<&'a Value>, key: &str) -> &'a [Value] {
+    reply.and_then(|reply| reply.get(key)).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
 }
 
-/// The apps inside `codex_apps`: it names its tools `<app>.<tool>`.
+/// The apps inside `codex_apps`: the connectors of its reply entry.
 fn codex_apps_inside(server: Option<&Value>) -> Vec<String> {
-    let names: BTreeSet<&str> = server
-        .and_then(|server| server.get("tools"))
-        .and_then(Value::as_object)
-        .map(|tools| tools.keys().filter_map(|key| key.split_once('.').map(|(app, _)| app)).collect())
-        .unwrap_or_default();
+    let names: BTreeSet<&str> = reply_list(server, "connectors").iter().filter_map(Value::as_str).collect();
     names.into_iter().map(str::to_owned).collect()
 }
 
 /// `None` when the skills are units. Otherwise the reason that they are
-/// fixed: a `skills` key in the config, or a config that Bridge has not read.
+/// fixed: a `skills` key of the user, or a config that Bridge has not read.
 fn codex_skill_reason(config: Option<&Value>) -> Option<&'static str> {
-    let table = config
-        .and_then(|reply| reply.get("config"))
-        .and_then(Value::as_object)
-        .map(|config| config.contains_key("skills"));
-    match table {
+    match config.and_then(|reply| reply.get("userSkillsKey")).and_then(Value::as_bool) {
         Some(false) => None,
         Some(true) => Some(CODEX_SKILLS_TABLE_REASON),
         None => Some(CODEX_SKILLS_UNKNOWN_REASON),
@@ -640,18 +736,12 @@ fn codex_skill_reason(config: Option<&Value>) -> Option<&'static str> {
 }
 
 /// Codex units: each MCP server of the effective config, `codex_apps` as one
-/// switch, and skills only when the config has no `skills` key.
+/// switch, and skills only when the config has no `skills` key of the user.
 pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<ChatToolItem> {
     let row = row.filter(|row| row.harness == "codex");
     let at = source.at.as_deref();
     let off = off_set(row, |row| &row.servers_off);
-    let servers = source
-        .status
-        .as_ref()
-        .and_then(|status| status.get("data"))
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+    let servers = reply_list(source.status.as_ref(), "servers");
     let mut items = Vec::new();
     let mut listed = BTreeSet::new();
     let mut apps = None;
@@ -664,12 +754,15 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
         if !listed.insert(name) {
             continue;
         }
-        let item = ChatToolItem { tokens: tools_estimate(server, at), ..unit(ChatToolKind::Server, name, name, "MCP servers") };
+        let item = ChatToolItem {
+            tokens: reply_figure(server, CODEX_SERVER_SOURCE, at),
+            ..unit(ChatToolKind::Server, name, name, "MCP servers")
+        };
         items.push(if is_bridge(name) || codex_key_is_safe(name) { server_state(item, &off) } else { fixed(item, CODEX_KEY_REASON) });
     }
     items.extend(saved_servers(&off, &listed, |_| "MCP servers"));
     let apps_item = ChatToolItem {
-        tokens: apps.and_then(|server| tools_estimate(server, at)),
+        tokens: apps.and_then(|server| reply_figure(server, CODEX_SERVER_SOURCE, at)),
         ..unit(ChatToolKind::Apps, CODEX_APPS, "Apps", "Apps")
     };
     items.push(switch(apps_item, !row.is_some_and(|row| row.codex_apps_off)));
@@ -679,23 +772,13 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
     let reason = codex_skill_reason(source.config.as_ref());
     let skills_off = off_set(row, |row| &row.codex_skills_off);
     let mut skills = BTreeSet::new();
-    let listed_skills = source
-        .skills
-        .as_ref()
-        .and_then(|reply| reply.get("data"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
-        .flatten();
-    for skill in listed_skills {
+    for skill in reply_list(source.skills.as_ref(), "skills") {
         let Some(name) = skill.get("name").and_then(Value::as_str) else { continue };
         if !skills.insert(name) {
             continue;
         }
-        let description = skill.get("description").and_then(Value::as_str).unwrap_or_default();
         let item = ChatToolItem {
-            tokens: Some(estimate(name.len() + description.len(), CODEX_SKILL_SOURCE, at)),
+            tokens: reply_figure(skill, CODEX_SKILL_SOURCE, at),
             ..unit(ChatToolKind::Skill, name, name, "Skills")
         };
         items.push(match reason {
@@ -710,13 +793,7 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
             None => item,
         });
     }
-    let plugins = source
-        .config
-        .as_ref()
-        .and_then(|reply| reply.get("config"))
-        .and_then(|config| config.get("plugins"))
-        .and_then(Value::as_object);
-    for name in plugins.into_iter().flat_map(|plugins| plugins.keys()) {
+    for name in reply_list(source.config.as_ref(), "plugins").iter().filter_map(Value::as_str) {
         items.push(fixed(unit(ChatToolKind::Plugin, name, name, "Plugins"), CODEX_PLUGIN_REASON));
     }
     items
@@ -752,6 +829,58 @@ pub fn opencode_units(source: &OpenCodeSource, row: Option<&ToolSelectionRow>) -
     items.extend(saved_servers(&off, &listed, |_| "MCP servers"));
     items.push(fixed(unit(ChatToolKind::AllSkills, "skills", "Skills", "Skills"), OPENCODE_SKILLS_REASON));
     items
+}
+
+/// One Codex value in one of the three forms that [`codex_overrides`] can
+/// emit. Tests read each value back through [`parse_codex_off`].
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodexOff {
+    Server(String),
+    Apps,
+    Skills(Vec<String>),
+}
+
+/// The form of one Codex value, or `None` for any other value. The parse is
+/// strict: each skill entry is `{name="<TOML basic string>",enabled=false}`.
+#[cfg(test)]
+pub(crate) fn parse_codex_off(value: &str) -> Option<CodexOff> {
+    if value == CODEX_APPS_OFF {
+        return Some(CodexOff::Apps);
+    }
+    if let Some(key) = value.strip_prefix("mcp_servers.").and_then(|rest| rest.strip_suffix(".enabled=false")) {
+        return codex_key_is_safe(key).then(|| CodexOff::Server(key.to_owned()));
+    }
+    let mut rest = value.strip_prefix("skills.config=[")?.strip_suffix(']')?;
+    let mut names = Vec::new();
+    loop {
+        rest = rest.strip_prefix("{name=\"")?;
+        let mut name = String::new();
+        let mut chars = rest.char_indices();
+        let end = loop {
+            let (at, ch) = chars.next()?;
+            match ch {
+                '"' => break at,
+                '\\' => match chars.next()?.1 {
+                    '"' => name.push('"'),
+                    '\\' => name.push('\\'),
+                    'u' => {
+                        let hex: String = (0..4).map(|_| chars.next().map(|(_, digit)| digit)).collect::<Option<_>>()?;
+                        name.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                    }
+                    _ => return None,
+                },
+                ch if ch.is_control() => return None,
+                ch => name.push(ch),
+            }
+        };
+        rest = rest.get(end + 1..)?.strip_prefix(",enabled=false}")?;
+        names.push(name);
+        if rest.is_empty() {
+            return Some(CodexOff::Skills(names));
+        }
+        rest = rest.strip_prefix(',')?;
+    }
 }
 
 #[cfg(test)]

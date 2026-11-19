@@ -35,6 +35,9 @@ pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,
     pub thread_id: String,
+    /// The folder of the thread, for the `skills/list` and `config/read`
+    /// reads of the tool picker.
+    cwd: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
     turn_start_id: AtomicI64,
@@ -228,7 +231,7 @@ fn launch(
     request: StartRequest<'_>,
     resume_thread_id: Option<&str>,
     fork: bool,
-    _tools: Option<&ToolLaunch>,
+    tools: Option<&ToolLaunch>,
 ) -> Result<StartedCodex, BridgeError> {
     let StartRequest {
         session_id: bridge_session_id,
@@ -270,8 +273,6 @@ fn launch(
         read_only_sandbox.is_some_and(|sandbox| sandbox.runtime_network_denied()),
     );
     let outer_sandbox = read_only_sandbox.filter(|_| composition.outer_bridge_sandbox);
-    let mut command = crate::worker_sandbox::command(&binary, outer_sandbox)?;
-    binary::hydrate_command_path(&mut command);
     let sandbox_policy = read_only_sandbox.map(|sandbox| {
         if composition.nested_provider_sandbox {
             json!({
@@ -283,17 +284,13 @@ fn launch(
             json!({ "type": "dangerFullAccess" })
         }
     });
-    // Root-level overrides, ahead of the subcommand: an interactive chat gets
-    // Bridge's `visualize` server alongside the user's own servers.
+    // An interactive chat gets Bridge's `visualize` server alongside the
+    // user's own servers.
     let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
         .then(|| crate::mcp_apps::ServerLaunch::for_session(bridge_session_id.filter(|_| interactive)))
         .flatten();
-    for value in chat_config_overrides(visualize.as_ref()) {
-        command.args(["-c", &value]);
-    }
+    let mut command = app_server_command(&binary, cwd, outer_sandbox, visualize.as_ref(), tools)?;
     command
-        .args(["app-server", "--listen", "stdio://"])
-        .current_dir(std::path::Path::new(cwd))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // Piped and tail-captured: a worker that dies before its typed result
@@ -402,6 +399,7 @@ fn launch(
             writer,
             child: child.disarm(),
             thread_id,
+            cwd: cwd.to_owned(),
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
             turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
@@ -416,6 +414,27 @@ fn launch(
         reader,
         startup_messages,
     })
+}
+
+/// The `codex app-server` command before its pipes and environment. Root
+/// `-c` values come ahead of the subcommand: Bridge's own values first, then
+/// the tool choice of the chat. The choice only turns things off and never
+/// names the Bridge server, so it cannot replace a Bridge value.
+fn app_server_command(
+    program: &std::path::Path,
+    cwd: &str,
+    outer_sandbox: Option<&crate::worker_sandbox::ReadOnlySandbox>,
+    visualize: Option<&crate::mcp_apps::ServerLaunch>,
+    tools: Option<&ToolLaunch>,
+) -> Result<Command, BridgeError> {
+    let mut command = crate::worker_sandbox::command(program, outer_sandbox)?;
+    binary::hydrate_command_path(&mut command);
+    let selection = tools.map(crate::tool_selection::codex_overrides).unwrap_or_default();
+    for value in chat_config_overrides(visualize).iter().chain(&selection) {
+        command.args(["-c", value]);
+    }
+    command.args(["app-server", "--listen", "stdio://"]).current_dir(std::path::Path::new(cwd));
+    Ok(command)
 }
 
 fn prepare_isolated_codex_home(
@@ -819,7 +838,7 @@ impl AdapterRuntime for CodexRuntime {
     }
     /// Inventory or a read on this thread's MCP connection, with no model turn.
     fn app_control(&self, id: &str, request: &Value) -> Result<(), BridgeError> {
-        write_value(&self.writer, &crate::apps::codex::request_frame(id, &self.thread_id, request)?)
+        write_value(&self.writer, &crate::apps::codex::request_frame(id, &self.thread_id, &self.cwd, request)?)
     }
     fn provider_session_id(&self) -> &str {
         &self.thread_id
@@ -1203,7 +1222,7 @@ mod tests {
         let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
         let mut reader = BufReader::new(child.stdout.take().unwrap());
         let runtime = CodexRuntime {
-            writer, child, thread_id: "thread".into(),
+            writer, child, thread_id: "thread".into(), cwd: "/w".into(),
             current_turn: Arc::new(Mutex::new(Some("running".into()))),
             request_id: AtomicI64::new(10),
             turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
@@ -1992,4 +2011,209 @@ mod tests {
         assert!(!crate::mcp_apps::attaches_to(false, Some(WriteMode::Isolated), None, None));
     }
 
+    const FAKE_CODEX: &str = "/opt/fake/bin/codex";
+
+    fn bridge_launch() -> crate::mcp_apps::ServerLaunch {
+        crate::mcp_apps::ServerLaunch {
+            command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
+            args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
+        }
+    }
+
+    fn fake_command(visualize: Option<&crate::mcp_apps::ServerLaunch>, tools: Option<&ToolLaunch>) -> Command {
+        app_server_command(std::path::Path::new(FAKE_CODEX), "/w", None, visualize, tools).unwrap()
+    }
+
+    /// The arguments of the real `codex app-server` command after the program
+    /// path, with or without the watchdog wrapper.
+    fn launch_args(visualize: Option<&crate::mcp_apps::ServerLaunch>, tools: Option<&ToolLaunch>) -> Vec<String> {
+        let command = fake_command(visualize, tools);
+        let args: Vec<String> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let start = if command.get_program() == FAKE_CODEX { 0 } else { args.iter().position(|arg| arg == FAKE_CODEX).unwrap() + 1 };
+        args[start..].to_vec()
+    }
+
+    /// The `-c` values ahead of the subcommand.
+    fn config_values(args: &[String]) -> Vec<String> {
+        args.chunks(2).take_while(|pair| pair[0] == "-c").map(|pair| pair[1].clone()).collect()
+    }
+
+    fn codex_tools(servers_off: &[&str], codex_apps_off: bool, codex_skills_off: &[&str]) -> ToolLaunch {
+        let owned = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+        ToolLaunch::from_row(&crate::tool_selection::ToolSelectionRow {
+            revision: 1,
+            harness: "codex".into(),
+            account: None,
+            servers_off: owned(servers_off),
+            codex_apps_off,
+            claude_skills: None,
+            codex_skills_off: owned(codex_skills_off),
+        })
+    }
+
+    const SUBCOMMAND: [&str; 3] = ["app-server", "--listen", "stdio://"];
+
+    #[test]
+    fn a_chat_without_a_selection_launches_with_the_same_arguments() {
+        let today = [
+            "-c", r#"mcp_servers.bridge.command="/Applications/Bridge.app/Contents/MacOS/bridged""#,
+            "-c", r#"mcp_servers.bridge.args=["--bridge-mcp-visualize"]"#,
+            "-c", "plugins.visualize@openai-bundled.enabled=false",
+            "app-server", "--listen", "stdio://",
+        ];
+        assert_eq!(launch_args(Some(&bridge_launch()), None), today);
+        assert_eq!(launch_args(None, None), SUBCOMMAND);
+        // A stored choice that leaves nothing out, and a choice for another
+        // harness, add no value either.
+        let nothing_off = codex_tools(&[], false, &[]);
+        let claude = ToolLaunch { harness: "claude".into(), ..codex_tools(&["github"], true, &["review"]) };
+        for tools in [&nothing_off, &claude] {
+            assert_eq!(launch_args(Some(&bridge_launch()), Some(tools)), today);
+            assert_eq!(launch_args(None, Some(tools)), SUBCOMMAND);
+            let (before, after) = (fake_command(Some(&bridge_launch()), None), fake_command(Some(&bridge_launch()), Some(tools)));
+            assert_eq!(before.get_program(), after.get_program());
+            assert_eq!(before.get_current_dir(), after.get_current_dir());
+            assert_eq!(before.get_envs().collect::<Vec<_>>(), after.get_envs().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn the_launch_arguments_turn_off_only_the_selected_servers() {
+        let base = config_values(&launch_args(Some(&bridge_launch()), None));
+        let args = launch_args(Some(&bridge_launch()), Some(&codex_tools(&["sentry", "github"], false, &[])));
+        let values = config_values(&args);
+        assert_eq!(values[..base.len()], base[..]);
+        assert_eq!(values[base.len()..], ["mcp_servers.github.enabled=false", "mcp_servers.sentry.enabled=false"]);
+        assert_eq!(args[values.len() * 2..], SUBCOMMAND);
+        // The Bridge server, `codex_apps` and a key outside the safe set never
+        // become a server value, even in a launch that skipped the checks.
+        let forged = ToolLaunch {
+            servers_off: vec!["bridge".into(), "codex_apps".into(), "my.server".into(), "a\"b".into(), "github".into()],
+            ..codex_tools(&[], false, &[])
+        };
+        assert_eq!(config_values(&launch_args(None, Some(&forged))), ["mcp_servers.github.enabled=false"]);
+    }
+
+    #[test]
+    fn the_launch_arguments_never_turn_a_server_on_or_touch_approvals_or_sandbox() {
+        use crate::tool_selection::{parse_codex_off, CodexOff};
+        let base = launch_args(Some(&bridge_launch()), None);
+        let base_values = config_values(&base);
+        let choices = [
+            codex_tools(&["github"], false, &[]),
+            codex_tools(&[], true, &[]),
+            codex_tools(&[], false, &["review"]),
+            codex_tools(&["github", "sentry", "linear"], true, &["review", "say \"hi\"", "back\\slash", "tab\tname", "x\",enabled=true}"]),
+        ];
+        for tools in &choices {
+            let args = launch_args(Some(&bridge_launch()), Some(tools));
+            let values = config_values(&args);
+            assert_eq!(values[..base_values.len()], base_values[..]);
+            assert_eq!(args[values.len() * 2..], base[base_values.len() * 2..]);
+            for value in &values[base_values.len()..] {
+                let key = value.split_once('=').map_or(value.as_str(), |(key, _)| key);
+                for prefix in ["approval", "sandbox", "permissions", "mcp_servers.bridge"] {
+                    assert!(!key.starts_with(prefix), "{value}");
+                }
+                match parse_codex_off(value) {
+                    Some(CodexOff::Server(key)) => assert!(tools.servers_off.contains(&key) && value.ends_with(".enabled=false"), "{value}"),
+                    Some(CodexOff::Apps) => assert!(tools.codex_apps_off && value == "features.apps=false"),
+                    Some(CodexOff::Skills(names)) => assert_eq!(names, tools.codex_skills_off, "{value}"),
+                    None => panic!("{value} has none of the three forms"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_apps_off_is_one_features_switch() {
+        let base = config_values(&launch_args(Some(&bridge_launch()), None));
+        let values = config_values(&launch_args(Some(&bridge_launch()), Some(&codex_tools(&[], true, &[]))));
+        assert_eq!(values[base.len()..], ["features.apps=false"]);
+        // An off entry for `codex_apps` in a forged launch adds no second value.
+        let forged = ToolLaunch { servers_off: vec!["codex_apps".into()], ..codex_tools(&[], true, &[]) };
+        assert_eq!(config_values(&launch_args(None, Some(&forged))), ["features.apps=false"]);
+        // With the apps on, no `features` value appears.
+        let apps_on = config_values(&launch_args(None, Some(&codex_tools(&["github"], false, &["review"]))));
+        assert!(apps_on.iter().all(|value| !value.starts_with("features.")), "{apps_on:?}");
+    }
+
+    #[test]
+    fn the_skills_override_is_absent_when_the_config_has_a_skills_key() {
+        use crate::tool_selection::{launch_for, remember_codex_config, write_checked, LaunchTarget};
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        let session = format!("codex-skills-{}", Uuid::new_v4());
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES(?1,'codex','Chat','ready','reported','direct')", [&session]).unwrap();
+        let choice = serde_json::from_value(json!({"harness": "codex", "serversOff": ["github"], "codexSkillsOff": ["review", "deploy"]})).unwrap();
+        write_checked(&db, &session, 0, &choice).unwrap();
+        let target = LaunchTarget { harness: "codex", interactive: true, workflow: false };
+        let launch = || launch_for(&db, &session, &target).unwrap().unwrap();
+        let skills_values = || -> Vec<String> {
+            let values = config_values(&launch_args(Some(&bridge_launch()), Some(&launch())));
+            values.into_iter().filter(|value| value.starts_with("skills.")).collect()
+        };
+        let layer = |kind: &str, config: Value| json!({"name": {"type": kind}, "version": "v1", "config": config});
+        let config_read = |layers: Value| {
+            let frame = json!({"id": "bridge-app:config:c1", "result": {"config": {"skills": {"config": []}}, "origins": {}, "layers": layers}});
+            crate::apps::codex::translate(&frame).unwrap()["result"].clone()
+        };
+
+        // No `config/read` yet: Bridge does not know the config, so the skills stay as they are.
+        assert!(skills_values().is_empty());
+        // A skills key of the user: a `skills.config` value would replace it.
+        remember_codex_config(&session, &config_read(json!([layer("user", json!({"skills": {"config": [{"path": "/s", "enabled": false}]}}))])));
+        assert!(skills_values().is_empty());
+        let without = launch();
+        assert_eq!(without.servers_off, ["github"]);
+        assert!(without.codex_skills_off.is_empty());
+        // Only the own `-c` value of Bridge holds the key, so the override applies.
+        remember_codex_config(&session, &config_read(json!([layer("sessionFlags", json!({"skills": {"config": []}})), layer("user", json!({"model": "gpt"}))])));
+        assert_eq!(skills_values(), [r#"skills.config=[{name="deploy",enabled=false},{name="review",enabled=false}]"#]);
+        assert_ne!(launch().effective_hash, without.effective_hash, "the hash follows the applied set");
+        // A reply without the fact forgets it.
+        remember_codex_config(&session, &json!({}));
+        assert!(skills_values().is_empty());
+    }
+
+    #[test]
+    fn the_bridge_server_override_stays_after_the_selection() {
+        let base = config_values(&launch_args(Some(&bridge_launch()), None));
+        let bridge = bridge_launch().codex_overrides();
+        let forged = ToolLaunch { servers_off: vec!["Bridge".into(), "bridge".into(), "github".into()], ..codex_tools(&[], true, &["review"]) };
+        let values = config_values(&launch_args(Some(&bridge_launch()), Some(&forged)));
+        // The values of Bridge stay first and unchanged.
+        assert_eq!(values[..base.len()], base[..]);
+        assert_eq!(values[..bridge.len()], bridge[..]);
+        assert!(values.contains(&"plugins.visualize@openai-bundled.enabled=false".to_owned()));
+        // No value of the choice names the Bridge server, so no later value replaces it.
+        let selection = &values[base.len()..];
+        assert_eq!(selection, ["mcp_servers.github.enabled=false", "features.apps=false", r#"skills.config=[{name="review",enabled=false}]"#]);
+        assert!(selection.iter().all(|value| !value.to_ascii_lowercase().contains("bridge")), "{selection:?}");
+    }
+
+    #[test]
+    fn app_control_sends_the_tool_reads_with_the_folder_of_the_chat() {
+        let mut child = Command::new("cat").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let runtime = CodexRuntime {
+            writer, child, thread_id: "thread".into(), cwd: "/work/repo".into(),
+            current_turn: Arc::new(Mutex::new(None)),
+            request_id: AtomicI64::new(10),
+            turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
+            turn_steer_id: AtomicI64::new(TURN_STEER_REQUEST_ID_BASE),
+            sandbox_policy: None, context_inventory: Mutex::new(vec![]),
+            stopped: false, stderr_tail: Default::default(), realtime_voice: false, service_tier: None,
+        };
+        let mut next = || {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        runtime.app_control("k1", &json!({"kind": "skills"})).unwrap();
+        assert_eq!(next(), json!({"id": "bridge-app:skills:k1", "method": "skills/list", "params": {"cwds": ["/work/repo"]}}));
+        runtime.app_control("c1", &json!({"kind": "config"})).unwrap();
+        assert_eq!(next(), json!({"id": "bridge-app:config:c1", "method": "config/read", "params": {"cwd": "/work/repo", "includeLayers": true}}));
+    }
 }

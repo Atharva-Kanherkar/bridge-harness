@@ -61,8 +61,19 @@ fn connector(server: &str, label: &str, harness: &str) -> ConnectorDescriptor {
     }
 }
 
+/// The reply that the app-control path gives for a raw Codex result.
+fn via(kind: &str, raw: Value) -> Value {
+    let reply = crate::apps::codex::translate(&json!({"id": format!("bridge-app:{kind}:t"), "result": raw})).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    reply["result"].clone()
+}
+
 fn codex_status(servers: Value) -> CodexSource {
-    CodexSource { status: Some(json!({ "data": servers })), config: Some(json!({"config": {}})), ..CodexSource::default() }
+    CodexSource {
+        status: Some(via("servers", json!({ "data": servers }))),
+        config: Some(via("config", json!({"config": {}}))),
+        ..CodexSource::default()
+    }
 }
 
 #[test]
@@ -397,14 +408,14 @@ fn claude_units_are_each_server_and_each_skill() {
 fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table() {
     let tools = json!({"search": {"name": "search", "description": "Search code", "inputSchema": {}}});
     let source = CodexSource {
-        status: Some(json!({"data": [
+        status: Some(via("servers", json!({"data": [
             {"name": "bridge", "tools": {"open": {"name": "open", "inputSchema": {}}}},
             {"name": "github", "tools": tools},
             {"name": "empty", "tools": {}},
             {"name": "codex_apps", "tools": {"gmail.send": {}, "gmail.read": {}, "drive.list": {}}}
-        ]})),
-        skills: Some(json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": "Review a diff", "enabled": true}]}]})),
-        config: Some(json!({"config": {"model": "gpt"}, "origins": {}})),
+        ]}))),
+        skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": "Review a diff", "enabled": true}]}]}))),
+        config: Some(via("config", json!({"config": {"model": "gpt"}, "origins": {}}))),
         at: Some("2026-11-19T10:00:00Z".into()),
     };
     let items = codex_units(&source, None);
@@ -432,8 +443,18 @@ fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table(
     assert_eq!(item(&items, Skill, "review").state, Off);
 
     // A skills table in the config fixes each skill.
-    let table = CodexSource { config: Some(json!({"config": {"skills": {"config": []}}})), ..source.clone() };
+    let table = CodexSource { config: Some(via("config", json!({"config": {"skills": {"config": []}}}))), ..source.clone() };
     assert_eq!(item(&codex_units(&table, Some(&saved)), Skill, "review").state, Fixed);
+    // The own `-c` skills value of Bridge is not a table of the user.
+    let layers = json!([
+        {"name": {"type": "sessionFlags"}, "version": "v", "config": {"skills": {"config": [{"name": "review", "enabled": false}]}}},
+        {"name": {"type": "user", "file": "/h/.codex/config.toml"}, "version": "v", "config": {"model": "gpt"}}
+    ]);
+    let ours = CodexSource {
+        config: Some(via("config", json!({"config": {"skills": {"config": []}}, "origins": {}, "layers": layers}))),
+        ..source.clone()
+    };
+    assert_eq!(item(&codex_units(&ours, Some(&saved)), Skill, "review").state, Off);
 }
 
 #[test]
@@ -455,9 +476,9 @@ fn opencode_units_are_each_server_and_skills_are_fixed() {
 fn an_item_without_a_verified_lever_is_fixed_with_a_reason() {
     let claude = ClaudeSource { skills: vec!["a(b".into()], plugins: vec!["superpowers".into()], ..ClaudeSource::default() };
     let codex = CodexSource {
-        status: Some(json!({"data": [{"name": "my.server", "tools": {}}, {"name": "codex_apps", "tools": {"gmail.send": {}}}]})),
-        skills: Some(json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": ""}]}]})),
-        config: Some(json!({"config": {"skills": {}, "plugins": {"github@openai-curated": {"enabled": true}}}})),
+        status: Some(via("servers", json!({"data": [{"name": "my.server", "tools": {}}, {"name": "codex_apps", "tools": {"gmail.send": {}}}]}))),
+        skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": [{"name": "review", "description": ""}]}]}))),
+        config: Some(via("config", json!({"config": {"skills": {}, "plugins": {"github@openai-curated": {"enabled": true}}}}))),
         at: None,
     };
     let unknown = CodexSource { config: None, ..codex.clone() };
