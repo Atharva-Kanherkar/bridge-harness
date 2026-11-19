@@ -170,6 +170,8 @@ pub struct BridgeCore {
     /// never discovered on disk.
     pub external_import_discoveries:
         Mutex<HashMap<String, crate::external_import::DiscoveryResult>>,
+    /// A background import is running in this process. One at a time.
+    pub import_job_running: std::sync::atomic::AtomicBool,
     /// The artifacts the last preview of each discovery read. Commit re-derives
     /// exactly these, so a copy the person did not select cannot merge in and
     /// change the candidates they approved.
@@ -408,6 +410,7 @@ impl BridgeCore {
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
+            import_job_running: std::sync::atomic::AtomicBool::new(false),
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
@@ -577,6 +580,7 @@ impl BridgeCore {
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
+            import_job_running: std::sync::atomic::AtomicBool::new(false),
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),

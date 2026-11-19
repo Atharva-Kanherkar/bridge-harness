@@ -145,7 +145,7 @@ fn claude(
         roots: roots.iter().map(|root| root.to_string_lossy().into_owned()).collect(),
         counts,
         note: Some(
-            "Chats with their tool calls, thinking, images and subagents, plus memory and setup. Chats Claude Code ran for Conductor, T3 Code, Orca and Superset come over too."
+            "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory. Chats Claude Code ran for Conductor, T3 Code, Orca and Superset come over too."
                 .into(),
         ),
     }
@@ -185,7 +185,7 @@ fn other(home: &Path, known: &KnownTool) -> wire::DetectedImportSource {
 
 /// Claude names a project folder after its path with `/` as `-`. Sessions
 /// that ran under the OS temp folder are SDK probes and background runs.
-fn is_temp_project(project: &Path) -> bool {
+pub(crate) fn is_temp_project(project: &Path) -> bool {
     project
         .file_name()
         .and_then(|name| name.to_str())

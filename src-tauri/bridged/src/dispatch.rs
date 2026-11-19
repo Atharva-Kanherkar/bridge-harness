@@ -255,6 +255,11 @@ pub fn dispatch(
             reply(api::commit_external_import(core, &p))
         }
         MethodName::DetectImportSources => reply(api::detect_import_sources(core)),
+        MethodName::StartImport => {
+            let p: wire::StartImportParams = decode(method, params)?;
+            reply(api::start_import(core, &p))
+        }
+        MethodName::ImportStatus => reply(api::import_status(core)),
 
         MethodName::CreateWorkspace => {
             let p: wire::CreateWorkspaceParams = decode(method, params)?;
@@ -1712,6 +1717,18 @@ mod tests {
             assert!(
                 source.contains("workflow_trigger::start_workflow_maintenance(core.clone())"),
                 "{host} does not start workflow maintenance"
+            );
+        }
+    }
+
+    #[test]
+    fn both_hosts_resume_an_interrupted_import() {
+        // An import Bridge quit in the middle of carries on under whichever
+        // host owns core next.
+        for (host, source) in [("bridged", include_str!("lib.rs")), ("desktop", include_str!("../../src/lib.rs"))] {
+            assert!(
+                source.contains("import_job::start_import_maintenance(core.clone())"),
+                "{host} does not resume an interrupted import"
             );
         }
     }

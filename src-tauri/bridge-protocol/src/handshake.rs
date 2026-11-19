@@ -161,9 +161,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `apps/close_personal_app_surface`, `personal` in `apps/list_apps`, and an
 /// optional `sessionId` on opened-app calls (none means the person's own app
 /// surface).** A 1.42 client still pairs: it always sends a session id.
+///
+/// **1.44 adds the background import**: `imports/start_import`,
+/// `imports/import_status` and the `imports/progress` event.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 43,
+    minor: 44,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -474,6 +477,14 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn background_import_client_rejects_a_daemon_without_it() {
+        let before = ProtocolVersion { major: 1, minor: 43 };
+        let import = ProtocolVersion { major: 1, minor: 44 };
+        assert!(!before.accepts(import));
+        assert!(import.accepts(before), "a 1.43 client still pairs with a 1.44 daemon");
     }
 
     #[test]

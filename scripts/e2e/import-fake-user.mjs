@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // A scripted fake user for "Move to Bridge". It drives the real app in a
 // browser tab attached to a real `bridged` (see docs/web-client.md), the way a
-// person would: open Settings, find their tools, review, deselect one chat,
-// import, open the imported chats and look at what came over, then import
-// again to see that nothing lands twice. Every step asserts what is on screen;
-// any mismatch exits non-zero. It records the run as screenshots, an MP4 and a GIF.
+// person would: open Settings, find their tools, press Import once, watch the
+// progress, leave the page while it works, get told when it is done, open the
+// imported chats, then import again to see that nothing lands twice. Every
+// step asserts what is on screen; any mismatch exits non-zero. It records the
+// run as screenshots, an MP4 and a GIF.
 //
 //   HOME=<fake home> bridged --data-dir <dir> --listen 127.0.0.1:4391 --allowed-origin http://127.0.0.1:1471
 //   bunx vite --port 1471 --strictPort
@@ -14,7 +15,7 @@
 // The fake home is built by scripts/e2e/import-fake-home.py.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -22,6 +23,8 @@ const LINK = process.env.LINK;
 const OUT = process.env.OUT ?? "/tmp/import-fake-user";
 const PORT = Number(process.env.CDP_PORT ?? 9377);
 const RECORD = process.env.RECORD !== "0";
+// How many generated chats the fake home holds (import-fake-home.py), plus 5 hand-made.
+const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 5;
 if (!LINK) throw new Error("Set LINK to a daemon link from scripts/web-link.mjs");
 
 rmSync(OUT, { recursive: true, force: true });
@@ -37,6 +40,8 @@ await new Promise(resolve => { socket.onopen = resolve; });
 let nextId = 0;
 const pending = new Map();
 const frames = [];
+// The first frame of the transfer clip: when the progress card showed.
+let transferFrom = 0;
 socket.onmessage = event => {
   const message = JSON.parse(event.data);
   if (message.id && pending.has(message.id)) { pending.get(message.id)(message); pending.delete(message.id); return; }
@@ -147,41 +152,80 @@ try {
     }
     return false;
   })()`);
-  await caption("Open Settings, Data & storage, then Import history");
+  await caption("Open Settings, then Chat history, then Import");
   await click("Open settings for");
-  await click("Data & storage");
-  await click("Import history");
+  await click("Chat history");
+  await waitFor("the Chat history page", `!!document.querySelector("[data-settings-column]") && document.querySelector("[data-settings-column]").innerText.includes("Archived chats")`);
+  const history = await js(`document.querySelector("[data-settings-column]").innerText`);
+  check("Chat history has its own place in Settings, with Import and Archived chats", history.includes("Chat history") && history.includes("Import") && history.includes("Archived chats"));
+  await shot("00-chat-history-dark");
+  await click("Import", "main button, [data-settings-column] button");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats, projects, memory and setup", found.includes("5 chats in 3 projects · 1 memory · 1 setup item"), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 6 projects · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found and honestly marked as coming", found.includes("Codex chats are next"));
   check("Tools that are not installed say so", found.includes("Not found on this Mac"));
   await shot("01-found-dark");
 
-  await caption("Review what Claude Code holds, grouped by project");
-  await click("Review");
-  await waitFor("the review list", `document.body.innerText.includes("Review Claude Code")`);
-  const review = await text();
-  check("Chats are grouped by the folder they ran in", ["/work/billing-service", "/work/docs-site", "/work/invoice-app"].every(folder => review.includes(folder)));
-  check("A /rename title is shown, not the first message", review.includes("Invoice email header fix"));
-  check("Every chat is selected by default", review.includes("5 of 5 chats selected"));
-  await shot("02-review-dark");
+  // The generated chats plus 5 hand-made ones, the Explore subagent and
+  // CLAUDE.md: files read = chats + 1, items written = chats + 2 (the subagent
+  // comes out of its parent's file). Claude Code keeps its own memory, so the
+  // memory file stays where it is.
+  const EXPECTED = CHATS + 2;
+  await caption("One click: Import");
+  await click("Import", "button");
+  await waitFor("the progress card", `!!document.querySelector('section[aria-label="Import progress"]')`, 10000);
+  // Centre the card first so it stays put for the clip and the close-ups;
+  // the clip starts with the frame on screen once it is there.
+  await js(`document.querySelector('section[aria-label="Import progress"]').scrollIntoView({ block: "center" })`);
+  await sleep(300);
+  transferFrom = frames.length;
+  check("Import starts at once and shows its progress", true);
+  check("The Import button waits while the import runs", await js(`[...document.querySelectorAll("button")].some(b => b.textContent.includes("Importing") && b.disabled)`));
+  await waitFor("the first batches", `/\\d+ of \\d+/.test(document.querySelector('section[aria-label="Import progress"]')?.innerText ?? "")`, 30000);
+  await sleep(700);
+  await shot("02-progress-dark");
+  // A close-up of the transfer card, sharp, twice: the cards are mid-flight.
+  // A few seconds in, so the time left has a pace to go on.
+  await sleep(3500);
+  await js(`(() => { const dot = document.getElementById("fake-user-cursor"); if (dot) dot.style.opacity = "0"; })()`);
+  const rect = await js(`(() => { const r = document.querySelector('section[aria-label="Import progress"]').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+  writeFileSync(join(OUT, "transfer-rect.json"), JSON.stringify(rect));
+  for (const name of ["02b-transfer-close", "02c-transfer-close"]) {
+    const { result } = await send("Page.captureScreenshot", { format: "png", clip: { ...rect, scale: 2 } });
+    writeFileSync(join(OUT, `${name}.png`), Buffer.from(result.data, "base64"));
+    shots.push(`${name}.png`);
+    await sleep(450);
+  }
+  await js(`(() => { const dot = document.getElementById("fake-user-cursor"); if (dot) dot.style.opacity = "1"; })()`);
+  check("The transfer shows chats moving from Claude Code to Bridge", await js(`document.querySelectorAll('[data-transfer="running"] .import-transfer-card').length === 6`));
+  check("It says how long is left", /left|Working out/.test(await js(`document.querySelector("[data-import-time-left]")?.textContent ?? ""`)));
+  const card = await js(`document.querySelector('section[aria-label="Import progress"]').innerText`);
+  check("The card counts files and says what came over", new RegExp(`of ${(CHATS + 1).toLocaleString("en-US")}`).test(card) && /came over/.test(card), card.replace(/\n+/g, " | "));
+  check("The card says the page can be left", card.includes("You can leave this page"));
 
-  await caption("Leave one chat behind");
-  await click("Speed up the docs build", "[role=switch]");
-  check("Deselecting one chat updates the count", (await text()).includes("4 of 5 chats selected"));
+  await caption("Leave the page while it works");
+  await click("Data & storage");
+  await waitFor("Bridge to say the import is done", `document.body.innerText.includes("Import finished")`, 120000);
+  const toast = await text();
+  check("Bridge says when it is done, on whatever page you are on", toast.includes(`${EXPECTED.toLocaleString("en-US")} items came over from Claude Code`), toast.slice(toast.indexOf("Import finished"), toast.indexOf("Import finished") + 120).replace(/\n+/g, " | "));
+  await shot("03-finished-toast-dark");
 
-  await caption("Import");
-  await click("Import 5 selected");
-  await waitFor("the import to finish", `document.body.innerText.includes("Came over")`, 60000);
-  const imported = Number(await js(`document.querySelector('[data-import-result="imported"]')?.textContent`));
+  await caption("Open the summary from the notice");
+  await click("Import finished: open the import summary", "button[aria-label]");
+  await waitFor("the summary", `!!document.querySelector('[data-import-result="imported"]')`, 10000);
+  const imported = Number((await js(`document.querySelector('[data-import-result="imported"]')?.textContent`)).replace(/,/g, ""));
   const skippedFirst = Number(await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`));
-  check("Four chats, the Explore subagent and the memory came over", imported === 6, `imported=${imported}`);
+  const summary = await text();
+  check("Every chat, the subagent and CLAUDE.md came over", imported === EXPECTED, `imported=${imported}`);
   check("Nothing was already in Bridge on the first import", skippedFirst === 0, `skipped=${skippedFirst}`);
-  await caption(`${imported} items came over`);
-  await shot("03-done-dark");
+  // The fixture's temp-folder run, plus the probes Bridge itself ran in the
+  // fake home while setting up: all background runs, all left out.
+  check("Background runs are left out and counted", summary.includes("Background runs left out"));
+  await caption(`${imported} items came over; background runs left out`);
+  await shot("04-summary-dark");
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
@@ -195,7 +239,8 @@ try {
   writeFileSync(join(OUT, "chat.txt"), chat);
   check("Tool calls came over, grouped the way Bridge shows live work", chat.includes("Ran 1 command, searched code"));
   check("Thinking came over as a thinking row", chat.includes("Thought for a moment"));
-  check("The compaction point came over with its summary", chat.includes("fixed the invoice email header"));
+  // Drawn the way Bridge draws a live compaction, at the point it happened.
+  check("The compaction point came over where it happened", /Context compacted/.test(chat) && chat.indexOf("Context compacted") < chat.indexOf("Add a snapshot test"));
   await caption("Open the tool group: the calls and their output are there");
   await click("Ran 1 command, searched code", "[aria-expanded]");
   await waitFor("the tool group to open", `[...document.querySelectorAll("[aria-expanded]")].some(el => el.textContent.includes("Ran 1 command") && el.getAttribute("aria-expanded") === "true")`);
@@ -222,26 +267,18 @@ try {
 
   await caption("Import again: nothing lands twice");
   await click("Open settings for");
-  await click("Data & storage");
-  await click("Import history");
+  await click("Chat history");
+  await click("Import", "main button, [data-settings-column] button");
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
-  await click("Review");
-  await waitFor("the review list", `document.body.innerText.includes("Review Claude Code")`);
-  await click("Import 6 selected");
-  await waitFor("the second import to finish", `document.body.innerText.includes("Came over")`, 60000);
+  check("The finished import is still summarised on the page", (await text()).includes("Import finished"));
+  await click("Import again", "button");
+  await waitFor("the second import to finish", `document.body.innerText.includes("Import finished") && document.querySelector('[data-import-result="skipped"]')?.textContent.replace(/,/g, "") === "${EXPECTED}"`, 120000);
   const importedAgain = Number(await js(`document.querySelector('[data-import-result="imported"]')?.textContent`));
-  const skippedAgain = Number(await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`));
-  check("A second import brings over only the chat left behind", importedAgain === 1, `imported=${importedAgain}`);
+  const skippedAgain = Number((await js(`document.querySelector('[data-import-result="skipped"]')?.textContent`)).replace(/,/g, ""));
+  check("A second import brings over nothing new", importedAgain === 0, `imported=${importedAgain}`);
   check("Everything imported before is recognised", skippedAgain === imported, `skipped=${skippedAgain}`);
   await shot("06-again-dark");
 
-  await caption("Same screens in light mode");
-  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
-  await sleep(800);
-  await shot("07-done-light");
-  await click("Start over");
-  await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
-  await shot("08-found-light");
   log("all checks passed");
 } finally {
   if (RECORD) { try { await send("Page.stopScreencast"); } catch { /* closing */ } }
@@ -261,4 +298,23 @@ if (RECORD && frames.length > 1) {
   log("mp4", mp4.status === 0 ? "written" : mp4.stderr.toString());
   const gif = spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-i", join(OUT, "fake-user.mp4"), "-vf", "fps=8,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse", join(OUT, "fake-user.gif")]);
   log("gif", gif.status === 0 ? "written" : gif.stderr.toString());
+  // The transfer card on its own, cut from the full-size frames.
+  try {
+    const rect = JSON.parse(readFileSync(join(OUT, "transfer-rect.json"), "utf8"));
+    const even = value => Math.max(0, Math.floor(value / 2) * 2);
+    // Keep the box inside the 1440×900 frame whatever the card's position.
+    const x = even(rect.x), y = even(rect.y);
+    const crop = `crop=${even(Math.min(rect.width, 1440 - x))}:${even(Math.min(rect.height, 900 - y))}:${x}:${y}`;
+    // Eight seconds of the card from when it showed: a short loop of chats in flight.
+    const start = frames[transferFrom]?.at ?? frames[0].at;
+    const span = frames.slice(transferFrom).filter(frame => frame.at - start <= 8);
+    const list = span.map((frame, index) => {
+      const next = span[index + 1];
+      return `file '${frame.file}'\nduration ${(next ? Math.max(0.02, next.at - frame.at) : 0.1).toFixed(3)}`;
+    }).join("\n") + `\nfile '${span.at(-1).file}'\n`;
+    writeFileSync(join(OUT, "frames-transfer.txt"), list);
+    const clip = spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", join(OUT, "frames-transfer.txt"), "-vsync", "vfr", "-pix_fmt", "yuv420p", "-vf", crop, join(OUT, "transfer.mp4")]);
+    const clipGif = spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-i", join(OUT, "transfer.mp4"), "-vf", "fps=20,scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse", join(OUT, "transfer.gif")]);
+    log("transfer clip", clip.status === 0 && clipGif.status === 0 ? "written" : `${clip.stderr}${clipGif.stderr}`);
+  } catch (error) { log("transfer clip skipped", String(error)); }
 }

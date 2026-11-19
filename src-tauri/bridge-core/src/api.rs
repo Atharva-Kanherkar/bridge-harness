@@ -215,13 +215,28 @@ pub fn detect_import_sources(
     })
 }
 
+/// Import everything from one tool in the background; returns at once.
+pub fn start_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::StartImportParams,
+) -> Result<wire::ImportJob, BridgeError> {
+    crate::import_job::start(core, &params.tool)
+}
+
+/// The latest background import, running or finished.
+pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
+    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })
+}
+
 /// Chats written per transaction. A big import commits batch by batch so the
 /// database lock every send waits on is held for one batch at a time.
 const IMPORT_BATCH: usize = 25;
 
 /// Group candidates so a chat and every chat under it share a batch, then
 /// pack groups into batches of about `IMPORT_BATCH`.
-pub(crate) fn import_batches(
+/// Selected candidates grouped into families: a chat with its subagents, or
+/// one item on its own. A family is committed together or not at all.
+pub(crate) fn import_families(
     candidates: &[external_import::NormalizedImportCandidate],
     selected: &std::collections::HashSet<&str>,
 ) -> Vec<Vec<String>> {
@@ -259,8 +274,15 @@ pub(crate) fn import_batches(
         let slot = *position.entry(root(id)).or_insert(next);
         groups.entry(slot).or_default().push(id.to_owned());
     }
+    groups.into_values().collect()
+}
+
+pub(crate) fn import_batches(
+    candidates: &[external_import::NormalizedImportCandidate],
+    selected: &std::collections::HashSet<&str>,
+) -> Vec<Vec<String>> {
     let mut batches: Vec<Vec<String>> = Vec::new();
-    for (_, ids) in groups {
+    for ids in import_families(candidates, selected) {
         match batches.last_mut() {
             Some(batch) if batch.len() + ids.len() <= IMPORT_BATCH => batch.extend(ids),
             _ => batches.push(ids),

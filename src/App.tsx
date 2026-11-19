@@ -10,7 +10,7 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, use
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
-import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
+import type { ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
@@ -68,6 +68,8 @@ import { fixPrompt } from "./workSummary";
 import { PullsScreen } from "./components/PullsScreen";
 import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { ImportToast } from "./components/ImportToast";
+import { importNotice } from "./moveToBridge";
 import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
 import type { TrailStartRequest } from "./components/TrailsScreen";
@@ -1208,6 +1210,20 @@ function AppContent() {
   const githubIntentNonce = useRef(0);
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
+  // A background import ended: say so wherever the person is in Bridge, and
+  // with a system notification when Bridge is in the background.
+  const [importToast, setImportToast] = useState<ImportJob | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void bridgeApi.onImportProgress(job => {
+      if (job.status === "running") return;
+      setImportToast(job);
+      const notice = importNotice(job);
+      void notifyAttention(notice.title, notice.body);
+    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; });
+    return () => { disposed = true; stop?.(); };
+  }, []);
   // Trails: the list feeds the sidebar badge and a chat's trail chip; the
   // Trails view shows one trail when `trailId` is set.
   const [trailSummaries, setTrailSummaries] = useState<TrailSummary[]>([]);
@@ -4401,6 +4417,11 @@ function AppContent() {
       }}
       onDismiss={key => setTrailToasts(current => current.filter(item => item.key !== key))}
     />
+    {importToast && <ImportToast
+      job={importToast}
+      onOpen={() => { setImportToast(null); setSettingsSection("import"); setView("settings"); }}
+      onDismiss={() => setImportToast(null)}
+    />}
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
