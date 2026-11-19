@@ -80,6 +80,10 @@ pub fn session_guidance(db: &Connection, session_id: &str) -> Option<&'static st
 struct SearchArgs {
     query: String,
     limit: Option<u32>,
+    /// Records to skip. Absent is 0, and null is refused like any other value
+    /// that is not a non-negative integer.
+    #[serde(default)]
+    offset: u32,
 }
 
 /// Exactly the three fields the tool offers. A `status`, `scope`,
@@ -140,9 +144,9 @@ pub fn run(
 
 fn search(db: &Connection, args: &Value) -> Result<Outcome, ToolError> {
     let args: SearchArgs = serde_json::from_value(args.clone())
-        .map_err(|error| bad(format!("memory_search takes {{query, limit?}}: {error}")))?;
+        .map_err(|error| bad(format!("memory_search takes {{query, limit?, offset?}}: {error}")))?;
     let limit = args.limit.unwrap_or(10).clamp(1, MAX_SEARCH_RESULTS);
-    let records = memory_ledger::search(db, ACCOUNT_MEMORY_SCOPE, &args.query, Some(limit))
+    let records = memory_ledger::search(db, ACCOUNT_MEMORY_SCOPE, &args.query, Some(limit), args.offset)
         .map_err(|error| bad(error.to_string()))?;
     Ok(Outcome {
         result: json!({
@@ -422,5 +426,61 @@ mod tests {
     fn an_unknown_memory_tool_is_not_found() {
         let (_dir, db) = tools_db();
         assert_eq!(run(&db, "chat", true, "memory_forget", &json!({})).unwrap_err().status, 404);
+    }
+
+    /// What the `bridge` server sends for `result`: the forwarded reply,
+    /// through the limiter with `ceiling` for `memory_search`.
+    fn bounded(ceiling: usize, args: &Value, result: Value) -> Value {
+        use crate::tool_limit::{bound_reply_within, limit_of, Limit};
+        let class = limit_of(SEARCH).unwrap().class;
+        let reply = json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&result).unwrap()}], "structuredContent": result, "isError": false});
+        let reply = bound_reply_within(SEARCH, Limit { class, ceiling }, ceiling, args, reply);
+        let size = reply["content"][0]["text"].as_str().unwrap().len();
+        assert!(size <= ceiling, "{size} bytes");
+        reply["structuredContent"].clone()
+    }
+
+    #[test]
+    fn memory_search_pages_with_offset_without_a_gap_or_a_repeat() {
+        let (_dir, db) = tools_db();
+        let topics = ["kiwi", "mango", "plum", "pear", "fig", "lime", "date", "yuzu", "guava", "lychee", "quince", "melon", "papaya", "cherry", "apricot", "peach", "grape", "lemon"];
+        for (index, topic) in topics.iter().enumerate() {
+            // Two lengths, so the rank of the search has ties to break.
+            let filler = if index % 2 == 0 { "short" } else { "a much longer clause about the orchard rows and the harvest" };
+            memory_ledger::save(&db, &format!("Deploy notes for the {topic} service: {filler}. {}", "Keep the rollout steps. ".repeat(8)), Some("fact"), None).unwrap();
+        }
+        let full = run(&db, "chat", false, SEARCH, &json!({"query": "deploy", "limit": 20})).unwrap().result["records"].as_array().unwrap().clone();
+        assert_eq!(full.len(), topics.len());
+        let slice = run(&db, "chat", false, SEARCH, &json!({"query": "deploy", "limit": 5, "offset": 7})).unwrap().result["records"].as_array().unwrap().clone();
+        assert_eq!(slice[..], full[7..12]);
+        assert!(run(&db, "chat", false, SEARCH, &json!({"query": "deploy", "offset": 1000})).unwrap().result["records"].as_array().unwrap().is_empty());
+
+        let mut args = json!({"query": "deploy", "limit": 20});
+        let mut joined = Vec::new();
+        let mut pages = 0;
+        loop {
+            let page = bounded(1500, &args, run(&db, "chat", false, SEARCH, &args).unwrap().result);
+            joined.extend(page["records"].as_array().unwrap().clone());
+            pages += 1;
+            assert!(pages < 100, "never ends");
+            match page.get("next") {
+                Some(next) => args["offset"] = next["offset"].clone(),
+                None => break,
+            }
+        }
+        assert!(pages > 3, "{pages}");
+        assert_eq!(joined, full);
+    }
+
+    #[test]
+    fn a_bad_offset_is_refused() {
+        let (_dir, db) = tools_db();
+        memory_ledger::save(&db, "Deploys go out on Tuesdays", None, None).unwrap();
+        for offset in [json!(-1), json!(1.5), json!("3"), json!(null), json!(true), json!(u64::from(u32::MAX) + 1)] {
+            let error = run(&db, "chat", false, SEARCH, &json!({"query": "deploys", "offset": offset})).unwrap_err();
+            assert_eq!(error.status, 400, "{offset}");
+            assert!(error.message.contains("offset?"), "{}", error.message);
+        }
+        assert_eq!(run(&db, "chat", false, SEARCH, &json!({"query": "deploys", "offset": 0})).unwrap().result["records"].as_array().unwrap().len(), 1);
     }
 }

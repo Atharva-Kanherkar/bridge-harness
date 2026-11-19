@@ -917,12 +917,14 @@ pub(crate) fn load_record(
 }
 
 /// FTS over active pins in one scope. Same guarded query shape as session
-/// recall: phrase-quoted tokens, scope bound in SQL, bounded limit.
+/// recall: phrase-quoted tokens, scope bound in SQL, bounded limit. The order
+/// is total, so `offset` pages through it with no gap and no repeat.
 pub fn search(
     db: &Connection,
     scope_key: &str,
     query: &str,
     limit: Option<u32>,
+    offset: u32,
 ) -> Result<Vec<MemoryRecord>, BridgeError> {
     let scope_key = parse_scope_key(scope_key)?;
     let match_query = crate::session_recall::fts_match_query(query)
@@ -944,12 +946,12 @@ pub fn search(
          FROM memory_record_fts f
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3
-         ORDER BY rank, m.updated_at DESC
-         LIMIT ?4",
+         ORDER BY rank, m.updated_at DESC, m.id
+         LIMIT ?4 OFFSET ?5",
     )?;
     let records = statement
         .query_map(
-            params![scope_key, match_query, STATUS_ACTIVE, limit],
+            params![scope_key, match_query, STATUS_ACTIVE, limit, i64::from(offset)],
             map_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1238,14 +1240,14 @@ mod tests {
         let (_dir, db) = ledger_db();
         insert_proposed(&db, "p1", "Proposed convention");
         assert!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.is_empty());
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None)
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None, 0)
             .unwrap()
             .is_empty());
         let approved = approve(&db, "p1").unwrap();
         assert_eq!(approved.status, "active");
         assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.len(), 1);
         assert_eq!(
-            search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None)
+            search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None, 0)
                 .unwrap()
                 .len(),
             1,
@@ -1263,7 +1265,7 @@ mod tests {
         assert!(approve(&db, "p2").is_err(), "rejected is terminal");
         assert!(reject(&db, "p2").is_err());
         assert!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.is_empty());
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "idea", None)
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "idea", None, 0)
             .unwrap()
             .is_empty());
         assert!(load(&db, "p2").unwrap().is_some(), "history stays readable");
@@ -1316,10 +1318,10 @@ mod tests {
         let dropped = save(&db, "Forget zsh detail", None, None).unwrap();
         supersede(&db, &kept.id, "Keep spaces config", None).unwrap();
         forget(&db, &dropped.id).unwrap();
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "tabs", None).unwrap().is_empty());
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "zsh", None).unwrap().is_empty());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "tabs", None, 0).unwrap().is_empty());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "zsh", None, 0).unwrap().is_empty());
         assert_eq!(
-            search(&db, ACCOUNT_MEMORY_SCOPE, "spaces", None).unwrap().len(),
+            search(&db, ACCOUNT_MEMORY_SCOPE, "spaces", None, 0).unwrap().len(),
             1
         );
     }
@@ -1334,18 +1336,18 @@ mod tests {
             [],
         )
         .unwrap();
-        let scoped = search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", None).unwrap();
+        let scoped = search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", None, 0).unwrap();
         assert_eq!(scoped.len(), 1, "the other scope's match stays invisible");
         assert_eq!(scoped[0].scope_key, ACCOUNT_MEMORY_SCOPE);
         assert!(
-            search(&db, ACCOUNT_MEMORY_SCOPE, "deploys OR secret", None)
+            search(&db, ACCOUNT_MEMORY_SCOPE, "deploys OR secret", None, 0)
                 .unwrap()
                 .is_empty(),
             "OR is a stripped word, not an operator that widens the query"
         );
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "\"", None).is_err());
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(0)).is_err());
-        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(51)).is_err());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "\"", None, 0).is_err());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(0), 0).is_err());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(51), 0).is_err());
     }
 
     #[test]
