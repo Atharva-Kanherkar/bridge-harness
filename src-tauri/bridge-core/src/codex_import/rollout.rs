@@ -259,20 +259,15 @@ pub fn command_line(command: &Value) -> String {
     }
 }
 
+/// Item types that become a tool row.
+const TOOL_ITEMS: &[&str] = &["CommandExecution", "FileChange", "McpToolCall", "ImageView", "Extension"];
+
 fn item(parsed: &mut Reading, item: &Value, at: Option<String>) {
     let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
     let id = item
         .get("id")
         .and_then(Value::as_str)
         .map_or_else(|| format!("item-{}", parsed.entries.len()), str::to_owned);
-    let text_of = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
-    let tool = |name: String, input: Value, output: Option<String>, failed: bool| BundleTool {
-        call_id: id.clone(),
-        name,
-        input,
-        output,
-        status: if failed { ToolStatus::Failed } else { ToolStatus::Completed },
-    };
     let new = match kind {
         "UserMessage" => {
             let text = content_text(item.get("content").unwrap_or(&Value::Null));
@@ -298,61 +293,8 @@ fn item(parsed: &mut Reading, item: &Value, at: Option<String>) {
             let text = summary.join("\n");
             (!text.trim().is_empty()).then(|| entry(&id, at, BundleEntryKind::Reasoning, Some(text), None))
         }
-        "CommandExecution" => {
-            let command = command_line(item.get("command").unwrap_or(&Value::Null));
-            let failed = item.get("exit_code").and_then(Value::as_i64).is_some_and(|code| code != 0)
-                || matches!(item.get("status").and_then(Value::as_str), Some("failed" | "declined"));
-            let output = item.get("aggregated_output").and_then(Value::as_str).map(str::to_owned);
-            Some(entry(&id, at, BundleEntryKind::ToolCall, None, Some(tool("shell".into(), json!({ "command": command, "workdir": text_of("cwd") }), output, failed))))
-        }
-        "FileChange" => {
-            let changes = item.get("changes").and_then(Value::as_object).cloned().unwrap_or_default();
-            let files: Vec<Value> = changes
-                .iter()
-                .map(|(path, change)| json!({ "path": path, "kind": change.get("type").cloned().unwrap_or(Value::Null) }))
-                .collect();
-            let diff = changes
-                .values()
-                .filter_map(|change| change.get("unified_diff").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let first = changes.keys().next().cloned().unwrap_or_default();
-            let failed = matches!(item.get("status").and_then(Value::as_str), Some("failed" | "declined"));
-            Some(entry(&id, at, BundleEntryKind::ToolCall, None, Some(tool("apply_patch".into(), json!({ "file_path": first, "files": files }), (!diff.is_empty()).then_some(diff), failed))))
-        }
-        "McpToolCall" => {
-            let server = text_of("server");
-            let name = text_of("tool");
-            let result = item.get("result").unwrap_or(&Value::Null);
-            let output = content_text(result.get("content").unwrap_or(&Value::Null));
-            let failed = result.get("isError").and_then(Value::as_bool).unwrap_or(false)
-                || matches!(item.get("status").and_then(Value::as_str), Some("failed"));
-            Some(entry(&id, at, BundleEntryKind::ToolCall, None, Some(tool(format!("mcp__{server}__{name}"), item.get("arguments").cloned().unwrap_or(Value::Null), (!output.is_empty()).then_some(output), failed))))
-        }
-        "ImageView" => Some(entry(&id, at, BundleEntryKind::ToolCall, None, Some(tool("view_image".into(), json!({ "file_path": text_of("path") }), None, false)))),
-        "Extension" => {
-            let query = item.get("query").and_then(Value::as_str).map(str::to_owned);
-            match query {
-                Some(query) => {
-                    let results: Vec<String> = item
-                        .get("results")
-                        .and_then(Value::as_array)
-                        .map(|results| {
-                            results
-                                .iter()
-                                .filter_map(|result| {
-                                    let title = result.get("title").and_then(Value::as_str)?;
-                                    let url = result.get("url").and_then(Value::as_str).unwrap_or("");
-                                    Some(format!("{title} {url}").trim().to_owned())
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Some(entry(&id, at, BundleEntryKind::ToolCall, None, Some(tool("websearch".into(), json!({ "query": query }), (!results.is_empty()).then(|| results.join("\n")), false))))
-                }
-                // A timing-only extension item carries nothing to show.
-                None => None,
-            }
+        kind if TOOL_ITEMS.contains(&kind) => {
+            tool_for(kind, item, &id).map(|tool| entry(&id, at, BundleEntryKind::ToolCall, None, Some(tool)))
         }
         kind if ITEM_BOOKKEEPING.contains(&kind) => None,
         "" => {
@@ -366,6 +308,73 @@ fn item(parsed: &mut Reading, item: &Value, at: Option<String>) {
     };
     if let Some(new) = new {
         parsed.entries.push(new);
+    }
+}
+
+fn failed_status(item: &Value) -> bool {
+    matches!(item.get("status").and_then(Value::as_str), Some("failed" | "declined"))
+}
+
+/// The tool row for a command, file change, MCP call, image view or web
+/// search; `None` for an item that carries nothing to show.
+fn tool_for(kind: &str, item: &Value, id: &str) -> Option<BundleTool> {
+    let text_of = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
+    let tool = |name: String, input: Value, output: Option<String>, failed: bool| BundleTool {
+        call_id: id.to_owned(),
+        name,
+        input,
+        output,
+        status: if failed { ToolStatus::Failed } else { ToolStatus::Completed },
+    };
+    match kind {
+        "CommandExecution" => {
+            let command = command_line(item.get("command").unwrap_or(&Value::Null));
+            let failed = item.get("exit_code").and_then(Value::as_i64).is_some_and(|code| code != 0) || failed_status(item);
+            let output = item.get("aggregated_output").and_then(Value::as_str).map(str::to_owned);
+            Some(tool("shell".into(), json!({ "command": command, "workdir": text_of("cwd") }), output, failed))
+        }
+        "FileChange" => {
+            let changes = item.get("changes").and_then(Value::as_object).cloned().unwrap_or_default();
+            let files: Vec<Value> = changes
+                .iter()
+                .map(|(path, change)| json!({ "path": path, "kind": change.get("type").cloned().unwrap_or(Value::Null) }))
+                .collect();
+            let diff = changes
+                .values()
+                .filter_map(|change| change.get("unified_diff").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let first = changes.keys().next().cloned().unwrap_or_default();
+            Some(tool("apply_patch".into(), json!({ "file_path": first, "files": files }), (!diff.is_empty()).then_some(diff), failed_status(item)))
+        }
+        "McpToolCall" => {
+            let result = item.get("result").unwrap_or(&Value::Null);
+            let output = content_text(result.get("content").unwrap_or(&Value::Null));
+            let failed = result.get("isError").and_then(Value::as_bool).unwrap_or(false) || failed_status(item);
+            let name = format!("mcp__{}__{}", text_of("server"), text_of("tool"));
+            Some(tool(name, item.get("arguments").cloned().unwrap_or(Value::Null), (!output.is_empty()).then_some(output), failed))
+        }
+        "ImageView" => Some(tool("view_image".into(), json!({ "file_path": text_of("path") }), None, false)),
+        // A web search; a timing-only extension item carries nothing to show.
+        "Extension" => {
+            let query = item.get("query").and_then(Value::as_str)?;
+            let results: Vec<String> = item
+                .get("results")
+                .and_then(Value::as_array)
+                .map(|results| {
+                    results
+                        .iter()
+                        .filter_map(|result| {
+                            let title = result.get("title").and_then(Value::as_str)?;
+                            let url = result.get("url").and_then(Value::as_str).unwrap_or("");
+                            Some(format!("{title} {url}").trim().to_owned())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(tool("websearch".into(), json!({ "query": query }), (!results.is_empty()).then(|| results.join("\n")), false))
+        }
+        _ => None,
     }
 }
 
