@@ -708,7 +708,7 @@ fn the_prefix_event_follows_a_successful_changed_codex_or_opencode_launch() {
         let applied = core.applied_tools.lock().unwrap().get(&chat).cloned().unwrap();
         assert!(applied.confirmed && applied.pending.is_none(), "{harness}: {applied:?}");
         assert_eq!((applied.revision, applied.effective_hash), (1, hash), "{harness}");
-        tool_selection::settle_after_turn(&core, &chat, false);
+        tool_selection::settle_after_turn(&core, &chat, false, None);
         assert_eq!(change_events(&core, &chat).len(), 1, "{harness}: a turn writes no second event");
     }
 }
@@ -744,6 +744,65 @@ fn the_prefix_event_follows_the_first_claude_turn_on_the_same_session() {
     // The next good turn writes no second event.
     frame(&core, &chat, good_turn());
     assert_eq!(change_events(&core, &chat).len(), 1);
+}
+
+/// The statements of the connections that trace into it. Only one test
+/// traces.
+static TRACED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn traced(statement: &str) {
+    TRACED.lock().unwrap().push(statement.to_owned());
+}
+
+#[test]
+fn a_claude_turn_settles_the_event_with_no_read_of_the_history() {
+    let (_dir, core, _script) = live();
+    let chat = chat_on(&core, "claude", Some("thread-0"));
+    save_off(&core, &chat, &["github"]);
+    start_chat(&core, chat.clone()).unwrap();
+    core.db.lock().unwrap().trace(Some(traced));
+    frame(&core, &chat, claude_init("thread-0"));
+    frame(&core, &chat, good_turn());
+    core.db.lock().unwrap().trace(None);
+    let statements = std::mem::take(&mut *TRACED.lock().unwrap());
+    assert!(!statements.is_empty());
+    let reads: Vec<&String> = statements.iter().filter(|sql| sql.contains("$.data.subtype") || sql.contains("$.data.session_id")).collect();
+    assert!(reads.is_empty(), "the frame path reads the history: {reads:#?}");
+    assert_eq!(change_events(&core, &chat).len(), 1);
+    assert!(core.applied_tools.lock().unwrap()[&chat].confirmed);
+}
+
+#[test]
+fn a_turn_of_an_old_launch_does_not_settle_the_event_of_the_new_one() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", Some("thread-0"));
+    let started_at = || -> String {
+        core.db.lock().unwrap().query_row("SELECT started_at FROM sessions WHERE id=?1", [&chat], |row| row.get(0)).unwrap()
+    };
+    save_off(&core, &chat, &["github"]);
+    start_chat(&core, chat.clone()).unwrap();
+    let old = started_at();
+    assert_eq!(save_off(&core, &chat, &["github", "linear"]), 2);
+    start_chat(&core, chat.clone()).unwrap();
+    let new = started_at();
+    assert_ne!(old, new);
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0")), ("resume", Some("thread-0"))]);
+    let turn = Arc::new(Mutex::new(None));
+    // An init of the old launch proves nothing for the new one.
+    handle_agent_value_timed(&core, &chat, &turn, &claude_init("thread-0"), None, Some((&old, "thread-0")));
+    let pending = |core: &BridgeCore| core.applied_tools.lock().unwrap()[&chat].pending.clone();
+    assert_eq!(pending(&core).unwrap().init_session_id, None);
+    handle_agent_value_timed(&core, &chat, &turn, &claude_init("thread-0"), None, Some((&new, "thread-0")));
+
+    // The good turn of the old launch ends after the relaunch.
+    tool_selection::settle_after_turn(&core, &chat, false, Some((&old, "thread-0")));
+    assert!(change_events(&core, &chat).is_empty(), "an old launch writes no event");
+    assert!(pending(&core).is_some(), "the event of the new launch stays in wait");
+
+    tool_selection::settle_after_turn(&core, &chat, false, Some((&new, "thread-0")));
+    let events = change_events(&core, &chat);
+    assert_eq!((events.len(), events[0]["revision"].clone()), (1, json!(2)));
+    assert!(core.applied_tools.lock().unwrap()[&chat].confirmed);
 }
 
 #[test]

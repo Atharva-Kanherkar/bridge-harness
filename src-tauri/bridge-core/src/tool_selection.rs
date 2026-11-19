@@ -736,9 +736,21 @@ pub struct AppliedTools {
 pub struct PendingEvent {
     pub payload: Value,
     pub provider_session_id: String,
-    /// The last entry sequence of the chat at the launch. The proof is an
-    /// init entry after it.
-    pub after_sequence: i64,
+    /// The `started_at` of the launch. A frame of another launch cannot
+    /// settle the event.
+    pub started_at: String,
+    /// The session id of the last init frame of the launch.
+    pub init_session_id: Option<String>,
+}
+
+impl PendingEvent {
+    /// `launch` is the `started_at` and the provider session id of the
+    /// launch of a frame. `None` is a frame with no launch to check.
+    fn is_of(&self, launch: Option<(&str, &str)>) -> bool {
+        launch.is_none_or(|(started_at, provider_session_id)| {
+            self.started_at == started_at && self.provider_session_id == provider_session_id
+        })
+    }
 }
 
 /// The effective set of one launch, read before the launch starts.
@@ -855,9 +867,8 @@ impl LaunchRecord {
         Ok(())
     }
 
-    /// The entry of a launch that succeeded. `after_sequence` is the last
-    /// entry sequence once the startup frames are stored.
-    pub fn applied(&self, provider_session_id: &str, after_sequence: i64) -> AppliedTools {
+    /// The entry of a launch that succeeded at `started_at`.
+    pub fn applied(&self, provider_session_id: &str, started_at: &str) -> AppliedTools {
         let pending = self
             .waits_for_a_turn()
             .then(|| self.event(provider_session_id))
@@ -865,7 +876,8 @@ impl LaunchRecord {
             .map(|payload| PendingEvent {
                 payload,
                 provider_session_id: provider_session_id.to_owned(),
-                after_sequence,
+                started_at: started_at.to_owned(),
+                init_session_id: None,
             });
         AppliedTools {
             revision: self.revision,
@@ -918,50 +930,45 @@ pub fn stale(core: &BridgeCore, session_id: &str) -> bool {
     applied_revision(core, session_id) != stored
 }
 
-/// Settle the Claude event of the last launch at the end of a turn. A failed
-/// turn keeps the event in wait. A good turn writes it when an init entry of
+/// Keep the session id of an init frame for the pending event of its launch.
+/// The frame path calls it, so the end of the turn reads no history.
+pub fn note_init(core: &BridgeCore, session_id: &str, launch: Option<(&str, &str)>, init_session_id: &str) {
+    let mut applied = core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(pending) = applied.get_mut(session_id).and_then(|entry| entry.pending.as_mut()) else { return };
+    if pending.is_of(launch) {
+        pending.init_session_id = Some(init_session_id.to_owned());
+    }
+}
+
+/// Settle the Claude event of the last launch at the end of a turn of that
+/// launch. A failed turn keeps the event in wait, and so does a turn of
+/// another launch. A good turn writes the event when the last init frame of
 /// the launch has the same session id, and drops it when not.
-pub fn settle_after_turn(core: &BridgeCore, session_id: &str, turn_failed: bool) {
+pub fn settle_after_turn(core: &BridgeCore, session_id: &str, turn_failed: bool, launch: Option<(&str, &str)>) {
     if turn_failed {
         return;
     }
     // The map lock comes before the database lock here and nowhere after it.
     let mut applied = core.applied_tools.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(entry) = applied.get_mut(session_id) else { return };
+    if !entry.pending.as_ref().is_some_and(|pending| pending.is_of(launch)) {
+        return;
+    }
     let Some(pending) = entry.pending.take() else { return };
-    let written = core.try_db().and_then(|db| write_when_proved(&db, session_id, &pending));
+    if pending.init_session_id.as_deref() != Some(pending.provider_session_id.as_str()) {
+        return;
+    }
+    let written = core.try_db().and_then(|db| {
+        SessionForest::new(&db)
+            .append(session_id, EntryKind::ToolSelectionChanged, pending.payload)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))
+    });
     match written {
-        Ok(proved) => entry.confirmed = proved,
+        Ok(_) => entry.confirmed = true,
         Err(error) => crate::diagnostics::record(&format!(
             "tool_selection: the change event of session {session_id} was not written: {error}"
         )),
     }
-}
-
-fn write_when_proved(db: &Connection, session_id: &str, pending: &PendingEvent) -> Result<bool, BridgeError> {
-    let init: Option<Option<String>> = db
-        .query_row(
-            "SELECT json_extract(payload,'$.data.session_id') FROM session_entries WHERE session_id=?1 AND kind='session.started' AND sequence>?2 AND json_extract(payload,'$.data.subtype')='init' ORDER BY sequence DESC LIMIT 1",
-            params![session_id, pending.after_sequence],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if init.flatten().as_deref() != Some(pending.provider_session_id.as_str()) {
-        return Ok(false);
-    }
-    SessionForest::new(db)
-        .append(session_id, EntryKind::ToolSelectionChanged, pending.payload.clone())
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    Ok(true)
-}
-
-/// The last entry sequence of a chat, or 0.
-pub fn last_sequence(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
-    Ok(db.query_row(
-        "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?)
 }
 
 /// Name the server key of a Codex launch that failed because the key left

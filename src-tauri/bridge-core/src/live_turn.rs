@@ -2341,7 +2341,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let process_id = started.runtime.process_id();
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
-    let after_sequence = {
+    {
         let db = state.db.lock().unwrap();
         // The change event of a tool set commits with the row of the launch
         // that applied it.
@@ -2470,11 +2470,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 message,
             )?;
         }
-        crate::tool_selection::last_sequence(&db, &session_id)?
-    };
+    }
     // Before the runtime is visible, so a send never finds a warm runtime with
     // an old applied revision.
-    crate::tool_selection::record_applied(state, &session_id, tool_record.applied(&thread_id, after_sequence));
+    crate::tool_selection::record_applied(state, &session_id, tool_record.applied(&thread_id, &started_at));
     state
         .adapters
         .lock()
@@ -2978,6 +2977,15 @@ fn handle_agent_value_timed(
             &body,
         );
         return;
+    }
+    // The init frame of a Claude launch is the proof of its pending tool
+    // event. It goes to memory, so the end of the turn reads no history.
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("system")
+        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("init")
+    {
+        if let Some(init_session_id) = value.get("session_id").and_then(serde_json::Value::as_str) {
+            crate::tool_selection::note_init(core, session_id, expected_launch, init_session_id);
+        }
     }
     let state = core.clone();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
@@ -4302,7 +4310,7 @@ fn handle_agent_value_timed(
     // the same session id. The event goes in before the queued input starts
     // the next turn.
     if turn_completed {
-        crate::tool_selection::settle_after_turn(core, session_id, turn_failed);
+        crate::tool_selection::settle_after_turn(core, session_id, turn_failed, expected_launch);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
