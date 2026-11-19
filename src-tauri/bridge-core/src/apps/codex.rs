@@ -21,6 +21,14 @@ fn invalid(text: &str) -> BridgeError {
 
 /// The JSON-RPC request for one app-control request, or a refusal.
 pub fn request_frame(id: &str, thread_id: &str, request: &Value) -> Result<Value, BridgeError> {
+    // Every server's name and status, for correcting a misspelled name.
+    if request["kind"] == "servers" {
+        return Ok(json!({
+            "id": format!("{ID_PREFIX}servers:{id}"),
+            "method": "mcpServerStatus/list",
+            "params": {"threadId": thread_id, "detail": "toolsAndAuthOnly"},
+        }));
+    }
     let server = request["server"]
         .as_str()
         .filter(|server| !server.is_empty() && server.len() <= 100)
@@ -68,6 +76,7 @@ pub fn translate(frame: &Value) -> Option<Value> {
     let result = frame.get("result")?;
     let value = match kind {
         "inventory" => inventory(result),
+        "servers" => servers(result),
         "read" | "write" => read(result),
         _ => None,
     };
@@ -126,6 +135,37 @@ fn inventory(result: &Value) -> Option<Value> {
 }
 
 /// A tool result, kept to the MCP result shape.
+fn servers(result: &Value) -> Option<Value> {
+    let listed: Vec<Value> = result
+        .get("data")?
+        .as_array()?
+        .iter()
+        .take(200)
+        .filter_map(|server| {
+            let name = server.get("name")?.as_str()?;
+            let connected = match server.get("runtimeStatus").and_then(Value::as_str) {
+                Some(status) => status == "connected",
+                None => server.get("tools").and_then(Value::as_object).is_some_and(|tools| !tools.is_empty()),
+            };
+            // A bundled server (Codex's connectors) names its tools
+            // `<connector>.<tool>`: its connectors let "notion" find it.
+            let mut connectors: Vec<&str> = server
+                .get("tools")
+                .and_then(Value::as_object)
+                .map(|tools| tools.keys().filter_map(|key| key.split_once('.').map(|(prefix, _)| prefix)).collect())
+                .unwrap_or_default();
+            connectors.sort_unstable();
+            connectors.dedup();
+            connectors.truncate(50);
+            // Not yet connected keeps Codex's own word (`starting`), so the
+            // router can wait for a fresh runtime's slower servers.
+            let status = if connected { "connected" } else { server.get("runtimeStatus").and_then(Value::as_str).unwrap_or("unavailable") };
+            Some(json!({"name": name, "status": status, "connectors": connectors}))
+        })
+        .collect();
+    Some(json!({"servers": listed}))
+}
+
 fn read(result: &Value) -> Option<Value> {
     let object = result.as_object()?;
     object.get("content")?.as_array()?;

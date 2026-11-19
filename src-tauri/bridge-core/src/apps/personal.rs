@@ -101,10 +101,18 @@ pub struct Draft {
     pub content_hash: String,
 }
 
+/// A bare lowercase tool name, or one connector-qualified name
+/// (`notion.search`): Codex serves connectors like Notion and Gmail as one
+/// bundled server whose tools carry the connector's name and a dot.
 fn tool_name_ok(name: &str) -> bool {
-    !name.is_empty()
-        && name.chars().count() <= MAX_TOOL_CHARS
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    let segment = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    !name.is_empty() && name.chars().count() <= MAX_TOOL_CHARS && name.split('.').count() <= 2 && name.split('.').all(segment)
+}
+
+/// Whether a tool is a read by Bridge's read vocabulary. A connector-
+/// qualified name is judged by its own part: `notion.search` reads.
+pub fn is_app_read_tool(name: &str) -> bool {
+    crate::briefing_policy::is_read_tool_name(name.rsplit('.').next().unwrap_or(name))
 }
 
 fn is_builtin_id(id: &str) -> bool {
@@ -165,7 +173,7 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
     }
     // A read skips approval, so it must be a read by the vocabulary every
     // other gate in Bridge uses. `slack_send_message` is never a read.
-    if let Some(tool) = manifest.reads.iter().find(|tool| !crate::briefing_policy::is_read_tool_name(tool)) {
+    if let Some(tool) = manifest.reads.iter().find(|tool| !is_app_read_tool(tool)) {
         return Err(format!("{tool} is not a read tool; list it as a write so it asks first"));
     }
     if manifest.view_html.trim().is_empty() || manifest.view_html.len() > MAX_VIEW_BYTES {
@@ -506,6 +514,17 @@ mod tests {
     fn locked(db: &Connection, app_id: Option<&str>, manifest: &Manifest, allow_wider: bool) -> LockPersonalAppResult {
         let draft = create_draft(db, app_id, manifest, now()).unwrap();
         lock(db, &draft.id, &draft.content_hash, allow_wider, now()).unwrap()
+    }
+
+    #[test]
+    fn connector_qualified_tools_are_allowed_and_classified_by_their_own_name() {
+        assert!(tool_name_ok("notion.search") && tool_name_ok("search_people"));
+        for bad in ["notion.", ".search", "a.b.c", "Notion.search", "notion search"] {
+            assert!(!tool_name_ok(bad), "{bad}");
+        }
+        assert!(is_app_read_tool("notion.search") && is_app_read_tool("notion.fetch"));
+        assert!(!is_app_read_tool("notion.notion-update-page") && !is_app_read_tool("gmail.send_email"));
+        assert!(!is_app_read_tool("search.delete"), "the connector's name never makes a write a read");
     }
 
     #[test]

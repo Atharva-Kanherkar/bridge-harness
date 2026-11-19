@@ -143,7 +143,8 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       }
       bridge.current = app as unknown as Bridge;
       // Only now that the bridge listens does the view get its document.
-      node.srcdoc = personalView ? personalViewDocument(viewHtml) : viewDocument(viewHtml);
+      const initial = { theme: latest.current.theme, variables: styleVariables() };
+      node.srcdoc = personalView ? personalViewDocument(viewHtml, initial) : viewDocument(viewHtml, initial);
     })();
     return () => {
       cancelled = true;

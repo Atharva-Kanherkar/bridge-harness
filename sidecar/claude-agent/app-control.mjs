@@ -18,6 +18,13 @@ export function createAppControl({ enabled, status, request, writeFrame, mayRead
     active++;
     try {
       const input = frame.request;
+      // The names of every server this launch's agent has, and nothing
+      // else: Bridge uses them to correct a misspelled server name or to say
+      // what is connected. No tools, no calls.
+      if (object(input) && input.kind === "servers") {
+        const servers = (await status()).map(server => ({ name: server.name, status: server.status }));
+        return reply(true, { servers: servers.slice(0, 200) });
+      }
       if (!object(input) || !["inventory", "read"].includes(input.kind) || typeof input.server !== "string" || !input.server || input.server.length > 100) {
         return reply(false, "invalid preview request");
       }

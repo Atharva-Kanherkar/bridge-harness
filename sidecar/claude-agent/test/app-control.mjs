@@ -110,3 +110,14 @@ test("a server not yet started is asked for once, then listed", async () => {
   assert.equal((await never.send({ kind: "inventory", server: "claude.ai Slack" })).ok, false);
   assert.deepEqual(calls, ["mcp_reconnect"], "a server this launch does not serve is never started");
 });
+test("servers lists names and statuses only, even on a launch that serves one server", async () => {
+  const { send, calls } = setup({ serverAllowed: name => name === "claude.ai Slack", status: async () => [
+    { name: "claude.ai Slack", status: "connected", config: { password: "hidden" }, tools: [{ name: "slack_search_users" }] },
+    { name: "openaiDeveloperDocs", status: "pending", tools: [] },
+  ] });
+  const result = await send({ kind: "servers" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.result, { servers: [{ name: "claude.ai Slack", status: "connected" }, { name: "openaiDeveloperDocs", status: "pending" }] });
+  assert.equal(JSON.stringify(result).includes("hidden") || JSON.stringify(result).includes("slack_search_users"), false, "no config or tools");
+  assert.deepEqual(calls, [], "no MCP call is made");
+});
