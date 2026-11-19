@@ -286,6 +286,24 @@ describe("ChatToolsControl", () => {
     expect(row("linear")!.querySelector('[aria-label="Loading"]')).not.toBeNull();
   });
 
+  it("shares one read of a chat between the mount and an early open", async () => {
+    const first = deferred<ChatTools>();
+    const read = vi.spyOn(bridgeApi, "chatTools").mockReturnValueOnce(first.promise).mockResolvedValue(codexTools(["github"], 4));
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
+    // A warm Codex read asks its runtime three things, under a limit of four for each chat.
+    act(() => { chip()!.click(); });
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => { first.resolve(codexTools()); await first.promise; });
+    await settle();
+    expect(switchOf("github")?.getAttribute("aria-checked")).toBe("true");
+
+    // An open after the read answered reads again.
+    act(() => { chip()!.click(); });
+    await openPanel();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(switchOf("github")?.getAttribute("aria-checked")).toBe("false");
+  });
+
   it("shows a token figure with its source and none when absent", async () => {
     vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });

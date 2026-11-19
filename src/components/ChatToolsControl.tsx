@@ -59,12 +59,23 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const generation = useRef(0);
+  const inFlight = useRef<{ key: string; read: Promise<ChatTools> } | null>(null);
 
   const load = useCallback(async () => {
     const ticket = ++generation.current;
     const params = sessionId ? { sessionId } : { draft: { harness: draftHarness ?? "", account: draftAccount, workspaceId: draftWorkspace } };
+    // A warm Codex read sends three requests under a limit of four for each chat, so
+    // a second read of the same target waits for the read in flight.
+    let read = inFlight.current?.key === key ? inFlight.current.read : null;
+    if (!read) {
+      const entry = { key, read: bridgeApi.chatTools(params) };
+      const release = () => { if (inFlight.current === entry) inFlight.current = null; };
+      entry.read.then(release, release);
+      inFlight.current = entry;
+      read = entry.read;
+    }
     try {
-      const data = await bridgeApi.chatTools(params);
+      const data = await read;
       if (ticket === generation.current) setView({ key, data });
     } catch (error) {
       // A failed read keeps the last list of this chat on screen.
@@ -110,6 +121,8 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
     // the save in turn, so its answer never reaches the state of that chat.
     const ticket = ++generation.current;
     const current = () => ticket === generation.current;
+    // A read that started before the save cannot show it, so the next read asks again.
+    inFlight.current = null;
     setPending({ id: item.id, on });
     try {
       const outcome = await bridgeApi.updateChatTools({ sessionId, expectedRevision: data.selection.revision, selection: next });
