@@ -37,7 +37,7 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
   capped at 4 s).
 - A run requested before the lazy Terminal pane has mounted is queued and runs
   when the pane mounts. A request no pane picks up within 10 s fails.
-- Button states: idle "Run" → "Running…" while waiting → "Ran in shell 1"
+- Button states: idle "Run" → "Running…" while waiting → "Sent to shell 1"
   (shell label) with a check for ~2 s → idle. On failure: "Couldn't run" with
   the error in its title for ~3 s → idle. The button is disabled while running.
 - The shell gets focus after the run.
@@ -76,7 +76,7 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
   button; a `ts` block does not; without the context no button renders.
 - An unclosed bash fence renders Copy but no Run.
 - Clicking Run calls the context with the extracted command, shows
-  "Running…", then "Ran in shell 1" when it resolves, then returns to "Run".
+  "Running…", then "Sent to shell 1" when it resolves, then returns to "Run".
 - A rejected run shows "Couldn't run" with the error message as the title.
 
 `src/components/TerminalPane.test.tsx` (jsdom, mocked `bridgeApi` + xterm)
