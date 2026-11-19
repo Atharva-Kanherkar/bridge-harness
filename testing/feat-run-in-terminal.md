@@ -16,11 +16,13 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
 - It renders only on a **closed** fence. A fence still streaming (no closing
   ```` ``` ```` yet) has Copy but no Run, so a half-written command can never run.
 - What runs:
-  - `bash`/`sh`/`zsh`/`shell`: the body. If every non-blank line starts with a
-    `$ ` or `% ` prompt, the prompts are stripped.
-  - `console`/`shell-session`/`shellsession`/`terminal`: only prompt lines
-    (`$ `, `% `), prompts stripped, plus continuation lines after a line ending
-    in `\`; output lines are dropped. With no prompt lines, the whole body runs.
+  - A *transcript* keeps only prompt lines (`$ `, `% `), prompts stripped, plus
+    continuation lines after a line ending in `\` (a leading `> ` on those is
+    stripped); output lines are dropped.
+  - `bash`/`sh`/`zsh`/`shell` are a transcript when their first non-blank line
+    starts with a prompt; otherwise the body runs as written.
+  - `console`/`shell-session`/`shellsession`/`terminal` are a transcript when
+    any line starts with a prompt; otherwise the whole body runs.
   - Leading and trailing blank lines are dropped. C0/C1 control characters
     other than tab and newline are stripped (what you see is what runs).
   - A body that reduces to nothing gets no Run button.
@@ -44,7 +46,9 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
 
 `src/terminal/runCommand.test.ts`
 - `isShellFence` accepts the eight languages in any case, rejects others.
-- `commandFromFence` strips uniform `$ ` prompts in bash, keeps mixed bodies.
+- `commandFromFence` strips `$ ` prompts in a bash transcript, keeps its
+  continuation lines and drops its output lines; a bash body that does not
+  start with a prompt runs as written.
 - `commandFromFence` keeps only prompt lines and continuations for `console`.
 - `commandFromFence` returns the whole console body when it has no prompts.
 - `commandFromFence` strips control characters and trims blank edges; returns
@@ -52,6 +56,8 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
 - `terminalRunInput` without bracketed paste: `\n` → `\r`, trailing `\r`.
 - `terminalRunInput` with bracketed paste: wrapped, Enter after `ESC[201~`,
   and an embedded `ESC[201~` cannot survive (control chars stripped first).
+- `terminalRunInput` without bracketed paste turns tabs into spaces (a tab
+  would trigger completion); with bracketed paste tabs are kept.
 
 `src/terminal/runQueue.test.ts`
 - A request with no listener waits; a listener attached later drains it.
