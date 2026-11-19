@@ -1123,7 +1123,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
     onEditTurn={retryFor(entry) ? onEditTurn : undefined}
   />;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><RunInTerminalContext.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -1166,7 +1166,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {trailing}
       </div>
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></VisualActionsContext.Provider></RunInTerminalContext.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></ChatRunInTerminal.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1606,11 +1606,17 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
 /// directive. They are status, not prose, so they go through ThinkingRow.
 const WORKER_STATUS = /^_(Delegating to a worker|Checking on workers|Steering a worker|Stopping a worker)…_$/;
 
+/** The chat's terminal, held back from every Markdown surface but the
+ *  agent's own reply: a shell line in a tool result, a thought or a draft for
+ *  someone else is text, not a command offered to the person. */
+const ChatRunInTerminal = createContext<RunInTerminal | null>(null);
+
 function StreamedProse({ text, streaming }: { text: string; streaming: boolean }) {
   const smooth = useSmoothText(text, streaming);
+  const run = useContext(ChatRunInTerminal);
   const status = WORKER_STATUS.exec(text.trim())?.[1];
   if (status) return <ThinkingRow label={`${status}…`}/>;
-  return <Markdown text={smooth} />;
+  return <RunInTerminalContext.Provider value={run}><Markdown text={smooth} /></RunInTerminalContext.Provider>;
 }
 
 /// Prose, from either side of the conversation.
