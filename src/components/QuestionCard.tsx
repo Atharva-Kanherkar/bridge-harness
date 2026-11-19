@@ -1,7 +1,8 @@
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { motion } from "framer-motion";
-import { Check, CornerDownLeft, MessageCircleQuestion, X } from "lucide-react";
+import { Check, MessageCircleQuestion, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { modKey } from "@/lib/platform";
 import type { ConversationItem } from "../conversation";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
@@ -17,8 +18,6 @@ const INPUT = "w-full rounded-lg border border-input bg-background px-3 py-2 tex
 
 /** The typed "Other" answer, kept apart from the listed choices. */
 type Other = { on: boolean; text: string };
-
-const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 /** Everything a harness asks: one or several questions, each a single or
  *  multiple choice (with descriptions, previews and a typed "Other"), free
@@ -130,7 +129,7 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
               <span className="mr-auto inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                 {fields.length > 1 && <span className="tabular-nums">{answeredCount} of {fields.length} answered</span>}
                 {fields.length > 1 && <span aria-hidden="true">·</span>}
-                <kbd className="inline-flex items-center gap-0.5 rounded border border-border px-1 font-sans text-[10.5px]">{isMac ? "⌘" : "Ctrl"}<CornerDownLeft size={10} aria-hidden="true" /></kbd> to send
+                <kbd className="rounded border border-border px-1 font-sans text-[10.5px]">{modKey("↵")}</kbd> to send
               </span>
               <button type="button" disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Skipping…" : "Skip"}</button>
               <button type="button" disabled={!!busy || !ready} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : fields.length > 1 ? "Send answers" : "Send answer"}</button>
