@@ -26,7 +26,10 @@ export type ChatToolsControlProps = { disabled?: boolean } & (
 );
 
 type Notice = { tone: "saved" | "refusal" | "error"; text: string };
-type Pending = { id: string; on: boolean | null };
+/** A server and a skill can share a name, so a row is its kind and its id. */
+type RowId = { kind: string; id: string };
+type Pending = RowId & { on: boolean | null };
+const sameRow = (a: RowId, b: RowId) => a.kind === b.kind && a.id === b.id;
 
 const HARNESS_LABEL: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" };
 const SECTIONS = [
@@ -65,7 +68,8 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   const saves = useRef(new Map<string, Pending>());
   // The target on screen, or null after the control unmounts.
   const shown = useRef<string | null>(null);
-  const refocus = useRef<string | null>(null);
+  const refocus = useRef<RowId | null>(null);
+  const refocusFrame = useRef<number | null>(null);
 
   const read = useCallback((fresh: boolean): Promise<ChatTools> => {
     const prior = inFlight.current.get(key);
@@ -109,20 +113,37 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   // the menu open. The switch takes the focus back once it is enabled again.
   const { panelRef, triggerRef } = menu;
   const restoreFocus = useCallback(() => {
-    const id = refocus.current;
-    if (id === null) return;
+    const row = refocus.current;
+    if (row === null) return;
     const panel = panelRef.current;
     const target = [...panel?.querySelectorAll<HTMLElement>("[data-tool-item]") ?? []]
-      .find(element => element.dataset.toolItem === id)
+      .find(element => sameRow({ kind: element.dataset.toolKind ?? "", id: element.dataset.toolItem ?? "" }, row))
       ?.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]');
     if (panel && target?.disabled) return;
     refocus.current = null;
     const active = document.activeElement;
     if (target && (active === triggerRef.current || active === document.body || panel?.contains(active))) target.focus();
   }, [panelRef, triggerRef]);
+  const requestFocus = (row: RowId) => {
+    refocus.current = row;
+    if (refocusFrame.current !== null) window.cancelAnimationFrame(refocusFrame.current);
+    refocusFrame.current = window.requestAnimationFrame(() => {
+      refocusFrame.current = null;
+      restoreFocus();
+    });
+  };
   useEffect(() => {
     if (!pending) restoreFocus();
   }, [pending, restoreFocus]);
+  // A focus request ends when the menu closes or the control unmounts.
+  useEffect(() => {
+    if (!menu.open) return;
+    return () => {
+      refocus.current = null;
+      if (refocusFrame.current !== null) window.cancelAnimationFrame(refocusFrame.current);
+      refocusFrame.current = null;
+    };
+  }, [menu.open]);
 
   const data = view.key === key ? view.data : undefined;
   const loadError = view.key === key ? view.error : undefined;
@@ -159,7 +180,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
     // after the person left the chat and came back to it.
     const target = key;
     const here = () => shown.current === target;
-    const mine: Pending = { id: item.id, on };
+    const mine: Pending = { kind: item.kind, id: item.id, on };
     const end = () => { if (saves.current.get(target) === mine) saves.current.delete(target); };
     // A save outdates each read that started before it, and no later read shares one.
     ++generation.current;
@@ -276,11 +297,10 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
               {entries.map(item => <ToolRow
                 key={`${item.kind}:${item.id}`}
                 item={item}
-                pending={pending?.id === item.id ? pending : null}
+                pending={pending && sameRow(pending, item) ? pending : null}
                 busy={!!pending || !!disabled}
                 onSwitch={on => {
-                  refocus.current = item.id;
-                  window.requestAnimationFrame(restoreFocus);
+                  requestFocus(item);
                   void change(switched(base, item, on, items), item, on);
                 }}
                 onRemove={() => void change(removed(base, item), item, null)}
@@ -331,7 +351,7 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
     {!item.seen && <span className="block text-[11px] leading-4 text-faint">Saved, not listed now</span>}
   </>;
   if (item.state === "fixed") {
-    return <div data-tool-item={item.id} className="flex items-start gap-2 rounded-md px-2 py-1.5">
+    return <div data-tool-kind={item.kind} data-tool-item={item.id} className="flex items-start gap-2 rounded-md px-2 py-1.5">
       <Lock size={12} aria-hidden="true" className="mt-0.5 shrink-0 text-faint" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] text-foreground">{item.label}</span>
@@ -341,7 +361,7 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
     </div>;
   }
   const on = pending?.on ?? item.state === "on";
-  return <div data-tool-item={item.id} className="flex items-center gap-1">
+  return <div data-tool-kind={item.kind} data-tool-item={item.id} className="flex items-center gap-1">
     <button
       type="button"
       role="menuitemcheckbox"

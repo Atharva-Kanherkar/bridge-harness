@@ -444,6 +444,73 @@ describe("ChatToolsControl", () => {
     expect(document.activeElement).toBe(switchOf("linear"));
   });
 
+  it("finds the switch by its kind and its id when a server and a skill share a name", async () => {
+    const frames = () => act(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    const switchIn = (kind: string, id: string) =>
+      document.querySelector<HTMLButtonElement>(`[data-tool-kind="${kind}"][data-tool-item="${id}"] [role="menuitemcheckbox"]`);
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue({
+      harness: "claude",
+      account: null,
+      choice: null,
+      items: [item({ id: "review" }), item({ id: "review", kind: "skill", group: "Skills" }), item({ id: "simplify", kind: "skill", group: "Skills" })],
+      sources: [],
+      selection: { revision: 1, harness: "claude", account: null, applies: true, notAppliedReason: null },
+    });
+    const save = deferred<{ revision: number; refusal: null }>();
+    vi.spyOn(bridgeApi, "updateChatTools").mockReturnValue(save.promise);
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="claude" />); });
+    await settle();
+    await openPanel();
+    const skill = switchIn("skill", "review")!;
+    act(() => { skill.focus(); skill.click(); });
+    await frames();
+    // Only the skill row shows the save in flight.
+    expect(switchIn("skill", "review")!.getAttribute("aria-checked")).toBe("false");
+    expect(switchIn("server", "review")!.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { save.resolve({ revision: 2, refusal: null }); await save.promise; });
+    await settle();
+    await frames();
+    expect(document.activeElement).toBe(switchIn("skill", "review"));
+  });
+
+  it("drops the focus request when the menu closes", async () => {
+    const frames = () => act(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
+    const save = deferred<{ revision: number; refusal: null }>();
+    vi.spyOn(bridgeApi, "updateChatTools").mockReturnValue(save.promise);
+    act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
+    await settle();
+    await openPanel();
+    const linear = switchOf("linear")!;
+    act(() => { linear.focus(); linear.click(); });
+    await frames();
+
+    // Escape closes the menu while the save runs, and the person opens it again.
+    act(() => { document.querySelector('[role="menu"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await frames();
+    await openPanel();
+    expect(switchOf("linear")!.disabled).toBe(true);
+    await act(async () => { save.resolve({ revision: 4, refusal: null }); await save.promise; });
+    await settle();
+    await frames();
+    expect(switchOf("linear")!.disabled).toBe(false);
+    expect(document.activeElement).not.toBe(switchOf("linear"));
+  });
+
+  it("cancels the queued focus frame when the control unmounts", async () => {
+    vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools([], 0));
+    act(() => { root.render(<ChatToolsControl draft={{ harness: "codex", account: null, workspaceId: null }} choice={null} onChoiceChange={() => undefined} />); });
+    await settle();
+    await openPanel();
+    const queue = vi.spyOn(window, "requestAnimationFrame");
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+    act(() => { switchOf("linear")!.click(); });
+    const frame = queue.mock.results.at(-1)!.value as number;
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(cancel).toHaveBeenCalledWith(frame);
+  });
+
   it("shows a token figure with its source and none when absent", async () => {
     vi.spyOn(bridgeApi, "chatTools").mockResolvedValue(codexTools());
     act(() => { root.render(<ChatToolsControl sessionId="s-1" harness="codex" />); });
