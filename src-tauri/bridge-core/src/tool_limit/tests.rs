@@ -237,6 +237,86 @@ fn a_single_item_over_the_ceiling_is_shortened_and_the_offset_moves_on() {
     assert!(cut_of(&after).contains("/pages/0/preview keeps"), "{}", cut_of(&after));
 }
 
+/// A database row with `count` text properties of about `bytes` bytes each.
+fn wide_row(index: usize, count: usize, bytes: usize) -> Value {
+    let mut page = summary(index, "short");
+    page["properties"] = Value::Object((0..count).map(|property| (format!("Property {property}"), json!(text(Style::Plain, bytes, 0, property)))).collect());
+    page
+}
+
+#[test]
+fn an_item_with_many_texts_is_kept_with_shorter_texts() {
+    // 140 texts at the floor of 256 bytes are above 32 KiB.
+    let source = json!({"pages": (0..3).map(|index| wide_row(index, 140, 400)).collect::<Vec<_>>(), "total": 3});
+    let arguments = json!({"database": "Tasks", "offset": 4});
+    let reply = forwarded(source.clone());
+    let after = bound_reply("notes_search", &arguments, reply.clone());
+    assert_bounded("notes_search", &arguments, &reply, &after, LIST_CEILING);
+    let kept = structured(&after)["pages"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "{}", cut_of(&after));
+    assert_eq!(kept[0]["id"], "p0");
+    let properties = kept[0]["properties"].as_object().unwrap();
+    assert_eq!(properties.len(), 140);
+    for (name, short) in properties {
+        let full = source["pages"][0]["properties"][name].as_str().unwrap();
+        let short = short.as_str().unwrap();
+        assert!(short.len() < MIN_TEXT && full.starts_with(short), "{name}: {short:?}");
+    }
+    assert!(properties.values().all(|short| short.as_str().unwrap().len() > 100), "each text keeps what fits");
+    assert_eq!(next_of(&after), 5);
+    assert!(cut_of(&after).contains("/pages/0/properties/Property 0 keeps"), "{}", cut_of(&after));
+}
+
+#[test]
+fn an_item_that_cannot_fit_is_named_in_the_notice() {
+    // Even with each text empty, the keys of the first item are above the ceiling.
+    let mut pages = vec![wide_row(0, 400, 20)];
+    pages.extend((1..4).map(|index| summary(index, "short")));
+    let source = json!({"pages": pages, "total": 4});
+    let arguments = json!({"database": "Tasks", "offset": 9});
+    let reply = forwarded(source);
+    let after = bound("notes_search", 4096, &arguments, reply.clone());
+    assert_bounded("notes_search", &arguments, &reply, &after, 4096);
+    let value = structured(&after);
+    assert_eq!(value["pages"], json!([]));
+    assert_eq!(value["total"], 4);
+    assert_eq!(next_of(&after), 10);
+    let cut = cut_of(&after);
+    assert!(cut.contains("the item at offset 9 is too large for one reply and is not in the reply"), "{cut}");
+    assert!(cut.contains("offset 10"), "{cut}");
+    // The same at the real ceiling.
+    let source = json!({"pages": [wide_row(0, 3000, 20), summary(1, "short")]});
+    let reply = forwarded(source);
+    let after = bound_reply("notes_search", &json!({}), reply.clone());
+    assert_bounded("notes_search", &json!({}), &reply, &after, LIST_CEILING);
+    assert_eq!(next_of(&after), 1);
+    assert!(cut_of(&after).contains("the item at offset 0 is too large for one reply"), "{}", cut_of(&after));
+}
+
+#[test]
+fn a_document_keeps_each_character_when_other_parts_are_too_large() {
+    let source = text(Style::Wide, 60_000, 9, 1);
+    // Texts that fit only below the floor of 256 bytes, and keys that do not
+    // fit even with each text empty.
+    for (properties, bytes) in [(140, 400), (3000, 20)] {
+        let call = |offset: u64| {
+            let markdown: String = source.chars().skip(offset as usize).collect();
+            if offset > 0 {
+                return json!({"page": summary(0, "preview"), "markdown": markdown, "note": NOTE});
+            }
+            let mut read = read_result(&markdown, 0, 0);
+            read["database"] = wide_row(0, properties, bytes)["properties"].clone();
+            read
+        };
+        let pages = follow("notes_read", DOCUMENT_CEILING, call);
+        assert!(pages.len() > 1, "{}", pages.len());
+        let joined: String = pages.iter().map(|page| page["markdown"].as_str().unwrap()).collect();
+        assert_eq!(joined, source, "{properties} properties");
+        let cut = pages[0]["cut"].as_str().unwrap();
+        assert!(cut.contains("/database"), "{cut}");
+    }
+}
+
 #[test]
 fn large_parts_without_pages_are_shortened_and_named() {
     let markdown = text(Style::Plain, 30_000, 8, 0);
@@ -371,6 +451,15 @@ fn shapes() -> Vec<(&'static str, Value, Value)> {
     cases.push(("settings_read", json!({}), forwarded(Value::Object(many.clone()))));
     cases.push(("notes_search", json!({}), forwarded(json!({"pages": [summary(0, "x")], "extra": many}))));
     cases.push(("memory_search", json!({}), forwarded(json!({"records": [], "note": text(Style::Plain, 9000, 0, 0)}))));
+    // An item that fits only with texts below the floor, an item that does
+    // not fit with each text empty, and the same data in a part with no pages.
+    for (properties, bytes) in [(140, 400), (3000, 20)] {
+        let row = wide_row(0, properties, bytes);
+        cases.push(("notes_search", json!({"offset": 2}), forwarded(json!({"pages": [row.clone(), summary(1, "short")], "total": 2}))));
+        let mut read = read_result(&text(Style::Wide, 40_000, 7, 0), 0, 0);
+        read["database"] = row["properties"].clone();
+        cases.push(("notes_read", json!({}), forwarded(read)));
+    }
     cases
 }
 

@@ -14,6 +14,7 @@
 //!
 //! Pure: no I/O, no clock, no database.
 
+use std::collections::HashSet;
 use std::io;
 
 use serde::Serialize;
@@ -172,7 +173,7 @@ fn bound_list(mut pager: Pager<'_>, mut rest: Value) -> Value {
     };
     pager.full = items.len();
     let ceiling = pager.ceiling;
-    let (settled, parts) = settle(&rest, ceiling);
+    let (settled, parts) = settle(&rest, key, ceiling);
     let probe = |kept: usize| {
         let page = pager.finish(with_part(settled.clone(), key, Value::Array(items[..kept].to_vec())), kept, &parts);
         (pretty_len(&page) <= ceiling).then_some(page)
@@ -183,7 +184,7 @@ fn bound_list(mut pager: Pager<'_>, mut rest: Value) -> Value {
     // The first item alone is above the ceiling: it goes out shortened, so
     // the next call still moves on.
     let Some(first) = items.first() else { return pager.none_fits() };
-    pager.single(&with_part(rest, key, Value::Array(vec![first.clone()])))
+    pager.single(&with_part(without_removed(rest, &parts), key, Value::Array(vec![first.clone()])), &parts).unwrap_or_else(|| pager.too_large(settled, &parts))
 }
 
 /// The longest start of the text that fits. The other parts get at most half
@@ -195,12 +196,12 @@ fn bound_document(mut pager: Pager<'_>, mut rest: Value) -> Value {
         _ => String::new(),
     };
     pager.full = text.chars().count();
-    let (settled, parts) = settle(&rest, pager.ceiling);
+    let (settled, parts) = settle(&rest, key, pager.ceiling);
     if let Some(page) = document_page(&pager, &settled, &text, &parts) {
         return page;
     }
     let first = text.chars().next().map(String::from).unwrap_or_default();
-    pager.single(&with_part(rest, key, Value::String(first)))
+    pager.single(&with_part(without_removed(rest, &parts), key, Value::String(first)), &parts).unwrap_or_else(|| pager.none_fits())
 }
 
 fn document_page(pager: &Pager<'_>, settled: &Value, text: &str, parts: &[Part]) -> Option<Value> {
@@ -247,14 +248,48 @@ fn after_cut(tool: &str, class: Class) -> &'static str {
 }
 
 /// The parts with no pages, shortened to half of the ceiling when they are
-/// above it. The part with pages gets the remaining space.
-fn settle(rest: &Value, ceiling: usize) -> (Value, Vec<Part>) {
+/// above it. The part with pages under `key` gets the remaining space.
+fn settle(rest: &Value, key: &str, ceiling: usize) -> (Value, Vec<Part>) {
     let half = ceiling / 2;
     if pretty_len(rest) <= half {
         return (rest.clone(), Vec::new());
     }
-    let shrunk = shrink(rest, None, half, &|candidate, _| pretty_len(candidate) <= half);
-    (shrunk.value, shrunk.parts)
+    let fits = |candidate: &Value, _: &[Part]| pretty_len(candidate) <= half;
+    let shrunk = shrink(rest, None, half, &fits);
+    let Value::Object(map) = rest else { return (shrunk.value, shrunk.parts) };
+    if shrunk.fits {
+        return (shrunk.value, shrunk.parts);
+    }
+    // Some parts are too large even with each text and list empty. Whole
+    // parts go, the largest first, so that the part with pages keeps its room.
+    let mut order: Vec<(usize, &String)> = map.iter().filter(|(name, _)| *name != key).map(|(name, part)| (pretty_len(part), name)).collect();
+    order.sort_by_key(|(size, _)| std::cmp::Reverse(*size));
+    let probe = |removed: usize| {
+        let gone: HashSet<&String> = order[..removed].iter().map(|(_, name)| *name).collect();
+        let is_gone = |name: &String| gone.contains(name);
+        let candidate: Map<String, Value> = map.iter().filter(|(name, _)| !is_gone(name)).map(|(name, part)| (name.clone(), part.clone())).collect();
+        let shrunk = shrink(&Value::Object(candidate), None, half, &fits);
+        shrunk.fits.then(|| {
+            let mut parts = shrunk.parts;
+            parts.extend(map.keys().filter(|name| is_gone(name)).map(|name| Part::Removed { key: name.clone() }));
+            (shrunk.value, parts)
+        })
+    };
+    // `search` gives the largest count that fits, and the fewest removed parts
+    // are wanted, so it counts the parts that stay.
+    search(0, order.len(), |kept| probe(order.len() - kept)).unwrap_or((shrunk.value, shrunk.parts))
+}
+
+/// `value` with each part that [`settle`] removed left out.
+fn without_removed(mut value: Value, parts: &[Part]) -> Value {
+    if let Some(map) = value.as_object_mut() {
+        for part in parts {
+            if let Part::Removed { key } = part {
+                map.shift_remove(key);
+            }
+        }
+    }
+    value
 }
 
 /// The count of leading items whose compact size fits in `ceiling`. The
@@ -302,14 +337,36 @@ impl Pager<'_> {
     }
 
     /// One unit of the part with pages, with the whole reply shortened
-    /// around it.
-    fn single(&self, candidate: &Value) -> Value {
-        let shrunk = shrink(candidate, Some(self.key), self.ceiling, &|value, parts| pretty_len(&self.finish(value.clone(), 1, parts)) <= self.ceiling);
-        if shrunk.fits {
-            self.finish(shrunk.value, 1, &shrunk.parts)
-        } else {
-            self.none_fits()
+    /// around it. `settled` names the parts that [`settle`] removed, and
+    /// `candidate` is already without them.
+    fn single(&self, candidate: &Value, settled: &[Part]) -> Option<Value> {
+        let removed: Vec<Part> = settled.iter().filter(|part| matches!(part, Part::Removed { .. })).cloned().collect();
+        let all = |parts: &[Part]| [parts, &removed].concat();
+        let shrunk = shrink(candidate, Some(self.key), self.ceiling, &|value, parts| pretty_len(&self.finish(value.clone(), 1, &all(parts))) <= self.ceiling);
+        shrunk.fits.then(|| self.finish(shrunk.value, 1, &all(&shrunk.parts)))
+    }
+
+    /// The first item is above the ceiling even with each of its texts and
+    /// lists empty. The reply names it and the next call starts after it.
+    fn too_large(&self, settled: Value, parts: &[Part]) -> Value {
+        let notice = |parts: &[Part]| {
+            format!(
+                "Cut at the ceiling of {} bytes: the {} at offset {} is too large for one reply and is not in the reply. This reply holds 0 {}s and leaves out {}. Call {} again with offset {} and the same other arguments for the rest.{}",
+                self.ceiling,
+                self.unit,
+                self.offset,
+                self.unit,
+                self.full,
+                self.tool,
+                self.next(1),
+                shortened(parts)
+            )
+        };
+        let page = finish(with_part(settled, self.key, Value::Array(Vec::new())), notice(parts), Some(self.next(1)));
+        if pretty_len(&page) <= self.ceiling {
+            return page;
         }
+        only_cut(notice(&[]), Some(self.next(1)), self.ceiling)
     }
 
     fn none_fits(&self) -> Value {
@@ -375,6 +432,8 @@ fn only_cut(text: String, next: Option<u64>, ceiling: usize) -> Value {
 enum Part {
     Items { pointer: String, kept: usize, full: usize },
     Text { pointer: String, kept: usize, full: usize },
+    /// A top-level part that is left out whole.
+    Removed { key: String },
 }
 
 impl Part {
@@ -382,9 +441,15 @@ impl Part {
         let (pointer, kept, full, unit) = match self {
             Part::Items { pointer, kept, full } => (pointer, kept, full, "items"),
             Part::Text { pointer, kept, full } => (pointer, kept, full, "bytes"),
+            Part::Removed { key } => return format!("{} is left out", cut_text(&escape_key(key), POINTER_BYTES, POINTER_BYTES)),
         };
         format!("{} keeps {kept} of {full} {unit}", cut_text(pointer, POINTER_BYTES, POINTER_BYTES))
     }
+}
+
+/// One step of a JSON pointer for an object key.
+fn escape_key(key: &str) -> String {
+    format!("/{}", key.replace('~', "~0").replace('/', "~1"))
 }
 
 /// How much of each part with no pages a candidate keeps.
@@ -404,9 +469,10 @@ struct Shrunk {
 
 /// Shorten the parts with no pages of `value` until `fits` holds: whole items
 /// from the end of the longest lists (one stays in each), then the longest
-/// texts (at least [`MIN_TEXT`] bytes stay), then the remaining items. The
-/// top-level key `protected` keeps all of its own items or text. When nothing
-/// fits, the result has `fits` false and the caller falls back.
+/// texts (at least [`MIN_TEXT`] bytes stay), then the remaining items, then
+/// each text below [`MIN_TEXT`] bytes, down to empty. The top-level key
+/// `protected` keeps all of its own items or text. When nothing fits, the
+/// result has `fits` false and the caller falls back.
 fn shrink(value: &Value, protected: Option<&str>, ceiling: usize, fits: &dyn Fn(&Value, &[Part]) -> bool) -> Shrunk {
     let (longest_list, longest_text) = extent(value, protected);
     // A list item takes at least four bytes in the pretty form, and a text
@@ -423,8 +489,9 @@ fn shrink(value: &Value, protected: Option<&str>, ceiling: usize, fits: &dyn Fn(
         .or_else(|| search(MIN_TEXT, text_high, |bytes| probe(1, bytes)))
         .or_else(|| probe(0, UNCAPPED))
         .or_else(|| search(MIN_TEXT, text_high, |bytes| probe(0, bytes)))
+        .or_else(|| search(0, MIN_TEXT.min(text_high), |bytes| probe(0, bytes)))
         .unwrap_or_else(|| {
-            let (value, parts) = apply(value, Caps { items: 0, bytes: MIN_TEXT }, protected);
+            let (value, parts) = apply(value, Caps { items: 0, bytes: 0 }, protected);
             Shrunk { value, parts, fits: false }
         })
 }
@@ -502,7 +569,7 @@ impl<'a> Cutter<'a> {
         self.path
             .iter()
             .map(|step| match step {
-                Step::Key(key) => format!("/{}", key.replace('~', "~0").replace('/', "~1")),
+                Step::Key(key) => escape_key(key),
                 Step::Index(index) => format!("/{index}"),
             })
             .collect()
@@ -533,7 +600,7 @@ impl<'a> Cutter<'a> {
                 Value::Object(out)
             }
             Value::String(text) if text.len() > self.caps.bytes && !self.exempt() => {
-                let kept = cut_text(text, self.caps.bytes.max(MIN_TEXT), MIN_TEXT);
+                let kept = cut_text(text, self.caps.bytes, MIN_TEXT);
                 if kept.len() < text.len() {
                     self.parts.push(Part::Text { pointer: self.pointer(), kept: kept.len(), full: text.len() });
                 }
