@@ -415,7 +415,17 @@ pub fn with_startup_stderr(
     child: &mut std::process::Child,
     stderr_tail: &StderrTail,
 ) -> BridgeError {
-    let deadline = std::time::Instant::now() + STARTUP_STDERR_WAIT;
+    with_startup_stderr_within(error, child, stderr_tail, STARTUP_STDERR_WAIT)
+}
+
+/// [`with_startup_stderr`] with `wait` as the longest wait.
+fn with_startup_stderr_within(
+    error: BridgeError,
+    child: &mut std::process::Child,
+    stderr_tail: &StderrTail,
+    wait: Duration,
+) -> BridgeError {
+    let deadline = std::time::Instant::now() + wait;
     // The first line can arrive before the line that names the reason. The
     // pipe closes only after the last line.
     while std::time::Instant::now() < deadline
@@ -3114,7 +3124,10 @@ mod tests {
             .spawn()
             .unwrap();
         let tail = StderrTail::capture(&mut child);
-        let error = with_startup_stderr(BridgeError::Adapter("the handshake ended".into()), &mut child, &tail).to_string();
+        // A long limit: the wait ends when the pipe closes and the child
+        // exits, so a slow machine cannot cut the tail.
+        let ended = BridgeError::Adapter("the handshake ended".into());
+        let error = with_startup_stderr_within(ended, &mut child, &tail, Duration::from_secs(60)).to_string();
         assert!(error.contains("the handshake ended"), "{error}");
         assert!(error.contains("exit status: 1"), "{error}");
         assert!(error.contains("invalid transport in mcp_servers.github"), "{error}");
@@ -3122,7 +3135,9 @@ mod tests {
         // A process that does not stop keeps the first error after the wait.
         let mut silent = Command::new("/bin/sh").args(["-c", "sleep 5"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
         let tail = StderrTail::capture(&mut silent);
-        let error = with_startup_stderr(BridgeError::Adapter("no reply".into()), &mut silent, &tail).to_string();
+        let error =
+            with_startup_stderr_within(BridgeError::Adapter("no reply".into()), &mut silent, &tail, Duration::from_millis(200))
+                .to_string();
         silent.kill().unwrap();
         silent.wait().unwrap();
         assert!(error.contains("no reply") && !error.contains("Stderr tail"), "{error}");

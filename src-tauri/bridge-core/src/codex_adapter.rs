@@ -1278,8 +1278,13 @@ mod tests {
         let tail = crate::adapters::StderrTail::capture(&mut child);
         let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
         let mut reader = BufReader::new(child.stdout.take().unwrap());
-        // The process is gone before the write, so the write fails.
+        // The process is gone before the write, so the write fails. The wait
+        // for the tail keeps the check free of the 1 s limit.
         child.wait().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !tail.is_closed() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let error = initialize(&mut child, &writer, &mut reader, &tail, None).unwrap_err().to_string();
         assert!(error.contains("exit status: 1"), "{error}");
         assert!(error.contains("invalid transport in mcp_servers.github"), "{error}");
