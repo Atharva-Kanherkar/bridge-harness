@@ -1334,4 +1334,59 @@ describe("a new chat's model before the host answers", () => {
     expect(pill()?.textContent).toContain("Loading models…");
     expect(pill()?.getAttribute("aria-busy")).toBe("true");
   });
+
+  it("sends the draft tool choice inside createConfiguredChat and sends the first message after it", async () => {
+    const readTools = bridgeApi.chatTools;
+    const createChat = bridgeApi.createConfiguredChat;
+    // A draft lists one server for whichever harness the draft resolves to.
+    const drafts = vi.spyOn(bridgeApi, "chatTools").mockImplementation(async params => params.draft ? {
+      harness: params.draft.harness,
+      account: params.draft.account ?? null,
+      choice: null,
+      items: [{ kind: "server", id: "github", label: "github", group: "MCP servers", state: "on", fixedReason: null, seen: true, tokens: null }],
+      sources: [{ kind: "catalog", label: "Bridge catalog", available: true, at: null, note: null }],
+      selection: { revision: 0, harness: params.draft.harness, account: params.draft.account ?? null, applies: true, notAppliedReason: null },
+    } : readTools(params));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat").mockImplementation(async params => {
+      await gate;
+      return createChat(params);
+    });
+    const prepare = vi.spyOn(bridgeApi, "prepareTurn");
+    const submit = vi.spyOn(bridgeApi, "submitInput");
+    await mountApp();
+    await settle(2);
+
+    const chip = container.querySelector<HTMLButtonElement>('button[aria-label^="Tools:"]');
+    expect(chip).not.toBeNull();
+    const draft = drafts.mock.calls.map(([params]) => params.draft).find(Boolean)!;
+    expect(draft.harness).toBeTruthy();
+    await click(chip!);
+    await click(document.querySelector('[data-tool-item="github"] [role="menuitemcheckbox"]')!);
+    expect(chip!.getAttribute("aria-label")).toBe("Tools: 1 left out");
+
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Plan the next step");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0].toolSelection).toEqual(expect.objectContaining({ harness: draft.harness, account: draft.account ?? null, serversOff: ["github"] }));
+    // The create has not returned, so the first message waits.
+    expect(prepare).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+
+    release();
+    await settle(10);
+    const created = await create.mock.results[0]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
+    expect(prepare).toHaveBeenCalledWith(created.sessionId, "Plan the next step");
+    expect(prepare.mock.invocationCallOrder[0]).toBeGreaterThan(create.mock.invocationCallOrder[0]!);
+    const saved = await readTools({ sessionId: created.sessionId });
+    expect(saved.selection).toMatchObject({ revision: 1, applies: true });
+    expect(saved.choice?.serversOff).toEqual(["github"]);
+  });
 });

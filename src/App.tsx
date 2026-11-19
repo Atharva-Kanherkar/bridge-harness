@@ -1,7 +1,8 @@
 import { defaultsFromSettings, harnessLaunchOverrides, WORKER_EFFORTS } from "./chatDefaults";
 import { useResolvedChatDraft } from "./useChatDefaults";
 import { ChatOptionsControl } from "./components/ChatOptionsControl";
-import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings, SessionPullRequest } from "./protocol/generated/protocol";
+import { ChatToolsControl } from "./components/ChatToolsControl";
+import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings, ChatToolSelection, SessionPullRequest } from "./protocol/generated/protocol";
 import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, userPromptPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { FIRST_PAGE_ENTRIES, ForestCache, isPartialForest, markPartialForest, pageIsComplete } from "./forestCache";
@@ -241,6 +242,8 @@ type NewChatDraft = {
   carryFromSessionId?: string;
   /** Start the chat on a trail, carrying these brief items first. */
   trailCarry?: { trailId: string; items: string[] };
+  /** The first tool choice. It commits with the create of the chat, or the create fails. */
+  toolSelection?: ChatToolSelection | null;
 };
 
 type AsidePhase = "creating" | "handing_off" | "ready" | "switching" | "failed" | "cancelled" | "closed";
@@ -1602,6 +1605,9 @@ function AppContent() {
   function patchDraft(patch: ChatDefaults) {
     setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
   }
+  function setDraftToolSelection(toolSelection: ChatToolSelection) {
+    setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), toolSelection }));
+  }
 
   // A review-comment jump from Pulls: the file lives in a worktree, so the
   // jump waits until a chat in that workspace is the one on screen, through a
@@ -2277,7 +2283,9 @@ function AppContent() {
         if ((agent || mention) && (initialAttachments.length > 0 || !text)) {
           throw new Error("Agents need a text objective and workspace file references. Remove image attachments before sending to an agent.");
         }
-        const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null});
+        // The tool choice commits in the create, so a choice for another
+        // harness or account fails here and nothing starts.
+        const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null,...(draft.toolSelection ? {toolSelection:draft.toolSelection} : {})});
         markFlight(latency, "create_configured_chat");
         let next = result.state;
         const created = next.sessions.find(item => item.id === result.sessionId);
@@ -3725,6 +3733,14 @@ function AppContent() {
   };
   const effectiveSettings = session ? currentChatConfiguration?.settings : draftSettings.settings;
   const accessControl = <><AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />
+    {session
+      ? !session.parentSessionId && session.kind !== "worker" && <ChatToolsControl sessionId={session.id} harness={session.harness} account={session.account ?? null} />
+      : draftSettings.settings && <ChatToolsControl
+        draft={{harness:draftSettings.settings.model.harness,account:draftSettings.settings.model.account ?? null,workspaceId:draftSettings.settings.workspaceId ?? null}}
+        choice={newChatDraft?.toolSelection ?? null}
+        disabled={busy}
+        onChoiceChange={setDraftToolSelection}
+      />}
     <ChatOptionsControl key={session?.id ?? "new-chat"} settings={effectiveSettings} disabled={busy} onInputChange={input => {if(session) void changeChatOptions(effectiveSettings?.access ?? "ask",input);else patchDraft({activeTurnInput:input});}} onOpenDefaults={() => {setSettingsSection("chatDefaults");setView("settings");}} onContinue={session ? () => {
       const source=session.id;const workspaceId=session.workspaceId;
       setNewChatDraft({workspaceId:workspaceId ?? null,carryFromSessionId:source,overrides:effectiveSettings ? defaultsFromSettings(effectiveSettings) : {}});
