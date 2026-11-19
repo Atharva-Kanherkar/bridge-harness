@@ -512,6 +512,48 @@ pub fn codex_overrides(tools: &ToolLaunch) -> Vec<String> {
     values
 }
 
+/// The picker reason for an OpenCode choice that a launch cannot apply.
+pub const OPENCODE_CONFIG_REASON: &str = "Not applied: the inherited OpenCode config is not valid JSON";
+
+/// The result of [`merge_opencode`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenCodeMerge {
+    /// The config content with each left-out server turned off.
+    Applied(String),
+    /// The inherited content is not a JSON object, so the choice is not
+    /// applied and the launch keeps the content of today.
+    NotApplied,
+}
+
+/// Set `mcp.<key>.enabled=false` for each server in `off` and keep each other
+/// key. No content counts as the empty object. Content that does not parse
+/// is never replaced, because it can hold a setting of the user.
+pub fn merge_opencode(existing: Option<&str>, off: &[String]) -> OpenCodeMerge {
+    let mut config = match existing.map(serde_json::from_str::<Value>) {
+        None => serde_json::Map::new(),
+        Some(Ok(Value::Object(config))) => config,
+        Some(_) => return OpenCodeMerge::NotApplied,
+    };
+    let off: Vec<&String> = off.iter().filter(|key| !is_bridge(key)).collect();
+    if !off.is_empty() {
+        let Some(servers) = config.entry("mcp").or_insert_with(|| Value::Object(serde_json::Map::new())).as_object_mut() else {
+            return OpenCodeMerge::NotApplied;
+        };
+        for key in off {
+            let entry = servers.entry(key.as_str()).or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let Some(entry) = entry.as_object_mut() else { return OpenCodeMerge::NotApplied };
+            entry.insert("enabled".into(), Value::Bool(false));
+        }
+    }
+    OpenCodeMerge::Applied(Value::Object(config).to_string())
+}
+
+/// The reason that a launch does not apply these off servers with this
+/// inherited `OPENCODE_CONFIG_CONTENT`, or `None` when it applies them.
+pub fn opencode_not_applied_reason(existing: Option<&str>, off: &[String]) -> Option<&'static str> {
+    (merge_opencode(existing, off) == OpenCodeMerge::NotApplied).then_some(OPENCODE_CONFIG_REASON)
+}
+
 // --- units ------------------------------------------------------------------------
 
 /// Token figures of one reading, by item id, with the name of their source.
