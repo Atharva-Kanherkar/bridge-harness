@@ -448,6 +448,28 @@ fn claude_units_are_each_server_and_each_skill() {
 }
 
 #[test]
+fn a_codex_skill_name_that_the_save_refuses_is_fixed() {
+    let names = ["review", "a\"b", "c\\d"];
+    let skills: Vec<Value> = names.iter().map(|name| json!({"name": name, "description": "", "enabled": true})).collect();
+    let source = CodexSource {
+        skills: Some(via("skills", json!({"data": [{"cwd": "/w", "errors": [], "skills": skills}]}))),
+        config: Some(via("config", json!({"config": {"model": "gpt"}, "origins": {}}))),
+        ..CodexSource::default()
+    };
+    let items = codex_units(&source, None);
+    assert_eq!(item(&items, Skill, "review").state, On);
+    for name in ["a\"b", "c\\d"] {
+        let refused_name = item(&items, Skill, name);
+        assert_eq!(
+            (refused_name.state, refused_name.fixed_reason.as_deref()),
+            (Fixed, Some("This skill name has a quote or a backslash. Bridge cannot turn it off safely.")),
+            "{name}"
+        );
+        assert!(!refused(json!({"harness": "codex", "codexSkillsOff": [name]})).is_empty());
+    }
+}
+
+#[test]
 fn codex_units_are_each_configured_server_codex_apps_and_skills_without_a_table() {
     let tools = json!({"search": {"name": "search", "description": "Search code", "inputSchema": {}}});
     let source = CodexSource {

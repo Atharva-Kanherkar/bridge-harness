@@ -42,6 +42,7 @@ const CODEX_KEY_REASON: &str =
 const CODEX_APP_REASON: &str =
     "Codex has no verified switch for one app. The Apps switch turns all apps on or off.";
 const CODEX_PLUGIN_REASON: &str = "Codex has no verified switch for a plugin.";
+const CODEX_SKILL_NAME_REASON: &str = "This skill name has a quote or a backslash. Bridge cannot turn it off safely.";
 const CODEX_SKILLS_TABLE_REASON: &str =
     "The Codex config has a skills key. Bridge does not change it.";
 const CODEX_SKILLS_UNKNOWN_REASON: &str =
@@ -116,6 +117,11 @@ pub fn claude_sdk_accepts(name: &str) -> bool {
         || name.ends_with('\\'))
 }
 
+/// A Codex skill name that a `skills.config` value can hold.
+fn codex_skill_name_fits(name: &str) -> bool {
+    !name.contains(['"', '\\'])
+}
+
 /// A Codex config key that a `-c mcp_servers.<key>.enabled=false` value can
 /// hold with no quotes.
 pub fn codex_key_is_safe(key: &str) -> bool {
@@ -188,7 +194,7 @@ pub fn check(choice: &ChatToolSelection) -> Result<ChatToolSelection, BridgeErro
                 return Err(invalid("Use the Apps switch to leave out codex_apps"));
             }
             check_ids(&choice.codex_skills_off, MAX_SKILLS, "Codex skill")?;
-            if let Some(name) = choice.codex_skills_off.iter().find(|name| name.contains(['"', '\\'])) {
+            if let Some(name) = choice.codex_skills_off.iter().find(|name| !codex_skill_name_fits(name)) {
                 return Err(invalid(format!(
                     "The Codex skill name {name:?} cannot go in a config value"
                 )));
@@ -1443,6 +1449,7 @@ pub fn codex_units(source: &CodexSource, row: Option<&ToolSelectionRow>) -> Vec<
         };
         items.push(match reason {
             Some(reason) => fixed(item, reason),
+            None if !codex_skill_name_fits(name) => fixed(item, CODEX_SKILL_NAME_REASON),
             None => switch(item, !skills_off.contains(name)),
         });
     }
