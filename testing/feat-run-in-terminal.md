@@ -13,6 +13,11 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
 - It renders only when the host provides a terminal (the main chat with a
   repository and workspace). Notes, previews, worker feeds and repo-less chats
   render no Run button; Copy is unchanged everywhere.
+- Inside the chat it renders only in the agent's own reply prose: a command
+  the agent suggests to the person. Markdown the chat shows for other reasons
+  gets Copy alone: tool output, thinking, delegation directives, worker
+  result summaries, PR descriptions, and outgoing drafts written for someone
+  else (a shell line in a Slack draft is text to send, not a command to run).
 - It renders only on a **closed** fence. A fence still streaming (no closing
   ```` ``` ```` yet) has Copy but no Run, so a half-written command can never run.
 - What runs:
@@ -78,6 +83,10 @@ opens the dock's Terminal pane and runs the command in the chat's active shell.
 - Clicking Run calls the context with the extracted command, shows
   "Running…", then "Sent to shell 1" when it resolves, then returns to "Run".
 - A rejected run shows "Couldn't run" with the error message as the title.
+
+`src/components/AgentConversation.test.tsx` (jsdom)
+- With `onRunInTerminal`, a bash block in an assistant reply has Run; the same
+  block in an outgoing draft card and in thinking has Copy only.
 
 `src/components/TerminalPane.test.tsx` (jsdom, mocked `bridgeApi` + xterm)
 - A run queued before mount is written to the active shell as one
