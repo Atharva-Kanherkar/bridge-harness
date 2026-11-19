@@ -115,14 +115,14 @@ function DialogSurface({
       >
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] border border-border bg-muted">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted">
               {icon}
             </span>
             <div className="min-w-0">
               <h2 id={titleId} className="font-display text-base font-semibold text-foreground">
                 {title}
               </h2>
-              <p className={cn("mt-0.5 text-[13px] text-muted-foreground", subtitleClassName)}>
+              <p className={cn("mt-0.5 text-ui text-muted-foreground", subtitleClassName)}>
                 {subtitle}
               </p>
             </div>

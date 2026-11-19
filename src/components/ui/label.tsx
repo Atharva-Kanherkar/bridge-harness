@@ -12,7 +12,7 @@ export function Label({
 }: useRender.ComponentProps<"label">): React.ReactElement {
   const defaultProps = {
     className: cn(
-      "inline-flex items-center gap-2 font-medium text-[13px]/5 text-foreground",
+      "inline-flex items-center gap-2 font-medium text-ui/5 text-foreground",
       className,
     ),
     "data-slot": "label",

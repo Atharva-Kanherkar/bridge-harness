@@ -50,6 +50,6 @@ function Tile({ label, target = false, done = false, children }: { label: string
       {children}
       {done && <span className="import-transfer-check" aria-hidden="true"><Check size={11} strokeWidth={3} /></span>}
     </div>
-    <span className="max-w-full truncate text-[11px] text-muted-foreground">{label}</span>
+    <span className="max-w-full truncate text-caption text-muted-foreground">{label}</span>
   </div>;
 }

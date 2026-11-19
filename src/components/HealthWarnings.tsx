@@ -51,7 +51,7 @@ export function HealthWarnings({ warnings, className }: { warnings: HealthWarnin
     <AlertDescription>
       <p>{warning.detail}</p>
       {warning.paths.length > 0 && <ul className="mt-1.5 space-y-0.5">
-        {warning.paths.map(path => <li key={path} className="truncate font-mono text-[11px]" title={path}>{path}</li>)}
+        {warning.paths.map(path => <li key={path} className="truncate font-mono text-caption" title={path}>{path}</li>)}
       </ul>}
     </AlertDescription>
     <AlertAction>

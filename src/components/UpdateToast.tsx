@@ -30,16 +30,16 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
     onDismiss={onDismiss}
     icon={<Download size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-foreground" />}
     body={<>
-      <span className="block text-[13px] font-medium leading-snug text-foreground">Bridge {update.version} is available</span>
-      <span className="mt-0.5 block text-[12px] text-muted-foreground">You're on {update.currentVersion}. Update now to restart with the latest build.</span>
+      <span className="block text-ui font-medium leading-snug text-foreground">Bridge {update.version} is available</span>
+      <span className="mt-0.5 block text-meta text-muted-foreground">You're on {update.currentVersion}. Update now to restart with the latest build.</span>
     </>}
     footer={<>
-      {installError && <span className="mt-1 block text-[12px] text-destructive">{installError}</span>}
-      {developmentBuild ? <span className="mt-2 block text-[12px] text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
+      {installError && <span className="mt-1 block text-meta text-destructive">{installError}</span>}
+      {developmentBuild ? <span className="mt-2 block text-meta text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
         type="button"
         disabled={installing}
         onClick={() => void install()}
-        className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
+        className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-meta font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
       >
         {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
         {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}

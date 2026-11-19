@@ -44,9 +44,9 @@ export function RingGauge({ provider, used, label }: { provider: UsageProvider; 
     <svg viewBox="0 0 44 44" className={cn("size-14", harnessChartText(provider))} role="img" aria-label={`${Math.round(used)} percent of the ${label} window used`}>
       <circle cx="22" cy="22" r={radius} fill="none" className="stroke-border" strokeWidth={3} />
       <circle cx="22" cy="22" r={radius} fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} transform="rotate(-90 22 22)" className="transition-[stroke-dashoffset] duration-700 ease-out" />
-      <text x="22" y="22" textAnchor="middle" dominantBaseline="central" className="fill-foreground font-sans text-[11px] font-semibold tabular-nums">{Math.round(used)}%</text>
+      <text x="22" y="22" textAnchor="middle" dominantBaseline="central" className="fill-foreground font-sans text-caption font-semibold tabular-nums">{Math.round(used)}%</text>
     </svg>
-    <figcaption className="flex items-center gap-1 text-[11px] text-muted-foreground">
+    <figcaption className="flex items-center gap-1 text-caption text-muted-foreground">
       <HarnessMark harness={provider} size={10} />
       <span className="truncate">{harnessLabel(provider)} · {label}</span>
     </figcaption>
@@ -68,11 +68,11 @@ export function WindowRow({ provider, window, nowMs }: { provider: UsageProvider
     <button type="button" aria-expanded={expanded} aria-controls={`meter-window-${provider}-${window.id}`} onClick={() => setExpanded(value => !value)} className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring">
       <span className={cn("block h-full origin-left rounded-full motion-safe:animate-[meter-fill_600ms_ease-out]", harnessChartDot(provider))} style={{ width: `${used}%` }} />
     </button>
-    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted-foreground">
       {reset && <span className="tabular-nums">{reset}</span>}
       {pace && showPace && <span>{pacePhrase(pace)}</span>}
     </div>
-    {expanded && <p id={`meter-window-${provider}-${window.id}`} className="mt-1 text-[11px] text-muted-foreground">{Math.round(used)}% of this window is used{reset ? `. ${reset === "fresh window" ? "Nothing spent since it reset" : reset}.` : "."}</p>}
+    {expanded && <p id={`meter-window-${provider}-${window.id}`} className="mt-1 text-caption text-muted-foreground">{Math.round(used)}% of this window is used{reset ? `. ${reset === "fresh window" ? "Nothing spent since it reset" : reset}.` : "."}</p>}
   </div>;
 }
 
@@ -88,10 +88,10 @@ export function MeterReadings({ usage, nowMs }: { usage: Partial<Record<UsagePro
       <div className="flex items-center gap-1.5 text-ui">
         <HarnessMark harness={provider} size={12} />
         <span className="font-medium text-foreground">{harnessLabel(provider)}</span>
-        {snapshot.planType && <span className="text-[11px] text-muted-foreground">{snapshot.planType}</span>}
-        <span className="ml-auto text-[11px] text-muted-foreground">{snapshot.source.charAt(0).toUpperCase() + snapshot.source.slice(1)}</span>
+        {snapshot.planType && <span className="text-caption text-muted-foreground">{snapshot.planType}</span>}
+        <span className="ml-auto text-caption text-muted-foreground">{snapshot.source.charAt(0).toUpperCase() + snapshot.source.slice(1)}</span>
       </div>
-      {snapshot.windows.length === 0 && <p className="py-1 text-[11px] text-muted-foreground">Connected — no quota windows reported.</p>}
+      {snapshot.windows.length === 0 && <p className="py-1 text-caption text-muted-foreground">Connected — no quota windows reported.</p>}
       {snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} nowMs={nowMs} />)}
     </section>)}
   </>;

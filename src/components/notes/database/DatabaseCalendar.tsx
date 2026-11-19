@@ -85,7 +85,7 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
     return () => { alive = false; };
   }, [dateColumn, days, filterKey, version, run, writable]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!dateColumn) return <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-[13px] text-muted-foreground">Add a date property to use a calendar</p>;
+  if (!dateColumn) return <p role="status" className="m-0 rounded-lg bg-muted px-3 py-6 text-center text-ui text-muted-foreground">Add a date property to use a calendar</p>;
 
   const span = (row: DatabaseRow): [string, string] | null => {
     if (dateColumn.type !== "date") {
@@ -118,19 +118,19 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
     onDragStart={event => { event.dataTransfer?.setData("text/plain", row.note.id); setDragging(row); }}
     onDragEnd={() => setDragging(null)}
     onClick={() => onOpenRow(row.note.id)}
-    className="block w-full truncate rounded px-1 py-0.5 text-left text-[11.5px] text-foreground ring-1 ring-border transition-colors hover:bg-accent"
+    className="block w-full truncate rounded px-1 py-0.5 text-left text-caption text-foreground ring-1 ring-border transition-colors hover:bg-accent"
   >{row.note.title || "Untitled"}</button>;
 
   return <div aria-label="Calendar" className="flex gap-3">
     <div className="min-w-0 flex-1">
       <div className="mb-2 flex items-center gap-1">
-        <h3 className="m-0 mr-auto text-[14px] font-semibold text-foreground">{MONTHS[monthNumber - 1]} {year}</h3>
+        <h3 className="m-0 mr-auto text-body font-semibold text-foreground">{MONTHS[monthNumber - 1]} {year}</h3>
         <button type="button" aria-label="Previous month" onClick={() => shiftMonth(-1)} className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ChevronLeft size={14} aria-hidden="true" /></button>
-        <button type="button" onClick={() => setMonth(today.slice(0, 7))} className="h-7 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Today</button>
+        <button type="button" onClick={() => setMonth(today.slice(0, 7))} className="h-7 rounded-md px-2 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Today</button>
         <button type="button" aria-label="Next month" onClick={() => shiftMonth(1)} className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ChevronRight size={14} aria-hidden="true" /></button>
       </div>
       <div role="grid" aria-label={`${MONTHS[monthNumber - 1]} ${year}`} className="grid grid-cols-7 overflow-hidden rounded-lg ring-1 ring-border">
-        {WEEKDAYS.map(name => <div key={name} role="columnheader" className="border-b border-border px-1.5 py-1 text-[11px] text-muted-foreground">{name}</div>)}
+        {WEEKDAYS.map(name => <div key={name} role="columnheader" className="border-b border-border px-1.5 py-1 text-caption text-muted-foreground">{name}</div>)}
         {days.map(day => <div
           key={day}
           role="gridcell"
@@ -139,7 +139,7 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
           onDrop={event => { event.preventDefault(); void drop(day); }}
           className={clsx("flex min-h-24 flex-col gap-0.5 border-b border-r border-border p-1 [&:nth-child(7n+7)]:border-r-0", day.slice(0, 7) !== month && "bg-muted/40")}
         >
-          <span className={clsx("text-[11.5px] tabular-nums", day === today ? "font-semibold text-foreground" : "text-muted-foreground")}>{Number(day.slice(8))}</span>
+          <span className={clsx("text-caption tabular-nums", day === today ? "font-semibold text-foreground" : "text-muted-foreground")}>{Number(day.slice(8))}</span>
           {onDay(day).map(item)}
         </div>)}
       </div>
@@ -149,8 +149,8 @@ export function DatabaseCalendar({ database, view, query, run, version, onCommit
       onDragOver={event => event.preventDefault()}
       className="w-44 shrink-0"
     >
-      <h3 className="m-0 mb-2 flex h-7 items-center text-[12.5px] font-medium text-foreground">No date <span className="ml-1.5 font-normal text-muted-foreground tabular-nums">{undated.length}</span></h3>
-      <div className="flex flex-col gap-1">{undated.length ? undated.map(item) : <p className="m-0 text-[12px] text-muted-foreground">Every row has a date.</p>}</div>
+      <h3 className="m-0 mb-2 flex h-7 items-center text-meta font-medium text-foreground">No date <span className="ml-1.5 font-normal text-muted-foreground tabular-nums">{undated.length}</span></h3>
+      <div className="flex flex-col gap-1">{undated.length ? undated.map(item) : <p className="m-0 text-meta text-muted-foreground">Every row has a date.</p>}</div>
     </aside>}
   </div>;
 }

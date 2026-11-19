@@ -29,7 +29,7 @@ export function SourceStateBadge({ state }: { state: WireSourceState }) {
   const dashed = state === "estimated" || state === "unavailable";
   return <span
     className={cn(
-      "shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+      "shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-caption font-semibold",
       dashed ? "border-dashed text-muted-foreground" : "text-muted-foreground",
       state === "unavailable"
         ? "border-destructive/40 text-destructive/80"
@@ -57,7 +57,7 @@ export function ContextBreakdownPanel({ state, sessionId, onClose, onOpenPromptS
     <div className="flex items-center gap-2 px-0.5">
       <Layers size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       <h2 className="font-display text-sm font-semibold text-foreground">Context breakdown</h2>
-      <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">
+      <span className="ml-auto truncate font-mono text-caption text-muted-foreground">
         {state.reconciledAt ? `reconciled ${new Date(state.reconciledAt).toLocaleTimeString()}` : "reconciling…"}
       </span>
       <button type="button" onClick={onClose} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to usage health"><X size={13} aria-hidden="true" /></button>
@@ -65,10 +65,10 @@ export function ContextBreakdownPanel({ state, sessionId, onClose, onOpenPromptS
 
     {!result ? <EmptyCard unavailable={state.unavailable} /> : <>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
-        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={sessionId ?? undefined}>{result.sessionId}</span>
-        {result.conversation.model && <span className="truncate font-mono text-[11px] text-muted-foreground">{result.conversation.model}</span>}
-        {result.conversation.effort && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{result.conversation.effort}</span>}
-        {result.totals.unavailableSources > 0 && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{result.totals.unavailableSources} unavailable sources</span>}
+        <span className="min-w-0 truncate font-mono text-caption text-muted-foreground" title={sessionId ?? undefined}>{result.sessionId}</span>
+        {result.conversation.model && <span className="truncate font-mono text-caption text-muted-foreground">{result.conversation.model}</span>}
+        {result.conversation.effort && <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-caption font-semibold text-muted-foreground">{result.conversation.effort}</span>}
+        {result.totals.unavailableSources > 0 && <span className="ml-auto shrink-0 text-caption text-muted-foreground">{result.totals.unavailableSources} unavailable sources</span>}
       </div>
 
       <PressureCard result={result} />
@@ -76,7 +76,7 @@ export function ContextBreakdownPanel({ state, sessionId, onClose, onOpenPromptS
       <SegmentRows result={result} expanded={expanded} onToggle={toggle} onOpenPromptStudio={onOpenPromptStudio} />
       <DeltaStrip result={result} />
 
-      <p className="px-0.5 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="px-0.5 text-caption leading-relaxed text-muted-foreground">
         Hatched area is material this harness cannot observe. Unavailable is not zero — hidden instructions, tool payloads, and plugins still consume the window.
       </p>
     </>}
@@ -84,7 +84,7 @@ export function ContextBreakdownPanel({ state, sessionId, onClose, onOpenPromptS
 }
 
 function EmptyCard({ unavailable }: { unavailable: boolean }) {
-  return <p className={cn("border border-dashed border-border px-3 py-6 text-center text-[11px] leading-relaxed text-muted-foreground", "rounded-[calc(var(--radius-2xl)-0.625rem)]")}>
+  return <p className={cn("border border-dashed border-border px-3 py-6 text-center text-caption leading-relaxed text-muted-foreground", "rounded-[calc(var(--radius-2xl)-0.625rem)]")}>
     {unavailable
       ? "No breakdown is available for this session right now. Polling stopped after repeated misses."
       : "No breakdown recorded yet — reconciling with the focused session…"}
@@ -107,14 +107,14 @@ function PressureCard({ result }: { result: ContextBreakdownResult }) {
     )}>
     <div className="flex flex-wrap items-center gap-2">
       <b className={cn(
-        "text-[11px]",
+        "text-caption",
         pressure.level === "critical" ? "text-destructive" : pressure.level === "high" ? "text-warning" : "text-foreground",
       )}>{pressure.label}</b>
-      {pressure.percent != null && <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{Math.round(pressure.percent)}%</span>}
-      <span className="shrink-0 whitespace-nowrap rounded-full border border-dashed border-border px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Estimated</span>
-      <span className="ml-auto font-mono text-[11px] text-muted-foreground">of ~{formatCompactTokens(result.conversation.contextWindowTokens)} window</span>
+      {pressure.percent != null && <span className="font-mono text-caption tabular-nums text-muted-foreground">{Math.round(pressure.percent)}%</span>}
+      <span className="shrink-0 whitespace-nowrap rounded-full border border-dashed border-border px-1.5 py-0.5 text-caption font-semibold text-muted-foreground">Estimated</span>
+      <span className="ml-auto font-mono text-caption text-muted-foreground">of ~{formatCompactTokens(result.conversation.contextWindowTokens)} window</span>
     </div>
-    <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{pressure.explanation}</p>
+    <p className="mt-1.5 text-caption leading-relaxed text-muted-foreground">{pressure.explanation}</p>
   </section>;
 }
 
@@ -138,7 +138,7 @@ function CompositionBar({ result }: { result: ContextBreakdownResult }) {
         title={`Last checkpoint · ${formatTokens(delta.tokensBefore)} tok before`}
       />}
     </div>
-    <div className="mt-1 flex items-center justify-between font-mono text-[11px] tabular-nums text-muted-foreground">
+    <div className="mt-1 flex items-center justify-between font-mono text-caption tabular-nums text-muted-foreground">
       <span>{formatTokens(math.knownTokens)} tok attributed</span>
       <span>{formatCompactTokens(math.freeTokens)} free</span>
     </div>
@@ -160,7 +160,7 @@ function SegmentRows({
   const ranked = rankSegments(result.segments);
   let rampIndex = -1;
   return <div className="grid gap-1">
-    <div className="px-0.5 pb-0.5 text-[11px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Segments · ranked by size</div>
+    <div className="px-0.5 pb-0.5 text-caption font-semibold text-muted-foreground">Segments · ranked by size</div>
     {ranked.map(entry => {
       const { segment, meta } = entry;
       const id = `${segment.origin}:${segment.segmentClass}`;
@@ -174,28 +174,28 @@ function SegmentRows({
           {expandable
             ? <button type="button" onClick={() => onToggle(id)} aria-expanded={isOpen} aria-label={`${isOpen ? "Collapse" : "Expand"} ${meta.label}`} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ChevronRight size={10} className={cn("transition-transform duration-150", isOpen && "rotate-90")} aria-hidden="true" /></button>
             : <span className="w-[10px] shrink-0" aria-hidden="true" />}
-          <span className={cn("size-2 shrink-0 rounded-[3px]", sized ? rampClass(rampIndex) : "ctx-hatch")} />
-          <span className="min-w-0 truncate text-[11px] font-medium">{meta.label}</span>
+          <span className={cn("size-2 shrink-0 rounded-sm", sized ? rampClass(rampIndex) : "ctx-hatch")} />
+          <span className="min-w-0 truncate text-caption font-medium">{meta.label}</span>
           {meta.editable && onOpenPromptStudio && <button
             type="button"
             onClick={() => onOpenPromptStudio(segment.segmentClass)}
-            className="ml-auto inline-flex shrink-0 items-center gap-1 min-h-7 rounded-md px-2 text-[11px] font-medium text-ring transition-colors hover:bg-accent"
+            className="ml-auto inline-flex shrink-0 items-center gap-1 min-h-7 rounded-md px-2 text-caption font-medium text-ring transition-colors hover:bg-accent"
           >Edit in Prompt Studio<ExternalLink size={9} aria-hidden="true" /></button>}
-          <span className={cn("whitespace-nowrap font-mono text-[11px] tabular-nums", meta.editable && onOpenPromptStudio ? "" : "ml-auto", sized ? "text-foreground" : "text-muted-foreground")}>
+          <span className={cn("whitespace-nowrap font-mono text-caption tabular-nums", meta.editable && onOpenPromptStudio ? "" : "ml-auto", sized ? "text-foreground" : "text-muted-foreground")}>
             {sized ? formatTokens(segment.tokens!) : "—"}
           </span>
-          <span className="w-9 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+          <span className="w-9 shrink-0 text-right font-mono text-caption tabular-nums text-muted-foreground">
             {sized ? percentLabel(segment.tokens!, math.windowTokens) : ""}
           </span>
           <SourceStateBadge state={segment.state} />
         </div>
-        {unavailable && segment.reason && <p className="px-2.5 pb-2 pl-[26px] text-[11px] leading-relaxed text-muted-foreground">{segment.reason}</p>}
+        {unavailable && segment.reason && <p className="px-2.5 pb-2 pl-[26px] text-caption leading-relaxed text-muted-foreground">{segment.reason}</p>}
         {isOpen && segment.names && segment.names.length > 0 && <ul className="grid gap-1 px-2.5 pb-2 pl-[26px]">
           {segment.names.map(name => (
-            <li key={name} className="truncate rounded-md px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-accent" title={name}>{name}</li>
+            <li key={name} className="truncate rounded-md px-1.5 py-1 text-caption text-muted-foreground hover:bg-accent" title={name}>{name}</li>
           ))}
         </ul>}
-        {isOpen && meta.editable && segment.names?.length === 0 && <p className="px-2.5 pb-2 pl-[26px] text-[11px] leading-relaxed text-muted-foreground">Compiled sections live in Prompt Studio; per-section sizes are not reported separately.</p>}
+        {isOpen && meta.editable && segment.names?.length === 0 && <p className="px-2.5 pb-2 pl-[26px] text-caption leading-relaxed text-muted-foreground">Compiled sections live in Prompt Studio; per-section sizes are not reported separately.</p>}
       </div>;
     })}
   </div>;
@@ -204,7 +204,7 @@ function SegmentRows({
 function DeltaStrip({ result }: { result: ContextBreakdownResult }) {
   const summary = deltaSummary(result);
   if (!summary) return null;
-  return <div className="flex items-center gap-2 rounded-[calc(var(--radius-2xl)-0.625rem)] border border-dashed border-border px-2.5 py-2 text-[11px] text-muted-foreground">
+  return <div className="flex items-center gap-2 rounded-[calc(var(--radius-2xl)-0.625rem)] border border-dashed border-border px-2.5 py-2 text-caption text-muted-foreground">
     <ArrowUpRight size={12} className="shrink-0 text-warning" aria-hidden="true" />
     <span>Since last checkpoint: <b className="font-semibold text-foreground">{summary.text}</b></span>
     {summary.detail && <span className="min-w-0 truncate text-muted-foreground">({summary.detail})</span>}

@@ -101,8 +101,8 @@ function AgentStarting({ name, topic, harness }: { name: string; topic?: string;
   return <div role="status" aria-label={`${name} is starting`} className="absolute inset-0 grid place-items-center px-6 text-center animate-page-enter">
     <div className="flex max-w-[360px] flex-col items-center">
       <LoaderCircle size={18} className="animate-spin text-muted-foreground" aria-hidden="true" />
-      <p className="mt-3 text-[14px] font-medium text-foreground">{name} is starting</p>
-      {topic && <p className="mt-1 line-clamp-2 text-[12.5px] leading-relaxed text-muted-foreground">{topic}</p>}
+      <p className="mt-3 text-body font-medium text-foreground">{name} is starting</p>
+      {topic && <p className="mt-1 line-clamp-2 text-meta leading-relaxed text-muted-foreground">{topic}</p>}
       <p className="mt-2 text-caption text-muted-foreground/80">Waiting for its first message{harness ? ` from ${harness}` : ""}</p>
     </div>
   </div>;
@@ -129,15 +129,15 @@ function ResultCard({ result }: { result: ReportedResult }) {
   return <section aria-label="Worker result" className="min-w-0 overflow-hidden rounded-xl border border-border bg-card">
     <header className="flex items-center gap-2 px-3.5 pb-2 pt-2.5">
       <span className={cn("size-[7px] flex-none rounded-full", tone.dot)} aria-hidden="true" />
-      <b className="text-[13px] font-medium text-foreground">Result</b>
-      {result.status && <span className={cn("text-[10px] font-semibold uppercase tracking-[0.09em]", tone.text)}>{result.status.replaceAll("_", " ")}</span>}
+      <b className="text-ui font-medium text-foreground">Result</b>
+      {result.status && <span className={cn("text-caption font-semibold", tone.text)}>{result.status.replaceAll("_", " ")}</span>}
     </header>
-    {result.summary && <div className="border-t border-border px-3.5 py-2.5 text-[12px] leading-relaxed text-foreground/85"><Markdown text={result.summary} /></div>}
-    {result.filesChanged.length > 0 && <details className="border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">
+    {result.summary && <div className="border-t border-border px-3.5 py-2.5 text-meta leading-relaxed text-foreground/85"><Markdown text={result.summary} /></div>}
+    {result.filesChanged.length > 0 && <details className="border-t border-border px-3.5 py-2 text-caption text-muted-foreground">
       <summary className="cursor-pointer">{result.filesChanged.length} file{result.filesChanged.length === 1 ? "" : "s"} changed</summary>
       <ul className="mt-1.5 space-y-0.5">{result.filesChanged.map(path => <li key={path} className="truncate font-mono text-foreground/80">{path}</li>)}</ul>
     </details>}
-    {result.tests.length > 0 && <details className="border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">
+    {result.tests.length > 0 && <details className="border-t border-border px-3.5 py-2 text-caption text-muted-foreground">
       <summary className={cn("cursor-pointer", failing ? "text-destructive" : "text-success")}>{failing ? `${failing} of ${result.tests.length} checks failing` : `${result.tests.length} check${result.tests.length === 1 ? "" : "s"} passing`}</summary>
       <ul className="mt-1.5 space-y-0.5">{result.tests.map((test, index) => <li key={`${index}:${test.command}`} className="flex items-center gap-1.5 font-mono text-foreground/80">
         {test.status === "failed" ? <X size={11} className="shrink-0 text-destructive" aria-hidden="true" /> : <Check size={11} className="shrink-0 text-success" aria-hidden="true" />}

@@ -306,23 +306,23 @@ export function DatabaseTable({ database, view, rows, host, actions, onCommit, o
             })}
           </div>;
         })}
-        {!rows.length && <p className="m-0 px-3 py-6 text-[13px] text-muted-foreground">No rows yet</p>}
+        {!rows.length && <p className="m-0 px-3 py-6 text-ui text-muted-foreground">No rows yet</p>}
       </div>
     </div>
-    <button type="button" onClick={() => void newRow()} className="mt-1 inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <button type="button" onClick={() => void newRow()} className="mt-1 inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
       <Plus size={14} aria-hidden="true" />New
     </button>
   </div>;
 }
 
 function TitleCell({ title, onOpen }: { title: string; onOpen: () => void }) {
-  return <span className="flex h-full min-w-0 items-center gap-1 pl-2 pr-1 text-[13px]">
+  return <span className="flex h-full min-w-0 items-center gap-1 pl-2 pr-1 text-ui">
     <span className={clsx("min-w-0 flex-1 truncate font-medium", title ? "text-foreground" : "text-faint")}>{title || "Untitled"}</span>
     <button
       type="button"
       aria-label={`Open ${title || "Untitled"}`}
       onClick={event => { event.stopPropagation(); onOpen(); }}
-      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-muted-foreground opacity-0 ring-1 ring-border transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-caption text-muted-foreground opacity-0 ring-1 ring-border transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
     ><ArrowUpRight size={12} aria-hidden="true" />Open</button>
   </span>;
 }
@@ -369,7 +369,7 @@ function HeaderCell({ column, width, pinned, open, onOpen, onClose, onWidth, onR
       aria-haspopup="menu"
       aria-expanded={open}
       onClick={onOpen}
-      className={clsx("flex h-full w-full min-w-0 items-center gap-1.5 px-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", open && "bg-accent text-foreground")}
+      className={clsx("flex h-full w-full min-w-0 items-center gap-1.5 px-2 text-left text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", open && "bg-accent text-foreground")}
     >
       <span className="shrink-0">{typeIcon(column.type)}</span>
       <span className="min-w-0 truncate">{column.name}</span>

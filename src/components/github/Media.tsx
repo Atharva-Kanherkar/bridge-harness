@@ -90,10 +90,10 @@ function useMediaSource(url: string) {
 }
 
 const FRAME = "relative overflow-hidden rounded-lg border border-border bg-muted/40";
-const OPEN_LINK = "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+const OPEN_LINK = "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
 function MediaNotice({ icon: Icon, children }: { icon: typeof ImageIcon; children: React.ReactNode }) {
-  return <div className={cn(FRAME, "animate-page-mount flex min-h-16 flex-wrap items-center gap-2 px-3 py-2.5 text-[12px] text-muted-foreground")}>
+  return <div className={cn(FRAME, "animate-page-mount flex min-h-16 flex-wrap items-center gap-2 px-3 py-2.5 text-meta text-muted-foreground")}>
     <Icon size={14} className="shrink-0" aria-hidden="true" />
     {children}
   </div>;
@@ -141,7 +141,7 @@ function Lightbox({ source, alt, original, onClose }: { source: string; alt: str
       onClick={event => event.stopPropagation()}
     />
     <div className="absolute right-4 top-4 flex items-center gap-1.5" onClick={event => event.stopPropagation()}>
-      <a href={original} target="_blank" rel="noreferrer" data-system-browser className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[12px] text-foreground shadow-xs transition-colors hover:bg-accent">
+      <a href={original} target="_blank" rel="noreferrer" data-system-browser className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-meta text-foreground shadow-xs transition-colors hover:bg-accent">
         <ExternalLink size={12} aria-hidden="true" /> Open original
       </a>
       <button ref={close} type="button" onClick={onClose} aria-label="Close image" className="grid size-8 place-items-center rounded-md border border-border bg-card text-foreground shadow-xs transition-colors hover:bg-accent">
@@ -159,7 +159,7 @@ function GithubImage({ item }: { item: GithubMediaItem }) {
 
   if (media.phase === "waiting") return <MediaNotice icon={ImageIcon}>
     <span className="min-w-0 flex-1 truncate">{label}</span>
-    <button type="button" onClick={media.allow} className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98]">
+    <button type="button" onClick={media.allow} className="rounded-md border border-border bg-card px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98]">
       Load from {hostOf(item.url)}
     </button>
   </MediaNotice>;
@@ -197,7 +197,7 @@ function GithubVideo({ item }: { item: GithubMediaItem }) {
   const media = useMediaSource(item.url);
   if (media.phase === "waiting") return <MediaNotice icon={Play}>
     <span className="min-w-0 flex-1 truncate">{item.alt || "video"}</span>
-    <button type="button" onClick={media.allow} className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98]">
+    <button type="button" onClick={media.allow} className="rounded-md border border-border bg-card px-2 py-0.5 text-caption font-medium text-foreground shadow-xs transition-colors hover:bg-accent active:scale-[0.98]">
       Load from {hostOf(item.url)}
     </button>
   </MediaNotice>;
@@ -233,7 +233,7 @@ export function MediaRow({ items }: { items: GithubMediaItem[] }) {
   return <div className={cn("my-2 grid items-start gap-2", COLUMNS[Math.min(items.length, 3)])}>
     {items.map((item, index) => <figure key={`${index}-${item.url}`} className="min-w-0">
       {item.kind === "video" ? <GithubVideo item={item} /> : <GithubImage item={item} />}
-      {item.caption && <figcaption className="mt-1 truncate text-center text-[11px] text-muted-foreground">{item.caption}</figcaption>}
+      {item.caption && <figcaption className="mt-1 truncate text-center text-caption text-muted-foreground">{item.caption}</figcaption>}
     </figure>)}
   </div>;
 }

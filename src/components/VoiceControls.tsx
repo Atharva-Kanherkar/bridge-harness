@@ -109,7 +109,7 @@ export function VoiceStatus({ state, startingPhase, audioLevel = 0, error, notic
         </span>
         <span role="status">{state === "starting" ? startingPhase === "microphone" ? "Allow microphone access…" : "Loading speech model…" : state === "stopping" ? "Finishing…" : "Listening"}</span>
       </span>
-      <span className="text-[11px]">{state === "stopping" ? "Esc to cancel" : "Enter to finish · Esc to cancel"}</span>
+      <span className="text-caption">{state === "stopping" ? "Esc to cancel" : "Enter to finish · Esc to cancel"}</span>
     </div>}
     {error && <p role="alert" className="px-1 py-1 text-xs leading-relaxed text-destructive">{error}</p>}
     {notice && !error && <p role="status" className="px-1 py-1 text-xs leading-relaxed text-muted-foreground">{notice}</p>}

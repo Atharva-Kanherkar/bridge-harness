@@ -117,7 +117,7 @@ export function BlockHandle({ editor, area }: { editor: Editor; area: RefObject<
       {menu && <>
         <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => { setMenu(false); setHover(null); }} />
         <div role="menu" aria-label="Block actions" className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl bg-popover p-1 shadow-lg ring-1 ring-border">
-          {actions.map(action => <button key={action.label} type="button" role="menuitem" disabled={action.disabled} onClick={action.run} className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] text-foreground transition-colors hover:bg-accent disabled:opacity-40">
+          {actions.map(action => <button key={action.label} type="button" role="menuitem" disabled={action.disabled} onClick={action.run} className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-ui text-foreground transition-colors hover:bg-accent disabled:opacity-40">
             <action.icon size={14} aria-hidden="true" className="text-muted-foreground" />{action.label}
           </button>)}
         </div>

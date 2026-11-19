@@ -52,7 +52,7 @@ function Tooltip({ tip, width }: { tip: Tip | null; width: number }) {
   const left = Math.min(Math.max(tip.x + 14, 0), width - 200);
   return (
     <div
-      className="u-overlay pointer-events-none absolute z-10 min-w-[160px] rounded-xl px-3 py-2 text-[12.5px]"
+      className="u-overlay pointer-events-none absolute z-10 min-w-[160px] rounded-xl px-3 py-2 text-meta"
       style={{ left, top: Math.max(tip.y - 12, 0) }}
       role="status"
     >
@@ -79,7 +79,7 @@ function Tooltip({ tip, width }: { tip: Tip | null; width: number }) {
 function Legend({ prepared, colors, total }: { prepared: Prepared; colors: Map<string, string>; total?: (series: string) => string }) {
   if (prepared.series.length < 2 || prepared.series[0] === SINGLE_SERIES) return null;
   return (
-    <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] text-muted-foreground">
+    <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-meta text-muted-foreground">
       {prepared.series.map(series => (
         <span key={series} className="flex items-center gap-2">
           <svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill={colors.get(series)} /></svg>
@@ -551,12 +551,12 @@ function Proportion({ block }: { block: ChartBlock }) {
       <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-6 gap-y-3">
         {parts.map(([part, entry]) => (
           <div key={part} className="min-w-0" onMouseEnter={() => setHover(part)} onMouseLeave={() => setHover(null)}>
-            <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+            <div className="flex items-center gap-2 text-meta text-muted-foreground">
               <svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill={colors.get(part)} /></svg>
               <span className="truncate">{part}</span>
             </div>
-            <div className="mt-1 text-[22px] font-light tracking-[-0.02em] text-foreground tabular-nums">{formatNumber(entry.value, format)}{entry.estimate && <span className="ml-1 text-[12px] text-muted-foreground">est.</span>}</div>
-            <div className="text-[12px] text-muted-foreground tabular-nums">{((entry.value / sum) * 100).toFixed(1)}%</div>
+            <div className="mt-1 text-[22px] font-light tracking-[-0.02em] text-foreground tabular-nums">{formatNumber(entry.value, format)}{entry.estimate && <span className="ml-1 text-meta text-muted-foreground">est.</span>}</div>
+            <div className="text-meta text-muted-foreground tabular-nums">{((entry.value / sum) * 100).toFixed(1)}%</div>
           </div>
         ))}
       </div>

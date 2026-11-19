@@ -63,7 +63,7 @@ export function RunButton({ lang, body, closed }: { lang: string; body: string; 
       title={title}
       data-run-state={state.kind}
       className={cn(
-        "group/run inline-flex min-h-7 items-center gap-1.5 rounded-[0.35rem] px-[0.45rem] py-[0.15rem] text-[11px] font-medium transition-colors",
+        "group/run inline-flex min-h-7 items-center gap-1.5 rounded-[0.35rem] px-[0.45rem] py-[0.15rem] text-caption font-medium transition-colors",
         "hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:hover:bg-transparent",
         state.kind === "failed" ? "text-destructive" : state.kind === "idle" ? "text-foreground" : "text-muted-foreground",
       )}

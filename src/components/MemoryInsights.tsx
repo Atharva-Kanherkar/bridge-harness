@@ -81,11 +81,11 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
           ["Used in 14 days", usedPct === null ? "n/a" : `${usedPct}%`],
           ["Packets with memory", `${stats.packetsWithMemories} of ${stats.packets}`],
         ].map(([label, value]) => <div key={label}>
-          <dt className="text-[11px] text-muted-foreground">{label}</dt>
+          <dt className="text-caption text-muted-foreground">{label}</dt>
           <dd className="font-display text-xl font-semibold tabular-nums text-foreground">{value}</dd>
         </div>)}
       </dl>
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-3 text-caption text-muted-foreground">
         {result?.harness && result?.model ? <>Written by {harnessLabel(result.harness)} · <span className="font-mono">{result.model}</span> · </> : null}
         {result?.generatedAt ? `${relative(result.generatedAt)} · ` : ""}{report.memoriesAnalysed} memories read. The figures are Bridge's own; the words are the model's.
       </p>
@@ -93,7 +93,7 @@ export function MemoryInsights({ onError }: { onError: (message: string) => void
 
     {report.highlights.length > 0 && <section className="grid gap-3 sm:grid-cols-3" aria-label="Highlights">
       {report.highlights.map((item, index) => <article key={item.title} className={cn(CARD, "py-3", rise(index + 1).className)} style={rise(index + 1).style}>
-        <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
+        <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
         <h3 className="text-ui font-medium text-foreground">{item.title}</h3>
         <p className="mt-1 text-caption leading-relaxed text-muted-foreground">{item.detail}</p>
       </article>)}

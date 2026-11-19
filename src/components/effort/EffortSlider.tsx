@@ -18,7 +18,7 @@ export function EffortSlider(props: EffortControlProps) {
     setPulse(count => count + 1);
   }, [label]);
   return <div className="flex h-full flex-col justify-between" data-effort-style="slider">
-    <div className="flex items-baseline justify-between text-[11px] text-muted-foreground">
+    <div className="flex items-baseline justify-between text-caption text-muted-foreground">
       <span>Thinking</span>
       <span key={pulse} className={cn("min-w-[6ch] text-right font-medium tabular-nums text-foreground", pulse > 0 && "animate-effort-label")}>{label}</span>
     </div>

@@ -110,7 +110,7 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
   const ordered = orderPullRequests(prs);
   const lone = ordered.length === 1 ? ordered[0] : undefined;
   const fixable = lone && onFix && lone.state === "open" && chatPrStatus(lone).phase === "failing" ? lone : undefined;
-  return <div data-work-shelf className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1.5 text-[12.5px] text-muted-foreground">
+  return <div data-work-shelf className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1.5 text-meta text-muted-foreground">
     <button
       type="button"
       data-work-shelf-open
@@ -129,7 +129,7 @@ export function WorkShelf({ prs, tasks, notice, harness, onOpen, onFix }: {
       type="button"
       data-work-shelf-fix
       onClick={() => onFix!(fixable)}
-      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border-card px-2 text-[11.5px] text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border-card px-2 text-caption text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       Fix it
     </button>}

@@ -64,7 +64,7 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
       {empty ? <h2 className="text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">No activity in this window.</h2> : metric === "tokens"
         ? <h2 className="max-w-3xl text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">{formatPercent(cacheShare, 0)} of what you processed was a cache read. <span className="text-muted-foreground">Here is where the other {formatTokens(processed - report.totals.cacheReadTokens)} went.</span></h2>
         : <h2 className="max-w-3xl text-[2rem] font-normal leading-tight tracking-[-0.03em] text-foreground">{harnessLabel(lead!.harness)} carried {formatPercent(leadShare, 0)} of the cost. <span className="text-muted-foreground">Here is how it splits by model.</span></h2>}
-      <p className="mt-3 text-[14.5px] text-muted-foreground">
+      <p className="mt-3 text-body text-muted-foreground">
         <span className="font-medium tabular-nums text-foreground">{formatTokens(processed)}</span> tokens · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates · cache reuse saved <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.cacheSavingsMicrousd)}</span>
       </p>
       <HeroCaption report={report} metric={metric} className="mt-1" />
@@ -90,8 +90,8 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
           const ys = place(nodes, HARNESS_GAP, 16);
           return nodes.map((node, index) => <g key={`label-${node.id}`}>
             <Leader x={columnX[0] - 2} from={node.y + node.height / 2} to={ys[index]} side="left" />
-            <text x={columnX[0] - 12} y={ys[index] - 3} textAnchor="end" className="fill-foreground text-[13.5px] font-medium">{harnessLabel(node.harness!)}</text>
-            <text x={columnX[0] - 12} y={ys[index] + 13} textAnchor="end" className="fill-muted-foreground text-[12px] tabular-nums">{format(node.value)}</text>
+            <text x={columnX[0] - 12} y={ys[index] - 3} textAnchor="end" className="fill-foreground text-ui font-medium">{harnessLabel(node.harness!)}</text>
+            <text x={columnX[0] - 12} y={ys[index] + 13} textAnchor="end" className="fill-muted-foreground text-meta tabular-nums">{format(node.value)}</text>
           </g>);
         })()}
         {(() => {
@@ -99,7 +99,7 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
           const ys = place(nodes, MODEL_GAP, 8);
           return nodes.map((node, index) => <g key={`label-${node.id}`}>
             <Leader x={columnX[1] + NODE + 1} from={node.y + node.height / 2} to={ys[index]} side="right" />
-            <text x={columnX[1] + NODE + 8} y={ys[index] + 4} className={cn("stroke-card text-[11.5px] [paint-order:stroke]", node.model ? "fill-foreground font-mono" : "fill-muted-foreground")} strokeWidth={4} strokeLinejoin="round">
+            <text x={columnX[1] + NODE + 8} y={ys[index] + 4} className={cn("stroke-card text-caption [paint-order:stroke]", node.model ? "fill-foreground font-mono" : "fill-muted-foreground")} strokeWidth={4} strokeLinejoin="round">
               {node.label}{node.model?.costSource === "unpriced" ? " (unpriced)" : ""} <tspan className="fill-muted-foreground font-sans tabular-nums">{format(node.value)}</tspan>
             </text>
           </g>);
@@ -109,8 +109,8 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
           const ys = place(nodes, KIND_GAP, 16);
           return nodes.map((node, index) => <g key={`label-${node.id}`}>
             <Leader x={columnX[2] + NODE + 1} from={node.y + node.height / 2} to={ys[index]} side="right" />
-            <text x={columnX[2] + NODE + 12} y={ys[index] - 3} className="fill-foreground text-[13px] font-medium">{node.label}</text>
-            <text x={columnX[2] + NODE + 12} y={ys[index] + 13} className="fill-muted-foreground text-[12px] tabular-nums">{formatTokens(node.value)} · {formatPercent(processed > 0 ? node.value / processed : 0)}</text>
+            <text x={columnX[2] + NODE + 12} y={ys[index] - 3} className="fill-foreground text-ui font-medium">{node.label}</text>
+            <text x={columnX[2] + NODE + 12} y={ys[index] + 13} className="fill-muted-foreground text-meta tabular-nums">{formatTokens(node.value)} · {formatPercent(processed > 0 ? node.value / processed : 0)}</text>
           </g>);
         })()}
       </svg>

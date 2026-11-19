@@ -50,23 +50,23 @@ export function OrchestratorCreateDialog({
       closeDisabled={busy}
       onClose={onClose}
     >
-      <p className="text-[13px] leading-5 text-muted-foreground">
+      <p className="text-ui leading-5 text-muted-foreground">
         Bridge can create a new Git branch and worktree automatically. This orchestrator gets its own files and cannot overwrite another chat’s uncommitted work.
       </p>
-      {!canCreateWorktree && <p role="status" className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5 text-[13px] leading-4 text-warning">Connect a Git repository to this workspace to enable isolated worktrees.</p>}
+      {!canCreateWorktree && <p role="status" className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5 text-ui leading-4 text-warning">Connect a Git repository to this workspace to enable isolated worktrees.</p>}
 
       <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-border pt-4">
-        <button type="button" disabled={busy} onClick={onClose} className="mr-auto min-h-8 rounded-lg px-3 text-[13px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30">Cancel</button>
-        <button ref={sharedRef} type="button" disabled={busy} onClick={onUseCurrentFolder} className="flex items-center justify-center gap-2 min-h-8 rounded-lg border border-border bg-card px-3 text-[13px] text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30">
+        <button type="button" disabled={busy} onClick={onClose} className="mr-auto min-h-8 rounded-lg px-3 text-ui text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30">Cancel</button>
+        <button ref={sharedRef} type="button" disabled={busy} onClick={onUseCurrentFolder} className="flex items-center justify-center gap-2 min-h-8 rounded-lg border border-border bg-card px-3 text-ui text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30">
           <GitBranch className="h-4 w-4" aria-hidden="true" />
           Use current folder
         </button>
-        <button ref={primaryRef} type="button" disabled={busy || !canCreateWorktree} onClick={onCreateWorktree} className="flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30">
+        <button ref={primaryRef} type="button" disabled={busy || !canCreateWorktree} onClick={onCreateWorktree} className="flex items-center justify-center gap-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-30">
           <GitFork className="h-4 w-4" aria-hidden="true" />
           {busy ? "Creating…" : "Create worktree"}
         </button>
       </div>
-      <p className="mt-3 text-[12px] leading-4 text-muted-foreground">The worktree starts from the repository’s current HEAD. Uncommitted changes are not copied.</p>
+      <p className="mt-3 text-meta leading-4 text-muted-foreground">The worktree starts from the repository’s current HEAD. Uncommitted changes are not copied.</p>
     </CreateDialogShell>
   );
 }

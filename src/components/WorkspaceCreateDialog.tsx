@@ -50,7 +50,7 @@ export function WorkspaceCreateDialog({
       onClose={onClose}
       dismissOnScrim
     >
-      <label htmlFor="workspace-name" className="mb-2 block text-[13px] font-medium text-foreground">
+      <label htmlFor="workspace-name" className="mb-2 block text-ui font-medium text-foreground">
         Workspace name
       </label>
       <input
@@ -69,7 +69,7 @@ export function WorkspaceCreateDialog({
         }}
         className={cn(
           "h-9 w-full rounded-lg border border-input bg-card px-3",
-          "text-[13px] text-foreground placeholder:text-muted-foreground",
+          "text-ui text-foreground placeholder:text-muted-foreground",
           "transition-colors",
         )}
       />
@@ -79,7 +79,7 @@ export function WorkspaceCreateDialog({
           type="button"
           disabled={busy}
           onClick={onClose}
-          className="min-h-8 rounded-lg border border-border bg-card px-4 text-[13px] text-foreground transition-colors hover:bg-accent disabled:opacity-45"
+          className="min-h-8 rounded-lg border border-border bg-card px-4 text-ui text-foreground transition-colors hover:bg-accent disabled:opacity-45"
         >
           Cancel
         </button>
@@ -87,7 +87,7 @@ export function WorkspaceCreateDialog({
           type="button"
           disabled={!canSubmit}
           onClick={onSubmit}
-          className="min-h-8 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-45"
+          className="min-h-8 rounded-lg bg-primary px-4 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-45"
         >
           {busy ? "Creating…" : "Create workspace"}
         </button>

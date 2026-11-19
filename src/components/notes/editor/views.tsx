@@ -115,7 +115,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   return <NodeViewWrapper as="figure" ref={figure} data-drag-handle="" className="note-image group relative mx-auto my-3 w-fit max-w-full">
     <span className="relative block w-fit max-w-full">
       {failed
-        ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-[12.5px] text-muted-foreground">Couldn't load {src}</div>
+        ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-meta text-muted-foreground">Couldn't load {src}</div>
         : url
           ? <img
             src={url}
@@ -150,7 +150,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
       data-empty={caption ? undefined : ""}
       // An empty caption shows while the image is selected or in use, with a
       // prompt to type one.
-      className={clsx("mt-1.5 text-center text-[12.5px] leading-relaxed text-muted-foreground outline-none empty:before:text-faint empty:before:content-['Add_a_caption'] focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring", !selected && "data-[empty]:hidden group-focus-within:data-[empty]:block")}
+      className={clsx("mt-1.5 text-center text-meta leading-relaxed text-muted-foreground outline-none empty:before:text-faint empty:before:content-['Add_a_caption'] focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring", !selected && "data-[empty]:hidden group-focus-within:data-[empty]:block")}
     />
   </NodeViewWrapper>;
 }
@@ -169,7 +169,7 @@ function PageLinkView({ node, selected }: ReactNodeViewProps) {
       type="button"
       contentEditable={false}
       onClick={() => pages.open(id)}
-      className={clsx("-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-[15px] text-foreground transition-colors hover:bg-accent", selected && "bg-selection")}
+      className={clsx("-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-message text-foreground transition-colors hover:bg-accent", selected && "bg-selection")}
     >
       <FileText size={16} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate underline decoration-border underline-offset-4">{title || "Untitled"}</span>
@@ -189,13 +189,13 @@ function DatabaseEmbedView({ node, selected }: ReactNodeViewProps) {
   return <NodeViewWrapper data-drag-handle="" className={clsx("my-3 rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}>
     <div contentEditable={false} className="mb-1.5 flex items-center gap-2">
       <Table2 size={15} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-foreground">{title || "Untitled database"}</span>
-      <button type="button" onClick={() => pages.open(id)} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <span className="min-w-0 flex-1 truncate text-message font-semibold text-foreground">{title || "Untitled database"}</span>
+      <button type="button" onClick={() => pages.open(id)} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
         <ArrowUpRight size={13} aria-hidden="true" />Open as page
       </button>
     </div>
     <div contentEditable={false} data-database-frame="" className="max-h-[480px]">
-      {pages.renderDatabase?.(id, view) ?? <p className="m-0 rounded-lg bg-muted px-3 py-4 text-[13px] text-muted-foreground">{title || "Untitled database"}</p>}
+      {pages.renderDatabase?.(id, view) ?? <p className="m-0 rounded-lg bg-muted px-3 py-4 text-ui text-muted-foreground">{title || "Untitled database"}</p>}
     </div>
   </NodeViewWrapper>;
 }

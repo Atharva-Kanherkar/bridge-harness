@@ -10,7 +10,7 @@ export const AvatarScope = createContext<ReadonlyMap<string, string>>(new Map())
  *  for anyone GitHub sent no picture for. */
 export function Monogram({ login, className }: { login?: string | null; className?: string }) {
   const name = login ?? "ghost";
-  return <span aria-hidden="true" className={cn("grid size-5 shrink-0 place-items-center rounded-full bg-muted text-[10px] font-semibold uppercase text-muted-foreground ring-1 ring-border", className)}>{name.replace(/[^a-z0-9]/gi, "").charAt(0) || "?"}</span>;
+  return <span aria-hidden="true" className={cn("grid size-5 shrink-0 place-items-center rounded-full bg-muted text-caption font-semibold text-muted-foreground ring-1 ring-border", className)}>{name.replace(/[^a-z0-9]/gi, "").charAt(0) || "?"}</span>;
 }
 
 export function Avatar({ login, className }: { login?: string | null; className?: string }) {

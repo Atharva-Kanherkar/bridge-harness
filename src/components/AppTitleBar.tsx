@@ -48,7 +48,7 @@ export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush
         <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
       </button>
       <p className="m-0 min-w-0 flex-1 truncate">
-        <span className="text-[13px] font-semibold text-foreground">{title}</span>
+        <span className="text-ui font-semibold text-foreground">{title}</span>
       </p>
       {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
     </header>

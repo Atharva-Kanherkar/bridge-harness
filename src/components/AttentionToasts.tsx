@@ -49,14 +49,14 @@ function AttentionCard({ toast, onOpen, onDismiss, onAction }: {
     onOpen={() => onOpen(toast)}
     openLabel={`${toast.copy.headline} — open the chat`}
     body={<>
-      <span className="block text-[13px] font-medium leading-snug text-foreground">{toast.copy.headline}</span>
+      <span className="block text-ui font-medium leading-snug text-foreground">{toast.copy.headline}</span>
       {/* A remedy needs its reason read in full, so that detail may wrap. */}
-      <span className={cn("mt-0.5 block text-[12px] text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
+      <span className={cn("mt-0.5 block text-meta text-muted-foreground", toast.actionLabel ? "line-clamp-2" : "truncate")}>{toast.copy.detail}</span>
     </>}
     footer={toast.actionLabel && onAction && <button
       type="button"
       onClick={() => onAction(toast)}
-      className="mt-2 h-7 rounded-md border border-border px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent"
+      className="mt-2 h-7 rounded-md border border-border px-2 text-meta font-medium text-foreground transition-colors hover:bg-accent"
     >
       {toast.actionLabel}
     </button>}

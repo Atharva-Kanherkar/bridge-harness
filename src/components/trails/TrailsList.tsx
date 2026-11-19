@@ -142,7 +142,7 @@ export function TrailsList({ trails, loading, error, workspaces, defaultWorkspac
       )}
       {sections.map(section => (
         <section key={section.state} className="mb-5" aria-label={section.label}>
-          <h2 className="mb-1 px-4 text-caption font-medium uppercase tracking-wide text-faint">
+          <h2 className="mb-1 px-4 text-caption font-medium text-faint">
             {section.label} · {section.trails.length}
           </h2>
           <ul>

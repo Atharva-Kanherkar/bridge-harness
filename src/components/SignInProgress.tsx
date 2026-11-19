@@ -63,7 +63,7 @@ export function SignInProgress({ harness, label, stage, account = false, slow = 
           <HarnessMark harness={harness} size={17} live={stage !== "done"} />
         </span>
       </span>
-      <p className="min-w-0 flex-1 text-[13px] font-medium text-foreground" data-testid="signin-narration">{narration}</p>
+      <p className="min-w-0 flex-1 text-ui font-medium text-foreground" data-testid="signin-narration">{narration}</p>
     </div>
     <ol className={cn("grid gap-1.5", steps.length === 4 ? "grid-cols-4" : "grid-cols-3")}>
       {steps.map((step, index) => {
@@ -74,7 +74,7 @@ export function SignInProgress({ harness, label, stage, account = false, slow = 
               state === "done" ? "scale-x-100" : "scale-x-0")} />
             {state === "active" && <span aria-hidden="true" className="signin-rail-light absolute inset-y-0 left-0 w-2/5 rounded-full bg-foreground/70" />}
           </span>
-          <span className={cn("flex items-center gap-1 text-[11px]", state === "pending" ? "text-muted-foreground/70" : "text-muted-foreground", state === "active" && "font-medium text-foreground")}>
+          <span className={cn("flex items-center gap-1 text-caption", state === "pending" ? "text-muted-foreground/70" : "text-muted-foreground", state === "active" && "font-medium text-foreground")}>
             {state === "done" && <Check size={11} aria-hidden="true" />}
             {step.label}
           </span>

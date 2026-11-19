@@ -46,13 +46,13 @@ function HarnessBars({ report }: { report: UsageInsightsReport }) {
       const width = (entry.processedTokens / peak) * 100;
       return <li key={entry.harness} {...rise(index)} className={cn("relative", rise(index).className)} onMouseEnter={() => setHover(entry.harness)} onMouseLeave={() => setHover(null)}>
         <div className="mb-1 flex items-baseline justify-between gap-3 text-caption">
-          <span className="inline-flex min-w-0 items-center gap-1.5 text-foreground"><span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={12} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
+          <span className="inline-flex min-w-0 items-center gap-1.5 text-foreground"><span className={cn("size-2 shrink-0 rounded-sm", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={12} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
           <span className="shrink-0 tabular-nums text-muted-foreground">{formatTokens(entry.processedTokens)}</span>
         </div>
-        <div className="h-3 w-full overflow-hidden rounded-[4px] bg-muted/60">
+        <div className="h-3 w-full overflow-hidden rounded-sm bg-muted/60">
           <div className={cn("h-full origin-left rounded-r-[4px] motion-safe:animate-[meter-fill_600ms_ease-out_both]", harnessChartDot(entry.harness))} style={{ width: `${Math.max(width, entry.processedTokens > 0 ? 1.5 : 0)}%` }} />
         </div>
-        {hover === entry.harness && <div role="tooltip" className="u-glass-popover absolute right-0 top-full z-10 mt-1 rounded-lg px-2.5 py-1.5 text-[11px] leading-4 tabular-nums">
+        {hover === entry.harness && <div role="tooltip" className="u-glass-popover absolute right-0 top-full z-10 mt-1 rounded-lg px-2.5 py-1.5 text-caption leading-4 tabular-nums">
           <div className="text-foreground">{formatUsd(entry.costMicrousd)} at API rates</div>
           <div className="text-muted-foreground">{formatCount(entry.records)} requests · {formatCount(entry.sessions)} sessions · {formatCount(entry.prompts)} prompts</div>
         </div>}
@@ -72,12 +72,12 @@ function HourColumns({ report }: { report: UsageInsightsReport }) {
     <div className="relative flex h-28 items-end gap-[2px]" onMouseLeave={() => setHover(null)}>
       {report.hours.map((entry, index) => <div key={entry.hour} className="group relative flex h-full flex-1 items-end" onMouseEnter={() => setHover(entry.hour)}>
         <div className={cn("w-full origin-bottom rounded-t-[3px] motion-safe:animate-[chart-rise_500ms_ease-out_both]", entry.hour === peakHour.hour && entry.prompts > 0 ? "bg-foreground" : "bg-foreground/35 group-hover:bg-foreground/60")} style={{ height: `${Math.max((entry.prompts / peak) * 100, entry.prompts > 0 ? 3 : 1)}%`, animationDelay: `${index * 15}ms` }} />
-        {hover === entry.hour && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg px-2 py-1 text-[11px] tabular-nums", index > 15 ? "right-0" : "left-0")}>
+        {hover === entry.hour && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute bottom-full z-10 mb-1 whitespace-nowrap rounded-lg px-2 py-1 text-caption tabular-nums", index > 15 ? "right-0" : "left-0")}>
           <span className="text-foreground">{formatCount(entry.prompts)} prompts</span> <span className="text-muted-foreground">at {String(entry.hour).padStart(2, "0")}:00</span>
         </div>}
       </div>)}
     </div>
-    <div className="mt-1 flex justify-between text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+    <div className="mt-1 flex justify-between text-caption tabular-nums text-muted-foreground" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
     <figcaption className="mt-2 text-caption text-muted-foreground">{total === 0 ? "No prompts in this window." : <>Busiest at <span className="tabular-nums text-foreground">{String(peakHour.hour).padStart(2, "0")}:00</span>, {formatCount(peakHour.prompts)} of {formatCount(total)} prompts.</>}</figcaption>
   </figure>;
 }
@@ -113,12 +113,12 @@ function DayArea({ report }: { report: UsageInsightsReport }) {
           <circle cx={points[hovered].x} cy={points[hovered].y} r={4} fill="currentColor" className="stroke-background" strokeWidth={2} vectorEffect="non-scaling-stroke" />
         </>}
       </svg>
-      {hovered != null && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute top-1 z-10 rounded-lg px-2.5 py-1.5 text-[11px] leading-4 tabular-nums", (hovered / Math.max(1, days.length - 1)) > 0.6 ? "-translate-x-[calc(100%+10px)]" : "translate-x-2.5")} style={{ left: `${(hovered / Math.max(1, days.length - 1)) * 100}%` }}>
+      {hovered != null && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute top-1 z-10 rounded-lg px-2.5 py-1.5 text-caption leading-4 tabular-nums", (hovered / Math.max(1, days.length - 1)) > 0.6 ? "-translate-x-[calc(100%+10px)]" : "translate-x-2.5")} style={{ left: `${(hovered / Math.max(1, days.length - 1)) * 100}%` }}>
         <div className="text-foreground">{formatTokens(days[hovered].processedTokens)} tokens</div>
         <div className="text-muted-foreground">{days[hovered].day} · {formatCount(days[hovered].prompts)} prompts</div>
       </div>}
     </div>
-    <div className="mt-1 flex justify-between text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
+    <div className="mt-1 flex justify-between text-caption tabular-nums text-muted-foreground" aria-hidden="true">
       <span>{days[0]?.day.slice(5) ?? ""}</span><span>{days[days.length - 1]?.day.slice(5) ?? ""}</span>
     </div>
   </figure>;
@@ -131,13 +131,13 @@ export function Themes({ report }: { report: Pick<UsageInsightsReport, "themes">
   const shades = ["bg-foreground", "bg-foreground/75", "bg-foreground/55", "bg-foreground/40", "bg-foreground/28", "bg-foreground/18"];
   if (themes.length === 0) return <p className="text-caption text-muted-foreground">No themes were found in the sampled prompts.</p>;
   return <div>
-    <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-[4px]" aria-hidden="true">
+    <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-sm" aria-hidden="true">
       {themes.map((theme, index) => <div key={theme.label} className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out_both]", shades[Math.min(index, shades.length - 1)])} style={{ width: `${Math.max(theme.share * 100, 1)}%`, animationDelay: `${index * 60}ms` }} />)}
     </div>
     <ul className="mt-3 space-y-2" aria-label="Prompt themes">
       {themes.map((theme, index) => <li key={theme.label} className={cn("flex items-start justify-between gap-3", rise(index + 1).className)} style={rise(index + 1).style}>
         <span className="inline-flex min-w-0 items-start gap-2">
-          <span className={cn("mt-1.5 size-2 shrink-0 rounded-[3px]", shades[Math.min(index, shades.length - 1)])} aria-hidden="true" />
+          <span className={cn("mt-1.5 size-2 shrink-0 rounded-sm", shades[Math.min(index, shades.length - 1)])} aria-hidden="true" />
           <span className="min-w-0">
             <span className="block text-ui text-foreground">{theme.label}</span>
             {theme.example && <span className="block text-caption text-muted-foreground">{theme.example}</span>}
@@ -204,7 +204,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
         </div>
         {analyseButton}
       </div>
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-3 text-caption text-muted-foreground">
         {result?.harness && result?.model ? <>Written by {harnessLabel(result.harness)} · <span className="font-mono">{result.model}</span> · </> : null}
         {result?.generatedAt ? `${relative(result.generatedAt)} · ` : ""}{result?.windowDays} day window · {formatCount(report.promptsAnalysed)} prompts sampled. Figures on the charts are Bridge's own; the words are the model's.
       </p>
@@ -212,7 +212,7 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
 
     {report.highlights.length > 0 && <section className="grid gap-3 md:grid-cols-3" aria-label="Highlights">
       {report.highlights.map((item, index) => <article key={item.title} className={cn(CARD, "py-3", rise(index + 1).className)} style={rise(index + 1).style}>
-        <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
+        <div className="mb-1 flex items-center gap-1.5 text-caption text-muted-foreground"><span className={cn("size-1.5 rounded-full", TONE[item.tone].dot)} aria-hidden="true" />{TONE[item.tone].label}</div>
         <h3 className="text-ui font-medium text-foreground">{item.title}</h3>
         <p className="mt-1 text-caption leading-relaxed text-muted-foreground">{item.detail}</p>
       </article>)}
@@ -247,10 +247,10 @@ export function UsageInsights({ windowDays, onError }: { windowDays: number; onE
             ["Failing checks", report.github.failingChecks],
             ["Awaiting review", report.github.awaitingReview],
           ].map(([label, value]) => <div key={label as string}>
-            <dt className="text-[11px] text-muted-foreground">{label}</dt>
+            <dt className="text-caption text-muted-foreground">{label}</dt>
             <dd className="font-display text-2xl font-semibold tabular-nums text-foreground">{formatCount(value as number)}</dd>
           </div>)}
-          <p className="col-span-2 text-[11px] text-muted-foreground">Across {formatCount(report.github.repositories)} {report.github.repositories === 1 ? "repository" : "repositories"} Bridge has open.</p>
+          <p className="col-span-2 text-caption text-muted-foreground">Across {formatCount(report.github.repositories)} {report.github.repositories === 1 ? "repository" : "repositories"} Bridge has open.</p>
         </dl> : <p className="text-caption text-muted-foreground">GitHub was not available for this run. Install and sign in to the GitHub CLI to include pull requests.</p>}
       </div>
       <div className={cn(CARD, rise(8).className)} style={rise(8).style}>

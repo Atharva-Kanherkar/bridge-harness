@@ -84,7 +84,7 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
     disabled={READ_ONLY.has(type)}
     onClick={() => type === "checkbox" ? onCommit(!(value === true)) : setEditing(!editing)}
     onKeyDown={event => { if (type === "checkbox" && event.key === " ") { event.preventDefault(); onCommit(!(value === true)); } }}
-    className={clsx("-ml-1.5 flex min-h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-[13px] transition-colors enabled:hover:bg-accent", editing && "bg-accent", text || type === "checkbox" ? "text-foreground" : "text-faint")}
+    className={clsx("-ml-1.5 flex min-h-8 w-full min-w-0 items-center rounded-md px-1.5 text-left text-ui transition-colors enabled:hover:bg-accent", editing && "bg-accent", text || type === "checkbox" ? "text-foreground" : "text-faint")}
   >{children}</button>;
 
   const openable = type === "url" && typeof value === "string" && OPENABLE.test(value.trim());
@@ -113,7 +113,7 @@ export function PropertyCell({ column, value, host, mode = "panel", editing: con
 
 /** The value as a cell or panel reads it. */
 function Display({ column, value, text, host, mode }: { column: PropertyCellProps["column"]; value: unknown; text: string; host: CellHost; mode: "cell" | "panel" }) {
-  const box = mode === "cell" ? "flex h-full min-w-0 items-center px-2 text-[13px]" : "flex min-w-0 flex-wrap items-center gap-1 py-1 [overflow-wrap:anywhere]";
+  const box = mode === "cell" ? "flex h-full min-w-0 items-center px-2 text-ui" : "flex min-w-0 flex-wrap items-center gap-1 py-1 [overflow-wrap:anywhere]";
   switch (column.type) {
     case "checkbox":
       return <span className={box}><span aria-label={value === true ? "Checked" : "Not checked"} className={clsx("grid size-4 shrink-0 place-items-center rounded border", value === true ? "border-foreground bg-foreground text-background" : "border-border")}>{value === true && <Check size={12} strokeWidth={2.5} aria-hidden="true" />}</span></span>;
@@ -151,7 +151,7 @@ function OpenLink({ url }: { url: string }) {
 }
 
 function Chip({ option, status }: { option: NoteOption; status: boolean }) {
-  return <span className="inline-flex max-w-full shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[12px] leading-4 text-foreground">
+  return <span className="inline-flex max-w-full shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-meta leading-4 text-foreground">
     {status && <span aria-hidden="true" className={clsx("size-1.5 shrink-0 rounded-full", option.group === "done" ? "bg-foreground" : option.group === "inProgress" ? "bg-muted-foreground" : "border border-muted-foreground")} />}
     <span className="truncate">{option.name}</span>
   </span>;
@@ -199,7 +199,7 @@ function InlineInput({ type, name, initial, mode, onCommit, onCancel }: { type: 
     }}
     onBlur={() => finish("blur")}
     className={clsx(
-      "min-w-0 bg-background text-[13px] text-foreground outline-none",
+      "min-w-0 bg-background text-ui text-foreground outline-none",
       mode === "cell" ? "h-full w-full px-2 ring-2 ring-inset ring-ring" : "h-8 w-full rounded-md px-1.5 ring-1 ring-ring",
       invalid && "ring-destructive",
       type === "number" && mode === "cell" && "text-right tabular-nums",
@@ -221,7 +221,7 @@ function SearchBox({ label, value, onChange, onEnter, onCancel }: { label: strin
       if (event.key === "Enter") { event.preventDefault(); onEnter(); }
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); }
     }}
-    className="mb-1 h-8 w-full rounded-lg bg-muted px-2.5 text-[13px] text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring"
+    className="mb-1 h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-ring"
   />;
 }
 
@@ -263,11 +263,11 @@ function OptionPicker({ property, value, seed, host, onPick, onCancel }: { prope
           return inGroup.length ? <div key={group} role="group" aria-label={label}><MenuLabel>{label}</MenuLabel>{inGroup.map(row)}</div> : null;
         })
         : matches.map(row)}
-      {query.trim() && !exact && <button type="button" onClick={() => void create()} disabled={creating} className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-foreground transition-colors hover:bg-accent disabled:opacity-60">
+      {query.trim() && !exact && <button type="button" onClick={() => void create()} disabled={creating} className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent disabled:opacity-60">
         <Plus size={14} aria-hidden="true" className="shrink-0 text-muted-foreground" />
         <span className="min-w-0 truncate">Create <span className="font-medium">{query.trim()}</span></span>
       </button>}
-      {!matches.length && !query.trim() && <p className="m-0 px-2.5 py-2 text-[12.5px] text-muted-foreground">No options yet. Type one to create it.</p>}
+      {!matches.length && !query.trim() && <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No options yet. Type one to create it.</p>}
     </OptionList>
   </div>;
 }
@@ -315,16 +315,16 @@ function DateEditor({ name, value, onCommit, onCancel }: { name: string; value: 
     if (event.key === "Enter") { event.preventDefault(); save(); }
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); }
   };
-  const field = "h-8 w-full rounded-lg bg-muted px-2.5 text-[13px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const field = "h-8 w-full rounded-lg bg-muted px-2.5 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return <div className="flex flex-col gap-1.5 p-1" onKeyDown={keys}>
     <input aria-label={`${name} start`} type={withTime ? "datetime-local" : "date"} value={start} onChange={event => setStart(event.target.value)} autoFocus className={field} />
     {hasEnd && <input aria-label={`${name} end`} type={withTime ? "datetime-local" : "date"} value={end} onChange={event => setEnd(event.target.value)} className={field} />}
-    {backwards && <p role="alert" className="m-0 px-1 text-[12px] text-destructive">The end is before the start.</p>}
-    <label className="flex items-center gap-2 px-1 text-[12.5px] text-foreground"><input type="checkbox" checked={hasEnd} onChange={() => setHasEnd(current => !current)} className="accent-foreground" />End date</label>
-    <label className="flex items-center gap-2 px-1 text-[12.5px] text-foreground"><input type="checkbox" checked={withTime} onChange={toggleTime} className="accent-foreground" />Include time</label>
+    {backwards && <p role="alert" className="m-0 px-1 text-meta text-destructive">The end is before the start.</p>}
+    <label className="flex items-center gap-2 px-1 text-meta text-foreground"><input type="checkbox" checked={hasEnd} onChange={() => setHasEnd(current => !current)} className="accent-foreground" />End date</label>
+    <label className="flex items-center gap-2 px-1 text-meta text-foreground"><input type="checkbox" checked={withTime} onChange={toggleTime} className="accent-foreground" />Include time</label>
     <div className="mt-1 flex justify-between gap-1">
-      <button type="button" onClick={() => onCommit(null)} className="inline-flex h-8 items-center rounded-full px-3 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Clear</button>
-      <button type="button" onClick={save} disabled={!ready} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Done</button>
+      <button type="button" onClick={() => onCommit(null)} className="inline-flex h-8 items-center rounded-full px-3 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Clear</button>
+      <button type="button" onClick={save} disabled={!ready} className="inline-flex h-8 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">Done</button>
     </div>
   </div>;
 }
@@ -357,16 +357,16 @@ function RelationPicker({ property, value, host, onPick, onCancel }: { property:
     <OptionList label={`${property.name} pages`} className="max-h-64 overflow-y-auto">
       {chosen.map(id => <Option key={id} selected onSelect={() => toggle(id)}>{name(id) || "Untitled"}</Option>)}
       {others.map(row => <Option key={row.id} selected={false} onSelect={() => toggle(row.id)}>{row.title || "Untitled"}</Option>)}
-      {!target && <p className="m-0 px-2.5 py-2 text-[12.5px] text-muted-foreground">This relation has no database to point at.</p>}
-      {target && !chosen.length && !others.length && <p className="m-0 px-2.5 py-2 text-[12.5px] text-muted-foreground">No pages match.</p>}
+      {!target && <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">This relation has no database to point at.</p>}
+      {target && !chosen.length && !others.length && <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No pages match.</p>}
     </OptionList>
   </div>;
 }
 
 function ChatLinks({ value, host }: { value: unknown; host: CellHost }) {
   const ids = Array.isArray(value) ? value.map(String) : [];
-  if (!ids.length) return <p className="m-0 px-2.5 py-2 text-[12.5px] text-muted-foreground">No linked chats.</p>;
+  if (!ids.length) return <p className="m-0 px-2.5 py-2 text-meta text-muted-foreground">No linked chats.</p>;
   return <div className="flex flex-col">
-    {ids.map(id => <button key={id} type="button" onClick={() => host.onOpenChat?.(id)} className="flex min-h-8 w-full items-center rounded-lg px-2.5 text-left text-[13px] text-foreground underline decoration-border underline-offset-4 transition-colors hover:bg-accent">{host.chatTitle?.(id) ?? "A chat"}</button>)}
+    {ids.map(id => <button key={id} type="button" onClick={() => host.onOpenChat?.(id)} className="flex min-h-8 w-full items-center rounded-lg px-2.5 text-left text-ui text-foreground underline decoration-border underline-offset-4 transition-colors hover:bg-accent">{host.chatTitle?.(id) ?? "A chat"}</button>)}
   </div>;
 }

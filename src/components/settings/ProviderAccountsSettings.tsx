@@ -94,7 +94,7 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
               onClick={() => void save(accounts.filter(item => item.id !== account.id))}>Remove</TextButton>
           </span>}
         />)}
-    {error && <SettingsBlockRow><p role="alert" className="text-[12px] text-destructive">{error}</p></SettingsBlockRow>}
+    {error && <SettingsBlockRow><p role="alert" className="text-meta text-destructive">{error}</p></SettingsBlockRow>}
     {adding
       ? <AddAccountForm harness={harness} label={label} accounts={accounts} disabled={busy}
           onCancel={() => setAdding(false)}
@@ -125,7 +125,7 @@ export function ProviderAccountsSettings({ harness, label, accounts, disabled, o
     />}
     {!loginAccount && loginResult && <SettingsBlockRow>
       <div role="status" className="flex items-center justify-between gap-3">
-        <p className={loginResult.ok ? "text-[12px] text-foreground" : "text-[12px] text-destructive"}>
+        <p className={loginResult.ok ? "text-meta text-foreground" : "text-meta text-destructive"}>
           {loginResult.ok
             ? `${loginResult.account.label} is signed in. Pick it from the model picker in any chat.`
             : `${loginResult.account.label}'s sign-in didn't finish.`}
@@ -202,16 +202,16 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
   return <SettingsBlockRow label="Add an account" description={description}>
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="w-36 shrink-0 text-[12px] text-muted-foreground">Name</span>
+        <span className="w-36 shrink-0 text-meta text-muted-foreground">Name</span>
         <Field label="Account name" value={name} disabled={disabled} placeholder="e.g. Personal or Work" onChange={setName} />
       </div>
       {usesFolder && <div className="flex flex-wrap items-center gap-3">
-        <span className="w-36 shrink-0 text-[12px] text-muted-foreground">{provider.variable}</span>
+        <span className="w-36 shrink-0 text-meta text-muted-foreground">{provider.variable}</span>
         <Field label="Account folder" value={folder} disabled={disabled} mono placeholder={suggestedFolder(harness, "work")} onChange={value => setFolderEdited(value)} />
       </div>}
       {provider.sharedHome && <div className="flex flex-wrap items-center gap-3">
-        <span className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">
-          <span className="block text-[13px] text-foreground">Share chats with your main {label}</span>
+        <span className="min-w-0 flex-1 text-meta leading-relaxed text-muted-foreground">
+          <span className="block text-ui text-foreground">Share chats with your main {label}</span>
           {shared
             ? "Keeps this login separate but shares sessions and settings, so a chat can switch accounts and keep its thread."
             : `A separate ${label} home with its own sessions and settings. Switching a chat to it starts a fresh thread.`}
@@ -220,16 +220,16 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
       </div>}
       {provider.key && <div className="grid gap-1.5">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="w-36 shrink-0 text-[12px] text-muted-foreground">{provider.key.required ? "API key" : "API key (optional)"}</span>
+          <span className="w-36 shrink-0 text-meta text-muted-foreground">{provider.key.required ? "API key" : "API key (optional)"}</span>
           <Field label={provider.key.label} type="password" value={key} disabled={disabled} mono placeholder="Paste the key" width="w-72" onChange={value => { setKey(value); setKeyTouched(true); }} />
         </div>
-        <span className="text-[11px] text-muted-foreground">{provider.key.help}</span>
+        <span className="text-caption text-muted-foreground">{provider.key.help}</span>
       </div>}
-      {provider.signIn === "cli" && <p className="text-[12px] leading-relaxed text-muted-foreground">
+      {provider.signIn === "cli" && <p className="text-meta leading-relaxed text-muted-foreground">
         Bridge will create this folder, start {label}'s sign-in, then ask you to finish in your browser.
       </p>}
-      {provider.loginNote && <span className="text-[11px] text-muted-foreground">{provider.loginNote}</span>}
-      {error && <p role="alert" className="text-[12px] text-destructive">{error}</p>}
+      {provider.loginNote && <span className="text-caption text-muted-foreground">{provider.loginNote}</span>}
+      {error && <p role="alert" className="text-meta text-destructive">{error}</p>}
       <div className="flex items-center justify-end gap-2">
         <TextButton disabled={disabled} onClick={onCancel}>Cancel</TextButton>
         <PrimaryButton disabled={disabled || !!error || missingKey} onClick={() => void onAdd(account, key.trim())}>{provider.signIn === "cli" ? "Add & sign in" : "Add account"}</PrimaryButton>

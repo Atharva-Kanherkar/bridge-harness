@@ -83,11 +83,11 @@ export function UsageHeatmap({ periods, resolution, timeZone, metric, className 
 
   return <figure className={cn("min-w-0", className)}>
     <div className="flex items-start gap-2 overflow-x-auto">
-      {!hourly && <div className="mt-[1.1rem] grid shrink-0 gap-[2px] text-[10px] leading-none text-muted-foreground" style={{ gridTemplateRows: `repeat(7, 0.75rem)` }} aria-hidden="true">
+      {!hourly && <div className="mt-[1.1rem] grid shrink-0 gap-[2px] text-micro leading-none text-muted-foreground" style={{ gridTemplateRows: `repeat(7, 0.75rem)` }} aria-hidden="true">
         {WEEKDAYS.map((label, index) => <span key={label} className="flex items-center">{index % 2 === 0 ? label : ""}</span>)}
       </div>}
       <div className="w-fit">
-        <div className="mb-1 grid gap-[2px] text-[10px] leading-none text-muted-foreground" style={{ gridTemplateColumns: `repeat(${columns}, 0.75rem)`, height: "0.75rem" }} aria-hidden="true">
+        <div className="mb-1 grid gap-[2px] text-micro leading-none text-muted-foreground" style={{ gridTemplateColumns: `repeat(${columns}, 0.75rem)`, height: "0.75rem" }} aria-hidden="true">
           {Array.from({ length: columns }, (_, column) => <span key={column} className="whitespace-nowrap">{hourly ? (column % 6 === 0 ? formatPeriodLabel(cells[column].period, resolution, timeZone).replace(/\s?[AP]M$/, match => match.trim().toLowerCase()) : "") : monthStarts.get(column) ?? ""}</span>)}
         </div>
         <div
@@ -106,26 +106,26 @@ export function UsageHeatmap({ periods, resolution, timeZone, metric, className 
               data-step={step}
               data-harness={cell.harness ?? undefined}
               onMouseEnter={() => setHover(cell)}
-              className={cn("size-3 rounded-[3px] transition-opacity motion-safe:animate-[insight-rise_300ms_ease-out_both]", step === 0 ? "bg-muted/60" : cn(harnessChartDot(cell.harness), DEPTH[step]), hover && hover.period !== cell.period && step > 0 && "opacity-40")}
+              className={cn("size-3 rounded-sm transition-opacity motion-safe:animate-[insight-rise_300ms_ease-out_both]", step === 0 ? "bg-muted/60" : cn(harnessChartDot(cell.harness), DEPTH[step]), hover && hover.period !== cell.period && step > 0 && "opacity-40")}
               style={{ gridColumnStart: cell.column + 1, gridRowStart: cell.row + 1, animationDelay: `${Math.min(cell.column, 20) * 15}ms` }}
             />;
           })}
-          {hover && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute z-10 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[11px] leading-4 tabular-nums", hover.column / Math.max(1, columns - 1) > 0.6 ? "-translate-x-full" : "", "top-full mt-1.5")} style={{ left: `${((hover.column + (hover.column / Math.max(1, columns - 1) > 0.6 ? 1 : 0)) / Math.max(1, columns)) * 100}%` }}>
+          {hover && <div role="tooltip" className={cn("u-glass-popover pointer-events-none absolute z-10 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-caption leading-4 tabular-nums", hover.column / Math.max(1, columns - 1) > 0.6 ? "-translate-x-full" : "", "top-full mt-1.5")} style={{ left: `${((hover.column + (hover.column / Math.max(1, columns - 1) > 0.6 ? 1 : 0)) / Math.max(1, columns)) * 100}%` }}>
             <div className="text-foreground">{format(hover.value)}{hover.harness && <span className="text-muted-foreground"> · mostly {harnessLabel(hover.harness)}</span>}</div>
             <div className="text-muted-foreground">{formatPeriodLabel(hover.period, resolution, timeZone)}</div>
           </div>}
         </div>
       </div>
     </div>
-    <figcaption className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+    <figcaption className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground">
       <span className="inline-flex flex-wrap items-center gap-3">
-        {harnesses.map(harness => <span key={harness} className="inline-flex items-center gap-1.5"><span className={cn("size-2.5 rounded-[3px]", harnessChartDot(harness))} aria-hidden="true" /><HarnessMark harness={harness} size={11} />{harnessLabel(harness)}</span>)}
+        {harnesses.map(harness => <span key={harness} className="inline-flex items-center gap-1.5"><span className={cn("size-2.5 rounded-sm", harnessChartDot(harness))} aria-hidden="true" /><HarnessMark harness={harness} size={11} />{harnessLabel(harness)}</span>)}
         {harnesses.length === 0 && <span>No activity in this window.</span>}
       </span>
       <span className="ml-auto inline-flex items-center gap-1" aria-label={`Depth from none to ${format(peak)}`}>
         <span>less</span>
-        <span className="size-2.5 rounded-[3px] bg-muted/50" aria-hidden="true" />
-        {DEPTH.slice(1).map(depth => <span key={depth} className={cn("size-2.5 rounded-[3px] bg-foreground", depth)} aria-hidden="true" />)}
+        <span className="size-2.5 rounded-sm bg-muted/50" aria-hidden="true" />
+        {DEPTH.slice(1).map(depth => <span key={depth} className={cn("size-2.5 rounded-sm bg-foreground", depth)} aria-hidden="true" />)}
         <span>more</span>
       </span>
     </figcaption>
