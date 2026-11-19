@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildOptions, permissionOptions, sdkEffort } from "../options.mjs";
+import { buildOptions, permissionOptions, sdkEffort, sdkFlagSettings } from "../options.mjs";
 
 const base = {
   sessionId: "11111111-1111-4111-8111-111111111111",
@@ -82,6 +82,23 @@ test("effort is normalized and an out-of-set level is dropped rather than sent",
   assert.equal(sdkEffort(undefined), null);
 });
 
+test("fast speed opts the SDK into fast mode through flag settings", () => {
+  // Without `fastMode` in the flag settings the CLI refuses fast mode for an
+  // SDK host (`sdk_opt_in_required`).
+  assert.deepEqual(buildOptions({ ...base, resume: false, speed: "fast" }).settings, { fastMode: true });
+  assert.equal(buildOptions({ ...base, resume: false, speed: null }).settings, undefined);
+  assert.equal(buildOptions({ ...base, resume: false, speed: "priority" }).settings, undefined);
+  // Going back to standard overrides a fast mode saved by an interactive /fast.
+  assert.deepEqual(buildOptions({ ...base, resume: false, speed: "standard" }).settings, { fastMode: false });
+});
+
+test("ultracode effort turns on the ultracode setting at the model's default effort", () => {
+  const options = buildOptions({ ...base, resume: false, effort: "ultracode", speed: "fast" });
+  assert.deepEqual(options.settings, { fastMode: true, ultracode: true });
+  assert.equal(options.effort, undefined);
+  assert.equal(sdkFlagSettings({ effort: "max" }), null);
+});
+
 test("read-only mode denies direct write tools without dangerous bypass", () => {
   const options = permissionOptions("ReadOnly");
   assert.equal(options.permissionMode, "default");
@@ -126,7 +143,7 @@ test("ask mode runs Bridge's read-only tools without a prompt Claude cannot show
   for (const mode of ["Shared", "Isolated"]) {
     const options = permissionOptions(mode, false, bridge);
     assert.equal(options.permissionMode, "acceptEdits");
-    assert.deepEqual(options.allowedTools, ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read", "mcp__bridge__chats_search", "mcp__bridge__chats_read", "mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft", "mcp__bridge__settings_change"]);
+    assert.deepEqual(options.allowedTools, ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read", "mcp__bridge__memory_search", "mcp__bridge__settings_read", "mcp__bridge__chats_search", "mcp__bridge__chats_read", "mcp__bridge__memory_propose", "mcp__bridge__outgoing_draft", "mcp__bridge__apps_draft", "mcp__bridge__apps_open", "mcp__bridge__settings_change"]);
     assert.ok(!options.allowedTools.some(name => /notes_(create|edit|append|set|draw)/.test(name)));
   }
   assert.equal(permissionOptions("Shared", false, {}).allowedTools, undefined, "no bridge server, nothing to allow");
@@ -173,7 +190,7 @@ test("a subagent cannot reach Bridge's top-level-only settings tools", async () 
       }
       return "none";
     };
-    for (const tool of ["mcp__bridge__settings_read", "mcp__bridge__settings_change", "mcp__bridge__chats_search", "mcp__bridge__chats_read"]) {
+    for (const tool of ["mcp__bridge__apps_draft", "mcp__bridge__settings_read", "mcp__bridge__settings_change", "mcp__bridge__chats_search", "mcp__bridge__chats_read"]) {
       assert.equal(await decide({ tool_name: tool, agent_id: "agent-1", agent_type: "general-purpose" }), "deny", `${writeMode} ${tool} from a subagent`);
       assert.equal(await decide({ tool_name: tool }), "none", `${writeMode} ${tool} from the chat itself is left to the allowlist`);
     }

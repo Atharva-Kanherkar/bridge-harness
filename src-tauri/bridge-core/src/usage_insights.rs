@@ -611,6 +611,7 @@ pub(crate) fn run_headless_turn(
             cwd: &cwd,
             model: Some(model),
             effort,
+            speed: None,
             instructions: Some(instructions),
             write_mode: None,
             read_only_sandbox: None,

@@ -163,6 +163,10 @@ pub fn preview_external_import(
     let selection = external_import::DiscoverySelection {
         artifact_ids: params.artifact_ids.clone(),
     };
+    core.external_import_previews
+        .lock()
+        .unwrap()
+        .insert(params.discovery_id.clone(), params.artifact_ids.clone());
     let candidates = match discovery.provider.as_str() {
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
@@ -174,8 +178,191 @@ pub fn preview_external_import(
         }
     };
     Ok(wire::ExternalImportPreview {
-        candidates: protocol_wire(candidates)?,
+        candidates: protocol_wire(preview_summaries(candidates))?,
     })
+}
+
+/// What preview sends to the client: every field except a chat's messages,
+/// replaced by their count. Commit re-reads the source from disk and never
+/// trusts a client payload, so the messages are not needed on the wire, and a
+/// large import would otherwise exceed the daemon's message size limit.
+fn preview_summaries(
+    candidates: Vec<external_import::ImportCandidate>,
+) -> Vec<external_import::ImportCandidate> {
+    candidates
+        .into_iter()
+        .map(|mut candidate| {
+            if let Some(payload) = candidate.normalized_payload.as_object_mut() {
+                if let Some(messages) = payload.remove("messages") {
+                    let count = messages.as_array().map(Vec::len).unwrap_or(0);
+                    payload.insert("messageCount".into(), serde_json::Value::from(count));
+                }
+            }
+            candidate
+        })
+        .collect()
+}
+
+/// Read-only: which tools on this machine Bridge can import from.
+pub fn detect_import_sources(
+    _core: &Arc<BridgeCore>,
+) -> Result<wire::ImportSourcesDetection, BridgeError> {
+    let (home, claude_config_dir) = claude_import::claude_env()
+        .ok_or_else(|| BridgeError::Invalid("HOME is not set; Bridge cannot look for other tools".into()))?;
+    Ok(wire::ImportSourcesDetection {
+        sources: crate::import_sources::detect(&home, claude_config_dir.as_deref(), &[]),
+        detected_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Import everything from one tool in the background; returns at once.
+pub fn start_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::StartImportParams,
+) -> Result<wire::ImportJob, BridgeError> {
+    crate::import_job::start(core, &params.tool)
+}
+
+/// How an imported chat would continue, before the first send.
+pub fn import_continuation(
+    core: &Arc<BridgeCore>,
+    params: &wire::ImportContinuationParams,
+) -> Result<wire::ImportContinuation, BridgeError> {
+    let plan = crate::import_continue::plan(core, &params.session_id)?;
+    Ok(wire::ImportContinuation { mode: plan.mode.into(), reason: plan.reason })
+}
+
+/// Continue an imported chat in a new chat; the imported one never changes.
+pub fn continue_imported_chat(
+    core: &Arc<BridgeCore>,
+    params: &wire::ContinueImportedChatParams,
+) -> Result<wire::ContinuedImportedChat, BridgeError> {
+    let (session_id, plan) = crate::import_continue::continue_chat(core, &params.session_id)?;
+    Ok(wire::ContinuedImportedChat { session_id, mode: plan.mode.into(), reason: plan.reason })
+}
+
+/// The latest background import, running or finished.
+pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
+    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })
+}
+
+/// Chats written per transaction. A big import commits batch by batch so the
+/// database lock every send waits on is held for one batch at a time.
+const IMPORT_BATCH: usize = 25;
+
+/// Group candidates so a chat and every chat under it share a batch, then
+/// pack groups into batches of about `IMPORT_BATCH`.
+/// Selected candidates grouped into families: a chat with its subagents, or
+/// one item on its own. A family is committed together or not at all.
+pub(crate) fn import_families(
+    candidates: &[external_import::NormalizedImportCandidate],
+    selected: &std::collections::HashSet<&str>,
+) -> Vec<Vec<String>> {
+    use std::collections::{BTreeMap, HashMap};
+    let parent: HashMap<&str, &str> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let id = candidate.candidate.candidate_id.as_str();
+            candidate
+                .candidate
+                .normalized_payload
+                .get("parentCandidateId")
+                .and_then(serde_json::Value::as_str)
+                .map(|parent| (id, parent))
+        })
+        .collect();
+    let root = |start: &str| -> String {
+        let mut current = start.to_owned();
+        for _ in 0..64 {
+            match parent.get(current.as_str()) {
+                Some(next) if selected.contains(next) => current = (*next).to_owned(),
+                _ => break,
+            }
+        }
+        current
+    };
+    let mut groups: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut position: HashMap<String, usize> = HashMap::new();
+    for candidate in candidates {
+        let id = candidate.candidate.candidate_id.as_str();
+        if !selected.contains(id) {
+            continue;
+        }
+        let next = position.len();
+        let slot = *position.entry(root(id)).or_insert(next);
+        groups.entry(slot).or_default().push(id.to_owned());
+    }
+    groups.into_values().collect()
+}
+
+pub(crate) fn import_batches(
+    candidates: &[external_import::NormalizedImportCandidate],
+    selected: &std::collections::HashSet<&str>,
+) -> Vec<Vec<String>> {
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    for ids in import_families(candidates, selected) {
+        match batches.last_mut() {
+            Some(batch) if batch.len() + ids.len() <= IMPORT_BATCH => batch.extend(ids),
+            _ => batches.push(ids),
+        }
+    }
+    batches
+}
+
+/// Commit `candidates` batch by batch (see [`import_batches`]). A failed batch
+/// rolls back on its own; earlier batches stay and the result says so.
+fn commit_in_batches(
+    core: &Arc<BridgeCore>,
+    candidates: &[external_import::NormalizedImportCandidate],
+    plan: &external_import::ImportPlan,
+    selected: &std::collections::HashSet<&str>,
+) -> Result<external_import::ImportCommit, BridgeError> {
+    let mut commit: Option<external_import::ImportCommit> = None;
+    for (index, batch) in import_batches(candidates, selected).into_iter().enumerate() {
+        let batch_plan = external_import::ImportPlan {
+            selected_candidate_ids: batch,
+            ..plan.clone()
+        };
+        let result = {
+            let db = core.db.lock().unwrap();
+            external_import::commit_import(&db, candidates, &batch_plan)
+        };
+        let batch_commit = match (result, commit.as_mut()) {
+            (Ok(batch_commit), _) => batch_commit,
+            (Err(error), None) => return Err(error),
+            (Err(error), Some(so_far)) => {
+                // Earlier batches are committed and stay; this one rolled back.
+                so_far.rollback_state = "partial".into();
+                so_far.diagnostics.push(external_import::ImportDiagnostic {
+                    code: "batch_failed".into(),
+                    severity: "error".into(),
+                    classification: external_import::SourceClassification::Documented,
+                    message: format!("Batch {} rolled back and the rest was not imported: {error}", index + 1),
+                    recovery: Some("Run the import again; chats already imported are skipped".into()),
+                    source_label: None,
+                });
+                break;
+            }
+        };
+        if batch_commit.imported > 0 {
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        match commit.as_mut() {
+            None => commit = Some(batch_commit),
+            Some(total) => {
+                total.candidate_results.extend(batch_commit.candidate_results);
+                total.created_bridge_ids.extend(batch_commit.created_bridge_ids);
+                total.imported += batch_commit.imported;
+                total.skipped += batch_commit.skipped;
+                total.changed += batch_commit.changed;
+                total.conflicted += batch_commit.conflicted;
+                total.rejected += batch_commit.rejected;
+                total.unsupported += batch_commit.unsupported;
+                total.diagnostics.extend(batch_commit.diagnostics);
+            }
+        }
+    }
+    commit.ok_or_else(|| BridgeError::Invalid("Select at least one import candidate".into()))
 }
 
 pub fn commit_external_import(
@@ -193,14 +380,35 @@ pub fn commit_external_import(
     // caught here because the source bytes are read and re-hashed right now,
     // through the same schema-gate and structural-allowlist checks preview
     // already applied.
-    let all_artifact_ids = discovery
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.artifact_id.clone())
-        .collect();
-    let selection = external_import::DiscoverySelection {
-        artifact_ids: all_artifact_ids,
+    // What commit re-reads: the artifacts the caller names, else the ones the
+    // last preview read, else (no preview ran) every artifact.
+    let previewed = core
+        .external_import_previews
+        .lock()
+        .unwrap()
+        .get(&params.discovery_id)
+        .cloned();
+    let artifact_ids = match params.artifact_ids.clone().or(previewed) {
+        Some(ids) => {
+            let known: std::collections::HashSet<&str> = discovery
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.artifact_id.as_str())
+                .collect();
+            if let Some(unknown) = ids.iter().find(|id| !known.contains(id.as_str())) {
+                return Err(BridgeError::Invalid(format!(
+                    "Import commit names artifact '{unknown}' that this discovery did not find"
+                )));
+            }
+            ids
+        }
+        None => discovery
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect(),
     };
+    let selection = external_import::DiscoverySelection { artifact_ids };
     let previewed = match discovery.provider.as_str() {
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
@@ -225,10 +433,21 @@ pub fn commit_external_import(
             ))),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let commit = {
-        let db = core.db.lock().unwrap();
-        external_import::commit_import(&db, &candidates, &plan)?
-    };
+    let selected: std::collections::HashSet<&str> = plan
+        .selected_candidate_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if let Some(unknown) = plan.selected_candidate_ids.iter().find(|id| {
+        !candidates
+            .iter()
+            .any(|candidate| &candidate.candidate.candidate_id == *id)
+    }) {
+        return Err(BridgeError::Invalid(format!(
+            "Import plan references unknown candidate '{unknown}'"
+        )));
+    }
+    let commit = commit_in_batches(core, &candidates, &plan, &selected)?;
     let imported_ids: std::collections::HashSet<&str> = commit
         .candidate_results
         .iter()
@@ -247,9 +466,6 @@ pub fn commit_external_import(
     // A committed import writes sessions/memory/setup rows directly, with no
     // other path that would tell the frontend to refetch — without this the
     // sidebar shows nothing new until the app restarts.
-    if commit.imported > 0 {
-        core.events.publish(CoreEvent::StateChanged);
-    }
     protocol_wire(commit)
 }
 
@@ -674,8 +890,34 @@ pub fn list_apps(core: &Arc<BridgeCore>) -> Result<wire::ListAppsResult, BridgeE
     } else {
         crate::trails::timeline::NoteSnapshot::all(core.notes.as_ref())
     };
-    let apps = crate::apps::badges::summaries(&*core.try_db()?, &notes, Some(cached))?;
-    Ok(wire::ListAppsResult { apps })
+    let db = core.try_db()?;
+    let apps = crate::apps::badges::summaries(&db, &notes, Some(cached))?;
+    let personal = personal_entries(&db)?;
+    Ok(wire::ListAppsResult { apps, personal })
+}
+
+/// The person's locked apps with whether each is on and where it is pinned.
+fn personal_entries(db: &rusqlite::Connection) -> Result<Vec<wire::PersonalAppEntry>, BridgeError> {
+    let off = crate::apps::registry::disabled_ids(db)?;
+    let pins = crate::apps::registry::pins(db)?;
+    Ok(crate::apps::personal::list(db)?
+        .into_iter()
+        .map(|app| wire::PersonalAppEntry {
+            enabled: !off.contains(&app.id),
+            pinned: pins.iter().position(|pin| pin == &app.id).map(|index| index as u32),
+            app,
+        })
+        .collect())
+}
+
+/// The person opens one of their apps from the Store or the launcher.
+pub fn open_personal_app_surface(core: &Arc<BridgeCore>, params: &wire::OpenPersonalAppSurfaceParams) -> Result<wire::PersonalAppSurfaceOpen, BridgeError> {
+    crate::apps::open::open_surface(core, &params.app_id)
+}
+
+/// The app's pane closed: its open and any write waiting on it go.
+pub fn close_personal_app_surface(core: &Arc<BridgeCore>, params: &wire::ClosePersonalAppSurfaceParams) -> Result<wire::ClosePersonalAppSurfaceResult, BridgeError> {
+    Ok(wire::ClosePersonalAppSurfaceResult { closed: crate::apps::open::close_surface(&*core.try_db()?, &params.open_id)? })
 }
 
 /// Pin or unpin an app in the sidebar. Core holds the three-pin limit.
@@ -686,6 +928,57 @@ pub fn set_app_pinned(core: &Arc<BridgeCore>, params: &wire::SetAppPinnedParams)
         core.events.publish(CoreEvent::AppsChanged);
     }
     list_apps(core)
+}
+
+/// Every personal app's latest version, most recently locked first.
+pub fn list_personal_apps(core: &Arc<BridgeCore>) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    Ok(wire::ListPersonalAppsResult { apps: crate::apps::personal::list(&*core.try_db()?)? })
+}
+
+/// One personal app's latest version, with its view.
+pub fn get_personal_app(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppParams) -> Result<wire::PersonalApp, BridgeError> {
+    crate::apps::personal::get(&*core.try_db()?, &params.id)
+}
+
+pub fn get_personal_app_draft(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppDraftParams) -> Result<wire::PersonalAppDraft, BridgeError> {
+    crate::apps::draft::get(&*core.try_db()?, params, chrono::Utc::now())
+}
+
+pub fn get_personal_app_open(core: &Arc<BridgeCore>, params: &wire::GetPersonalAppOpenParams) -> Result<wire::PersonalAppOpen, BridgeError> {
+    crate::apps::open::get(&*core.try_db()?, params)
+}
+
+pub fn call_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::CallPersonalAppToolParams) -> Result<wire::PersonalAppCallResult, BridgeError> {
+    crate::apps::open::call(core, params)
+}
+
+pub fn preview_personal_app_tool(core: &Arc<BridgeCore>, params: &wire::PreviewPersonalAppToolParams) -> Result<Value, BridgeError> {
+    crate::apps::draft::preview(core, params)
+}
+
+/// Lock a previewed draft as a personal app version. A version that can do
+/// more than the last one is reported, and stored only with `allowWider`.
+pub fn lock_personal_app(core: &Arc<BridgeCore>, params: &wire::LockPersonalAppParams) -> Result<wire::LockPersonalAppResult, BridgeError> {
+    let result = crate::apps::personal::lock(
+        &*core.try_db()?,
+        &params.draft_id,
+        &params.content_hash,
+        params.allow_wider,
+        chrono::Utc::now(),
+    )?;
+    if matches!(result, wire::LockPersonalAppResult::Locked { .. }) {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    Ok(result)
+}
+
+/// Remove a personal app: every version and any draft waiting for it.
+pub fn delete_personal_app(core: &Arc<BridgeCore>, params: &wire::DeletePersonalAppParams) -> Result<wire::ListPersonalAppsResult, BridgeError> {
+    let removed = crate::apps::personal::delete(&*core.try_db()?, &params.id)?;
+    if removed {
+        core.events.publish(CoreEvent::AppsChanged);
+    }
+    list_personal_apps(core)
 }
 
 /// Turn an app on or off. Off removes its tools from new chats, refuses
@@ -959,6 +1252,18 @@ pub fn github_merge_config(core: &Arc<BridgeCore>, workspace_id: &str) -> Result
     let path = locked_workspace_path(core, workspace_id)?;
     let config = core.github_surface.merge_config(Path::new(&path)).map_err(github_error)?;
     github_wire(config)
+}
+
+/// One image or video from a GitHub body, for media the webview cannot load on
+/// its own (a private attachment, or a video served without a media type).
+pub fn github_media(core: &Arc<BridgeCore>, workspace_id: &str, url: &str) -> Result<wire::GithubMediaResult, BridgeError> {
+    use base64::Engine as _;
+    let path = locked_workspace_path(core, workspace_id)?;
+    let media = core.github_surface.media(Path::new(&path), url).map_err(github_error)?;
+    Ok(wire::GithubMediaResult {
+        mime_type: media.mime_type,
+        data: base64::engine::general_purpose::STANDARD.encode(media.bytes),
+    })
 }
 
 /// Perform one mutating GitHub action. The approval gate is consulted *before*
@@ -1887,6 +2192,21 @@ pub fn update_chat_model_with_account(
     effort: Option<&str>,
     account: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
+    update_chat_selection(core, session_id, harness, model, effort, account, None)
+}
+
+/// [`update_chat_model_with_account`] with the chat's speed tier: an id from
+/// the selected model's `speed_tiers`, or `standard`. `None` keeps the current
+/// speed when the target model still offers it.
+pub fn update_chat_selection(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    harness: &Harness,
+    model: Option<&str>,
+    effort: Option<&str>,
+    account: Option<&str>,
+    speed: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     // Exclusive for the whole plan -> teardown -> commit window: a concurrent
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
@@ -1894,25 +2214,29 @@ pub fn update_chat_model_with_account(
     crate::chat_defaults::validate_model_switch(&core.db.lock().unwrap(), &core.adapter_registry, session_id, &store::harness_name(harness))?;
     let account = account.map_or(crate::sessions::AccountRequest::Keep, crate::sessions::AccountRequest::Choose);
     let change = core.plan_chat_selection_change(session_id, harness, model, account)?;
-    let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
-        "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+    let (previous_model, previous_effort, previous_speed): (Option<String>, Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
+        "SELECT model,effort,speed FROM sessions WHERE id=?1", params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let target_model = change.as_ref().map(|change| change.selected_model())
         .unwrap_or(previous_model.as_deref());
     let descriptor = core.adapter_registry.descriptors().into_iter()
         .find(|adapter| adapter.id == store::harness_name(harness))
         .ok_or_else(|| BridgeError::Invalid("Model adapter is unavailable".into()))?;
-    let next_effort = if target_model.is_none() && descriptor.models.is_empty() && effort.is_none() {
+    let (next_effort, next_speed) = if target_model.is_none() && descriptor.models.is_empty() && effort.is_none() && speed.is_none() {
         // Provider defaults have no advertised effort controls yet. Drop the
         // outgoing provider's effort rather than carrying it into this launch.
-        None
+        (None, None)
     } else {
         let selected = descriptor.models.iter().find(|option| Some(option.id.as_str()) == target_model)
             .ok_or_else(|| BridgeError::Invalid("Selected model is unavailable; refresh models".into()))?;
-        selected_chat_effort(selected, effort, previous_effort.as_deref())?
+        (
+            selected_chat_effort(selected, effort, previous_effort.as_deref())?,
+            selected_chat_speed(selected, speed, previous_speed.as_deref())?,
+        )
     };
     let effort_changed = next_effort != previous_effort;
+    let speed_changed = next_speed != previous_speed;
     let model_changed = change.is_some();
     if let Some(change) = change {
         // Only a switch the next turn can natively resume skips the handover.
@@ -1958,22 +2282,46 @@ pub fn update_chat_model_with_account(
             thread::spawn(move || switch_summary::deliver_and_wait(background, session));
         }
     }
-    if effort_changed {
+    if effort_changed || speed_changed {
         if !model_changed {
-            // Effort is a launch option. Keep the native session identity and
-            // restart its runtime on the next turn so a warm query cannot ignore it.
+            // Effort and speed are launch options. Keep the native session
+            // identity and restart its runtime on the next turn so a warm query
+            // cannot ignore them.
             core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
         }
         let db = core.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
         session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
         transaction.execute(
-            "UPDATE sessions SET effort=?2 WHERE id=?1 AND active_turn_id IS NULL",
-            rusqlite::params![session_id, next_effort],
+            "UPDATE sessions SET effort=?2,speed=?3 WHERE id=?1 AND active_turn_id IS NULL",
+            rusqlite::params![session_id, next_effort, next_speed],
         )?;
         transaction.commit()?;
     }
     core.state_snapshot()
+}
+
+/// An explicit speed must be one the model lists (or `standard`, where there
+/// is a faster tier to leave). An inherited one the new model does not offer
+/// returns to the provider's default instead of failing a later turn.
+fn selected_chat_speed(
+    model: &crate::model::ModelOption,
+    requested: Option<&str>,
+    previous: Option<&str>,
+) -> Result<Option<String>, BridgeError> {
+    let offered = |value: &str| value == adapters::STANDARD_SPEED
+        || model.speed_tiers.iter().any(|tier| tier.id == value);
+    if let Some(value) = requested {
+        if !offered(value) {
+            return Err(BridgeError::Invalid(format!(
+                "{} does not offer speed {value}; refresh models and choose a listed speed",
+                model.label,
+            )));
+        }
+    }
+    Ok(requested.or(previous)
+        .filter(|value| !model.speed_tiers.is_empty() && offered(value))
+        .map(str::to_owned))
 }
 
 /// Explicit user choices are validated; inherited choices incompatible with a
@@ -2042,6 +2390,33 @@ pub fn prepare_turn(
     text: String,
 ) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     live_turn::prepare_turn(core, session_id, text)
+}
+
+/// The webview's marks for one send, written to the latency ledger as a
+/// `latency.client` row. Bounded and name-checked: a timing row is a few
+/// numbers under short names, never free text from the page.
+pub fn record_client_latency(
+    core: &Arc<BridgeCore>,
+    params: &wire::RecordClientLatencyParams,
+) -> Result<(), BridgeError> {
+    const MAX_STEPS: usize = 32;
+    let is_name = |value: &str| {
+        !value.is_empty() && value.len() <= 48 && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'.')
+    };
+    if !matches!(params.flow.as_str(), "new_chat" | "send") {
+        return Err(BridgeError::Invalid(format!("unknown latency flow {}", params.flow)));
+    }
+    if params.steps.len() > MAX_STEPS || !params.steps.iter().all(|step| is_name(&step.name)) {
+        return Err(BridgeError::Invalid("latency steps must be at most 32 short snake_case names".into()));
+    }
+    let steps: Vec<serde_json::Value> = params
+        .steps
+        .iter()
+        .map(|step| serde_json::json!([step.name, step.at_ms]))
+        .collect();
+    let body = serde_json::json!({ "flow": params.flow, "steps": steps });
+    crate::latency::record(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), "latency.client", &params.session_id, &body);
+    Ok(())
 }
 
 pub fn send_turn(
@@ -2997,6 +3372,7 @@ fn claim_interaction(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn finish_interaction(
     core: &Arc<BridgeCore>,
     session_id: &str,
@@ -3010,6 +3386,27 @@ fn finish_interaction(
     is_worker: bool,
     item_id: Option<&str>,
     failure: Option<&str>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    finish_interaction_with_answers(core, session_id, event_id, interaction_kind, decision, option_id, actor, reason, adapter_id, is_worker, item_id, failure, None)
+}
+
+/// `finish_interaction`, also recording what a question was answered with so
+/// the card can say so after a reload. Secret fields never reach this map.
+#[allow(clippy::too_many_arguments)]
+fn finish_interaction_with_answers(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    interaction_kind: &str,
+    decision: &str,
+    option_id: Option<&str>,
+    actor: &str,
+    reason: Option<&str>,
+    adapter_id: &str,
+    is_worker: bool,
+    item_id: Option<&str>,
+    failure: Option<&str>,
+    submitted_answers: Option<&Value>,
 ) -> Result<wire::InteractionResolutionResult, BridgeError> {
     let status = failure.map_or_else(
         || {
@@ -3043,6 +3440,7 @@ fn finish_interaction(
             "resolvedBy": actor,
             "reason": reason,
             "failure": failure,
+            "submittedAnswers": submitted_answers.filter(|_| failure.is_none()),
         }),
     };
     let event = store::session_event_in_transaction(
@@ -3360,6 +3758,13 @@ pub fn resolve_question(
                 runtime.reject_question(request_id)
             }
         }
+        (Some(runtime), agent::CLAUDE_QUESTION_REQUEST_METHOD) => {
+            if action == "answer" {
+                runtime.answer_question(request_id, claude_question_reply(&details, &answers))
+            } else {
+                runtime.reject_question(request_id)
+            }
+        }
         (Some(runtime), "item/tool/requestUserInput") => {
             let mapped = answers
                 .iter()
@@ -3368,16 +3773,11 @@ pub fn resolve_question(
             runtime.answer_question(request_id, serde_json::json!({"answers":mapped}))
         }
         (Some(runtime), "mcpServer/elicitation/request") => {
+            let properties = details.pointer("/requestedSchema/properties").cloned().unwrap_or(Value::Null);
             let content = answers
                 .iter()
-                .map(|(id, values)| {
-                    let value = if values.len() == 1 {
-                        Value::String(values[0].clone())
-                    } else {
-                        Value::Array(values.iter().cloned().map(Value::String).collect())
-                    };
-                    (id.clone(), value)
-                })
+                .filter(|(_, values)| !values.is_empty())
+                .map(|(id, values)| (id.clone(), elicitation_value(properties.get(id), values)))
                 .collect::<serde_json::Map<_, _>>();
             runtime.answer_question(
                 request_id,
@@ -3410,7 +3810,8 @@ pub fn resolve_question(
         );
         return Err(error);
     }
-    finish_interaction(
+    let submitted = (action == "answer").then(|| public_answers(&details, &answers));
+    finish_interaction_with_answers(
         core,
         session_id,
         event_id,
@@ -3423,7 +3824,111 @@ pub fn resolve_question(
         is_worker,
         item_id.as_deref(),
         None,
+        submitted.as_ref(),
     )
+}
+
+/// One elicitation answer typed the way its schema property asks: a boolean
+/// or number as JSON, an array property as an array, anything else a string.
+/// The card sends strings; a schema-checked server would reject `"true"`.
+fn elicitation_value(property: Option<&Value>, values: &[String]) -> Value {
+    let kind = |property: Option<&Value>| property.and_then(|p| p.get("type")).and_then(Value::as_str).map(str::to_owned);
+    let scalar = |kind: Option<&str>, value: &str| -> Value {
+        match kind {
+            Some("boolean") => match value.trim() {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                other => Value::String(other.to_owned()),
+            },
+            Some("integer") => value.trim().parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::String(value.to_owned())),
+            Some("number") => value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .unwrap_or_else(|| Value::String(value.to_owned())),
+            _ => Value::String(value.to_owned()),
+        }
+    };
+    match kind(property).as_deref() {
+        Some("array") => {
+            let item_kind = kind(property.and_then(|p| p.get("items")));
+            Value::Array(values.iter().map(|value| scalar(item_kind.as_deref(), value)).collect())
+        }
+        // No schema to read: keep the old shape, one string or a list.
+        None if values.len() > 1 => Value::Array(values.iter().cloned().map(Value::String).collect()),
+        other => scalar(other, &values[0]),
+    }
+}
+
+/// The field ids a provider marked secret: a Codex `isSecret` question or an
+/// elicitation property with a password format.
+fn secret_question_ids(details: &Value) -> std::collections::BTreeSet<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for (index, question) in details.get("questions").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        if question.get("isSecret").and_then(Value::as_bool) == Some(true) {
+            ids.insert(question.get("id").and_then(Value::as_str).map_or_else(|| index.to_string(), str::to_owned));
+        }
+    }
+    if let Some(properties) = details.pointer("/requestedSchema/properties").and_then(Value::as_object) {
+        for (id, property) in properties {
+            if property.get("format").and_then(Value::as_str) == Some("password") {
+                ids.insert(id.clone());
+            }
+        }
+    }
+    ids
+}
+
+/// What the card shows as the answer once settled: every non-secret field.
+fn public_answers(details: &Value, answers: &std::collections::BTreeMap<String, Vec<String>>) -> Value {
+    let secret = secret_question_ids(details);
+    Value::Object(
+        answers
+            .iter()
+            .filter(|(id, values)| !secret.contains(*id) && !values.is_empty())
+            .map(|(id, values)| (id.clone(), serde_json::json!(values)))
+            .collect(),
+    )
+}
+
+/// Claude's `AskUserQuestion` reply: `answers` keyed by each question's text,
+/// a multi-select joined with ", " as Claude Code joins it, plus the preview
+/// of a chosen option under `annotations` the way Claude Code reports it.
+fn claude_question_reply(details: &Value, answers: &std::collections::BTreeMap<String, Vec<String>>) -> Value {
+    let mut reply = serde_json::Map::new();
+    let mut annotations = serde_json::Map::new();
+    for (index, question) in details.get("questions").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        let id = question.get("id").and_then(Value::as_str).map_or_else(|| index.to_string(), str::to_owned);
+        let Some(text) = question.get("question").and_then(Value::as_str) else { continue };
+        let chosen = answers
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if chosen.is_empty() {
+            continue;
+        }
+        reply.insert(text.to_owned(), Value::String(chosen.join(", ")));
+        if let [only] = chosen.as_slice() {
+            let preview = question
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|option| option.get("label").and_then(Value::as_str) == Some(*only))
+                .and_then(|option| option.get("preview"))
+                .and_then(Value::as_str)
+                .filter(|preview| !preview.is_empty());
+            if let Some(preview) = preview {
+                annotations.insert(text.to_owned(), serde_json::json!({"preview": preview}));
+            }
+        }
+    }
+    serde_json::json!({"answers": reply, "annotations": annotations})
 }
 
 // --- terminal ----------------------------------------------------------------
@@ -3537,6 +4042,67 @@ pub struct ProviderLogin {
     pub terminal_id: String,
 }
 
+/// Account logins run in their own PTY so two browser handoffs from one
+/// provider never share output or a cancellation handle.
+fn provider_login_terminal_id(provider: &str, account: Option<&str>) -> String {
+    account
+        .map(|account| format!("{provider}:account:{account}"))
+        .unwrap_or_else(|| provider.to_owned())
+}
+
+/// Resolve an account from persisted Settings before launching its CLI. The
+/// renderer supplies only an account id, never a filesystem path, so this is
+/// the same validated folder a chat will later use.
+fn provider_login_account(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+    account_id: Option<&str>,
+) -> Result<Option<crate::provider_accounts::AccountLaunch>, BridgeError> {
+    let Some(account_id) = account_id else { return Ok(None) };
+    let db = core.db.lock().unwrap();
+    let account = agent_config::account(&db, provider, account_id)?;
+    drop(db);
+    prepare_login_account(provider, &account, &crate::provider_accounts::HostHomes::from_env()).map(Some)
+}
+
+/// The launch an account's sign-in runs with, its folder created. Only a
+/// folder login has a CLI sign-in; an API-key account is refused before any
+/// process starts.
+fn prepare_login_account(
+    provider: &str,
+    account: &crate::provider_accounts::ProviderAccount,
+    homes: &crate::provider_accounts::HostHomes,
+) -> Result<crate::provider_accounts::AccountLaunch, BridgeError> {
+    let account_id = account.id.as_str();
+    let driver = crate::provider_accounts::driver(provider)
+        .ok_or_else(|| BridgeError::Invalid(format!("{provider} does not support extra accounts")))?;
+    let crate::provider_accounts::AccountLogin::Folder { variable, .. } = driver.login else {
+        return Err(BridgeError::Invalid(format!(
+            "{} accounts sign in with an API key, not a provider login command",
+            driver.label
+        )));
+    };
+    let launch = crate::provider_accounts::prepare_launch(provider, account, homes)?;
+    let folder = launch.value(variable).ok_or_else(|| {
+        BridgeError::Invalid(format!("account {account_id} has no {variable} folder"))
+    })?;
+    std::fs::create_dir_all(folder)?;
+    Ok(launch)
+}
+
+fn apply_provider_login_account(
+    command: &mut CommandBuilder,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) {
+    let Some(account) = account else { return };
+    for name in account.removed() {
+        command.env_remove(name);
+    }
+    for (name, value) in account.set() {
+        command.env(name, value);
+    }
+}
+
 /// The vendor's own documented login entry point for `provider`. Bridge only
 /// launches the process — any browser handoff is started by the vendor
 /// command itself, and Bridge never reads, stores, or logs the credential it
@@ -3615,16 +4181,22 @@ fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<Comm
 pub fn start_provider_login(
     core: &Arc<BridgeCore>,
     provider: &str,
+    account: Option<&str>,
 ) -> Result<ProviderLogin, BridgeError> {
-    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+    let terminal_id = provider_login_terminal_id(provider, account);
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "provider login")?;
     if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
         return Ok(ProviderLogin {
             workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
-            terminal_id: provider.into(),
+            terminal_id,
         });
     }
+    // This both creates a new account folder and materializes a Codex shadow
+    // home when required. It happens before the CLI starts, never in a shell.
+    let account_launch = provider_login_account(core, provider, account)?;
     let mut command = provider_login_command(core, provider)?;
+    apply_provider_login_account(&mut command, account_launch.as_ref());
     command.env("TERM", "xterm-256color");
     if let Some(path) = binary::hydrated_command_path() {
         command.env("PATH", path);
@@ -3665,7 +4237,8 @@ pub fn start_provider_login(
     );
     let core_reader = Arc::clone(core);
     let workspace_reader = PROVIDER_LOGIN_WORKSPACE_ID.to_owned();
-    let terminal_reader = provider.to_owned();
+    let terminal_reader = terminal_id.clone();
+    let provider_reader = provider.to_owned();
     let runtime_reader = runtime_id;
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -3699,12 +4272,12 @@ pub fn start_provider_login(
         // serving the pre-login one until restart. Unconditional — a cancelled
         // login re-probes to the same answer — and non-blocking: the fresh
         // result arrives as its own adapters-changed hint when it lands.
-        if terminal_reader == "github" {
+        if provider_reader == "github" {
             core_reader.github_surface.refresh_availability();
         } else {
             core_reader
                 .adapter_registry
-                .refresh_availability(&terminal_reader);
+                .refresh_availability(&provider_reader);
         }
         core_reader.events.publish(CoreEvent::TerminalExited {
             session_id: workspace_reader,
@@ -3713,7 +4286,7 @@ pub fn start_provider_login(
     });
     Ok(ProviderLogin {
         workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
-        terminal_id: provider.into(),
+        terminal_id,
     })
 }
 
@@ -3723,13 +4296,124 @@ pub fn start_provider_login(
 /// closed pane missed, so a surviving process would leave the next attempt
 /// staring at an empty terminal. The reader thread publishes the usual
 /// `TerminalExited` and re-probes availability as the process ends.
-pub fn cancel_provider_login(core: &Arc<BridgeCore>, provider: &str) -> Result<(), BridgeError> {
-    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+pub fn cancel_provider_login(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+    account: Option<&str>,
+) -> Result<(), BridgeError> {
+    let terminal_id = provider_login_terminal_id(provider, account);
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, &terminal_id);
     let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
     if let Some(mut runtime) = removed {
         let _ = runtime.child.kill();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_login_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn account_login_has_a_private_terminal_and_config_folder() {
+        let account = crate::provider_accounts::ProviderAccount {
+            id: "personal".into(),
+            label: "Personal".into(),
+            home_path: "/tmp/bridge-claude-personal".into(),
+            shadow_home_path: String::new(),
+        };
+        let homes = crate::provider_accounts::HostHomes {
+            home: PathBuf::from("/tmp/bridge-host"),
+            claude_config_dir: None,
+            codex_home: None,
+            xdg_data_home: None,
+        };
+        let launch = crate::provider_accounts::prepare_launch("claude", &account, &homes).unwrap();
+        let mut command = CommandBuilder::new("claude");
+        apply_provider_login_account(&mut command, Some(&launch));
+
+        assert_eq!(provider_login_terminal_id("claude", Some("personal")), "claude:account:personal");
+        assert_eq!(command.get_env("CLAUDE_CONFIG_DIR"), Some(OsStr::new("/tmp/bridge-claude-personal")));
+    }
+
+    fn homes(root: &std::path::Path) -> crate::provider_accounts::HostHomes {
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        crate::provider_accounts::HostHomes {
+            home: root.join("home"),
+            claude_config_dir: None,
+            codex_home: None,
+            xdg_data_home: None,
+        }
+    }
+
+    fn account(id: &str, home: &str, shadow: &str) -> crate::provider_accounts::ProviderAccount {
+        crate::provider_accounts::ProviderAccount { id: id.into(), label: id.into(), home_path: home.into(), shadow_home_path: shadow.into() }
+    }
+
+    /// Every provider with a CLI sign-in gets its own folder, created before
+    /// the CLI starts, in the variable that CLI reads. A provider without one
+    /// is refused before any process exists.
+    #[test]
+    fn each_provider_signs_an_account_in_to_its_own_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let homes = homes(root.path());
+        let cases = [
+            ("claude", account("work", "~/.claude_work", ""), "CLAUDE_CONFIG_DIR", "home/.claude_work"),
+            ("codex", account("personal", "", "~/.codex_personal"), "CODEX_HOME", "home/.codex_personal"),
+            ("codex", account("solo", "~/.codex_solo", ""), "CODEX_HOME", "home/.codex_solo"),
+            ("opencode", account("go", "~/.opencode_go", ""), "XDG_DATA_HOME", "home/.opencode_go"),
+        ];
+        for (provider, account, variable, folder) in cases {
+            let launch = prepare_login_account(provider, &account, &homes)
+                .unwrap_or_else(|error| panic!("{provider}/{}: {error}", account.id));
+            let expected = root.path().join(folder);
+            assert_eq!(launch.value(variable), Some(expected.to_str().unwrap()), "{provider}");
+            assert!(expected.is_dir(), "{provider} folder was not created");
+            let mut command = CommandBuilder::new(provider);
+            command.env("ANTHROPIC_API_KEY", "inherited");
+            command.env("OPENCODE_API_KEY", "inherited");
+            apply_provider_login_account(&mut command, Some(&launch));
+            assert_eq!(command.get_env(variable), Some(OsStr::new(expected.to_str().unwrap())));
+            for removed in launch.removed() {
+                assert_eq!(command.get_env(removed), None, "{provider} kept {removed}");
+            }
+        }
+        // A Codex shadow home links the shared one but keeps its own login.
+        assert!(root.path().join("home/.codex_personal/sessions").is_symlink());
+        assert!(!root.path().join("home/.codex_personal/auth.json").exists());
+        let refused = prepare_login_account("cursor", &account("team", "", ""), &homes).unwrap_err().to_string();
+        assert!(refused.contains("API key"), "{refused}");
+        assert!(prepare_login_account("grok", &account("x", "~/.x", ""), &homes).is_err());
+    }
+
+    /// Fuzz the ids a renderer can send: no two distinct (provider, account)
+    /// pairs share a sign-in terminal, and none collides with a default login.
+    #[test]
+    fn login_terminals_never_collide() {
+        let mut seed: u64 = 0xdead_beef_cafe_f00d;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let alphabet: Vec<char> = "abcAB09-_:/. ".chars().collect();
+        let providers = ["claude", "codex", "opencode", "cursor", "github", "grok"];
+        let mut seen = std::collections::HashMap::new();
+        for provider in providers {
+            seen.insert(provider_login_terminal_id(provider, None), (provider.to_owned(), None));
+        }
+        for _ in 0..20_000 {
+            let provider = providers[(next() % providers.len() as u64) as usize];
+            let mut id = String::from("a");
+            for _ in 0..(next() % 6) {
+                id.push(alphabet[(next() % alphabet.len() as u64) as usize]);
+            }
+            // Only ids Settings would accept reach a sign-in.
+            if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { continue; }
+            let terminal = provider_login_terminal_id(provider, Some(&id));
+            let entry = (provider.to_owned(), Some(id.clone()));
+            if let Some(previous) = seen.insert(terminal.clone(), entry.clone()) {
+                assert_eq!(previous, entry, "{terminal} shared");
+            }
+        }
+    }
 }
 
 // --- slash commands ------------------------------------------------------------
@@ -6822,6 +7506,59 @@ pub fn execute_automation_action(
 }
 
 #[cfg(test)]
+mod question_reply_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn elicitation_answers_take_their_schema_types() {
+        let schema = json!({
+            "confirm": {"type": "boolean"},
+            "count": {"type": "integer"},
+            "ratio": {"type": "number"},
+            "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}},
+            "name": {"type": "string"}
+        });
+        let one = |id: &str, values: &[&str]| elicitation_value(schema.get(id), &values.iter().map(|v| v.to_string()).collect::<Vec<_>>());
+        assert_eq!(one("confirm", &["true"]), json!(true));
+        assert_eq!(one("count", &["3"]), json!(3));
+        assert_eq!(one("ratio", &["0.5"]), json!(0.5));
+        assert_eq!(one("tags", &["a"]), json!(["a"]));
+        assert_eq!(one("name", &["Ada"]), json!("Ada"));
+        assert_eq!(elicitation_value(None, &["x".into(), "y".into()]), json!(["x", "y"]));
+    }
+
+    #[test]
+    fn secret_answers_are_never_recorded() {
+        let details = json!({"questions": [{"id": "token", "isSecret": true}, {"id": "name"}]});
+        let answers = std::collections::BTreeMap::from([
+            ("token".to_owned(), vec!["sk-live".to_owned()]),
+            ("name".to_owned(), vec!["Ada".to_owned()]),
+        ]);
+        assert_eq!(public_answers(&details, &answers), json!({"name": ["Ada"]}));
+        let schema = json!({"requestedSchema": {"properties": {"pw": {"type": "string", "format": "password"}}}});
+        let answers = std::collections::BTreeMap::from([("pw".to_owned(), vec!["hunter2".to_owned()])]);
+        assert_eq!(public_answers(&schema, &answers), json!({}));
+    }
+
+    #[test]
+    fn claude_answers_are_keyed_by_question_text() {
+        let details = json!({"questions": [
+            {"id": "0", "question": "Which?", "options": [{"label": "A", "preview": "aa"}, {"label": "B"}]},
+            {"id": "1", "question": "Also?", "options": [{"label": "C"}]},
+            {"id": "2", "question": "Skipped?"}
+        ]});
+        let answers = std::collections::BTreeMap::from([
+            ("0".to_owned(), vec!["A".to_owned()]),
+            ("1".to_owned(), vec!["C".to_owned(), "  typed  ".to_owned(), " ".to_owned()]),
+        ]);
+        let reply = claude_question_reply(&details, &answers);
+        assert_eq!(reply["answers"], json!({"Which?": "A", "Also?": "C, typed"}));
+        assert_eq!(reply["annotations"], json!({"Which?": {"preview": "aa"}}));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{create_trail, list_trails, read_trail, remove_trail_member, wire, CoreEvent};
 
@@ -7324,7 +8061,7 @@ mod tests {
             .join("../../testing/fixtures/github-act-policy.json");
         let cases: Vec<PolicyReplayCase> =
             serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        assert_eq!(cases.len(), 20, "approve and deny for PR and issue action kinds");
+        assert_eq!(cases.len(), 24, "approve and deny for PR and issue action kinds");
         let scratch = tempfile::tempdir().unwrap();
         let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
         for case in cases {
@@ -7750,10 +8487,67 @@ mod tests {
             &super::wire::CommitExternalImportParams {
                 discovery_id: "forged-discovery".into(),
                 plan: stub_import_plan(vec!["anything".into()]),
+                artifact_ids: None,
             },
         )
         .unwrap_err();
         assert!(commit_error.to_string().contains("no longer available"));
+    }
+
+    /// The folder-picker flow previews a selection and commits without naming
+    /// it. Commit must re-derive that selection, not every artifact: a second
+    /// copy of the same native session would otherwise merge in, change the
+    /// candidate's id, and fail the plan.
+    #[test]
+    fn commit_uses_the_artifacts_the_preview_read() {
+        let scratch = tempfile::tempdir().unwrap();
+        let claude_home = scratch.path().join(".claude");
+        let session = [
+            r#"{"type":"user","uuid":"u1","sessionId":"twin","timestamp":"2026-11-01T10:00:00Z","cwd":"/w","message":{"role":"user","content":"same session, two files"}}"#,
+            r#"{"type":"assistant","uuid":"a1","sessionId":"twin","timestamp":"2026-11-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}"#,
+        ]
+        .join("\n");
+        for project in ["a", "b"] {
+            std::fs::create_dir_all(claude_home.join(format!("projects/{project}"))).unwrap();
+            std::fs::write(claude_home.join(format!("projects/{project}/twin.jsonl")), &session).unwrap();
+        }
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let discovery = super::discover_external_import(
+            &core,
+            &super::wire::DiscoverExternalImportParams {
+                provider: "claude_code".into(),
+                approved_roots: vec![claude_home.to_string_lossy().into_owned()],
+                selected_export: None,
+                source_version: None,
+                schema_version: None,
+                format_versions: Default::default(),
+            },
+        )
+        .unwrap();
+        let first = discovery
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == super::wire::ExternalImportCandidateKind::Conversation)
+            .unwrap();
+        let preview = super::preview_external_import(
+            &core,
+            &super::wire::PreviewExternalImportParams {
+                discovery_id: discovery.discovery_id.clone(),
+                artifact_ids: vec![first.artifact_id.clone()],
+            },
+        )
+        .unwrap();
+        assert_eq!(preview.candidates.len(), 1);
+        let commit = super::commit_external_import(
+            &core,
+            &super::wire::CommitExternalImportParams {
+                discovery_id: discovery.discovery_id.clone(),
+                plan: stub_import_plan(vec![preview.candidates[0].candidate_id.clone()]),
+                artifact_ids: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(commit.imported, 1);
     }
 
     /// End-to-end through the same api functions the daemon dispatches to:
@@ -7808,6 +8602,7 @@ mod tests {
             &super::wire::CommitExternalImportParams {
                 discovery_id: discovery.discovery_id.clone(),
                 plan: stub_import_plan(vec![preview.candidates[0].candidate_id.clone()]),
+                artifact_ids: None,
             },
         )
         .unwrap();

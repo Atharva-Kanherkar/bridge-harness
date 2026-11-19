@@ -43,6 +43,24 @@ export function sessionPermissionUpdates(suggestions) {
   return updates.slice(0, 32);
 }
 
+/** Claude Code's question tool. The SDK asks the host through `canUseTool`,
+ * and the host answers by returning the person's choices in `updatedInput`;
+ * allowing it unchanged runs it with no answers, which Claude reads as the
+ * person ignoring the question. */
+export const QUESTION_TOOL = "AskUserQuestion";
+
+/** The tool input with Bridge's answers folded in: `answers` keyed by question
+ * text, and `annotations` (a chosen option's preview) when Bridge sent any. */
+export function answeredQuestionInput(input, answer) {
+  const answers = answer?.answers && typeof answer.answers === "object" && !Array.isArray(answer.answers)
+    ? Object.fromEntries(Object.entries(answer.answers).filter(([, value]) => typeof value === "string"))
+    : {};
+  const annotations = answer?.annotations && typeof answer.annotations === "object" && !Array.isArray(answer.annotations) && Object.keys(answer.annotations).length
+    ? answer.annotations
+    : null;
+  return { ...(input ?? {}), answers, ...(annotations ? { annotations } : {}) };
+}
+
 /** Bridge child and root approvals both use the query's existing control
  * channel. A Claude worker is the root query of its own process, so a request
  * with no SDK `agentID` still belongs to the person, not to a local deny: the
@@ -74,7 +92,8 @@ export function childPermissions(writeFrame, sessionId) {
         };
         const abort = () => finish({ behavior: "deny", message: "Subagent permission cancelled." });
         pending.set(requestId, answer => {
-          if (answer?.behavior !== "allow") return finish({ behavior: "deny", message: "Permission declined in Bridge." });
+          if (answer?.behavior !== "allow") return finish({ behavior: "deny", message: typeof answer?.message === "string" && answer.message ? answer.message : "Permission declined in Bridge." });
+          if (toolName === QUESTION_TOOL) return finish({ behavior: "allow", updatedInput: answeredQuestionInput(input, answer) });
           const updatedPermissions = answer.decision === "acceptForSession"
             ? sessionPermissionUpdates(suggestions)
             : [];

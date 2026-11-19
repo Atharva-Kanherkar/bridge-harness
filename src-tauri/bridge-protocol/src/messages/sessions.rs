@@ -533,6 +533,11 @@ pub struct UpdateChatModelParams {
     /// user's own login on another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// A speed tier id from the selected model's `speedTiers`, or `standard`
+    /// for the provider's standard speed. Omitted keeps the current speed when
+    /// the target model offers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -621,6 +626,27 @@ pub struct StartSessionParams {
 #[serde(rename_all = "camelCase")]
 pub struct StartChatParams {
     pub session_id: String,
+}
+
+/// `sessions/record_client_latency`: what one send cost as the person saw it,
+/// measured in the webview: milliseconds from the Send click to each boundary
+/// it crossed (each request answered, the first frame, the first output
+/// painted). The daemon cannot see any of these, so they arrive here and land
+/// in the latency ledger beside its own rows. Durations and names only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordClientLatencyParams {
+    pub session_id: String,
+    /// `new_chat` when the click created the chat, `send` otherwise.
+    pub flow: String,
+    pub steps: Vec<ClientLatencyStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientLatencyStep {
+    pub name: String,
+    pub at_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1116,6 +1142,7 @@ mod tests {
             model: Some("kimi-k2.5".into()),
             effort: Some("high".into()),
             account: None,
+            speed: None,
         };
         let wire = serde_json::to_value(&update).unwrap();
         assert_eq!(

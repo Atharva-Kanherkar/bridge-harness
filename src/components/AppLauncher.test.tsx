@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppLauncher, launcherSections, type AppLauncherProps } from "./AppLauncher";
 import { PIN_LIMIT_MESSAGE, type PinResult } from "../apps/pins";
-import { BUILTIN_APPS, type AppId } from "../apps/registry";
+import { BUILTIN_APPS, personalEntry, type AppId, type AppKey } from "../apps/registry";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -72,7 +72,7 @@ describe("launcherSections", () => {
   it("lists only the apps that are on, in Needs you and in the grid", () => {
     const on = BUILTIN_APPS.filter(app => app.id !== "workflows");
     const sections = launcherSections({ apps: on, query: "", badges: { workflows: { count: 2 }, memory: { count: 1 } }, chats: [], chatOpen: false });
-    const ids = (id: string) => sections.find(section => section.id === id)!.items.map(item => "app" in item ? item.app.id : "");
+    const ids = (id: string) => sections.find(section => section.id === id)!.items.map(item => "app" in item ? item.app.key : "");
     expect(ids("apps")).not.toContain("workflows");
     expect(ids("needs")).toEqual(["memory"]);
   });
@@ -151,8 +151,8 @@ describe("AppLauncher", () => {
   });
 
   it("pins the highlighted app with ⌘P and says so", async () => {
-    let pins: AppId[] = [];
-    const onTogglePin = vi.fn(async (id: AppId): Promise<PinResult> => { pins = [...pins, id]; return { ok: true }; });
+    let pins: AppKey[] = [];
+    const onTogglePin = vi.fn(async (id: AppKey): Promise<PinResult> => { pins = [...pins, id]; return { ok: true }; });
     await mount({ onTogglePin });
     await press("p", { metaKey: true });
     expect(onTogglePin).toHaveBeenCalledWith("notes");
@@ -212,5 +212,31 @@ describe("AppLauncher", () => {
     const row = [...document.querySelectorAll('[role="option"]')].find(node => node.textContent?.includes("Search this chat")) as HTMLElement;
     await act(async () => { row.click(); });
     expect(value.onSearchThisChat).toHaveBeenCalled();
+  });
+});
+
+describe("My apps in the launcher", () => {
+  const slack = personalEntry({ id: "slack-dm", name: "Slack DM", intent: "Message a teammate", server: "claude.ai Slack" });
+
+  it("gets its own section, found by name or server, and opens by key", async () => {
+    const value = await mount({ personal: [slack] });
+    expect(sections()).toContain("mine");
+    await type("slack");
+    expect(sections()).toEqual(["mine", "actions"]);
+    await press("Enter");
+    expect(value.onOpenApp).toHaveBeenCalledWith("personal:slack-dm");
+  });
+
+  it("pins a personal app with ⌘P", async () => {
+    const onTogglePin = vi.fn(async (_key: AppKey): Promise<PinResult> => ({ ok: true }));
+    await mount({ personal: [slack], onTogglePin });
+    await type("slack dm");
+    await press("p", { metaKey: true });
+    expect(onTogglePin).toHaveBeenCalledWith("personal:slack-dm");
+    expect(document.querySelector('[role="status"]')?.textContent).toBe("Pinned Slack DM to the sidebar.");
+  });
+
+  it("has no section when the person has no apps on", () => {
+    expect(launcherSections({ query: "", apps: BUILTIN_APPS, personal: [], badges: {}, chats: [], chatOpen: false }).map(section => section.id)).not.toContain("mine");
   });
 });

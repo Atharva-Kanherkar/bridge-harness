@@ -123,6 +123,7 @@ fn live() {
                 cwd: &cwd_text,
                 model: model.as_deref(),
                 effort: None,
+                speed: None,
                 instructions: None,
                 write_mode: Some(access),
                 read_only_sandbox: None,

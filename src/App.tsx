@@ -10,12 +10,14 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, use
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
-import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
+import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
+import { continuationNotice, importedChatBadge } from "./importSources";
+import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
 import { pickPath } from "./pathPicker";
 import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
@@ -39,18 +41,18 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
-import { appById, appForView, appsBadge, badgeText, type AppId } from "./apps/registry";
+import { appById, appForView, appsBadge, badgeText, builtinEntry, isAppId, personalEntry, personalIdOf, personalKey, type AppKey, type LaunchEntry } from "./apps/registry";
 import { setPinned, togglePin } from "./apps/pins";
-import { badgesOf, enabledApps, pinsOf, useApps } from "./apps/store";
+import { badgesOf, enabledApps, enabledPersonal, pinsOf, useApps, usePersonalApps } from "./apps/store";
+import { PersonalAppSurface } from "./components/PersonalAppSurface";
 import { splitDockPanes, useAddedPanes } from "./dockVisibility";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
+import { speedTiersOf } from "./components/effort/SpeedControl";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { BrowserPane } from "./components/BrowserPane";
-import { CloneRequestInbox } from "./components/CloneRequestInbox";
-import type { CloneSupervision } from "./components/CloneSurface";
 import { sanitizeBrowserSelection, serializeBrowserSelections, type BrowserSelectionContext } from "./browserSelection";
 import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
@@ -66,6 +68,8 @@ import { fixPrompt } from "./workSummary";
 import { PullsScreen } from "./components/PullsScreen";
 import { pullsJumpStep, type PullsJump } from "./pullsJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { ImportToast } from "./components/ImportToast";
+import { importNotice } from "./moveToBridge";
 import { TrailToasts, trailToastKey, type TrailToast } from "./components/trails/TrailToasts";
 import { AddToTrailDialog } from "./components/trails/AddToTrailDialog";
 import type { TrailStartRequest } from "./components/TrailsScreen";
@@ -93,6 +97,7 @@ import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type 
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
+import { requestTerminalRun } from "./terminal/runQueue";
 import { TasksPane, activeAgentRows, type AgentFocus } from "./components/TasksPane";
 import { usePinnedAgents } from "./pinnedAgents";
 import { useAgentSpawns } from "./agentSpawns";
@@ -267,6 +272,8 @@ function AppContent() {
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
+  // The personal app on screen in the `personal-app` view.
+  const [personalAppId, setPersonalAppId] = useState<string | null>(null);
   const loginSessionRef = useRef<{ id: string; harness: string } | undefined>();
   loginSessionRef.current = state.sessions.find(item => item.id === selectedSessionId);
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
@@ -974,17 +981,18 @@ function AppContent() {
   useEffect(() => startAppPreferenceSync(bridgeApi), []);
 
   useEffect(() => {
-    const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
+    const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm, appId: view === "personal-app" ? personalAppId : null };
     if (skipNavRecord.current) {
       skipNavRecord.current = false;
       return;
     }
     setNavPlaces(current => recordPlace(current.stack, current.index, place));
-  }, [view, selectedSessionId, paradigm]);
+  }, [view, selectedSessionId, paradigm, personalAppId]);
 
   const applyPlace = useCallback((place: AppPlace) => {
     skipNavRecord.current = true;
     setView(place.view);
+    if (place.view === "personal-app") setPersonalAppId(place.appId ?? null);
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
   }, []);
@@ -1036,12 +1044,31 @@ function AppContent() {
   // condition that decides whether the pane is available at all.
   const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
-  const importedSourceFingerprint = useMemo(() => {
+  const importedSource = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
-    const value = forest?.entries.find(entry => entry.sessionId === session.id)?.payload.sourcePathFingerprint;
-    return typeof value === "string" ? value : undefined;
+    const payload = forest?.entries.find(entry => entry.sessionId === session.id)?.payload;
+    const fingerprint = payload?.sourcePathFingerprint;
+    const tool = payload?.importSource;
+    return {
+      fingerprint: typeof fingerprint === "string" ? fingerprint : undefined,
+      tool: typeof tool === "string" ? tool : undefined,
+    };
   }, [forest?.entries, session?.id, session?.kind]);
   useEffect(() => { setAgentDispatchNotice(undefined); }, [session?.id]);
+  // An imported chat is history: the next message continues it in a new chat,
+  // natively when the tool still has the session. Say which before the send.
+  const [importContinuation, setImportContinuation] = useState<{ sessionId: string; plan: ImportContinuation }>();
+  useEffect(() => {
+    if (session?.kind !== "imported") return;
+    let cancelled = false;
+    const sessionId = session.id;
+    bridgeApi.importContinuation(sessionId)
+      .then(plan => { if (!cancelled) setImportContinuation({ sessionId, plan }); })
+      .catch(() => { if (!cancelled) setImportContinuation(undefined); });
+    return () => { cancelled = true; };
+  }, [session?.id, session?.kind]);
+  const continuation = session?.kind === "imported" && importContinuation?.sessionId === session.id
+    ? continuationNotice(importContinuation.plan, importedSource?.tool) : undefined;
 
   // The dock is a workspace possession: width, active pane, and expand state
   // belong to the tree being worked on, so direct chats key by session instead.
@@ -1081,25 +1108,10 @@ function AppContent() {
   const [connectorUnread, setConnectorUnread] = useState(0);
   const [connectorFocus, setConnectorFocus] = useState<string>();
   const connectorAttention = connectorToasts.some(toast => !toast.settled);
-  // The clone surface reports whether it needs the person (waiting_for_you or a
-  // pending approval). Only a mounted surface is polling, so the mark is drawn
-  // only while the pane has been visited: an unmounted surface cannot vouch for
-  // a state it is no longer watching.
-  const [cloneAttention, setCloneAttention] = useState(false);
-  const reportCloneSupervision = useCallback((state: CloneSupervision) => setCloneAttention(state.attention), []);
-  useEffect(() => setCloneAttention(false), [selectedSessionId]);
-  const cloneAlert = cloneAttention;
-  const [cloneFocus, setCloneFocus] = useState<string>();
   // The composer ring opens the Context lens over the chat it belongs to.
   // Switching chats closes it, so a stale chat's windows are never shown.
   const [contextLensFor, setContextLensFor] = useState<string | null>(null);
   useEffect(() => setContextLensFor(null), [selectedSessionId]);
-  useEffect(() => {
-    if (cloneFocus && selectedSessionId === cloneFocus) {
-      dispatchDock({ type: "open-pane", pane: "browser" });
-      setCloneFocus(undefined);
-    }
-  }, [cloneFocus, selectedSessionId, dispatchDock]);
 
   // The PRs this chat opened (or had attached), kept live after the turn ends.
   // The shelf above the composer and the Work pane in the dock say how those
@@ -1121,8 +1133,8 @@ function AppContent() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
-    // One browser: your own pages, and the throwaway copy an agent asks for.
-    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: cloneAlert || undefined },
+    // One browser: your own pages.
+    { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Agents", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
@@ -1178,6 +1190,14 @@ function AppContent() {
       setHighlightEntryId(current => current === entryId ? null : current);
     }, 3000);
   }
+  // A shell block's Run: the dock shows the terminal and its active shell
+  // takes the command. Stable per workspace so code blocks don't re-render.
+  const runWorkspaceId = hasRepo ? workspace?.id : undefined;
+  const runInTerminal = useCallback((command: string) => {
+    if (!runWorkspaceId) return Promise.reject(new Error("This chat has no terminal."));
+    dispatchDock({ type: "open-pane", pane: "terminal" });
+    return requestTerminalRun(runWorkspaceId, command);
+  }, [runWorkspaceId, dispatchDock]);
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
@@ -1204,6 +1224,20 @@ function AppContent() {
   const githubIntentNonce = useRef(0);
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
+  // A background import ended: say so wherever the person is in Bridge, and
+  // with a system notification when Bridge is in the background.
+  const [importToast, setImportToast] = useState<ImportJob | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void bridgeApi.onImportProgress(job => {
+      if (job.status === "running") return;
+      setImportToast(job);
+      const notice = importNotice(job);
+      void notifyAttention(notice.title, notice.body);
+    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; });
+    return () => { disposed = true; stop?.(); };
+  }, []);
   // Trails: the list feeds the sidebar badge and a chat's trail chip; the
   // Trails view shows one trail when `trailId` is set.
   const [trailSummaries, setTrailSummaries] = useState<TrailSummary[]>([]);
@@ -1506,6 +1540,8 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  /** The speed picked on the new-chat screen, applied to the chat it creates. */
+  const [draftSpeed, setDraftSpeed] = useState<string | null>(null);
   // The harness/model the last new chat was confirmed on. Read once at mount and
   // updated through `rememberDraftChoice`, so a new chat paints the real model
   // before provider catalogs finish discovering instead of a fallback guess.
@@ -2230,19 +2266,28 @@ function AppContent() {
       // submit is a no-op, never a zero-entry placeholder row. The draft stays open.
       if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
+      const latency = beginNewChat();
       try {
         const overrides = draft.overrides ?? {};
         const reviewed = draftSettings.settings?.workspaceId === draft.workspaceId ? draftSettings.settings : undefined;
         const settings = await bridgeApi.resolveChatSettings({workspaceId:draft.workspaceId,overrides,expectedRevision:reviewed?.revision});
+        markFlight(latency, "resolve_chat_settings");
         const agent = settings.target.kind === "agent" ? settings.target : undefined;
         const mention = configuredAgentMention(text, agentShortcutTargets);
         if ((agent || mention) && (initialAttachments.length > 0 || !text)) {
           throw new Error("Agents need a text objective and workspace file references. Remove image attachments before sending to an agent.");
         }
         const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null});
-        const next = result.state;
+        markFlight(latency, "create_configured_chat");
+        let next = result.state;
         const created = next.sessions.find(item => item.id === result.sessionId);
         if (!created) throw new Error("The host did not return the created chat");
+        // A faster speed picked before the first message. The chat has no
+        // process yet, so this only records the choice its first turn starts on.
+        if (!agent && draftSpeed && created.model && speedTiersOf(adapters, created.harness, created.model).some(tier => tier.id === draftSpeed)) {
+          next = await bridgeApi.updateChatModel(created.id, created.harness, created.model, undefined, undefined, draftSpeed).catch(() => next);
+        }
+        bindNewChat(latency, result.sessionId);
         setChatConfiguration({sessionId:result.sessionId,value:result.configuration});
         const firstMessage = agent && !mention ? `#${agent.agentId} ${text}` : text;
         // Carry before selecting: the welcome-message effect fires on session-id
@@ -2277,6 +2322,7 @@ function AppContent() {
         }
         return created?.id;
       } catch (e) {
+        abandonFlight(latency);
         pendingWelcomeMessageRef.current = null;
         if (e instanceof TrailStartError) throw e;
         setError(errorMessage(e));
@@ -2835,6 +2881,15 @@ function AppContent() {
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
+  /** Fast mode, Fast or Ultrafast, or back to standard. Like effort it is a
+   *  launch option: the next turn starts on it. */
+  async function changeChatSpeed(speed: string) {
+    if (!session) return;
+    setBusy(true); setError(undefined);
+    try { setState(await bridgeApi.updateChatModel(session.id, session.harness, session.model ?? null, undefined, undefined, speed)); }
+    catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  }
   async function connectNewWorkspaceFolder(value: string) {
     setBusy(true); setError(undefined);
     try {
@@ -2930,7 +2985,19 @@ function AppContent() {
   /// submit, with optimistic pending bookkeeping. Slash-command handling stays
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
   async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
+    // An imported chat never changes. The message goes to a new chat that
+    // continues it, natively when the tool still has the session.
+    if (target.kind === "imported") {
+      const continued = await bridgeApi.continueImportedChat(target.id);
+      const next = await bridgeApi.state();
+      setState(next);
+      openSession(continued.sessionId);
+      const created = next.sessions.find(item => item.id === continued.sessionId);
+      if (!created) throw new Error("Bridge could not open the chat that continues this one.");
+      return deliverPrompt(created, submittedText, sentAttachments);
+    }
     const key = crypto.randomUUID();
+    const latency = beginSend(target.id);
     const flight = sessionStops.beginSend(target.id, () => setPending(current => current.filter(item => item.key !== key)));
     // The bubble lands before the first round-trip, not after it: the user
     // should see their words the instant they press Send, and the daemon may
@@ -2941,6 +3008,7 @@ function AppContent() {
       if (flight.ready) await flight.ready;
       if (flight.cancelled) return;
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      markFlight(latency, "prepare_turn");
       if (flight.cancelled) return;
       const text = prepared.text;
       if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
@@ -2948,13 +3016,17 @@ function AppContent() {
         flight.starting();
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
+        markFlight(latency, "start_chat");
         if (flight.cancelled) { flight.stopIfCancelled(); return; }
       }
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
       flight.submitted();
+      markSubmitted(latency);
       const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments, activeTurnInput);
+      markFlight(latency, "submit_input");
+      if (outcome.disposition !== "startedNewTurn") abandonFlight(latency);
       if (flight.cancelled) { flight.stopIfCancelled(); return; }
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
@@ -2965,6 +3037,8 @@ function AppContent() {
       if (flight.cancelled) return;
       throw e;
     } finally {
+      // A send that never reached submit has no first output to time.
+      if (!latency.submitted) abandonFlight(latency);
       flight.finish();
     }
   }
@@ -3078,6 +3152,22 @@ function AppContent() {
     }
     const key = crypto.randomUUID();
     let target = session;
+    // An imported chat never changes: the message goes to a new chat that
+    // continues it, natively when the tool still has the session.
+    if (session.kind === "imported") {
+      try {
+        const continued = await bridgeApi.continueImportedChat(session.id);
+        const next = await bridgeApi.state();
+        setState(next);
+        openSession(continued.sessionId);
+        const created = next.sessions.find(item => item.id === continued.sessionId);
+        if (!created) throw new Error("Bridge could not open the chat that continues this one.");
+        target = created;
+      } catch (e) {
+        setError(errorMessage(e));
+        return;
+      }
+    }
     // Stop before submission means the words never left. Their bubble goes
     // and they are back in the composer, as if Send had not been pressed.
     const flight = sessionStops.beginSend(target.id, () => {
@@ -3247,7 +3337,14 @@ function AppContent() {
   // Core owns the apps: which are on, the pins and the badges.
   const coreApps = useApps();
   const launcherApps = useMemo(() => enabledApps(coreApps), [coreApps]);
-  const pins = useMemo(() => pinsOf(coreApps), [coreApps]);
+  const personalApps = usePersonalApps();
+  const launcherPersonal = useMemo(() => enabledPersonal(personalApps), [personalApps]);
+  const pins = useMemo(() => pinsOf(coreApps, personalApps), [coreApps, personalApps]);
+  const pinEntries = useMemo(() => pins.flatMap((key): LaunchEntry[] => {
+    if (isAppId(key)) return [builtinEntry(appById(key))];
+    const found = personalApps.find(entry => personalKey(entry.app.id) === key);
+    return found ? [personalEntry(found.app)] : [];
+  }), [pins, personalApps]);
   const appBadges = useMemo(() => badgesOf(coreApps), [coreApps]);
   const launcherChats = useMemo(() => [...topSessions].sort(byRecency).slice(0, 20).map(chat => ({
     id: chat.id,
@@ -3592,7 +3689,6 @@ function AppContent() {
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   const codexUpdateOverlays = <>
-    <CloneRequestInbox sessionLabels={Object.fromEntries(state.sessions.map(item => [item.id, item.label]))} onOpen={id => { openSession(id); setCloneFocus(id); }} onError={setError} />
     {!error && codexUpdateSuccess && <TransientAlert title="Codex updated" message="Bridge refreshed the Codex runtime." variant="success" onDismiss={() => setCodexUpdateSuccess(false)} />}
     {!error && !codexUpdateSuccess && codexUpdateNotice && latestCodex && codexVersion && <TransientAlert
       title="Codex update available"
@@ -3612,7 +3708,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "personal-app" ? (personalApps.find(entry => entry.app.id === personalAppId)?.app.name ?? "App") : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3656,14 +3752,17 @@ function AppContent() {
   ) : undefined;
   // Every app opens the way its old sidebar row did. Terminals and Mission
   // Control also leave the grid paradigm, as their rows always had.
-  const openApp = (id: AppId) => {
+  const openApp = (key: AppKey) => {
+    const personal = personalIdOf(key);
+    if (personal !== null) { setPersonalAppId(personal); setView("personal-app"); return; }
+    const id = key as Exclude<AppKey, `personal:${string}`>;
     // Trails opens on its list, the way its old row did.
     if (id === "trails") { openTrail(null); return; }
     const { view: target } = appById(id);
     if (target === "agent-fleet" || target === "mission-control") setParadigm("single");
     setView(target);
   };
-  const activeApp = appForView(view, paradigm);
+  const activeApp: AppKey | null = view === "personal-app" && personalAppId ? personalKey(personalAppId) : appForView(view, paradigm);
   const searchAllChats = (query: string) => {
     setSidebarCollapsed(false);
     setNavOpen(true);
@@ -3688,7 +3787,7 @@ function AppContent() {
       onOpenProjects={() => setView("projects")}
       onOpenApps={() => setLauncherOpen(true)}
       appsBadge={appsBadge(appBadges)}
-      pinnedApps={pins.map(id => ({ id, badge: badgeText(appBadges[id]) }))}
+      pinnedApps={pinEntries.map(app => ({ app, badge: isAppId(app.key) ? badgeText(appBadges[app.key]) : undefined }))}
       activeApp={activeApp}
       onOpenApp={openApp}
       onUnpinApp={id => void setPinned(id, false).then(result => { if (!result.ok) setError(result.message); })}
@@ -3787,7 +3886,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening the Store…"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening the Store…"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "personal-app" && personalAppId ? <PersonalAppSurface key={personalAppId} appId={personalAppId} /> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
@@ -3818,7 +3917,7 @@ function AppContent() {
           onOpenTrail={() => { const trail = trailForSession(trailSummaries, session.id); if (trail) openTrail(trail.id); }}
           onAddToTrail={!session.parentSessionId ? () => setAddToTrail({ member: { kind: "session", ref: session.id }, title: chatName(session), workspaceId: session.workspaceId ?? null }) : undefined}
           projectName={workspace?.title}
-          sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
+          sourceBadge={session.kind === "imported" ? importedChatBadge(importedSource?.tool, importedSource?.fingerprint) : undefined}
           leading={sidebarNav}
           sidebarHidden={sidebarCollapsed}
           navOpen={navOpen}
@@ -3976,6 +4075,7 @@ function AppContent() {
                    }}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
+                  onRunInTerminal={runWorkspaceId ? runInTerminal : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                   onForkSession={(snapshotSessionId, entryId) => {
@@ -4007,6 +4107,12 @@ function AppContent() {
                   </div>
                 </div>}
                 {!isWorkerView && <LimitRecoveryBanner sessionId={session.id} sessionStatus={session.status} adapters={adapters} onError={message => setError(message)} />}
+                {continuation && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
+                  <div data-import-continuation={importContinuation?.plan.mode} className="u-glass-soft flex max-w-full items-start gap-2 rounded-2xl px-3.5 py-2 text-xs text-muted-foreground" role="status">
+                    <History size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                    <span><span className="font-medium text-foreground">{continuation.headline}</span><span className="block">{continuation.detail}</span></span>
+                  </div>
+                </div>}
                 {fallbackNotice && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <span>{fallbackNotice}</span>
@@ -4136,7 +4242,7 @@ function AppContent() {
                     header={<ChatWorkShelf sessionId={session.id} harness={session.harness} prs={chatPrs.prs} onOpen={showWorkInDock} onFix={draftPullRequestFix} />}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
+                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} speed={session.speed ?? null} onSpeedChange={speed => void changeChatSpeed(speed)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
                     footer={<ComposerContextStrip
@@ -4207,9 +4313,6 @@ function AppContent() {
               if (pane === "browser") return <BrowserPane
                 key={session.id}
                 sessionId={session.id}
-                agentLabel={harnessLabel(session.harness)}
-                onSupervisionChange={reportCloneSupervision}
-                onError={setError}
                 visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !contextLensFor && !githubLinkChoice && !recallOpen && !navOpen}
                 onAttachSelection={attachBrowserSelection}
                 onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
@@ -4258,6 +4361,8 @@ function AppContent() {
         account={draftSettings.settings?.model.account ?? null}
         effort={draftSettings.settings?.effort ?? undefined}
         onSelectEffort={effort => patchDraft({effort:{value:effort}})}
+        speed={draftSpeed}
+        onSelectSpeed={setDraftSpeed}
         onSelectModel={(harness, model, account) => patchDraft({model:{harness,model,...(account ? {account} : {})},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model).filter(value => draftSettings.settings?.target.kind !== "agent" || WORKER_EFFORTS.includes(value)),draftSettings.settings?.effort) ?? null}})}
         slashCommands={slashCommands}
         suggestionSettings={suggestionSettings}
@@ -4359,6 +4464,11 @@ function AppContent() {
       }}
       onDismiss={key => setTrailToasts(current => current.filter(item => item.key !== key))}
     />
+    {importToast && <ImportToast
+      job={importToast}
+      onOpen={() => { setImportToast(null); setSettingsSection("import"); setView("settings"); }}
+      onDismiss={() => setImportToast(null)}
+    />}
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
@@ -4426,6 +4536,7 @@ function AppContent() {
       open={launcherOpen}
       onClose={() => setLauncherOpen(false)}
       apps={launcherApps}
+      personal={launcherPersonal}
       badges={appBadges}
       pins={pins}
       chats={launcherChats}
@@ -4466,7 +4577,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, knownLabel, loading, slashCommands, suggestionSettings, effort, onSelectEffort, speed, onSelectSpeed, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -4484,6 +4595,8 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
   loading?: boolean;
   effort?: string;
   onSelectEffort: (effort: string) => void;
+  speed?: string | null;
+  onSelectSpeed?: (speed: string) => void;
   onSelectModel: (harness: Harness, model: string | null, account: string | null) => void;
   accounts: readonly AccountChoice[];
   account: string | null;
@@ -4668,7 +4781,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} knownLabel={knownLabel} loading={loading} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} speed={speed} onSpeedChange={agent ? undefined : onSelectSpeed} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip

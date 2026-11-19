@@ -875,6 +875,18 @@ impl BridgeCore {
         let runtime = { self.adapters.lock().unwrap().remove(session_id) };
         if let Some(mut runtime) = runtime {
             runtime.stop(reason);
+            // The reader no longer counts as current, so its exit will not
+            // close the subagents and background tasks that died with it.
+            let closed = match self.try_db() {
+                Ok(db) => crate::harness_subagents::close_with_process(&db, session_id),
+                Err(error) => {
+                    eprintln!("[sessions] cleanup for {session_id}: {error}");
+                    Vec::new()
+                }
+            };
+            for event in closed {
+                self.events.publish(crate::events::CoreEvent::Agent(event));
+            }
         }
         // A model switch's outgoing runtime lives outside the adapter map while
         // it summarises; stopping the session must not leave it running.
@@ -2045,8 +2057,10 @@ pub(crate) fn fork_session_records(
     }
     // Continue in chat: a workflow run's conversation goes on as an ordinary
     // chat. The run itself stays hidden and refuses user turns; its fork must
-    // do neither.
-    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND { "direct".to_owned() } else { kind };
+    // do neither. An imported chat is the same: it is history that never
+    // starts, and a fork of it is an ordinary chat that can.
+    let from_import = kind == "imported";
+    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND || from_import { "direct".to_owned() } else { kind };
     let fork_harness = harness.map(|value| store::harness_name(value).into_owned());
     let child_harness = fork_harness.as_deref().unwrap_or(&parent_harness);
     let child_model = match (model, parent_model.as_deref()) {
@@ -2117,6 +2131,14 @@ pub(crate) fn fork_session_records(
         // verbatim; `provider_event_id` is cleared because the fork owns no
         // provider-adjacent events yet.
         let entry_copy_id = Uuid::new_v4().to_string();
+        // Imported history is stored for display only (`visible`), so it
+        // never enters a model's context. The chat that continues it is a
+        // conversation with that history, and gives it to the model.
+        let context_visibility = if from_import && entry.context_visibility == "visible" {
+            "eligible"
+        } else {
+            entry.context_visibility.as_str()
+        };
         transaction.execute(
             "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,?10)",
@@ -2128,7 +2150,7 @@ pub(crate) fn fork_session_records(
                 entry.semantic_schema_version,
                 entry.kind,
                 entry.payload.to_string(),
-                entry.context_visibility,
+                context_visibility,
                 entry.token_estimate,
                 entry.created_at,
             ],
@@ -2451,6 +2473,7 @@ mod tests {
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
                         supported_effort_levels: vec!["high".into(), "ultra".into()],
+                        speed_tiers: vec![crate::model::SpeedTier { id: "priority".into(), label: "Fast".into(), description: None }],
                         default_for_tier: true,
                     },
                     ModelOption {
@@ -2462,6 +2485,7 @@ mod tests {
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
                         supported_effort_levels: Vec::new(),
+                        speed_tiers: Vec::new(),
                         default_for_tier: true,
                     },
                 ],
@@ -2550,6 +2574,7 @@ mod tests {
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
                         supported_effort_levels: Vec::new(),
+                        speed_tiers: Vec::new(),
                         default_for_tier: true,
                     },
                     ModelOption {
@@ -2561,6 +2586,7 @@ mod tests {
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
                         supported_effort_levels: Vec::new(),
+                        speed_tiers: Vec::new(),
                         default_for_tier: true,
                     },
                 ],
@@ -5236,6 +5262,37 @@ mod tests {
         crate::api::update_chat_model(&core, "effort-chat", &Harness::Codex, Some("stub-fast"), None).unwrap();
         let effort: Option<String> = core.db.lock().unwrap().query_row("SELECT effort FROM sessions WHERE id='effort-chat'", [], |row| row.get(0)).unwrap();
         assert!(effort.is_none(), "switching to a model without thinking support clears effort");
+    }
+
+    #[test]
+    fn chat_speed_is_validated_stored_and_restarts_the_warm_runtime() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let core = std::sync::Arc::new(core);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,model,provider_session_id) VALUES('speed-chat','w','codex','Chat','idle','estimated','direct','stub-standard','native-thread')", [],
+        ).unwrap();
+        let warm = |core: &std::sync::Arc<crate::runtime::BridgeCore>| core.adapters.lock().unwrap().insert("speed-chat".into(), Box::new(RecordingRuntime {
+            interrupted: Default::default(), usage_requested: Default::default(),
+        }));
+        let speed = |core: &std::sync::Arc<crate::runtime::BridgeCore>| -> Option<String> {
+            core.db.lock().unwrap().query_row("SELECT speed FROM sessions WHERE id='speed-chat'", [], |row| row.get(0)).unwrap()
+        };
+        warm(&core);
+        assert!(crate::api::update_chat_selection(&core, "speed-chat", &Harness::Codex, Some("stub-standard"), None, None, Some("turbo")).is_err());
+        assert!(core.adapters.lock().unwrap().contains_key("speed-chat"), "a refused speed changes nothing");
+        crate::api::update_chat_selection(&core, "speed-chat", &Harness::Codex, Some("stub-standard"), None, None, Some("priority")).unwrap();
+        assert!(!core.adapters.lock().unwrap().contains_key("speed-chat"), "speed is a launch option");
+        assert_eq!(speed(&core).as_deref(), Some("priority"));
+        // An effort-only change keeps the chosen speed.
+        crate::api::update_chat_model(&core, "speed-chat", &Harness::Codex, Some("stub-standard"), Some("high")).unwrap();
+        assert_eq!(speed(&core).as_deref(), Some("priority"));
+        crate::api::update_chat_selection(&core, "speed-chat", &Harness::Codex, Some("stub-standard"), None, None, Some("standard")).unwrap();
+        assert_eq!(speed(&core).as_deref(), Some("standard"));
+        crate::api::update_chat_selection(&core, "speed-chat", &Harness::Codex, Some("stub-standard"), None, None, Some("priority")).unwrap();
+        // A model without faster tiers drops the inherited speed.
+        crate::api::update_chat_model(&core, "speed-chat", &Harness::Codex, Some("stub-fast"), None).unwrap();
+        assert_eq!(speed(&core), None);
     }
 
     /// A runtime that is registered but can no longer answer — the shape of a

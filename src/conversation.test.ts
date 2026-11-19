@@ -944,6 +944,12 @@ describe("toolCallDisplay", () => {
 });
 
 describe("attachmentUris", () => {
+  it("reads images a stored forest entry keeps under data, as after a reload or an import", () => {
+    const uri = "data:image/png;base64,iVBORw0KGgo=";
+    expect(attachmentUris({ text: "see this", data: { attachments: [{ mediaType: "image/png", dataUri: uri }] } })).toEqual([uri]);
+    expect(attachmentUris({ data: "not an object" })).toEqual([]);
+    expect(attachmentUris({ data: null })).toEqual([]);
+  });
   it("extracts image data URIs from a persisted user turn payload", () => {
     expect(attachmentUris({
       delivery: "submitted",

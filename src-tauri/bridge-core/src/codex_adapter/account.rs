@@ -30,10 +30,19 @@ pub struct AccountQuota {
 }
 
 pub fn read(interactive: bool) -> Result<AccountQuota, BridgeError> {
+    read_as(interactive, None)
+}
+
+/// [`read`] against an extra account's `CODEX_HOME`.
+pub fn read_as(
+    interactive: bool,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) -> Result<AccountQuota, BridgeError> {
     let (before, after, limits) = exchange(
         "account/rateLimits/read",
         json!({"excludeResetCreditDetails": !interactive}),
         None,
+        account,
     )?;
     normalize(before, after, limits, chrono::Utc::now().timestamp())
 }
@@ -47,6 +56,7 @@ pub fn consume(
         "account/rateLimitResetCredit/consume",
         json!({"idempotencyKey": idempotency_key, "creditId": credit_id}),
         Some(expected_account),
+        None,
     )?;
     let outcome = result["outcome"].as_str().filter(|outcome| matches!(
         *outcome, "reset" | "nothingToReset" | "noCredit" | "alreadyRedeemed"
@@ -62,6 +72,7 @@ fn exchange(
     method: &str,
     params: Value,
     expected_account: Option<&str>,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
 ) -> Result<(Value, Value, Value), BridgeError> {
     let binary = resolve_runtime().ok_or_else(|| {
         BridgeError::Adapter(
@@ -70,6 +81,7 @@ fn exchange(
     })?;
     let mut command = adapters::supervised_command(&binary, ["app-server", "--listen", "stdio://"]);
     binary::hydrate_command_path(&mut command);
+    crate::provider_accounts::apply_account(&mut command, account);
     adapters::configure_process_group(&mut command);
     let mut child = SpawnedChildGuard::new(
         command

@@ -284,3 +284,19 @@ it("explains environment-managed OpenCode credentials without leaking the error 
   expect(container.textContent).not.toContain("private-details");
   expect(input.value).toBe("");
 });
+
+it("lists every Claude account, not only the own login, even when an account arrives first", async () => {
+  const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
+  const row = (account: string, plan: string, extra: object = {}) => ({ schemaVersion: 1, generatedAt: 1, provider: "claude", account, plan, observedAt: 1, coverage: "", windows: [], today: empty, month: empty, error: null, ...extra });
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue({ ...structuredClone(settings), claudeEnabled: true });
+  vi.mocked(bridgeApi.getProviderUsageOverviews).mockResolvedValue({ schemaVersion: 1, generatedAt: 1, providers: [
+    row("me@personal.test", "Claude Max", { accountId: "personal", accountLabel: "Personal" }),
+    row("me@team.test", "Claude Team"),
+  ] });
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const text = container.textContent ?? "";
+  expect(text).toContain("me@team.test · Claude Team");
+  expect(text).toContain("Claude · Personal");
+  expect(text).toContain("me@personal.test · Claude Max");
+  expect(text.indexOf("me@team.test")).toBeLessThan(text.indexOf("Claude · Personal"));
+});

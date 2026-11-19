@@ -93,3 +93,38 @@ describe("the Store's Apps tab", () => {
     expect(onOpenApp).toHaveBeenCalledWith("usage");
   });
 });
+
+describe("My apps", () => {
+  const mine = () => [...host.querySelectorAll('[aria-label="My apps"] h3')].map(node => node.textContent);
+
+  it("lists the person's apps with their connection, and opens one in its pane", async () => {
+    const onOpenApp = vi.fn();
+    await render(<MarketplaceScreen onOpenApp={onOpenApp} />);
+    expect(mine()).toEqual(["Slack DM"]);
+    expect(host.querySelector('[data-personal-app="slack-dm"]')?.textContent).toContain("claude.ai Slack · via Claude Code · v1");
+    await click(button("Open Slack DM"));
+    expect(onOpenApp).toHaveBeenCalledWith("personal:slack-dm");
+  });
+
+  it("pins, turns off and on, and deletes only after confirming", async () => {
+    await render(<MarketplaceScreen onOpenApp={vi.fn()} />);
+    await click(button("Pin Slack DM"));
+    const listed = await bridgeApi.listApps();
+    expect(pinsOf(listed.apps, listed.personal)).toEqual(["personal:slack-dm"]);
+    await click(button("Turn Slack DM off"));
+    expect(status()).toContain("Writes waiting for approval were cancelled");
+    expect(button("Open Slack DM"), "an app that is off does not open").toBeNull();
+    const off = await bridgeApi.listApps();
+    expect(pinsOf(off.apps, off.personal), "off unpins").toEqual([]);
+    await click(button("Turn Slack DM on"));
+    const remove = vi.spyOn(bridgeApi, "deletePersonalApp");
+    await click(button("Delete Slack DM"));
+    expect(remove).not.toHaveBeenCalled();
+    expect(host.querySelector('[aria-label="Delete Slack DM?"]')?.textContent).toContain("Delete every version of Slack DM?");
+    const confirm = [...host.querySelectorAll('[aria-label="Delete Slack DM?"] button')].find(node => node.textContent === "Delete") as HTMLButtonElement;
+    await click(confirm);
+    expect(remove).toHaveBeenCalledWith("slack-dm");
+    expect(mine()).toEqual([]);
+    expect(host.textContent).toContain("No apps yet.");
+  });
+});

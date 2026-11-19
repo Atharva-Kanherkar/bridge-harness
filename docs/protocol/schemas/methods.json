@@ -65,6 +65,41 @@
       "resultSchema": "external-import-commit.json"
     },
     {
+      "command": "detect_import_sources",
+      "domain": "imports",
+      "method": "imports/detect_import_sources",
+      "paramsSchema": null,
+      "resultSchema": "import-sources-detection.json"
+    },
+    {
+      "command": "start_import",
+      "domain": "imports",
+      "method": "imports/start_import",
+      "paramsSchema": "start-import-params.json",
+      "resultSchema": "import-job.json"
+    },
+    {
+      "command": "import_status",
+      "domain": "imports",
+      "method": "imports/import_status",
+      "paramsSchema": null,
+      "resultSchema": "import-job-status.json"
+    },
+    {
+      "command": "import_continuation",
+      "domain": "imports",
+      "method": "imports/import_continuation",
+      "paramsSchema": "import-continuation-params.json",
+      "resultSchema": "import-continuation.json"
+    },
+    {
+      "command": "continue_imported_chat",
+      "domain": "imports",
+      "method": "imports/continue_imported_chat",
+      "paramsSchema": "continue-imported-chat-params.json",
+      "resultSchema": "continued-imported-chat.json"
+    },
+    {
       "command": "github_status",
       "domain": "github",
       "method": "github/github_status",
@@ -119,6 +154,13 @@
       "method": "github/github_merge_config",
       "paramsSchema": "github-merge-config-params.json",
       "resultSchema": "github-merge-config-result.json"
+    },
+    {
+      "command": "github_media",
+      "domain": "github",
+      "method": "github/github_media",
+      "paramsSchema": "github-media-params.json",
+      "resultSchema": "github-media-result.json"
     },
     {
       "command": "github_act",
@@ -434,6 +476,13 @@
       "method": "sessions/prepare_turn",
       "paramsSchema": "prepare-turn-params.json",
       "resultSchema": "sanitized-turn.json"
+    },
+    {
+      "command": "record_client_latency",
+      "domain": "sessions",
+      "method": "sessions/record_client_latency",
+      "paramsSchema": "record-client-latency-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "send_turn",
@@ -1190,6 +1239,76 @@
       "method": "apps/set_app_enabled",
       "paramsSchema": "set-app-enabled-params.json",
       "resultSchema": "list-apps-result.json"
+    },
+    {
+      "command": "list_personal_apps",
+      "domain": "apps",
+      "method": "apps/list_personal_apps",
+      "paramsSchema": null,
+      "resultSchema": "list-personal-apps-result.json"
+    },
+    {
+      "command": "get_personal_app",
+      "domain": "apps",
+      "method": "apps/get_personal_app",
+      "paramsSchema": "get-personal-app-params.json",
+      "resultSchema": "personal-app.json"
+    },
+    {
+      "command": "get_personal_app_draft",
+      "domain": "apps",
+      "method": "apps/get_personal_app_draft",
+      "paramsSchema": "get-personal-app-draft-params.json",
+      "resultSchema": "personal-app-draft.json"
+    },
+    {
+      "command": "preview_personal_app_tool",
+      "domain": "apps",
+      "method": "apps/preview_personal_app_tool",
+      "paramsSchema": "preview-personal-app-tool-params.json",
+      "resultSchema": "value.json"
+    },
+    {
+      "command": "get_personal_app_open",
+      "domain": "apps",
+      "method": "apps/get_personal_app_open",
+      "paramsSchema": "get-personal-app-open-params.json",
+      "resultSchema": "personal-app-open.json"
+    },
+    {
+      "command": "call_personal_app_tool",
+      "domain": "apps",
+      "method": "apps/call_personal_app_tool",
+      "paramsSchema": "call-personal-app-tool-params.json",
+      "resultSchema": "personal-app-call-result.json"
+    },
+    {
+      "command": "lock_personal_app",
+      "domain": "apps",
+      "method": "apps/lock_personal_app",
+      "paramsSchema": "lock-personal-app-params.json",
+      "resultSchema": "lock-personal-app-result.json"
+    },
+    {
+      "command": "delete_personal_app",
+      "domain": "apps",
+      "method": "apps/delete_personal_app",
+      "paramsSchema": "delete-personal-app-params.json",
+      "resultSchema": "list-personal-apps-result.json"
+    },
+    {
+      "command": "open_personal_app_surface",
+      "domain": "apps",
+      "method": "apps/open_personal_app_surface",
+      "paramsSchema": "open-personal-app-surface-params.json",
+      "resultSchema": "personal-app-surface-open.json"
+    },
+    {
+      "command": "close_personal_app_surface",
+      "domain": "apps",
+      "method": "apps/close_personal_app_surface",
+      "paramsSchema": "close-personal-app-surface-params.json",
+      "resultSchema": "close-personal-app-surface-result.json"
     },
     {
       "command": "list_trails",
@@ -2321,7 +2440,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 37
+    "minor": 45
   },
   "reserved": {
     "cancel": "$/cancel",

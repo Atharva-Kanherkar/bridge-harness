@@ -73,6 +73,14 @@ pub fn summary(action: &GithubAction) -> String {
             target.label(),
         ),
         GithubAction::Ready { .. } => format!("mark PR #{number} ready for review"),
+        GithubAction::RestoreBranch { branch, .. } => format!("restore branch {branch}"),
+        GithubAction::ResolveThread { resolved, .. } => format!(
+            "{} a review conversation on PR #{number}",
+            if *resolved { "resolve" } else { "reopen" },
+        ),
+        GithubAction::ReviewComment { path, line, .. } => {
+            format!("comment on {path}:{line} in PR #{number}")
+        }
     }
 }
 
@@ -106,6 +114,9 @@ mod tests {
         let merge = GithubAction::Merge {
             number: 328,
             strategy: MergeStrategy::Squash,
+            subject: None,
+            body: None,
+            delete_branch: None,
         };
         assert_eq!(describe(&merge, "owner/repo"), "merge PR #328 (squash) on owner/repo");
 
@@ -157,5 +168,27 @@ mod tests {
 
         let ready = GithubAction::Ready { number: 341 };
         assert_eq!(describe(&ready, "owner/repo"), "mark PR #341 ready for review on owner/repo");
+
+        let restore = GithubAction::RestoreBranch {
+            number: 341,
+            branch: "feat/safe".into(),
+        };
+        assert_eq!(describe(&restore, "owner/repo"), "restore branch feat/safe on owner/repo");
+    }
+
+    #[test]
+    fn describe_names_a_conversation_and_a_line_comment() {
+        let resolve = GithubAction::ResolveThread { number: 341, thread_id: "PRRT_1".into(), resolved: true };
+        assert_eq!(describe(&resolve, "owner/repo"), "resolve a review conversation on PR #341 on owner/repo");
+        let reopen = GithubAction::ResolveThread { number: 341, thread_id: "PRRT_1".into(), resolved: false };
+        assert_eq!(summary(&reopen), "reopen a review conversation on PR #341");
+        let line = GithubAction::ReviewComment {
+            number: 341,
+            path: "src/lib.rs".into(),
+            line: 12,
+            side: crate::github_surface::DiffSide::Right,
+            body: "why".into(),
+        };
+        assert_eq!(summary(&line), "comment on src/lib.rs:12 in PR #341");
     }
 }

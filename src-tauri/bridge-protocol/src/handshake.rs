@@ -139,9 +139,37 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.37 adds `trails/list_trail_candidates`.** A new client must not pair
 /// with an older daemon, whose Add picker on a trail would fail with
 /// `method_not_found`; a 1.36 client still pairs with a 1.37 daemon.
+///
+/// **1.38 adds personal apps** (`apps/list_personal_apps`,
+/// `apps/get_personal_app`, `apps/lock_personal_app`,
+/// `apps/delete_personal_app`). A new client must not pair with an older
+/// daemon, whose personal app calls would fail with `method_not_found`; a 1.37
+/// client still pairs with a 1.38 daemon.
+/// **1.39 adds chat-bound personal app draft previews** and read-only MCP calls.
+///
+/// **1.40 adds `sessions/record_client_latency`**, the webview's marks for one
+/// send. A new client must not pair with an older daemon, which would answer
+/// it with `method_not_found`; a 1.39 client still pairs with a 1.40 daemon.
+///
+/// **1.41 adds opened personal apps**: `apps/get_personal_app_open` and
+/// `apps/call_personal_app_tool`, whose writes wait for an approval token.
+///
+/// **1.42 adds `allowOpencodeAppCourier` to app preferences.** A 1.42 client
+/// saving it to a 1.41 daemon would be refused as an unknown field.
+///
+/// **1.43 adds "My apps": `apps/open_personal_app_surface` and
+/// `apps/close_personal_app_surface`, `personal` in `apps/list_apps`, and an
+/// optional `sessionId` on opened-app calls (none means the person's own app
+/// surface).** A 1.42 client still pairs: it always sends a session id.
+///
+/// **1.44 adds the background import**: `imports/start_import`,
+/// `imports/import_status` and the `imports/progress` event.
+///
+/// **1.45 adds continuing an imported chat**: `imports/import_continuation`
+/// and `imports/continue_imported_chat`.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 37,
+    minor: 45,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -452,6 +480,62 @@ mod tests {
         assert!(!issues.accepts(ProtocolVersion { major: 1, minor: 33 }), "nor can the first trails client");
         assert!(issues.accepts(ProtocolVersion { major: 1, minor: 32 }), "a client without trails never meets an issue");
         assert!(issues.accepts(issues));
+    }
+
+    #[test]
+    fn continue_imported_client_rejects_a_daemon_without_it() {
+        let before = ProtocolVersion { major: 1, minor: 44 };
+        let continuing = ProtocolVersion { major: 1, minor: 45 };
+        assert!(!before.accepts(continuing));
+        assert!(continuing.accepts(before), "a 1.44 client still pairs with a 1.45 daemon");
+    }
+
+    #[test]
+    fn background_import_client_rejects_a_daemon_without_it() {
+        let before = ProtocolVersion { major: 1, minor: 43 };
+        let import = ProtocolVersion { major: 1, minor: 44 };
+        assert!(!before.accepts(import));
+        assert!(import.accepts(before), "a 1.43 client still pairs with a 1.44 daemon");
+    }
+
+    #[test]
+    fn my_apps_client_rejects_a_daemon_without_surfaces() {
+        let before = ProtocolVersion { major: 1, minor: 42 };
+        let surfaces = ProtocolVersion { major: 1, minor: 43 };
+        assert!(!before.accepts(surfaces));
+        assert!(surfaces.accepts(before), "a 1.42 client still pairs with a 1.43 daemon");
+    }
+
+    #[test]
+    fn opencode_courier_preference_client_rejects_an_older_daemon() {
+        let before = ProtocolVersion { major: 1, minor: 41 };
+        let flag = ProtocolVersion { major: 1, minor: 42 };
+        assert!(!before.accepts(flag));
+        assert!(flag.accepts(before), "a 1.41 client still pairs with a 1.42 daemon");
+    }
+
+    #[test]
+    fn opened_apps_client_rejects_a_daemon_without_them() {
+        let before = ProtocolVersion { major: 1, minor: 40 };
+        let opened = ProtocolVersion { major: 1, minor: 41 };
+        assert!(!before.accepts(opened));
+        assert!(opened.accepts(before), "a 1.40 client still pairs with a 1.41 daemon");
+    }
+
+    #[test]
+    fn client_latency_client_rejects_a_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 39 };
+        let latency = ProtocolVersion { major: 1, minor: 40 };
+        assert!(!before.accepts(latency));
+        assert!(latency.accepts(before), "a 1.39 client still pairs with a 1.40 daemon");
+    }
+
+    #[test]
+    fn personal_apps_client_rejects_a_daemon_without_them() {
+        let before = ProtocolVersion { major: 1, minor: 37 };
+        let personal = ProtocolVersion { major: 1, minor: 38 };
+        assert!(!before.accepts(personal));
+        assert!(personal.accepts(before), "a 1.37 client still pairs with a 1.38 daemon");
     }
 
     #[test]

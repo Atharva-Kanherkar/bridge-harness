@@ -53,6 +53,13 @@
     },
     "GithubActor": {
       "properties": {
+        "avatarUrl": {
+          "description": "The account's avatar, present on reads that asked GitHub for it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "login": {
           "type": "string"
         }

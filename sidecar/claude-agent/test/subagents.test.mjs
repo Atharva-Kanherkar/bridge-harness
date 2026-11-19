@@ -98,3 +98,18 @@ test("a briefing run keeps its own gate, so reviewed reads still run", async () 
   const direct=childPermissions(()=>{},"s");
   assert.equal(withChildPermissions(buildOptions({sessionId:"s",writeMode:"Shared"}),direct).canUseTool,direct.canUseTool);
 });
+
+test("AskUserQuestion answers reach Claude as updatedInput, never as a bare allow", async () => {
+  const { childPermissions } = await import("../subagents.mjs");
+  const frames=[];
+  const permissions=childPermissions(frame => frames.push(frame), "s");
+  const input={questions:[{question:"Which database?",header:"Database",multiSelect:false,options:[{label:"Postgres",description:""},{label:"SQLite",description:""}]}]};
+  const answered=permissions.canUseTool("AskUserQuestion",input,{toolUseID:"q",signal:new AbortController().signal});
+  assert.equal(frames[0].request.tool_name,"AskUserQuestion");
+  permissions.respond({response:{request_id:frames[0].request_id,response:{behavior:"allow",decision:"accept",answers:{"Which database?":"SQLite",bad:7},annotations:{"Which database?":{preview:"db"}}}}});
+  assert.deepEqual(await answered,{behavior:"allow",updatedInput:{...input,answers:{"Which database?":"SQLite"},annotations:{"Which database?":{preview:"db"}}}});
+
+  const declined=permissions.canUseTool("AskUserQuestion",input,{toolUseID:"q2",signal:new AbortController().signal});
+  permissions.respond({response:{request_id:frames[1].request_id,response:{behavior:"deny",decision:"decline",message:"The user declined to answer these questions."}}});
+  assert.deepEqual(await declined,{behavior:"deny",message:"The user declined to answer these questions."});
+});

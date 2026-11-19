@@ -22,6 +22,9 @@ pub enum ExternalImportCandidateKind {
     Hook,
     McpServer,
     Plugin,
+    Script,
+    Preference,
+    ProviderInstance,
     Unsupported,
 }
 
@@ -93,6 +96,14 @@ pub struct ExternalImportArtifact {
     pub modified_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_schema_gate: Option<String>,
+    /// For a chat: its title, read from the first and last few KiB only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// For a chat: the folder it ran in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -239,6 +250,145 @@ pub struct CommitExternalImportParams {
     /// discover/preview/commit TOCTOU window.
     pub discovery_id: String,
     pub plan: ExternalImportPlan,
+    /// The artifacts `preview` was run on. Commit re-derives only these, so a
+    /// store of 80,000 transcripts is not re-read to import ten. Absent means
+    /// every artifact in the discovery, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_ids: Option<Vec<String>>,
+}
+
+/// What `imports/detect_import_sources` found for one tool. Detection takes no
+/// parameters and is read-only: it lists folders and counts files, and never
+/// opens a database or a transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSourceCounts {
+    pub chats: u64,
+    pub projects: u64,
+    pub workspaces: u64,
+    pub memories: u64,
+    pub setup: u64,
+    /// Sessions that ran in a temporary folder: SDK probes and background
+    /// runs, not chats a person had. Listed, but not selected by default.
+    #[serde(default)]
+    pub background: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedImportSource {
+    /// Bundle tool id: `claude_code`, `codex`, `opencode`, `conductor`, `t3code`, `orca`, `superset`.
+    pub tool: String,
+    pub label: String,
+    pub installed: bool,
+    /// Bridge can import this tool's own data today.
+    pub supported: bool,
+    pub roots: Vec<String>,
+    pub counts: ImportSourceCounts,
+    /// One line for the person: what comes over, or why not yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSourcesDetection {
+    pub sources: Vec<DetectedImportSource>,
+    pub detected_at: String,
+}
+
+/// `imports/start_import`: import everything Bridge can bring over from one
+/// tool, in the background. Returns at once with the job; a job already
+/// running is returned instead of starting a second one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartImportParams {
+    /// Bundle tool id, as in `DetectedImportSource::tool`.
+    pub tool: String,
+}
+
+/// Something that did not come over, with how many times.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportNotCarried {
+    pub text: String,
+    pub count: u64,
+}
+
+/// A background import: how far it has got and what came over so far. Sent
+/// by `imports/import_status` and live as `imports/progress`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJob {
+    pub job_id: String,
+    pub tool: String,
+    /// `running`, `done` or `failed`.
+    pub status: String,
+    /// Files the job reads: transcripts and setup items.
+    pub total: u64,
+    pub processed: u64,
+    /// Chats and setup items written to Bridge.
+    pub imported: u64,
+    pub already_in_bridge: u64,
+    /// Chats imported before whose source has changed since; kept as they were.
+    pub changed: u64,
+    pub failed: u64,
+    /// Background runs from the OS temp folder, not imported.
+    pub left_out: u64,
+    /// The folder of the chat being read now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_project: Option<String>,
+    #[serde(default)]
+    pub not_carried: Vec<ImportNotCarried>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    pub started_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
+/// `imports/import_continuation`: the imported chat to ask about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportContinuationParams {
+    pub session_id: String,
+}
+
+/// `imports/continue_imported_chat`: the imported chat to continue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinueImportedChatParams {
+    pub session_id: String,
+}
+
+/// How an imported chat continues: `native` resumes the tool's own session,
+/// `history` starts a new chat seeded with the imported history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportContinuation {
+    pub mode: String,
+    /// Why it cannot continue natively, for the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The new chat that continues an imported one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuedImportedChat {
+    pub session_id: String,
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `imports/import_status`: the latest import, running or finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJobStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<ImportJob>,
 }
 
 #[cfg(test)]

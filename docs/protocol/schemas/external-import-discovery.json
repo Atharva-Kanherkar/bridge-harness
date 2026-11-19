@@ -27,6 +27,13 @@
             "null"
           ]
         },
+        "projectPath": {
+          "description": "For a chat: the folder it ran in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "requiredSchemaGate": {
           "type": [
             "string",
@@ -38,6 +45,19 @@
         },
         "stability": {
           "$ref": "#/definitions/ExternalImportStability"
+        },
+        "startedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "For a chat: its title, read from the first and last few KiB only.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -67,6 +87,9 @@
         "hook",
         "mcp_server",
         "plugin",
+        "script",
+        "preference",
+        "provider_instance",
         "unsupported"
       ],
       "type": "string"

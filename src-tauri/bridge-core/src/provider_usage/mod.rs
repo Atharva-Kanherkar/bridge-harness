@@ -112,6 +112,30 @@ pub(crate) fn claim_claude_reset(
     claude::claim(account, org, credit, key)
 }
 
+/// Limits for an extra account, read the way a chat on it would run: the
+/// account's own folder, and none of the user's own credentials.
+pub(crate) fn read_account(
+    core: &crate::BridgeCore,
+    provider: MenuBarProvider,
+    launch: &crate::provider_accounts::AccountLaunch,
+) -> Result<AccountUsage, AccountReadError> {
+    match provider {
+        MenuBarProvider::Claude => claude_sdk::read_as(core, Some(launch)).map_err(Into::into),
+        MenuBarProvider::OpenCode => {
+            let data = launch
+                .value("XDG_DATA_HOME")
+                .ok_or("This OpenCode account has no data folder.")?;
+            let credentials = opencode_go::account_credentials(std::path::Path::new(data))?;
+            if credentials.is_empty() {
+                return Err("Add this account's OpenCode Go key, or sign it in to OpenCode, to see its limits.".into());
+            }
+            opencode_go::read(&credentials).map_err(Into::into)
+        }
+        MenuBarProvider::Cursor => Err("Cursor reports limits only for the account signed in to the Cursor app.".into()),
+        MenuBarProvider::Codex => Err("Codex uses its app-server collector".into()),
+    }
+}
+
 pub(crate) fn read(
     core: &crate::BridgeCore,
     provider: MenuBarProvider,

@@ -1068,6 +1068,7 @@ fn populated_session() -> model::Session {
         fork_parent_entry_id: Some("e-9".into()),
         account: Some("personal".into()),
         title_ladder: vec!["Tests".into(), "Fix tests".into(), "Fix the flaky auth tests".into()],
+        speed: Some("fast".into()),
     }
 }
 
@@ -1305,6 +1306,7 @@ fn result_payloads_mirror_core() {
                 lifecycle: model::ModelLifecycle::Stable,
                 source: model::ModelCatalogSource::CuratedFallback,
                 supported_effort_levels: Vec::new(),
+                speed_tiers: Vec::new(),
                 default_for_tier: true,
             }],
             default_model: Some("gpt-5".into()),

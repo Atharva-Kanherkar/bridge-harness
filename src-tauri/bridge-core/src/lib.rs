@@ -7,6 +7,7 @@
 //! in their own transport.
 
 pub mod account_secrets;
+pub(crate) mod account_usage;
 pub mod api_keys;
 pub mod acp_events;
 pub mod acp_registry;
@@ -91,6 +92,10 @@ pub mod delegation;
 pub mod diagnostics;
 pub mod events;
 pub mod external_import;
+pub mod import_bundle;
+pub mod import_continue;
+pub mod import_job;
+pub mod import_sources;
 pub mod frame_queue;
 pub mod git;
 pub mod github_surface;
@@ -101,6 +106,7 @@ pub mod health;
 pub mod history_tools;
 #[cfg(test)]
 mod history_tools_eval;
+pub mod latency;
 pub mod learning_job;
 pub mod learning_router;
 pub mod live_turn;

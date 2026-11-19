@@ -19,6 +19,7 @@ pub mod notifications;
 pub mod quick_prompt;
 mod diagnostics;
 mod nightly_updater;
+mod preview_isolation;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -109,16 +110,69 @@ async fn preview_external_import(
 async fn commit_external_import(
     discovery_id: String,
     plan: wire::ExternalImportPlan,
+    artifact_ids: Option<Vec<String>>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ExternalImportCommit, BridgeError> {
     let core = state.inner().clone();
     blocking("Commit external import", move || {
         api::commit_external_import(
             &core,
-            &wire::CommitExternalImportParams { discovery_id, plan },
+            &wire::CommitExternalImportParams { discovery_id, plan, artifact_ids },
         )
     })
     .await
+}
+
+#[tauri::command]
+async fn detect_import_sources(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportSourcesDetection, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Detect import sources", move || api::detect_import_sources(&core)).await
+}
+
+#[tauri::command]
+async fn start_import(
+    tool: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportJob, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Start import", move || {
+        api::start_import(&core, &wire::StartImportParams { tool })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn import_continuation(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportContinuation, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Import continuation", move || {
+        api::import_continuation(&core, &wire::ImportContinuationParams { session_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn continue_imported_chat(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ContinuedImportedChat, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Continue imported chat", move || {
+        api::continue_imported_chat(&core, &wire::ContinueImportedChatParams { session_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn import_status(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ImportJobStatus, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Import status", move || api::import_status(&core)).await
 }
 
 #[tauri::command]
@@ -206,6 +260,12 @@ async fn github_merge_config(workspace_id: String, state: State<'_, Arc<BridgeCo
 }
 
 #[tauri::command]
+async fn github_media(workspace_id: String, url: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubMediaResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub media", move || api::github_media(&core, &workspace_id, &url)).await
+}
+
+#[tauri::command]
 async fn github_act(workspace_id: String, action: wire::GithubAction, confirmed: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubActResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub action", move || api::github_act(&core, &workspace_id, action, confirmed)).await
@@ -239,6 +299,71 @@ async fn list_apps(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListAppsRe
 async fn set_app_pinned(id: String, pinned: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ListAppsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("pin an app", move || api::set_app_pinned(&core, &wire::SetAppPinnedParams { id, pinned })).await
+}
+
+// Return owned futures: Tauri keeps these commands asynchronous without its
+// generated unused-Result assertion for borrowed async arguments.
+#[tauri::command(async)]
+fn list_personal_apps(state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ListPersonalAppsResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("list personal apps", move || api::list_personal_apps(&core))
+}
+
+#[tauri::command(async)]
+fn get_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalApp, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("read a personal app", move || api::get_personal_app(&core, &wire::GetPersonalAppParams { id }))
+}
+
+#[tauri::command(async)]
+fn lock_personal_app(draft_id: String, content_hash: String, allow_wider: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::LockPersonalAppResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("lock a personal app", move || {
+        api::lock_personal_app(&core, &wire::LockPersonalAppParams { draft_id, content_hash, allow_wider: allow_wider.unwrap_or(false) })
+    })
+}
+
+#[tauri::command(async)]
+fn get_personal_app_draft(session_id: String, draft_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppDraft, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("read an app draft", move || api::get_personal_app_draft(&core, &wire::GetPersonalAppDraftParams { session_id, draft_id, content_hash }))
+}
+
+#[tauri::command(async)]
+fn get_personal_app_open(session_id: Option<String>, open_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppOpen, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("read an opened app", move || api::get_personal_app_open(&core, &wire::GetPersonalAppOpenParams { session_id, open_id, content_hash }))
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+fn call_personal_app_tool(session_id: Option<String>, open_id: String, content_hash: String, tool: String, arguments: serde_json::Value, approval_token: Option<String>, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppCallResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("call an app tool", move || api::call_personal_app_tool(&core, &wire::CallPersonalAppToolParams { session_id, open_id, content_hash, tool, arguments, approval_token }))
+}
+
+#[tauri::command(async)]
+fn preview_personal_app_tool(session_id: String, draft_id: String, content_hash: String, tool: String, arguments: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<serde_json::Value, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("preview an app tool", move || api::preview_personal_app_tool(&core, &wire::PreviewPersonalAppToolParams { session_id, draft_id, content_hash, tool, arguments }))
+}
+
+#[tauri::command(async)]
+fn open_personal_app_surface(app_id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppSurfaceOpen, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("open a personal app", move || api::open_personal_app_surface(&core, &wire::OpenPersonalAppSurfaceParams { app_id }))
+}
+
+#[tauri::command(async)]
+fn close_personal_app_surface(open_id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ClosePersonalAppSurfaceResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("close a personal app", move || api::close_personal_app_surface(&core, &wire::ClosePersonalAppSurfaceParams { open_id }))
+}
+
+#[tauri::command(async)]
+fn delete_personal_app(id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ListPersonalAppsResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("delete a personal app", move || api::delete_personal_app(&core, &wire::DeletePersonalAppParams { id }))
 }
 
 #[tauri::command]
@@ -2222,13 +2347,14 @@ async fn update_chat_model(
     model: Option<String>,
     effort: Option<String>,
     account: Option<String>,
+    speed: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Stopping the old adapter can block on process teardown; run the whole
     // claim -> teardown -> commit window on the blocking pool.
     let core = state.inner().clone();
     blocking("Adapter shutdown", move || {
-        api::update_chat_model_with_account(&core, &session_id, &harness, model.as_deref(), effort.as_deref(), account.as_deref())
+        api::update_chat_selection(&core, &session_id, &harness, model.as_deref(), effort.as_deref(), account.as_deref(), speed.as_deref())
     })
     .await
 }
@@ -2345,11 +2471,12 @@ async fn start_chat(
 #[tauri::command]
 async fn start_provider_login(
     provider: String,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<api::ProviderLogin, BridgeError> {
     let core = state.inner().clone();
     blocking("Provider login", move || {
-        api::start_provider_login(&core, &provider)
+        api::start_provider_login(&core, &provider, account.as_deref())
     })
     .await
 }
@@ -2357,11 +2484,12 @@ async fn start_provider_login(
 #[tauri::command]
 async fn cancel_provider_login(
     provider: String,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
     let core = state.inner().clone();
     blocking("Provider login cancel", move || {
-        api::cancel_provider_login(&core, &provider)
+        api::cancel_provider_login(&core, &provider, account.as_deref())
     })
     .await
 }
@@ -2438,6 +2566,21 @@ async fn list_terminals(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<String>, BridgeError> {
     Ok(api::list_terminals(state.inner(), &workspace_id))
+}
+
+// An owned future, like the personal-app commands: Tauri's expansion of an
+// `async fn` with a borrowed `State` adds an unused-Result assertion.
+#[tauri::command(async)]
+fn record_client_latency(
+    session_id: String,
+    flow: String,
+    steps: Vec<wire::ClientLatencyStep>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> impl std::future::Future<Output = Result<(), BridgeError>> {
+    let core = state.inner().clone();
+    blocking("Record send latency", move || {
+        api::record_client_latency(&core, &wire::RecordClientLatencyParams { session_id, flow, steps })
+    })
 }
 
 #[tauri::command]
@@ -3439,6 +3582,7 @@ fn setup_embedded(
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
     bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
     bridge_core::workflow_trigger::start_workflow_maintenance(core.clone());
+    bridge_core::import_job::start_import_maintenance(core.clone());
     bridge_core::trails::live::start_trail_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
@@ -3486,6 +3630,11 @@ pub fn run() -> i32 {
             discover_external_import,
             preview_external_import,
             commit_external_import,
+            detect_import_sources,
+            start_import,
+            import_status,
+            import_continuation,
+            continue_imported_chat,
             github_status,
             connector_list,
             connector_inbox,
@@ -3500,6 +3649,7 @@ pub fn run() -> i32 {
             github_issue,
             github_repository,
             github_merge_config,
+            github_media,
             github_act,
             github_review,
             github_checkout,
@@ -3510,6 +3660,16 @@ pub fn run() -> i32 {
             list_apps,
             set_app_pinned,
             set_app_enabled,
+            list_personal_apps,
+            get_personal_app,
+            get_personal_app_draft,
+            get_personal_app_open,
+            call_personal_app_tool,
+            preview_personal_app_tool,
+            lock_personal_app,
+            delete_personal_app,
+            open_personal_app_surface,
+            close_personal_app_surface,
             list_trails,
             read_trail,
             create_trail,
@@ -3763,6 +3923,7 @@ pub fn run() -> i32 {
             close_terminal,
             list_terminals,
             prepare_turn,
+            record_client_latency,
             send_turn,
             submit_input,
             voice_capabilities,
@@ -3919,6 +4080,9 @@ pub fn run() -> i32 {
             }
             if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update" | "ensure_update_installable") {
                 return nightly_updater::commands(invoke);
+            }
+            if invoke.message.command() == "isolate_app_previews" {
+                return preview_isolation::commands(invoke);
             }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {
@@ -4218,7 +4382,7 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("lib.rs has a test module");
-        let attribute = format!("#[tauri::{}]", "command"); // dodge this literal
+        let attribute = format!("#[tauri::{}", "command"); // includes command(async) too
         let stray: Vec<&str> = command_region
             .split(&attribute)
             .skip(1)
@@ -4386,10 +4550,10 @@ mod tests {
     /// camelCase wire names. Whitespace is removed from Rust types so multiline
     /// signatures compare consistently.
     fn command_arguments(source: &str, command: &str) -> Option<Vec<CommandArgument>> {
-        let needle = format!("async fn {command}(");
+        let needle = format!("fn {command}(");
         let start = source
             .find(&needle)
-            .unwrap_or_else(|| panic!("no async fn named {command} in the shell"))
+            .unwrap_or_else(|| panic!("no fn named {command} in the shell"))
             + needle.len();
         // Split the parameter list on top-level commas: generic arguments
         // (`State<'_, Arc<BridgeCore>>`) carry commas of their own.

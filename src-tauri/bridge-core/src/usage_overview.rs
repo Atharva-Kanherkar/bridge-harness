@@ -25,17 +25,27 @@ pub struct UsageOverviewService {
     refresh: Mutex<ProviderRefreshState>,
     redeem: Mutex<()>,
     providers: [Mutex<ProviderRefreshState>; 3],
+    /// One gate per extra account, keyed by its cache id.
+    pub(crate) accounts: Mutex<std::collections::HashMap<String, Arc<Mutex<ProviderRefreshState>>>>,
     history: Mutex<Option<CachedSummary>>,
 }
 
 #[derive(Default)]
-struct ProviderRefreshState {
+pub(crate) struct ProviderRefreshState {
     completed_at: Option<Instant>,
     manual_completed_at: Option<Instant>,
 }
 
 impl ProviderRefreshState {
-    fn should_skip(&self, interactive: bool, requested_at: Instant) -> bool {
+    pub(crate) fn record(&mut self, interactive: bool) {
+        let completed_at = Instant::now();
+        self.completed_at = Some(completed_at);
+        if interactive {
+            self.manual_completed_at = Some(completed_at);
+        }
+    }
+
+    pub(crate) fn should_skip(&self, interactive: bool, requested_at: Instant) -> bool {
         if interactive {
             // Preserve a user click waiting on background work, but one manual
             // pass satisfies every other click that arrived while it ran.
@@ -176,6 +186,8 @@ fn codex_snapshot(
         }
         .into(),
         error: cache.error,
+        account_id: None,
+        account_label: None,
     }
 }
 
@@ -423,7 +435,7 @@ fn valid_percent(value: &Value) -> Option<f64> {
     number(value, "usedPercent", "used_percent").filter(|value| value.is_finite() && *value >= 0.0)
 }
 
-fn windows(quota: Option<&AccountQuota>, failed: bool, now: i64) -> Vec<UsageQuotaWindow> {
+pub(crate) fn windows(quota: Option<&AccountQuota>, failed: bool, now: i64) -> Vec<UsageQuotaWindow> {
     let primary = quota
         .and_then(|q| q.limits.get("primary"))
         .filter(|v| v.is_object());
@@ -626,7 +638,7 @@ fn daily(rows: &[&UsageBucket]) -> Vec<UsageDailyOverview> {
         .collect()
 }
 
-fn confirmed_empty_account_period() -> UsagePeriodOverview {
+pub(crate) fn confirmed_empty_account_period() -> UsagePeriodOverview {
     UsagePeriodOverview {
         tokens: UsageMetric::known(0.0, Source::Reported),
         cost_microusd: UsageMetric::known(0.0, Source::Reported),
@@ -634,7 +646,7 @@ fn confirmed_empty_account_period() -> UsagePeriodOverview {
     }
 }
 
-fn unavailable_account_period() -> UsagePeriodOverview {
+pub(crate) fn unavailable_account_period() -> UsagePeriodOverview {
     UsagePeriodOverview {
         tokens: UsageMetric::unavailable(),
         cost_microusd: UsageMetric::unavailable(),
@@ -926,6 +938,7 @@ pub fn provider_snapshots(
     let db = core.db.lock().unwrap();
     let summary = menu_summary(&core.usage_overview, &db, today, &tz.to_string())?;
     let mut providers = vec![codex_snapshot(load_cache(&db)?, &summary, now, today)];
+    providers.extend(crate::account_usage::snapshots(&db, "codex", now));
     for provider in MenuBarProvider::ALL.into_iter().skip(1) {
         let cache = load_provider(&db, provider.id())?;
         let mut quota = cache.usage.unwrap_or_default();
@@ -988,7 +1001,10 @@ pub fn provider_snapshots(
             daily: daily_usage,
             coverage,
             error: cache.error,
+            account_id: None,
+            account_label: None,
         });
+        providers.extend(crate::account_usage::snapshots(&db, provider.id(), now));
     }
     Ok(ProviderUsageOverviews {
         schema_version: 1,
@@ -996,7 +1012,7 @@ pub fn provider_snapshots(
         providers,
     })
 }
-fn expire_provider(quota: &mut crate::provider_usage::AccountUsage, failed: bool, now: i64) {
+pub(crate) fn expire_provider(quota: &mut crate::provider_usage::AccountUsage, failed: bool, now: i64) {
     let stale = failed || now < quota.observed_at || now - quota.observed_at >= 600;
     for window in &mut quota.windows {
         if window.used_percent.value.is_some()
@@ -1161,11 +1177,13 @@ pub fn refresh_providers(
                 })
             })
             .collect();
+        let accounts = scope.spawn(|| crate::account_usage::refresh_all(core, &settings, false));
         for job in jobs {
             job.join().map_err(|_| {
                 BridgeError::Invalid("Provider collector stopped unexpectedly".into())
             })??;
         }
+        accounts.join().map_err(|_| BridgeError::Invalid("Account collector stopped unexpectedly".into()))?;
         Ok(())
     })?;
     provider_snapshots(core)
@@ -1192,11 +1210,13 @@ pub fn refresh_providers_interactive(
                 })
             })
             .collect();
+        let accounts = scope.spawn(|| crate::account_usage::refresh_all(core, &settings, true));
         for job in jobs {
             job.join().map_err(|_| {
                 BridgeError::Invalid("Provider collector stopped unexpectedly".into())
             })??;
         }
+        accounts.join().map_err(|_| BridgeError::Invalid("Account collector stopped unexpectedly".into()))?;
         Ok(())
     })?;
     provider_snapshots(core)

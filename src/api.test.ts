@@ -69,6 +69,7 @@ describe("SQLite-shaped mock observability", () => {
   });
 
   it("forks a session branch into an independent session without touching the parent", async () => {
+    const before = await bridgeApi.sessionForest("session-1");
     const created = await bridgeApi.forkSession("session-1", "entry-5a", "Alternate path", null, null, "shared");
     expect(created.fidelity).toBe("projected_at_boundary");
     expect(created.sessionId).not.toBe("session-1");
@@ -84,8 +85,8 @@ describe("SQLite-shaped mock observability", () => {
     expect(fork).toMatchObject({ parentSessionId: null, depth: 0, forkParentSessionId: "session-1", forkParentEntryId: "entry-5a", label: "Alternate path", restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", status: "idle", providerSessionId: null, activeTurnId: null });
     // The parent forest is untouched by the fork.
     const parent = await bridgeApi.sessionForest("session-1");
-    expect(parent.entries).toHaveLength(25);
-    expect(parent.head?.activeEntryId).toBe("entry-raw");
+    expect(parent.entries).toEqual(before.entries);
+    expect(parent.head).toEqual(before.head);
     await expect(bridgeApi.forkSession("session-1", "missing-entry", null, null, null, "shared")).rejects.toThrow("not in this session");
     await expect(bridgeApi.forkSession("session-1w", "entry-1", null, null, null, "shared")).rejects.toThrow("Worker sessions cannot be forked");
   });
@@ -101,7 +102,8 @@ describe("SQLite-shaped mock observability", () => {
 
   it("replays forks, compaction, queue conflict, restoration and conversation-only rewind", async () => {
     const initial = await bridgeApi.sessionForest("session-1");
-    expect(initial.leaves.map(entry => entry.id)).toEqual(["entry-5a", "entry-raw"]);
+    expect(initial.leaves.map(entry => entry.id)).toEqual(["entry-5a", initial.entries.at(-1)!.id]);
+    expect(initial.head?.activeEntryId).toBe(initial.entries.at(-1)!.id);
     expect(initial.entries.some(entry => entry.kind === "compaction")).toBe(true);
     expect(initial.head?.restorationMode).toBe("hot");
     expect(initial.workerQueue[0].request.reason).toBe("owned_path_conflict");

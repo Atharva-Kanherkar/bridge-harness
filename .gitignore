@@ -14,3 +14,6 @@ vite.config.d.ts
 
 # Eval runs: the PR carries the summary table, not the raw transcripts.
 testing/evals/visualize/results/
+
+# Personal-app eval runs: live read output from the person's accounts.
+testing/evals/personal-apps/results/

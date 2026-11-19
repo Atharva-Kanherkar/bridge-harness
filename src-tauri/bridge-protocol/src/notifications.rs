@@ -82,6 +82,9 @@ notifications![
     // bytes: a client that missed it re-lists the workspace's terminals.
     (TerminalExited, "terminal-exited", Transient),
     (AccountUsage, "account-usage", Transient),
+    // A background import's progress, after every batch and when it ends. A
+    // client that missed one asks `imports/import_status`.
+    (ImportProgress, "imports/progress", Transient),
     (VoiceTranscript, "voice-transcript", Transient),
     // Cold-start narration: a phase observed at a real adapter launch
     // boundary (spawning/handshake/session_open). Live-only on purpose — a

@@ -15,6 +15,7 @@ const LABELS: Record<string, string> = {
   xhigh: "XHigh",
   max: "Max",
   ultra: "Ultra",
+  ultracode: "Ultracode",
 };
 
 /** The adverb the sentence style scrubs through. */
@@ -25,6 +26,7 @@ const WORDS: Record<string, string> = {
   xhigh: "deeply",
   max: "exhaustively",
   ultra: "relentlessly",
+  ultracode: "with workflows",
 };
 
 /** One line of meaning per level for the list style. */
@@ -35,6 +37,7 @@ const MEANINGS: Record<string, string> = {
   xhigh: "Long reasoning chains.",
   max: "Longest Claude allows.",
   ultra: "Codex ceiling. Slowest.",
+  ultracode: "Claude Code orchestrates workflows of agents.",
 };
 
 export function effortLabel(value: string): string {

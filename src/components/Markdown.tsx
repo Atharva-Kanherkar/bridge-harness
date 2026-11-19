@@ -12,9 +12,11 @@ import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 import { placeholderReference, SECRET_PLACEHOLDER } from "../apiKeys";
+import { RunButton } from "./RunInTerminal";
 
 type Block =
-  | { kind: "code"; lang: string; body: string }
+  /** `closed` is false while a streaming fence still lacks its closing line. */
+  | { kind: "code"; lang: string; body: string; closed: boolean }
   | { kind: "diagram"; spec: string }
   | { kind: "mermaid"; code: string }
   | { kind: "storage-plan"; body: string }
@@ -54,15 +56,15 @@ export function richFenceKind(lang: string): RichFenceKind | null {
 /** Classify a fenced block by its info string into a rich-content block
  *  kind. Without rich fences every fence is code, as GitHub and Slack show
  *  it: a preview of text bound elsewhere must not run chat-only widgets. */
-function fencedBlock(lang: string, body: string, richFences = true): Block {
-  if (!richFences) return { kind: "code", lang, body };
+function fencedBlock(lang: string, body: string, closed: boolean, richFences = true): Block {
+  if (!richFences) return { kind: "code", lang, body, closed };
   if (lang.trim().toLowerCase() === "storage-plan") return { kind: "storage-plan", body };
   const kind = richFenceKind(lang);
   if (kind === "diagram") return { kind, spec: body };
   if (kind === "mermaid") return { kind, code: body };
   if (kind === "math") return { kind, tex: body };
   if (kind === "html") return { kind, html: body };
-  return { kind: "code", lang, body };
+  return { kind: "code", lang, body, closed };
 }
 
 export function splitBlocks(source: string, { richFences = true }: { richFences?: boolean } = {}): Block[] {
@@ -78,8 +80,9 @@ export function splitBlocks(source: string, { richFences = true }: { richFences?
       const body: string[] = [];
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
+      const closed = index < lines.length;
       index += 1;
-      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n"), richFences));
+      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n"), closed, richFences));
       continue;
     }
     if (trimmed.startsWith("$$")) {
@@ -357,7 +360,7 @@ function renderInline(text: string, allowLinks = true): React.ReactNode[] {
   });
 }
 
-function CodeBlock({ lang, body }: { lang: string; body: string }) {
+function CodeBlock({ lang, body, closed = true }: { lang: string; body: string; closed?: boolean }) {
   // `html` is derived at render time, not reset by an effect: an effect only
   // runs after commit, so for one real paint a naive `useEffect`-driven reset
   // would show the *previous* block's coloured HTML under the *new* body.
@@ -386,7 +389,10 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
     <div ref={blockRef} className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
-        <CopyButton text={body} className="code-block-copy" />
+        <div className="flex items-center gap-0.5">
+          <RunButton lang={lang} body={body} closed={closed} />
+          <CopyButton text={body} className="code-block-copy" />
+        </div>
       </div>
       <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
     </div>
@@ -430,13 +436,41 @@ function DiagramBlock({ spec }: { spec: string }) {
 
 let mermaidSequence = 0;
 
+/** The narrowest readable render of a Mermaid drawing: `containerWidth /
+ *  viewBoxWidth`, floored at 0.75. Below the floor the drawing keeps 75% of
+ *  its natural size and scrolls horizontally instead of shrinking into dust
+ *  (issue #1028: a wide `flowchart LR` in a PR description hit 6px text in
+ *  the 440px dock). */
+export const MERMAID_MIN_SCALE = 0.75;
+
+export function mermaidClamp(containerWidth: number, viewBoxWidth: number): { width: number; clamped: boolean } {
+  if (!Number.isFinite(containerWidth) || !Number.isFinite(viewBoxWidth) || containerWidth <= 0 || viewBoxWidth <= 0) {
+    return { width: 0, clamped: false };
+  }
+  if (containerWidth / viewBoxWidth >= MERMAID_MIN_SCALE) return { width: containerWidth, clamped: false };
+  return { width: Math.round(viewBoxWidth * MERMAID_MIN_SCALE), clamped: true };
+}
+
 function MermaidBlock({ code }: { code: string }) {
   const dark = useDarkTheme();
   const [rendered, setRendered] = useState<{ code: string; dark: boolean; svg: string } | null>(null);
   const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(0);
   const id = useRef("");
+  const holder = useRef<HTMLDivElement>(null);
   if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
+
+  useEffect(() => {
+    const element = holder.current;
+    if (!element) return;
+    const measure = () => setContainerWidth(element.clientWidth);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [rendered?.svg]);
 
   useEffect(() => {
     let cancelled = false;
@@ -463,12 +497,23 @@ function MermaidBlock({ code }: { code: string }) {
   if (rendered?.code !== code || rendered.dark !== dark) {
     return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
   }
+  const viewBoxWidth = Number(/viewBox="0 0 ([\d.]+) /.exec(rendered.svg)?.[1]);
+  const { width: clampedWidth, clamped } = mermaidClamp(containerWidth, viewBoxWidth);
   return <div className="rich-block my-[0.9em]">
     <div className="rich-block-actions">
       <CopyButton text={code} className="rich-block-copy" />
       <ExpandButton onClick={() => setFullscreen(true)} />
     </div>
-    <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+    <div ref={holder}>
+      {clamped
+        ? <div className="overflow-x-auto" data-mermaid-clamped>
+            <div style={{ width: `${clampedWidth}px` }} className="[&_svg]:h-auto [&_svg]:max-w-none [&_svg]:w-full">
+              <div role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+            </div>
+          </div>
+        : <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />}
+      {clamped && <p className="mt-1 text-[11px] text-muted-foreground">Scroll horizontally or expand for the full diagram.</p>}
+    </div>
     <VisualFullscreen open={fullscreen} onClose={() => setFullscreen(false)} label="mermaid">
       {/* Mermaid bakes a `max-width` onto its own <svg>; the overlay's canvas
           rule overrides it so the drawing can use the window's width. */}
@@ -546,7 +591,7 @@ export const Markdown = memo(function Markdown({ text, richFences = true }: { te
   return (
     <div className="md">
       {splitBlocks(text, { richFences }).map((block, index) => {
-        if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
+        if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} closed={block.closed} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
         if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
         if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;

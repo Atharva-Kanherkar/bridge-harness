@@ -441,6 +441,7 @@ impl Live {
                     cwd: &self.cwd,
                     model: self.model.as_deref(),
                     effort: None,
+                    speed: None,
                     instructions: None,
                     write_mode: Some(self.access),
                     read_only_sandbox: None,

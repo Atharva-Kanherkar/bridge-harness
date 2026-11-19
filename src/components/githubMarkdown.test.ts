@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeGithubMarkdown, splitGithubDetails } from "./githubMarkdown";
+import { normalizeGithubMarkdown, splitGithubDetails, splitGithubMedia } from "./githubMarkdown";
 
 const REPO = "https://github.com/bridge/harness";
 
@@ -155,5 +155,76 @@ describe("splitGithubDetails", () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe("details");
     expect(blocks[0]).toMatchObject({ summary: "Log", body: "```\n</details>\n```" });
+  });
+});
+
+describe("splitGithubMedia", () => {
+  const media = (text: string) => splitGithubMedia(text).flatMap(block => block.kind === "media" ? block.items : []);
+
+  it("lifts markdown and HTML images out of the text around them", () => {
+    const blocks = splitGithubMedia('Before\n\n![a shot](https://github.com/a.png "title")\n\nAfter <img width="300" alt="inline" src="https://github.com/b.png"> the fact');
+    expect(blocks).toEqual([
+      { kind: "markdown", text: "Before\n" },
+      { kind: "media", items: [{ kind: "image", url: "https://github.com/a.png", alt: "a shot" }] },
+      { kind: "markdown", text: "\nAfter  the fact" },
+      { kind: "media", items: [{ kind: "image", url: "https://github.com/b.png", alt: "inline" }] },
+    ]);
+  });
+
+  it("puts consecutive media lines in one row and keeps a linked image's target", () => {
+    const blocks = splitGithubMedia("![one](https://github.com/1.png)\n[![badge](https://github.com/2.svg)](https://example.test/ci)\n<a href=\"https://example.test/big\"><img src=\"https://github.com/3.png\"></a>");
+    expect(blocks).toEqual([{ kind: "media", items: [
+      { kind: "image", url: "https://github.com/1.png", alt: "one" },
+      { kind: "image", url: "https://github.com/2.svg", alt: "badge", href: "https://example.test/ci" },
+      { kind: "image", url: "https://github.com/3.png", alt: "", href: "https://example.test/big" },
+    ] }]);
+  });
+
+  it("treats an uploaded recording, a video file and a <video> tag as videos", () => {
+    expect(media([
+      "https://github.com/user-attachments/assets/0f0f0f0f-aaaa-bbbb-cccc-121212121212",
+      "",
+      "https://github.com/bridge/harness/assets/42/0f0f0f0f-aaaa-bbbb-cccc-121212121212",
+      "",
+      "![demo](https://raw.githubusercontent.com/o/r/main/demo.mp4)",
+      "",
+      '<video src="https://example.test/clip.webm" controls></video>',
+      "",
+      "<video controls>\n  <source src=\"https://example.test/wrapped.mov\">\n</video>".replace(/\n/g, " "),
+    ].join("\n")).map(item => [item.kind, item.url])).toEqual([
+      ["video", "https://github.com/user-attachments/assets/0f0f0f0f-aaaa-bbbb-cccc-121212121212"],
+      ["video", "https://github.com/bridge/harness/assets/42/0f0f0f0f-aaaa-bbbb-cccc-121212121212"],
+      ["video", "https://raw.githubusercontent.com/o/r/main/demo.mp4"],
+      ["video", "https://example.test/clip.webm"],
+      ["video", "https://example.test/wrapped.mov"],
+    ]);
+  });
+
+  it("leaves an ordinary address on its own line as a link, not a player", () => {
+    expect(media("https://github.com/bridge/harness/pull/12\n\nhttps://example.test/page")).toEqual([]);
+  });
+
+  it("turns a screenshot table into captioned rows and leaves a prose table alone", () => {
+    const table = "| Dark | **Light** |\n|---|---|\n| ![d](https://github.com/d.png) | ![l](https://github.com/l.png) |\n| ![d2](https://github.com/d2.png) | |";
+    expect(splitGithubMedia(table)).toEqual([
+      { kind: "media", items: [
+        { kind: "image", url: "https://github.com/d.png", alt: "d", caption: "Dark" },
+        { kind: "image", url: "https://github.com/l.png", alt: "l", caption: "Light" },
+      ] },
+      { kind: "media", items: [{ kind: "image", url: "https://github.com/d2.png", alt: "d2", caption: "Dark" }] },
+    ]);
+    const prose = "| Step | Result |\n|---|---|\n| build | ok |";
+    expect(splitGithubMedia(prose)).toEqual([{ kind: "markdown", text: prose }]);
+  });
+
+  it("never lifts media out of code, and never lifts a non-http address", () => {
+    const fenced = "```\n![x](https://github.com/x.png)\n```";
+    expect(splitGithubMedia(fenced)).toEqual([{ kind: "markdown", text: fenced }]);
+    expect(media("use `![x](https://github.com/x.png)` to embed")).toEqual([]);
+    expect(media('<img src="data:text/html,pwned">\n![x](javascript:alert(1))\n![rel](./docs/shot.png)')).toEqual([]);
+  });
+
+  it("reads a tag wrapped across lines", () => {
+    expect(media('<img\n  alt="wrapped"\n  src="https://github.com/w.png"\n/>')).toEqual([{ kind: "image", url: "https://github.com/w.png", alt: "wrapped" }]);
   });
 });

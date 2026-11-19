@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { OpencodeAppsSetting } from "./OpencodeAppsSetting";
 
 /// Host gates that outlive the provider convenience switch.
 ///
@@ -69,6 +70,8 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
         />}
       />)}
     </SettingsGroup></div></details>
+
+    <OpencodeAppsSetting />
 
     <SettingsGroup label="Always asks" note="These keep asking either way">
       {SURVIVING_GATES.map(gate => <SettingsRow

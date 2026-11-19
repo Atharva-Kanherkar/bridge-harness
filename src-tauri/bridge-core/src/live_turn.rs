@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -1421,6 +1421,7 @@ pub fn start_session(
                 cwd: &path,
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
+                speed: None,
                 instructions: Some(instructions),
                 write_mode: root_write_mode,
                 interactive,
@@ -1457,6 +1458,7 @@ pub fn start_session(
                     cwd: &path,
                     model: chosen_model.as_deref(),
                     effort: chosen_effort_name,
+                    speed: None,
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: root_write_mode,
                     interactive,
@@ -1717,51 +1719,37 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
 }
 
 /// Where one cold chat launch spent its time before the provider process
-/// existed, printed only when `BRIDGE_LAUNCH_TIMING=1`.
+/// existed, and what it did after.
 ///
 /// `SessionStartup` says when the provider was reached; this says what the
-/// invoke did before that, which is where a launch can actually be made
-/// faster. Each mark is a boundary this call crossed, and a normal launch pays
-/// one `Instant::now` per mark and nothing else.
+/// invoke did around that, which is where a launch can actually be made
+/// faster. Each mark is a boundary this call crossed. Every launch leaves a
+/// `latency.launch` ledger row; `BRIDGE_LAUNCH_TIMING=1` also prints it.
 struct LaunchTiming {
-    enabled: bool,
-    started: Instant,
-    marks: Vec<(&'static str, u128)>,
+    print: bool,
+    marks: crate::latency::Marks,
 }
 
 impl LaunchTiming {
     fn start() -> Self {
-        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let enabled = *ENABLED.get_or_init(|| {
+        static PRINT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let print = *PRINT.get_or_init(|| {
             std::env::var("BRIDGE_LAUNCH_TIMING").as_deref() == Ok("1")
         });
-        Self {
-            enabled,
-            started: Instant::now(),
-            marks: Vec::new(),
-        }
+        Self { print, marks: crate::latency::Marks::start() }
     }
 
     fn mark(&mut self, name: &'static str) {
-        if self.enabled {
-            self.marks.push((name, self.started.elapsed().as_millis()));
-        }
+        self.marks.mark(name);
     }
 
-    fn record(&self, session_id: &str, harness: &str) {
-        if !self.enabled {
-            return;
+    fn record(&self, db: &Connection, session_id: &str, harness: &str) {
+        if self.print {
+            crate::diagnostics::record(&self.marks.line(&format!("launch session={session_id} harness={harness}")));
         }
-        let mut line = format!(
-            "bridge: launch session={session_id} harness={harness} total_ms={}",
-            self.started.elapsed().as_millis()
-        );
-        let mut previous = 0;
-        for (name, at) in &self.marks {
-            line.push_str(&format!(" {name}_ms={} (+{})", at, at - previous));
-            previous = *at;
-        }
-        crate::diagnostics::record(&line);
+        let mut body = self.marks.to_json();
+        body["harness"] = serde_json::json!(harness);
+        crate::latency::record(db, "latency.launch", session_id, &body);
     }
 }
 
@@ -2064,6 +2052,12 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let chosen_effort = if scoped_settings { effort.clone() } else { effort
         .filter(|value| !value.is_empty())
         .or(configured_effort) };
+    // The chat's own speed tier. The registry drops one the launch model does
+    // not list, so a stale choice never reaches the provider.
+    let chosen_speed: Option<String> = state.try_db()?
+        .query_row("SELECT speed FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+        .ok()
+        .flatten();
     timing.mark("context");
     let registry = state.adapter_registry.clone();
     let launch_adapter_id = dispatch_id.clone();
@@ -2103,6 +2097,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 cwd: &launch_cwd,
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
+                speed: chosen_speed.as_deref(),
                 instructions: Some(instructions),
                 write_mode: root_write_mode,
                 interactive,
@@ -2139,6 +2134,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
+                    speed: chosen_speed.as_deref(),
                     instructions: Some(&runtime_instructions),
                     write_mode: root_write_mode,
                     interactive,
@@ -2211,6 +2207,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
+                    speed: chosen_speed.as_deref(),
                     instructions: Some(&runtime_instructions),
                     write_mode: root_write_mode,
                     interactive,
@@ -2459,9 +2456,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     }
     timing.mark("persist");
     core.events.publish(CoreEvent::StateChanged);
-    let snapshot = store::state(&state.db.lock().unwrap());
+    let db = state.db.lock().unwrap();
+    let snapshot = store::state(&db);
     timing.mark("state");
-    timing.record(&session_id, adapter_id);
+    timing.record(&db, &session_id, adapter_id);
     snapshot
 }
 
@@ -2499,6 +2497,13 @@ fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), B
          WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
         params![session_id],
     )?;
+    // Every caller stops this process next, and its reader no longer counts as
+    // current, so the reader's exit will not close what dies with it.
+    let closed = crate::harness_subagents::close_with_process(&db, session_id);
+    drop(db);
+    for event in closed {
+        core.events.publish(CoreEvent::Agent(event));
+    }
     Ok(())
 }
 
@@ -2623,6 +2628,12 @@ fn spawn_reader_thread(
                         break;
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        // Codex answers app control as JSON-RPC responses in
+                        // Bridge's id namespace; they become the same frame.
+                        let value = crate::apps::codex::translate(&value).unwrap_or(value);
+                        if crate::apps::control::deliver(&session_id, &value) {
+                            continue;
+                        }
                         // A provider's server-level heartbeat proves the process
                         // is alive and nothing more. It must not count as turn
                         // progress — the chat watchdog exists precisely for a
@@ -2900,6 +2911,25 @@ fn handle_agent_value_timed(
         if recorded {
             core.events.publish(CoreEvent::StateChanged);
         }
+        return;
+    }
+    // The sidecar's own account of a turn (sidecar/claude-agent/timing.mjs):
+    // a measurement, so it goes to the latency ledger, never the forest.
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("system")
+        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("bridge_timing")
+    {
+        let mut body = value.clone();
+        if let Some(object) = body.as_object_mut() {
+            object.remove("type");
+            object.remove("subtype");
+            object.insert("harness".into(), serde_json::json!("claude"));
+        }
+        crate::latency::record(
+            &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            "latency.harness",
+            session_id,
+            &body,
+        );
         return;
     }
     let state = core.clone();
@@ -6243,6 +6273,7 @@ pub fn launch_worker_outcome(
                         cwd: &reservation.path,
                         model: Some(model.as_str()),
                         effort: Some(&effort),
+                        speed: None,
                         instructions: Some(instructions.as_str()),
                         write_mode: Some(directive.write_mode),
                         read_only_sandbox: read_only_sandbox.as_ref(),
@@ -6271,6 +6302,7 @@ pub fn launch_worker_outcome(
                                 cwd: &reservation.path,
                                 model: Some(model.as_str()),
                                 effort: Some(&effort),
+                                speed: None,
                                 instructions: Some(restored_instructions.as_str()),
                                 write_mode: Some(directive.write_mode),
                                 read_only_sandbox: read_only_sandbox.as_ref(),
@@ -6292,6 +6324,7 @@ pub fn launch_worker_outcome(
                             cwd: &reservation.path,
                             model: Some(model.as_str()),
                             effort: Some(&effort),
+                            speed: None,
                             instructions: Some(restored_instructions.as_str()),
                             write_mode: Some(directive.write_mode),
                             read_only_sandbox: read_only_sandbox.as_ref(),
@@ -6314,6 +6347,7 @@ pub fn launch_worker_outcome(
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
+                    speed: None,
                     instructions: Some(instructions.as_str()),
                     write_mode: Some(directive.write_mode),
                     read_only_sandbox: read_only_sandbox.as_ref(),
@@ -11051,9 +11085,9 @@ pub fn prepare_turn(
     text: String,
 ) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     let state = core;
-    if text.trim().is_empty() {
-        return Err(BridgeError::Invalid("Message cannot be empty".into()));
-    }
+    // Empty text is not refused here. An image-only send prepares "" and then
+    // submits the images, and only `submit_input` sees the attachments, so it
+    // alone decides whether a message is empty.
     let exists: bool = state.db.lock().unwrap().query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
         params![session_id],
@@ -11563,6 +11597,18 @@ impl DeliveryMode {
     }
 }
 
+
+/// Whether agents are offered a throwaway signed-in browser clone. Off for
+/// now: the clone code stays, but no turn advertises it or mints its request
+/// tool, and the app does not surface it. Turn it on together with the
+/// frontend surfaces (`BrowserPane`, `CloneRequestInbox`, the Clones settings
+/// page).
+const OFFER_BROWSER_CLONES: bool = false;
+
+/// What an agent is told about browsers while clones are off. It names no tool
+/// because Bridge provides none: the agent brings its own automation.
+const PLAIN_BROWSER_CONTEXT: &str = "Browser access: when a task needs a browser (local app QA, UI tests, screenshots, extension tests, public pages), use ordinary browser automation such as Playwright with a fresh profile that is not signed in, or the available web/fetch tools. This includes localhost, 127.0.0.1, and [::1]. That is the only browser there is, apart from a browser tab the person attached to this chat, which is described separately when one exists. Bridge has no signed-in browser, no browser clone and no cookie import, so do not offer, request or wait for one. If a task needs the person's signed-in session, say that it cannot be done from here and ask how they want to proceed, for example with a test account. If automation is missing or fails, use another available tool, set it up within the task's permissions, or explain the limitation.";
+
 /// Hand prepared text to the live provider and record it in the conversation.
 fn deliver_prepared_input(
     core: &Arc<BridgeCore>,
@@ -11585,12 +11631,16 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let browser_context = supports_context.then(|| state.browser_bridge.capability_context(session_id, runtime.process_id())).flatten();
-    // Two clone capabilities. The "ask for a clone" one is offered every turn so
-    // the agent can request a signed-in browser; the drive tool is added only
-    // once a clone exists (after the person approved), the same way the attached
-    // tab works.
+    // Signed-in browser clones are switched off (`OFFER_BROWSER_CLONES`): the
+    // agent is told an ordinary, not signed in browser is the only one, and no
+    // clone tool is minted. With the switch on there are two clone
+    // capabilities: the "ask for a clone" one is offered every turn, and the
+    // drive tool is added only once a clone exists (after the person approved),
+    // the same way the attached tab works.
     #[cfg(target_os = "macos")]
-    let clone_context: Option<String> = if supports_context {
+    let clone_context: Option<String> = if !supports_context {
+        None
+    } else if OFFER_BROWSER_CLONES {
         let request = state
             .browser_clone_orchestrator
             .request_capability_context(session_id, runtime.process_id());
@@ -11601,9 +11651,11 @@ fn deliver_prepared_input(
             (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
             (request, drive) => request.or(drive),
         }
-    } else { None };
+    } else {
+        Some(PLAIN_BROWSER_CONTEXT.to_owned())
+    };
     #[cfg(not(target_os = "macos"))]
-    let clone_context: Option<String> = None;
+    let clone_context: Option<String> = supports_context.then(|| PLAIN_BROWSER_CONTEXT.to_owned());
     let application_context = [credential_context, browser_context, clone_context]
         .into_iter()
         .flatten()
@@ -12173,7 +12225,7 @@ fn settle_question_resolution(
     Ok(())
 }
 
-/// Durably resolve every unanswered OpenCode question for `session_id`
+/// Durably resolve every unanswered OpenCode or Claude question for `session_id`
 /// without answering it, tagged with why. Best-effort and silent on error —
 /// callers are teardown paths (session stop, provider error) that must not
 /// fail because a bookkeeping write did not land.
@@ -12185,9 +12237,9 @@ fn settle_question_resolution(
 /// permanently unable to accept new input, repeating the same failure).
 fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
     let Ok(mut statement) = db.prepare(
-        "SELECT e.sequence FROM session_entries e
+        "SELECT e.sequence, json_extract(e.payload,'$.data.requestMethod') FROM session_entries e
          WHERE e.session_id=?1 AND e.kind='question.requested'
-           AND json_extract(e.payload,'$.data.requestMethod')=?2
+           AND json_extract(e.payload,'$.data.requestMethod') IN (?2, ?3)
            AND NOT EXISTS (
                SELECT 1 FROM session_entries r
                WHERE r.session_id=e.session_id AND r.kind='question.resolved'
@@ -12198,16 +12250,16 @@ fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
         return;
     };
     let Ok(rows) = statement.query_map(
-        params![session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD],
-        |row| row.get::<_, i64>(0),
+        params![session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD, agent::CLAUDE_QUESTION_REQUEST_METHOD],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
     ) else {
         return;
     };
-    let Ok(pending) = rows.collect::<Result<Vec<i64>, _>>() else {
+    let Ok(pending) = rows.collect::<Result<Vec<(i64, String)>, _>>() else {
         return;
     };
     drop(statement);
-    for event_id in pending {
+    for (event_id, method) in pending {
         let resolved = agent::NormalizedEvent {
             kind: "question.resolved".into(),
             item_id: None,
@@ -12217,11 +12269,12 @@ fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
             text: None,
             data: serde_json::json!({"requestEventId": event_id, "decision": reason}),
         };
+        let adapter = if method == agent::CLAUDE_QUESTION_REQUEST_METHOD { "claude" } else { "opencode" };
         let _ = store::session_event(
             db,
             session_id,
             &resolved,
-            &serde_json::json!({"adapter": "opencode"}),
+            &serde_json::json!({"adapter": adapter}),
         );
     }
 }
@@ -12257,6 +12310,18 @@ fn answer_pending_question(
     // a second submission racing this one, or this one racing a card's
     // Decline through `resolve_approval` — and both would call the adapter,
     // sending OpenCode two contradictory replies to one question.
+    //
+    // Only a pending question needs the claim. Taking it for every message
+    // refused an ordinary message whenever another operation held the
+    // session (a limit recovery switching models, a launch), with a wrong
+    // "already being answered" even though nothing was being asked.
+    let pending = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        latest_unresolved_approval(&db, session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD).is_some()
+    };
+    if !pending {
+        return Ok(None);
+    }
     let _claim = core
         .claim_session_lifecycle(session_id, "question resolution")
         .map_err(|_| BridgeError::Invalid("This question is already being answered".into()))?;
@@ -12351,7 +12416,9 @@ fn submit_input_internal(
     attachments: Vec<wire::TurnImage>,
     preference: Option<wire::ActiveTurnInput>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    let mut timing = crate::latency::Marks::start();
     let _input_lease = core.input_activity.read().unwrap();
+    timing.mark("input_lease");
     ensure_session_not_archived(core, &session_id)?;
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
@@ -12364,6 +12431,8 @@ fn submit_input_internal(
     // meant the only person who could see the mistake was the only one who could
     // not mention it. Three durable states still refuse, and they name themselves.
     let worker = store::worker_runtime(&state.db.lock().unwrap(), &session_id)?;
+    timing.mark("gates");
+    let mut resumed = false;
     if let Some(runtime) = &worker {
         let has_live_runtime = state.adapters.lock().unwrap().contains_key(&session_id);
         session_input::worker_steer_gate(
@@ -12381,6 +12450,8 @@ fn submit_input_internal(
         // already refused a worker with no live runtime, because launching one is
         // the pool's decision, not a side effect of typing.
         resume_for_send(core, &session_id)?;
+        resumed = true;
+        timing.mark("resume");
     }
 
     // A pending OpenCode question is not "a turn in flight that can take more
@@ -12437,6 +12508,7 @@ fn submit_input_internal(
     } else {
         route.disposition()
     };
+    timing.mark("route");
 
     let prepared = match prepare_input(
         core,
@@ -12476,6 +12548,7 @@ fn submit_input_internal(
         None => prepared,
     };
     let interceptions = mirror_interceptions(&prepared.interceptions);
+    timing.mark("prepare");
 
     let mut queued_input_id = None;
     let mut delivered_route = route;
@@ -12536,9 +12609,19 @@ fn submit_input_internal(
     // keeps planning against the objective it issued and argues with guidance it
     // never saw. Told at submission time rather than at delivery: knowing a steer
     // is inbound is what stops the fight, and a queued one lands next boundary.
+    timing.mark("deliver");
     if worker.is_some() {
         notify_parent_worker_steered(core, &session_id, &prepared.display_text, delivered_route);
     }
+    let mut body = timing.to_json();
+    body["route"] = serde_json::json!(format!("{delivered_route:?}"));
+    body["resumed"] = serde_json::json!(resumed);
+    crate::latency::record(
+        &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        "latency.submit",
+        &session_id,
+        &body,
+    );
     Ok(wire::SubmitInputResult {
         disposition,
         queued_input_id,
@@ -14699,6 +14782,16 @@ fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod submit_input_tests {
     use super::*;
+
+    #[test]
+    fn a_message_with_no_pending_question_is_not_refused_by_another_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+        core.db.lock().unwrap().execute("INSERT INTO sessions(id,harness,label,status) VALUES('s','opencode','Chat','ready')", []).unwrap();
+        // Another operation (a limit recovery, a launch) holds the session.
+        let _held = core.claim_session_lifecycle("s", "limit recovery").unwrap();
+        assert!(matches!(answer_pending_question(&core, "s", "hello"), Ok(None)), "no question: the message goes on as an ordinary one");
+    }
     #[cfg(target_os = "macos")]
     use crate::api;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -15162,7 +15255,7 @@ mod submit_input_tests {
         let owner = Arc::get_mut(&mut core).unwrap();
         owner.browser_clones = supervisor;
         owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
-        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        let (runtime, _handles) = FakeRuntime::build(false, false, std::process::id());
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
         let extension = browser.path().join("extension");
@@ -15170,11 +15263,10 @@ mod submit_input_tests {
         std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
         for _ in 0..2 {
             submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
-            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text|
-                text.contains("clone-request-chat")
-                    && text.contains("For local app QA")
-                    && text.contains("user's existing signed-in browser state")
-            ));
+            // Clones are not offered on a turn (`OFFER_BROWSER_CLONES`), so the
+            // request capability is minted here the way a turn would mint it.
+            let offered = core.browser_clone_orchestrator.request_capability_context("chat", std::process::id()).unwrap();
+            assert!(offered.contains("clone-request-chat") && offered.contains("user's existing signed-in browser state"));
             let request_tool = directory.join("clone-request-chat");
             let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension,"additionalDomains":["cdn.example.test"]}));
             assert!(ok);
@@ -15225,6 +15317,44 @@ mod submit_input_tests {
         }
         let commands = std::fs::read_to_string(browser.path().join("commands.jsonl")).unwrap();
         assert_eq!(commands.lines().filter(|line| line.contains("Extensions.loadUnpacked")).count(), 2);
+    }
+
+    /// Clones are switched off: a turn tells the agent about the ordinary
+    /// browser only, and mints no clone request tool.
+    #[test]
+    fn turn_offers_only_the_plain_browser() {
+        let (_fixture, mut core, _managed_root) = core_with_chat("ready");
+        let browser = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = browser.path().join("tool");
+        #[cfg(target_os = "macos")]
+        {
+            let supervisor = crate::browser_clone::tests::synthetic_supervisor(browser.path(), true);
+            let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), directory.clone()).unwrap();
+            let owner = Arc::get_mut(&mut core).unwrap();
+            owner.browser_clones = supervisor;
+            owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = &mut core;
+        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        for message in ["Test my local app in a browser", "Now sign in to my account"] {
+            submit_input(&core, "chat".into(), message.into()).unwrap();
+            let contexts = handles.contexts.lock().unwrap().last().unwrap().clone();
+            assert_eq!(contexts.iter().filter(|text| text.contains(PLAIN_BROWSER_CONTEXT)).count(), 1, "every turn carries the plain browser note once");
+            assert!(!contexts.iter().any(|text| text.contains("clone-request-") || text.contains("clone-browser-") || text.contains("Request a Bridge browser clone")));
+            assert!(!directory.join("clone-request-chat").exists(), "no clone request tool is minted");
+            handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+        }
+    }
+
+    #[test]
+    fn plain_browser_note_names_no_clone_tool() {
+        assert!(!OFFER_BROWSER_CLONES);
+        for needle in ["not signed in", "only browser there is", "no signed-in browser, no browser clone and no cookie import", "Playwright"] {
+            assert!(PLAIN_BROWSER_CONTEXT.contains(needle), "missing: {needle}");
+        }
+        assert!(!PLAIN_BROWSER_CONTEXT.contains("clone-request") && !PLAIN_BROWSER_CONTEXT.contains('\u{2014}'));
     }
 
     // -- session-context frame (#528) ---------------------------------------
@@ -15544,6 +15674,57 @@ mod submit_input_tests {
         let payload = latest_user_message_payload(&core).unwrap();
         assert_eq!(payload["text"], "");
         assert_eq!(payload["data"]["attachments"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn preparing_an_image_only_turn_accepts_empty_text() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+
+        for text in ["", "   "] {
+            let prepared = prepare_turn(&core, "chat".into(), text.into())
+                .unwrap_or_else(|error| panic!("prepare refused {text:?}: {error}"));
+            assert_eq!(prepared.text, text);
+            assert!(prepared.interceptions.is_empty());
+        }
+    }
+
+    #[test]
+    fn preparing_a_turn_for_a_missing_session_is_still_refused() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+
+        let error = prepare_turn(&core, "no-such-chat".into(), String::new()).unwrap_err();
+
+        assert!(error.to_string().contains("does not exist"), "{error}");
+    }
+
+    /// The composer's real sequence for a pasted image and no words: prepare
+    /// the empty text, then submit it with the image.
+    #[test]
+    fn an_image_only_send_prepares_then_delivers() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        let prepared = prepare_turn(&core, "chat".into(), String::new()).unwrap();
+        let outcome =
+            submit_input_with_attachments(&core, "chat".into(), prepared.text, vec![png_image()])
+                .unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert!(!handles.sent_images.lock().unwrap().is_empty(), "the image reached the provider");
+    }
+
+    #[test]
+    fn an_empty_send_without_images_is_refused_at_submit() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        let prepared = prepare_turn(&core, "chat".into(), String::new()).unwrap();
+        let error = submit_input_with_attachments(&core, "chat".into(), prepared.text, Vec::new())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Message cannot be empty"), "{error}");
+        assert!(handles.sent.lock().unwrap().is_empty(), "nothing reached the provider");
+        assert!(latest_user_message_payload(&core).is_none(), "nothing persisted");
     }
 
     #[test]
@@ -19300,6 +19481,58 @@ mod permission_policy_tests {
         }
     }
 
+    /// The bug this guards: Claude's `AskUserQuestion` arrived as a
+    /// permission, Full access allowed it with no answers, and Claude went on
+    /// "since you didn't answer". It must wait for the person and then reach
+    /// Claude as answers keyed by question text.
+    #[test]
+    fn full_access_never_answers_a_claude_question_and_the_card_does() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='claude' WHERE id='chat'", []).unwrap();
+        let handles = attach(&core, "chat");
+        deliver_to(&core, "chat", &serde_json::json!({
+            "type": "control_request",
+            "request_id": "root-permission-7",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_use_id": "toolu_q",
+                "tool_name": "AskUserQuestion",
+                "tool_input": {"questions": [
+                    {"question": "Which database?", "header": "Database", "multiSelect": false,
+                     "options": [{"label": "Postgres", "description": ""}, {"label": "SQLite", "description": "", "preview": "app.db"}]},
+                    {"question": "Which features?", "header": "Features", "multiSelect": true,
+                     "options": [{"label": "Auth", "description": ""}, {"label": "Billing", "description": ""}]}
+                ]}
+            }
+        }));
+        assert!(handles.responded.lock().unwrap().is_empty(), "no permission reply may answer a question");
+        assert!(handles.answered.lock().unwrap().is_empty());
+        let (event_id, status): (i64, String) = core.db.lock().unwrap().query_row(
+            "SELECT e.sequence, s.status FROM session_entries e JOIN sessions s ON s.id=e.session_id
+             WHERE e.session_id='chat' AND e.kind='question.requested'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(status, "waiting");
+
+        let answers = std::collections::BTreeMap::from([
+            ("0".to_owned(), vec!["SQLite".to_owned()]),
+            ("1".to_owned(), vec!["Auth".to_owned(), "Something else".to_owned()]),
+        ]);
+        crate::api::resolve_question(&core, "chat", event_id, "answer", answers).unwrap();
+        let answered = handles.answered.lock().unwrap().clone();
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0].0, serde_json::json!("root-permission-7"));
+        assert_eq!(answered[0].1["answers"], serde_json::json!({"Which database?": "SQLite", "Which features?": "Auth, Something else"}));
+        assert_eq!(answered[0].1["annotations"], serde_json::json!({"Which database?": {"preview": "app.db"}}));
+        let submitted: String = core.db.lock().unwrap().query_row(
+            "SELECT json_extract(payload,'$.data.submittedAnswers') FROM session_entries WHERE session_id='chat' AND kind='question.resolved'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&submitted).unwrap(), serde_json::json!({"0": ["SQLite"], "1": ["Auth", "Something else"]}));
+    }
+
     /// `session_event` returns sequence 0 for a frame it did not persist, and
     /// answering 0 would resolve whatever approval happens to sit there.
     #[test]
@@ -19711,6 +19944,7 @@ mod hot_worker_prompt_tests {
                     lifecycle: crate::model::ModelLifecycle::Stable,
                     source: crate::model::ModelCatalogSource::CuratedFallback,
                     supported_effort_levels: vec!["medium".into()], default_for_tier: true,
+                    speed_tiers: Vec::new(),
                 }],
             }
         }

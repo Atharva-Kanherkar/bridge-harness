@@ -170,6 +170,12 @@ pub struct BridgeCore {
     /// never discovered on disk.
     pub external_import_discoveries:
         Mutex<HashMap<String, crate::external_import::DiscoveryResult>>,
+    /// A background import is running in this process. One at a time.
+    pub import_job_running: std::sync::atomic::AtomicBool,
+    /// The artifacts the last preview of each discovery read. Commit re-derives
+    /// exactly these, so a copy the person did not select cannot merge in and
+    /// change the candidates they approved.
+    pub external_import_previews: Mutex<HashMap<String, Vec<String>>>,
     /// The composer typeahead's warm hidden session and fallback cooldowns.
     /// See `suggestion_engine` for why this lives on `BridgeCore` rather than
     /// being started fresh per request: process-start latency on every
@@ -404,6 +410,8 @@ impl BridgeCore {
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
+            import_job_running: std::sync::atomic::AtomicBool::new(false),
+            external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
         }
@@ -444,6 +452,9 @@ impl BridgeCore {
         // Adoption state must survive restart: a pending row whose worktree is
         // gone would otherwise block its parent forever.
         crate::worker_adoption::recover(&connection)?;
+        // An app pane lives only as long as the window that drew it; none
+        // survives a restart, and nor does a write waiting in one.
+        crate::apps::open::remove_surfaces(&connection, None)?;
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)?;
         // No history snapshot here on purpose. `VACUUM INTO` plus a full-file
         // hash grows with total history, and running it before the daemon
@@ -569,6 +580,8 @@ impl BridgeCore {
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
+            import_job_running: std::sync::atomic::AtomicBool::new(false),
+            external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
         })

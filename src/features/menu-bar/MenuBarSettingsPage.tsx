@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
 import { bridgeApi } from "../../api";
@@ -149,11 +149,19 @@ export function MenuBarSettingsPage() {
       <SettingsGroup label="Providers & accounts">
         <p className="px-4 py-3 text-xs text-muted-foreground">Enable account usage for each provider. Choosing a favorite does not connect its account.</p>
         {providers.map(provider => {
-          const account = usage?.providers.find(value => value.provider === provider.id);
-          return <SettingsRow key={provider.id} label={provider.name}
-            description={!settings[provider.key] ? provider.description : account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
-            control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
-              onChange={value => void save({ [provider.key]: value })} />} />;
+          // The provider's own login; extra accounts follow it, read with the
+          // same switch, so a second subscription is never invisible here.
+          const account = usage?.providers.find(value => value.provider === provider.id && !value.accountId);
+          const extra = (usage?.providers ?? []).filter(value => value.provider === provider.id && !!value.accountId);
+          return <Fragment key={provider.id}>
+            <SettingsRow label={provider.name}
+              description={!settings[provider.key] ? provider.description : account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
+              control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
+                onChange={value => void save({ [provider.key]: value })} />} />
+            {extra.map(row => <SettingsRow key={row.accountId} label={`${provider.name} · ${row.accountLabel || row.accountId}`}
+              description={!settings[provider.key] ? `Shown when ${provider.name} usage is on.` : row.account ? `${row.account}${row.plan ? ` · ${row.plan}` : ""}` : row.error ?? "Not read yet."}
+              control={<span className="text-[11px] text-muted-foreground">{settings[provider.key] ? "Included" : "Off"}</span>} />)}
+          </Fragment>;
         })}
         {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}
         <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each favorite with account usage enabled has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}

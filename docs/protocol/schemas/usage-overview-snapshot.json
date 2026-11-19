@@ -271,6 +271,20 @@
         "null"
       ]
     },
+    "accountId": {
+      "description": "An extra account from Settings this reading belongs to. Absent for the user's own login, which every older client assumes.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "accountLabel": {
+      "description": "The name the user gave that account.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "accountMetrics": {
       "description": "Provider-reported account amounts, separate from the device ledger.",
       "items": {

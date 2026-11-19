@@ -41,6 +41,21 @@ const MUTATION_WORDS = new Set([
   "set", "update", "upload", "write",
 ]);
 
+export function isReadToolName(name) {
+  if (typeof name !== "string" || !/^[a-z0-9_-]{1,64}$/.test(name)) return false;
+  const words = name.split(/[_-]/);
+  return !words.some(word => MUTATION_WORDS.has(word)) && words.some(word => READ_TOOL_VERBS.has(word));
+}
+
+/**
+ * The segment the harness puts in tool names for a configured server: anything
+ * outside `[A-Za-z0-9_-]` becomes `_`, so `claude.ai Slack` is `claude_ai_Slack`.
+ * Mirrors `workflows::wire_server_name` in Rust.
+ */
+export function wireServerName(server) {
+  return String(server).replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
 /** Split `mcp__<server>__<tool>` into its parts, or null. */
 function splitWireName(toolName) {
   if (!toolName.startsWith("mcp__")) return null;
@@ -93,10 +108,12 @@ export function makeBriefingGate({
   // A Set, so matching is exact by construction rather than by a comparison
   // somebody might later relax into a prefix test.
   const reviewed = new Set(allowedTools);
-  const scoped = new Set(readScopeServers);
+  // Scopes arrive as configuration keys (`claude.ai Slack`) and tool names
+  // carry the wire segment (`claude_ai_Slack`), so both sides compare as wire.
+  const scoped = new Set(readScopeServers.map(wireServerName));
   const action = actionScope
     ? {
-        server: actionScope.server,
+        server: wireServerName(actionScope.server),
         permittedWords: new Set(actionScope.permittedWords ?? []),
         forbiddenWords: new Set(actionScope.forbiddenWords ?? []),
       }
@@ -180,6 +197,27 @@ export function makeWorkflowGate({ servers = [], maxArgumentBytes = 8192, ask = 
   };
 }
 
+/** A launch that makes one approved call with no model turn. */
+export function isDirectCall(briefing) {
+  return briefing?.directCall === true && Boolean(briefing?.exactAction);
+}
+
+/**
+ * A launch whose claude.ai connectors Claude Code loads itself, signed in: a
+ * direct call, or a run Rust marked `nativeConnectors` (the Outgoing resolver).
+ */
+export function loadsConnectorsNatively(briefing) {
+  return briefing?.nativeConnectors === true || isDirectCall(briefing) || isAppRuntime(briefing);
+}
+
+/**
+ * A personal-app connection runtime: no model turn and no tools, only app
+ * control (inventory and reads) on `appRuntime.server`. See app-control.mjs.
+ */
+export function isAppRuntime(briefing) {
+  return typeof briefing?.appRuntime?.server === "string" && briefing.appRuntime.server.length > 0;
+}
+
 /**
  * The SDK options a briefing run uses, replacing the write-mode permission
  * options entirely rather than layering on top of them.
@@ -187,7 +225,7 @@ export function makeWorkflowGate({ servers = [], maxArgumentBytes = 8192, ask = 
  * `mcpServers` is filtered to the connector instances the reviewed tools belong
  * to: a server nobody reviewed a tool from has no reason to be reachable.
  */
-export function briefingOptions(briefing, mcpServers = {}, ask = null) {
+export function briefingOptions(briefing, mcpServers = {}, ask = null, projectTrusted = false) {
   if (briefing?.workflow) return workflowOptions(briefing, mcpServers, ask);
   // `allowedServers` already carries the read-scope servers on the Rust side,
   // but the union is restated here so the reachable-server set and the gate's
@@ -196,9 +234,17 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
     ...(briefing?.allowedServers ?? []),
     ...(briefing?.readScopeServers ?? []),
     ...(briefing?.actionScope ? [briefing.actionScope.server] : []),
+    ...(isAppRuntime(briefing) ? [briefing.appRuntime.server] : []),
   ]);
+  // Native connectors: Claude Code loads its claude.ai connectors itself, with
+  // the account's own sign-in. An explicit copy never shares that sign-in and
+  // comes up needing authentication, so a run handed one can reach nothing.
+  // This changes the route only: the gate below decides every call exactly as
+  // before, and a direct call is further held to its one approved call by
+  // mcp-call.mjs.
+  const native = loadsConnectorsNatively(briefing);
   const scopedMcpServers = Object.fromEntries(
-    Object.entries(mcpServers).filter(([name]) => allowedServers.has(name)),
+    Object.entries(mcpServers).filter(([name]) => allowedServers.has(name) && !(native && name.startsWith("claude.ai "))),
   );
   return {
     // `default` rather than `dontAsk` or `bypassPermissions`: the gate below is
@@ -214,12 +260,20 @@ export function briefingOptions(briefing, mcpServers = {}, ask = null) {
       exactAction: briefing?.exactAction ?? null,
       maxArgumentBytes: briefing?.maxArgumentBytes,
     }),
-    // Only the reviewed connectors, and only as declared here.
-    strictMcpConfig: true,
+    // Only the reviewed connectors, and only as declared here, unless the run
+    // uses the harness's own signed-in connectors (above).
+    strictMcpConfig: !native,
     mcpServers: scopedMcpServers,
     // Nothing inherited. A project's settings can carry permissions and hooks,
     // and a briefing run must not gain authority from where it happens to be run.
-    settingSources: [],
+    // A personal-app runtime is the one exception: it loads the person's own
+    // user settings, as their chats do, so their configured MCP servers come
+    // up with their sign-in. It gains nothing to act with: the gate above
+    // denies every model tool and the runtime is never sent a turn.
+    // In a trusted project folder it loads that project's settings too,
+    // exactly as a chat opened there would, so a server the project
+    // configures under a user-wide name resolves to the project's server.
+    settingSources: isAppRuntime(briefing) ? (projectTrusted ? ["user", "project", "local"] : ["user"]) : [],
     plugins: [],
     // No dialog kinds are declared and no dialog callback is wired, so the CLI
     // emits none and every flow behind one degrades to its no-dialog behaviour.

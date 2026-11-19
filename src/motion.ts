@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useReducedMotion, type Transition } from "framer-motion";
 
 /**
@@ -29,6 +30,30 @@ export const MOTION_DURATION = {
 
 /** Gap between consecutive rows revealed together, matching `chat-message-enter`. */
 export const MOTION_STAGGER = 0.04;
+
+/**
+ * The user's reduce preference, read live at mount. Framer's own
+ * `useReducedMotion` caches a module-level snapshot on first use, which a
+ * test (or a surface that mounts before the query lands) cannot influence;
+ * this one queries per mount so the GitHub pane's choreography gate — and
+ * anything else that asks directly — sees the actual setting.
+ */
+export function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setReduced(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  return reduced;
+}
 
 /**
  * A transition at `duration`, or an instant one when the user prefers reduced

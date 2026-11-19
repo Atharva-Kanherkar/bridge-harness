@@ -1,4 +1,4 @@
-// The settings rail: title, search, four groups, and the reset footer.
+// The settings rail: title, search, the destinations, and the reset footer.
 //
 // It replaces both the old 64px header (whose subtitle described a Settings
 // screen that no longer existed) and the shield note that sat under the nav
@@ -9,7 +9,7 @@
 import { useState } from "react";
 import {
   RotateCcw as ArrowCounterClockwise, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
-  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Ghost, Mic, Bell, KeyRound,
+  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Mic, Bell, KeyRound, MessagesSquare,
 } from "lucide-react";
 import { SECTION_LABELS, SECTION_ORDER, primarySection, type Section } from "./sections";
 import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
@@ -21,6 +21,7 @@ const SECTION_ICONS: Record<Section, Icon> = {
   chatDefaults: Robot,
   codingAgents: Robot,
   data: HardDrive,
+  history: MessagesSquare,
   appearance: Sun,
   menuBar: SlidersHorizontal,
   notifications: Bell,
@@ -35,7 +36,6 @@ const SECTION_ICONS: Record<Section, Icon> = {
   archives: Archive,
   workers: Robot,
   harnesses: Code,
-  clones: Ghost,
   keys: KeyRound,
   work: Sparkle,
   import: DownloadSimple,

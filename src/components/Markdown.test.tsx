@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, MentionText, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, mermaidClamp, renderMathToHtml, RichFence, richFenceKind, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 import { withNotesContext } from "../notesBrief";
 
@@ -61,7 +61,14 @@ describe("splitBlocks rich content detection", () => {
   });
 
   it("leaves ordinary fenced code untouched", () => {
-    expect(splitBlocks("```ts\nconst x = 1;\n```")).toEqual([{ kind: "code", lang: "ts", body: "const x = 1;" }]);
+    expect(splitBlocks("```ts\nconst x = 1;\n```")).toEqual([{ kind: "code", lang: "ts", body: "const x = 1;", closed: true }]);
+  });
+
+  it("marks a fence still waiting for its closing line as open", () => {
+    expect(splitBlocks("Run this:\n\n```bash\nbun inst")).toEqual([
+      { kind: "para", text: "Run this:" },
+      { kind: "code", lang: "bash", body: "bun inst", closed: false },
+    ]);
   });
 
   it("does not misread prices as inline math", () => {
@@ -198,6 +205,41 @@ describe("Mermaid rendering", () => {
     expect(overlay.querySelector('[data-testid="mermaid-svg"]')).toBeTruthy();
     await act(async () => { (overlay.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement).click(); });
     expect(document.body.querySelector('[aria-label="mermaid fullscreen"]')).toBeNull();
+  });
+
+  it("keeps a wide diagram readable at the minimum scale instead of shrinking it to dust", async () => {
+    mermaidMock.parse.mockResolvedValue(true);
+    // A flowchart that is three docks wide.
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-testid="mermaid-svg" viewBox="0 0 1200 600"></svg>' });
+    const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 440 });
+    try {
+      await act(async () => { root.render(<Markdown text={"```mermaid\nflowchart LR; A-->B;\n```"} />); });
+      // Two settles: the svg renders in an effect, the measurement follows.
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      const clamped = container.querySelector("[data-mermaid-clamped]");
+      expect(clamped).toBeTruthy();
+      // 1200 * 0.75 = 900: three quarters of the natural size, not 36%.
+      const inner = clamped!.firstElementChild as HTMLElement;
+      expect(inner.style.width).toBe("900px");
+      expect(container.textContent).toContain("Scroll horizontally or expand");
+    } finally {
+      if (clientWidth) Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidth);
+    }
+  });
+
+  it("renders a fitting diagram centered without the clamp", async () => {
+    mermaidMock.parse.mockResolvedValue(true);
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-testid="mermaid-svg" viewBox="0 0 400 200"></svg>' });
+    const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 440 });
+    try {
+      await act(async () => { root.render(<Markdown text={"```mermaid\nflowchart TD; A-->B;\n```"} />); });
+      expect(container.querySelector("[data-mermaid-clamped]")).toBeNull();
+      expect(container.querySelector('[aria-label="Mermaid diagram"]')).toBeTruthy();
+    } finally {
+      if (clientWidth) Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidth);
+    }
   });
 
   it("re-renders when the active theme changes", async () => {

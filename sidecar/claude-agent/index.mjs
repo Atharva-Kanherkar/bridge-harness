@@ -10,20 +10,26 @@ import { stopTaskFrame, childPermissions, withChildPermissions } from "./subagen
 //   stdin  (Rust → sidecar): control frames
 //     {"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}
 //     {"type":"control_request","request":{"subtype":"interrupt"}}
+//     {"type":"mcp_call","id":"…","tool":"mcp__…","arguments":{…}}  (mcp-call.mjs)
 //   stdout (sidecar → Rust): raw SDK messages (system/assistant/stream_event/
 //     user/result), one JSON object per line — the exact shapes Bridge's
 //     normalize_claude_message_with_state already understands.
 //
 // Config arrives as a single JSON argument (argv[2]):
-//   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers }
+//   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers,
+//     timing }  (timing: report each turn as a system/bridge_timing frame)
 
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { buildOptions, catalogOptions } from "./options.mjs";
+import { buildOptions, catalogOptions, connectorReadPolicy } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
 import { probeUsage, readContextUsage } from "./usage.mjs";
 import { createAskRelay } from "./ask.mjs";
 import { isTrustedFolder } from "./trust.mjs";
+import { createDirectCall } from "./mcp-call.mjs";
+import { createAppControl } from "./app-control.mjs";
+import { isAppRuntime, isDirectCall, wireServerName } from "./briefing.mjs";
+import { createTurnTiming } from "./timing.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -33,9 +39,12 @@ import { isTrustedFolder } from "./trust.mjs";
 // exactly as it did before. ESM ignores NODE_PATH, so an explicit module entry is
 // the only way to redirect a bare specifier.
 const sdkEntry = process.env.BRIDGE_CLAUDE_SDK_ENTRY;
+const bootStarted = performance.now();
 const { query } = sdkEntry
   ? await import(pathToFileURL(sdkEntry).href)
   : await import("@anthropic-ai/claude-agent-sdk");
+
+const sdkImportedMs = Math.round(performance.now() - bootStarted);
 
 // A closed pipe means the parent can no longer receive protocol frames. Exit
 // unsuccessfully instead of trying to report another frame to that same pipe.
@@ -120,6 +129,39 @@ const options = config.catalog === true
 const permissions = childPermissions(writeFrame, sessionId);
 if (config.catalog !== true) withChildPermissions(options, permissions);
 const run = query({ prompt: input, options });
+// Only an interactive chat asks for per-turn timing; every other run keeps its
+// exact frame sequence.
+const turnTiming = config.timing === true
+  ? createTurnTiming({
+    // performance.now() counts from process start, so boot includes Node's own.
+    processToSdkImportMs: Math.round(bootStarted) + sdkImportedMs,
+    sdkImportMs: sdkImportedMs,
+    queryCreatedMs: Math.round(performance.now()),
+  })
+  : null;
+
+// The one approved tool call a connector action launch may make without a
+// model turn. Inert unless the briefing carries an exact action.
+const directCall = createDirectCall({
+  exactAction: isDirectCall(config.briefing) ? config.briefing.exactAction : null,
+  request: (request) => run.request(request),
+  writeFrame,
+});
+
+// A chat serves any of its servers under its own access mode. A personal-app
+// connection runtime (a turnless briefing) serves its one server; Rust has
+// already applied the requesting chat's access mode before sending.
+const appRuntimeServer = isAppRuntime(config.briefing) ? config.briefing.appRuntime.server : null;
+const servesAppRuntime = (name) => wireServerName(name) === wireServerName(appRuntimeServer);
+const appControl = createAppControl({
+  enabled: appRuntimeServer !== null
+    || (Boolean(config.mcpServers?.bridge) && !config.briefing && !config.workflow && config.catalog !== true),
+  status: () => run.mcpServerStatus(),
+  request: (request) => run.request(request),
+  writeFrame,
+  mayRead: appRuntimeServer !== null ? servesAppRuntime : connectorReadPolicy(config),
+  serverAllowed: appRuntimeServer !== null ? servesAppRuntime : () => true,
+});
 
 // Catalogue discovery is a short-lived control-plane request. It uses the
 // installed SDK/CLI itself, so new provider releases appear without a Bridge
@@ -148,11 +190,18 @@ rl.on("line", (line) => {
     // here would silently drop them — the exact failure image paste exists
     // to remove. See input.mjs for the shapes this tolerates.
     const blocks = userContentBlocks(frame);
-    if (blocks) input.push(userMessage(blocks));
+    if (blocks) {
+      turnTiming?.userFrame();
+      input.push(userMessage(blocks));
+    }
   } else if (frame.type === "control_response") {
     // One channel, two askers with their own request ids: a workflow run's
     // write (`wf-N`, ask.mjs) and a subagent's prompt (`child-permission-N`).
     if (!asks.resolve(frame)) permissions.respond(frame);
+  } else if (frame.type === "mcp_call") {
+    void directCall(frame).catch(() => {});
+  } else if (frame.type === "app_control") {
+    void appControl(frame).catch(() => {});
   } else if (frame.type === "stop_task") {
     void stopTaskFrame(run, frame).catch(error => writeFrame({ type: "system", subtype: "subagent_stop_failed", task_id: frame.task_id, error: String(error) }));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
@@ -192,6 +241,7 @@ function needsFreshLoginQuery(message) {
 // Pump SDK messages straight to stdout as newline JSON.
 try {
   for await (const message of run) {
+    turnTiming?.observe(message);
     await writeFrame(message);
     if (needsFreshLoginQuery(message)) {
       // Some SDK versions return async cleanup despite typing close() as void.
@@ -200,7 +250,11 @@ try {
       try { await run.close(); } catch {}
       process.exit(1);
     }
-    if (message?.type === "result") reportContextUsage();
+    if (message?.type === "result") {
+      reportContextUsage();
+      const timing = turnTiming?.finish();
+      if (timing) await writeFrame(timing);
+    }
   }
 } catch (error) {
   await fail(`Claude Agent SDK error: ${error?.message ?? error}`);

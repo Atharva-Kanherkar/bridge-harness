@@ -70,6 +70,10 @@ pub fn dispatch(
             let p: wire::GithubChecksParams = decode(method, params)?;
             reply(api::github_checks(core, &p.workspace_id, p.number))
         }
+        MethodName::GithubMedia => {
+            let p: wire::GithubMediaParams = decode(method, params)?;
+            reply(api::github_media(core, &p.workspace_id, &p.url))
+        }
         MethodName::GithubMergeConfig => {
             let p: wire::GithubMergeConfigParams = decode(method, params)?;
             reply(api::github_merge_config(core, &p.workspace_id))
@@ -123,6 +127,43 @@ pub fn dispatch(
             reply(api::github_sidebar_prs(core, p.refresh))
         }
         MethodName::ListApps => reply(api::list_apps(core)),
+        MethodName::ListPersonalApps => reply(api::list_personal_apps(core)),
+        MethodName::GetPersonalApp => {
+            let p: wire::GetPersonalAppParams = decode(method, params)?;
+            reply(api::get_personal_app(core, &p))
+        }
+        MethodName::GetPersonalAppDraft => {
+            let p: wire::GetPersonalAppDraftParams = decode(method, params)?;
+            reply(api::get_personal_app_draft(core, &p))
+        }
+        MethodName::GetPersonalAppOpen => {
+            let p: wire::GetPersonalAppOpenParams = decode(method, params)?;
+            reply(api::get_personal_app_open(core, &p))
+        }
+        MethodName::CallPersonalAppTool => {
+            let p: wire::CallPersonalAppToolParams = decode(method, params)?;
+            reply(api::call_personal_app_tool(core, &p))
+        }
+        MethodName::PreviewPersonalAppTool => {
+            let p: wire::PreviewPersonalAppToolParams = decode(method, params)?;
+            reply(api::preview_personal_app_tool(core, &p))
+        }
+        MethodName::LockPersonalApp => {
+            let p: wire::LockPersonalAppParams = decode(method, params)?;
+            reply(api::lock_personal_app(core, &p))
+        }
+        MethodName::DeletePersonalApp => {
+            let p: wire::DeletePersonalAppParams = decode(method, params)?;
+            reply(api::delete_personal_app(core, &p))
+        }
+        MethodName::OpenPersonalAppSurface => {
+            let p: wire::OpenPersonalAppSurfaceParams = decode(method, params)?;
+            reply(api::open_personal_app_surface(core, &p))
+        }
+        MethodName::ClosePersonalAppSurface => {
+            let p: wire::ClosePersonalAppSurfaceParams = decode(method, params)?;
+            reply(api::close_personal_app_surface(core, &p))
+        }
         MethodName::SetAppPinned => {
             let p: wire::SetAppPinnedParams = decode(method, params)?;
             reply(api::set_app_pinned(core, &p))
@@ -212,6 +253,20 @@ pub fn dispatch(
         MethodName::CommitExternalImport => {
             let p: wire::CommitExternalImportParams = decode(method, params)?;
             reply(api::commit_external_import(core, &p))
+        }
+        MethodName::DetectImportSources => reply(api::detect_import_sources(core)),
+        MethodName::StartImport => {
+            let p: wire::StartImportParams = decode(method, params)?;
+            reply(api::start_import(core, &p))
+        }
+        MethodName::ImportStatus => reply(api::import_status(core)),
+        MethodName::ImportContinuation => {
+            let p: wire::ImportContinuationParams = decode(method, params)?;
+            reply(api::import_continuation(core, &p))
+        }
+        MethodName::ContinueImportedChat => {
+            let p: wire::ContinueImportedChatParams = decode(method, params)?;
+            reply(api::continue_imported_chat(core, &p))
         }
 
         MethodName::CreateWorkspace => {
@@ -349,7 +404,7 @@ pub fn dispatch(
         }
         MethodName::UpdateChatModel => {
             let p: wire::UpdateChatModelParams = decode(method, params)?;
-            reply(api::update_chat_model_with_account(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref(), p.account.as_deref()))
+            reply(api::update_chat_selection(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref(), p.account.as_deref(), p.speed.as_deref()))
         }
         MethodName::CarrySessionHandoff => {
             let p: wire::CarrySessionHandoffParams = decode(method, params)?;
@@ -358,6 +413,10 @@ pub fn dispatch(
         MethodName::PrepareTurn => {
             let p: wire::PrepareTurnParams = decode(method, params)?;
             reply(api::prepare_turn(core, p.session_id, p.text))
+        }
+        MethodName::RecordClientLatency => {
+            let p: wire::RecordClientLatencyParams = decode(method, params)?;
+            reply(api::record_client_latency(core, &p))
         }
         MethodName::SendTurn => {
             let p: wire::SendTurnParams = decode(method, params)?;
@@ -556,11 +615,11 @@ pub fn dispatch(
 
         MethodName::StartProviderLogin => {
             let p: wire::StartProviderLoginParams = decode(method, params)?;
-            reply(api::start_provider_login(core, &p.provider))
+            reply(api::start_provider_login(core, &p.provider, p.account.as_deref()))
         }
         MethodName::CancelProviderLogin => {
             let p: wire::CancelProviderLoginParams = decode(method, params)?;
-            reply(api::cancel_provider_login(core, &p.provider))
+            reply(api::cancel_provider_login(core, &p.provider, p.account.as_deref()))
         }
 
         MethodName::CreateTerminal => {
@@ -1573,6 +1632,67 @@ mod tests {
     }
 
     #[test]
+    fn client_latency_lands_in_the_ledger_and_refuses_free_text() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let steps = json!([{"name": "prepare_turn", "atMs": 12}, {"name": "first_output_painted", "atMs": 4100}]);
+
+        let recorded = dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "send", "steps": steps})));
+        assert_eq!(recorded.unwrap(), Value::Null);
+        let (kind, entity, body): (String, String, String) = core.db.lock().unwrap()
+            .query_row("SELECT kind, entity_id, body FROM events WHERE source='latency'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!((kind.as_str(), entity.as_str()), ("latency.client", "chat"));
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"flow": "send", "steps": [["prepare_turn", 12], ["first_output_painted", 4100]]}));
+
+        let prose = json!([{"name": "the user typed this", "atMs": 1}]);
+        assert!(dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "send", "steps": prose}))).is_err());
+        assert!(dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "other", "steps": []}))).is_err());
+        assert!(dispatch(&core, MethodName::RecordClientLatency, Some(json!({"sessionId": "chat", "flow": "send", "steps": [], "text": "x"}))).is_err(), "unknown fields are refused");
+    }
+
+    #[test]
+    fn personal_apps_answer_through_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let mut events = core.events.subscribe();
+        let manifest = bridge_core::apps::personal::Manifest {
+            name: "Slack DM".into(),
+            intent: "Message a teammate".into(),
+            harness: "claude".into(),
+            account: None,
+            cwd: None,
+            server: "claude.ai Slack".into(),
+            reads: vec!["slack_search_users".into()],
+            writes: vec!["slack_send_message".into()],
+            view_html: "<button>Send</button>".into(),
+            sample_args: None,
+        };
+        let draft = bridge_core::apps::personal::create_draft(&core.db.lock().unwrap(), None, &manifest, chrono::Utc::now()).unwrap();
+
+        assert_eq!(dispatch(&core, MethodName::ListPersonalApps, None).unwrap(), json!({"apps": []}));
+        assert!(dispatch(&core, MethodName::ListPersonalApps, Some(json!({}))).is_err(), "list takes no parameters");
+        assert!(dispatch(&core, MethodName::LockPersonalApp, Some(json!({"draftId": draft.id, "contentHash": "sha256:wrong"}))).is_err());
+        let locked = dispatch(&core, MethodName::LockPersonalApp, Some(json!({"draftId": draft.id, "contentHash": draft.content_hash}))).unwrap();
+        assert_eq!(locked["kind"], "locked");
+        assert_eq!(locked["app"]["id"], "slack-dm");
+        assert_eq!(locked["app"]["version"], 1);
+        assert!(events.drain_pending(), "locking publishes apps/changed");
+
+        let listed = dispatch(&core, MethodName::ListPersonalApps, None).unwrap();
+        assert_eq!(listed["apps"][0]["contentHash"], draft.content_hash);
+        assert!(listed["apps"][0].get("viewHtml").is_none(), "the list carries no views");
+        let got = dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm"}))).unwrap();
+        assert_eq!(got["viewHtml"], "<button>Send</button>");
+        assert!(dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm", "x": 1}))).is_err());
+
+        let after = dispatch(&core, MethodName::DeletePersonalApp, Some(json!({"id": "slack-dm"}))).unwrap();
+        assert_eq!(after, json!({"apps": []}));
+        assert!(events.drain_pending(), "deleting publishes apps/changed");
+        assert!(dispatch(&core, MethodName::GetPersonalApp, Some(json!({"id": "slack-dm"}))).is_err());
+    }
+
+    #[test]
     fn apps_answer_through_dispatch() {
         let fixture = tempfile::tempdir().unwrap();
         let core = core(fixture.path());
@@ -1605,6 +1725,18 @@ mod tests {
             assert!(
                 source.contains("workflow_trigger::start_workflow_maintenance(core.clone())"),
                 "{host} does not start workflow maintenance"
+            );
+        }
+    }
+
+    #[test]
+    fn both_hosts_resume_an_interrupted_import() {
+        // An import Bridge quit in the middle of carries on under whichever
+        // host owns core next.
+        for (host, source) in [("bridged", include_str!("lib.rs")), ("desktop", include_str!("../../src/lib.rs"))] {
+            assert!(
+                source.contains("import_job::start_import_maintenance(core.clone())"),
+                "{host} does not resume an interrupted import"
             );
         }
     }

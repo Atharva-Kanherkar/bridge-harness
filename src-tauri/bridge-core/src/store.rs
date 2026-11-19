@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 80;
+const LATEST_SCHEMA_VERSION: i64 = 85;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +69,13 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_harness_subagent_provider ON sessions(parent_session_id,provider_session_id) WHERE kind='harness_subagent';",
     )?;
+    // A chat's speed tier (Claude fast mode, Codex service tier). One nullable
+    // column, added the same version-less way as the indexes above.
+    {
+        let transaction = connection.transaction()?;
+        add_column_if_missing(&transaction, "sessions", "speed", "TEXT")?;
+        transaction.commit()?;
+    }
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
     let _ = crate::session_titles::backfill_from_messages(&connection);
@@ -785,6 +792,18 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // One row per chat a usage limit stopped, while Bridge waits to
             // resume it or switch it to the backup model. See `limit_recovery`.
             80 => crate::limit_recovery::install_store(&transaction)?,
+            // Personal apps: drafts waiting for their lock, and every locked
+            // version. See `apps::personal`.
+            81 => crate::apps::personal::install_store(&transaction)?,
+            82 => crate::apps::draft::install_store(&transaction)?,
+            // Opened personal apps and their pending write approvals.
+            83 => crate::apps::open::install_store(&transaction)?,
+            // Imported native sessions, the tools that pointed at them, and the
+            // native sessions Bridge itself ran.
+            84 => crate::external_import::install_import_native_identity(&transaction)?,
+            // Personal app opens get an owner (chat or the person's surface)
+            // and every locked app a generation.
+            85 => crate::apps::open::install_owners(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -3016,12 +3035,15 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
     let sessions = query(db, "WITH RECURSIVE archived(id) AS (
              SELECT id FROM sessions WHERE archived_at IS NOT NULL
              UNION SELECT s.id FROM sessions s JOIN archived a ON s.parent_session_id=a.id
-         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id,s.account,CASE WHEN s.title_ladder_for IS s.title THEN s.title_ladder END FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id,s.account,CASE WHEN s.title_ladder_for IS s.title THEN s.title_ladder END,s.speed FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
          WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id)
-         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)?, title_ladder:crate::title_jobs::read_ladder(r.get::<_,Option<String>>(25)?.as_deref()) }))?;
+         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)?, title_ladder:crate::title_jobs::read_ladder(r.get::<_,Option<String>>(25)?.as_deref()), speed:r.get(26)? }))?;
     let events = query(
         db,
-        "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
+        // Latency rows are measurements, not activity: the app's recent-events
+        // window (auto-allowed approvals, queued follow-ups) must not lose
+        // real events to them.
+        "SELECT id,source,kind,entity_id,body,created_at FROM events WHERE source<>'latency' ORDER BY id DESC LIMIT 200",
         |r| {
             Ok(BridgeEvent {
                 id: r.get(0)?,
@@ -4583,6 +4605,18 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn latency_rows_never_take_a_place_in_the_recent_events_window() {
+        let db = open(Path::new(":memory:")).unwrap();
+        event(&db, "session", "session.input.steered", "chat", "guidance").unwrap();
+        for _ in 0..250 {
+            crate::latency::record(&db, "latency.rpc", "chat", &json!({"totalMs": 1}));
+        }
+        let events = state(&db).unwrap().events;
+        assert!(events.iter().all(|event| event.source != "latency"));
+        assert!(events.iter().any(|event| event.kind == "session.input.steered"), "a real event outlives any number of latency rows");
+    }
 
     #[test]
     fn schema_68_records_the_account_a_chat_signs_in_with() {
@@ -6986,6 +7020,19 @@ mod tests {
         assert!(columns.iter().any(|name| name == "revision"), "{columns:?}");
         // Later migrations may follow; this one must have run.
         assert!(current_schema_version(&db).unwrap() >= 73);
+    }
+
+    #[test]
+    fn migration_81_adds_the_personal_app_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        for table in ["personal_app_drafts", "personal_app_versions"] {
+            let found: i64 = db
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", params![table], |row| row.get(0))
+                .unwrap();
+            assert_eq!(found, 1, "{table}");
+        }
+        assert!(current_schema_version(&db).unwrap() >= 81);
     }
 
     #[test]

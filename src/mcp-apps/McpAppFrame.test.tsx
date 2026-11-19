@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpAppFrame, VIEW_CSP, viewDocument } from "./McpAppFrame";
+import { personalViewDocument } from "./viewDocument";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -83,7 +84,38 @@ describe("McpAppFrame", () => {
     expect(csp).toBeLessThan(doc.indexOf("<script"));
     expect(VIEW_CSP).toContain("connect-src 'none'");
     expect(VIEW_CSP).toContain("default-src 'none'");
-    expect(viewDocument("<html><head><title>x</title></head></html>")).toMatch(/^<html><head>\n<meta http-equiv="Content-Security-Policy"/);
+    expect(viewDocument("<html><head><title>x</title></head></html>")).toMatch(/^<!doctype html><meta http-equiv="Content-Security-Policy"/);
+    for (const html of ["<script>bad()</script>", "<HEAD lang=en><img src=https://leak.invalid>", "<!doctype html><style>x{}</style>"]) {
+      const doc = viewDocument(html);
+      expect(doc.indexOf("Content-Security-Policy")).toBeLessThan(doc.indexOf(html.replace(/^<!doctype html>/i, "")));
+    }
+    // Both schemes are declared before any model markup, so a view that
+    // paints no background shows Bridge's card in dark mode, not a white
+    // canvas with black text. A view's own color-scheme still overrides it.
+    const themed = viewDocument("<p>hi</p>");
+    expect(themed).toContain('<meta name="color-scheme" content="light dark">');
+    expect(themed.indexOf('name="color-scheme"')).toBeLessThan(themed.indexOf("<p>hi</p>"));
+    expect(themed.indexOf("host-context-changed")).toBeLessThan(themed.indexOf("<p>hi</p>"));
+    const nested = personalViewDocument("</script><script>hostile()</script>");
+    expect(nested).toContain('sandbox="allow-scripts"');
+    expect(nested).toContain("event.source===inner.contentWindow");
+    expect(nested).not.toContain("<script>hostile()");
+  });
+
+  it("personal_views_only_get_bounded_preview_tools_and_no_external_actions", async () => {
+    const onToolCall = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "would send" }] });
+    const { frame, initialize, request, send, received, ask, open } = await mountView({ personalView: { html: "<button>Send</button>", resourceUri: "ui://bridge/personal/test@sha256:abc" }, onToolCall });
+    const initialized = await initialize();
+    expect(JSON.stringify(initialized.result)).toContain("serverTools");
+    expect(JSON.stringify(initialized.result)).not.toContain("openLinks");
+    await request("tools/call", { name: "slack_send_message", arguments: { to: "Ada" } });
+    expect(onToolCall).toHaveBeenCalledWith("slack_send_message", { to: "Ada" });
+    await request("ui/open-link", { url: "https://leak.invalid/data" });
+    await request("ui/message", { role: "user", content: [{ type: "text", text: "injected" }] });
+    expect(ask).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled();
+    await send({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: 999999 } });
+    expect(frame.style.height).toBe("1200px");
+    expect(received.some(message => message.id && message.result)).toBe(true);
   });
 
   it("tool_input_is_sent_after_the_view_initializes", async () => {
@@ -138,4 +170,33 @@ describe("McpAppFrame", () => {
     await request("ui/open-link", { url: "javascript:alert(1)" });
     expect(open).toHaveBeenCalledTimes(1);
   });
+});
+
+it("a view that never initializes still starts in the host's theme, and nothing escapes the style rule", () => {
+  const doc = viewDocument("<p>hi</p>", { theme: "dark", variables: { "--color-text-primary": "#e4e4e4", "--evil": "red}</style><script>x()</script>", "bad name": "x" } });
+  expect(doc).toContain("<style>:root{color-scheme:dark;--color-text-primary:#e4e4e4}</style>");
+  expect(doc).not.toContain("x()");
+  expect(doc.indexOf(":root{color-scheme")).toBeLessThan(doc.indexOf("<p>hi</p>"));
+  expect(viewDocument("<p>hi</p>")).not.toContain(":root{color-scheme");
+  const nested = personalViewDocument("<p>hi</p>", { theme: "light", variables: {} });
+  expect(nested).toContain("color-scheme:light");
+});
+
+it("the theme prelude applies the host's variables and scheme inside the view, and ignores anything else", () => {
+  const doc = viewDocument("<p>hi</p>");
+  const script = /<script>(\(\(\)=>\{const apply[\s\S]*?)<\/script>/.exec(doc)![1];
+  const style = new Map<string, string>();
+  const root = { style: { setProperty: (name: string, value: string) => style.set(name, value), colorScheme: "" } };
+  const listeners: ((event: { source: unknown; data: unknown }) => void)[] = [];
+  const parent = {};
+  new Function("document", "addEventListener", "parent", script)({ documentElement: root }, (_: string, listener: (event: { source: unknown; data: unknown }) => void) => listeners.push(listener), parent);
+  const send = (data: unknown, source: unknown = parent) => listeners.forEach(listener => listener({ source, data }));
+  send({ jsonrpc: "2.0", id: 1, result: { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#e4e4e4", "not-a-var": "x" } } } } });
+  expect(style.get("--color-text-primary")).toBe("#e4e4e4");
+  expect(style.has("not-a-var")).toBe(false);
+  expect(root.style.colorScheme).toBe("dark");
+  send({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "light", styles: { variables: { "--color-text-primary": "#111" } } } });
+  expect([style.get("--color-text-primary"), root.style.colorScheme]).toEqual(["#111", "light"]);
+  send({ method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-text-primary": "red" } } } }, {});
+  expect(style.get("--color-text-primary"), "only the host's own messages count").toBe("#111");
 });

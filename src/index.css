@@ -11,6 +11,12 @@
    The default shell is opaque; native vibrancy is an optional material. */
 
 @theme inline {
+    /* The GitHub pane merge-flow curves (issue #1028), exposed as utilities.
+       New names, on purpose: Tailwind's `--ease-out` theme variable carries a
+       different curve and is read by every `ease-out` utility in the app, so
+       this file must not retune it. */
+    --ease-out-bridge: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
     /* Shared desktop hierarchy: reading, controls, metadata, and page titles. */
     --container-conversation: 50rem;
     --container-conversation-frame: 54rem;
@@ -96,6 +102,7 @@
     --color-info-foreground: var(--info-foreground);
     --color-info: var(--info);
     --color-destructive-foreground: var(--destructive-foreground);
+    --color-merged: var(--merged);
     --color-scrim: var(--scrim);
     /* Harness tints. Only ever worn by a harness's own mark while its session
        starts — transient, and identifying rather than decorative, which is why
@@ -168,6 +175,12 @@
 
     /* Scrim always darkens, in both modes — never a tint of --foreground. */
     --scrim: rgb(31 31 29 / 0.38);
+
+    /* The merged state. The one deliberate colour on this chrome: the purple
+       everyone already reads as "merged" on GitHub. Reserved for the merged
+       verdict — the pill, the merge graph, the receipt badge — never for
+       buttons or open pull requests. */
+    --merged: #8250df;
 
     /* Meaning — status, diffs, approvals */
     --success: #2f7d4f;
@@ -265,9 +278,18 @@
 
     --radius: 0.5rem;
 
-    /* macOS Tahoe titlebar-only windows. 16pt is the measured community fallback
-       (toolbar windows are larger). Trailing titlebar chrome is inset by the
-       same amount on both axes so its top-right arc is concentric with the window. */
+    /* Motion durations for the GitHub pane's merge flow (issue #1028). The
+       two easing curves the same flow uses are registered in `@theme inline`
+       at the top of this file as `--ease-out-bridge` and `--ease-spring`
+       (JSX reaches them as `ease-out-bridge` / `ease-spring` utilities). They
+       carry distinct names because Tailwind's own `--ease-out` theme variable
+       means a different (globally used) curve that this file must not
+       retune; Tailwind's `ease-in` utility already equals the issue's
+       `--ease-in`, so exits use `--duration-base` + `ease-in`. */
+    --duration-fast: 120ms;
+    --duration-base: 200ms;
+    --duration-slow: 320ms;
+    --duration-hero: 560ms;
     --window-radius: 16px;
     --window-control-inset: 6px;
 
@@ -319,6 +341,8 @@
 
     --ring: #6a9bcc;
     --scrim: rgb(0 0 0 / 0.62);
+
+    --merged: #a371f7;
 
     --success: #5db872;
     --success-foreground: #14210f;
@@ -799,6 +823,148 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: skeleton-in 0.24s ease-out 0.12s both;
 }
 
+/* The import progress bar: a soft highlight runs along the filled part while
+   Bridge works through the import. Reduced motion leaves the plain bar. */
+.import-progress-sweep {
+  background-image: linear-gradient(
+    100deg,
+    transparent 25%,
+    color-mix(in srgb, var(--color-background) 45%, transparent) 50%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-sweep 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .import-progress-sweep { animation: none; }
+}
+
+/* The import's transfer stage (ImportTransfer.tsx): chats arc from the tool's
+   tile to Bridge's, like a file copy. Each card rides three nested animations
+   on one 2.4s clock: across (linear, so the arc stays on the dashed path), up
+   and down (ease out, then ease in: a parabola), and its own fade, scale and
+   tilt. Reduced motion removes the cards and stills the rest. */
+.import-transfer-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 0.875rem;
+  border: 1px solid var(--color-border-card);
+  background: var(--color-card);
+  color: var(--color-muted-foreground);
+  box-shadow: 0 1px 2px color-mix(in srgb, black 12%, transparent);
+}
+.import-transfer-target { color: var(--color-foreground); }
+.import-transfer[data-transfer="running"] .import-transfer-target::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  animation: import-transfer-land 0.8s ease-out infinite;
+}
+@keyframes import-transfer-land {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-foreground) 22%, transparent); }
+  to { box-shadow: 0 0 0 7px color-mix(in srgb, var(--color-foreground) 0%, transparent); }
+}
+.import-transfer-path {
+  stroke: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-dasharray: 2 5;
+  animation: import-transfer-flow 0.8s linear infinite;
+}
+.import-transfer[data-transfer="done"] .import-transfer-path {
+  stroke-dasharray: none;
+  stroke: color-mix(in srgb, var(--color-success) 55%, transparent);
+  animation: none;
+}
+@keyframes import-transfer-flow {
+  to { stroke-dashoffset: -14; }
+}
+.import-transfer-flight {
+  position: absolute;
+  left: 2%;
+  top: 46px;
+  width: 96%;
+  height: 0;
+  animation: import-transfer-across 2.4s linear infinite both;
+}
+@keyframes import-transfer-across {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+.import-transfer-arc {
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: import-transfer-arc 2.4s infinite both;
+}
+@keyframes import-transfer-arc {
+  0% { transform: translateY(0); animation-timing-function: cubic-bezier(0.33, 0.66, 0.66, 1); }
+  50% { transform: translateY(-22px); animation-timing-function: cubic-bezier(0.33, 0, 0.66, 0.34); }
+  100% { transform: translateY(0); }
+}
+.import-transfer-card {
+  position: absolute;
+  left: -9px;
+  top: -12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5px;
+  width: 18px;
+  height: 23px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--color-foreground) 22%, transparent);
+  background: color-mix(in srgb, var(--color-foreground) 9%, var(--color-popover));
+  box-shadow: 0 4px 10px -2px color-mix(in srgb, black 30%, transparent);
+  animation: import-transfer-card 2.4s ease-in-out infinite both;
+}
+.import-transfer-card i {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--color-foreground) 55%, transparent);
+}
+.import-transfer-card i:nth-child(1) { width: 75%; }
+.import-transfer-card i:nth-child(2) { width: 100%; }
+.import-transfer-card i:nth-child(3) { width: 55%; }
+@keyframes import-transfer-card {
+  0% { opacity: 0; transform: scale(0.6) rotate(-14deg); }
+  14% { opacity: 1; transform: scale(1) rotate(-6deg); }
+  50% { transform: scale(1.06) rotate(0deg); }
+  84% { opacity: 1; transform: scale(0.95) rotate(6deg); }
+  100% { opacity: 0; transform: scale(0.55) rotate(10deg); }
+}
+.import-transfer-check {
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--color-success);
+  color: var(--color-background);
+  box-shadow: 0 0 0 2px var(--color-card);
+  animation: import-transfer-check 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes import-transfer-check {
+  from { opacity: 0; transform: scale(0.3); }
+  to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .import-transfer-flight { display: none; }
+  .import-transfer-path,
+  .import-transfer[data-transfer="running"] .import-transfer-target::after,
+  .import-transfer-check { animation: none; }
+}
+
 @keyframes skeleton-sweep {
   from { background-position: 150% 0; }
   to { background-position: -50% 0; }
@@ -849,6 +1015,339 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: github-row-enter 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--github-row-delay, 0ms);
 }
+
+/* ── GitHub pane · merge flow (issue #1028) ─────────────────────────────────
+   One motion system with the merge animation as its hero. Everything animates
+   transform, opacity, grid-template-rows or SVG stroke-dashoffset /
+   offset-distance only, and every curve/duration is the issue's own spec:
+   readiness rows collapse over `--duration-slow`, the merge choreography runs
+   on one clock (gather 420ms, curve 560ms from 500ms, ring at 1.06s, receipt
+   at 1.2s), and reduced motion collapses all of it via the global freeze at
+   the bottom of this file (the JS side renders the graph in its final state
+   instead of playing). */
+
+/* The verdict label rolling up to its new word (Running → Passing). */
+@keyframes github-roll-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(-100%); }
+}
+
+.github-roll-up {
+  animation: github-roll-up 320ms var(--ease-out-bridge) both;
+}
+
+/* A check that just finished: the glyph springs from 40% while the row
+   flashes one wash of success. One-shot by construction — the class is
+   removed after the flash. */
+/* The verdict label rolling up to its new word (Running → Passing). */
+@keyframes github-roll-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(-100%); }
+}
+
+.github-roll-up {
+  animation: github-roll-up 320ms var(--ease-out-bridge) both;
+}
+
+@keyframes github-check-settle-flash {
+  0% { background-color: color-mix(in srgb, var(--color-success) 14%, transparent); }
+  100% { background-color: transparent; }
+}
+
+.github-check-settle {
+  animation: github-check-settle-flash 700ms var(--ease-out-bridge);
+}
+
+@keyframes check-glyph-settle-spring {
+  0% { opacity: 0; transform: scale(0.4); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.check-glyph-settle {
+  animation: check-glyph-settle-spring 320ms var(--ease-spring) both;
+}
+
+/* The indeterminate hairline under the merge box while `gh` is in flight. */
+.merge-hairline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity var(--duration-base);
+}
+
+.merge-hairline::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--color-foreground), transparent);
+  animation: merge-hairline 1.1s var(--ease-out-bridge) infinite;
+}
+
+.merge-hairline-live { opacity: 0.7; }
+
+@keyframes merge-hairline {
+  from { left: -40%; }
+  to { left: 100%; }
+}
+
+/* When GitHub refuses: the button shakes once, the reason stays. */
+@keyframes merge-shake {
+  0%, 100% { transform: none; }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
+.merge-shake { animation: merge-shake 300ms var(--ease-out-bridge); }
+
+/* Collapsible regions inside the merge box. Height tweens without measuring
+   anything: the row is a grid whose only track goes 1fr → 0fr while the
+   child clips. */
+.u-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--duration-slow) var(--ease-out-bridge), opacity var(--duration-base);
+}
+
+.u-collapse > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.u-collapse.shut {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
+
+/* ── The merged receipt graph (issue #1028) ────────────────────────────────────
+   Two states: `.merge-graph-play` runs the full choreography once (gather,
+   curve draw, travelling commit, landing ring, receipt rise); everything else
+   renders `.merge-graph-final`, the choreography's last frame with no motion.
+   SVG-only properties: stroke-dashoffset and offset-distance. */
+.merge-graph .rail {
+  stroke: var(--color-border-card);
+  stroke-width: 2;
+  fill: none;
+}
+
+.merge-graph .main-rail {
+  stroke: var(--color-muted-foreground);
+  stroke-width: 2;
+  fill: none;
+}
+
+.merge-graph .curve {
+  stroke: var(--color-merged);
+  stroke-width: 2;
+  fill: none;
+}
+
+.merge-graph .node {
+  fill: var(--color-card);
+  stroke: var(--color-muted-foreground);
+  stroke-width: 2;
+}
+
+.merge-graph .landed {
+  fill: var(--color-merged);
+  stroke: none;
+  opacity: 0;
+}
+
+.merge-graph .traveller {
+  fill: var(--color-merged);
+  stroke: none;
+  opacity: 0;
+}
+
+.merge-graph .ring {
+  fill: none;
+  stroke: var(--color-merged);
+  stroke-width: 2;
+  opacity: 0;
+  transform-box: view-box;
+}
+
+.merge-graph .lbl {
+  font-size: 10px;
+  fill: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+}
+
+.merge-graph-final .curve {
+  stroke-dashoffset: 0;
+}
+
+.merge-graph-final .traveller { opacity: 0; }
+.merge-graph-final .ring { opacity: 0; }
+.merge-graph-final .c-vanish { opacity: 0; }
+.merge-graph-final .landed { opacity: 1; }
+.merge-graph-final .lbl-old { opacity: 0; }
+.merge-graph-final .rise { opacity: 1; transform: none; }
+.merge-graph-final .merge-rise { opacity: 1; transform: none; animation: none; }
+.merge-graph-final .badge-check { stroke-dashoffset: 0; }
+
+.merge-graph-play .curve {
+  stroke-dasharray: 160;
+  stroke-dashoffset: 160;
+  animation: merge-curve-draw var(--duration-hero) var(--ease-out-bridge) 0.5s forwards;
+}
+
+@keyframes merge-curve-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+/* Squash: the branch commits gather into one, which then travels. Each node
+   carries its own gather distance via `--merge-gather-x`. */
+@keyframes merge-gather {
+  to { transform: translateX(var(--merge-gather-x, 70px)); }
+}
+
+@keyframes merge-fade-out {
+  to { opacity: 0; }
+}
+
+@keyframes merge-fade-in {
+  to { opacity: 1; }
+}
+
+.merge-graph-play .c-gather {
+  animation: merge-gather 420ms var(--ease-out-bridge) forwards;
+}
+
+.merge-graph-play .c-vanish {
+  animation: merge-fade-out 420ms var(--ease-out-bridge) forwards;
+}
+
+/* The travelling commit rides the curve itself via offset-path (Safari 16+
+   supports motion paths; components probe and fall back to a rAF walk). */
+.merge-graph-play .traveller {
+  offset-rotate: 0deg;
+  animation: merge-travel var(--duration-hero) var(--ease-out-bridge) forwards;
+}
+
+@keyframes merge-travel {
+  0% { opacity: 1; offset-distance: 0%; }
+  100% { opacity: 1; offset-distance: 100%; }
+}
+
+.merge-graph-play .ring {
+  animation: merge-ring 520ms var(--ease-out-bridge) 1.06s forwards;
+  transform-box: view-box;
+}
+
+@keyframes merge-ring {
+  0% { opacity: 0.8; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(2.6); }
+}
+
+.merge-graph-play .landed {
+  opacity: 0;
+  animation: merge-fade-in 1ms linear 1.06s forwards;
+}
+
+.merge-graph-play .lbl-old {
+  animation: merge-fade-out 300ms var(--ease-out-bridge) 0.4s forwards;
+}
+
+.merge-graph-play .lbl-new {
+  opacity: 0;
+  animation: merge-fade-in 260ms var(--ease-out-bridge) 1.15s forwards;
+}
+
+/* Rebase's second replay: its commit departs later and lands later. */
+.merge-graph-play .traveller.b { animation-delay: 0.85s; }
+.merge-graph-play .c-vanish.d1 { animation-delay: 0.5s; }
+.merge-graph-play .c-vanish.d2 { animation-delay: 0.85s; }
+.merge-graph-play .landed.b { animation-delay: 1.27s; }
+.merge-graph-play .ring.b { animation-delay: 1.27s; }
+
+/* The receipt's check badge draws its tick as it rises. */
+.merge-graph .badge-check {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+}
+
+.merge-graph-play .badge-check {
+  animation: merge-curve-draw 320ms var(--ease-out-bridge) 1.2s forwards;
+}
+
+.merge-graph-final .badge-check {
+  stroke-dashoffset: 0;
+}
+
+/* The receipt text and its actions rise in after the landing. */
+@keyframes merge-rise {
+  to { opacity: 1; transform: none; }
+}
+
+.merge-rise {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: merge-rise var(--duration-slow) var(--ease-out-bridge) forwards;
+}
+
+.merge-rise.d1 { animation-delay: 1.2s; }
+.merge-rise.d2 { animation-delay: 1.32s; }
+
+
+/* One quiet sweep across the header the moment the pill flips to merged. */
+.merge-sweep {
+  position: relative;
+}
+
+.merge-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, var(--color-merged) 12%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 250% 100%;
+  background-position: 120% 0;
+  opacity: 0;
+}
+
+.merge-sweep.play::after {
+  animation: merge-sweep 900ms var(--ease-out-bridge) 1.1s;
+}
+
+@keyframes merge-sweep {
+  0% { opacity: 1; background-position: 120% 0; }
+  100% { opacity: 1; background-position: -30% 0; }
+}
+
+/* The travelling dots beside "Merging". */
+@keyframes merge-dot {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+.merge-dot {
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: merge-dot 1s infinite;
+}
+
+.merge-dot:nth-child(2) { animation-delay: 0.15s; }
+.merge-dot:nth-child(3) { animation-delay: 0.3s; }
 
 /* The GitHub markdown surface. A comment body is written for GitHub, where a
    single newline inside a paragraph is a hard break — collapsing them (which
@@ -950,6 +1449,29 @@ html[data-native-fullscreen] .u-traffic-inset {
 
 .connector-approval-in {
   animation: connector-approval-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Provider sign-in progress. A vendor CLI can sit silent for seconds while it
+   boots, so the pane shows that work is happening without a spinner: a halo
+   that blooms from the agent's mark, and a light that travels along the
+   active step's rail. Transform and opacity only; the reduced-motion rule at
+   the bottom of this file freezes both on a readable frame. */
+@keyframes signin-halo {
+  0% { opacity: 0.5; transform: scale(0.75); }
+  70%, 100% { opacity: 0; transform: scale(1.55); }
+}
+
+.signin-halo {
+  animation: signin-halo 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes signin-rail {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.signin-rail-light {
+  animation: signin-rail 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 /* The live accent bar on a working Agent Fleet tile. */

@@ -9,6 +9,7 @@ import { harnessLabel } from "./utils";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
+import { observeSendLatency, setLatencyReporter } from "./sendLatency";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
@@ -33,7 +34,9 @@ import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { mockAddTrailMember, mockCarryTrailBrief, mockCreateTrail, mockListTrailCandidates, mockListTrails, mockPreviewTrailBrief, mockReadTrail, mockRemoveTrailMember, mockUpdateTrail, onMockTrailsChanged } from "./trailsMock";
 import type { AddTrailMemberResult, CarryTrailBriefResult, CreateTrailResult, ListTrailCandidatesResult, ListTrailsResult, PreviewTrailBriefResult, ReadTrailResult, RemoveTrailMemberResult, TrailMemberKind, TrailMemberRef, UpdateTrailResult } from "./protocol/generated/protocol";
 import type { TrailsChangedPayload } from "./trails";
-import { mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
+import { mockDeletePersonalApp, mockListApps, mockSetAppEnabled, mockSetAppPinned, onMockAppsChanged, type MockBadgeCounts } from "./appsMock";
+import { MOCK_APP_DRAFT_ID, MOCK_APP_HASH, MOCK_APP_OPEN_ID, mockCallPersonalAppTool, mockClosePersonalAppSurface, mockOpenPersonalAppSurface, mockGetPersonalAppDraft, mockGetPersonalAppOpen, mockLockPersonalApp, mockPreviewPersonalAppTool } from "./personalAppMock";
+import type { ClosePersonalAppSurfaceResult, ListPersonalAppsResult, PersonalAppSurfaceOpen, CallPersonalAppToolParams, GetPersonalAppDraftParams, GetPersonalAppOpenParams, LockPersonalAppParams, LockPersonalAppResult, PersonalAppCallResult, PersonalAppDraft, PersonalAppOpen, PreviewPersonalAppToolParams } from "./protocol/generated/protocol";
 import type { ListAppsResult } from "./protocol/generated/protocol";
 import { MOCK_OUTGOING_ID, mockCopyOutgoing, mockDiscardOutgoing, mockListOutgoing, mockReadOutgoingAttachment, mockSendOutgoing, mockUpdateOutgoing, onMockOutgoingChanged } from "./outgoingMock";
 import type { CopyOutgoingResult, DiscardOutgoingResult, ListOutgoingResult, ReadOutgoingAttachmentResult, SendOutgoingResult, UpdateOutgoingResult } from "./protocol/generated/protocol";
@@ -49,10 +52,16 @@ import type {
   ExternalImportDiscovery,
   ExternalImportPlan,
   ExternalImportPreview,
+  ImportSourcesDetection,
+  ImportJob,
+  ImportJobStatus,
+  ImportContinuation,
+  ContinuedImportedChat,
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
 import { accountsOf, normalizeAccount, supportsAccounts } from "./providerAccounts";
+import { providerLoginTerminalId } from "./providerLoginPresentation";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
@@ -94,6 +103,7 @@ import type {
   ConnectorRefreshResult,
   ConnectorSetSettingsResult,
   GithubIssuesResult,
+  GithubMediaResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
   GithubPullRequestsResult,
@@ -159,6 +169,15 @@ function mockProviderUsageOverviews(): ProviderUsageOverviews {
           { id: "weekly", label: "Weekly", usedPercent: { value: mockResetsRedeemed ? 0 : 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
         ],
         resetCredits: mockResetCredits(now),
+        today: empty, month: empty, error: null,
+      },
+      {
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "personal@example.com", plan: "pro", observedAt: now - 30, coverage: "Mock data",
+        accountId: "personal", accountLabel: "Personal",
+        windows: [
+          { id: "session", label: "5-hour", usedPercent: { value: 27, source: "reported", status: "current" }, resetsAt: now + 2 * 3600, windowMinutes: 300 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: 41, source: "reported", status: "current" }, resetsAt: now + 5 * 86400, windowMinutes: 10080 },
+        ],
         today: empty, month: empty, error: null,
       },
       { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
@@ -634,7 +653,11 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-18b", "session-1", 22, "user.message", { text: "Tell #dev in the deploy thread that staging is done and I'll watch errors before promoting.", itemId: "user-outgoing" }, "entry-17b"),
   forestEntry("entry-19b", "session-1", 23, "tool.completed", { status: "completed", title: "mcp__bridge__outgoing_draft", data: { type: "tool_use", name: "mcp__bridge__outgoing_draft", input: { to: { slack: { channel: "#dev", thread: "https://acme.slack.com/archives/C01/p1730000000" } }, body: "Deploy to staging is done \u2014 all checks green.", reason: "tell #dev the staging deploy finished" }, aggregatedOutput: JSON.stringify({ id: MOCK_OUTGOING_ID, state: "draft", destination: "Slack \u00b7 #dev \u00b7 thread" }) } }, "entry-18b"),
   forestEntry("entry-20b", "session-1", 24, "assistant.message", { text: "Drafted a reply for the #dev deploy thread. Edit or copy it from the card." }, "entry-19b"),
-  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b")
+  forestEntry("entry-raw", "session-1", 25, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-20b"),
+  forestEntry("entry-app-user", "session-1", 26, "user.message", { text: "Build me a small app to find and message a teammate on Slack.", itemId: "user-app" }, "entry-raw"),
+  forestEntry("entry-app-draft", "session-1", 27, "tool.completed", { status: "completed", title: "mcp__bridge__apps_draft", data: { type: "tool_use", name: "mcp__bridge__apps_draft", input: { name: "Slack DM" }, aggregatedOutput: JSON.stringify({ draftId: MOCK_APP_DRAFT_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-user"),
+  forestEntry("entry-app-open-user", "session-1", 28, "user.message", { text: "Message Ada that the preview is ready.", itemId: "user-app-open" }, "entry-app-draft"),
+  forestEntry("entry-app-open", "session-1", 29, "tool.completed", { status: "completed", title: "mcp__bridge__apps_open", data: { type: "tool_use", name: "mcp__bridge__apps_open", input: { app_id: "slack-dm" }, aggregatedOutput: JSON.stringify({ openId: MOCK_APP_OPEN_ID, contentHash: MOCK_APP_HASH }) } }, "entry-app-open-user")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -694,7 +717,7 @@ const mockMemoryMaxRecords = 200;
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
-    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
+    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-app-open", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
     workerLeases: [
       { sessionId: "session-1w", workspaceId: "demo-1", role: "implementation", capabilityTier: "strong", taskFamily: "implementation", ownedPaths: ["src/auth/**"], writeMode: "isolated", leaseStatus: "active", expiresAt: null, createdAt: now, updatedAt: now },
       { sessionId: "session-1w2", workspaceId: "demo-1", role: "verification", capabilityTier: "strong", taskFamily: "verification", ownedPaths: ["src/auth/**"], writeMode: "readOnly", leaseStatus: "released", expiresAt: null, createdAt: now, updatedAt: now }
@@ -1698,6 +1721,44 @@ export const mockWorkflowApi = {
   },
 };
 
+let mockImportJob: ImportJob | null = null;
+const mockImportListeners = new Set<(job: ImportJob) => void>();
+
+/** Mock mode: a 24-file import that finishes in a few seconds. */
+function startMockImport(tool: string): ImportJob {
+  if (mockImportJob?.status === "running") return mockImportJob;
+  const now = new Date().toISOString();
+  const job: ImportJob = { jobId: crypto.randomUUID(), tool, status: "running", total: 24, processed: 0, imported: 0, alreadyInBridge: 0, changed: 0, failed: 0, leftOut: 3, notCarried: [], errors: [], startedAt: now, updatedAt: now };
+  mockImportJob = job;
+  const tick = () => {
+    const current = mockImportJob!;
+    const processed = Math.min(current.total, current.processed + 6);
+    const done = processed === current.total;
+    mockImportJob = { ...current, processed, imported: processed - 2, alreadyInBridge: Math.min(2, processed), currentProject: done ? undefined : "/Users/you/Code/app", status: done ? "done" : "running", updatedAt: new Date().toISOString(), finishedAt: done ? new Date().toISOString() : undefined };
+    mockImportListeners.forEach(listener => listener(mockImportJob!));
+    if (!done) setTimeout(tick, 600);
+  };
+  setTimeout(tick, 600);
+  return job;
+}
+
+/** Mock-mode tools: Claude Code found with history, two ADEs found, the rest absent. */
+function mockImportSources(): ImportSourcesDetection {
+  const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
+  return {
+    detectedAt: new Date().toISOString(),
+    sources: [
+      { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory." },
+      { tool: "codex", label: "Codex", installed: true, supported: false, roots: ["/mock/.codex/sessions"], counts: { chats: 12, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note: "Codex chats are next. Nothing is read until then." },
+      absent("opencode", "OpenCode", "OpenCode chats are coming. Nothing is read until then."),
+      { tool: "conductor", label: "Conductor", installed: true, supported: false, roots: ["/mock/conductor/workspaces"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming." },
+      absent("t3code", "T3 Code", "T3 Code runs Claude Code, so its Claude chats come over with the Claude Code import. Thread titles and projects are coming."),
+      absent("orca", "Orca", "Orca's Claude Code chats come over with the Claude Code import. Its projects and multi-agent runs are coming."),
+      absent("superset", "Superset", "Superset's Claude Code chats come over with the Claude Code import. Its workspaces and agent settings are coming."),
+    ],
+  };
+}
+
 export const bridgeApi = {
   /** The app preferences record (theme, skin, transcript display). The core
    *  keeps it so a chat or another window can change it; see `appPreferences.ts`. */
@@ -1761,7 +1822,8 @@ export const bridgeApi = {
       artifacts: [
         { artifactId: "mock-instructions", canonicalSourceRef: `${root}/CLAUDE.md`, sourceLabel: "CLAUDE.md", kind: "instruction", classification: "documented", stability: "stable", estimatedBytes: 820, modifiedAt: discoveredAt, requiredSchemaGate: null },
         { artifactId: "mock-memory", canonicalSourceRef: `${root}/projects/demo/memory/MEMORY.md`, sourceLabel: "projects/demo/memory/MEMORY.md", kind: "memory", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 430, modifiedAt: discoveredAt, requiredSchemaGate: "claude-auto-memory-v1" },
-        { artifactId: "mock-history", canonicalSourceRef: `${root}/projects/demo/session.jsonl`, sourceLabel: "projects/demo/session.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 2_400, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v1" },
+        { artifactId: "mock-history", canonicalSourceRef: `${root}/projects/demo/session.jsonl`, sourceLabel: "projects/demo/session.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 2_400, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v2", title: "Fix the failing invoice test", projectPath: "/Users/you/invoice-app", startedAt: discoveredAt },
+        { artifactId: "mock-history-2", canonicalSourceRef: `${root}/projects/demo/session-2.jsonl`, sourceLabel: "projects/demo/session-2.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 9_100, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v2", title: "Add a README for the discount fix", projectPath: "/Users/you/invoice-app", startedAt: discoveredAt },
       ],
     });
   },
@@ -1802,11 +1864,45 @@ export const bridgeApi = {
     const candidates: ExternalImportCandidate[] = [];
     if (selected.has("mock-instructions")) candidates.push(candidate("mock-instructions", { kind: "instruction" }));
     if (selected.has("mock-memory")) candidates.push(candidate("mock-memory", { kind: "memory", title: "Claude auto memory" }));
-    if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messages: [] } }));
+    if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messageCount: 14 } }));
+    if (selected.has("mock-history-2")) candidates.push(candidate("mock-history-2", { kind: "conversation", title: "Add a README for the discount fix", normalizedPayload: { messageCount: 6 }, diagnostics: [{ code: "excluded_attachment", severity: "warning", classification: "documented", message: "1 attachment: image too large or not an image; the message text was kept", recovery: null, sourceLabel: "projects/demo/session-2.jsonl" }] }));
     return Promise.resolve({ candidates });
   },
-  commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan): Promise<ExternalImportCommit> => {
-    if (hasBackend()) return call("imports/commit_external_import", { discoveryId, plan } satisfies CommitExternalImportParams);
+  /** How an imported chat would continue, before the first send. */
+  importContinuation: (sessionId: string): Promise<ImportContinuation> => {
+    if (hasBackend()) return call("imports/import_continuation", { sessionId });
+    return Promise.resolve({ mode: "history", reason: "Mock mode has no Claude Code sessions to resume." });
+  },
+  /** Continue an imported chat in a new chat that branches from it. */
+  continueImportedChat: async (sessionId: string): Promise<ContinuedImportedChat> => {
+    if (hasBackend()) return call("imports/continue_imported_chat", { sessionId });
+    const source = mockState.sessions.find(session => session.id === sessionId);
+    if (!source) throw new Error("That chat does not exist");
+    const id = crypto.randomUUID();
+    mockState.sessions.unshift({ ...source, id, kind: "direct", status: "idle", forkParentSessionId: sessionId });
+    return { sessionId: id, mode: "history", reason: "Mock mode has no Claude Code sessions to resume." };
+  },
+  detectImportSources: (): Promise<ImportSourcesDetection> => {
+    if (hasBackend()) return call("imports/detect_import_sources");
+    return Promise.resolve(mockImportSources());
+  },
+  /** Import everything from one tool in the background; returns at once. */
+  startImport: (tool: string): Promise<ImportJob> => {
+    if (hasBackend()) return call("imports/start_import", { tool });
+    return Promise.resolve(startMockImport(tool));
+  },
+  importStatus: (): Promise<ImportJobStatus> => {
+    if (hasBackend()) return call("imports/import_status");
+    return Promise.resolve({ job: mockImportJob ?? undefined });
+  },
+  /** A background import's progress after every batch, and its end. */
+  onImportProgress: async (handler: (job: ImportJob) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<ImportJob>("imports/progress", handler);
+    mockImportListeners.add(handler);
+    return () => { mockImportListeners.delete(handler); };
+  },
+  commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan, artifactIds?: string[]): Promise<ExternalImportCommit> => {
+    if (hasBackend()) return call("imports/commit_external_import", { discoveryId, plan, ...(artifactIds ? { artifactIds } : {}) } satisfies CommitExternalImportParams);
     const selected = candidates.filter(candidate => plan.selectedCandidateIds.includes(candidate.candidateId));
     return Promise.resolve({
       importId: crypto.randomUUID(),
@@ -1855,6 +1951,10 @@ export const bridgeApi = {
     hasBackend() ? call("github/github_repository", { workspaceId }) : Promise.resolve(mockGithubRepository()),
   githubMergeConfig: (workspaceId: string): Promise<GithubMergeConfigResult> =>
     hasBackend() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
+  /** One image or video from a GitHub body, fetched with the signed-in
+   *  account. Only for media the webview could not load on its own. */
+  githubMedia: (workspaceId: string, url: string): Promise<GithubMediaResult> =>
+    hasBackend() ? call("github/github_media", { workspaceId, url }) : mockGithubMedia(url),
   githubAct: (workspaceId: string, action: GithubAction, confirmed: boolean): Promise<GithubActResult> =>
     hasBackend() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
   githubReview: (workspaceId: string, number: number, harness: string, sessionId?: string): Promise<GithubReviewResult> =>
@@ -1874,6 +1974,33 @@ export const bridgeApi = {
   // Apps: core's manifests, their state on this Mac, pins and badges.
   listApps: async (): Promise<ListAppsResult> =>
     hasBackend() ? call("apps/list_apps") : mockListApps(mockBadgeCounts()),
+  getPersonalAppDraft: async (params: GetPersonalAppDraftParams): Promise<PersonalAppDraft> =>
+    hasBackend() ? call("apps/get_personal_app_draft", params) : mockGetPersonalAppDraft(params),
+  getPersonalAppOpen: async (params: GetPersonalAppOpenParams): Promise<PersonalAppOpen> =>
+    hasBackend() ? call("apps/get_personal_app_open", params) : mockGetPersonalAppOpen(params),
+  /** One call from an opened app; a write first returns `approvalRequired`. */
+  callPersonalAppTool: async (params: CallPersonalAppToolParams): Promise<PersonalAppCallResult> =>
+    hasBackend() ? call("apps/call_personal_app_tool", params) : mockCallPersonalAppTool(params),
+  /** The person opens one of their apps in its own pane. Only this UI calls it. */
+  openPersonalAppSurface: async (appId: string): Promise<PersonalAppSurfaceOpen> =>
+    hasBackend() ? call("apps/open_personal_app_surface", { appId }) : mockOpenPersonalAppSurface(appId),
+  /** The pane closed: its open, and any write waiting in it, go. */
+  closePersonalAppSurface: async (openId: string): Promise<ClosePersonalAppSurfaceResult> =>
+    hasBackend() ? call("apps/close_personal_app_surface", { openId }) : mockClosePersonalAppSurface(openId),
+  deletePersonalApp: async (id: string): Promise<ListPersonalAppsResult> =>
+    hasBackend() ? call("apps/delete_personal_app", { id }) : mockDeletePersonalApp(id),
+  previewPersonalAppTool: async (params: PreviewPersonalAppToolParams): Promise<unknown> =>
+    hasBackend() ? call("apps/preview_personal_app_tool", params) : mockPreviewPersonalAppTool(params),
+  /** Whether a live app preview is isolated from the network, WebRTC
+   *  included, which CSP cannot block. Only the Mac app can switch WebRTC off
+   *  (see preview_isolation.rs); a browser tab cannot, so it is refused live
+   *  reads. Mock mode has only fake data. */
+  isolateAppPreviews: async (): Promise<boolean> => {
+    if (isTauri()) return invoke<boolean>("isolate_app_previews").then(value => value === true, () => false);
+    return !hasBackend();
+  },
+  lockPersonalApp: async (params: LockPersonalAppParams): Promise<LockPersonalAppResult> =>
+    hasBackend() ? call("apps/lock_personal_app", params) : mockLockPersonalApp(params),
   setAppPinned: async (id: string, pinned: boolean): Promise<ListAppsResult> =>
     hasBackend() ? call("apps/set_app_pinned", { id, pinned }) : mockSetAppPinned(id, pinned, mockBadgeCounts()),
   setAppEnabled: async (id: string, enabled: boolean): Promise<ListAppsResult> =>
@@ -3456,13 +3583,13 @@ export const bridgeApi = {
   },
   /** `account` is an extra sign-in's id, or the harness id for the user's own
    *  login; omitted keeps the chat's account on the same harness. */
-  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null, account?: string): Promise<BridgeState> => {
-    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort, ...(account === undefined ? {} : { account }) });
+  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null, account?: string, speed?: string): Promise<BridgeState> => {
+    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort, ...(account === undefined ? {} : { account }), ...(speed === undefined ? {} : { speed }) });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
     if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) {
       const nextAccount = account === undefined ? (session.harness === harness ? session.account ?? null : null) : normalizeAccount(harness, account);
-      session.harness = harness; session.model = model; session.account = nextAccount; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh";
+      session.harness = harness; session.model = model; session.account = nextAccount; if (effort) session.effort = effort; if (speed !== undefined) session.speed = speed; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh";
     }
     emitState(); return snapshot();
   },
@@ -3519,6 +3646,9 @@ export const bridgeApi = {
     const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.status = "stopped"; session.endedAt = new Date().toISOString(); session.activeTurnId = null; }
     emitState(); return snapshot();
   },
+  recordClientLatency: (sessionId: string, flow: "new_chat" | "send", steps: { name: string; atMs: number }[]): Promise<void> => hasBackend()
+    ? unit(call("sessions/record_client_latency", { sessionId, flow, steps }))
+    : Promise.resolve(),
   prepareTurn: (sessionId: string, text: string): Promise<SanitizedTurn> => hasBackend()
     ? call("sessions/prepare_turn", { sessionId, text })
     : Promise.resolve({ text, interceptions: [] }),
@@ -3655,14 +3785,14 @@ export const bridgeApi = {
   resolveQuestion: async (sessionId: string, eventId: number, action: QuestionAction, answers: Record<string, string[]> = {}): Promise<InteractionResolutionResult> => {
     if (hasBackend()) return call("approvals/resolve_question", { sessionId, eventId, action, answers });
     const request = mockState.agentEvents.find(item => item.id === eventId);
-    if (request) appendAgent(request.sessionId, "question.resolved", { status: action === "answer" ? "answered" : action, data: { requestEventId: eventId, decision: action, resolvedBy: "human" } });
+    if (request) appendAgent(request.sessionId, "question.resolved", { status: action === "answer" ? "answered" : action, data: { requestEventId: eventId, decision: action, resolvedBy: "human", ...(action === "answer" ? { submittedAnswers: answers } : {}) } });
     emitState();
     return { disposition: "resolved", interactionKind: "question", status: action === "answer" ? "answered" : action, resolvedBy: "human", decision: action };
   },
-  startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
-    hasBackend() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
-  cancelProviderLogin: (provider: string): Promise<void> =>
-    hasBackend() ? unit(call("auth/cancel_provider_login", { provider })) : Promise.resolve(),
+  startProviderLogin: (provider: string, account?: string): Promise<{ workspaceId: string; terminalId: string }> =>
+    hasBackend() ? call("auth/start_provider_login", { provider, ...(account ? { account } : {}) }) : Promise.resolve({ workspaceId: "provider-login", terminalId: providerLoginTerminalId(provider, account) }),
+  cancelProviderLogin: (provider: string, account?: string): Promise<void> =>
+    hasBackend() ? unit(call("auth/cancel_provider_login", { provider, ...(account ? { account } : {}) })) : Promise.resolve(),
   createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => hasBackend() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
   terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => hasBackend() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
   terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => hasBackend() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),
@@ -3752,12 +3882,12 @@ export const bridgeApi = {
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) {
       return listen<AgentEvent[]>(AGENT_EVENT_BATCH, event => {
-        for (const frame of event.payload) { recordStreamReceipt(frame); handler(frame); }
+        for (const frame of event.payload) { recordStreamReceipt(frame); observeSendLatency(frame); handler(frame); }
       });
     }
     // The daemon itself sends one `agent-event` per frame; only the desktop
     // shell batches them, so the browser takes them as they come.
-    if (hasBackend()) return subscribe<AgentEvent>("agent-event", frame => { recordStreamReceipt(frame); handler(frame); });
+    if (hasBackend()) return subscribe<AgentEvent>("agent-event", frame => { recordStreamReceipt(frame); observeSendLatency(frame); handler(frame); });
     agentListeners.add(handler);
     return () => agentListeners.delete(handler);
   },
@@ -4042,8 +4172,45 @@ async function mockGithubAttachPr(sessionId: string, reference: string): Promise
   return { attached: true, message: `Attached PR #${number}.`, pullRequest: mockChatPrView(entry) };
 }
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
-const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
-  confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
+// Browser-mode writes land in these so `bun run dev` shows a reply appearing
+// and a conversation resolving without GitHub.
+const mockPostedComments: string[] = [];
+const mockThreadResolved = new Map<string, boolean>([["thread-2", true]]);
+const mockThreadReplies = new Map<number, string[]>();
+const mockLineThreads: Array<{ path: string; line: number; body: string }> = [];
+const mockShot = (fill: string, ink: string) => btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="${fill}"/><rect x="32" y="32" width="200" height="14" rx="7" fill="${ink}" opacity=".8"/><rect x="32" y="64" width="576" height="120" rx="10" fill="${ink}" opacity=".12"/><rect x="32" y="204" width="576" height="120" rx="10" fill="${ink}" opacity=".12"/></svg>`);
+const MOCK_SHOT_DARK = "https://raw.githubusercontent.com/Atharva-Kanherkar/bridge-harness/pr-assets/mock/pane-dark.png";
+const MOCK_SHOT_LIGHT = "https://raw.githubusercontent.com/Atharva-Kanherkar/bridge-harness/pr-assets/mock/pane-light.png";
+/** The mock screenshots do not exist on GitHub, so the pane's direct load
+ *  fails and it falls back to `githubMedia`, which serves these. That is the
+ *  same path a private attachment takes against a real backend. */
+const MOCK_GITHUB_MEDIA: Readonly<Record<string, string>> = {
+  [MOCK_SHOT_DARK]: mockShot("rgb(19 19 22)", "rgb(244 244 245)"),
+  [MOCK_SHOT_LIGHT]: mockShot("rgb(246 245 242)", "rgb(24 24 27)"),
+};
+const mockGithubMedia = (url: string): Promise<GithubMediaResult> => MOCK_GITHUB_MEDIA[url]
+  ? Promise.resolve({ mimeType: "image/svg+xml", data: MOCK_GITHUB_MEDIA[url] })
+  : Promise.reject(new Error("Media needs a GitHub connection."));
+const mockReviewThreads = (prUrl: string): GithubPullRequestResult["reviewThreads"] => {
+  const reply = (rootId: number) => (mockThreadReplies.get(rootId) ?? []).map((body, index) => ({ id: `reply-${rootId}-${index}`, databaseId: rootId * 100 + index, author: { login: "atharva" }, body, createdAt: new Date().toISOString(), url: prUrl, replyToId: null }));
+  const thread = (id: string, rootId: number, path: string, line: number, author: string, body: string, diffHunk: string, isOutdated = false) => {
+    const isResolved = mockThreadResolved.get(id) ?? false;
+    return { id, isResolved, isOutdated, path, line, originalLine: null, diffHunk, viewerCanResolve: !isResolved, viewerCanUnresolve: isResolved, viewerCanReply: true, comments: [{ id: `comment-${rootId}`, databaseId: rootId, author: { login: author }, body, createdAt: now, url: prUrl, replyToId: null }, ...reply(rootId)] };
+  };
+  return [
+    thread("thread-1", 1, "src/api.ts", 42, "reviewer", "Please keep <b>remote HTML</b> inert.", "@@ -40,3 +40,4 @@ export const bridgeApi = {\n   githubStatus,\n-  render: html => html,\n+  render: text => escape(text),\n+  media: loadMedia,"),
+    thread("thread-2", 2, "src/components/GitHubPane.tsx", 128, "maintainer", "This selector re-renders the whole list on every poll. Memoize it?", "@@ -126,2 +126,3 @@\n const rows = useRows();\n+const visible = rows.filter(matches);", true),
+    ...mockLineThreads.map((entry, index) => thread(`line-${index}`, 50 + index, entry.path, entry.line, "atharva", entry.body, "")),
+  ];
+};
+const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult => {
+  if (!confirmed) return { executed: false, message: `Declined: ${action.kind}` };
+  if (action.kind === "comment" && action.target === "pullRequest") mockPostedComments.push(action.body);
+  else if (action.kind === "resolveThread") mockThreadResolved.set(action.threadId, action.resolved);
+  else if (action.kind === "reply") mockThreadReplies.set(action.commentId, [...(mockThreadReplies.get(action.commentId) ?? []), action.body]);
+  else if (action.kind === "reviewComment") mockLineThreads.push({ path: action.path, line: action.line, body: action.body });
+  return { executed: true, message: `Ran ${action.kind}.` };
+};
 const mockGithubReview = (number: number, harness: string): GithubReviewResult =>
   ({ status: "launched", sessionId: "mock-review", message: `Review started with ${harness} — comments will post to PR #${number} shortly.` });
 const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [
@@ -4068,9 +4235,18 @@ const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullR
         "GitHub content remains plain text, including <script>alert('inert')</script>.",
         "",
         "A disguised link — <a href=\"javascript:void%200\">click for the logs</a> — renders as text, not an anchor.",
+        "",
+        "## Screenshots",
+        "",
+        "| Dark | Light |",
+        "|---|---|",
+        `| ![The pane, dark](${MOCK_SHOT_DARK}) | ![The pane, light](${MOCK_SHOT_LIGHT}) |`,
       ].join("\n"),
       baseBranch: "main",
-      comments: [{ id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.\n\n<details><summary>CI output</summary>\n\n```\nok 12 passed\n```\n\n</details>", createdAt: now, url: `${summary.url}#issuecomment-1` }],
+      comments: [
+        { id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.\n\n<details><summary>CI output</summary>\n\n```\nok 12 passed\n```\n\n</details>", createdAt: now, url: `${summary.url}#issuecomment-1` },
+        ...mockPostedComments.map((body, index) => ({ id: `posted-${index}`, author: { login: "atharva" }, body, createdAt: new Date().toISOString(), url: `${summary.url}#issuecomment-${index + 2}` })),
+      ],
       labels: [{ name: "enhancement", color: "a2eeef", description: "New feature" }],
       commits: [
         { oid: "8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192", abbreviatedOid: "8f2a1c9", messageHeadline: "feat(github): render the read surface", messageBody: "The pane owns its own height now.", committedAt: now, authors: [{ login: "atharva" }] },
@@ -4080,7 +4256,7 @@ const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullR
       deletions: 4,
       changedFiles: 2,
     },
-    reviewThreads: [{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/api.ts", line: 42, originalLine: null, comments: [{ id: "comment-1", databaseId: 1, author: { login: "reviewer" }, body: "Please keep <b>remote HTML</b> inert.", createdAt: now, url: summary.url, replyToId: null }] }],
+    reviewThreads: mockReviewThreads(summary.url),
     files: [
       { path: "src/api.ts", previousPath: null, status: "modified", additions: 14, deletions: 4, patch: "@@ -1,2 +1,3 @@\n-old line\n+new line\n context" },
       { path: "assets/github.png", previousPath: null, status: "added", additions: 0, deletions: 0, patch: null },
@@ -4265,3 +4441,9 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
   Object.assign(agent, status);
   return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }
+
+// A send's own timings go to the daemon's latency ledger. Fire and forget: a
+// lost timing row must never surface as an error in the chat.
+setLatencyReporter((sessionId, flow, steps) => {
+  void bridgeApi.recordClientLatency(sessionId, flow, steps).catch(() => undefined);
+});

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { appById, builtinEntry } from "../apps/registry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MotionGlobalConfig } from "framer-motion";
@@ -231,7 +232,7 @@ describe("BridgeSidebar apps", () => {
 
   it("opens a pinned app by its id", () => {
     const onOpenApp = vi.fn();
-    mount({ pinnedApps: [{ id: "notes" }], onOpenApp });
+    mount({ pinnedApps: [{ app: builtinEntry(appById("notes")) }], onOpenApp });
     click(container.querySelector('button[aria-label="Notes"]')!);
     expect(onOpenApp).toHaveBeenCalledWith("notes");
   });
@@ -396,7 +397,7 @@ describe("mobile drawer scrim", () => {
 describe("BridgeSidebar pinned Notes", () => {
   it("sits right after Apps, opens Notes, and shows where you are", () => {
     const onOpenApp = vi.fn();
-    mount({ pinnedApps: [{ id: "notes" }], onOpenApp });
+    mount({ pinnedApps: [{ app: builtinEntry(appById("notes")) }], onOpenApp });
     const rows = [...container.querySelectorAll<HTMLButtonElement>("nav[aria-label='Main navigation'] button")].map(button => button.getAttribute("aria-label"));
     expect(rows).toEqual(["Apps", "Notes"]);
     const notes = container.querySelector<HTMLButtonElement>("button[aria-label='Notes']")!;
@@ -404,14 +405,14 @@ describe("BridgeSidebar pinned Notes", () => {
     expect(notes.getAttribute("aria-current")).toBeNull();
     click(notes);
     expect(onOpenApp).toHaveBeenCalledWith("notes");
-    mount({ pinnedApps: [{ id: "notes" }], onOpenApp, activeApp: "notes" });
+    mount({ pinnedApps: [{ app: builtinEntry(appById("notes")) }], onOpenApp, activeApp: "notes" });
     expect(container.querySelector("button[aria-label='Notes']")?.getAttribute("aria-current")).toBe("page");
   });
 
   it("unpins a pinned app from the button beside its row, without opening it", () => {
     const onOpenApp = vi.fn();
     const onUnpinApp = vi.fn();
-    mount({ pinnedApps: [{ id: "notes" }, { id: "pulls" }], onOpenApp, onUnpinApp });
+    mount({ pinnedApps: [{ app: builtinEntry(appById("notes")) }, { app: builtinEntry(appById("pulls")) }], onOpenApp, onUnpinApp });
     expect(container.querySelector("button[aria-label='Unpin Apps']")).toBeNull();
     const unpin = container.querySelector<HTMLButtonElement>("button[aria-label='Unpin Pulls']")!;
     // A sibling of the row button, never nested inside it.
@@ -422,7 +423,7 @@ describe("BridgeSidebar pinned Notes", () => {
   });
 
   it("shows no Unpin when the host cannot unpin", () => {
-    mount({ pinnedApps: [{ id: "notes" }] });
+    mount({ pinnedApps: [{ app: builtinEntry(appById("notes")) }] });
     expect(container.querySelector("button[aria-label='Unpin Notes']")).toBeNull();
   });
 });

@@ -2,8 +2,10 @@
 //!
 //! Built-in manifests are code, so the tables hold departures only: a row in
 //! `apps` exists once an app was turned off (or back on), and a missing row
-//! means on. Rows whose id this build does not know (an app a newer build
-//! added, or one an older build removed) are ignored on read.
+//! means on. An id is known when it is a built-in or a locked personal app
+//! (the two never share an id). Rows whose id is unknown (an app a newer
+//! build added, one an older build removed, or a deleted personal app) are
+//! ignored on read.
 
 use std::collections::BTreeSet;
 
@@ -30,15 +32,48 @@ pub fn install_store(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     Ok(())
 }
 
-fn known(id: &str) -> Result<&'static BuiltinApp, BridgeError> {
-    builtin(id).ok_or_else(|| BridgeError::Invalid(format!("Bridge has no app called {id}.")))
+/// An app this Mac knows by id.
+enum Known {
+    Builtin(&'static BuiltinApp),
+    /// A locked personal app. Its screen is the app surface, and it can be
+    /// turned off.
+    Personal { name: String },
+}
+
+impl Known {
+    fn name(&self) -> &str {
+        match self {
+            Self::Builtin(app) => &app.manifest.name,
+            Self::Personal { name } => name,
+        }
+    }
+}
+
+fn personal_exists(db: &Connection, id: &str) -> Result<bool, BridgeError> {
+    Ok(super::personal::generation(db, id)?.is_some())
+}
+
+fn known(db: &Connection, id: &str) -> Result<Known, BridgeError> {
+    if let Some(app) = builtin(id) {
+        return Ok(Known::Builtin(app));
+    }
+    if personal_exists(db, id)? {
+        if let Some(version) = super::personal::latest_locked(db, id)? {
+            return Ok(Known::Personal { name: version.manifest.name });
+        }
+    }
+    Err(BridgeError::Invalid(format!("Bridge has no app called {id}.")))
+}
+
+fn is_known(db: &Connection, id: &str) -> bool {
+    builtin(id).is_some() || personal_exists(db, id).unwrap_or(false)
 }
 
 /// Ids of known apps that are off.
 pub fn disabled_ids(db: &Connection) -> Result<BTreeSet<String>, BridgeError> {
     let mut statement = db.prepare("SELECT id FROM apps WHERE enabled=0")?;
     let ids = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-    Ok(ids.into_iter().filter(|id| builtin(id).is_some()).collect())
+    Ok(ids.into_iter().filter(|id| is_known(db, id)).collect())
 }
 
 pub fn is_enabled(db: &Connection, id: &str) -> Result<bool, BridgeError> {
@@ -53,7 +88,17 @@ pub fn is_enabled(db: &Connection, id: &str) -> Result<bool, BridgeError> {
 pub fn pins(db: &Connection) -> Result<Vec<String>, BridgeError> {
     let mut statement = db.prepare("SELECT app_id FROM app_pins ORDER BY position")?;
     let ids = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-    Ok(ids.into_iter().filter(|id| builtin(id).is_some()).collect())
+    Ok(ids.into_iter().filter(|id| is_known(db, id)).collect())
+}
+
+/// A deleted personal app's on/off row and pin go with it, in the caller's
+/// transaction, so an app later made with the same id starts on and unpinned.
+pub fn forget(transaction: &Transaction<'_>, id: &str) -> Result<(), BridgeError> {
+    transaction.execute("DELETE FROM apps WHERE id=?1", [id])?;
+    if transaction.execute("DELETE FROM app_pins WHERE app_id=?1", [id])? > 0 {
+        compact(transaction)?;
+    }
+    Ok(())
 }
 
 /// Rewrite pin positions as 0..n in their current order, so unpinning never
@@ -74,8 +119,8 @@ fn compact(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
 /// Pin or unpin an app. Returns whether anything changed. A 4th pin and a pin
 /// on an app that is off are refused.
 pub fn set_pinned(db: &Connection, id: &str, pinned: bool, now: &str) -> Result<bool, BridgeError> {
-    let app = known(id)?;
     let transaction = db.unchecked_transaction()?;
+    let app = known(&transaction, id)?;
     let current = pins(&transaction)?;
     let changed = if pinned {
         if current.iter().any(|pin| pin == id) {
@@ -84,11 +129,13 @@ pub fn set_pinned(db: &Connection, id: &str, pinned: bool, now: &str) -> Result<
             // A pin is a sidebar row that opens the app. An app that only
             // shows up as a chat card has nothing to open, so its pin would
             // hold a slot no client can draw or undo.
-            if !app.manifest.views.iter().any(|view| matches!(view.slot, AppSlot::Screen | AppSlot::Dock)) {
-                return Err(BridgeError::Invalid(format!("{} has no screen to pin to the sidebar.", app.manifest.name)));
+            if let Known::Builtin(builtin) = &app {
+                if !builtin.manifest.views.iter().any(|view| matches!(view.slot, AppSlot::Screen | AppSlot::Dock)) {
+                    return Err(BridgeError::Invalid(format!("{} has no screen to pin to the sidebar.", app.name())));
+                }
             }
             if !is_enabled(&transaction, id)? {
-                return Err(BridgeError::Invalid(format!("Turn {} on before pinning it.", app.manifest.name)));
+                return Err(BridgeError::Invalid(format!("Turn {} on before pinning it.", app.name())));
             }
             if current.len() >= MAX_APP_PINS {
                 return Err(BridgeError::Invalid(format!("You can pin {MAX_APP_PINS} apps. Unpin one first.")));
@@ -114,13 +161,18 @@ pub fn set_pinned(db: &Connection, id: &str, pinned: bool, now: &str) -> Result<
 }
 
 /// Turn an app on or off. Turning it off also unpins it, in the same
-/// transaction. Returns whether anything changed.
+/// transaction; for a personal app it also revokes every write waiting on it
+/// and closes its Surface. Returns whether anything changed.
 pub fn set_enabled(db: &Connection, id: &str, enabled: bool, now: &str) -> Result<bool, BridgeError> {
-    let app = known(id)?;
-    if !enabled && !app.can_disable {
-        return Err(BridgeError::Invalid(format!("The {} cannot be turned off.", app.manifest.name)));
-    }
     let transaction = db.unchecked_transaction()?;
+    let app = known(&transaction, id)?;
+    let (source, can_disable) = match &app {
+        Known::Builtin(builtin) => ("builtin", builtin.can_disable),
+        Known::Personal { .. } => ("personal", true),
+    };
+    if !enabled && !can_disable {
+        return Err(BridgeError::Invalid(format!("The {} cannot be turned off.", app.name())));
+    }
     let was = is_enabled(&transaction, id)?;
     let mut changed = was != enabled;
     if enabled {
@@ -128,10 +180,13 @@ pub fn set_enabled(db: &Connection, id: &str, enabled: bool, now: &str) -> Resul
         transaction.execute("DELETE FROM apps WHERE id=?1", [id])?;
     } else {
         transaction.execute(
-            "INSERT INTO apps(id, source, enabled, updated_at) VALUES(?1, 'builtin', 0, ?2)
+            "INSERT INTO apps(id, source, enabled, updated_at) VALUES(?1, ?2, 0, ?3)
              ON CONFLICT(id) DO UPDATE SET enabled=0, updated_at=excluded.updated_at",
-            params![id, now],
+            params![id, source, now],
         )?;
+        if source == "personal" {
+            super::open::revoke_app(&transaction, id)?;
+        }
         if transaction.execute("DELETE FROM app_pins WHERE app_id=?1", [id])? > 0 {
             compact(&transaction)?;
             changed = true;

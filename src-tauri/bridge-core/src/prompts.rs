@@ -204,10 +204,17 @@ Reach for these when a diagram, formula, or formatted layout communicates better
 pub const VISUALIZE_NOTE: &str = "## Visuals in the Bridge chat UI
 For a chart, research findings with their sources, a comparison, or a diagram that carries the answer better than prose, call the `visualize` tool (MCP server `bridge`) with data, and Bridge draws it under your message. Image files, matplotlib output and HTML files you write do not display in this chat. The tool's description says when to call it and when not to: most turns need no visual, and one number or a short list never does.";
 
-/// The rendering note a chat session gets: the inline formats plus the
-/// `visualize` tool.
+/// What a chat session needs to know about personal apps. The personal-app
+/// eval found chats asked for "an app for <server>" writing their own web
+/// app (files, a local server, demo data) instead of calling `apps_draft`,
+/// and refusing when the server was not among their own tools.
+pub const APPS_NOTE: &str = "## Personal apps
+When the person asks to open or use one of their saved apps, or for something one of them does, call `apps_open` (it lists their apps), never `apps_draft`. When they ask for a new app, tool, panel or dashboard for an MCP server or connector, call the `apps_draft` tool (MCP server `bridge`) when you have it: Bridge shows the app as a live card in this chat, on that server's real tools. Do not write HTML files, a web app or a local server for it; they do not display here and cannot reach the person's connections. Call it even when that server is not among your own tools: Bridge finds it on the person's other agents, or says what is connected, and a guessed tool name is answered with the server's real tools.";
+
+/// The rendering note a chat session gets: the inline formats, the
+/// `visualize` tool and personal apps.
 pub fn chat_rendering_note() -> String {
-    format!("{RENDERING_NOTE}\n\n{VISUALIZE_NOTE}")
+    format!("{RENDERING_NOTE}\n\n{VISUALIZE_NOTE}\n\n{APPS_NOTE}")
 }
 
 #[cfg(test)]

@@ -171,6 +171,23 @@ describe("theme tokens", () => {
     }
   });
 
+  it("defines the merged verdict as GitHub's merged purple in both modes", () => {
+    // The one deliberate colour on the chrome: the purple everyone already
+    // reads as "merged". The raw hexes live in the token, never in a
+    // component, and the Tailwind colour maps through the same var.
+    expect(tokenValue(":root {", "merged")).toBe("#8250df");
+    expect(tokenValue(".dark {", "merged")).toBe("#a371f7");
+    expect(tokenValue("@theme inline {", "color-merged")).toBe("var(--merged)");
+  });
+
+  it("never retunes Tailwind's ease-out theme variable", () => {
+    // Every `ease-out` utility in the app reads Tailwind's curve; the merge
+    // flow's snappier curve registers under its own name instead.
+    expect(css).not.toMatch(/--ease-out:\s*(?!cubic-bezier\(0, 0, 0\.2, 1\))/);
+    expect(tokenValue("@theme inline {", "ease-out-bridge")).toBeTruthy();
+    expect(tokenValue("@theme inline {", "ease-spring")).toBeTruthy();
+  });
+
   it("keeps primary an inversion rather than a hue", () => {
     expect(tokenValue(":root {", "primary")).toBe(tokenValue(":root {", "foreground"));
     expect(tokenValue(".dark {", "primary")).toBe(tokenValue(".dark {", "foreground"));
@@ -186,6 +203,15 @@ describe("theme tokens", () => {
     expect(css).not.toContain("space-drift");
     expect(css).not.toContain("star-twinkle");
     expect(css).not.toContain(".space-dark");
+  });
+
+  it("defines the merged token as GitHub's purples in both modes", () => {
+    // The one deliberate colour the chrome borrows: the purple everyone
+    // already reads as "merged". Light and dark carry GitHub's own pair.
+    expect(tokenValue(":root {", "merged")).toBe("#8250df");
+    expect(tokenValue(".dark {", "merged")).toBe("#a371f7");
+    // Exposed to Tailwind, so `text-merged` / `bg-merged/14` resolve.
+    expect(css).toMatch(/--color-merged:\s*var\(--merged\)/);
   });
 
   it("honours reduced motion", () => {

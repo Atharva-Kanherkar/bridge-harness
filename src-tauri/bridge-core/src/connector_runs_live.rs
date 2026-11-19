@@ -433,7 +433,7 @@ pub fn available_server(core: &Arc<BridgeCore>, family: ConnectorFamily) -> Opti
 /// under a wall-clock deadline. The connector-run analogue of
 /// `memory_consolidation_live::one_bounded_turn`, scoped to one MCP server
 /// instead of to nothing.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct TurnOutput { pub(crate) text: String, pub(crate) results: Vec<Value> }
 
 fn one_bounded_turn(core: &Arc<BridgeCore>, connection: &ConnectorAvailability, kind: RunKind, prompt: &str, action_intent: Option<ActionIntent>) -> Result<String, String> {
@@ -449,9 +449,7 @@ pub(crate) fn bounded_turn_output(
     exact_call: Option<(&str, Value)>,
 ) -> Result<TurnOutput, String> {
     let server = connection.server.as_deref().unwrap_or_default();
-    let harness_id = connection.harness.as_deref().unwrap_or_default();
     let limits = connector_runs::run_limits(kind);
-    let wall = limits.max_wall_seconds.max(1) as u64;
     // Scoped to this one server. Ingress and render get the read-only policy —
     // its verb rule is what keeps them from reaching a different connector or a
     // write tool on this one. An action gets the same policy plus exactly one
@@ -473,66 +471,44 @@ pub(crate) fn bounded_turn_output(
     if let Some((tool, arguments)) = exact_call {
         policy = BriefingRuntimePolicy::compile_exact_action(server.to_owned(), tool, arguments, limits).map_err(|e| e.reason())?;
     }
-    let (harness, model) = run_profile(core, harness_id)?;
-    let session_id = Uuid::new_v4().to_string();
-    let scratch = core.chat_scratch_dir(&session_id);
-    std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
-    let cwd = scratch.to_string_lossy().to_string();
-    {
-        let db = core.db.lock().unwrap();
-        db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth)
-             VALUES(?1,NULL,?2,'Connector','working','reported',?3,?4,'Connector run',?5,0)",
-            params![session_id, harness, model, CONNECTOR_SESSION_KIND, cwd],
-        )
-        .map_err(|error| error.to_string())?;
-    }
+    turn_with_policy(core, connection, &policy, kind, prompt, exact)
+}
 
-    let started = core.adapter_registry.start(
-        &harness,
-        StartRequest {
-            session_id: None,
-            cwd: &cwd,
-            model: Some(&model),
-            effort: None,
-            instructions: None,
-            write_mode: None,
-            read_only_sandbox: None,
-            briefing: Some(&policy),
-            interactive: false,
-            account: None,
-            on_progress: None,
-        },
-    );
-    let started = match started {
-        Ok(started) => started,
-        Err(error) => {
-            settle_session(core, &session_id, "failed");
-            return Err(format!("provider start: {error}"));
-        }
-    };
-    let mut runtime = started.runtime;
+/// The read-only run that resolves an Outgoing destination before any approval
+/// exists. It must reach the harness's own signed-in connector, since an
+/// explicit copy of a claude.ai connector comes up needing authentication and
+/// a fresh draft could then never be offered for approval. So it loads
+/// connectors natively; its gate stays the read-only scope on this one server.
+pub(crate) fn outgoing_resolution_policy(server: &str) -> Result<BriefingRuntimePolicy, String> {
+    BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], connector_runs::run_limits(RunKind::Ingress))
+        .map(BriefingRuntimePolicy::with_native_connectors)
+        .map_err(|unsupported| format!("policy: {}", unsupported.reason()))
+}
 
-    let (lines, receiver) = mpsc::channel::<String>();
-    let mut reader = started.reader;
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if lines.send(line.trim_end().to_owned()).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
+/// Run the Outgoing resolver's turn under [`outgoing_resolution_policy`].
+pub(crate) fn outgoing_resolution_turn(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    prompt: &str,
+) -> Result<TurnOutput, String> {
+    let policy = outgoing_resolution_policy(connection.server.as_deref().unwrap_or_default())?;
+    turn_with_policy(core, connection, &policy, RunKind::Ingress, prompt, false)
+}
 
-    if let Err(error) = runtime.send_turn(prompt) {
-        runtime.stop(ShutdownReason::Failed);
-        settle_session(core, &session_id, "failed");
+/// One bounded model turn under an already compiled policy: launch, send the
+/// prompt, read to the result frame under the policy's wall clock, settle.
+fn turn_with_policy(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    policy: &BriefingRuntimePolicy,
+    kind: RunKind,
+    prompt: &str,
+    exact: bool,
+) -> Result<TurnOutput, String> {
+    let wall = policy.limits().max_wall_seconds.max(1) as u64;
+    let run = launch_run(core, connection, policy)?;
+    if let Err(error) = run.runtime.send_turn(prompt) {
+        run.finish(core, false);
         return Err(format!("send: {error}"));
     }
 
@@ -547,7 +523,7 @@ pub(crate) fn bounded_turn_output(
         if Instant::now() >= deadline {
             break Err(format!("the {} run exceeded its {wall}s budget", kind_label(kind)));
         }
-        match receiver.recv_timeout(StdDuration::from_secs(1)) {
+        match run.lines.recv_timeout(StdDuration::from_secs(1)) {
             Ok(line) => {
                 let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
                 match message.get("type").and_then(Value::as_str) {
@@ -566,13 +542,11 @@ pub(crate) fn bounded_turn_output(
 
     match outcome {
         Ok(()) => {
-            runtime.stop(ShutdownReason::Completed);
-            settle_session(core, &session_id, "ended");
+            run.finish(core, true);
             Ok(TurnOutput { text, results })
         }
         Err(detail) => {
-            runtime.stop(ShutdownReason::Failed);
-            settle_session(core, &session_id, "failed");
+            run.finish(core, false);
             // A tool may have posted before the model timed out or failed its
             // final response. Preserve authoritative tool output for the
             // provider's strict receipt parser; prose still proves nothing.
@@ -662,7 +636,147 @@ fn decode_result(value: &Value, results: &mut Vec<Value>, depth: usize, parse_te
     }
 }
 
+/// A connector session that has started: its row, its runtime, and its output
+/// lines read on a background thread.
+struct LaunchedRun {
+    session_id: String,
+    runtime: Box<dyn crate::adapters::AdapterRuntime>,
+    lines: mpsc::Receiver<String>,
+}
+
+impl LaunchedRun {
+    /// Stop the provider and settle the row. Every exit after a launch goes
+    /// through here, so no connector session is left `working`.
+    fn finish(mut self, core: &Arc<BridgeCore>, succeeded: bool) {
+        self.runtime.stop(if succeeded { ShutdownReason::Completed } else { ShutdownReason::Failed });
+        settle_session(core, &self.session_id, if succeeded { "ended" } else { "failed" });
+    }
+}
+
+/// Start a hidden connector session under `policy`. Shared by the turn path and
+/// the direct path, so a direct call runs with exactly the launch a turn would:
+/// the same harness, account, credentials, MCP configuration and gate.
+fn launch_run(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    policy: &BriefingRuntimePolicy,
+) -> Result<LaunchedRun, String> {
+    let harness_id = connection.harness.as_deref().unwrap_or_default();
+    let (harness, model) = run_profile(core, harness_id)?;
+    let session_id = Uuid::new_v4().to_string();
+    let scratch = core.chat_scratch_dir(&session_id);
+    std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
+    let cwd = scratch.to_string_lossy().to_string();
+    {
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth)
+             VALUES(?1,NULL,?2,'Connector','working','reported',?3,?4,'Connector run',?5,0)",
+            params![session_id, harness, model, CONNECTOR_SESSION_KIND, cwd],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    let started = core.adapter_registry.start(
+        &harness,
+        StartRequest {
+            session_id: None,
+            cwd: &cwd,
+            model: Some(&model),
+            effort: None,
+            speed: None,
+            instructions: None,
+            write_mode: None,
+            read_only_sandbox: None,
+            briefing: Some(policy),
+            interactive: false,
+            account: None,
+            on_progress: None,
+        },
+    );
+    let started = match started {
+        Ok(started) => started,
+        Err(error) => {
+            settle_session(core, &session_id, "failed");
+            return Err(format!("provider start: {error}"));
+        }
+    };
+    let runtime = started.runtime;
+
+    let (lines, receiver) = mpsc::channel::<String>();
+    let mut reader = started.reader;
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if lines.send(line.trim_end().to_owned()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(LaunchedRun { session_id, runtime, lines: receiver })
+}
+
+/// How an exact approved call reaches the connector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactCallPath {
+    /// The harness's own MCP client runs the call (`mcp_call`). No model turn.
+    Direct,
+    /// A hidden model turn told to make the call, gated to exactly that call.
+    Turn,
+}
+
+impl ExactCallPath {
+    fn ledger_kind(self) -> &'static str {
+        match self {
+            Self::Direct => "connector.action.direct",
+            Self::Turn => "connector.action.turn",
+        }
+    }
+}
+
+/// Which path an exact call takes. Decided before anything is sent and never
+/// revisited: a direct call that fails after its frame went out may already
+/// have run, so it is reported for the user to retry, never re-sent as a turn.
+pub(crate) fn exact_call_path(harness: Option<&str>, claude_direct: bool) -> ExactCallPath {
+    if harness == Some("claude") && claude_direct {
+        ExactCallPath::Direct
+    } else {
+        ExactCallPath::Turn
+    }
+}
+
 pub(crate) fn exact_outgoing_call(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    tool: &str,
+    arguments: Value,
+) -> Result<TurnOutput, String> {
+    let path = exact_call_path(
+        connection.harness.as_deref(),
+        crate::claude_adapter::supports_direct_tool_calls(),
+    );
+    let started = Instant::now();
+    let outcome = match path {
+        ExactCallPath::Direct => direct_exact_call(core, connection, tool, arguments),
+        ExactCallPath::Turn => turn_exact_call(core, connection, tool, arguments),
+    };
+    // Bookkeeping only: the call has already run, so a ledger problem is
+    // reported and never changes the outcome the caller acts on.
+    match core.db.lock() {
+        Ok(db) => record_exact_call(&db, path, connection.harness.as_deref(), tool, outcome.is_ok(), started.elapsed()),
+        Err(_) => crate::diagnostics::record("connector ledger: database lock poisoned; an exact call was not recorded"),
+    }
+    outcome
+}
+
+fn turn_exact_call(
     core: &Arc<BridgeCore>,
     connection: &ConnectorAvailability,
     tool: &str,
@@ -677,6 +791,125 @@ pub(crate) fn exact_outgoing_call(
         Some(ActionIntent::Post),
         Some((tool, arguments)),
     )
+}
+
+/// Run the approved call through the harness's own MCP client: the same launch
+/// as a turn, then one `mcp_call` frame instead of a user message.
+fn direct_exact_call(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    tool: &str,
+    arguments: Value,
+) -> Result<TurnOutput, String> {
+    let server = connection.server.as_deref().unwrap_or_default();
+    let limits = connector_runs::run_limits(RunKind::Action);
+    let wall = limits.max_wall_seconds.max(1) as u64;
+    let policy = BriefingRuntimePolicy::compile_exact_action(server.to_owned(), tool, arguments, limits)
+        .and_then(BriefingRuntimePolicy::into_direct_call)
+        .map_err(|error| error.reason())?;
+    // Sent exactly as the policy names it, so the sidecar's deep-equality check
+    // and the gate compare the call against itself.
+    let approved = policy
+        .exact_action_config()
+        .ok_or("the approved call was lost while compiling its policy")?;
+    let wire_tool = approved["tool"].as_str().unwrap_or_default().to_owned();
+    let run = launch_run(core, connection, &policy)?;
+    let call_id = Uuid::new_v4().to_string();
+    if let Err(error) = run.runtime.call_tool(&call_id, &wire_tool, &approved["arguments"]) {
+        run.finish(core, false);
+        return Err(format!("send: {error}"));
+    }
+    let outcome = await_call_result(&run.lines, &call_id, Instant::now() + StdDuration::from_secs(wall), wall);
+    run.finish(core, outcome.is_ok());
+    outcome
+}
+
+/// Read output until this call's own result frame, the provider ending, or the
+/// deadline. Unrelated frames (startup, hooks, another id) are skipped.
+pub(crate) fn await_call_result(
+    lines: &mpsc::Receiver<String>,
+    id: &str,
+    deadline: Instant,
+    wall: u64,
+) -> Result<TurnOutput, String> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("the send exceeded its {wall}s budget"));
+        }
+        match lines.recv_timeout(remaining.min(StdDuration::from_secs(1))) {
+            Ok(line) => {
+                let Ok(frame) = serde_json::from_str::<Value>(&line) else { continue };
+                match frame.get("type").and_then(Value::as_str) {
+                    Some("mcp_call_result") if frame.get("id").and_then(Value::as_str) == Some(id) => {
+                        return call_result_output(&frame);
+                    }
+                    // The sidecar's own failure frame: nothing can answer now.
+                    Some("result") if frame.get("is_error").and_then(Value::as_bool) == Some(true) => {
+                        return Err(bounded(
+                            frame.get("result").and_then(Value::as_str).unwrap_or("the provider reported an error"),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("the provider ended before returning the call result".into());
+            }
+        }
+    }
+}
+
+/// An `mcp_call_result` frame as the `TurnOutput` the same tool result would
+/// produce inside a turn, so receipt parsing cannot tell the paths apart.
+pub(crate) fn call_result_output(frame: &Value) -> Result<TurnOutput, String> {
+    if frame.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(bounded(
+            frame.get("error").and_then(Value::as_str).unwrap_or("the harness refused the call"),
+        ));
+    }
+    let result = frame.get("result").filter(|result| result.is_object()).ok_or("the harness returned no tool result")?;
+    if result.get("isError").and_then(Value::as_bool).unwrap_or(false) {
+        let detail = result
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|blocks| blocks.iter().find_map(|block| block.get("text").and_then(Value::as_str)))
+            .unwrap_or("the connector rejected the call");
+        return Err(format!("a tool call failed: {}", bounded(detail)));
+    }
+    let mut results = Vec::new();
+    if let Some(content) = result.get("content") {
+        decode_result(content, &mut results, 0, true);
+    }
+    if let Some(structured) = result.get("structuredContent") {
+        decode_result(structured, &mut results, 0, false);
+    }
+    Ok(TurnOutput { text: String::new(), results })
+}
+
+/// One ledger row per exact call: which path, which tool, whether it worked and
+/// how long it took. Never the arguments or the message text.
+fn record_exact_call(
+    db: &rusqlite::Connection,
+    path: ExactCallPath,
+    harness: Option<&str>,
+    tool: &str,
+    succeeded: bool,
+    elapsed: StdDuration,
+) {
+    let body = serde_json::json!({
+        "harness": harness,
+        "tool": tool,
+        "ok": succeeded,
+        "elapsedMs": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+    });
+    if let Err(error) = db.execute(
+        "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('connector',?1,?2,?3,?4)",
+        params![path.ledger_kind(), tool, body.to_string(), Utc::now().to_rfc3339()],
+    ) {
+        crate::diagnostics::record(&format!("connector ledger: an exact call was not recorded: {error}"));
+    }
 }
 
 /// Tool results the provider marked as errors.
@@ -997,6 +1230,131 @@ mod tests {
         // Released on every path, so a failed send stays retryable rather than
         // wedging the item forever.
         assert!(poller.begin_action("slack:D0:1.0"));
+    }
+
+    // ── Direct exact calls ──────────────────────────────────────────────────
+
+    #[test]
+    fn the_outgoing_resolver_reads_through_the_signed_in_connector_and_nothing_else() {
+        let policy = outgoing_resolution_policy("claude.ai Slack").unwrap();
+        assert!(policy.native_connectors(), "an explicit claude.ai copy cannot sign in");
+        assert!(!policy.direct_call());
+        assert_eq!(policy.exact_action_config(), None);
+        assert_eq!(policy.action_scope_config(), None);
+        assert_eq!(policy.read_scope_servers(), ["claude.ai Slack".to_owned()]);
+        use crate::briefing_policy::ToolDecision;
+        assert_eq!(policy.decide("mcp__claude_ai_Slack__slack_search_channels", 100), ToolDecision::Allow);
+        assert_eq!(policy.decide("mcp__claude_ai_Slack__slack_search_users", 100), ToolDecision::Allow);
+        assert_ne!(policy.decide("mcp__claude_ai_Slack__slack_send_message", 100), ToolDecision::Allow);
+        assert_ne!(policy.decide("mcp__claude_ai_Notion__notion_search", 100), ToolDecision::Allow);
+        assert_eq!(policy.limits(), &connector_runs::run_limits(RunKind::Ingress));
+    }
+
+    #[test]
+    fn only_claude_with_a_capable_sdk_takes_the_direct_path() {
+        assert_eq!(exact_call_path(Some("claude"), true), ExactCallPath::Direct);
+        assert_eq!(exact_call_path(Some("claude"), false), ExactCallPath::Turn);
+        assert_eq!(exact_call_path(Some("codex"), true), ExactCallPath::Turn);
+        assert_eq!(exact_call_path(Some("opencode"), true), ExactCallPath::Turn);
+        assert_eq!(exact_call_path(None, true), ExactCallPath::Turn);
+    }
+
+    #[test]
+    fn a_direct_result_decodes_like_the_same_tool_result_in_a_turn() {
+        let content = serde_json::json!([{"type":"text","text":"{\"ok\":true,\"permalink\":\"https://acme.slack.com/archives/C1/p1794571200000001\"}"}]);
+        let mut turn = Vec::new();
+        collect_tool_results(
+            &serde_json::json!({"message":{"content":[{"type":"tool_result","content":content}]}}),
+            &mut turn,
+        );
+        let frame = serde_json::json!({"type":"mcp_call_result","id":"c1","ok":true,"result":{"content":content}});
+        let direct = call_result_output(&frame).unwrap();
+        assert!(!turn.is_empty());
+        assert_eq!(direct.results, turn);
+        assert!(direct.text.is_empty(), "prose proves nothing, so a direct call has none");
+    }
+
+    #[test]
+    fn structured_content_is_decoded_beside_the_text_blocks() {
+        let frame = serde_json::json!({"type":"mcp_call_result","id":"c1","ok":true,"result":{"content":[],"structuredContent":{"file_id":"F123","upload_url":"https://files.slack.com/upload/x"}}});
+        let output = call_result_output(&frame).unwrap();
+        assert!(output.results.iter().any(|value| value.get("file_id").and_then(Value::as_str) == Some("F123")));
+    }
+
+    #[test]
+    fn refusals_and_tool_errors_are_failures_with_their_reason() {
+        let refused = serde_json::json!({"type":"mcp_call_result","id":"c1","ok":false,"error":"The tool did not run: this call does not match"});
+        assert_eq!(call_result_output(&refused).unwrap_err(), "The tool did not run: this call does not match");
+        let tool_error = serde_json::json!({"type":"mcp_call_result","id":"c1","ok":true,"result":{"isError":true,"content":[{"type":"text","text":"channel_not_found"}]}});
+        assert_eq!(call_result_output(&tool_error).unwrap_err(), "a tool call failed: channel_not_found");
+        let empty = serde_json::json!({"type":"mcp_call_result","id":"c1","ok":true});
+        assert!(call_result_output(&empty).is_err());
+        let not_an_object = serde_json::json!({"type":"mcp_call_result","id":"c1","ok":true,"result":"sent"});
+        assert!(call_result_output(&not_an_object).is_err());
+    }
+
+    fn lines(frames: &[&str]) -> mpsc::Receiver<String> {
+        let (send, receive) = mpsc::channel();
+        for frame in frames {
+            send.send((*frame).to_owned()).unwrap();
+        }
+        receive
+    }
+
+    #[test]
+    fn the_reader_waits_for_its_own_result_and_skips_everything_else() {
+        let receiver = lines(&[
+            "not json",
+            r#"{"type":"system","subtype":"hook_started"}"#,
+            r#"{"type":"mcp_call_result","id":"other","ok":false,"error":"not ours"}"#,
+            r#"{"type":"mcp_call_result","id":"mine","ok":true,"result":{"content":[{"type":"text","text":"{\"ts\":\"1\"}"}]}}"#,
+        ]);
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        let output = await_call_result(&receiver, "mine", deadline, 5).unwrap();
+        assert!(output.results.iter().any(|value| value.get("ts").and_then(Value::as_str) == Some("1")));
+    }
+
+    #[test]
+    fn the_reader_fails_when_the_provider_ends_errors_or_runs_out_of_time() {
+        let (send, ended) = mpsc::channel::<String>();
+        drop(send);
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        assert_eq!(
+            await_call_result(&ended, "mine", deadline, 5).unwrap_err(),
+            "the provider ended before returning the call result"
+        );
+
+        let crashed = lines(&[r#"{"type":"result","subtype":"error_sidecar","is_error":true,"result":"Claude Agent SDK error: boom"}"#]);
+        assert_eq!(await_call_result(&crashed, "mine", deadline, 5).unwrap_err(), "Claude Agent SDK error: boom");
+
+        let (_keep, silent) = mpsc::channel::<String>();
+        let past = Instant::now() + StdDuration::from_millis(30);
+        assert_eq!(await_call_result(&silent, "mine", past, 9).unwrap_err(), "the send exceeded its 9s budget");
+    }
+
+    #[test]
+    fn each_exact_call_leaves_one_ledger_row_without_its_arguments() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);").unwrap();
+        record_exact_call(&db, ExactCallPath::Direct, Some("claude"), "slack_send_message", true, StdDuration::from_millis(1234));
+        record_exact_call(&db, ExactCallPath::Turn, Some("claude"), "slack_send_message", false, StdDuration::from_millis(25_000));
+        let rows: Vec<(String, String, String, String)> = db
+            .prepare("SELECT source, kind, entity_id, body FROM events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].0.as_str(), rows[0].1.as_str(), rows[0].2.as_str()), ("connector", "connector.action.direct", "slack_send_message"));
+        assert_eq!(rows[1].1, "connector.action.turn");
+        let body: Value = serde_json::from_str(&rows[0].3).unwrap();
+        assert_eq!(body, serde_json::json!({"harness":"claude","tool":"slack_send_message","ok":true,"elapsedMs":1234}));
+
+        // A ledger that cannot be written is reported, never a panic or an
+        // error the caller would mistake for the call failing.
+        let broken = rusqlite::Connection::open_in_memory().unwrap();
+        record_exact_call(&broken, ExactCallPath::Direct, Some("claude"), "slack_send_message", true, StdDuration::ZERO);
     }
 
     #[test]

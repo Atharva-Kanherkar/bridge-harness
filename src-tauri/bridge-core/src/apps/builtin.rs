@@ -187,7 +187,12 @@ mod tests {
     fn frontend_and_mock_list_exactly_the_builtin_ids() {
         let core: BTreeSet<String> = builtins().iter().map(|app| app.manifest.id.clone()).collect();
         let frontend = ts_ids(include_str!("../../../../src/apps/registry.ts"));
-        let mock = ts_ids(include_str!("../../../../src/appsMock.ts"));
+        // The mock's built-ins are its `SPECS`, which end where `MOCK_APP_IDS`
+        // is declared; its demo personal app ("My apps") follows and is not
+        // a built-in.
+        let mock_source = include_str!("../../../../src/appsMock.ts");
+        let specs = mock_source.split("export const MOCK_APP_IDS").next().unwrap_or(mock_source);
+        let mock = ts_ids(specs);
         assert_eq!(frontend, core, "src/apps/registry.ts (BUILTIN_APPS plus CARD_APPS) must describe exactly core's apps");
         assert_eq!(mock, core, "src/appsMock.ts must serve exactly core's apps");
     }

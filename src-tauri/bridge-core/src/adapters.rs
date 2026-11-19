@@ -169,6 +169,26 @@ pub trait AdapterRuntime: Send {
             "This provider does not accept image attachments".into(),
         ))
     }
+    /// Call one MCP tool through the provider's own MCP client, with no model
+    /// turn. The answer arrives on the output stream as an `mcp_call_result`
+    /// frame carrying `id`. Only a launch whose briefing carries an exact
+    /// approved action honours it, and only for that action. The default
+    /// refuses, so a provider without the capability fails at this seam and
+    /// never on the wire.
+    fn call_tool(&self, _id: &str, _tool: &str, _arguments: &Value) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider cannot call a tool without a model turn".into(),
+        ))
+    }
+    /// One MCP server's connection status, for agents with no tool inventory
+    /// to read (OpenCode). `{name, status}`.
+    fn mcp_status(&self, _server: &str) -> Result<Value, BridgeError> {
+        Err(BridgeError::Invalid("This provider cannot report an MCP server's status".into()))
+    }
+    /// Inventory or a preview read on this chat's existing MCP connection.
+    fn app_control(&self, _id: &str, _request: &Value) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This provider cannot preview personal apps".into()))
+    }
     /// Whether this provider can take a user message while one of its own
     /// turns is still running, and fold it into that turn.
     ///
@@ -604,6 +624,11 @@ pub struct StartRequest<'a> {
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// The chat's speed tier, by the id the model's catalog row listed it
+    /// under (`ModelOption::speed_tiers`): Claude `fast`, Codex `priority` or
+    /// `ultrafast`. `None` is the provider's standard speed. Adapters without
+    /// speed tiers ignore it.
+    pub speed: Option<&'a str>,
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
@@ -636,6 +661,7 @@ impl std::fmt::Debug for StartRequest<'_> {
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
+            .field("speed", &self.speed)
             .field("instructions", &self.instructions)
             .field("write_mode", &self.write_mode)
             .field("read_only_sandbox", &self.read_only_sandbox)
@@ -661,6 +687,8 @@ pub struct ResumeRequest<'a> {
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// See [`StartRequest::speed`].
+    pub speed: Option<&'a str>,
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
@@ -683,6 +711,7 @@ impl std::fmt::Debug for ResumeRequest<'_> {
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
+            .field("speed", &self.speed)
             .field("instructions", &self.instructions)
             .field("write_mode", &self.write_mode)
             .field("read_only_sandbox", &self.read_only_sandbox)
@@ -703,6 +732,7 @@ impl<'a> ResumeRequest<'a> {
             cwd: self.cwd,
             model: self.model,
             effort: self.effort,
+            speed: self.speed,
             instructions: self.instructions,
             write_mode: self.write_mode,
             read_only_sandbox: self.read_only_sandbox,
@@ -729,6 +759,11 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         validate_start_compatibility(&self.descriptor(), &request)?;
         self.start(request)
+    }
+    /// A personal-app courier session that may ask for exactly one MCP tool
+    /// (see `apps::courier`). Unsupported unless an adapter overrides it.
+    fn start_app_courier(&self, _request: StartRequest<'_>, _permission: &str, _server: &str) -> Result<StartedAdapter, BridgeError> {
+        Err(BridgeError::Invalid(format!("{} cannot run a personal app courier", self.descriptor().label)))
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
@@ -793,6 +828,23 @@ pub fn descriptor_supports_agent_role(descriptor: &AdapterDescriptor, role: &str
         _ => false,
     }
 }
+
+/// A speed the launch model does not list is dropped, not sent: a provider
+/// can refuse an unknown service tier outright, and a stale choice must not
+/// fail a turn after a model change.
+fn supported_model_speed<'a>(descriptor: &AdapterDescriptor, model: Option<&str>, speed: Option<&'a str>) -> Option<&'a str> {
+    let selected = descriptor.models.iter().find(|option|
+        Some(option.id.as_str()) == model.or(descriptor.default_model.as_deref()));
+    speed.filter(|value| selected.is_some_and(|model|
+        model.speed_tiers.iter().any(|tier| tier.id == *value)
+            // An explicit return to standard matters only where a faster tier
+            // exists to return from.
+            || (*value == STANDARD_SPEED && !model.speed_tiers.is_empty())))
+}
+
+/// The speed a person chose to go back to after a faster tier. Distinct from
+/// no choice at all (`None`), which leaves the provider's own default alone.
+pub const STANDARD_SPEED: &str = "standard";
 
 fn supported_model_effort<'a>(descriptor: &AdapterDescriptor, model: Option<&str>, effort: Option<&'a str>) -> Option<&'a str> {
     let selected = descriptor.models.iter().find(|option|
@@ -994,7 +1046,18 @@ impl AdapterRegistry {
         }
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         adapter.start(request)
+    }
+
+    pub fn start_app_courier(&self, id: &str, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
+        let adapter = self.adapters.get(id).ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?;
+        crate::credential_policy::gate_adapter(id)?;
+        let descriptor = adapter.descriptor();
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
+        }
+        adapter.start_app_courier(request, permission, server)
     }
 
     pub fn start_completion(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1005,6 +1068,7 @@ impl AdapterRegistry {
             return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
         }
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
         adapter.start_completion(request)
     }
 
@@ -1029,7 +1093,22 @@ impl AdapterRegistry {
         }
         let descriptor = adapter.descriptor();
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
-        adapter.resume(request)
+        request.speed = supported_model_speed(&descriptor, request.model, request.speed);
+        let wanted = request.provider_session_id.to_owned();
+        let fork = request.fork;
+        let mut started = adapter.resume(request)?;
+        // A plain resume must come back on the session it asked for. Anything
+        // else would carry the chat on in another conversation: stop it, and
+        // let the caller's fallback restore from Bridge's own history. A fork
+        // gets a new id by design, and an empty id is one reported later.
+        let reported = started.runtime.provider_session_id().to_owned();
+        if !fork && !reported.is_empty() && reported != wanted {
+            started.runtime.stop(ShutdownReason::Failed);
+            return Err(BridgeError::Invalid(format!(
+                "{id} resumed session {reported} instead of {wanted}"
+            )));
+        }
+        Ok(started)
     }
 
     pub fn supports_native_resume(&self, id: &str) -> bool {
@@ -1272,6 +1351,7 @@ impl OpenCodeAdapter {
                                 compatible: model.compatible,
                                 lifecycle: model.lifecycle,
                                 supported_effort_levels: model.supported_effort_levels,
+                                speed_tiers: model.speed_tiers,
                                 promotion_priority: i64::from(model.default_for_tier),
                             })
                             .collect();
@@ -1331,6 +1411,7 @@ impl OpenCodeAdapter {
                         compatible: model.compatible,
                         lifecycle: model.lifecycle,
                         supported_effort_levels: model.supported_effort_levels,
+                        speed_tiers: model.speed_tiers,
                         promotion_priority: i64::from(model.default_for_tier),
                     })
                     .collect();
@@ -1405,6 +1486,7 @@ impl OpenCodeAdapter {
                 compatible: model.compatible,
                 lifecycle: model.lifecycle,
                 supported_effort_levels: model.supported_effort_levels,
+                speed_tiers: model.speed_tiers,
                 promotion_priority: i64::from(model.default_for_tier),
             })
             .collect();
@@ -1493,6 +1575,12 @@ impl HarnessAdapter for OpenCodeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+        })
+    }
+    fn start_app_courier(&self, request: StartRequest<'_>, permission: &str, server: &str) -> Result<StartedAdapter, BridgeError> {
+        let started = opencode_adapter::start_courier_with_settings(request, &self.settings(), permission, server)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
         })
     }
     fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1589,6 +1677,8 @@ pub struct DiscoveredModel {
     /// `None` means the row omitted the ladder, so a curated ladder can stay.
     /// `Some`, including an empty list, is the provider's answer.
     pub supported_effort_levels: Option<Vec<String>>,
+    /// Faster service tiers the provider lists for this model.
+    pub speed_tiers: Vec<crate::model::SpeedTier>,
 }
 
 /// Priority handed to a discovered model the provider marks as its default. Set
@@ -1631,6 +1721,7 @@ fn runtime_candidates_with_fallbacks(
                 label,
                 is_default,
                 supported_effort_levels,
+                speed_tiers,
             } = model;
             match fallbacks.iter().find(|fallback| fallback.id == id) {
                 // Curated entries stay authoritative for tier; discovery
@@ -1648,6 +1739,7 @@ fn runtime_candidates_with_fallbacks(
                     if let Some(levels) = supported_effort_levels {
                         merged.supported_effort_levels = levels;
                     }
+                    merged.speed_tiers = speed_tiers;
                     if is_default {
                         merged.promotion_priority = DISCOVERED_DEFAULT_PRIORITY;
                     }
@@ -1668,6 +1760,7 @@ fn runtime_candidates_with_fallbacks(
                         },
                     );
                     candidate.supported_effort_levels = supported_effort_levels.unwrap_or_default();
+                    candidate.speed_tiers = speed_tiers;
                     candidate
                 }
             }
@@ -2015,6 +2108,7 @@ mod tests {
             cwd: "/tmp/chat",
             model: Some("m"),
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: Some(WriteMode::Full),
             read_only_sandbox: None,
@@ -2119,6 +2213,9 @@ mod tests {
         assert!(!bare.native_compaction().accepts_focus());
         assert!(bare.compact_native(None).is_err());
         assert!(bare.compact_native(Some("the failing test")).is_err());
+        // Same rule for a direct tool call: a provider without one refuses at
+        // the seam rather than writing a frame nothing will ever answer.
+        assert!(bare.call_tool("c1", "mcp__s__t", &serde_json::json!({})).is_err());
     }
 
     #[test]
@@ -2169,6 +2266,86 @@ mod tests {
         );
     }
 
+    /// A native resume that comes back on another session is not a resume:
+    /// the new process is stopped and the caller's fallback runs, so a chat
+    /// never quietly carries on in someone else's conversation.
+    #[test]
+    fn a_resume_onto_another_session_is_refused_and_stopped() {
+        struct Drifting { reports: &'static str, stopped: Arc<AtomicBool> }
+        impl AdapterRuntime for Drifting {
+            fn process_id(&self) -> u32 { 0 }
+            fn provider_session_id(&self) -> &str { self.reports }
+            fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+            fn send_turn(&self, _text: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+            fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn stop(&mut self, _reason: ShutdownReason) { self.stopped.store(true, Ordering::SeqCst); }
+        }
+        struct Resumer { reports: &'static str, stopped: Arc<AtomicBool> }
+        impl HarnessAdapter for Resumer {
+            fn as_any(&self) -> &dyn Any { self }
+            fn descriptor(&self) -> AdapterDescriptor {
+                AdapterDescriptor {
+                    sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                    id: "claude".into(),
+                    label: "Resumer".into(),
+                    available: true,
+                    auth_state: crate::model::AuthState::Unknown,
+                    version: Some("1".into()),
+                    capabilities: vec!["messages".into()],
+                    unavailable_reason: None,
+                    models: vec![],
+                    default_model: None,
+                    model_catalog: ModelCatalogDiagnostics::curated(),
+                }
+            }
+            fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not launched".into()))
+            }
+            fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Ok(StartedAdapter {
+                    runtime: Box::new(Drifting { reports: self.reports, stopped: self.stopped.clone() }),
+                    reader: Box::new(std::io::Cursor::new(Vec::new())),
+                    startup_messages: vec![],
+                })
+            }
+            fn supports_native_resume(&self) -> bool { true }
+            fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> { vec![] }
+        }
+        let resume = |reports: &'static str, fork: bool| {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let mut registry = AdapterRegistry::empty();
+            registry.register(Box::new(Resumer { reports, stopped: stopped.clone() })).unwrap();
+            let result = registry.resume("claude", ResumeRequest {
+                session_id: None,
+                provider_session_id: "wanted",
+                fork,
+                cwd: "/tmp",
+                model: None,
+                effort: None,
+                speed: None,
+                instructions: None,
+                write_mode: None,
+                read_only_sandbox: None,
+                briefing: None,
+                interactive: false,
+                account: None,
+                on_progress: None,
+            });
+            (result.map(|started| started.runtime.provider_session_id().to_owned()), stopped.load(Ordering::SeqCst))
+        };
+
+        let (result, stopped) = resume("someone-else", false);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("someone-else") && error.contains("wanted"), "{error}");
+        assert!(stopped, "the process that came up on the wrong session is stopped");
+
+        let (result, stopped) = resume("wanted", false);
+        assert_eq!((result.unwrap(), stopped), ("wanted".to_owned(), false));
+        let (result, stopped) = resume("", false);
+        assert_eq!((result.unwrap(), stopped), (String::new(), false), "an id reported later is not a mismatch");
+    }
+
     #[test]
     fn only_a_focus_accepting_harness_reports_that_it_takes_one() {
         assert!(NativeCompaction::WithFocus.is_supported());
@@ -2206,6 +2383,7 @@ mod tests {
             label: label.into(),
             is_default: false,
             supported_effort_levels: Some(Vec::new()),
+            speed_tiers: Vec::new(),
         }
     }
 

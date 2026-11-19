@@ -44,6 +44,7 @@ const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefNa
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
 const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url,mergeable";
 const PR_HEAD_FIELDS: &str = "headRefOid";
+const PR_RESTORE_FIELDS: &str = "headRefName,headRefOid,isCrossRepository";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
 /// What a trail keeps of an issue: the detail, how and when it closed, and
@@ -54,7 +55,12 @@ const ISSUE_READ_FIELDS: &str =
 /// `--json` field, and an older `gh` must not lose every PR card over a trail.
 const PR_CLOSING_FIELDS: &str = "closingIssuesReferences";
 const REPOSITORY_FIELDS: &str = "nameWithOwner,description,visibility,defaultBranchRef,primaryLanguage,url,issues,pullRequests";
-const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:100){nodes{id,databaseId,author{login},body,createdAt,url,replyTo{id}}}}}}}}";
+const RESOLVE_THREAD_MUTATION: &str = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id,isResolved}}}";
+const UNRESOLVE_THREAD_MUTATION: &str = "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id,isResolved}}}";
+/// The largest image or video the pane will pull through the backend.
+const MEDIA_BYTE_LIMIT: usize = 48 * 1024 * 1024;
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(45);
+const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,isOutdated,viewerCanResolve,viewerCanUnresolve,viewerCanReply,path,line,originalLine,comments(first:100){nodes{id,databaseId,author{login,avatarUrl},body,diffHunk,createdAt,url,replyTo{id}}}}}}}}";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
@@ -134,6 +140,9 @@ pub enum CheckConclusion {
 #[serde(rename_all = "camelCase")]
 pub struct GithubActor {
     pub login: String,
+    /// The account's avatar, when the read that produced it asked for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,7 +311,45 @@ pub struct ReviewThread {
     pub path: String,
     pub line: Option<u64>,
     pub original_line: Option<u64>,
+    /// The diff hunk the thread was opened on, as GitHub reports it for the
+    /// thread's first comment.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
+    /// What the signed-in account may do to this thread. Absent on an old
+    /// cached read means "not allowed", so the pane never offers a button
+    /// GitHub would refuse.
+    #[serde(default)]
+    pub viewer_can_resolve: bool,
+    #[serde(default)]
+    pub viewer_can_unresolve: bool,
+    #[serde(default)]
+    pub viewer_can_reply: bool,
     pub comments: Vec<ReviewComment>,
+}
+
+/// Which side of a diff a new review comment sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffSide {
+    Left,
+    Right,
+}
+
+impl DiffSide {
+    /// GitHub's REST spelling.
+    fn api_value(self) -> &'static str {
+        match self {
+            DiffSide::Left => "LEFT",
+            DiffSide::Right => "RIGHT",
+        }
+    }
+}
+
+/// One image or video fetched for the pane, already checked to be media.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubMedia {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
 }
 
 /// The merge strategies a repository permits, plus the one Bridge preselects.
@@ -409,6 +456,11 @@ pub enum GithubAction {
     Merge {
         number: u64,
         strategy: MergeStrategy,
+        // Optional squash/merge commit text; `gh`'s defaults when absent.
+        subject: Option<String>,
+        body: Option<String>,
+        #[serde(rename = "deleteBranch")]
+        delete_branch: Option<bool>,
     },
     Review {
         number: u64,
@@ -444,6 +496,25 @@ pub enum GithubAction {
     Ready {
         number: u64,
     },
+    RestoreBranch {
+        number: u64,
+        branch: String,
+    },
+    /// Resolve or reopen one review conversation.
+    ResolveThread {
+        number: u64,
+        #[serde(rename = "threadId")]
+        thread_id: String,
+        resolved: bool,
+    },
+    /// Open a new review conversation on one line of the pull request's diff.
+    ReviewComment {
+        number: u64,
+        path: String,
+        line: u64,
+        side: DiffSide,
+        body: String,
+    },
 }
 
 impl GithubAction {
@@ -457,7 +528,10 @@ impl GithubAction {
             | GithubAction::Label { number, .. }
             | GithubAction::Comment { number, .. }
             | GithubAction::SetState { number, .. }
-            | GithubAction::Ready { number } => *number,
+            | GithubAction::Ready { number }
+            | GithubAction::RestoreBranch { number, .. }
+            | GithubAction::ResolveThread { number, .. }
+            | GithubAction::ReviewComment { number, .. } => *number,
         }
     }
 }
@@ -1344,6 +1418,67 @@ impl GithubSurface {
         Ok(threads)
     }
 
+    /// Fetch one image or video a GitHub body refers to.
+    ///
+    /// The webview loads public media itself; this is the path for what it
+    /// cannot: an attachment on a private repository, or a video GitHub serves
+    /// as `application/octet-stream`. See [`media_access`] for which hosts are
+    /// reachable and which ever see the token.
+    pub fn media(&self, workspace: &Path, url: &str) -> Result<GithubMedia, GithubSurfaceError> {
+        let refused = |detail: &str| GithubSurfaceError::CommandFailed {
+            operation: "load media",
+            stderr: detail.to_string(),
+        };
+        let binary = self.require_binary()?.to_path_buf();
+        let repository = self.resolve_repository(workspace)?;
+        let parsed = reqwest::Url::parse(url).map_err(|_| refused("That is not a media address."))?;
+        let Some(send_token) = media_access(&parsed, &repository.host) else {
+            return Err(refused("Only media hosted by GitHub is loaded here."));
+        };
+        let token = if send_token {
+            let mut command = Command::new(&binary);
+            command.current_dir(workspace).args(["auth", "token", "--hostname", &repository.host]);
+            run_with_timeout(command, self.command_timeout)?
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|token| !token.is_empty())
+        } else {
+            None
+        };
+        let repository_host = repository.host.clone();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(MEDIA_TIMEOUT)
+            // Every hop is held to the same host rule as the first address.
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() > 5 || media_access(attempt.url(), &repository_host).is_none() {
+                    attempt.stop()
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()
+            .map_err(|error| refused(&error.to_string()))?;
+        let mut request = client.get(parsed).header("User-Agent", "bridge-github-pane");
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("token {token}"));
+        }
+        let mut response = request.send().map_err(|error| refused(&format!("GitHub did not answer: {error}")))?;
+        if !response.status().is_success() {
+            return Err(refused(&format!("GitHub answered {} for that file.", response.status().as_u16())));
+        }
+        if response.content_length().is_some_and(|length| length > MEDIA_BYTE_LIMIT as u64) {
+            return Err(refused("That file is too large to show here."));
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(&mut response, MEDIA_BYTE_LIMIT as u64 + 1), &mut bytes)
+            .map_err(|error| refused(&error.to_string()))?;
+        if bytes.len() > MEDIA_BYTE_LIMIT {
+            return Err(refused("That file is too large to show here."));
+        }
+        let mime_type = sniff_media_type(&bytes).ok_or_else(|| refused("That file is not an image or a video."))?;
+        Ok(GithubMedia { mime_type: mime_type.into(), bytes })
+    }
+
     /// The merge strategies the repository permits. A separate `gh api` read so
     /// the merge confirmation can offer only the allowed choices; the reader
     /// never widens what `gh pr merge` will actually accept.
@@ -1415,20 +1550,35 @@ impl GithubSurface {
         let repository = self.resolve_repository_fresh(workspace)?;
         let selector = repository.selector();
         let result = match action {
-            GithubAction::Merge { number, strategy } => {
-                self.run_gh(
-                    workspace,
-                    "pr merge",
-                    &[
-                        "pr".into(),
-                        "merge".into(),
-                        number.to_string(),
-                        "--repo".into(),
-                        selector.clone(),
-                        strategy.flag().into(),
-                    ],
-                    false,
-                )?;
+            GithubAction::Merge {
+                number,
+                strategy,
+                subject,
+                body,
+                delete_branch,
+            } => {
+                // Optional commit text rides `--subject`/`--body`; the branch
+                // cleanup rides `--delete-branch` (issue #1028 slice 5).
+                let mut args = vec![
+                    "pr".into(),
+                    "merge".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    selector.clone(),
+                    strategy.flag().into(),
+                ];
+                if let Some(subject) = subject.as_deref().filter(|value| !value.is_empty()) {
+                    args.push("--subject".into());
+                    args.push(subject.into());
+                }
+                if let Some(body) = body.as_deref().filter(|value| !value.is_empty()) {
+                    args.push("--body".into());
+                    args.push(body.into());
+                }
+                if *delete_branch == Some(true) {
+                    args.push("--delete-branch".into());
+                }
+                self.run_gh(workspace, "pr merge", &args, false)?;
                 Ok(format!("Merge requested for PR #{number} ({}).", strategy_label(*strategy)))
             }
             GithubAction::Review {
@@ -1551,6 +1701,110 @@ impl GithubSurface {
                     false,
                 )?;
                 Ok(format!("Marked PR #{number} ready for review."))
+            }
+            GithubAction::RestoreBranch { number, branch } => {
+                // Recreate the head branch at its head SHA, the same call
+                // GitHub's own "Restore branch" button makes. Only the PR's own
+                // same-repository head branch may be recreated: the name comes
+                // from the client, so it is checked against what GitHub reports.
+                let head = self.pr_restorable_head(workspace, &selector, *number)?;
+                if head.is_cross_repository {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "restore branch",
+                        stderr: format!("PR #{number} comes from a fork; its branch lives in the fork."),
+                    });
+                }
+                if head.head_ref_name != *branch {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "restore branch",
+                        stderr: format!("{branch} is not the head branch of PR #{number}."),
+                    });
+                }
+                let head_sha = head.head_ref_oid;
+                self.run_gh(
+                    workspace,
+                    "restore branch",
+                    &[
+                        "api".into(),
+                        "--hostname".into(),
+                        repository.host.clone(),
+                        "--method".into(),
+                        "POST".into(),
+                        format!("repos/{}/{}/git/refs", repository.owner, repository.name),
+                        "-f".into(),
+                        format!("ref=refs/heads/{branch}"),
+                        "-f".into(),
+                        format!("sha={head_sha}"),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Restored branch {branch}."))
+            }
+            GithubAction::ResolveThread { number, thread_id, resolved } => {
+                // The id is a GraphQL node id handed back by the thread read.
+                // It travels as a variable, never spliced into the query, and
+                // anything that is not an opaque id is refused before `gh` runs.
+                if !valid_node_id(thread_id) {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "resolve conversation",
+                        stderr: "That conversation id is not one GitHub issued.".into(),
+                    });
+                }
+                let mutation = if *resolved { RESOLVE_THREAD_MUTATION } else { UNRESOLVE_THREAD_MUTATION };
+                self.run_gh(
+                    workspace,
+                    "resolve conversation",
+                    &[
+                        "api".into(),
+                        "graphql".into(),
+                        "--hostname".into(),
+                        repository.host.clone(),
+                        "-f".into(),
+                        format!("query={mutation}"),
+                        "-f".into(),
+                        format!("id={thread_id}"),
+                    ],
+                    false,
+                )?;
+                Ok(format!(
+                    "{} a conversation on PR #{number}.",
+                    if *resolved { "Resolved" } else { "Reopened" }
+                ))
+            }
+            GithubAction::ReviewComment { number, path, line, side, body } => {
+                if path.trim().is_empty() || *line == 0 {
+                    return Err(GithubSurfaceError::CommandFailed {
+                        operation: "review comment",
+                        stderr: "A review comment needs a file and a line.".into(),
+                    });
+                }
+                // A line comment is anchored to a commit; use the head GitHub
+                // reports right now so the comment lands on the current diff.
+                let head_sha = self.pr_head_sha(workspace, &selector, *number)?;
+                self.run_gh(
+                    workspace,
+                    "review comment",
+                    &[
+                        "api".into(),
+                        "--hostname".into(),
+                        repository.host.clone(),
+                        "--method".into(),
+                        "POST".into(),
+                        format!("repos/{}/{}/pulls/{number}/comments", repository.owner, repository.name),
+                        "-f".into(),
+                        format!("body={body}"),
+                        "-f".into(),
+                        format!("commit_id={head_sha}"),
+                        "-f".into(),
+                        format!("path={path}"),
+                        "-F".into(),
+                        format!("line={line}"),
+                        "-f".into(),
+                        format!("side={}", side.api_value()),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Commented on {path}:{line} in PR #{number}."))
             }
         };
         if result.is_ok() {
@@ -1866,6 +2120,33 @@ impl GithubSurface {
         Ok(head.head_ref_oid)
     }
 
+    fn pr_restorable_head(
+        &self,
+        workspace: &Path,
+        selector: &str,
+        number: u64,
+    ) -> Result<RawRestorableHead, GithubSurfaceError> {
+        let bytes = self.run_gh(
+            workspace,
+            "pr head branch",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                selector.into(),
+                "--json".into(),
+                PR_RESTORE_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let head: RawRestorableHead = parse_json("pull-request head", &bytes)?;
+        if head.head_ref_oid.is_empty() || head.head_ref_name.is_empty() {
+            return Err(malformed("pull-request head", "headRefName or headRefOid was empty"));
+        }
+        Ok(head)
+    }
+
     #[cfg(test)]
     pub(crate) fn discover_on_path(path: &Path) -> Self {
         let binary = which::which_in("gh", Some(std::ffi::OsString::from(path)), ".").ok();
@@ -1877,6 +2158,8 @@ impl GithubSurface {
 #[serde(rename_all = "camelCase")]
 struct RawActor {
     login: String,
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2120,6 +2403,15 @@ struct RawPullRequestHead {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawRestorableHead {
+    head_ref_name: String,
+    head_ref_oid: String,
+    #[serde(default)]
+    is_cross_repository: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawPullRequestCheck {
     name: String,
     state: String,
@@ -2161,6 +2453,12 @@ struct RawReviewThread {
     id: String,
     is_resolved: bool,
     is_outdated: bool,
+    #[serde(default)]
+    viewer_can_resolve: bool,
+    #[serde(default)]
+    viewer_can_unresolve: bool,
+    #[serde(default)]
+    viewer_can_reply: bool,
     path: String,
     line: Option<u64>,
     original_line: Option<u64>,
@@ -2179,6 +2477,8 @@ struct RawReviewComment {
     database_id: Option<u64>,
     author: Option<RawActor>,
     body: String,
+    #[serde(default)]
+    diff_hunk: Option<String>,
     created_at: String,
     url: String,
     reply_to: Option<RawReviewReply>,
@@ -2232,6 +2532,7 @@ impl TryFrom<RawPullRequestSummary> for PullRequestSummary {
             is_draft: raw.is_draft,
             author: raw.author.map(|author| GithubActor {
                 login: author.login,
+                avatar_url: author.avatar_url,
             }),
             head_branch: raw.head_ref_name,
             review_decision: parse_review_decision(&raw.review_decision)?,
@@ -2258,6 +2559,7 @@ impl TryFrom<RawPullRequestDetail> for PullRequestDetail {
                 is_draft: raw.is_draft,
                 author: raw.author.map(|author| GithubActor {
                     login: author.login,
+                    avatar_url: author.avatar_url,
                 }),
                 head_branch: raw.head_ref_name,
                 review_decision: parse_review_decision(&raw.review_decision)?,
@@ -2284,7 +2586,7 @@ impl TryFrom<RawPullRequestDetail> for PullRequestDetail {
 
 impl From<RawActor> for GithubActor {
     fn from(raw: RawActor) -> Self {
-        Self { login: raw.login }
+        Self { login: raw.login, avatar_url: raw.avatar_url }
     }
 }
 
@@ -2304,7 +2606,7 @@ impl From<RawPullRequestCommit> for PullRequestCommit {
                 .into_iter()
                 .filter_map(|author| {
                     let login = if author.login.is_empty() { author.name } else { author.login };
-                    (!login.is_empty()).then_some(GithubActor { login })
+                    (!login.is_empty()).then_some(GithubActor { login, avatar_url: None })
                 })
                 .collect(),
         }
@@ -2419,6 +2721,12 @@ impl TryFrom<RawReviewThread> for ReviewThread {
     type Error = GithubSurfaceError;
 
     fn try_from(raw: RawReviewThread) -> Result<Self, Self::Error> {
+        let diff_hunk = raw
+            .comments
+            .nodes
+            .first()
+            .and_then(|comment| comment.diff_hunk.clone())
+            .filter(|hunk| !hunk.trim().is_empty());
         let comments = raw
             .comments
             .nodes
@@ -2428,6 +2736,7 @@ impl TryFrom<RawReviewThread> for ReviewThread {
                 database_id: comment.database_id,
                 author: comment.author.map(|author| GithubActor {
                     login: author.login,
+                    avatar_url: author.avatar_url,
                 }),
                 body: comment.body,
                 created_at: comment.created_at,
@@ -2442,9 +2751,82 @@ impl TryFrom<RawReviewThread> for ReviewThread {
             path: raw.path,
             line: raw.line,
             original_line: raw.original_line,
+            diff_hunk,
+            viewer_can_resolve: raw.viewer_can_resolve,
+            viewer_can_unresolve: raw.viewer_can_unresolve,
+            viewer_can_reply: raw.viewer_can_reply,
             comments,
         })
     }
+}
+
+/// A GraphQL node id: opaque, but only ever base64-ish characters.
+fn valid_node_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/'))
+}
+
+/// Whether the pane may pull `url` through the backend, and whether the
+/// signed-in token may ride along.
+///
+/// Only https on a GitHub-owned host is fetched at all, so the method is not a
+/// general proxy. The token is narrower still: it goes to the repository's own
+/// host and to `raw.githubusercontent.com`, never to a storage or CDN host,
+/// which are reached through signed redirects instead.
+fn media_access(url: &reqwest::Url, repository_host: &str) -> Option<bool> {
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    if url.port().is_some_and(|port| port != 443) {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let repository_host = repository_host.to_ascii_lowercase();
+    if host == repository_host {
+        return Some(true);
+    }
+    if repository_host == "github.com" && host == "raw.githubusercontent.com" {
+        return Some(true);
+    }
+    if host == "github.com" || host.ends_with(".githubusercontent.com") || host.ends_with(".githubassets.com") {
+        return Some(false);
+    }
+    // Where github.com redirects a public attachment: GitHub's own storage
+    // buckets, named `github-production-…`.
+    if host.starts_with("github-production-") && host.ends_with(".s3.amazonaws.com") {
+        return Some(false);
+    }
+    None
+}
+
+/// The media type of `bytes`, from its own leading bytes rather than a header
+/// or a file name. `None` means "not an image or video the pane shows", which
+/// is what keeps an HTML or SVG payload out of a blob URL.
+pub fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        return Some("video/webm");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return Some(match &bytes[8..12] {
+            b"avif" | b"avis" => "image/avif",
+            b"qt  " => "video/quicktime",
+            _ => "video/mp4",
+        });
+    }
+    None
 }
 
 fn parse_json<T: serde::de::DeserializeOwned>(
@@ -3738,7 +4120,7 @@ mod tests {
         let complete_old_read = defer_resolution_completion(&surface, repository.path());
         git(repository.path(), &["remote", "set-url", "origin", "https://github.com/fixture/other.git"]);
 
-        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash }).unwrap();
+        surface.act(repository.path(), &GithubAction::Merge { number: 103, strategy: MergeStrategy::Squash, subject: None, body: None, delete_branch: None }).unwrap();
         complete_old_read();
         assert_eq!(surface.resolve_repository(repository.path()).unwrap(), expected("fixture", "other"));
         assert!(invocations(&fake).contains("pr merge 103 --repo fixture/other --squash"));
@@ -3795,7 +4177,7 @@ mod tests {
             let message = surface
                 .act(
                     repository.path(),
-                    &GithubAction::Merge { number: 103, strategy },
+                    &GithubAction::Merge { number: 103, strategy, subject: None, body: None, delete_branch: None },
                 )
                 .unwrap();
             assert!(message.contains("Merge requested for PR #103"));
@@ -3819,6 +4201,9 @@ mod tests {
                 &GithubAction::Merge {
                     number: 103,
                     strategy: MergeStrategy::Squash,
+                    subject: None,
+                    body: None,
+                    delete_branch: None,
                 },
             )
             .unwrap_err();
@@ -4107,6 +4492,171 @@ mod tests {
         assert_eq!(invocation_count(&fake, "pr view"), 2);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);
+    }
+
+    #[test]
+    fn resolving_a_conversation_sends_the_thread_id_as_a_graphql_variable() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.pr_review_threads(repository.path(), 103).unwrap();
+
+        let resolved = surface
+            .act(
+                repository.path(),
+                &GithubAction::ResolveThread { number: 103, thread_id: "PRRT_kwDOabc-123".into(), resolved: true },
+            )
+            .unwrap();
+        assert_eq!(resolved, "Resolved a conversation on PR #103.");
+        let reopened = surface
+            .act(
+                repository.path(),
+                &GithubAction::ResolveThread { number: 103, thread_id: "PRRT_kwDOabc-123".into(), resolved: false },
+            )
+            .unwrap();
+        assert_eq!(reopened, "Reopened a conversation on PR #103.");
+        let log = invocations(&fake);
+        assert!(log.contains("resolveReviewThread(input:{threadId:$id}){thread{id,isResolved}}} -f id=PRRT_kwDOabc-123"), "{log}");
+        assert!(log.contains("unresolveReviewThread(input:{threadId:$id}){thread{id,isResolved}}} -f id=PRRT_kwDOabc-123"), "{log}");
+
+        // The write dropped the cached threads, so the next read asks again.
+        let before = invocation_count(&fake, "api graphql");
+        surface.pr_review_threads(repository.path(), 103).unwrap();
+        assert_eq!(invocation_count(&fake, "api graphql"), before + 1);
+    }
+
+    #[test]
+    fn a_forged_conversation_id_never_reaches_gh() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        for id in ["", "x\"}){evil", "id with space", "a;b"] {
+            let refused = surface
+                .act(
+                    repository.path(),
+                    &GithubAction::ResolveThread { number: 103, thread_id: id.into(), resolved: true },
+                )
+                .unwrap_err();
+            assert!(refused.to_string().contains("not one GitHub issued"), "{refused}");
+        }
+        assert_eq!(invocation_count(&fake, "api graphql"), 0);
+    }
+
+    #[test]
+    fn a_line_comment_is_anchored_to_the_current_head_commit() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let message = surface
+            .act(
+                repository.path(),
+                &GithubAction::ReviewComment {
+                    number: 103,
+                    path: "src/lib.rs".into(),
+                    line: 42,
+                    side: DiffSide::Right,
+                    body: "why this?".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(message, "Commented on src/lib.rs:42 in PR #103.");
+        let log = invocations(&fake);
+        assert!(
+            log.contains("api --hostname github.com --method POST repos/fixture/project/pulls/103/comments -f body=why this? -f commit_id=current-head-sha -f path=src/lib.rs -F line=42 -f side=RIGHT"),
+            "{log}"
+        );
+
+        let refused = surface
+            .act(
+                repository.path(),
+                &GithubAction::ReviewComment { number: 103, path: " ".into(), line: 0, side: DiffSide::Left, body: "x".into() },
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("needs a file and a line"), "{refused}");
+    }
+
+    #[test]
+    fn review_threads_carry_the_hunk_avatar_and_viewer_permissions() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let threads = surface.pr_review_threads(repository.path(), 103).unwrap();
+        let thread = &threads[0];
+        assert!(thread.viewer_can_resolve && thread.viewer_can_reply);
+        assert!(!thread.viewer_can_unresolve);
+        assert_eq!(thread.diff_hunk.as_deref(), Some("@@ -1,2 +1,3 @@\n fn main() {\n+    run();"));
+        assert_eq!(
+            thread.comments[0].author.as_ref().and_then(|author| author.avatar_url.as_deref()),
+            Some("https://avatars.githubusercontent.com/u/1?v=4")
+        );
+    }
+
+    #[test]
+    fn media_is_fetched_only_from_github_and_the_token_stays_on_the_repository_host() {
+        let access = |url: &str, host: &str| media_access(&reqwest::Url::parse(url).unwrap(), host);
+        // The repository's own host and raw files may carry the token.
+        assert_eq!(access("https://github.com/user-attachments/assets/abc", "github.com"), Some(true));
+        assert_eq!(access("https://raw.githubusercontent.com/o/r/main/a.png", "github.com"), Some(true));
+        assert_eq!(access("https://github.example.test/o/r/assets/1/abc", "github.example.test"), Some(true));
+        // Storage and CDN hosts are reachable, without the token.
+        assert_eq!(access("https://private-user-images.githubusercontent.com/1/a.png?jwt=x", "github.com"), Some(false));
+        assert_eq!(access("https://camo.githubusercontent.com/abc", "github.com"), Some(false));
+        assert_eq!(access("https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.mp4?X-Amz-Signature=x", "github.com"), Some(false));
+        assert_eq!(access("https://raw.githubusercontent.com/o/r/main/a.png", "github.example.test"), Some(false));
+        // Everything else is not fetched at all.
+        for url in [
+            "http://github.com/user-attachments/assets/abc",
+            "https://example.com/a.png",
+            "https://githubusercontent.com.evil.test/a.png",
+            "https://evilgithubusercontent.com/a.png",
+            "https://someone-else.s3.amazonaws.com/a.png",
+            "https://github-production-x.s3.amazonaws.com.evil.test/a.png",
+            "https://user:pw@github.com/a.png",
+            "https://github.com:8443/a.png",
+            "https://127.0.0.1/a.png",
+        ] {
+            assert_eq!(access(url, "github.com"), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn media_type_comes_from_the_bytes_and_refuses_markup() {
+        assert_eq!(sniff_media_type(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+        assert_eq!(sniff_media_type(b"\xff\xd8\xff\xe0"), Some("image/jpeg"));
+        assert_eq!(sniff_media_type(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(sniff_media_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(sniff_media_type(b"\0\0\0\x20ftypisom...."), Some("video/mp4"));
+        assert_eq!(sniff_media_type(b"\0\0\0\x14ftypqt  ...."), Some("video/quicktime"));
+        assert_eq!(sniff_media_type(b"\x1a\x45\xdf\xa3...."), Some("video/webm"));
+        assert_eq!(sniff_media_type(b"<svg xmlns='http://www.w3.org/2000/svg'><script/></svg>"), None);
+        assert_eq!(sniff_media_type(b"<!doctype html><script>alert(1)</script>"), None);
+        assert_eq!(sniff_media_type(b""), None);
+    }
+
+    #[test]
+    fn restore_branch_only_recreates_the_pull_requests_own_head_branch() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let refused = surface
+            .act(
+                repository.path(),
+                &GithubAction::RestoreBranch { number: 103, branch: "main".into() },
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("not the head branch of PR #103"), "{refused}");
+        assert!(!invocations(&fake).contains("git/refs"), "a mismatched name never reaches the API");
+
+        let message = surface
+            .act(
+                repository.path(),
+                &GithubAction::RestoreBranch { number: 103, branch: "fix/review".into() },
+            )
+            .unwrap();
+        assert_eq!(message, "Restored branch fix/review.");
+        let log = invocations(&fake);
+        assert!(log.contains("pr view 103 --repo fixture/project --json headRefName,headRefOid,isCrossRepository"));
+        assert!(log.contains("repos/fixture/project/git/refs -f ref=refs/heads/fix/review -f sha=current-head-sha"), "{log}");
     }
 
     #[test]

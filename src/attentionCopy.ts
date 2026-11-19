@@ -34,9 +34,16 @@ export function attentionCopy(item: Pick<AttentionItem, "kind" | "title" | "body
   if (item.kind === "posted") return { headline: item.title, detail: item.body ?? (who ? `${who} asks for you` : ""), tone };
   // An escalation's body carries how much is waiting, which only core knows.
   if (!who || item.kind === "escalation") return { headline: item.title, detail: item.body ?? "", tone };
+  // A question carries what is being asked, which only core read; keep it.
+  if (item.kind === "needsYou" && isQuestionCopy(item.title)) return { headline: item.title, detail: item.body ?? `${who} is waiting for your answer`, tone };
   if (item.kind === "needsYou") return { headline: "Bridge needs you", detail: `${who} is waiting for your input`, tone };
   if (item.kind === "failed") return { headline: "Turn failed", detail: `${who} ended this turn with an error`, tone };
   return { headline: "Turn completed", detail: `${who} finished its turn`, tone };
+}
+
+/** Core titles an agent's question "<Harness> has a question". */
+export function isQuestionCopy(title: string | null | undefined): boolean {
+  return typeof title === "string" && / has a question$/.test(title);
 }
 
 export function attentionToastKey(item: Pick<AttentionItem, "sequence">): string {

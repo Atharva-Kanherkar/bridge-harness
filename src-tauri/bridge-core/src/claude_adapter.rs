@@ -37,6 +37,11 @@ pub fn register_node_compile_cache_root(root: impl Into<PathBuf>) {
 /// Referenced by the catalog in `adapters.rs` and by the runtime fallback below.
 pub const DEFAULT_MODEL: &str = "sonnet";
 
+/// The effort level Bridge offers for Claude Code's ultracode.
+pub const ULTRACODE_EFFORT: &str = "ultracode";
+/// The speed tier id for Claude Code's fast mode.
+pub const FAST_MODE_SPEED: &str = "fast";
+
 pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
     let sidecar = sidecar_entry()?;
@@ -88,6 +93,23 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
                 }).collect::<Vec<_>>())
                 .unwrap_or_default();
             if model.get("supportsEffort").and_then(Value::as_bool) == Some(false) { supported_effort_levels.clear(); }
+            // Claude Code runs ultracode (standing workflow orchestration) on
+            // exactly the models that take `xhigh` effort, and offers it as an
+            // effort level (`/effort ultracode`). The sidecar launches it as the
+            // `ultracode` setting.
+            if supported_effort_levels.iter().any(|level| level == "xhigh") {
+                supported_effort_levels.push(ULTRACODE_EFFORT.to_owned());
+            }
+            // Fast mode is a speed, not an effort: same model, faster output.
+            let speed_tiers = if model.get("supportsFastMode").and_then(Value::as_bool) == Some(true) {
+                vec![crate::model::SpeedTier {
+                    id: FAST_MODE_SPEED.to_owned(),
+                    label: "Fast".to_owned(),
+                    description: Some("Faster output on the same model, billed at a higher rate".to_owned()),
+                }]
+            } else {
+                Vec::new()
+            };
             // "default" is the CLI's alias for whatever it currently prefers,
             // not a model; Bridge tracks its own per-tier defaults instead.
             (!id.is_empty() && !label.is_empty() && id != "default").then(|| crate::adapters::DiscoveredModel {
@@ -97,6 +119,7 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
                 is_default: alias == "default",
                 // Claude treats a missing ladder as "no knob", not "unknown".
                 supported_effort_levels: Some(supported_effort_levels),
+                speed_tiers,
             })
         }).collect::<Vec<_>>();
         if !found.is_empty() { return Ok(found); }
@@ -173,6 +196,14 @@ fn launch_discovery(
     }
 }
 
+/// A briefing launch with no connector to discover or hand over: a toolless run
+/// or a worktree workflow reaches none, and a launch with native connectors
+/// (a direct call, the Outgoing resolver) has Claude Code load them itself with
+/// the account's own sign-in.
+fn skips_connector_discovery(policy: &crate::briefing_policy::BriefingRuntimePolicy) -> bool {
+    policy.toolless() || policy.workflow_worktree() || policy.native_connectors()
+}
+
 fn sdk_configuration_for_launch(
     discovery: crate::marketplace::ClaudeDiscovery,
     discover: impl FnOnce(crate::marketplace::ClaudeDiscovery) -> crate::marketplace::ClaudeSdkConfiguration,
@@ -195,6 +226,7 @@ fn launch(
         cwd,
         model,
         effort,
+        speed,
         instructions,
         write_mode,
         read_only_sandbox,
@@ -259,6 +291,15 @@ fn launch(
                     "forbiddenWords": crate::briefing_policy::BriefingRuntimePolicy::action_forbidden_words(),
                 })),
                 "exactAction": policy.exact_action_config(),
+                // No model turn: the sidecar honours one `mcp_call` frame for
+                // the exact action, and Claude Code loads the connector itself.
+                "directCall": policy.direct_call(),
+                // Claude Code loads claude.ai connectors itself, signed in;
+                // the explicit copies below would come up needing auth.
+                "nativeConnectors": policy.native_connectors(),
+                // A personal-app connection runtime: app control on this one
+                // server, no model turn, no tools. Absent otherwise.
+                "appRuntime": policy.app_runtime().map(|server| json!({"server": server})),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
                 // No tool definitions and no coding preset. Present only for a
@@ -277,7 +318,7 @@ fn launch(
         launch_discovery(
             briefing_config.is_some() || read_only_sandbox.is_some(),
             briefing_config.is_some(),
-            briefing.is_some_and(|policy| policy.toolless() || policy.workflow_worktree()),
+            briefing.is_some_and(skips_connector_discovery),
             read_only_sandbox.is_some_and(|sandbox| sandbox.network_allowed()),
         ),
         |discovery| crate::marketplace::cached_claude_sdk_configuration(discovery),
@@ -343,11 +384,17 @@ fn launch(
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,
+        // A chat the person is waiting on reports where each turn spent its
+        // time (`latency.harness`). Background runs keep their exact frames.
+        "timing": interactive && read_only_sandbox.is_none() && briefing_config.is_none(),
         // The routed reasoning effort. The Claude Agent SDK takes this natively
         // (Options.effort), so low/medium are honoured instead of being silently
         // dropped the way the old thinking-budget mapping dropped them. The
         // sidecar sanitizes it to the levels the SDK accepts.
         "effort": effort.map(str::trim).filter(|value| !value.is_empty()),
+        // Fast mode, already checked against the model's catalog row. The
+        // sidecar opts in through the SDK's flag settings.
+        "speed": speed.map(str::trim).filter(|value| !value.is_empty()),
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
     binary::hydrate_command_path(&mut command);
@@ -894,6 +941,42 @@ fn approval_response(request_id: Value, decision: &str) -> Value {
     })
 }
 
+/// The `control_response` that answers an `AskUserQuestion` prompt.
+///
+/// `reply` carries `answers` (question text → chosen label, several joined
+/// with ", " the way Claude Code joins a multi-select) and optional
+/// `annotations`. The sidecar folds both into the tool's `updatedInput`, which
+/// is how the SDK expects a host to answer this tool; a bare allow would run
+/// it with no answers at all.
+fn question_response(request_id: Value, reply: &Value) -> Value {
+    let mut response = json!({"behavior": "allow", "decision": "accept"});
+    response["answers"] = reply.get("answers").cloned().unwrap_or_else(|| json!({}));
+    if let Some(annotations) = reply.get("annotations").filter(|value| value.as_object().is_some_and(|map| !map.is_empty())) {
+        response["annotations"] = annotations.clone();
+    }
+    json!({
+        "type": "control_response",
+        "response": {"subtype": "success", "request_id": request_id, "response": response}
+    })
+}
+
+/// A declined `AskUserQuestion`: the tool is denied with a message Claude
+/// reads as the person choosing not to answer, not as silence.
+fn question_decline(request_id: Value) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "behavior": "deny",
+                "decision": "decline",
+                "message": "The user declined to answer these questions. Ask how they want to proceed instead of assuming defaults."
+            }
+        }
+    })
+}
+
 /// The `/compact` line a harness reads off its input stream.
 ///
 /// A blank focus is dropped rather than sent as a trailing space, so a bare
@@ -920,6 +1003,14 @@ impl AdapterRuntime for ClaudeRuntime {
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text, TurnContext::default())
+    }
+    /// See `sidecar/claude-agent/mcp-call.mjs`: the sidecar sends the SDK's
+    /// `mcp_call` control request, with the briefing gate applied.
+    fn call_tool(&self, id: &str, tool: &str, arguments: &Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &mcp_call_frame(id, tool, arguments))
+    }
+    fn app_control(&self, id: &str, request: &Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &serde_json::json!({"type": "app_control", "id": id, "request": request}))
     }
     /// The streaming-input frame is an array of content blocks, so Bridge's
     /// trusted context rides as its own blocks ahead of the user's text —
@@ -974,6 +1065,12 @@ impl AdapterRuntime for ClaudeRuntime {
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         ClaudeRuntime::respond(self, request_id, decision)
+    }
+    fn answer_question(&self, request_id: Value, answers: Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &question_response(request_id, &answers))
+    }
+    fn reject_question(&self, request_id: Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &question_decline(request_id))
     }
     fn failure_context(&mut self) -> Option<String> {
         crate::adapters::process_failure_context(&mut self.child, &self.stderr_tail)
@@ -1140,6 +1237,43 @@ fn sdk_version_from_manifest(manifest: &Path) -> Option<String> {
     (!version.is_empty()).then(|| version.to_owned())
 }
 
+/// The first Agent SDK whose `mcp_call` takes `check_permissions` (Claude Code
+/// runs the briefing gate on the call, as for a model's own call) and
+/// `result_not_for_model`. 0.3.284 has `mcp_call` without either.
+const DIRECT_TOOL_CALL_MIN_SDK: (u64, u64, u64) = (0, 3, 322);
+
+/// Whether the installed SDK can run an approved tool call with no model turn.
+/// Decided before anything is sent; an older payload keeps the hidden turn.
+pub(crate) fn supports_direct_tool_calls() -> bool {
+    sdk_supports_direct_tool_calls(installed_sdk_version().as_deref())
+}
+
+fn sdk_supports_direct_tool_calls(version: Option<&str>) -> bool {
+    version
+        .and_then(release_version)
+        .is_some_and(|version| version >= DIRECT_TOOL_CALL_MIN_SDK)
+}
+
+/// `major.minor.patch`, ignoring build metadata. A pre-release is refused: it
+/// may predate the feature its release number promises.
+fn release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version.trim().split('+').next()?;
+    if version.contains('-') {
+        return None;
+    }
+    let mut parts = version.split('.');
+    let parsed = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(parsed)
+}
+
+fn mcp_call_frame(id: &str, tool: &str, arguments: &Value) -> Value {
+    json!({"type": "mcp_call", "id": id, "tool": tool, "arguments": arguments})
+}
+
 /// The managed Claude SDK module to import, if a managed payload is installed.
 ///
 /// Derived from the payload's receipt entrypoint — the platform binary — by
@@ -1233,6 +1367,25 @@ mod tests {
                 "the sidecar needs the duration, not only the behavior"
             );
         }
+    }
+
+    #[test]
+    fn a_question_answer_rides_the_control_channel_as_answers() {
+        let frame = question_response(
+            json!("root-permission-3"),
+            &json!({"answers": {"Which database?": "Postgres"}, "annotations": {"Which database?": {"preview": "pg"}}}),
+        );
+        assert_eq!(frame["type"], "control_response");
+        assert_eq!(frame["response"]["request_id"], "root-permission-3");
+        assert_eq!(frame["response"]["response"]["behavior"], "allow");
+        assert_eq!(frame["response"]["response"]["answers"]["Which database?"], "Postgres");
+        assert_eq!(frame["response"]["response"]["annotations"]["Which database?"]["preview"], "pg");
+        let bare = question_response(json!("r"), &json!({"answers": {"Q?": "A"}, "annotations": {}}));
+        assert!(bare["response"]["response"].get("annotations").is_none());
+
+        let declined = question_decline(json!("root-permission-3"));
+        assert_eq!(declined["response"]["response"]["behavior"], "deny");
+        assert!(declined["response"]["response"]["message"].as_str().unwrap().contains("declined"));
     }
 
     #[test]
@@ -1473,6 +1626,41 @@ mod tests {
     }
 
     #[test]
+    fn direct_tool_calls_need_the_sdk_whose_mcp_call_runs_the_gate() {
+        for (version, supported) in [
+            (Some("0.3.322"), true),
+            (Some("0.3.400"), true),
+            (Some("0.4.0"), true),
+            (Some("1.0.0+build.7"), true),
+            (Some(" 0.3.322 "), true),
+            (Some("0.3.321"), false),
+            (Some("0.3.284"), false),
+            (Some("0.3.322-beta.1"), false),
+            (Some("0.3"), false),
+            (Some("0.3.322.1"), false),
+            (Some("latest"), false),
+            (Some(""), false),
+            (None, false),
+        ] {
+            assert_eq!(sdk_supports_direct_tool_calls(version), supported, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn a_direct_call_is_one_mcp_call_frame_with_its_id() {
+        let arguments = json!({"channel_id": "C1", "message": "hi"});
+        assert_eq!(
+            mcp_call_frame("call-1", "mcp__claude_ai_Slack__slack_send_message", &arguments),
+            json!({
+                "type": "mcp_call",
+                "id": "call-1",
+                "tool": "mcp__claude_ai_Slack__slack_send_message",
+                "arguments": {"channel_id": "C1", "message": "hi"}
+            })
+        );
+    }
+
+    #[test]
     fn interrupt_control_request_is_structured() {
         let value = json!({
             "type": "control_request",
@@ -1492,6 +1680,7 @@ mod tests {
             cwd: cwd.to_str().unwrap(),
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1571,6 +1760,7 @@ mod tests {
             cwd,
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1590,6 +1780,7 @@ mod tests {
             cwd,
             model: None,
             effort: None,
+            speed: None,
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
@@ -1765,6 +1956,32 @@ mod briefing_boundary_tests {
     }
 
     #[test]
+    fn a_direct_call_skips_discovery_but_the_same_send_as_a_turn_keeps_it() {
+        let limits = wire::WorkBriefLimits {
+            max_wall_seconds: 60, max_turns: 2, max_tool_calls: 2,
+            max_output_tokens: None, cost_ceiling_microusd: None,
+        };
+        let turn = BriefingRuntimePolicy::compile_exact_action(
+            "claude.ai Slack".into(),
+            "slack_send_message",
+            serde_json::json!({"channel_id": "C1", "message": "hi"}),
+            limits,
+        )
+        .unwrap();
+        let direct = turn.clone().into_direct_call().unwrap();
+        assert!(!super::skips_connector_discovery(&turn));
+        assert!(super::skips_connector_discovery(&direct));
+        assert_eq!(
+            super::launch_discovery(true, true, super::skips_connector_discovery(&direct), false),
+            crate::marketplace::ClaudeDiscovery { plugins: false, connectors: false }
+        );
+        // The Outgoing resolver is a read-only turn with native connectors.
+        let read = BriefingRuntimePolicy::compile_scoped(vec!["claude.ai Slack".into()], limits).unwrap();
+        assert!(!super::skips_connector_discovery(&read));
+        assert!(super::skips_connector_discovery(&read.with_native_connectors()));
+    }
+
+    #[test]
     fn a_toolless_or_worktree_launch_skips_discovery_but_other_launches_keep_it() {
         let ordinary = policy();
         let toolless = BriefingRuntimePolicy::compile_toolless(wire::WorkBriefLimits {
@@ -1873,9 +2090,26 @@ mod catalogue_tests {
         ]);
         for model in &models[1..] {
             assert!(!model.is_default);
-            assert_eq!(model.supported_effort_levels.clone().unwrap(), ["low", "medium", "high", "xhigh", "max"]);
+            // Every xhigh-capable model also runs ultracode.
+            assert_eq!(model.supported_effort_levels.clone().unwrap(), ["low", "medium", "high", "xhigh", "max", ULTRACODE_EFFORT]);
         }
     }
+    #[test]
+    fn fast_mode_and_ultracode_come_from_the_live_catalog() {
+        // Shapes from the 0.3.322 catalog: fast mode on Opus, not on Sonnet;
+        // ultracode wherever `xhigh` is.
+        let models = parse_discovered_models(&serde_json::from_str::<Value>(r#"{"models":[
+            {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus","description":"Opus 5.5 · Best","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"],"supportsFastMode":true},
+            {"value":"sonnet","resolvedModel":"claude-sonnet-5-5","displayName":"Sonnet","description":"Sonnet 5.5 · Fast","supportsEffort":true,"supportedEffortLevels":["low","high","max"]}
+        ]}"#).unwrap().to_string()).unwrap();
+        let opus = models.iter().find(|model| model.id == "claude-opus-5-5").unwrap();
+        assert_eq!(opus.speed_tiers.iter().map(|tier| tier.id.as_str()).collect::<Vec<_>>(), [FAST_MODE_SPEED]);
+        assert_eq!(opus.supported_effort_levels.as_ref().unwrap().last().map(String::as_str), Some(ULTRACODE_EFFORT));
+        let sonnet = models.iter().find(|model| model.id == "claude-sonnet-5-5").unwrap();
+        assert!(sonnet.speed_tiers.is_empty());
+        assert!(!sonnet.supported_effort_levels.as_ref().unwrap().iter().any(|level| level == ULTRACODE_EFFORT));
+    }
+
     #[test]
     fn ignores_malformed_rows_and_unresolved_default() {
         let models = parse_discovered_models("{\"models\":[{}, {\"value\":\"default\"}, {\"value\":\"sonnet\",\"displayName\":\"Sonnet\"}]}" ).unwrap();

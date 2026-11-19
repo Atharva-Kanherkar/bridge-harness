@@ -18,5 +18,9 @@
   { "id": "pr-close-denied", "action": { "kind": "setState", "target": "pullRequest", "number": 341, "operation": "close" }, "confirmed": false, "expectExecuted": false },
   { "id": "issue-reopen-approved", "action": { "kind": "setState", "target": "issue", "number": 17, "operation": "reopen" }, "confirmed": true, "expectExecuted": true },
   { "id": "ready-approved", "action": { "kind": "ready", "number": 341 }, "confirmed": true, "expectExecuted": true },
-  { "id": "ready-denied", "action": { "kind": "ready", "number": 341 }, "confirmed": false, "expectExecuted": false }
+  { "id": "ready-denied", "action": { "kind": "ready", "number": 341 }, "confirmed": false, "expectExecuted": false },
+  { "id": "resolve-thread-approved", "action": { "kind": "resolveThread", "number": 341, "threadId": "PRRT_kwDOabc", "resolved": true }, "confirmed": true, "expectExecuted": true },
+  { "id": "resolve-thread-denied", "action": { "kind": "resolveThread", "number": 341, "threadId": "PRRT_kwDOabc", "resolved": false }, "confirmed": false, "expectExecuted": false },
+  { "id": "review-comment-approved", "action": { "kind": "reviewComment", "number": 341, "path": "src/lib.rs", "line": 12, "side": "right", "body": "why" }, "confirmed": true, "expectExecuted": true },
+  { "id": "review-comment-denied", "action": { "kind": "reviewComment", "number": 341, "path": "src/lib.rs", "line": 12, "side": "left", "body": "why" }, "confirmed": false, "expectExecuted": false }
 ]

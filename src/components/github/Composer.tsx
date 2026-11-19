@@ -1,0 +1,112 @@
+import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { LoaderCircle, Send } from "lucide-react";
+import { modKey } from "@/lib/platform";
+import { cn } from "@/lib/utils";
+import { Kbd } from "@/components/ui/kbd";
+
+/** A write that reports back: `undefined` when GitHub took it, otherwise the
+ *  reason it did not, verbatim. */
+export type InlineWrite = (body: string) => Promise<string | undefined>;
+
+/**
+ * The pane's one text composer: a conversation comment, a reply inside a
+ * review thread, a new comment on a diff line.
+ *
+ * Its button is the confirmation. A comment is something the reader typed and
+ * then chose to send, the button names what it does, and it can be edited or
+ * deleted on GitHub afterwards, so it does not get a second sheet the way a
+ * merge or a close does. A refused write keeps the draft and says why.
+ */
+export function Composer({ label, placeholder, submitLabel, onSubmit, onCancel, collapsed = false, autoFocus = false, disabled = false, className }: {
+  /** The accessible name of the text field. */
+  label: string;
+  placeholder: string;
+  submitLabel: string;
+  onSubmit: InlineWrite;
+  /** Present on a composer that can be dismissed (a diff line's). */
+  onCancel?: () => void;
+  /** Start as one quiet line that opens on focus (a thread's reply box). */
+  collapsed?: boolean;
+  autoFocus?: boolean;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const reduced = useReducedMotion();
+  const [body, setBody] = useState("");
+  const [open, setOpen] = useState(!collapsed);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const field = useRef<HTMLTextAreaElement>(null);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => { if (open && (autoFocus || collapsed)) field.current?.focus(); }, [open, autoFocus, collapsed]);
+
+  const ready = body.trim().length > 0 && !busy && !disabled;
+  const send = async () => {
+    if (!ready) return;
+    setBusy(true); setError(undefined);
+    const failure = await onSubmit(body.trim());
+    if (!alive.current) return;
+    setBusy(false);
+    if (failure !== undefined) { setError(failure); return; }
+    setBody("");
+    if (collapsed) setOpen(false);
+    onCancel?.();
+  };
+  const dismiss = () => {
+    setError(undefined);
+    if (collapsed) { setOpen(false); setBody(""); }
+    onCancel?.();
+  };
+
+  if (!open) return <button
+    type="button"
+    disabled={disabled}
+    onClick={() => setOpen(true)}
+    className={cn("flex h-8 w-full items-center rounded-md border border-border bg-background/60 px-2.5 text-left text-[12px] text-muted-foreground transition-colors hover:border-foreground/25 hover:bg-background disabled:opacity-50", className)}
+  >{placeholder}</button>;
+
+  return <motion.div
+    initial={reduced || !collapsed ? false : { opacity: 0, y: -4 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+    className={cn("rounded-lg border border-border bg-card p-2 transition-[border-color,box-shadow] focus-within:border-foreground/30 focus-within:shadow-xs", className)}
+  >
+    <textarea
+      ref={field}
+      value={body}
+      disabled={busy}
+      onChange={event => setBody(event.target.value)}
+      onKeyDown={event => {
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.stopPropagation(); void send(); }
+        else if (event.key === "Escape" && (collapsed || onCancel)) { event.preventDefault(); event.stopPropagation(); dismiss(); }
+      }}
+      aria-label={label}
+      placeholder={placeholder}
+      className="min-h-16 w-full resize-y bg-transparent text-[12.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
+    />
+    <AnimatePresence initial={false}>
+      {error !== undefined && <motion.p
+        role="alert"
+        initial={reduced ? false : { opacity: 0, height: 0 }}
+        animate={{ opacity: 1, height: "auto" }}
+        exit={reduced ? undefined : { opacity: 0, height: 0 }}
+        className="overflow-hidden rounded-md bg-destructive/10 px-2 py-1 text-[11.5px] text-destructive"
+      >{error}</motion.p>}
+    </AnimatePresence>
+    <div className="mt-1 flex items-center justify-end gap-1.5">
+      <span className="mr-auto flex items-center gap-1 text-[11px] text-muted-foreground">Markdown · <Kbd>{modKey("↵")}</Kbd></span>
+      {(collapsed || onCancel) && <button type="button" disabled={busy} onClick={dismiss} className="inline-flex min-h-7 items-center rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">Cancel</button>}
+      <button
+        type="button"
+        disabled={!ready}
+        onClick={() => void send()}
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-[12px] font-medium text-primary-foreground shadow-xs transition-[background-color,transform,opacity] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+      >
+        {busy ? <LoaderCircle size={11} className="animate-spin" aria-hidden="true" /> : <Send size={11} aria-hidden="true" />}
+        {submitLabel}
+      </button>
+    </div>
+  </motion.div>;
+}

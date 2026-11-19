@@ -6,27 +6,27 @@
 
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
-import { applyAnswer, pinsOf, useApps } from "./store";
-import type { AppId } from "./registry";
+import { applyAnswer, pinsOf, useApps, usePersonalApps } from "./store";
+import { coreIdOf, type AppKey } from "./registry";
 
 export { importLegacyPins, MAX_PINS, parsePins, PINS_KEY } from "./store";
 export const PIN_LIMIT_MESSAGE = `You can pin 3 apps. Unpin one first.`;
 
 export type PinResult = { ok: true } | { ok: false; message: string };
 
-export async function setPinned(id: AppId, pinned: boolean): Promise<PinResult> {
+export async function setPinned(key: AppKey, pinned: boolean): Promise<PinResult> {
   try {
-    applyAnswer(await bridgeApi.setAppPinned(id, pinned));
+    applyAnswer(await bridgeApi.setAppPinned(coreIdOf(key), pinned));
     return { ok: true };
   } catch (error) {
     return { ok: false, message: errorMessage(error) };
   }
 }
 
-export function togglePin(id: AppId, pins: readonly AppId[]): Promise<PinResult> {
+export function togglePin(id: AppKey, pins: readonly AppKey[]): Promise<PinResult> {
   return setPinned(id, !pins.includes(id));
 }
 
-export function usePins(): readonly AppId[] {
-  return pinsOf(useApps());
+export function usePins(): readonly AppKey[] {
+  return pinsOf(useApps(), usePersonalApps());
 }

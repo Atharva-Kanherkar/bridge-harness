@@ -116,6 +116,8 @@ pub enum CoreEvent {
     NotesPageChanged(bridge_protocol::messages::NotePageChanged),
     /// A notes pass's reply so far.
     NotesPassProgress(bridge_protocol::messages::NotePassProgress),
+    /// A background import's progress, and its end.
+    ImportProgress(bridge_protocol::messages::ImportJob),
     /// Refetch hint for trails, carrying what the automatic sweep added.
     TrailsChanged(bridge_protocol::messages::TrailsChanged),
     /// Refetch hint: the attention ledger may have moved. Never constructed
@@ -164,6 +166,7 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
             CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
             CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
+            CoreEvent::ImportProgress(_) => NotificationName::ImportProgress,
             CoreEvent::TrailsChanged(_) => NotificationName::TrailsChanged,
             CoreEvent::AttentionChanged => NotificationName::AttentionChanged,
             CoreEvent::AppsChanged => NotificationName::AppsChanged,
@@ -240,6 +243,7 @@ impl CoreEvent {
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
             CoreEvent::NotesPageChanged(change) => serde_json::to_value(change).expect("page change serializes"),
             CoreEvent::NotesPassProgress(progress) => serde_json::to_value(progress).expect("pass progress serializes"),
+            CoreEvent::ImportProgress(job) => serde_json::to_value(job).unwrap_or(serde_json::Value::Null),
             CoreEvent::TrailsChanged(changed) => serde_json::to_value(changed).expect("trails change serializes"),
             CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
             CoreEvent::WorkflowRunChanged { run } => serde_json::json!({ "run": run }),
@@ -493,6 +497,7 @@ impl EventBus {
                 | CoreEvent::ConnectorInboxChanged { .. }
                 | CoreEvent::NotesPageChanged(_)
                 | CoreEvent::NotesPassProgress(_)
+                | CoreEvent::ImportProgress(_)
                 | CoreEvent::TrailsChanged(_) => {}
             }
             if moves_attention {
@@ -680,6 +685,7 @@ mod tests {
             CoreEvent::ConnectorInboxChanged { family: "slack".into() },
             CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
             CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
+            CoreEvent::ImportProgress(bridge_protocol::messages::ImportJob::default()),
             CoreEvent::TrailsChanged(bridge_protocol::messages::TrailsChanged { trail_id: Some("t".into()), added: Vec::new() }),
             CoreEvent::AttentionChanged,
             CoreEvent::AppsChanged,

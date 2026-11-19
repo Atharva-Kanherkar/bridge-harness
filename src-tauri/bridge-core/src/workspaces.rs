@@ -301,6 +301,7 @@ pub fn archive_workspace_records(
         "DELETE FROM worker_leases WHERE workspace_id=?1",
         params![workspace_id],
     )?;
+    crate::external_import::detach_imported_from_workspace(&transaction, workspace_id)?;
     transaction.execute(
         "DELETE FROM session_heads WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
         params![workspace_id],
