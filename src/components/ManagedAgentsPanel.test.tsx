@@ -1,3 +1,4 @@
+import { TYPE_SCALE } from "@/lib/utils";
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { act } from "react";
@@ -552,7 +553,7 @@ describe("ManagedAgentsPanel styling", () => {
     // Tailwind's own palette (text-red-400) is built in; a bare name
     // (text-foreground) has to be a project token.
     const PALETTE = /^(?:red|rose|amber|orange|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|slate|gray|zinc|neutral|stone)-\d{2,3}$/;
-    const NOT_A_COLOUR = ["xs", "sm", "base", "lg", "left", "center", "right", "black", "white", "transparent", "current", "inherit"];
+    const NOT_A_COLOUR = ["xs", "sm", "base", "lg", ...TYPE_SCALE, "left", "center", "right", "black", "white", "transparent", "current", "inherit"];
     const used = [...source.matchAll(/\b(?:text|bg|border)-([a-z][a-z0-9-]*)/g)]
       .map(match => match[1].replace(/\/.*$/, ""))
       .filter(token => !NOT_A_COLOUR.includes(token) && !PALETTE.test(token));
