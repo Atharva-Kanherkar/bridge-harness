@@ -42,6 +42,10 @@ const detail: GithubPullRequestResult = {
   ],
 };
 
+type Thread = GithubPullRequestResult["reviewThreads"][number];
+const thread = (over: Partial<Thread> = {}): Thread => ({ ...detail.reviewThreads[0], viewerCanReply: true, ...over });
+const withThreads = (reviewThreads: Thread[]): GithubPullRequestResult => ({ ...detail, reviewThreads });
+
 function mockReads() {
   vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue(status);
   const list = vi.spyOn(bridgeApi, "githubPullRequests").mockResolvedValue({ pullRequests: [summary] });
@@ -220,10 +224,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     await click(host!.querySelector('button[role="tab"]:nth-of-type(2)') as HTMLButtonElement);
     expect(host!.textContent).toContain("src/file-0.ts");
-    expect(host!.querySelector('pre[aria-label="File patch"]')).toBeNull();
+    expect(host!.querySelector('[aria-label="File patch"]')).toBeNull();
 
     await click(buttonByText("src/file-0.ts"));
-    const patch = host!.querySelector('pre[aria-label="File patch"]');
+    const patch = host!.querySelector('[aria-label="File patch"]');
     expect(patch).not.toBeNull();
     expect(host!.textContent).toContain("+line 599");
     expect(host!.textContent).not.toContain("+line 600");
@@ -854,22 +858,211 @@ describe("GitHubPane", () => {
     expect(action).toHaveBeenLastCalledWith("w", { kind: "restoreBranch", number: 1, branch: "feat/safe" }, true);
   });
 
-  it("posts a comment through the same confirmation gate as every other write", async () => {
+  it("posts a comment on its own button press and keeps the draft when GitHub refuses", async () => {
     mockReads();
-    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Commented on PR #1." });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValueOnce({ executed: false, message: "GitHub said no." });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
 
-    const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
-    await type(composer, "This reads well now.");
-    await click(buttonByText("Comment"));
-
-    // The draft is shown back, not re-requested, and nothing has run yet.
-    expect(document.body.textContent).toContain("Post a comment on #1");
-    expect(document.body.textContent).toContain("This reads well now.");
-    expect(action).not.toHaveBeenCalled();
-    await click(confirmButton());
+    const composer = () => host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
+    await type(composer(), "This reads well now.");
+    await click(exactButton("Comment"));
+    // One press, one typed write, no second sheet.
     expect(action).toHaveBeenCalledWith("w", { kind: "comment", target: "pullRequest", number: 1, body: "This reads well now." }, true);
+    expect(document.querySelector("button[data-confirm]")).toBeNull();
+    // A refusal is shown where it was asked, and the words are still there.
+    expect(host!.querySelector('[role="alert"]')?.textContent).toBe("GitHub said no.");
+    expect(composer().value).toBe("This reads well now.");
+
+    action.mockResolvedValueOnce({ executed: true, message: "Commented on PR #1." });
+    await click(exactButton("Comment"));
+    expect(action).toHaveBeenCalledTimes(2);
+    expect(composer().value).toBe("");
+  });
+
+  it("resolves and reopens a conversation with one button, and undoes a refused resolve", async () => {
+    mockReads();
+    const read = vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue(withThreads([thread({ viewerCanResolve: true })]));
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValueOnce({ executed: false, message: "Resource not accessible." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const card = () => host!.querySelector('[data-thread="t"]') as HTMLElement;
+
+    await click(exactButton("Resolve"));
+    expect(action).toHaveBeenCalledWith("w", { kind: "resolveThread", number: 1, threadId: "t", resolved: true }, true);
+    // Refused: the card is back to open and says why.
+    expect(card().hasAttribute("data-resolved")).toBe(false);
+    expect(card().textContent).toContain("Resource not accessible.");
+
+    action.mockResolvedValue({ executed: true, message: "Resolved a conversation on PR #1." });
+    read.mockResolvedValue(withThreads([thread({ isResolved: true, viewerCanUnresolve: true })]));
+    await click(exactButton("Resolve"));
+    expect(card().hasAttribute("data-resolved")).toBe(true);
+    expect(card().textContent).toContain("Resolved");
+    // A resolved conversation folds to one line that still names its author.
+    expect(card().querySelector('[aria-expanded="false"]')).not.toBeNull();
+    expect(card().textContent).toContain("reviewer");
+
+    read.mockResolvedValue(withThreads([thread({ viewerCanResolve: true })]));
+    await click(exactButton("Unresolve"));
+    expect(action).toHaveBeenLastCalledWith("w", { kind: "resolveThread", number: 1, threadId: "t", resolved: false }, true);
+    expect(card().hasAttribute("data-resolved")).toBe(false);
+  });
+
+  it("offers Resolve only when GitHub says the viewer may", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue(withThreads([thread({ viewerCanResolve: false })]));
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    expect(exactButton("Resolve")).toBeUndefined();
+  });
+
+  it("replies inside a conversation without leaving it", async () => {
+    mockReads();
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Replied on PR #1." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(exactButton("Reply…"));
+    await type(host!.querySelector('textarea[aria-label="Reply"]') as HTMLTextAreaElement, "Fixed in the next push.");
+    await click(exactButton("Reply"));
+    expect(action).toHaveBeenCalledWith("w", { kind: "reply", number: 1, commentId: 9, body: "Fixed in the next push." }, true);
+    // The box folds back to one line once the reply is in.
+    expect(host!.querySelector('textarea[aria-label="Reply"]')).toBeNull();
+  });
+
+  it("filters conversations by open and resolved", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue(withThreads([
+      thread({ id: "open-one" }),
+      thread({ id: "done-one", isResolved: true }),
+    ]));
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const radio = (name: string) => [...host!.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(button => button.textContent?.startsWith(name))!;
+    expect(radio("Open").textContent).toContain("1");
+    await click(radio("Resolved"));
+    expect(host!.querySelector('[data-thread="done-one"]')).not.toBeNull();
+    expect(radio("Resolved").getAttribute("aria-checked")).toBe("true");
+    await click(radio("Open"));
+    expect(host!.querySelector('[data-thread="open-one"]')).not.toBeNull();
+  });
+
+  it("shows the lines a conversation is about", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue(withThreads([thread({ diffHunk: "@@ -1,2 +1,3 @@\n fn main() {\n-    old();\n+    run();" })]));
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const hunk = host!.querySelector('[aria-label="Commented lines"]')!;
+    expect(hunk.textContent).toContain("+    run();");
+    expect(hunk.textContent).not.toContain("@@");
+  });
+
+  it("comments on a changed line with the file line and side GitHub expects", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      files: [{ path: "src/api.ts", previousPath: null, status: "modified", additions: 1, deletions: 1, patch: "@@ -10,3 +10,3 @@\n keep\n-old\n+new\n tail" }],
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Commented." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[role="tab"]:nth-of-type(2)') as HTMLButtonElement);
+
+    // A hunk header is not a line, so it offers nothing.
+    expect(host!.querySelector('button[aria-label="Comment on line 10"]')).not.toBeNull();
+    expect(host!.querySelectorAll('button[aria-label^="Comment on line"]').length).toBe(4);
+
+    // The added line is line 11 of the new file.
+    const added = [...host!.querySelectorAll<HTMLButtonElement>('button[aria-label="Comment on line 11"]')];
+    await click(added[1]);
+    await type(host!.querySelector('textarea[aria-label="Comment on line 11"]') as HTMLTextAreaElement, "Why this?");
+    await click(exactButton("Add comment"));
+    expect(action).toHaveBeenCalledWith("w", { kind: "reviewComment", number: 1, path: "src/api.ts", line: 11, side: "right", body: "Why this?" }, true);
+    expect(host!.querySelector('textarea[aria-label="Comment on line 11"]')).toBeNull();
+
+    // The deleted line is line 11 of the old file.
+    await click(added[0]);
+    await type(host!.querySelector('textarea[aria-label="Comment on line 11"]') as HTMLTextAreaElement, "Keep it?");
+    await click(exactButton("Add comment"));
+    expect(action).toHaveBeenLastCalledWith("w", { kind: "reviewComment", number: 1, path: "src/api.ts", line: 11, side: "left", body: "Keep it?" }, true);
+  });
+
+  it("does not offer line comments on a pull request that is not open", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({ ...detail, pullRequest: { ...detail.pullRequest, summary: { ...summary, state: "merged" } } });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[role="tab"]:nth-of-type(2)') as HTMLButtonElement);
+    expect(host!.querySelector('[aria-label="File patch"]')).not.toBeNull();
+    expect(host!.querySelector('button[aria-label^="Comment on line"]')).toBeNull();
+  });
+
+  it("shows images and videos from GitHub inline and holds third-party media behind a click", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: {
+        ...detail.pullRequest,
+        body: [
+          "Before and after:",
+          "",
+          "| Dark | Light |",
+          "|---|---|",
+          "| ![dark shot](https://raw.githubusercontent.com/o/r/a/dark.png) | ![light shot](https://raw.githubusercontent.com/o/r/a/light.png) |",
+          "",
+          "https://github.com/user-attachments/assets/11111111-2222-3333-4444-555555555555",
+          "",
+          '<img width="400" alt="tracker" src="https://tracker.example.test/pixel.png">',
+          "",
+          "```text",
+          '<img src="https://github.com/in-a-fence.png">',
+          "```",
+        ].join("\n"),
+      },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const description = host!.querySelector('[aria-label="Description"]')!;
+
+    const images = [...description.querySelectorAll("img")];
+    expect(images.map(image => image.getAttribute("src"))).toEqual([
+      "https://raw.githubusercontent.com/o/r/a/dark.png",
+      "https://raw.githubusercontent.com/o/r/a/light.png",
+    ]);
+    expect(images[0].getAttribute("alt")).toBe("dark shot");
+    expect(images.every(image => image.getAttribute("referrerpolicy") === "no-referrer")).toBe(true);
+    // The table's headings caption the pair.
+    expect([...description.querySelectorAll("figcaption")].map(caption => caption.textContent)).toEqual(["Dark", "Light"]);
+    // An uploaded recording is a player, not a bare address.
+    expect(description.querySelector("video")?.getAttribute("src")).toBe("https://github.com/user-attachments/assets/11111111-2222-3333-4444-555555555555");
+    // Someone else's server is not contacted until the reader asks.
+    expect(description.innerHTML).not.toContain('src="https://tracker.example.test');
+    await click(buttonByText("Load from tracker.example.test"));
+    expect(description.querySelector('img[alt="tracker"]')?.getAttribute("src")).toBe("https://tracker.example.test/pixel.png");
+    // Code stays code.
+    expect(description.textContent).toContain('<img src="https://github.com/in-a-fence.png">');
+  });
+
+  it("falls back to the signed-in fetch when the webview cannot load GitHub media", async () => {
+    mockReads();
+    const created = vi.fn(() => "blob:bridge/1");
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: created }));
+    const media = vi.spyOn(bridgeApi, "githubMedia").mockResolvedValue({ mimeType: "image/png", data: btoa("png-bytes") });
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: { ...detail.pullRequest, body: "![private shot](https://github.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee)" },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const image = () => host!.querySelector('[aria-label="Description"] img') as HTMLImageElement;
+    await act(async () => { image().dispatchEvent(new Event("error")); await flush(); });
+    expect(media).toHaveBeenCalledWith("w", "https://github.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    expect(image().getAttribute("src")).toBe("blob:bridge/1");
+
+    // The backend's copy failing too is the end of the road: say so, offer the original.
+    await act(async () => { image().dispatchEvent(new Event("error")); await flush(); });
+    expect(host!.textContent).toContain("Couldn’t load private shot");
+    expect(media).toHaveBeenCalledTimes(1);
   });
 
   it("closes a pull request and marks a draft ready behind a confirmation", async () => {
@@ -921,11 +1114,8 @@ describe("GitHubPane", () => {
 
     const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
     await type(composer, "On it.");
-    await click(buttonByText("Comment"));
-    // The drafted text is shown back before it posts, exactly as on a PR.
-    expect(document.body.textContent).toContain("Post a comment on #17");
-    expect(document.querySelector('[role="dialog"] [aria-label="Comment body"]')?.textContent).toBe("On it.");
-    await click(confirmButton());
+    await click(exactButton("Comment"));
+    // A comment posts on its own button, exactly as on a PR.
     expect(action).toHaveBeenLastCalledWith("w", { kind: "comment", target: "issue", number: 17, body: "On it." }, true);
 
     // A closed issue offers Reopen rather than Close.

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __snapshotForTests, badgesOf, COALESCE_MS, enabledApps, loadApps, pinsOf, PINS_KEY, resetAppsStore, subscribeApps } from "./store";
-import { emitMockAppsChanged, mockListApps, mockSetAppEnabled, resetMockApps } from "../appsMock";
+import { __snapshotForTests, badgesOf, COALESCE_MS, enabledApps, enabledPersonal, loadApps, pinsOf, PINS_KEY, resetAppsStore, subscribeApps } from "./store";
+import { emitMockAppsChanged, MOCK_PERSONAL_APP, mockDeletePersonalApp, mockListApps, mockSetAppEnabled, mockSetAppPinned, resetMockApps } from "../appsMock";
 import { appsBadge, BUILTIN_APPS } from "./registry";
 import { bridgeApi } from "../api";
 import type { ListAppsResult } from "../protocol/generated/protocol";
@@ -27,6 +27,29 @@ describe("views over core's list", () => {
     expect(appsBadge(badges)?.count).toBe("3");
     const pinned = apps.map(app => app.manifest.id === "usage" ? { ...app, pinned: 1 } : app.manifest.id === "notes" ? { ...app, pinned: 0 } : app);
     expect(pinsOf(pinned)).toEqual(["notes", "usage"]);
+  });
+});
+
+describe("the person's own apps", () => {
+  it("share the pins with built-ins, in core's order", () => {
+    mockSetAppPinned("notes", true);
+    mockSetAppPinned(MOCK_PERSONAL_APP.id, true);
+    mockSetAppPinned("usage", true);
+    const { apps, personal } = mockListApps();
+    expect(pinsOf(apps, personal)).toEqual(["notes", "personal:slack-dm", "usage"]);
+    expect(pinsOf(apps), "without the personal list a personal pin is never guessed").toEqual(["notes", "usage"]);
+  });
+
+  it("leave the launcher when off or deleted, and their pin goes with them", () => {
+    expect(enabledPersonal(mockListApps().personal).map(entry => entry.key)).toEqual(["personal:slack-dm"]);
+    mockSetAppPinned(MOCK_PERSONAL_APP.id, true);
+    mockSetAppEnabled(MOCK_PERSONAL_APP.id, false);
+    const off = mockListApps();
+    expect(enabledPersonal(off.personal)).toEqual([]);
+    expect(pinsOf(off.apps, off.personal)).toEqual([]);
+    mockSetAppEnabled(MOCK_PERSONAL_APP.id, true);
+    mockDeletePersonalApp(MOCK_PERSONAL_APP.id);
+    expect(mockListApps().personal).toEqual([]);
   });
 });
 

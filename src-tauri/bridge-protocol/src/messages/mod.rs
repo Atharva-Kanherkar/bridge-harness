@@ -207,6 +207,7 @@ typed_methods![
     (GithubIssue, GithubIssueParams, GithubIssueResult),
     (GithubRepository, GithubRepositoryParams, GithubRepositoryResult),
     (GithubMergeConfig, GithubMergeConfigParams, GithubMergeConfigResult),
+    (GithubMedia, GithubMediaParams, GithubMediaResult),
     (GithubAct, GithubActParams, GithubActResult),
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
@@ -370,6 +371,8 @@ typed_methods![
     (CallPersonalAppTool, CallPersonalAppToolParams, PersonalAppCallResult),
     (LockPersonalApp, LockPersonalAppParams, LockPersonalAppResult),
     (DeletePersonalApp, DeletePersonalAppParams, ListPersonalAppsResult),
+    (OpenPersonalAppSurface, OpenPersonalAppSurfaceParams, PersonalAppSurfaceOpen),
+    (ClosePersonalAppSurface, ClosePersonalAppSurfaceParams, ClosePersonalAppSurfaceResult),
     // trails: one page per piece of work
     (ListTrails, ListTrailsParams, ListTrailsResult),
     (ReadTrail, ReadTrailParams, ReadTrailResult),

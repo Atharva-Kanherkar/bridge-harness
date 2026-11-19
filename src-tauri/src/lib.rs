@@ -236,6 +236,12 @@ async fn github_merge_config(workspace_id: String, state: State<'_, Arc<BridgeCo
 }
 
 #[tauri::command]
+async fn github_media(workspace_id: String, url: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubMediaResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub media", move || api::github_media(&core, &workspace_id, &url)).await
+}
+
+#[tauri::command]
 async fn github_act(workspace_id: String, action: wire::GithubAction, confirmed: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubActResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub action", move || api::github_act(&core, &workspace_id, action, confirmed)).await
@@ -300,14 +306,14 @@ fn get_personal_app_draft(session_id: String, draft_id: String, content_hash: St
 }
 
 #[tauri::command(async)]
-fn get_personal_app_open(session_id: String, open_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppOpen, BridgeError>> {
+fn get_personal_app_open(session_id: Option<String>, open_id: String, content_hash: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppOpen, BridgeError>> {
     let core = state.inner().clone();
     blocking("read an opened app", move || api::get_personal_app_open(&core, &wire::GetPersonalAppOpenParams { session_id, open_id, content_hash }))
 }
 
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn call_personal_app_tool(session_id: String, open_id: String, content_hash: String, tool: String, arguments: serde_json::Value, approval_token: Option<String>, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppCallResult, BridgeError>> {
+fn call_personal_app_tool(session_id: Option<String>, open_id: String, content_hash: String, tool: String, arguments: serde_json::Value, approval_token: Option<String>, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppCallResult, BridgeError>> {
     let core = state.inner().clone();
     blocking("call an app tool", move || api::call_personal_app_tool(&core, &wire::CallPersonalAppToolParams { session_id, open_id, content_hash, tool, arguments, approval_token }))
 }
@@ -316,6 +322,18 @@ fn call_personal_app_tool(session_id: String, open_id: String, content_hash: Str
 fn preview_personal_app_tool(session_id: String, draft_id: String, content_hash: String, tool: String, arguments: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<serde_json::Value, BridgeError>> {
     let core = state.inner().clone();
     blocking("preview an app tool", move || api::preview_personal_app_tool(&core, &wire::PreviewPersonalAppToolParams { session_id, draft_id, content_hash, tool, arguments }))
+}
+
+#[tauri::command(async)]
+fn open_personal_app_surface(app_id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::PersonalAppSurfaceOpen, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("open a personal app", move || api::open_personal_app_surface(&core, &wire::OpenPersonalAppSurfaceParams { app_id }))
+}
+
+#[tauri::command(async)]
+fn close_personal_app_surface(open_id: String, state: State<'_, Arc<BridgeCore>>) -> impl std::future::Future<Output = Result<wire::ClosePersonalAppSurfaceResult, BridgeError>> {
+    let core = state.inner().clone();
+    blocking("close a personal app", move || api::close_personal_app_surface(&core, &wire::ClosePersonalAppSurfaceParams { open_id }))
 }
 
 #[tauri::command(async)]
@@ -3605,6 +3623,7 @@ pub fn run() -> i32 {
             github_issue,
             github_repository,
             github_merge_config,
+            github_media,
             github_act,
             github_review,
             github_checkout,
@@ -3623,6 +3642,8 @@ pub fn run() -> i32 {
             preview_personal_app_tool,
             lock_personal_app,
             delete_personal_app,
+            open_personal_app_surface,
+            close_personal_app_surface,
             list_trails,
             read_trail,
             create_trail,

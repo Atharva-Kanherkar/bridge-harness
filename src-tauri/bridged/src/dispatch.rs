@@ -70,6 +70,10 @@ pub fn dispatch(
             let p: wire::GithubChecksParams = decode(method, params)?;
             reply(api::github_checks(core, &p.workspace_id, p.number))
         }
+        MethodName::GithubMedia => {
+            let p: wire::GithubMediaParams = decode(method, params)?;
+            reply(api::github_media(core, &p.workspace_id, &p.url))
+        }
         MethodName::GithubMergeConfig => {
             let p: wire::GithubMergeConfigParams = decode(method, params)?;
             reply(api::github_merge_config(core, &p.workspace_id))
@@ -151,6 +155,14 @@ pub fn dispatch(
         MethodName::DeletePersonalApp => {
             let p: wire::DeletePersonalAppParams = decode(method, params)?;
             reply(api::delete_personal_app(core, &p))
+        }
+        MethodName::OpenPersonalAppSurface => {
+            let p: wire::OpenPersonalAppSurfaceParams = decode(method, params)?;
+            reply(api::open_personal_app_surface(core, &p))
+        }
+        MethodName::ClosePersonalAppSurface => {
+            let p: wire::ClosePersonalAppSurfaceParams = decode(method, params)?;
+            reply(api::close_personal_app_surface(core, &p))
         }
         MethodName::SetAppPinned => {
             let p: wire::SetAppPinnedParams = decode(method, params)?;

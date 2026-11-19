@@ -30,6 +30,14 @@ describe("attentionCopy", () => {
     });
   });
 
+  it("keeps what an agent's question asks, so the banner is not a generic ping", () => {
+    expect(attentionCopy({ kind: "needsYou", title: "Claude has a question", body: "Auth tokens: Which database?" }, session())).toEqual({
+      headline: "Claude has a question",
+      detail: "Auth tokens: Which database?",
+      tone: "needs-you",
+    });
+  });
+
   it("describes a finished turn", () => {
     expect(attentionCopy(row("finished"), session())).toEqual({
       headline: "Turn completed",

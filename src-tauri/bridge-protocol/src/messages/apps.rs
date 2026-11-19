@@ -106,6 +106,19 @@ pub struct AppSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ListAppsResult {
     pub apps: Vec<AppSummary>,
+    /// The person's locked personal apps ("My apps"), newest lock first.
+    #[serde(default)]
+    pub personal: Vec<PersonalAppEntry>,
+}
+
+/// A locked personal app as the Store, the launcher and the sidebar see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalAppEntry {
+    pub app: PersonalAppSummary,
+    pub enabled: bool,
+    /// The sidebar position, from 0, or null when the app is not pinned.
+    pub pinned: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -258,11 +271,14 @@ pub struct PersonalAppDraft {
     pub sample_args: Option<serde_json::Value>,
 }
 
-/// A locked app opened in a chat, bound to that chat and the exact version.
+/// A locked app opened in a chat or by the person, bound to its owner and
+/// the exact version. `session_id` names a chat owner; leaving it out names
+/// the person's own app surface. It must equal the open's stored owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetPersonalAppOpenParams {
-    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub open_id: String,
     pub content_hash: String,
 }
@@ -291,13 +307,45 @@ pub struct PersonalAppOpen {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallPersonalAppToolParams {
-    pub session_id: String,
+    /// The chat owner, or none for the person's own app surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub open_id: String,
     pub content_hash: String,
     pub tool: String,
     pub arguments: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_token: Option<String>,
+}
+
+/// The person opens a locked app from the Store or the launcher. Only the
+/// Bridge UI calls this; no agent tool reaches it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenPersonalAppSurfaceParams {
+    pub app_id: String,
+}
+
+/// A Surface open: load and call it with no `session_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalAppSurfaceOpen {
+    pub open_id: String,
+    pub app_id: String,
+    pub version: u32,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClosePersonalAppSurfaceParams {
+    pub open_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosePersonalAppSurfaceResult {
+    pub closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -341,7 +389,9 @@ mod tests {
         round_trip(manifest());
         let summary = AppSummary { manifest: manifest(), enabled: true, can_disable: true, pinned: Some(0), badge: Some(AppBadge { count: 2 }) };
         round_trip(summary.clone());
-        round_trip(ListAppsResult { apps: vec![summary] });
+        round_trip(ListAppsResult { apps: vec![summary.clone()], personal: Vec::new() });
+        let legacy: ListAppsResult = serde_json::from_value(json!({"apps": [serde_json::to_value(&summary).unwrap()]})).unwrap();
+        assert!(legacy.personal.is_empty(), "an older daemon's list has no personal apps");
         round_trip(SetAppPinnedParams { id: "notes".into(), pinned: true });
         round_trip(SetAppEnabledParams { id: "notes".into(), enabled: false });
     }
@@ -405,8 +455,15 @@ mod tests {
 
     #[test]
     fn open_and_call_params_round_trip_and_refuse_unknown_fields() {
-        round_trip(GetPersonalAppOpenParams { session_id:"s".into(),open_id:"o".into(),content_hash:"h".into() });
-        round_trip(CallPersonalAppToolParams { session_id:"s".into(),open_id:"o".into(),content_hash:"h".into(),tool:"send".into(),arguments:json!({"to":"Ada"}),approval_token:Some("t".into()) });
+        round_trip(GetPersonalAppOpenParams { session_id:Some("s".into()),open_id:"o".into(),content_hash:"h".into() });
+        round_trip(GetPersonalAppOpenParams { session_id:None,open_id:"o".into(),content_hash:"h".into() });
+        let surface = serde_json::to_value(GetPersonalAppOpenParams { session_id:None,open_id:"o".into(),content_hash:"h".into() }).unwrap();
+        assert_eq!(surface, json!({"openId":"o","contentHash":"h"}), "a surface sends no session id");
+        round_trip(OpenPersonalAppSurfaceParams { app_id:"slack-dm".into() });
+        round_trip(PersonalAppSurfaceOpen { open_id:"o".into(),app_id:"slack-dm".into(),version:2,content_hash:"h".into() });
+        round_trip(ClosePersonalAppSurfaceParams { open_id:"o".into() });
+        assert!(serde_json::from_value::<OpenPersonalAppSurfaceParams>(json!({"appId":"a","sessionId":"s"})).is_err(), "a surface open takes no chat");
+        round_trip(CallPersonalAppToolParams { session_id:Some("s".into()),open_id:"o".into(),content_hash:"h".into(),tool:"send".into(),arguments:json!({"to":"Ada"}),approval_token:Some("t".into()) });
         assert!(serde_json::from_value::<CallPersonalAppToolParams>(json!({"sessionId":"s","openId":"o","contentHash":"h","tool":"send","arguments":{},"approved":true})).is_err());
         assert_eq!(serde_json::to_value(PersonalAppCallResult::ApprovalRequired { token:"t".into(),harness:"codex".into(),server:"s".into(),tool:"send".into(),arguments_json:"{}".into() }).unwrap()["kind"], "approvalRequired");
     }

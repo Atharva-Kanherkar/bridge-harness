@@ -9,6 +9,7 @@
 //! Codex needs none of this: its writes are a direct `mcpServer/tool/call`
 //! on the connection's runtime, sent by the router after the approval.
 
+use super::control::Dispatch;
 use super::runtimes::{self, Key, Launched};
 use crate::briefing_policy::BriefingRuntimePolicy;
 use crate::adapters::ShutdownReason;
@@ -24,8 +25,8 @@ fn failed() -> BridgeError {
     BridgeError::Invalid("The write did not complete; nothing was confirmed as sent".into())
 }
 
-pub fn claude(core: &Arc<BridgeCore>, key: &Key, tool: &str, arguments: &Value) -> Result<Value, BridgeError> {
-    claude_with(key, tool, arguments, |key, policy| runtimes::launch_with(core, key, Some(policy)))
+pub fn claude(core: &Arc<BridgeCore>, key: &Key, tool: &str, arguments: &Value, dispatch: &Dispatch) -> Result<Value, BridgeError> {
+    claude_with(key, tool, arguments, |key, policy| runtimes::launch_with(core, key, Some(policy)), dispatch)
 }
 
 /// [`claude`] with the launch supplied, so a live test can use real adapters.
@@ -34,6 +35,7 @@ pub fn claude_with(
     tool: &str,
     arguments: &Value,
     launch: impl FnOnce(&Key, BriefingRuntimePolicy) -> Result<Launched, BridgeError>,
+    dispatch: &Dispatch,
 ) -> Result<Value, BridgeError> {
     let policy = BriefingRuntimePolicy::compile_app_write(
         key.server.clone(),
@@ -50,6 +52,10 @@ pub fn claude_with(
         .as_str()
         .ok_or_else(failed)
         .and_then(|wire_tool| runtime.call_tool(&id, wire_tool, &grant["arguments"]));
+    // Policy, launch and folder refusals all came before this: nothing went.
+    if sent.is_ok() {
+        dispatch.mark();
+    }
     let outcome = sent.and_then(|()| await_result(&lines, &id, Instant::now() + WALL));
     runtime.stop(ShutdownReason::Completed);
     outcome
@@ -151,7 +157,7 @@ mod tests {
                 read_only_sandbox: None, briefing: Some(&policy), interactive: false, account: None, on_progress: None,
             })?;
             Ok(Launched { runtime: started.runtime, reader: started.reader })
-        })
+        }, &Dispatch::default())
         .unwrap();
         assert!(result.to_string().contains("Sent"), "{result}");
         let calls = logged(&log);

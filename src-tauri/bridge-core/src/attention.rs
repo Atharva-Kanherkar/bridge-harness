@@ -301,6 +301,30 @@ pub fn copy(kind: AttentionKind, session: &SessionFacts) -> (String, String) {
     }
 }
 
+/// Copy for an agent's question: the banner says who is asking and what, so
+/// the person can tell a question from a permission prompt before switching.
+pub fn question_copy(session: &SessionFacts, payload: &serde_json::Value) -> (String, String) {
+    let asked = payload
+        .pointer("/data/questions/0/question")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| payload.get("text").and_then(serde_json::Value::as_str))
+        .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map(|text| {
+            const LIMIT: usize = 140;
+            if text.chars().count() > LIMIT {
+                format!("{}…", text.chars().take(LIMIT - 1).collect::<String>().trim_end())
+            } else {
+                text.to_owned()
+            }
+        });
+    let title = format!("{} has a question", harness_label(&session.harness));
+    let body = match asked {
+        Some(question) => format!("{}: {question}", chat_name(session)),
+        None => format!("{} is waiting for your answer", chat_name(session)),
+    };
+    (title, body)
+}
+
 /// Copy for a stranded queue: who stopped, and how much is waiting for it.
 pub fn escalation_copy(session: &SessionFacts, waiting: i64) -> (String, String) {
     let who = format!("{} · {}", chat_name(session), harness_label(&session.harness));
@@ -343,7 +367,7 @@ pub fn record_in_transaction(
         Effect::Ignore => Ok(false),
         Effect::Open(attention) => {
             let session = session.expect("classify ignores unknown sessions");
-            Ok(open(transaction, session_id, attention, &session, kind, entry_sequence)?.is_some())
+            Ok(open(transaction, session_id, attention, &session, kind, payload, entry_sequence)?.is_some())
         }
         Effect::Close => Ok(close(transaction, session_id, answered_request(payload))? > 0),
     };
@@ -378,6 +402,7 @@ fn open(
     kind: AttentionKind,
     session: &SessionFacts,
     forest_kind: &str,
+    payload: &serde_json::Value,
     entry_sequence: i64,
 ) -> Result<Option<i64>, BridgeError> {
     if kind == AttentionKind::Failed && newest_is_unseen_failure(db, session_id)? {
@@ -385,7 +410,11 @@ fn open(
         // order): the person hears about it once.
         return Ok(None);
     }
-    let (title, body) = copy(kind, session);
+    let (title, body) = if forest_kind == "question.requested" {
+        question_copy(session, payload)
+    } else {
+        copy(kind, session)
+    };
     let request = (kind == AttentionKind::NeedsYou).then_some(entry_sequence);
     // Only approvals and permissions are answered through resolve_approval; a
     // question has its own reply channel, so it offers no approval id.
@@ -1110,6 +1139,22 @@ mod tests {
         assert!(!record(&db, "s", "turn.completed", marked("completed"), 3));
         assert!(!record(&db, "s", "error", marked("failed"), 4));
         assert!(record(&db, "s", "permission.requested", json!({"data": {"bridgeCheckpointTurn": true}}), 5));
+    }
+
+    #[test]
+    fn a_question_banner_says_what_is_asked() {
+        let facts = SessionFacts {
+            kind: Some("direct".into()),
+            parent_session_id: None,
+            title: Some("Fix login".into()),
+            label: "Chat".into(),
+            harness: "claude".into(),
+        };
+        let payload = json!({"text": "Which database?\nWhich features?", "data": {"questions": [{"question": "Which database?"}]}});
+        assert_eq!(question_copy(&facts, &payload), ("Claude has a question".into(), "Fix login: Which database?".into()));
+        assert_eq!(question_copy(&facts, &json!({})).1, "Fix login is waiting for your answer");
+        let long = "x".repeat(400);
+        assert!(question_copy(&facts, &json!({"text": long})).1.chars().count() < 160);
     }
 
     #[test]

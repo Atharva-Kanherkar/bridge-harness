@@ -61,7 +61,14 @@ describe("splitBlocks rich content detection", () => {
   });
 
   it("leaves ordinary fenced code untouched", () => {
-    expect(splitBlocks("```ts\nconst x = 1;\n```")).toEqual([{ kind: "code", lang: "ts", body: "const x = 1;" }]);
+    expect(splitBlocks("```ts\nconst x = 1;\n```")).toEqual([{ kind: "code", lang: "ts", body: "const x = 1;", closed: true }]);
+  });
+
+  it("marks a fence still waiting for its closing line as open", () => {
+    expect(splitBlocks("Run this:\n\n```bash\nbun inst")).toEqual([
+      { kind: "para", text: "Run this:" },
+      { kind: "code", lang: "bash", body: "bun inst", closed: false },
+    ]);
   });
 
   it("does not misread prices as inline math", () => {

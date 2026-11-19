@@ -4,6 +4,13 @@ use std::time::Instant;
 
 /// The `requestMethod` marker for an OpenCode `question.asked` request.
 pub const OPENCODE_QUESTION_REQUEST_METHOD: &str = "opencode.question";
+/// Claude Code's `AskUserQuestion` tool. The SDK routes it through
+/// `canUseTool` like any permission prompt, but it is a question: allowing it
+/// without answers hands Claude an empty reply, which it reads as the person
+/// ignoring it. Bridge answers it on the same control channel with the
+/// chosen answers as the tool's `updatedInput`.
+pub const CLAUDE_QUESTION_REQUEST_METHOD: &str = "claude.askUserQuestion";
+pub const CLAUDE_QUESTION_TOOL: &str = "AskUserQuestion";
 
 fn permission_actions(allow_session: bool) -> Value {
     let mut actions = vec![
@@ -2424,6 +2431,9 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
     if subtype != "permission" && subtype != "can_use_tool" {
         return None;
     }
+    if request.get("tool_name").and_then(Value::as_str) == Some(CLAUDE_QUESTION_TOOL) {
+        return Some(normalize_claude_question(message, &request));
+    }
     let mut event = with_data("permission.requested", message, request.clone());
     event.item_id = request
         .get("tool_use_id")
@@ -2462,6 +2472,63 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
         .unwrap_or(true);
     event.data["actions"] = permission_actions(allow_session);
     Some(event)
+}
+
+/// `AskUserQuestion` as a question card, never a permission: a permission is
+/// what the auto-approve policy answers, and an allow with no answers is
+/// exactly the "you didn't answer" Claude then reports.
+///
+/// Each question keeps Claude's own shape (`question`, `header`, `options`
+/// with `label`/`description`/`preview`, `multiSelect`) plus a positional `id`
+/// the card answers by and `allowOther`, because Claude Code always offers a
+/// typed "Other" beside the listed options.
+fn normalize_claude_question(message: &Value, request: &Value) -> NormalizedEvent {
+    let questions = request
+        .pointer("/tool_input/questions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mut question)| {
+            let object = question.as_object_mut()?;
+            object.insert("id".into(), Value::String(index.to_string()));
+            object.entry("allowOther").or_insert(Value::Bool(true));
+            Some(question)
+        })
+        .collect::<Vec<_>>();
+    let mut event = with_data("question.requested", message, request.clone());
+    event.item_id = request
+        .get("tool_use_id")
+        .or_else(|| request.get("request_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    event.title = questions
+        .first()
+        .and_then(|question| question.get("header"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|header| !header.is_empty())
+        .map(str::to_owned)
+        .or_else(|| Some("Question".into()));
+    event.text = Some(
+        questions
+            .iter()
+            .filter_map(|question| question.get("question").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .filter(|text| !text.is_empty());
+    event.status = Some("pending".into());
+    event.data["requestId"] = message
+        .get("request_id")
+        .cloned()
+        .or_else(|| request.get("request_id").cloned())
+        .unwrap_or(Value::Null);
+    event.data["requestMethod"] = Value::String(CLAUDE_QUESTION_REQUEST_METHOD.into());
+    event.data["interactionKind"] = Value::String("question".into());
+    event.data["questions"] = Value::Array(questions);
+    event
 }
 
 fn is_opencode_file_tool(tool: &str) -> bool {
@@ -3892,6 +3959,40 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(file.title.as_deref(), Some("Edit these files?"));
+    }
+
+    #[test]
+    fn claude_ask_user_question_is_a_question_not_a_permission() {
+        let event = normalize_claude_control_request(&json!({
+            "type":"control_request",
+            "request_id":"root-permission-4",
+            "request":{
+                "subtype":"can_use_tool",
+                "tool_use_id":"toolu_q",
+                "tool_name":"AskUserQuestion",
+                "tool_input":{"questions":[
+                    {"question":"Which database?","header":"Database","multiSelect":false,
+                     "options":[{"label":"Postgres","description":"Relational"},{"label":"SQLite","description":"Embedded","preview":"file.db"}]},
+                    {"question":"Which features?","header":"Features","multiSelect":true,
+                     "options":[{"label":"Auth","description":""},{"label":"Billing","description":""}]}
+                ]}
+            }
+        }))
+        .unwrap();
+        assert_eq!(event.kind, "question.requested");
+        assert_eq!(event.title.as_deref(), Some("Database"));
+        assert_eq!(event.text.as_deref(), Some("Which database?\nWhich features?"));
+        assert_eq!(event.item_id.as_deref(), Some("toolu_q"));
+        assert_eq!(event.data["requestId"], "root-permission-4");
+        assert_eq!(event.data["requestMethod"], CLAUDE_QUESTION_REQUEST_METHOD);
+        assert_eq!(event.data["interactionKind"], "question");
+        assert!(event.data.get("actions").is_none());
+        let questions = event.data["questions"].as_array().unwrap();
+        assert_eq!(questions[0]["id"], "0");
+        assert_eq!(questions[1]["id"], "1");
+        assert_eq!(questions[0]["allowOther"], true);
+        assert_eq!(questions[0]["options"][1]["preview"], "file.db");
+        assert_eq!(questions[1]["multiSelect"], true);
     }
 
     #[test]

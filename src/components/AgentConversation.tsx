@@ -17,6 +17,7 @@ import { useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
+import { RunInTerminalContext, type RunInTerminal } from "./RunInTerminal";
 import { PersonalAppDraftCall } from "./PersonalAppDraftCall";
 import { isPersonalAppItem } from "../transcript/personalApp";
 import { isVisualItem } from "../transcript/visual";
@@ -38,12 +39,12 @@ import { backgroundOutcome, backgroundTaskKey, type BackgroundWork } from "../ba
 import { CHECK_LABEL } from "../transcript/checks";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
+import { QuestionCard, type ResolveQuestion } from "./QuestionCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
 import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
-type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
 // React warns when a layout effect is reached by `react-dom/server`. The effect
 // is still layout-only on the client, where the transcript actually lives.
@@ -858,7 +859,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -1122,7 +1123,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
     onEditTurn={retryFor(entry) ? onEditTurn : undefined}
   />;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -1165,7 +1166,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {trailing}
       </div>
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></ChatRunInTerminal.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1605,11 +1606,17 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
 /// directive. They are status, not prose, so they go through ThinkingRow.
 const WORKER_STATUS = /^_(Delegating to a worker|Checking on workers|Steering a worker|Stopping a worker)…_$/;
 
+/** The chat's terminal, held back from every Markdown surface but the
+ *  agent's own reply: a shell line in a tool result, a thought or a draft for
+ *  someone else is text, not a command offered to the person. */
+const ChatRunInTerminal = createContext<RunInTerminal | null>(null);
+
 function StreamedProse({ text, streaming }: { text: string; streaming: boolean }) {
   const smooth = useSmoothText(text, streaming);
+  const run = useContext(ChatRunInTerminal);
   const status = WORKER_STATUS.exec(text.trim())?.[1];
   if (status) return <ThinkingRow label={`${status}…`}/>;
-  return <Markdown text={smooth} />;
+  return <RunInTerminalContext.Provider value={run}><Markdown text={smooth} /></RunInTerminalContext.Provider>;
 }
 
 /// Prose, from either side of the conversation.
@@ -1703,7 +1710,7 @@ const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, rea
     ? <PromptMutationApprovalCard item={item} onResolve={onResolve}/>
     : <ApprovalCard item={item} onResolve={onResolve}/>)
     : item.type === "permission" ? <PermissionCard item={item} onResolve={onResolve}/>
-    : item.type === "question" ? <QuestionCard item={item} onResolve={onAnswerQuestion}/> : null;
+    : item.type === "question" ? <QuestionCard item={item} onResolve={onAnswerQuestion} resolvedCopy={resolutionCopy(item)}/> : null;
   if (interaction) return readOnly
     ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
     : interaction;
@@ -2079,93 +2086,6 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
       >{action.decision === "decline" ? <X size={12} aria-hidden="true" /> : action.decision === "accept" ? <Check size={12} aria-hidden="true" /> : null}{busy === (action.optionId ?? action.decision) ? "Applying…" : action.label}</button>)}
     </div>}
     {pending && actions.length === 0 && <p className="px-3.5 py-3 text-[12px] text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
-    {!pending && <p className={`px-3.5 py-3 text-[12px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
-  </div>;
-}
-
-type QuestionField = { id: string; prompt: string; options: string[]; multiple: boolean };
-
-function questionFields(data: Record<string, unknown>): QuestionField[] {
-  if (Array.isArray(data.questions)) {
-    return data.questions.flatMap((value, index) => {
-      if (!value || typeof value !== "object") return [];
-      const question = value as Record<string, unknown>;
-      const options = Array.isArray(question.options)
-        ? question.options.flatMap(option => typeof option === "string" ? [option] : option && typeof option === "object" && typeof (option as Record<string, unknown>).label === "string" ? [String((option as Record<string, unknown>).label)] : [])
-        : [];
-      return [{
-        id: typeof question.id === "string" ? question.id : String(index),
-        prompt: String(question.question ?? question.header ?? "Answer"),
-        options,
-        multiple: question.multiple === true || question.multiSelect === true,
-      }];
-    });
-  }
-  const schema = data.requestedSchema && typeof data.requestedSchema === "object" ? data.requestedSchema as Record<string, unknown> : {};
-  const properties = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : {};
-  return Object.entries(properties).map(([id, value]) => {
-    const property = value && typeof value === "object" ? value as Record<string, unknown> : {};
-    return {
-      id,
-      prompt: String(property.title ?? property.description ?? id),
-      options: Array.isArray(property.enum) ? property.enum.map(String) : [],
-      multiple: property.type === "array",
-    };
-  });
-}
-
-function QuestionCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolveQuestion }) {
-  const fields = questionFields(item.data);
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [busy, setBusy] = useState<QuestionAction | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const pending = item.status === "pending";
-  const setAnswer = (field: QuestionField, value: string) => setAnswers(current => ({
-    ...current,
-    [field.id]: field.multiple
-      ? (current[field.id] ?? []).includes(value) ? (current[field.id] ?? []).filter(option => option !== value) : [...(current[field.id] ?? []), value]
-      : [value],
-  }));
-  const act = async (action: QuestionAction) => {
-    setBusy(action);
-    setError(null);
-    try { await onResolve(item.eventId, action, answers); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setBusy(null); }
-  };
-  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-x-info`}>
-    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
-      <b className="text-[13px] font-semibold text-foreground">{item.title || "Question"}</b>
-      {pending && <small className="text-[11px] tracking-[0.03em] text-info">waiting for your answer</small>}
-    </header>
-    {item.text && <p className="mt-1.5 px-3.5 text-[13px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
-    {pending && <div className="space-y-3 px-3.5 py-3 sm:px-4">
-      {fields.map(field => <fieldset key={field.id} className="space-y-2">
-        <legend className="text-[12px] font-medium text-foreground">{field.prompt}</legend>
-        {field.options.length > 0 ? <div className="flex flex-wrap gap-1.5">{field.options.map(option => <button
-          type="button"
-          key={option}
-          disabled={!!busy}
-          aria-pressed={(answers[field.id] ?? []).includes(option)}
-          className={(answers[field.id] ?? []).includes(option) ? BTN_PRIMARY : BTN_SECONDARY}
-          onClick={() => setAnswer(field, option)}
-        >{option}</button>)}</div> : <input
-          aria-label={field.prompt}
-          disabled={!!busy}
-          value={answers[field.id]?.[0] ?? ""}
-          onChange={event => setAnswers(current => ({ ...current, [field.id]: [event.target.value] }))}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
-          placeholder="Type your answer"
-        />}
-      </fieldset>)}
-      {fields.length === 0 && <p className="text-[12px] text-muted-foreground">This provider did not supply an answerable question shape.</p>}
-      <div className="flex flex-wrap justify-end gap-[7px] pt-1">
-        <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Declining…" : "Decline"}</button>
-        <button disabled={!!busy || fields.length === 0 || !Object.values(answers).some(values => values.some(value => value.trim()))} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : "Send answer"}</button>
-      </div>
-    </div>}
     {!pending && <p className={`px-3.5 py-3 text-[12px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
     {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
     {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}

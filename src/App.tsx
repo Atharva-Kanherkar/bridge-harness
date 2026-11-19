@@ -41,9 +41,10 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
-import { appById, appForView, appsBadge, badgeText, type AppId } from "./apps/registry";
+import { appById, appForView, appsBadge, badgeText, builtinEntry, isAppId, personalEntry, personalIdOf, personalKey, type AppKey, type LaunchEntry } from "./apps/registry";
 import { setPinned, togglePin } from "./apps/pins";
-import { badgesOf, enabledApps, pinsOf, useApps } from "./apps/store";
+import { badgesOf, enabledApps, enabledPersonal, pinsOf, useApps, usePersonalApps } from "./apps/store";
+import { PersonalAppSurface } from "./components/PersonalAppSurface";
 import { splitDockPanes, useAddedPanes } from "./dockVisibility";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
@@ -96,6 +97,7 @@ import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type 
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
+import { requestTerminalRun } from "./terminal/runQueue";
 import { TasksPane, activeAgentRows, type AgentFocus } from "./components/TasksPane";
 import { usePinnedAgents } from "./pinnedAgents";
 import { useAgentSpawns } from "./agentSpawns";
@@ -270,6 +272,8 @@ function AppContent() {
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
+  // The personal app on screen in the `personal-app` view.
+  const [personalAppId, setPersonalAppId] = useState<string | null>(null);
   const loginSessionRef = useRef<{ id: string; harness: string } | undefined>();
   loginSessionRef.current = state.sessions.find(item => item.id === selectedSessionId);
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
@@ -977,17 +981,18 @@ function AppContent() {
   useEffect(() => startAppPreferenceSync(bridgeApi), []);
 
   useEffect(() => {
-    const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
+    const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm, appId: view === "personal-app" ? personalAppId : null };
     if (skipNavRecord.current) {
       skipNavRecord.current = false;
       return;
     }
     setNavPlaces(current => recordPlace(current.stack, current.index, place));
-  }, [view, selectedSessionId, paradigm]);
+  }, [view, selectedSessionId, paradigm, personalAppId]);
 
   const applyPlace = useCallback((place: AppPlace) => {
     skipNavRecord.current = true;
     setView(place.view);
+    if (place.view === "personal-app") setPersonalAppId(place.appId ?? null);
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
   }, []);
@@ -1171,6 +1176,14 @@ function AppContent() {
       setHighlightEntryId(current => current === entryId ? null : current);
     }, 3000);
   }
+  // A shell block's Run: the dock shows the terminal and its active shell
+  // takes the command. Stable per workspace so code blocks don't re-render.
+  const runWorkspaceId = hasRepo ? workspace?.id : undefined;
+  const runInTerminal = useCallback((command: string) => {
+    if (!runWorkspaceId) return Promise.reject(new Error("This chat has no terminal."));
+    dispatchDock({ type: "open-pane", pane: "terminal" });
+    return requestTerminalRun(runWorkspaceId, command);
+  }, [runWorkspaceId, dispatchDock]);
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
@@ -3283,7 +3296,14 @@ function AppContent() {
   // Core owns the apps: which are on, the pins and the badges.
   const coreApps = useApps();
   const launcherApps = useMemo(() => enabledApps(coreApps), [coreApps]);
-  const pins = useMemo(() => pinsOf(coreApps), [coreApps]);
+  const personalApps = usePersonalApps();
+  const launcherPersonal = useMemo(() => enabledPersonal(personalApps), [personalApps]);
+  const pins = useMemo(() => pinsOf(coreApps, personalApps), [coreApps, personalApps]);
+  const pinEntries = useMemo(() => pins.flatMap((key): LaunchEntry[] => {
+    if (isAppId(key)) return [builtinEntry(appById(key))];
+    const found = personalApps.find(entry => personalKey(entry.app.id) === key);
+    return found ? [personalEntry(found.app)] : [];
+  }), [pins, personalApps]);
   const appBadges = useMemo(() => badgesOf(coreApps), [coreApps]);
   const launcherChats = useMemo(() => [...topSessions].sort(byRecency).slice(0, 20).map(chat => ({
     id: chat.id,
@@ -3647,7 +3667,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "trails" ? "Trails" : view === "marketplace" ? "Store" : view === "personal-app" ? (personalApps.find(entry => entry.app.id === personalAppId)?.app.name ?? "App") : view === "usage" ? "Usage" : view === "pulls" ? "Pulls" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3691,14 +3711,17 @@ function AppContent() {
   ) : undefined;
   // Every app opens the way its old sidebar row did. Terminals and Mission
   // Control also leave the grid paradigm, as their rows always had.
-  const openApp = (id: AppId) => {
+  const openApp = (key: AppKey) => {
+    const personal = personalIdOf(key);
+    if (personal !== null) { setPersonalAppId(personal); setView("personal-app"); return; }
+    const id = key as Exclude<AppKey, `personal:${string}`>;
     // Trails opens on its list, the way its old row did.
     if (id === "trails") { openTrail(null); return; }
     const { view: target } = appById(id);
     if (target === "agent-fleet" || target === "mission-control") setParadigm("single");
     setView(target);
   };
-  const activeApp = appForView(view, paradigm);
+  const activeApp: AppKey | null = view === "personal-app" && personalAppId ? personalKey(personalAppId) : appForView(view, paradigm);
   const searchAllChats = (query: string) => {
     setSidebarCollapsed(false);
     setNavOpen(true);
@@ -3723,7 +3746,7 @@ function AppContent() {
       onOpenProjects={() => setView("projects")}
       onOpenApps={() => setLauncherOpen(true)}
       appsBadge={appsBadge(appBadges)}
-      pinnedApps={pins.map(id => ({ id, badge: badgeText(appBadges[id]) }))}
+      pinnedApps={pinEntries.map(app => ({ app, badge: isAppId(app.key) ? badgeText(appBadges[app.key]) : undefined }))}
       activeApp={activeApp}
       onOpenApp={openApp}
       onUnpinApp={id => void setPinned(id, false).then(result => { if (!result.ok) setError(result.message); })}
@@ -3822,7 +3845,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening the Store…"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening the Store…"/>}><MarketplaceScreen onOpenApp={openApp} /></Suspense> : view === "personal-app" && personalAppId ? <PersonalAppSurface key={personalAppId} appId={personalAppId} /> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "pulls" ? <PullsScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromPulls}
@@ -4011,6 +4034,7 @@ function AppContent() {
                    }}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
+                  onRunInTerminal={runWorkspaceId ? runInTerminal : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                   onForkSession={(snapshotSessionId, entryId) => {
@@ -4465,6 +4489,7 @@ function AppContent() {
       open={launcherOpen}
       onClose={() => setLauncherOpen(false)}
       apps={launcherApps}
+      personal={launcherPersonal}
       badges={appBadges}
       pins={pins}
       chats={launcherChats}

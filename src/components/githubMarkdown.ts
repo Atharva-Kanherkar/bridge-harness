@@ -19,6 +19,22 @@ export type GithubBlock =
   | { kind: "markdown"; text: string }
   | { kind: "details"; summary: string; body: string };
 
+/** One image or video a body embeds. */
+export type GithubMediaItem = {
+  kind: "image" | "video";
+  url: string;
+  alt: string;
+  /** Where a linked image (a badge, a thumbnail) points. */
+  href?: string;
+  /** The column heading when the media came out of a comparison table. */
+  caption?: string;
+};
+
+/** A run of markdown, or a row of media that sat between two runs. */
+export type GithubMediaBlock =
+  | { kind: "markdown"; text: string }
+  | { kind: "media"; items: GithubMediaItem[] };
+
 /** Formatting tags GitHub allows in a comment that carry a markdown spelling.
  * Anything absent from this table stays verbatim text. */
 const TAG_EQUIVALENT: Record<string, string> = {
@@ -250,4 +266,171 @@ export function splitGithubDetails(text: string): GithubBlock[] {
   const rest = text.slice(cursor);
   if (rest.trim() || blocks.length === 0) blocks.push({ kind: "markdown", text: rest });
   return blocks;
+}
+
+
+// ── Media ────────────────────────────────────────────────────────────────────
+//
+// A pull request is reviewed through its screenshots and recordings as much as
+// its diff, so the pane shows them. They are lifted out of the markdown before
+// the text renderer runs: the renderer stays a text renderer, and a piece of
+// media becomes a typed item the pane decides how to load (see
+// `github/Media.tsx`, which is also where the "which hosts load on their own"
+// rule lives). Only an http(s) address is ever lifted; anything else stays in
+// the text and takes the inert path above.
+
+const VIDEO_EXTENSION = /\.(?:mp4|mov|webm|m4v)$/i;
+/** GitHub's own attachment addresses, which carry no file extension. */
+const ATTACHMENT_PATH = /^\/(?:user-attachments\/assets\/[\w-]+|[^/]+\/[^/]+\/assets\/\d+\/[\w-]+)\/?$/;
+
+function mediaKind(url: string): "image" | "video" {
+  try {
+    return VIDEO_EXTENSION.test(new URL(url).pathname) ? "video" : "image";
+  } catch {
+    return "image";
+  }
+}
+
+/** A URL that stands alone on a line and is a recording: GitHub writes an
+ *  uploaded video into the body as exactly that. */
+function bareVideo(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (VIDEO_EXTENSION.test(parsed.pathname)) return true;
+    return /^https:$/.test(parsed.protocol) && !parsed.hostname.includes("githubusercontent") && ATTACHMENT_PATH.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+const attribute = (tag: string, name: string): string | undefined =>
+  new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(tag)?.slice(1).find(value => value !== undefined);
+
+// Alternatives, in the order they must be tried: a linked image before a bare
+// one, an `<a><img></a>` before a bare `<img>`.
+const MEDIA_TOKEN = new RegExp([
+  String.raw`\[!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)\]\(([^)\s]+)\)`,
+  String.raw`!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)`,
+  String.raw`<a\b[^>]*>\s*<img\b[^>]*>\s*<\/a>`,
+  String.raw`<video\b[^>]*>(?:[\s\S]*?<\/video>)?`,
+  String.raw`<img\b[^>]*>`,
+].join("|"), "gi");
+
+/** Wrapper markup that carries no content of its own once its media is gone. */
+const EMPTY_WRAPPER = /<\/?(?:p|div|center|picture|span|kbd)\b[^>]*>|<source\b[^>]*>|<br\s*\/?>/gi;
+
+function mediaFromToken(match: RegExpExecArray | RegExpMatchArray): GithubMediaItem | undefined {
+  const token = match[0];
+  let url: string | undefined;
+  let alt = "";
+  let href: string | undefined;
+  if (match[2] !== undefined) { alt = match[1] ?? ""; url = match[2]; href = match[3]; }
+  else if (match[5] !== undefined) { alt = match[4] ?? ""; url = match[5]; }
+  else if (/^<a\b/i.test(token)) {
+    const image = /<img\b[^>]*>/i.exec(token)?.[0] ?? "";
+    url = attribute(image, "src"); alt = attribute(image, "alt") ?? ""; href = attribute(token.slice(0, token.indexOf(">") + 1), "href");
+  } else {
+    url = attribute(token, "src"); alt = attribute(token, "alt") ?? attribute(token, "title") ?? "";
+  }
+  const target = url === undefined ? undefined : linkable(url);
+  if (!target) return undefined;
+  const link = href === undefined ? undefined : linkable(href);
+  const video = /^<video\b/i.test(token);
+  return { kind: video ? "video" : mediaKind(target), url: target, alt: alt.trim(), ...(link && !video ? { href: link } : {}) };
+}
+
+/** The media on one line, and what is left of the line without it. */
+function liftLine(line: string): { items: GithubMediaItem[]; rest: string } {
+  const { masked, spans } = maskInlineCode(line);
+  const items: GithubMediaItem[] = [];
+  let rest = masked.replace(MEDIA_TOKEN, (...args) => {
+    const item = mediaFromToken(args as unknown as RegExpMatchArray);
+    if (!item) return args[0] as string;
+    items.push(item);
+    return "";
+  });
+  if (!items.length) {
+    const bare = /^\s*<?(https?:\/\/[^\s<>]+)>?\s*$/.exec(masked);
+    if (bare && bareVideo(bare[1])) return { items: [{ kind: "video", url: bare[1], alt: "" }], rest: "" };
+    return { items, rest: line };
+  }
+  if (!rest.replace(EMPTY_WRAPPER, "").replace(/[|\s]/g, "")) rest = "";
+  return { items, rest: unmaskInlineCode(rest, spans) };
+}
+
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+const tableCells = (line: string): string[] => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(cell => cell.trim());
+
+/**
+ * A "Dark | Light" comparison table whose every body cell is a screenshot.
+ * It becomes rows of media captioned by the column heading, because a table
+ * cell is a line of text in the renderer and cannot hold an image. A table
+ * with any prose in its body is left alone.
+ */
+function liftTable(lines: string[]): GithubMediaItem[][] | undefined {
+  const header = tableCells(lines[0]);
+  const rows: GithubMediaItem[][] = [];
+  for (const line of lines.slice(2)) {
+    const row: GithubMediaItem[] = [];
+    for (const [column, cell] of tableCells(line).entries()) {
+      if (!cell) continue;
+      const lifted = liftLine(cell);
+      if (lifted.rest || lifted.items.length !== 1) return undefined;
+      const caption = header[column]?.replace(/[*_`]/g, "").trim();
+      row.push({ ...lifted.items[0], ...(caption ? { caption } : {}) });
+    }
+    if (row.length) rows.push(row);
+  }
+  return rows.length ? rows : undefined;
+}
+
+/**
+ * Split a run of GitHub markdown into text and the media between it.
+ *
+ * Fenced code is never searched, so a body that *shows* an `<img>` keeps it as
+ * code. Consecutive media lines share one row, which is how a pair of
+ * before/after screenshots reads side by side.
+ */
+export function splitGithubMedia(text: string): GithubMediaBlock[] {
+  // A tag may be wrapped across lines; the split below is line-based.
+  const source = text.replaceAll("\r\n", "\n");
+  const ranges = fencedRanges(source);
+  const flattened = source.replace(/<(?:img|video|a)\b[^>]*>/gi, (tag, offset: number) =>
+    insideFence(offset, ranges) ? tag : tag.replace(/\s*\n\s*/g, " "));
+  const fences = fencedRanges(flattened);
+  const blocks: GithubMediaBlock[] = [];
+  let prose: string[] = [];
+  const flushProse = () => {
+    if (prose.join("\n").trim()) blocks.push({ kind: "markdown", text: prose.join("\n") });
+    prose = [];
+  };
+  const pushMedia = (items: GithubMediaItem[], join: boolean) => {
+    const last = blocks[blocks.length - 1];
+    if (join && !prose.length && last?.kind === "media") last.items.push(...items);
+    else { flushProse(); blocks.push({ kind: "media", items: [...items] }); }
+  };
+
+  const lines = flattened.split("\n");
+  let offset = 0;
+  const offsets = lines.map(line => { const at = offset; offset += line.length + 1; return at; });
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (insideFence(offsets[index], fences)) { prose.push(line); continue; }
+    if (line.includes("|") && TABLE_SEPARATOR.test(lines[index + 1] ?? "") && (lines[index + 1] ?? "").includes("-")) {
+      let end = index + 2;
+      while (end < lines.length && lines[end].includes("|") && lines[end].trim() && !insideFence(offsets[end], fences)) end += 1;
+      const rows = liftTable(lines.slice(index, end));
+      if (rows) {
+        for (const row of rows) pushMedia(row, false);
+        index = end - 1;
+        continue;
+      }
+    }
+    const lifted = liftLine(line);
+    if (!lifted.items.length) { prose.push(line); continue; }
+    if (lifted.rest.trim()) { prose.push(lifted.rest); pushMedia(lifted.items, false); }
+    else pushMedia(lifted.items, true);
+  }
+  flushProse();
+  return blocks.length ? blocks : [{ kind: "markdown", text }];
 }

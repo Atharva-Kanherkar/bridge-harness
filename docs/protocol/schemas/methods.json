@@ -142,6 +142,13 @@
       "resultSchema": "github-merge-config-result.json"
     },
     {
+      "command": "github_media",
+      "domain": "github",
+      "method": "github/github_media",
+      "paramsSchema": "github-media-params.json",
+      "resultSchema": "github-media-result.json"
+    },
+    {
       "command": "github_act",
       "domain": "github",
       "method": "github/github_act",
@@ -1276,6 +1283,20 @@
       "resultSchema": "list-personal-apps-result.json"
     },
     {
+      "command": "open_personal_app_surface",
+      "domain": "apps",
+      "method": "apps/open_personal_app_surface",
+      "paramsSchema": "open-personal-app-surface-params.json",
+      "resultSchema": "personal-app-surface-open.json"
+    },
+    {
+      "command": "close_personal_app_surface",
+      "domain": "apps",
+      "method": "apps/close_personal_app_surface",
+      "paramsSchema": "close-personal-app-surface-params.json",
+      "resultSchema": "close-personal-app-surface-result.json"
+    },
+    {
       "command": "list_trails",
       "domain": "trails",
       "method": "trails/list_trails",
@@ -2405,7 +2426,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 43
+    "minor": 44
   },
   "reserved": {
     "cancel": "$/cancel",

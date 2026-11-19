@@ -53,6 +53,13 @@
     },
     "GithubActor": {
       "properties": {
+        "avatarUrl": {
+          "description": "The account's avatar, present on reads that asked GitHub for it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "login": {
           "type": "string"
         }
@@ -385,6 +392,13 @@
           },
           "type": "array"
         },
+        "diffHunk": {
+          "description": "The diff hunk the conversation was opened on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
@@ -412,6 +426,21 @@
         },
         "path": {
           "type": "string"
+        },
+        "viewerCanReply": {
+          "default": false,
+          "description": "Whether the signed-in account may reply in this conversation.",
+          "type": "boolean"
+        },
+        "viewerCanResolve": {
+          "default": false,
+          "description": "Whether the signed-in account may resolve this conversation.",
+          "type": "boolean"
+        },
+        "viewerCanUnresolve": {
+          "default": false,
+          "description": "Whether the signed-in account may reopen this conversation.",
+          "type": "boolean"
         }
       },
       "required": [

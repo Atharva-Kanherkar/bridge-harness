@@ -1,3 +1,4 @@
+import { appById, builtinEntry } from "../apps/registry";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, Workspace } from "../types";
@@ -84,7 +85,7 @@ beforeEach(() => {
 describe("BridgeSidebar responsive rail", () => {
   it("keeps Trails off the nav unless pinned, and badges it when pinned", () => {
     expect(render()).not.toContain('aria-label="Trails');
-    const html = render({ pinnedApps: [{ id: "trails", badge: { count: "2", label: "2 waiting for you" } }] });
+    const html = render({ pinnedApps: [{ app: builtinEntry(appById("trails")), badge: { count: "2", label: "2 waiting for you" } }] });
     expect(html).toContain('aria-label="Trails, 2 waiting for you"');
     expect(html.indexOf('aria-label="Apps"')).toBeLessThan(html.indexOf('aria-label="Trails'));
   });
@@ -459,7 +460,7 @@ describe("BridgeSidebar without the projects tree", () => {
 
   it("draws pinned apps under Apps, in pin order, and marks the one on screen current", () => {
     const rows = (html: string) => [...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*>/g)].map(match => match[1]);
-    const html = render({ pinnedApps: [{ id: "usage" }, { id: "notes" }], activeApp: "notes" });
+    const html = render({ pinnedApps: [{ app: builtinEntry(appById("usage")) }, { app: builtinEntry(appById("notes")) }], activeApp: "notes" });
     const labels = rows(html);
     expect(labels.indexOf("Usage")).toBe(labels.indexOf("Apps") + 1);
     expect(labels.indexOf("Notes")).toBe(labels.indexOf("Apps") + 2);
@@ -472,7 +473,7 @@ describe("BridgeSidebar without the projects tree", () => {
   it("badges a pinned app and the Apps row, and shows nothing at zero", () => {
     const apps = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Apps')) ?? "";
     expect(apps(render())).toContain('aria-label="Apps"');
-    const badged = render({ appsBadge: { count: "5", label: "5 waiting for you" }, pinnedApps: [{ id: "memory", badge: { count: "3", label: "3 waiting for you" } }] });
+    const badged = render({ appsBadge: { count: "5", label: "5 waiting for you" }, pinnedApps: [{ app: builtinEntry(appById("memory")), badge: { count: "3", label: "3 waiting for you" } }] });
     expect(apps(badged)).toContain('aria-label="Apps, 5 waiting for you"');
     expect(apps(badged)).toContain(">5</span>");
     expect(badged).toContain('aria-label="Memory, 3 waiting for you"');
@@ -582,9 +583,9 @@ describe("BridgeSidebar action rows", () => {
   it("marks a pinned app and account settings current", () => {
     const store = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Store"')) ?? "";
     const account = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Open settings for cestercian"')) ?? "";
-    expect(store(render({ pinnedApps: [{ id: "store" }], activeApp: "store" }))).toContain('aria-current="page"');
+    expect(store(render({ pinnedApps: [{ app: builtinEntry(appById("store")) }], activeApp: "store" }))).toContain('aria-current="page"');
     expect(account(render({ settingsActive: true }))).toContain('aria-current="page"');
-    expect(store(render({ pinnedApps: [{ id: "store" }] }))).not.toContain("aria-current");
+    expect(store(render({ pinnedApps: [{ app: builtinEntry(appById("store")) }] }))).not.toContain("aria-current");
   });
 });
 

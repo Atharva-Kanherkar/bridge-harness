@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SkillMarketplace } from "./SkillMarketplace";
 import { StoreApps } from "./StoreApps";
-import type { AppId } from "../apps/registry";
+import type { AppKey } from "../apps/registry";
 
 type InstallTarget = MarketplaceProvider | "both";
 type CatalogScope = "public" | "personal";
@@ -416,7 +416,7 @@ const STORE_SECTIONS: { id: StoreSection; label: string; hint: string }[] = [
 ];
 
 /** The Store: Bridge's own apps, the harnesses' plugins, and skills. */
-export function MarketplaceScreen({ onOpenApp }: { onOpenApp?: (id: AppId) => void } = {}) {
+export function MarketplaceScreen({ onOpenApp }: { onOpenApp?: (key: AppKey) => void } = {}) {
   const [section, setSection] = useState<StoreSection>("apps");
   return <div className="flex h-full min-h-0 flex-col">
     <nav className="flex shrink-0 items-center gap-4 border-b border-border px-5 py-2 sm:px-8" aria-label="Store sections">
