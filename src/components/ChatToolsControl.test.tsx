@@ -310,6 +310,8 @@ describe("ChatToolsControl", () => {
     await settle();
     await openPanel();
     expect(row("github")!.textContent).toContain("4,120 tokens · codex.mcpServerStatus bytes_div4_v1");
+    // The row cuts a long source, so the full text stays on the element.
+    expect(row("github")!.querySelector('[title="4,120 tokens · codex.mcpServerStatus bytes_div4_v1"]')?.textContent).toBe("4,120 tokens · codex.mcpServerStatus bytes_div4_v1");
     expect(row("linear")!.textContent).toBe("linear");
     expect(row("linear")!.textContent).not.toContain("tokens");
   });

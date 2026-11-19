@@ -273,7 +273,7 @@ function ToolRow({ item, pending, busy, onSwitch, onRemove }: {
   >{pending?.on === null ? <Spinner className="size-3.5" /> : <X size={13} aria-hidden="true" />}</button>;
   const meta = <>
     {item.fixedReason && <span className="block text-[11px] leading-4 text-muted-foreground">{item.fixedReason}</span>}
-    {figure && <span className="block truncate text-[11px] leading-4 text-muted-foreground">{figure}</span>}
+    {figure && <span title={figure} className="block truncate text-[11px] leading-4 text-muted-foreground">{figure}</span>}
     {!item.seen && <span className="block text-[11px] leading-4 text-faint">Saved, not listed now</span>}
   </>;
   if (item.state === "fixed") {
