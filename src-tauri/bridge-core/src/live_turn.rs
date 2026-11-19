@@ -2464,6 +2464,14 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 &serde_json::json!({"adapter": adapter_id, "hidden": true}),
             );
         }
+        // A native resume restores the Claude session totals in the new
+        // process. The normalizer starts from the last stored totals, before
+        // the first frame of the launch.
+        if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native && adapter_id == "claude" {
+            if let Some(usage_event) = last_usage_event(&db, &session_id) {
+                state.adapter_registry.seed_usage_totals(adapter_id, &thread_id, &usage_event);
+            }
+        }
         for message in &started.startup_messages {
             persist_agent_value(
                 &db,
@@ -2870,6 +2878,19 @@ fn spawn_reader_thread(
         }
         core.events.publish(CoreEvent::StateChanged);
     });
+}
+
+/// The stored payload of the last `usage.updated` entry of a chat. The read
+/// looks at the newest 5000 entries only, so its cost has a cap. A launch
+/// calls it one time, never the frame path.
+fn last_usage_event(db: &Connection, session_id: &str) -> Option<serde_json::Value> {
+    db.query_row(
+        "SELECT payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' AND sequence>(SELECT COALESCE(MAX(sequence),0)-5000 FROM session_entries WHERE session_id=?1) ORDER BY sequence DESC LIMIT 1",
+        params![session_id],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_str(&payload).ok())
 }
 
 fn persist_agent_value(

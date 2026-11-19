@@ -199,6 +199,8 @@ struct Script {
     /// A launch with a Codex skills part reports that it dropped the part,
     /// as for a config with a `skills` key of the user.
     drops_codex_skills: bool,
+    /// Each usage seed: the harness, the provider id and the stored payload.
+    seeds: Vec<(&'static str, String, Value)>,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -277,6 +279,9 @@ impl HarnessAdapter for Live {
         } else {
             vec![]
         }
+    }
+    fn seed_usage_totals(&self, provider_session_id: &str, usage_event: &Value) {
+        self.script.lock().unwrap().seeds.push((self.id, provider_session_id.to_owned(), usage_event.clone()));
     }
 }
 
@@ -983,4 +988,65 @@ fn the_first_launch_with_a_first_choice_records_the_event_without_a_prefix_rewri
     let events = change_events(&core, &chat);
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["prefixRewritten"], true);
+}
+
+/// Store one `usage.updated` entry of `harness` for a chat, with a total cost.
+fn store_usage(core: &BridgeCore, chat: &str, harness: &str, cost: f64) {
+    let mut event = agent::NormalizedEvent::new("usage.updated");
+    event.data = json!({"usage": {"input_tokens": 1}, "totalCostUsd": cost, "modelUsage": {"m": {"inputTokens": 1, "costUSD": cost}}});
+    store::session_event(&core.db.lock().unwrap(), chat, &event, &json!({"adapter": harness})).unwrap();
+}
+
+fn seeds(script: &Shared) -> Vec<(&'static str, String, Value)> {
+    std::mem::take(&mut script.lock().unwrap().seeds)
+}
+
+#[test]
+fn a_native_resume_seeds_the_claude_totals_from_the_last_usage_entry() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", Some("thread-0"));
+    store_usage(&core, &chat, "claude", 0.25);
+    store_usage(&core, &chat, "claude", 0.5);
+    // A later entry of another kind does not hide the last usage entry.
+    store::session_event(&core.db.lock().unwrap(), &chat, &agent::NormalizedEvent::new("turn.completed"), &json!({"adapter": "claude"})).unwrap();
+    start_chat(&core, chat.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-0"));
+    assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
+    assert_eq!(seeded[0].2["providerMeta"]["adapter"], "claude");
+
+    // A native resume of a chat with no usage entry calls no seed.
+    let empty = chat_on(&core, "claude", Some("thread-1"));
+    start_chat(&core, empty).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-1"))]);
+    assert!(seeds(&script).is_empty());
+
+    // A Codex chat and an OpenCode chat get no Claude seed.
+    for harness in ["codex", "opencode"] {
+        let other = chat_on(&core, harness, Some("thread-2"));
+        store_usage(&core, &other, harness, 0.5);
+        start_chat(&core, other).unwrap();
+        assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-2"))], "{harness}");
+        assert!(seeds(&script).is_empty(), "{harness}");
+    }
+}
+
+#[test]
+fn a_fresh_claude_start_gets_no_seed() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", None);
+    store_usage(&core, &chat, "claude", 0.5);
+    start_chat(&core, chat).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)]);
+    assert!(seeds(&script).is_empty());
+
+    // A failed native resume falls back to a fresh start, which gets no seed.
+    let failed = chat_on(&core, "claude", Some("thread-0"));
+    store_usage(&core, &failed, "claude", 0.5);
+    script.lock().unwrap().resume_error = Some("the session did not load".into());
+    start_chat(&core, failed).unwrap();
+    assert_eq!(asked(&script).iter().map(|launch| launch.verb).collect::<Vec<_>>(), ["resume", "start"]);
+    assert!(seeds(&script).is_empty());
 }

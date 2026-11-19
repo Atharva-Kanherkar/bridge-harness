@@ -43,6 +43,12 @@ agent's plan (`plan.updated`) are recorded there. They used to be dropped
 entirely, which meant a reloaded session could no longer say where a turn began
 or what it cost — the two questions an observability read starts from.
 
+The Claude Agent SDK reports usage and cost as totals of the session. A Claude
+`usage.updated` entry holds the share of one turn in `modelUsage` and
+`totalCostUsd`, and the raw totals in `cumulative`. After a native resume in a
+new process, the normalizer starts from the totals of the last stored entry of
+the chat.
+
 ### What is never stored
 
 Streaming frames — `message.delta`, `reasoning.delta`, `tool.progress` — and

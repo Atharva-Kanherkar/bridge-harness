@@ -858,6 +858,11 @@ pub trait HarnessAdapter: Send + Sync + Any {
     /// when the session's runtime is gone; adapters without per-session state
     /// ignore it.
     fn forget_session(&self, _provider_session_id: &str) {}
+    /// Give the normalization state of `provider_session_id` the session
+    /// totals of a stored `usage.updated` entry. `usage_event` is the stored
+    /// payload of that entry. A native resume calls this before the first
+    /// frame. Adapters whose usage needs no earlier totals ignore it.
+    fn seed_usage_totals(&self, _provider_session_id: &str, _usage_event: &Value) {}
     /// Look again at whatever decides this harness's availability.
     ///
     /// A default no-op, because most adapters read availability fresh on every
@@ -1231,6 +1236,12 @@ impl AdapterRegistry {
     pub fn forget_session(&self, id: &str, provider_session_id: &str) {
         if let Some(adapter) = self.adapters.get(id) {
             adapter.forget_session(provider_session_id);
+        }
+    }
+
+    pub fn seed_usage_totals(&self, id: &str, provider_session_id: &str, usage_event: &Value) {
+        if let Some(adapter) = self.adapters.get(id) {
+            adapter.seed_usage_totals(provider_session_id, usage_event);
         }
     }
 
@@ -2209,6 +2220,19 @@ impl HarnessAdapter for ClaudeAdapter {
         }
         self.streams.lock().unwrap().remove(provider_session_id);
     }
+    /// The SDK restores the session totals at a resume, so the first result
+    /// of the new process is a share of one turn only after this seed.
+    fn seed_usage_totals(&self, provider_session_id: &str, usage_event: &Value) {
+        let Some(seed) = agent::claude_usage_seed(usage_event, provider_session_id) else {
+            return;
+        };
+        self.streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(provider_session_id.to_owned())
+            .or_default()
+            .seed_usage_totals(seed);
+    }
 }
 
 #[cfg(test)]
@@ -2621,6 +2645,54 @@ mod tests {
             notify: None,
             refreshing: Arc::new(AtomicBool::new(false)),
         }));
+    }
+
+    #[test]
+    fn the_claude_seed_sets_totals_only_once_and_other_adapters_ignore_it() {
+        let models = |id: &str| Arc::new(RwLock::new(model_catalog::resolve(id, Err("not discovered".into()), &[], None, chrono::Utc::now())));
+        let claude = ClaudeAdapter { streams: Mutex::new(HashMap::new()), models: models("claude"), notify: None, refreshing: Arc::new(AtomicBool::new(false)) };
+        let result = |input: i64, cost: f64| serde_json::json!({
+            "type": "result", "subtype": "success", "session_id": "s", "usage": {"input_tokens": 1},
+            "total_cost_usd": cost, "modelUsage": {"m": {"inputTokens": input, "costUSD": cost}}
+        });
+        let stored = |input: i64, cost: f64| serde_json::json!({
+            "data": {"usage": {"input_tokens": 1}, "totalCostUsd": cost, "modelUsage": {"m": {"inputTokens": input, "costUSD": cost}}},
+            "providerMeta": {"adapter": "claude"}
+        });
+        let share = |events: Vec<agent::NormalizedEvent>| {
+            let data = events.into_iter().find(|event| event.kind == "usage.updated").unwrap().data;
+            (data["modelUsage"]["m"]["inputTokens"].as_i64().unwrap(), data["totalCostUsd"].as_f64().unwrap())
+        };
+        // The first seed sets the totals. A second seed finds them and changes nothing.
+        claude.seed_usage_totals("s", &stored(100, 1.0));
+        claude.seed_usage_totals("s", &stored(500, 5.0));
+        let (tokens, cost) = share(claude.normalize(&result(130, 1.25)));
+        assert_eq!(tokens, 30);
+        assert!((cost - 0.25).abs() < 1e-9, "{cost}");
+        // A seed after a result of this process keeps the totals of the process.
+        claude.seed_usage_totals("s", &stored(10, 0.1));
+        let (tokens, cost) = share(claude.normalize(&result(150, 1.5)));
+        assert_eq!(tokens, 20);
+        assert!((cost - 0.25).abs() < 1e-9, "{cost}");
+        // A refused seed makes no state.
+        claude.seed_usage_totals("t", &serde_json::json!({"data": {"totalCostUsd": 1.0}, "providerMeta": {"adapter": "codex"}}));
+        assert!(!claude.streams.lock().unwrap().contains_key("t"));
+
+        // Codex and OpenCode keep the default, which does nothing.
+        let codex = CodexAdapter { streams: Mutex::new(HashMap::new()), models: models("codex"), notify: None, refreshing: Arc::new(AtomicBool::new(false)) };
+        codex.seed_usage_totals("s", &stored(100, 1.0));
+        assert!(codex.streams.lock().unwrap().is_empty());
+        let opencode = OpenCodeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            session_roots: Mutex::new(HashMap::new()),
+            settings: RwLock::new(Default::default()),
+            catalog: Arc::new(RwLock::new(None)),
+            catalog_error: Arc::new(RwLock::new(None)),
+            model_catalog: models("opencode"),
+            cache_path: None,
+        };
+        opencode.seed_usage_totals("s", &stored(100, 1.0));
+        assert!(opencode.streams.lock().unwrap().is_empty());
     }
 
     fn discovered(id: &str, label: &str) -> DiscoveredModel {
