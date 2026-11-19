@@ -1442,4 +1442,43 @@ describe("a new chat's model before the host answers", () => {
     const created = await create.mock.results[1]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
     expect(created.state.sessions.find(session => session.id === created.sessionId)?.harness).toBe("opencode");
   });
+
+  it("keeps a draft tool choice in view on a harness with no tool rows until the person clears it", async () => {
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
+    await mountApp();
+    await settle(2);
+    const chip = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Tools:"]');
+    const pick = async (label: string) => {
+      if (pill()!.getAttribute("aria-expanded") !== "true") await click(pill()!);
+      await click([...container.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes(label))!);
+      await settle(2);
+    };
+
+    // Apps off in a Codex draft, then the draft moves to Cursor, which lists no tools.
+    await pick("GPT Luna");
+    await click(chip()!);
+    await click(document.querySelector('[data-tool-item="codex_apps"] [role="menuitemcheckbox"]')!);
+    await click(chip()!);
+    await pick("Composer 2.5");
+    expect(chip()?.getAttribute("aria-label")).toBe("Tools: not applied");
+
+    await click(chip()!);
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe("Chosen for Codex (own login), not applied");
+    const clear = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Clear this choice");
+    await click(clear!);
+    expect(chip()).toBeNull();
+
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Plan the next step");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("toolSelection");
+    const created = await create.mock.results[0]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
+    expect(created.state.sessions.find(session => session.id === created.sessionId)?.harness).toBe("cursor");
+  });
 });

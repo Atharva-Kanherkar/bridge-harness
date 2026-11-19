@@ -351,6 +351,25 @@ describe("ChatToolsControl", () => {
     expect(row("linear")!.textContent).not.toContain("tokens");
   });
 
+  it("keeps a draft choice in view on a harness without units until the person clears it", async () => {
+    const choice: ChatToolSelection = { harness: "codex", account: null, codexAppsOff: true };
+    const onChoiceChange = vi.fn();
+    const draft = (selection: ChatToolSelection | null) =>
+      <ChatToolsControl draft={{ harness: "cursor", account: null, workspaceId: null }} choice={selection} onChoiceChange={onChoiceChange} />;
+    act(() => { root.render(draft(choice)); });
+    await settle();
+    expect(chip()?.getAttribute("aria-label")).toBe("Tools: not applied");
+    await openPanel();
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe("Chosen for Codex (own login), not applied");
+    const clear = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Clear this choice");
+    act(() => { clear!.click(); });
+    expect(onChoiceChange).toHaveBeenCalledWith(null);
+
+    act(() => { root.render(draft(null)); });
+    await settle();
+    expect(container.innerHTML).toBe("");
+  });
+
   it("hides the control for a harness without units", async () => {
     act(() => { root.render(<ChatToolsControl draft={{ harness: "cursor", account: null, workspaceId: null }} choice={null} onChoiceChange={() => undefined} />); });
     await settle();

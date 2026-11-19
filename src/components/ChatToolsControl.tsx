@@ -112,11 +112,17 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
 
   const data = view.key === key ? view.data : undefined;
   const loadError = view.key === key ? view.error : undefined;
-  // A harness with no units lists nothing and reads nothing.
-  if (data && data.items.length === 0 && data.sources.length === 0) return null;
+  const saved = props.draft ? props.choice : data?.choice ?? null;
+  // A draft knows its own target, so it finds a choice for another target with no read.
+  const draftTarget = props.draft && saved && !fits(saved, props.draft.harness, normalizeAccount(props.draft.harness, draftAccount))
+    ? `Chosen for ${describeTarget(saved.harness, normalizeAccount(saved.harness, saved.account))}, not applied`
+    : null;
+  const unitless = !!data && data.items.length === 0 && data.sources.length === 0;
+  // A harness with no units lists nothing and reads nothing. The create refuses a draft
+  // choice for another target, so that choice stays in view until the person clears it.
+  if (unitless && !draftTarget) return null;
 
   const account = data ? normalizeAccount(data.harness, data.account) : null;
-  const saved = props.draft ? props.choice : data?.choice ?? null;
   const own = !!data && fits(saved, data.harness, account);
   const base = data ? baseChoice(saved, data.harness, account) : null;
   // The host reads a draft without its choice, so the local choice sets the states. The
@@ -124,10 +130,7 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
   const local = !!props.draft || (!!saved && !own);
   const items = !data || !base ? [] : local ? overlay(data.items.filter(entry => entry.seen), base) : data.items;
   const offCount = items.filter(item => item.state === "off").length;
-  const draftTarget = props.draft && saved && !own
-    ? `Chosen for ${describeTarget(saved.harness, normalizeAccount(saved.harness, saved.account))}, not applied`
-    : null;
-  const notApplied = data ? (!data.selection.applies ? data.selection.notAppliedReason ?? "Not applied" : draftTarget) : null;
+  const notApplied = draftTarget ?? (data && !data.selection.applies ? data.selection.notAppliedReason ?? "Not applied" : null);
   const choiceNotApplied = !!notApplied && !!saved;
 
   const change = async (next: Choice, item: ChatToolItem, on: boolean | null) => {
@@ -235,7 +238,9 @@ export function ChatToolsControl(props: ChatToolsControlProps) {
         </button>
       </div>}
       {data && base && <>
-        {!items.length && <p className="px-2 py-1.5 text-[12px] text-muted-foreground">Nothing to list yet.</p>}
+        {!items.length && <p className="px-2 py-1.5 text-[12px] text-muted-foreground">
+          {unitless ? data.selection.notAppliedReason ?? "Nothing to list yet." : "Nothing to list yet."}
+        </p>}
         {SECTIONS.map(section => {
           const members = items.filter(item => (section.kinds as readonly string[]).includes(item.kind));
           if (!members.length) return null;
