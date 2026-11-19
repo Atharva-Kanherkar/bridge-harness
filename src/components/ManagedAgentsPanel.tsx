@@ -208,7 +208,7 @@ function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: Managed
     return <span
       role="status"
       aria-live="polite"
-      className="shrink-0 text-[11px] text-muted-foreground motion-safe:animate-pulse"
+      className="shrink-0 text-caption text-muted-foreground motion-safe:animate-pulse"
       data-testid={`agent-busy-${agent.agentId}`}
     >{busy}…</span>;
   }
@@ -263,16 +263,16 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
               <span data-testid={`agent-state-${agent.agentId}`}>{stateLabel(agent)}</span>
             </StatusPill>
             <RowAction agent={agent} state={state} />
-            {!isAbsent(agent) && authState === "signed_in" && <span className="text-[11px] font-medium text-success" data-testid={`agent-auth-${agent.agentId}`}>Signed in</span>}
+            {!isAbsent(agent) && authState === "signed_in" && <span className="text-caption font-medium text-success" data-testid={`agent-auth-${agent.agentId}`}>Signed in</span>}
             {!isAbsent(agent) && (authState === "signed_out" || authState === "unknown") && <GhostButton onClick={() => setLogin(agent.agentId)}>Sign in</GhostButton>}
-            {!isAbsent(agent) && authState === "unknown" && <span className="text-[11px] text-muted-foreground" data-testid={`agent-auth-${agent.agentId}`}>Sign-in status unknown</span>}
+            {!isAbsent(agent) && authState === "unknown" && <span className="text-caption text-muted-foreground" data-testid={`agent-auth-${agent.agentId}`}>Sign-in status unknown</span>}
           </>}
         />
         {login === agent.agentId && <div className="px-3.5 pb-3"><ProviderLoginPane provider={agent.agentId as UsageProvider} label={agent.label} onClose={() => { setLogin(null); state.reload(); onAuthenticationChanged?.(); }} /></div>}
-        {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-[12px] text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
+        {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-meta text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
         </p>}
-        {state.errors[agent.agentId] && <p role="alert" className="px-3.5 pb-2.5 text-[12px] text-destructive">
+        {state.errors[agent.agentId] && <p role="alert" className="px-3.5 pb-2.5 text-meta text-destructive">
           {state.errors[agent.agentId]}
         </p>}
       </div>})}
@@ -302,7 +302,7 @@ export function ManagedAgentDetail({ state, agentId, adapters = [], onAuthentica
       label={agent.label}
       description={<span data-testid={`agent-source-${agent.agentId}`}>{sourceLine(agent)}</span>}
       control={busy
-        ? <span role="status" aria-live="polite" className="text-[11px] text-muted-foreground motion-safe:animate-pulse" data-testid={`agent-busy-${agent.agentId}`}>{busy}…</span>
+        ? <span role="status" aria-live="polite" className="text-caption text-muted-foreground motion-safe:animate-pulse" data-testid={`agent-busy-${agent.agentId}`}>{busy}…</span>
         : <>
             {isAbsent(agent) && canInstallManagedAgent(agent) && <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>}
             {needsRepair(agent) && canInstallManagedAgent(agent) && <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>}
@@ -408,16 +408,16 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
       data-testid="remove-confirmation"
     >
       <div ref={dialog} className="u-glass-popover flex max-h-[84dvh] w-full max-w-md flex-col gap-2 overflow-y-auto rounded-xl p-4">
-        <h4 id={titleId} className="text-[13px] font-medium text-foreground">
+        <h4 id={titleId} className="text-ui font-medium text-foreground">
           Remove the Bridge-managed {agent.label}
           {agent.version ? ` ${agent.version}` : ""}?
         </h4>
         {agent.executable && (
-          <p className="truncate font-mono text-[11px] text-muted-foreground" title={agent.executable}>
+          <p className="truncate font-mono text-caption text-muted-foreground" title={agent.executable}>
             {agent.executable}
           </p>
         )}
-        <p className="text-[12px] text-muted-foreground">
+        <p className="text-meta text-muted-foreground">
           Your conversation history, vendor configuration, sign-in, and any copy you
           installed yourself are left untouched. You can reinstall at any time.
         </p>

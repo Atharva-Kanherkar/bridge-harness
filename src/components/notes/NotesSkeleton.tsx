@@ -80,7 +80,7 @@ export function NotesScreenSkeleton() {
   return <div className="flex h-full min-h-0 bg-background">
     <aside aria-label="Notes list" className={clsx("flex min-h-0 w-full shrink-0 flex-col border-r border-border md:w-[18.5rem]", readListOpen() ? "md:flex" : "md:hidden")}>
       <div className="flex h-12 shrink-0 items-center pl-4 pr-2">
-        <h2 className="m-0 flex-1 text-[13px] font-semibold text-foreground">Notes</h2>
+        <h2 className="m-0 flex-1 text-ui font-semibold text-foreground">Notes</h2>
       </div>
       <div aria-hidden="true" className="shrink-0 px-3 pt-3">
         <div className="h-[5.25rem] rounded-2xl bg-card shadow-sm ring-1 ring-border" />

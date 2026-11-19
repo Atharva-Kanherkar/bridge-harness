@@ -263,7 +263,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
 
   return <EditorPagesContext.Provider value={props.pages}>
     <div ref={area} className="relative -ml-14 pl-14">
-      {uploading && <p role="status" className="m-0 mb-2 text-[12.5px] text-muted-foreground">Adding {uploading}…</p>}
+      {uploading && <p role="status" className="m-0 mb-2 text-meta text-muted-foreground">Adding {uploading}…</p>}
       <EditorContent editor={editor} />
       {editor && <BlockHandle editor={editor} area={area} />}
       {editor && <SelectionToolbar editor={editor} onMath={() => {

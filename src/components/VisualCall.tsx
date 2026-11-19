@@ -28,7 +28,7 @@ function FamilyIcon({ spec }: { spec: VisualSpec }) {
 
 function Placeholder({ title }: { title?: string }) {
   return (
-    <div data-visual-state="drawing" className="rounded-2xl border border-dashed border-border px-4 py-3 text-[12.5px] text-muted-foreground">
+    <div data-visual-state="drawing" className="rounded-2xl border border-dashed border-border px-4 py-3 text-meta text-muted-foreground">
       <span className="animate-pulse">Drawing{title ? ` “${title}”` : " a visual"}…</span>
     </div>
   );
@@ -37,7 +37,7 @@ function Placeholder({ title }: { title?: string }) {
 function QuietRow({ label, detail }: { label: string; detail?: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div data-visual-state="refused" className="min-w-0 text-[12px] text-muted-foreground">
+    <div data-visual-state="refused" className="min-w-0 text-meta text-muted-foreground">
       <button
         type="button"
         className="flex min-h-7 items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent/50 disabled:cursor-default"
@@ -49,7 +49,7 @@ function QuietRow({ label, detail }: { label: string; detail?: string }) {
         <span>{label}</span>
         {detail && <ChevronRight size={12} className={cn("transition-transform", open && "rotate-90")} aria-hidden="true" />}
       </button>
-      {open && detail && <pre className="ml-6 mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-[11.5px] leading-relaxed">{detail}</pre>}
+      {open && detail && <pre className="ml-6 mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-caption leading-relaxed">{detail}</pre>}
     </div>
   );
 }
@@ -65,10 +65,10 @@ function VisualCard({ spec, input }: { spec: VisualSpec; input: Record<string, u
   const header = (fullscreen: boolean) => (
     <div className="flex min-w-0 items-center gap-2.5 border-b border-border px-4 py-2.5">
       <FamilyIcon spec={spec} />
-      <span className="truncate text-[13px] font-medium text-foreground">{spec.title}</span>
-      {spec.subtitle && <span className="hidden truncate text-[12.5px] text-muted-foreground sm:inline">{spec.subtitle}</span>}
+      <span className="truncate text-ui font-medium text-foreground">{spec.title}</span>
+      {spec.subtitle && <span className="hidden truncate text-meta text-muted-foreground sm:inline">{spec.subtitle}</span>}
       <span className="flex-1" />
-      <span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground sm:inline-flex" title="Drawn by Bridge's visualize tool from data the model sent">
+      <span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-micro text-muted-foreground sm:inline-flex" title="Drawn by Bridge's visualize tool from data the model sent">
         <svg width="6" height="6" aria-hidden="true"><circle cx="3" cy="3" r="3" fill="var(--success)" /></svg>
         bridge.visualize
       </span>

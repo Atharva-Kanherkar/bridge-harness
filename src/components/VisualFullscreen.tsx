@@ -77,7 +77,7 @@ export function VisualFullscreen({ open, onClose, label, children }: VisualFulls
             >
               <Minus size={12} aria-hidden="true" />
             </button>
-            <span className="min-w-[3.4em] text-center text-[11px] tabular-nums text-muted-foreground" aria-live="polite">
+            <span className="min-w-[3.4em] text-center text-caption tabular-nums text-muted-foreground" aria-live="polite">
               {zoom}%
             </span>
             <button

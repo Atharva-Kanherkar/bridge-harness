@@ -19,7 +19,7 @@ export interface FilterBuilderProps {
   workspaces?: Workspace[];
 }
 
-const control = "h-7 min-w-0 rounded-md bg-muted px-1.5 text-[12.5px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const control = "h-7 min-w-0 rounded-md bg-muted px-1.5 text-meta text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const LIST_OPS = new Set(["isAnyOf", "isNoneOf", "containsAny"]);
 
 export function FilterBuilder({ database, value, onChange, workspaces = [] }: FilterBuilderProps) {
@@ -56,7 +56,7 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
       return <li key={keyOf(item)} className="rounded-lg bg-muted/50 p-1.5 ring-1 ring-border">
         <JoinSwitch label="Match in this group" join={item.join} onChange={join => apply(setJoin(tree, at, join))} />
         <ol className="m-0 mt-1 flex list-none flex-col gap-1 p-0">{rows(item, at)}</ol>
-        <button type="button" disabled={!canAdd(tree)} onClick={() => add(at)} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={12} aria-hidden="true" />Add to group</button>
+        <button type="button" disabled={!canAdd(tree)} onClick={() => add(at)} className="mt-1 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-meta text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={12} aria-hidden="true" />Add to group</button>
       </li>;
     }
     return <li key={keyOf(item)}><ConditionRow condition={item} columns={columns} workspaces={workspaces} label={`Filter ${at.map(part => part + 1).join(".")}`} onChange={condition => apply(setCondition(tree, at, condition))} onRemove={() => apply(removeAt(tree, at))} /></li>;
@@ -66,17 +66,17 @@ export function FilterBuilder({ database, value, onChange, workspaces = [] }: Fi
     {tree.items.length > 1 && <JoinSwitch label="Match" join={tree.join} onChange={join => apply(setJoin(tree, [], join))} />}
     {tree.items.length
       ? <ol className="m-0 flex list-none flex-col gap-1 p-0">{rows(tree, [])}</ol>
-      : <p className="m-0 px-1 py-1.5 text-[12.5px] text-muted-foreground">No filters. Every row shows.</p>}
+      : <p className="m-0 px-1 py-1.5 text-meta text-muted-foreground">No filters. Every row shows.</p>}
     <div className="flex gap-1">
-      <button type="button" disabled={!canAdd(tree)} onClick={() => add([])} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-foreground transition-colors enabled:hover:bg-accent disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter</button>
-      <button type="button" disabled={!canAdd(tree)} onClick={() => apply(addGroup(tree, defaultCondition(first, workspaces)))} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter group</button>
+      <button type="button" disabled={!canAdd(tree)} onClick={() => add([])} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-meta text-foreground transition-colors enabled:hover:bg-accent disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter</button>
+      <button type="button" disabled={!canAdd(tree)} onClick={() => apply(addGroup(tree, defaultCondition(first, workspaces)))} className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-meta text-muted-foreground transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-40"><Plus size={13} aria-hidden="true" />Add a filter group</button>
     </div>
   </div>;
 }
 
 function JoinSwitch({ label, join, onChange }: { label: string; join: "and" | "or"; onChange: (join: "and" | "or") => void }) {
   return <div role="radiogroup" aria-label={label} className="inline-flex w-fit rounded-md bg-muted p-0.5">
-    {(["and", "or"] as const).map(option => <button key={option} type="button" role="radio" aria-checked={join === option} onClick={() => onChange(option)} className={clsx("h-6 rounded px-2 text-[12px] transition-colors", join === option ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{option === "and" ? "All" : "Any"}</button>)}
+    {(["and", "or"] as const).map(option => <button key={option} type="button" role="radio" aria-checked={join === option} onClick={() => onChange(option)} className={clsx("h-6 rounded px-2 text-meta transition-colors", join === option ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{option === "and" ? "All" : "Any"}</button>)}
   </div>;
 }
 
@@ -107,7 +107,7 @@ function ValueInput({ condition, column, workspaces, label, onChange }: { condit
   if (LIST_OPS.has(condition.op) && choices.length) {
     const chosen = Array.isArray(value) ? value.map(String) : [];
     return <div role="group" aria-label={label} className="flex flex-wrap gap-1">
-      {choices.map(([id, name]) => <label key={id} className={clsx("inline-flex h-6 cursor-pointer items-center gap-1 rounded-md px-1.5 text-[12px]", chosen.includes(id) ? "bg-selection text-selection-foreground" : "bg-muted text-muted-foreground")}>
+      {choices.map(([id, name]) => <label key={id} className={clsx("inline-flex h-6 cursor-pointer items-center gap-1 rounded-md px-1.5 text-meta", chosen.includes(id) ? "bg-selection text-selection-foreground" : "bg-muted text-muted-foreground")}>
         <input type="checkbox" className="sr-only" checked={chosen.includes(id)} onChange={() => onChange(chosen.includes(id) ? chosen.filter(item => item !== id) : [...chosen, id])} />{name}
       </label>)}
     </div>;

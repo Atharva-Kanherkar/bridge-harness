@@ -124,7 +124,7 @@ export function KeysPage({ onError }: { onError: (message: string) => void }) {
 function SavedKeyRow({ apiKey, busy, saved, onEdit, onRepaste, onForget }: { apiKey: SavedApiKey; busy: boolean; saved: boolean; onEdit: () => void; onRepaste: () => void; onForget: () => void }) {
   return <SettingsRow
     lead={<KeyRound size={14} aria-hidden="true" />}
-    label={<span className="font-mono text-[12px]">{apiKey.name}</span>}
+    label={<span className="font-mono text-meta">{apiKey.name}</span>}
     description={apiKey.needsValue
       ? "This build of Bridge cannot read the saved value, so agents cannot use it. Paste the key again."
       : `${keyKindLabel(apiKey.kind)} · ${sitesLabel(apiKey.hosts)}`}
@@ -155,7 +155,7 @@ function ChatKeyRow({ chatKey, busy, canSave, onSave, onForget }: { chatKey: Cha
 
 function SitesEditor({ name, initial, busy, onCancel, onSave }: { name: string; initial: string[]; busy: boolean; onCancel: () => void; onSave: (hosts: string[]) => void }) {
   const [sites, setSites] = useState(initial.join(", "));
-  return <SettingsBlockRow label={<span className="font-mono text-[12px]">{name}</span>} description="Sites this key may be sent to. Separate them with commas; *.example.com covers its subdomains.">
+  return <SettingsBlockRow label={<span className="font-mono text-meta">{name}</span>} description="Sites this key may be sent to. Separate them with commas; *.example.com covers its subdomains.">
     <div className="flex flex-wrap items-center gap-2">
       <Field label={`Sites for ${name}`} value={sites} onChange={setSites} width="w-80" mono placeholder="api.example.com" />
       <PrimaryButton disabled={busy} onClick={() => onSave(parseSites(sites))}>Save</PrimaryButton>
@@ -166,7 +166,7 @@ function SitesEditor({ name, initial, busy, onCancel, onSave }: { name: string; 
 
 function RepasteForm({ name, busy, onCancel, onSave }: { name: string; busy: boolean; onCancel: () => void; onSave: (value: string) => void }) {
   const [value, setValue] = useState("");
-  return <SettingsBlockRow label={<span className="font-mono text-[12px]">{name}</span>} description="Its name and sites stay as they are.">
+  return <SettingsBlockRow label={<span className="font-mono text-meta">{name}</span>} description="Its name and sites stay as they are.">
     <div className="flex flex-wrap items-center gap-2">
       <Field label={`New value for ${name}`} type="password" value={value} onChange={setValue} width="w-80" placeholder="Paste the key" />
       <PrimaryButton disabled={busy || value.trim() === ""} onClick={() => onSave(value)}>Save</PrimaryButton>
@@ -218,7 +218,7 @@ function AddKeyForm({ busy, taken, onSave }: { busy: boolean; taken: string[]; o
       <Field label="Sites" value={sites} onChange={next => { setTouched(current => ({ ...current, sites: true })); setSites(next); }} width="w-full" mono placeholder="api.example.com" />
       <div className="flex items-center gap-2">
         <PrimaryButton disabled={busy || !valid} onClick={() => void save()}>{replacing ? "Replace key" : "Save key"}</PrimaryButton>
-        {replacing && <span className="text-[12px] text-muted-foreground">Replaces the saved {name}</span>}
+        {replacing && <span className="text-meta text-muted-foreground">Replaces the saved {name}</span>}
       </div>
     </div>
   </SettingsBlockRow>;

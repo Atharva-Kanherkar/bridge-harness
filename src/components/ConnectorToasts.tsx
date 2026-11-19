@@ -52,7 +52,7 @@ function ConnectorCard({ toast, index, onOpen, onDismiss }: {
       <span
         key={toast.headline}
         className={cn(
-          "block text-[13px] font-medium leading-snug text-foreground",
+          "block text-ui font-medium leading-snug text-foreground",
           // Unsettled: the render run is still in flight, so the wording is
           // Bridge's own and says so by shimmering. Settled: it just sharpened,
           // and the lift marks the swap without a colour change.
@@ -61,7 +61,7 @@ function ConnectorCard({ toast, index, onOpen, onDismiss }: {
       >
         {toast.headline}
       </span>
-      <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="mt-0.5 flex items-center gap-1.5 text-caption text-muted-foreground">
         <span className="truncate">{toast.detail}</span>
         <Reply size={10} aria-hidden="true" className="shrink-0" />
         <span className="shrink-0">Reply here</span>

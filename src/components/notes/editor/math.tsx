@@ -48,17 +48,17 @@ export function MathPopover({ edit, onSave, onRemove, onClose }: { edit: MathEdi
           if (event.key === "Escape") { event.preventDefault(); onClose(); }
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
         }}
-        className="block w-full resize-none rounded-lg bg-muted px-2.5 py-2 font-mono text-[12.5px] leading-relaxed text-foreground outline-none placeholder:text-faint focus:ring-2 focus:ring-ring"
+        className="block w-full resize-none rounded-lg bg-muted px-2.5 py-2 font-mono text-meta leading-relaxed text-foreground outline-none placeholder:text-faint focus:ring-2 focus:ring-ring"
       />
       <div aria-live="polite" className="mt-2 min-h-8 overflow-x-auto px-1 text-foreground">
         {preview.error
-          ? <p className="m-0 text-[12px] text-destructive">{preview.error}</p>
-          : preview.html ? <div dangerouslySetInnerHTML={{ __html: preview.html }} /> : <p className="m-0 text-[12px] text-faint">The formula shows here as you type.</p>}
+          ? <p className="m-0 text-meta text-destructive">{preview.error}</p>
+          : preview.html ? <div dangerouslySetInnerHTML={{ __html: preview.html }} /> : <p className="m-0 text-meta text-faint">The formula shows here as you type.</p>}
       </div>
       <div className="mt-2 flex items-center gap-1">
-        <span className="flex-1 text-[11px] text-faint">Enter to keep · Shift+Enter for a new line</span>
-        {edit.existing && <button type="button" onClick={onRemove} className="h-7 rounded-full px-2.5 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground">Remove</button>}
-        <button type="submit" className="h-7 rounded-full bg-primary px-3 text-[12px] font-medium text-primary-foreground hover:opacity-90">Done</button>
+        <span className="flex-1 text-caption text-faint">Enter to keep · Shift+Enter for a new line</span>
+        {edit.existing && <button type="button" onClick={onRemove} className="h-7 rounded-full px-2.5 text-meta text-muted-foreground hover:bg-accent hover:text-foreground">Remove</button>}
+        <button type="submit" className="h-7 rounded-full bg-primary px-3 text-meta font-medium text-primary-foreground hover:opacity-90">Done</button>
       </div>
     </form>
   </>, document.body);

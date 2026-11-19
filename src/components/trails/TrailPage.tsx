@@ -46,7 +46,7 @@ function EventRow({ event, last, onOpen, onRemove }: { event: TrailEvent; last: 
       </span>
       <div className="min-w-0 flex-1 pt-0.5">
         <div className="flex items-baseline gap-2">
-          <span className="w-24 shrink-0 text-caption uppercase tracking-wide text-faint">{KIND_LABEL[event.kind]}</span>
+          <span className="w-24 shrink-0 text-caption text-faint font-medium">{KIND_LABEL[event.kind]}</span>
           {onOpen ? (
             <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 text-left hover:underline focus-visible:underline focus-visible:outline-none">{title}</button>
           ) : title}

@@ -20,8 +20,8 @@ export function ImportToast({ job, onOpen, onDismiss }: { job: ImportJob; onOpen
       onOpen={onOpen}
       openLabel={`${notice.title}: open the import summary`}
       body={<>
-        <span className="block text-[13px] font-medium leading-snug text-foreground">{notice.title}</span>
-        <span className="mt-0.5 block text-[12px] text-muted-foreground">{notice.body}</span>
+        <span className="block text-ui font-medium leading-snug text-foreground">{notice.title}</span>
+        <span className="mt-0.5 block text-meta text-muted-foreground">{notice.body}</span>
       </>}
     />
   </div>;

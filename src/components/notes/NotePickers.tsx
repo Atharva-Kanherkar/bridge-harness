@@ -70,9 +70,9 @@ export function PassPicker({ label, what, adapters, defaultHarness, onRun }: {
   const choices = passHarnesses(adapters);
   const [harness, setHarness] = useState(() => preselect(choices, defaultHarness));
   return <>
-    <p className="m-0 px-2.5 pb-1 pt-1.5 text-[12px] leading-relaxed text-muted-foreground">{what}</p>
+    <p className="m-0 px-2.5 pb-1 pt-1.5 text-meta leading-relaxed text-muted-foreground">{what}</p>
     {choices.length === 0
-      ? <p role="status" className="m-0 px-2.5 pb-2 pt-1 text-[13px] text-foreground">{NO_PASS_HARNESS}</p>
+      ? <p role="status" className="m-0 px-2.5 pb-2 pt-1 text-ui text-foreground">{NO_PASS_HARNESS}</p>
       : <>
         <MenuDivider />
         <MenuLabel>Run on</MenuLabel>
@@ -109,9 +109,9 @@ export function StartPicker({ subject = "task", adapters, workspaces, defaultHar
     <MenuLabel>Run on</MenuLabel>
     {choices.length
       ? <HarnessOptions label="Chat harness" choices={choices} value={harness} defaultHarness={defaultHarness} onChange={setHarness} />
-      : <p role="status" className="m-0 px-2.5 pb-1 text-[13px] text-foreground">No harness can start a chat: sign in to one in Settings.</p>}
+      : <p role="status" className="m-0 px-2.5 pb-1 text-ui text-foreground">No harness can start a chat: sign in to one in Settings.</p>}
     <div className="flex items-center gap-2 px-2.5 pb-0.5 pt-2.5">
-      <p className="m-0 min-w-0 flex-1 text-[11px] leading-snug text-muted-foreground">The {subject} goes with it as the first message.</p>
+      <p className="m-0 min-w-0 flex-1 text-caption leading-snug text-muted-foreground">The {subject} goes with it as the first message.</p>
       <PrimaryButton disabled={busy || !harness} onClick={() => onStart({ workspaceId, harness })}>{busy ? "Starting…" : "Start"}</PrimaryButton>
     </div>
   </>;

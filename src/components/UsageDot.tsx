@@ -166,7 +166,7 @@ function WindowRow({ provider, window, fresh, nowSeconds }: { provider: UsagePro
       </span>
     </div>
     <QuotaBar provider={provider} fill={live ?? recorded} />
-    {(reset || (live != null && note)) && <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-foreground">
+    {(reset || (live != null && note)) && <div className="mt-1 flex flex-wrap gap-x-3 text-caption text-muted-foreground">
       {reset && <span className="tabular-nums">{reset}</span>}
       {live != null && note && <span>{note}</span>}
     </div>}
@@ -187,8 +187,8 @@ function adapterState(adapter?: AdapterDescriptor): "not_installed" | "signed_ou
  *  asks for never means leaving the card. */
 function ProviderError({ message, refreshing, onRefresh }: { message: string; refreshing: boolean; onRefresh?: () => void }) {
   return <div className="mt-1 flex items-start gap-2">
-    <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted-foreground">{message}</p>
-    {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} className="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40">
+    <p className="min-w-0 flex-1 text-caption leading-relaxed text-muted-foreground">{message}</p>
+    {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} className="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40">
       <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />{refreshing ? "Refreshing" : "Refresh"}
     </button>}
   </div>;
@@ -207,15 +207,15 @@ function ProviderSection({ snapshot, adapter, nowSeconds, refreshing, onSignIn, 
     <div className="flex min-w-0 items-center gap-1.5 text-ui">
       <HarnessMark harness={provider} size={12} />
       <span className="min-w-0 truncate font-medium text-foreground">{title}</span>
-      <span className="ml-auto min-w-0 truncate text-[11px] text-muted-foreground">
+      <span className="ml-auto min-w-0 truncate text-caption text-muted-foreground">
         {state === "not_installed" ? "Not installed"
-          : state === "signed_out" ? <button type="button" onClick={() => onSignIn?.(provider)} className="min-h-6 rounded-md border border-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent">Sign in</button>
+          : state === "signed_out" ? <button type="button" onClick={() => onSignIn?.(provider)} className="min-h-6 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent">Sign in</button>
           : meta}
       </span>
     </div>
     {snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} fresh={fresh} nowSeconds={nowSeconds} />)}
     {snapshot.error ? <ProviderError message={snapshot.error} refreshing={refreshing} onRefresh={onRefresh} />
-      : !snapshot.windows.length && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet."}</p>}
+      : !snapshot.windows.length && <p className="mt-1 text-caption leading-relaxed text-muted-foreground">{state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet."}</p>}
     {!isAccount && <UsageResetRow snapshot={snapshot} onUpdated={onRefresh} compact />}
   </section>;
 }
@@ -338,13 +338,13 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
           <h2 className="font-display text-sm font-semibold text-foreground">Usage</h2>
           <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${worstName} ${worst.window.label}`}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1">
-            {onOpenUsage && <button type="button" onClick={() => { setOpen(false); onOpenUsage(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><BarChart3 size={11} aria-hidden="true" />Open Usage</button>}
+            {onOpenUsage && <button type="button" onClick={() => { setOpen(false); onOpenUsage(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><BarChart3 size={11} aria-hidden="true" />Open Usage</button>}
             {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh usage" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" /></button>}
             <button type="button" onClick={() => setOpen(false)} aria-label="Close usage" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><X size={13} aria-hidden="true" /></button>
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
-          {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] leading-relaxed text-destructive">{error}</p>}
+          {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-caption leading-relaxed text-destructive">{error}</p>}
           {overviews == null && !error && <SkeletonRows label="Loading usage" rows={2} framed={false} rowClassName="px-0 py-3" />}
           {snapshots.map(snapshot => <ProviderSection key={snapshotKey(snapshot)} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
@@ -358,7 +358,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
       type="button"
       className={cn(
         rail
-          ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+          ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
           : compact
           ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
           : "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",

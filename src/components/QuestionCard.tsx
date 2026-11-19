@@ -11,10 +11,10 @@ import { answerSummary, canSubmit, cleanAnswers, fieldAnswered, initialAnswers, 
 export type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
 const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border border-x-2 border-x-info bg-card";
-const WELL = "block max-h-72 overflow-auto rounded-md border border-border bg-code px-3 py-2.5 font-mono text-[12px] leading-relaxed whitespace-pre text-foreground";
-const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
-const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-input px-3 py-1 text-[13px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
-const INPUT = "w-full rounded-lg border border-input bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring disabled:opacity-60";
+const WELL = "block max-h-72 overflow-auto rounded-md border border-border bg-code px-3 py-2.5 font-mono text-meta leading-relaxed whitespace-pre text-foreground";
+const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
+const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-input px-3 py-1 text-ui font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
+const INPUT = "w-full rounded-lg border border-input bg-background px-3 py-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring disabled:opacity-60";
 
 /** The typed "Other" answer, kept apart from the listed choices. */
 type Other = { on: boolean; text: string };
@@ -101,10 +101,10 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
   return <section aria-label="Question from the agent" onKeyDown={onKeyDown} className={PANEL}>
     <header className="flex items-center gap-2 px-3.5 pt-3 sm:px-4">
       <span aria-hidden="true" className="grid size-6 shrink-0 place-items-center rounded-full bg-info/15 text-info"><MessageCircleQuestion size={13} /></span>
-      <b className="min-w-0 truncate text-[13px] font-semibold text-foreground">{fields.length > 1 ? `${fields.length} questions` : fields[0]?.header ?? (item.title || "Question")}</b>
-      {pending && <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-[11px] tracking-[0.03em] text-info"><span aria-hidden="true" className="size-1.5 rounded-full bg-info" />waiting for your answer</span>}
+      <b className="min-w-0 truncate text-ui font-semibold text-foreground">{fields.length > 1 ? `${fields.length} questions` : fields[0]?.header ?? (item.title || "Question")}</b>
+      {pending && <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 text-caption text-info"><span aria-hidden="true" className="size-1.5 rounded-full bg-info" />waiting for your answer</span>}
     </header>
-    {intro && <p className="mt-1.5 px-3.5 text-[13px] leading-relaxed text-muted-foreground sm:px-4">{intro}</p>}
+    {intro && <p className="mt-1.5 px-3.5 text-ui leading-relaxed text-muted-foreground sm:px-4">{intro}</p>}
 
     {pending
         ? <div>
@@ -124,12 +124,12 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
                     onSubmit={() => void act("answer")}
                   />)}
                 </div>
-              : <p className="px-3.5 py-3 text-[12px] text-muted-foreground sm:px-4">This agent asked in a shape Bridge cannot answer here. Skip it, then reply in the chat.</p>}
+              : <p className="px-3.5 py-3 text-meta text-muted-foreground sm:px-4">This agent asked in a shape Bridge cannot answer here. Skip it, then reply in the chat.</p>}
             <footer className="flex flex-wrap items-center gap-2 border-t border-border/60 px-3.5 py-2.5 sm:px-4">
-              <span className="mr-auto inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+              <span className="mr-auto inline-flex items-center gap-1.5 text-caption text-muted-foreground">
                 {fields.length > 1 && <span className="tabular-nums">{answeredCount} of {fields.length} answered</span>}
                 {fields.length > 1 && <span aria-hidden="true">·</span>}
-                <kbd className="rounded border border-border px-1 font-sans text-[10.5px]">{modKey("↵")}</kbd> to send
+                <kbd className="rounded border border-border px-1 font-sans text-micro">{modKey("↵")}</kbd> to send
               </span>
               <button type="button" disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Skipping…" : "Skip"}</button>
               <button type="button" disabled={!!busy || !ready} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : fields.length > 1 ? "Send answers" : "Send answer"}</button>
@@ -142,18 +142,18 @@ export function QuestionCard({ item, onResolve, resolvedCopy }: { item: Conversa
               {fields.map(field => {
                 const summary = answerSummary(field, settled[field.id]);
                 return summary ? <div key={field.id} className="min-w-0">
-                  <dt className="text-[12px] leading-snug text-muted-foreground">{field.prompt}</dt>
-                  <dd className="mt-0.5 text-[13px] font-medium leading-snug text-foreground">{summary}</dd>
+                  <dt className="text-meta leading-snug text-muted-foreground">{field.prompt}</dt>
+                  <dd className="mt-0.5 text-ui font-medium leading-snug text-foreground">{summary}</dd>
                 </div> : null;
               })}
             </dl>}
-            <p className={cn("flex items-center gap-1.5 text-[12px]", failed ? "text-destructive" : "text-muted-foreground")}>
+            <p className={cn("flex items-center gap-1.5 text-meta", failed ? "text-destructive" : "text-muted-foreground")}>
               {failed ? <X size={12} aria-hidden="true" /> : item.status === "answered" || sent ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />}
               {sent && item.status === "pending" ? "Answer sent" : resolvedCopy}
             </p>
           </motion.div>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{item.data.failure}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-meta text-destructive sm:px-4">{error}</p>}
   </section>;
 }
 
@@ -186,12 +186,12 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
   const hasPreviews = field.options.some(option => option.preview);
   return <div role="group" aria-labelledby={promptId} className="px-3.5 py-3 sm:px-4">
     {(position || field.header || field.multiple) && <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-      {position && <span className="text-[11px] tabular-nums text-muted-foreground">{position}</span>}
-      {field.header && <span className="rounded-md border border-border bg-muted px-1.5 py-px text-[10.5px] font-medium uppercase tracking-[0.04em] text-muted-foreground">{field.header}</span>}
-      {field.multiple && choice && <span className="text-[11px] text-muted-foreground">Choose any</span>}
+      {position && <span className="text-caption tabular-nums text-muted-foreground">{position}</span>}
+      {field.header && <span className="rounded-md border border-border bg-muted px-1.5 py-px text-caption font-medium text-muted-foreground">{field.header}</span>}
+      {field.multiple && choice && <span className="text-caption text-muted-foreground">Choose any</span>}
     </div>}
-    <p id={promptId} className="text-[14px] font-medium leading-snug text-foreground">{field.prompt}</p>
-    {field.hint && <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">{field.hint}</p>}
+    <p id={promptId} className="text-body font-medium leading-snug text-foreground">{field.prompt}</p>
+    {field.hint && <p className="mt-0.5 text-meta leading-relaxed text-muted-foreground">{field.hint}</p>}
 
     {choice
       ? <div role={field.multiple ? "group" : "radiogroup"} aria-labelledby={promptId} className="mt-2.5 grid gap-1.5">
@@ -229,11 +229,11 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
               onChange={event => onOther({ text: event.target.value, on: event.target.value.trim().length > 0 || other.on })}
               onKeyDown={event => { if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); onSubmit(); } }}
               placeholder="Something else…"
-              className="min-h-7 w-full bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+              className="min-h-7 w-full bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>}
           {previewOption?.preview && <div className="mt-1">
-            <small className="mb-1 block text-[10.5px] font-medium uppercase tracking-[0.04em] text-muted-foreground">Preview · {previewOption.label}</small>
+            <small className="mb-1 block text-caption font-medium text-muted-foreground">Preview · {previewOption.label}</small>
             <pre className={WELL}>{previewOption.preview}</pre>
           </div>}
         </div>
@@ -262,7 +262,7 @@ function FieldView({ field, position, values, other, disabled, shortcuts, onPick
                 placeholder={field.secret ? "Hidden after you send it" : field.kind === "number" ? "Enter a number" : "Type your answer"}
                 className={INPUT}
               />}
-          {!field.required && <small className="mt-1 block text-[11px] text-muted-foreground">Optional</small>}
+          {!field.required && <small className="mt-1 block text-caption text-muted-foreground">Optional</small>}
         </div>}
   </div>;
 }
@@ -291,17 +291,17 @@ function OptionRow({ option, multiple, selected, disabled, shortcut, onSelect, o
   >
     <span className="mt-0.5"><Indicator multiple={multiple} selected={selected} /></span>
     <span className="min-w-0 flex-1">
-      <span className="block text-[13px] font-medium leading-snug text-foreground">{option.label}</span>
-      {option.description && <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">{option.description}</span>}
+      <span className="block text-ui font-medium leading-snug text-foreground">{option.label}</span>
+      {option.description && <span className="mt-0.5 block text-meta leading-relaxed text-muted-foreground">{option.description}</span>}
     </span>
-    {shortcut && <kbd aria-hidden="true" className="mt-0.5 shrink-0 rounded border border-border px-1.5 font-mono text-[10.5px] text-muted-foreground">{shortcut}</kbd>}
+    {shortcut && <kbd aria-hidden="true" className="mt-0.5 shrink-0 rounded border border-border px-1.5 font-mono text-micro text-muted-foreground">{shortcut}</kbd>}
   </button>;
 }
 
 function Indicator({ multiple, selected }: { multiple: boolean; selected: boolean }) {
   return <span aria-hidden="true" className={cn(
     "grid size-4 shrink-0 place-items-center border transition-colors",
-    multiple ? "rounded-[4px]" : "rounded-full",
+    multiple ? "rounded-sm" : "rounded-full",
     selected ? "border-info bg-info text-background" : "border-input bg-background",
   )}>{selected && (multiple ? <Check size={10} strokeWidth={3} /> : <span className="size-1.5 rounded-full bg-background" />)}</span>;
 }

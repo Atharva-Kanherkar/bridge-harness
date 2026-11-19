@@ -105,7 +105,7 @@ export function PersonalAppOpenCard({ sessionId, openId, contentHash, readOnly }
       {readOnly && <p>History. Live tools are disabled.</p>}
       {!readOnly && isolated === false && <p>{LIVE_READS_UNAVAILABLE}</p>}
       <details><summary className="cursor-pointer">Access · {app.reads.length} {app.reads.length === 1 ? "read" : "reads"} · {app.writes.length} {app.writes.length === 1 ? "write" : "writes"}</summary>
-        <div className="mt-2 space-y-1 break-words"><p>Reads: {app.reads.join(", ") || "None"}</p><p>Writes: {app.writes.join(", ") || "None"}</p><p className="break-all font-mono text-[10px]">{app.contentHash}</p></div>
+        <div className="mt-2 space-y-1 break-words"><p>Reads: {app.reads.join(", ") || "None"}</p><p>Writes: {app.writes.join(", ") || "None"}</p><p className="break-all font-mono text-micro">{app.contentHash}</p></div>
       </details>
     </div>
     {near && isolated !== undefined ? <McpAppFrame title={app.name} input={(app.prefill ?? {}) as Record<string, unknown>} theme={dark ? "dark" : "light"}

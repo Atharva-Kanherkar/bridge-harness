@@ -267,7 +267,7 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
           {/* Docked, the model picker below already wears the harness mark. */}
           {!docked && <HarnessMark harness={session.harness} live={working} size={15}/>}
           <div className="min-w-0 flex-1">
-            <h2 className="m-0 truncate font-display text-[13px] font-semibold leading-tight text-foreground">{session.title || session.label}</h2>
+            <h2 className="m-0 truncate font-display text-ui font-semibold leading-tight text-foreground">{session.title || session.label}</h2>
             <div className="-ml-1 flex min-w-0 items-center gap-1">
               <ChatModelControl
                 adapters={adapters}
@@ -295,14 +295,14 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                 placement="down"
                 maxWidthClassName="max-w-[220px]"
               />
-              {!docked && <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>{tag}</span>}
+              {!docked && <span className={cn("shrink-0 text-caption leading-tight", harnessTintClass(session.harness))}>{tag}</span>}
             </div>
           </div>
           {headerActions}
           <button
             type="button"
             onClick={onPromote}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Continue this aside as a full chat"
             aria-label="Open as chat"
           >
@@ -339,22 +339,22 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
         </div>
 
         <footer className="shrink-0 border-t border-border p-3">
-          {lifecycle?.handoffStatus && <p className="mb-2 px-1 text-[11px] text-muted-foreground">
+          {lifecycle?.handoffStatus && <p className="mb-2 px-1 text-caption text-muted-foreground">
             {lifecycle.handoffStatus === "forked"
               ? "Native fork of the conversation it was asked from"
               : lifecycle.handoffStatus === "carried" ? "Context carried" : "No prior context available"}
             {lifecycle.fidelity === "projected_at_boundary" ? " · projected at the handoff boundary" : ""}
           </p>}
-          {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
-          {sending && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Sending…</p>}
-          {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
-          {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
-          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{lifecycle.error} You can retry below.</p>}
+          {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-caption text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
+          {sending && <p className="mb-2 px-1 text-caption text-muted-foreground">Sending…</p>}
+          {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
+          {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-caption text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
+          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-caption text-destructive">{lifecycle.error} You can retry below.</p>}
           <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
-          {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
+          {composerError && <p className="mb-2 px-1 text-caption text-destructive">{composerError}</p>}
           <div className="relative">
             {mentionOpen && <div id="aside-file-mention-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-caption text-muted-foreground font-medium">
                 <span>Reference a file</span>
                 <span className="normal-case tracking-normal text-muted-foreground">{fileMatches.length}</span>
               </div>
@@ -364,21 +364,21 @@ export function AsideChat({ session, adapters, accounts, events, pendingMessages
                   const base = file.slice(dir.length);
                   return <button id={`aside-file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyMention(file); }} className={`flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
                     <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12px]"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-meta"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
                   </button>;
                 })}
               </div>
             </div>}
             {slashOpen && <div id="aside-slash-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-caption text-muted-foreground font-medium">
                 <span>Commands & skills</span>
                 <span className="normal-case tracking-normal text-muted-foreground">{slashMatches.length}</span>
               </div>
               <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                  <span className="whitespace-nowrap font-mono text-[12px] text-foreground">/{command.name}</span>
-                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted-foreground">{command.description}</span>
-                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-[11px] uppercase tracking-[0.06em] text-muted-foreground">{slashOwnershipBadge(command.harness)}</span>
+                  <span className="whitespace-nowrap font-mono text-meta text-foreground">/{command.name}</span>
+                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-caption text-muted-foreground">{command.description}</span>
+                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-caption text-muted-foreground font-medium">{slashOwnershipBadge(command.harness)}</span>
                 </button>)}
               </div>
             </div>}

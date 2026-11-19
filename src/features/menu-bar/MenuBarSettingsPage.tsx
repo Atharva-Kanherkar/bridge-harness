@@ -160,7 +160,7 @@ export function MenuBarSettingsPage() {
                 onChange={value => void save({ [provider.key]: value })} />} />
             {extra.map(row => <SettingsRow key={row.accountId} label={`${provider.name} · ${row.accountLabel || row.accountId}`}
               description={!settings[provider.key] ? `Shown when ${provider.name} usage is on.` : row.account ? `${row.account}${row.plan ? ` · ${row.plan}` : ""}` : row.error ?? "Not read yet."}
-              control={<span className="text-[11px] text-muted-foreground">{settings[provider.key] ? "Included" : "Off"}</span>} />)}
+              control={<span className="text-caption text-muted-foreground">{settings[provider.key] ? "Included" : "Off"}</span>} />)}
           </Fragment>;
         })}
         {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}

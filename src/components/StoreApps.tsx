@@ -78,7 +78,7 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
     <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
       <ScreenHeading title="Apps" description={`Everything Bridge does, one app each. Open any of them with ${chordLabel("open-launcher")}, pin up to three to the sidebar, and turn off the ones you do not use.`} />
-      <p role="status" className={status ? "mb-3 text-[12.5px] text-foreground" : "sr-only"}>{status}</p>
+      <p role="status" className={status ? "mb-3 text-meta text-foreground" : "sr-only"}>{status}</p>
       <ul aria-label="Installed apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {rows(apps).map(row => {
           const Icon = row.icon;
@@ -90,16 +90,16 @@ export function StoreApps({ onOpenApp }: { onOpenApp?: (key: AppKey) => void }) 
               <div className="flex items-start gap-3">
                 <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><Icon size={18} strokeWidth={1.5} aria-hidden="true" /></span>
                 <div className="min-w-0 flex-1">
-                  <h3 className="flex items-center gap-1.5 text-[13.5px] font-medium text-foreground">
+                  <h3 className="flex items-center gap-1.5 text-ui font-medium text-foreground">
                     {row.name}
                     {pinned && <Pin size={11} className="fill-current text-muted-foreground" aria-label="Pinned" />}
-                    {!enabled && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">Off</span>}
+                    {!enabled && <span className="rounded-md bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground">Off</span>}
                   </h3>
-                  <p className="text-[12px] leading-snug text-muted-foreground">{row.description}</p>
+                  <p className="text-meta leading-snug text-muted-foreground">{row.description}</p>
                 </div>
               </div>
               <div className="mt-auto flex flex-wrap items-center gap-1">
-                {row.slots.map(slot => <span key={slot} className="whitespace-nowrap rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{slot}</span>)}
+                {row.slots.map(slot => <span key={slot} className="whitespace-nowrap rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">{slot}</span>)}
                 <span className="ml-auto flex items-center gap-1">
                   {canDisable && (
                     <Button size="sm" variant="ghost" onClick={() => void power(row, enabled)} aria-label={`Turn ${row.name} ${enabled ? "off" : "on"}`}>
@@ -155,10 +155,10 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
   };
 
   return <section aria-labelledby="my-apps-heading" className="mt-8">
-    <h2 id="my-apps-heading" className="mb-1 text-[14px] font-medium text-foreground">My apps</h2>
-    <p className="mb-3 text-[12.5px] text-muted-foreground">Apps your agents built and you locked. Each runs only its locked tools, and every write asks you first.</p>
+    <h2 id="my-apps-heading" className="mb-1 text-body font-medium text-foreground">My apps</h2>
+    <p className="mb-3 text-meta text-muted-foreground">Apps your agents built and you locked. Each runs only its locked tools, and every write asks you first.</p>
     {apps.length === 0
-      ? <p className="rounded-xl border border-dashed border-border px-3.5 py-3 text-[12.5px] text-muted-foreground">No apps yet. Ask a chat to build one for an MCP server you use, then lock it.</p>
+      ? <p className="rounded-xl border border-dashed border-border px-3.5 py-3 text-meta text-muted-foreground">No apps yet. Ask a chat to build one for an MCP server you use, then lock it.</p>
       : <ul aria-label="My apps" className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {apps.map(entry => {
           const { app, enabled } = entry;
@@ -167,17 +167,17 @@ function MyApps({ apps, onOpenApp, onStatus }: { apps: readonly PersonalAppEntry
             <div className="flex items-start gap-3">
               <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-[11px] border border-border-card bg-background shadow-control", !enabled && "opacity-50")}><AppWindow size={18} strokeWidth={1.5} aria-hidden="true" /></span>
               <div className="min-w-0 flex-1">
-                <h3 className="flex items-center gap-1.5 text-[13.5px] font-medium text-foreground">
+                <h3 className="flex items-center gap-1.5 text-ui font-medium text-foreground">
                   {app.name}
                   {pinned && <Pin size={11} className="fill-current text-muted-foreground" aria-label="Pinned" />}
-                  {!enabled && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">Off</span>}
+                  {!enabled && <span className="rounded-md bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground">Off</span>}
                 </h3>
-                <p className="text-[12px] leading-snug text-muted-foreground">{app.intent}</p>
-                <p className="mt-1 truncate text-[11px] text-muted-foreground">{app.server} · via {connectionLabel(app.harness)} · v{app.version}</p>
+                <p className="text-meta leading-snug text-muted-foreground">{app.intent}</p>
+                <p className="mt-1 truncate text-caption text-muted-foreground">{app.server} · via {connectionLabel(app.harness)} · v{app.version}</p>
               </div>
             </div>
             {confirming === app.id
-              ? <div role="group" aria-label={`Delete ${app.name}?`} className="mt-auto flex flex-wrap items-center gap-1.5 text-[12px]">
+              ? <div role="group" aria-label={`Delete ${app.name}?`} className="mt-auto flex flex-wrap items-center gap-1.5 text-meta">
                 <span className="min-w-0 flex-1 text-foreground">Delete every version of {app.name}?</span>
                 <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>Cancel</Button>
                 <Button size="sm" variant="destructive" onClick={() => void remove(entry)}>Delete</Button>

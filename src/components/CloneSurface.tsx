@@ -124,10 +124,10 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
       <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5">
         <StatusDot status={status} />
         {live ? <Lock size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" /> : <Globe size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-        <span className={cn("min-w-0 truncate text-[12px] text-foreground", snapshot?.domain && "font-mono")}>{snapshot?.domain ?? "Browser clone"}</span>
-        <span className="ml-auto shrink-0 truncate text-[11px] text-muted-foreground">{statusLabel[status]}</span>
+        <span className={cn("min-w-0 truncate text-meta text-foreground", snapshot?.domain && "font-mono")}>{snapshot?.domain ?? "Browser clone"}</span>
+        <span className="ml-auto shrink-0 truncate text-caption text-muted-foreground">{statusLabel[status]}</span>
       </div>
-      {live && remaining !== undefined && <span title="Time until the clone is wiped" className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-[11px] tabular-nums text-muted-foreground"><Timer size={12} aria-hidden="true" />{remaining}m</span>}
+      {live && remaining !== undefined && <span title="Time until the clone is wiped" className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-caption tabular-nums text-muted-foreground"><Timer size={12} aria-hidden="true" />{remaining}m</span>}
       {onClose && <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Clone Surface"><ChevronRight size={14} /></Button>}
     </header>
 
@@ -135,19 +135,19 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
       : status === "none" ? <div className="flex flex-1 items-center justify-center overflow-y-auto px-6 py-8">
           <div className="w-full max-w-sm">
             <div className="grid size-10 place-items-center rounded-xl border border-border bg-muted/50"><Globe size={18} className="text-foreground" aria-hidden="true" /></div>
-            <h2 className="mt-4 font-display text-[15px] font-medium text-foreground">Open a browser for this chat</h2>
-            <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">A throwaway copy of your browser for one site. The agent can see it and use it, and you can step in any time. It is wiped when the work is done.</p>
+            <h2 className="mt-4 font-display text-message font-medium text-foreground">Open a browser for this chat</h2>
+            <p className="mt-1.5 text-meta leading-5 text-muted-foreground">A throwaway copy of your browser for one site. The agent can see it and use it, and you can step in any time. It is wiped when the work is done.</p>
             <form className="mt-4 flex h-9 items-center gap-2 rounded-lg border border-input bg-background pl-3 pr-1 transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/24" onSubmit={event => { event.preventDefault(); start(); }}>
               <Globe size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
               <input aria-label="Site to clone" value={domainDraft} onChange={event => setDomainDraft(event.target.value)} placeholder="app.example.com" autoCapitalize="off" autoCorrect="off" spellCheck={false}
-                className="h-full min-w-0 flex-1 bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground" />
+                className="h-full min-w-0 flex-1 bg-transparent font-mono text-meta text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground" />
               <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button>
             </form>
             {onCancelStart && <Button type="button" variant="ghost" size="xs" className="mt-2 text-muted-foreground" onClick={onCancelStart}>Back to browser</Button>}
             <div className="mt-3"><Select label="Source browser" value={startBrowser} options={CLONE_BROWSERS} disabled={busy} onChange={browser => setStartBrowser(browser as typeof startBrowser)} /></div>
-            {startBrowser === "safari" && <p className="mt-2 text-[11px] text-muted-foreground">{SAFARI_SIGN_IN_HINT}</p>}
+            {startBrowser === "safari" && <p className="mt-2 text-caption text-muted-foreground">{SAFARI_SIGN_IN_HINT}</p>}
             <div className="mt-3 flex items-center justify-between gap-3">
-              <span className="text-[11px] text-muted-foreground">Opens</span>
+              <span className="text-caption text-muted-foreground">Opens</span>
               <SignInToggle value={startBrowser === "safari" ? "sign_in_inside" : startPath} onChange={setStartPath} disabled={busy || startBrowser === "safari"} />
             </div>
           </div>
@@ -159,15 +159,15 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>
       : <>
-        {status === "waiting_for_you" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-[12px] leading-4 text-foreground">
+        {status === "waiting_for_you" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-meta leading-4 text-foreground">
           <Hand size={14} className="shrink-0 text-warning" aria-hidden="true" />
           <span className="min-w-0 flex-1"><b className="font-medium">The clone is waiting for you.</b> <span className="text-muted-foreground">{snapshot.waitingReason ?? "Take over to sign in, then hand it back."}</span></span>
         </div>}
-        {snapshot.waitingReason && status !== "waiting_for_you" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-[12px] leading-4 text-foreground">
+        {snapshot.waitingReason && status !== "waiting_for_you" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-meta leading-4 text-foreground">
           <AlertTriangle size={14} className="shrink-0 text-warning" aria-hidden="true" />
           <span className="min-w-0 flex-1">{snapshot.waitingReason}</span>
         </div>}
-        {status === "taken_over" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-[12px] leading-4 text-foreground">
+        {status === "taken_over" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-meta leading-4 text-foreground">
           <Hand size={14} className="shrink-0 text-info" aria-hidden="true" />
           <span className="min-w-0 flex-1"><b className="font-medium">You’re in control.</b> <span className="text-muted-foreground">Click the page and type; your keys go to the clone. The agent is paused.</span></span>
         </div>}
@@ -177,13 +177,13 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         </div>
 
         <footer className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2.5 py-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
             {snapshot.agentVision === false ? <EyeOff size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
             <span className="truncate">{snapshot.agentVision === false ? "Agent reads text only" : "Agent sees the page"}{snapshot.signInPath ? ` · ${signInLabel[snapshot.signInPath]}` : ""}</span>
           </span>
           {confirmingDestroy
             ? <div className="ml-auto flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">Wipe this clone?</span>
+              <span className="text-caption text-muted-foreground">Wipe this clone?</span>
               <Button variant="ghost" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(false)}>Cancel</Button>
               <Button variant="destructive" size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.destroyBrowserClone(sessionId))}><Trash2 size={12} />Destroy clone</Button>
             </div>
@@ -199,8 +199,8 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
     {snapshot?.pendingApproval && <div className="absolute inset-0 z-20 grid place-items-center overflow-y-auto bg-background/80 p-5 backdrop-blur-sm">
       <div role="region" aria-label="Sensitive clone action" className="u-glass-popover w-full max-w-sm rounded-xl p-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground"><AlertTriangle size={16} className="shrink-0 text-warning" />Sensitive action pending</div>
-        <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{snapshot.pendingApproval.effect}</p>
-        <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">{snapshot.pendingApproval.domain}</p>
+        <p className="mt-2 text-ui leading-relaxed text-muted-foreground">{snapshot.pendingApproval.effect}</p>
+        <p className="mt-1 break-all font-mono text-caption text-muted-foreground">{snapshot.pendingApproval.domain}</p>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => bridgeApi.resolveBrowserCloneApproval(snapshot.pendingApproval!.id, false))}>Deny</Button>
           <Button size="sm" disabled={busy} onClick={() => void run(() => bridgeApi.resolveBrowserCloneApproval(snapshot.pendingApproval!.id, true))}>Approve once</Button>
@@ -261,7 +261,7 @@ function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: Brow
     }
   };
 
-  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><LoaderCircle size={18} className="mx-auto animate-spin text-muted-foreground" /><p className="mt-2 max-w-sm text-[11px] leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first frame…"}</p></div></div>;
+  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><LoaderCircle size={18} className="mx-auto animate-spin text-muted-foreground" /><p className="mt-2 max-w-sm text-caption leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first frame…"}</p></div></div>;
   const pointer = snapshot.agentPointer;
   // The cursor lingers where the agent last acted, then fades, so a quiet page
   // does not look like it is still being driven.
@@ -272,8 +272,8 @@ function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: Brow
       takenOver && "ring-2 ring-info/60 focus-visible:ring-info")}>
     <div aria-hidden="true" className="flex h-8 items-center gap-2.5 border-b border-border bg-muted/40 px-3">
       <span className="flex gap-1.5"><i className="size-2 rounded-full bg-muted-foreground/30" /><i className="size-2 rounded-full bg-muted-foreground/30" /><i className="size-2 rounded-full bg-muted-foreground/30" /></span>
-      <span className="min-w-0 flex-1 truncate rounded-md bg-background/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{snapshot.domain}</span>
-      <span className="shrink-0 text-[11px] text-muted-foreground">throwaway clone</span>
+      <span className="min-w-0 flex-1 truncate rounded-md bg-background/70 px-2 py-0.5 font-mono text-caption text-muted-foreground">{snapshot.domain}</span>
+      <span className="shrink-0 text-caption text-muted-foreground">throwaway clone</span>
     </div>
     <div className="relative">
       <img src={snapshot.screenshot} alt="Live view of the browser clone" draggable={false} onClick={forwardClick} onMouseDown={event => { if (takenOver) event.currentTarget.parentElement?.parentElement?.focus(); }}
@@ -281,7 +281,7 @@ function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: Brow
       {pointer && <div aria-hidden="true" data-agent-pointer data-shown={pointerShown} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }}
         className={cn("pointer-events-none absolute z-10 transition-[left,top,opacity] duration-500 ease-out", pointerShown ? "opacity-100" : "opacity-0")}>
         <MousePointer2 size={16} className="fill-foreground text-background drop-shadow-sm" />
-        <span className="ml-3.5 -mt-0.5 block w-fit rounded-md bg-foreground px-1.5 py-0.5 text-[11px] font-medium leading-4 text-background shadow-sm">{agentLabel}</span>
+        <span className="ml-3.5 -mt-0.5 block w-fit rounded-md bg-foreground px-1.5 py-0.5 text-caption font-medium leading-4 text-background shadow-sm">{agentLabel}</span>
       </div>}
     </div>
   </div>;

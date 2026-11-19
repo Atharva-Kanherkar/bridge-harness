@@ -29,13 +29,13 @@ const IMPORTANCE_BADGE: Record<RiskTier, { label: string; variant: "error" | "wa
 };
 
 function FileDiffView({ patch, patchTruncated, binary, path, onQuoteHunk }: { patch: string; patchTruncated: boolean; binary: boolean; path: string; onQuoteHunk?: (range: HunkRange) => void }) {
-  if (binary) return <div className="px-3.5 py-4 text-[12px] text-muted-foreground">Binary file — no diff to show.</div>;
-  if (!patch.trim()) return <div className="px-3.5 py-4 text-[12px] text-muted-foreground">
+  if (binary) return <div className="px-3.5 py-4 text-meta text-muted-foreground">Binary file — no diff to show.</div>;
+  if (!patch.trim()) return <div className="px-3.5 py-4 text-meta text-muted-foreground">
     {patchTruncated ? "Patch preview omitted because the changeset reached its size limit. Open the file to review it." : "No diff content."}
   </div>;
   return <>
     <PatchView patch={patch} path={path} onQuoteHunk={onQuoteHunk} />
-    {patchTruncated && <p role="status" className="border-t border-warning/25 bg-warning/8 px-3.5 py-2 text-[11px] text-warning">
+    {patchTruncated && <p role="status" className="border-t border-warning/25 bg-warning/8 px-3.5 py-2 text-caption text-warning">
       Patch preview truncated — additional diff content exists. Open the file to review the remainder.
     </p>}
   </>;
@@ -80,12 +80,12 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
     <div className="group flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2">
       <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} aria-label={file.path} title={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent @max-[560px]/changes:basis-full">
         <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground transition-transform", !expanded && "-rotate-90")} aria-hidden="true" />
-        <span className="flex min-w-0 font-mono text-[12px]">
+        <span className="flex min-w-0 font-mono text-meta">
           {(file.previousPath || cut > 0) && <span className="truncate text-muted-foreground">{file.previousPath && `${file.previousPath} → `}{file.path.slice(0, cut)}</span>}
           <span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(cut)}</span>
         </span>
       </button>
-      {dirty && <span className="shrink-0 text-[11px] text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
+      {dirty && <span className="shrink-0 text-caption text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
       {onQuote && <button
         type="button"
         onClick={() => onQuote(file.path)}
@@ -107,7 +107,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
       {file.changeKind !== "modified" && <Badge variant="outline" size="sm" className="shrink-0">{kindLabel}</Badge>}
       {file.labels.map(label => <Badge key={`${file.path}:${label}`} variant="outline" size="sm" className="shrink-0" title={`Path label: ${label}`}>{label}</Badge>)}
       {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
-      <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums sm:flex">
+      <span className="hidden shrink-0 items-center gap-1.5 font-mono text-caption tabular-nums sm:flex">
         <span className="text-success">+{file.additions}</span>
         <span className="text-destructive">−{file.deletions}</span>
         <DiffStatBar additions={file.additions} deletions={file.deletions} />
@@ -134,7 +134,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
           onClick={() => { setMode(option); if (option === "edit") setEverEdited(true); }}
           aria-pressed={mode === option}
           className={cn(
-            "h-7 rounded-md px-2 text-[12px] capitalize transition-colors",
+            "h-7 rounded-md px-2 text-meta capitalize transition-colors",
             mode === option ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
           )}
         >{option}</button>)}
@@ -143,7 +143,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         <FileDiffView patch={file.patch} patchTruncated={file.patchTruncated} binary={file.binary} path={file.path} onQuoteHunk={onQuote ? range => onQuote(file.path, range) : undefined} />
       </div>
       {everEdited && editable && <div className={cn(mode !== "edit" && "hidden")}>
-        <Suspense fallback={<div className="px-3.5 py-4 text-[12px] text-muted-foreground">Opening editor…</div>}>
+        <Suspense fallback={<div className="px-3.5 py-4 text-meta text-muted-foreground">Opening editor…</div>}>
           <InlineFileEditor workspaceId={workspaceId} path={file.path} onDirtyChange={setDirty} onSaved={onSaved} />
         </Suspense>
       </div>}
@@ -212,7 +212,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     return next;
   });
 
-  if (loadError) return <PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-[13px] hover:bg-accent">Try again</button>}>{loadError}</PaneState>;
+  if (loadError) return <PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-ui hover:bg-accent">Try again</button>}>{loadError}</PaneState>;
   if (!changes) return <SkeletonRows label="Loading changes" rows={5} lead="dot" meta={false} framed={false} className="min-h-0 flex-1 overflow-hidden" />;
   if (changes.repositoryState === "not_git") return <PaneState icon={FolderGit2} title="No Git repository">This folder is available in Code, but Changes needs a Git repository.</PaneState>;
 
@@ -226,23 +226,23 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     : `${workspace.branch} · uncommitted vs HEAD${changes.baseCommit ? ` (${changes.baseCommit.slice(0, 8)})` : ""}`;
 
   return <div className="@container/changes h-full w-full overflow-y-auto px-3 py-4 sm:px-4">
-    <div className="text-[12px] font-medium text-muted-foreground">CHANGES</div>
+    <div className="text-meta font-medium text-muted-foreground">CHANGES</div>
     <h2 className="my-1.5 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : changes.repositoryState === "unborn" ? "No changes before first commit" : "Workspace is clean"}</h2>
     {/* What this diff is measured against — with worktree isolation, "which
         checkout am I looking at" should never be a question. */}
-    <p className="mb-2 font-mono text-[11px] text-muted-foreground">
+    <p className="mb-2 font-mono text-caption text-muted-foreground">
       {diffBasis}
     </p>
     {changes.files.length === 0
-      ? <p className="text-[13px] leading-relaxed text-muted-foreground">{changes.repositoryState === "unborn" ? "Create or stage a file to begin the first review." : "No uncommitted changes against HEAD."}</p>
+      ? <p className="text-ui leading-relaxed text-muted-foreground">{changes.repositoryState === "unborn" ? "Create or stage a file to begin the first review." : "No uncommitted changes against HEAD."}</p>
       : <>
-        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-[12px]">
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-meta">
           <span className="text-success">+{totalAdditions}</span>
           <span className="text-destructive">−{totalDeletions}</span>
           <DiffStatBar additions={totalAdditions} deletions={totalDeletions} className="w-24" />
           <span className="ml-auto text-muted-foreground">{viewedCount}/{sortedFiles.length}{changes.filesTruncated ? " shown" : ""} viewed</span>
         </div>
-        {changes.filesTruncated && <p role="status" className="mb-3 rounded-md border border-warning/25 bg-warning/8 px-3 py-2 text-[11px] text-warning">
+        {changes.filesTruncated && <p role="status" className="mb-3 rounded-md border border-warning/25 bg-warning/8 px-3 py-2 text-caption text-warning">
           {changes.totalFiles == null
             ? `Showing the first ${changes.files.length} files. Additional changed files exist beyond the scan limit.`
             : `Showing ${changes.files.length} of ${changes.totalFiles} changed files. Additional files were omitted from this bounded review.`}
@@ -263,7 +263,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
             onOpenFile={onOpenFile}
           />)}
         </div>
-        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground">
+        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-meta text-muted-foreground transition-colors hover:text-foreground">
           {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
         </button>}
       </>}

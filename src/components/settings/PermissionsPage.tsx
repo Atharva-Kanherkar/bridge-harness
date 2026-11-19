@@ -84,11 +84,11 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
 
     <SettingsGroup label="Recent auto-approvals" note="Every automatic decision is recorded">
       {autoApprovals.length === 0
-        ? <SettingsRow label={<span className="font-mono text-[11px] text-muted-foreground">Nothing has been auto-approved yet.</span>} />
+        ? <SettingsRow label={<span className="font-mono text-caption text-muted-foreground">Nothing has been auto-approved yet.</span>} />
         : autoApprovals.map(event => <SettingsRow
             key={event.id}
-            label={<span className="font-mono text-[11px] text-foreground/85">{event.body}</span>}
-            control={<time className="shrink-0 font-mono text-[11px] text-muted-foreground">
+            label={<span className="font-mono text-caption text-foreground/85">{event.body}</span>}
+            control={<time className="shrink-0 font-mono text-caption text-muted-foreground">
               {new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </time>}
           />)}

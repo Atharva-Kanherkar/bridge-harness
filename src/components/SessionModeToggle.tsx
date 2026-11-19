@@ -48,7 +48,7 @@ export function SessionModeToggle({ value, onChange, disabled, describedBy }: {
         onClick={() => onChange(mode.id)}
         onKeyDown={event => onKeyDown(event, index)}
         className={cn(
-          "inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition-colors disabled:opacity-50",
+          "inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-meta font-medium transition-colors disabled:opacity-50",
           checked ? "bg-accent text-foreground shadow-control" : "text-muted-foreground hover:text-foreground",
         )}
       >

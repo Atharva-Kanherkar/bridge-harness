@@ -61,9 +61,9 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
   if (!current) {
     return <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
       <span className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-xs"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
-      <h2 className="mt-2 font-display text-[15px] font-semibold text-foreground">Add a project with a GitHub remote</h2>
-      <p className="max-w-sm text-[13px] text-muted-foreground">Pulls shows pull requests and issues for the projects Bridge knows about. None has a folder yet.</p>
-      <button type="button" onClick={onAddProject} className="mt-2 min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">Add a project</button>
+      <h2 className="mt-2 font-display text-message font-semibold text-foreground">Add a project with a GitHub remote</h2>
+      <p className="max-w-sm text-ui text-muted-foreground">Pulls shows pull requests and issues for the projects Bridge knows about. None has a folder yet.</p>
+      <button type="button" onClick={onAddProject} className="mt-2 min-h-8 rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90">Add a project</button>
     </div>;
   }
 
@@ -88,13 +88,13 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
         className="-ml-1 flex h-9 min-w-0 items-center gap-1.5 rounded-lg px-2 text-left transition-colors hover:bg-accent"
       >
         <span className="min-w-0">
-          <span className="block text-[10.5px] font-medium uppercase leading-none tracking-[0.08em] text-muted-foreground">Repository</span>
-          <span className="mt-1 block truncate font-display text-[15px] font-semibold leading-none text-foreground">{current.label}</span>
+          <span className="block text-caption font-medium leading-none text-muted-foreground">Repository</span>
+          <span className="mt-1 block truncate font-display text-message font-semibold leading-none text-foreground">{current.label}</span>
         </span>
         <ChevronDown size={14} className={cn("mt-3 shrink-0 text-muted-foreground transition-transform", menu.open && "rotate-180")} aria-hidden="true" />
       </button>
       <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-card px-2.5 py-1.5 shadow-xs" title="When on, models never add Co-authored-by or harness mentions to commits or PR text">
-        <span className="hidden text-[12px] text-muted-foreground sm:inline">Hide AI attribution</span>
+        <span className="hidden text-meta text-muted-foreground sm:inline">Hide AI attribution</span>
         <Switch
           label="Hide AI attribution"
           checked={attribution.hide}
@@ -102,7 +102,7 @@ export function PullsScreen({ workspaces, projects, onJumpToFile, onAddProject }
           disabled={!attribution.loaded || attribution.saving}
         />
       </label>
-      {attribution.error && <span role="alert" className="max-w-44 truncate text-[12px] text-destructive" title={attribution.error}>Not saved</span>}
+      {attribution.error && <span role="alert" className="max-w-44 truncate text-meta text-destructive" title={attribution.error}>Not saved</span>}
     </div>
     <MenuPanel controller={menu} label="Repositories">
       {repos.map(repo => <MenuItem

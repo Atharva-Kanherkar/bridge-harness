@@ -91,7 +91,7 @@ function Chip({
       aria-expanded={expanded}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] transition-colors",
+        "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-meta tracking-[-0.01em] transition-colors",
         pressed || expanded ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
@@ -123,7 +123,7 @@ function ActionRow({
       aria-label={label}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center rounded-md text-[13px] tracking-[-0.008em] transition-colors",
+        "flex items-center rounded-md text-ui tracking-[-0.008em] transition-colors",
         collapsed ? "mx-auto size-9 justify-center" : "h-7 w-full gap-2.5 px-2",
         active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
       )}
@@ -163,7 +163,7 @@ function MenuItem({
       role="menuitem"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors",
+        "flex w-full items-center gap-2 px-3 py-2 text-left text-ui transition-colors",
         active ? "bg-accent text-foreground" : "text-foreground/85 hover:bg-accent",
       )}
     >
@@ -228,7 +228,7 @@ export function RightRailPreview() {
   return (
     <div className="flex h-[100dvh] flex-col bg-muted text-foreground">
       <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3">
-        <p className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+        <p className="min-w-0 flex-1 truncate text-meta text-muted-foreground">
           Look-at preview — not the real app. Click through, then tell me what to change.
         </p>
         <div className="u-segmented" aria-label="Window frame">
@@ -257,7 +257,7 @@ export function RightRailPreview() {
                 <span className="size-3 rounded-full bg-warning" />
                 <span className="size-3 rounded-full bg-success" />
               </div>
-              <p className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+              <p className="min-w-0 flex-1 truncate text-meta font-medium text-foreground">
                 {surface === "automations" ? "Automations" : surface === "mission-control" ? "Agent Fleet" : surface === "settings" ? "Settings" : surface === "projects" ? "Projects" : surface === "memory" ? "Memory" : repo.name}
               </p>
             </div>
@@ -336,7 +336,7 @@ export function RightRailPreview() {
                     onChange={event => setQuery(event.target.value)}
                     placeholder="Filter repositories…"
                     aria-label="Filter repositories"
-                    className="h-7 w-full rounded-lg border border-border bg-background pl-7 pr-2 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70 focus:border-ring"
+                    className="h-7 w-full rounded-lg border border-border bg-background pl-7 pr-2 text-ui text-foreground outline-none placeholder:text-muted-foreground/70 focus:border-ring"
                   />
                 </div>
               )}
@@ -344,7 +344,7 @@ export function RightRailPreview() {
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {!collapsed && (
                   <div className="mb-1 flex h-7 items-center justify-between px-2">
-                    <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Repositories</span>
+                    <span className="text-caption font-medium text-muted-foreground">Repositories</span>
                     <button type="button" aria-label="New folder" onClick={() => setSurface("projects")} className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground">
                       <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
                     </button>
@@ -353,7 +353,7 @@ export function RightRailPreview() {
                 {filtered.map(item => (
                   <div key={item.id}>
                     {!collapsed && (
-                      <div className="flex h-6 items-center gap-1.5 px-2 text-[11px] text-muted-foreground">
+                      <div className="flex h-6 items-center gap-1.5 px-2 text-caption text-muted-foreground">
                         <Folder size={12} strokeWidth={1.6} aria-hidden="true" />
                         <span className="min-w-0 flex-1 truncate">{item.name}</span>
                         <span className="tabular-nums">{item.chats.length}</span>
@@ -365,7 +365,7 @@ export function RightRailPreview() {
                         type="button"
                         onClick={() => openChat(item.id, chat.id)}
                         className={cn(
-                          "flex w-full items-center text-left text-[13px] tracking-[-0.008em] transition-colors",
+                          "flex w-full items-center text-left text-ui tracking-[-0.008em] transition-colors",
                           collapsed ? "h-9 justify-center" : "h-[26px] gap-1.5 rounded-md py-0 pr-2 pl-7",
                           activeChatId === chat.id && surface === "chat" ? "bg-accent font-medium text-foreground" : "text-foreground/80 hover:bg-accent/70",
                         )}
@@ -375,7 +375,7 @@ export function RightRailPreview() {
                           <>
                             <span className="min-w-0 flex-1 truncate">{chat.title}</span>
                             <GitBranch size={11} strokeWidth={1.7} className="shrink-0 text-ring" aria-hidden="true" />
-                            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/65">{chat.time}</span>
+                            <span className="shrink-0 text-caption tabular-nums text-muted-foreground/65">{chat.time}</span>
                           </>
                         )}
                       </button>
@@ -393,9 +393,9 @@ export function RightRailPreview() {
                   collapsed ? "size-10 justify-center" : "h-12 w-full gap-2.5 px-2",
                 )}
               >
-                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-[11px] font-semibold text-background">C</span>
+                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-caption font-semibold text-background">C</span>
                 {!collapsed && <>
-                  <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">cestercian</span>
+                  <span className="min-w-0 flex-1 truncate text-left text-ui font-medium">cestercian</span>
                   <Settings2 size={16} strokeWidth={1.6} className="text-muted-foreground" aria-hidden="true" />
                 </>}
               </button>
@@ -411,7 +411,7 @@ function Placeholder({ title, body }: { title: string; body: string }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <h1 className="font-display text-[1.6rem] font-medium tracking-[-0.03em] text-foreground">{title}</h1>
-      <p className="mt-2 max-w-sm text-[13px] leading-relaxed text-muted-foreground">{body}</p>
+      <p className="mt-2 max-w-sm text-ui leading-relaxed text-muted-foreground">{body}</p>
     </div>
   );
 }
@@ -424,7 +424,7 @@ function AutomationsCanvas() {
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-6 pb-16 pt-10">
       <h1 className="font-display text-[28px] font-semibold tracking-[-0.03em] text-foreground">Automations</h1>
-      <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">
+      <p className="mt-1.5 text-ui leading-relaxed text-muted-foreground">
         Scheduled jobs only. The catalog tabs are not part of this view.
       </p>
       <div className="mt-6 grid gap-3">
@@ -435,10 +435,10 @@ function AutomationsCanvas() {
                 <Bot size={15} aria-hidden="true" />
               </span>
               <div className="min-w-0 flex-1">
-                <h2 className="text-[13.5px] font-semibold text-foreground">{row.name}</h2>
-                <p className="mt-0.5 text-[12px] text-muted-foreground">{row.provider} · {row.when}</p>
+                <h2 className="text-ui font-semibold text-foreground">{row.name}</h2>
+                <p className="mt-0.5 text-meta text-muted-foreground">{row.provider} · {row.when}</p>
               </div>
-              <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.06em] text-muted-foreground">{row.status}</span>
+              <span className="rounded-full border border-border px-2 py-0.5 text-caption text-muted-foreground font-medium">{row.status}</span>
             </div>
           </article>
         ))}
@@ -495,8 +495,8 @@ function ComposerCanvas({
       )}
       {!hero && (
         <div className="min-h-0 flex-1 overflow-y-auto py-8">
-          <p className="text-[13px] text-muted-foreground">{chat?.title ?? "Chat"} in {repo.name}</p>
-          <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-foreground/90">
+          <p className="text-ui text-muted-foreground">{chat?.title ?? "Chat"} in {repo.name}</p>
+          <p className="mt-4 max-w-xl text-message leading-relaxed text-foreground/90">
             New Chat skipped the project picker. This session opened in the repo you were already in. Switch repo, branch, worktree, or host from the strip under the input.
           </p>
         </div>
@@ -542,7 +542,7 @@ function ComposerCanvas({
                       <Icon size={13} aria-hidden="true" />
                       <span className="min-w-0 flex-1">
                         <span className="block">{item.label}</span>
-                        <span className="block text-[11px] text-muted-foreground">{item.hint}</span>
+                        <span className="block text-caption text-muted-foreground">{item.hint}</span>
                       </span>
                     </MenuItem>
                   );
@@ -562,13 +562,13 @@ function ComposerCanvas({
             onChange={event => onDraft(event.target.value)}
             placeholder="Plan, build, / for skills, @ for context"
             aria-label="Message"
-            className="min-h-12 w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70"
+            className="min-h-12 w-full resize-none bg-transparent text-message leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70"
           />
           <div className="flex items-center gap-1.5">
             <button type="button" aria-label="Add context" className="inline-flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground">
               <Plus size={14} strokeWidth={1.7} aria-hidden="true" />
             </button>
-            <span className="inline-flex h-7 items-center rounded-full px-2.5 text-[12px] text-muted-foreground">High</span>
+            <span className="inline-flex h-7 items-center rounded-full px-2.5 text-meta text-muted-foreground">High</span>
             <button type="button" aria-label="Voice input" className="ml-auto inline-flex size-8 items-center justify-center rounded-full bg-foreground text-background">
               <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
             </button>
@@ -577,13 +577,13 @@ function ComposerCanvas({
 
         {hero && (
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-[12.5px] text-foreground hover:bg-accent">
+            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
               Plan new idea
             </button>
-            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-[12.5px] text-foreground hover:bg-accent">
+            <button type="button" className="inline-flex h-8 items-center rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
               Multitask
             </button>
-            <button type="button" onClick={onCloudShortcut} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[12.5px] text-foreground hover:bg-accent">
+            <button type="button" onClick={onCloudShortcut} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-meta text-foreground hover:bg-accent">
               <Cloud size={13} aria-hidden="true" />
               Run in Cloud
             </button>

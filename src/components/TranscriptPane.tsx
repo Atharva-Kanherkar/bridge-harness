@@ -58,7 +58,7 @@ function CopyJson({ value, label }: { value: unknown; label: string }) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     }}
-    className="inline-flex h-7 items-center gap-1 rounded px-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    className="inline-flex h-7 items-center gap-1 rounded px-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
   >
     {copied ? <Check size={10} aria-hidden="true" /> : <Copy size={10} aria-hidden="true" />}
     {copied ? "Copied" : "Copy"}
@@ -146,11 +146,11 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           onChange={event => setFilter(event.target.value)}
           placeholder="Filter kind or text"
           aria-label="Filter events"
-          className="h-8 min-w-24 flex-1 rounded-md border border-border bg-background px-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
+          className="h-8 min-w-24 flex-1 rounded-md border border-border bg-background px-2 text-caption text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
         />
         <CopyJson value={visible.map(row => row.event)} label="Copy the filtered stream as JSON" />
       </>}
-      {view === "entries" && head && <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">
+      {view === "entries" && head && <span className="ml-auto truncate font-mono text-caption text-muted-foreground">
         head {head.activeEntryId ? shortId(head.activeEntryId) : "—"} · {leaves.length} {leaves.length === 1 ? "leaf" : "leaves"}
       </span>}
       <button
@@ -163,7 +163,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
             .catch(cause => setExportState({ status: "error", message: cause instanceof Error ? cause.message : String(cause) }));
         }}
         title="Write the whole durable record to a JSONL file"
-        className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
       >
         <Download size={10} aria-hidden="true" />
         {exportState.status === "running" ? "Exporting…" : "Export JSONL"}
@@ -177,7 +177,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
         aria-pressed={facet === option}
         onClick={() => setFacet(option)}
         className={cn(
-          "inline-flex min-h-6 items-center gap-1 rounded-full border px-2 font-mono text-[11px] transition-colors",
+          "inline-flex min-h-6 items-center gap-1 rounded-full border px-2 font-mono text-caption transition-colors",
           facet === option ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
           // The one place this pane is not achromatic: a failure that reads
           // like every other chip is a failure nobody clicks.
@@ -189,7 +189,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
       </button>)}
     </div>}
 
-    {exportState.status === "done" && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-code px-2 py-1.5 font-mono text-[11px]">
+    {exportState.status === "done" && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-code px-2 py-1.5 font-mono text-caption">
       <span className="text-muted-foreground">Wrote {exportState.result.lineCount} lines</span>
       <span className="min-w-0 flex-1 truncate text-foreground" title={exportState.result.path}>{exportState.result.path}</span>
       <button
@@ -201,11 +201,11 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
         Copy path
       </button>
     </div>}
-    {exportState.status === "error" && <p className="shrink-0 border-b border-border px-2 py-1.5 font-mono text-[11px] text-destructive">
+    {exportState.status === "error" && <p className="shrink-0 border-b border-border px-2 py-1.5 font-mono text-caption text-destructive">
       Export failed: {exportState.message}
     </p>}
 
-    {view === "stream" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-[11px] leading-[1.9]">
+    {view === "stream" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-caption leading-[1.9]">
       {canLoadEarlier && <button
         type="button"
         disabled={loading}
@@ -216,7 +216,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
             .then(page => setLoaded(current => mergeRaw(current, page)))
             .finally(() => setLoading(false));
         }}
-        className="block w-full border-b border-border px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        className="block w-full border-b border-border px-2 py-1.5 text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
       >{loading ? "Loading…" : "Load earlier events"}</button>}
       {visible.length === 0 && !loading && <p className="px-2 py-4 text-muted-foreground">
         {stream.length === 0 ? "No events recorded for this session yet." : "Nothing matches the filter."}
@@ -242,29 +242,29 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
         </button>
         {selected?.event.id === row.event.id && <div className="border-t border-border bg-code px-2 py-1.5">
           <div className="flex items-center gap-2">
-            <span className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Raw event</span>
-            {row.problem && <span className="text-[11px] text-destructive">{row.problem}</span>}
+            <span className="text-caption text-muted-foreground font-medium">Raw event</span>
+            {row.problem && <span className="text-caption text-destructive">{row.problem}</span>}
             <span className="ml-auto"><CopyJson value={row.event} label={`Copy event ${row.event.sequence} as JSON`} /></span>
           </div>
-          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-[1.6] text-foreground">{JSON.stringify(row.event, null, 2)}</pre>
+          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-caption leading-[1.6] text-foreground">{JSON.stringify(row.event, null, 2)}</pre>
         </div>}
       </div>)}
     </div>}
 
-    {view === "entries" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-[11px] leading-[1.9]">
+    {view === "entries" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-caption leading-[1.9]">
       {entries.length === 0 && <p className="px-2 py-4 text-muted-foreground">No forest entries for this session yet.</p>}
       {entries.map(entry => <div key={entry.id} className="group flex items-baseline gap-2 border-b border-border/50 px-2 transition-colors hover:bg-accent">
         <span className={cn("w-1.5 shrink-0 self-stretch", activePath.has(entry.id) ? "bg-success/60" : "bg-transparent")} aria-hidden="true" />
         <span className="w-16 shrink-0 truncate text-muted-foreground">{shortId(entry.id)}</span>
         <span className="min-w-0 flex-1 truncate text-foreground">{entry.kind}</span>
         <span className="shrink-0 text-muted-foreground">{entry.contextVisibility}</span>
-        {activePath.has(entry.id) && <span className="shrink-0 text-[11px] uppercase tracking-[0.08em] text-success">active</span>}
+        {activePath.has(entry.id) && <span className="shrink-0 text-caption text-success font-medium">active</span>}
         {onRevealEntry && <button
           type="button"
           onClick={() => onRevealEntry(entry.id)}
           aria-label={`Reveal entry ${entry.id} in the conversation`}
           title="Reveal in the conversation"
-          className="inline-flex min-h-8 shrink-0 flex-wrap items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="inline-flex min-h-8 shrink-0 flex-wrap items-center gap-1 rounded-md px-2 text-caption text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Eye size={10} aria-hidden="true" />
           reveal
@@ -273,7 +273,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
       </div>)}
     </div>}
 
-    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2 font-mono text-[11px] text-muted-foreground">
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2 font-mono text-caption text-muted-foreground">
       <span>{view === "stream" ? `${visible.length} of ${stream.length} events` : `${entries.length} entries`}</span>
       {/* Always on screen, whichever facet is selected: a reader who never
           clicks Problems still has to learn that there are some. */}

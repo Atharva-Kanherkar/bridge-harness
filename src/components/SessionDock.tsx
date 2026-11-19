@@ -183,7 +183,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                       document.getElementById(`${dockId}-tab-${strip[next].id}`)?.focus();
                     }}
                     className={cn(
-                      "relative flex h-7 min-w-7 shrink-0 items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-colors",
+                      "relative flex h-7 min-w-7 shrink-0 items-center justify-center gap-1.5 rounded-md text-meta font-medium transition-colors",
                       // Icon-only mode is the narrow one, and the badges still
                       // ride along, so the tabs give up a little padding there
                       // to keep the last one inside the strip at the minimum width.
@@ -195,7 +195,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     <Icon size={13} strokeWidth={1.7} aria-hidden="true" />
                     {active && showActiveLabel && <span className="min-w-0 truncate pr-0.5">{pane.label}</span>}
                     {!!pane.badge && pane.available && (
-                      <span className="rounded-full bg-accent px-1 font-mono text-[11px] leading-4 text-muted-foreground">{pane.badge}</span>
+                      <span className="rounded-full bg-accent px-1 font-mono text-caption leading-4 text-muted-foreground">{pane.badge}</span>
                     )}
                     {pane.alert && pane.available && (
                       <span data-testid={`dock-alert-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-0 top-0 h-[5px] w-[5px] rounded-full bg-warning" />
@@ -245,7 +245,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                       <button
                         type="button"
                         onClick={onConnectFolder}
-                        className="u-glass-soft min-h-8 rounded-lg px-3 text-[13px] text-foreground transition-colors hover:bg-accent"
+                        className="u-glass-soft min-h-8 rounded-lg px-3 text-ui text-foreground transition-colors hover:bg-accent"
                       >
                         Connect a folder
                       </button>
@@ -279,7 +279,7 @@ function AddPaneMenu({ panes, onAdd }: { panes: DockPaneDescriptor[]; onAdd: (pa
         <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
       </button>
       <MenuPanel controller={menu} label="Add a pane to this chat" className="w-[260px] p-1.5">
-        <p className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Add to this chat</p>
+        <p className="px-2 pb-1 pt-1 text-caption font-medium text-faint">Add to this chat</p>
         {panes.map(pane => {
           const Icon = pane.icon;
           return (
@@ -289,11 +289,11 @@ function AddPaneMenu({ panes, onAdd }: { panes: DockPaneDescriptor[]; onAdd: (pa
               role="menuitem"
               onClick={() => { menu.close(); onAdd(pane.id); }}
               title={pane.available ? undefined : pane.unavailableReason}
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[12.5px] text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-meta text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
             >
               <Icon size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{pane.label}</span>
-              {!pane.available && <span className="shrink-0 text-[11px] text-muted-foreground">Unavailable here</span>}
+              {!pane.available && <span className="shrink-0 text-caption text-muted-foreground">Unavailable here</span>}
             </button>
           );
         })}

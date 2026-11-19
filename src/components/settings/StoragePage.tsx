@@ -239,17 +239,17 @@ function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
     <ul className="mt-3 grid grid-cols-1 gap-x-4 gap-y-0.5 @md/storage:grid-cols-2 @3xl/storage:grid-cols-3">
       {top.map((entry, index) => <li key={entry.path}>
         <button type="button" onClick={() => onOpen(entry.path)} className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left text-caption outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-          <span className={cn("size-2.5 shrink-0 rounded-[3px]", SERIES[index])} />
+          <span className={cn("size-2.5 shrink-0 rounded-sm", SERIES[index])} />
           <span className="min-w-0 flex-1 truncate text-foreground">{entry.name}</span>
           <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(entry.sizeBytes)}</span>
         </button>
       </li>)}
       {Array.from({ length: pending }, (_, index) => <li key={`pending-${index}`} aria-hidden="true" className="flex items-center gap-2 py-1 text-caption">
-        <span className="size-2.5 shrink-0 rounded-[3px] bg-foreground/10" />
+        <span className="size-2.5 shrink-0 rounded-sm bg-foreground/10" />
         <span className={cn(PLACEHOLDER, "w-[7em]")} />
       </li>)}
       <li className="flex items-center gap-2 py-1 text-caption">
-        <span className={cn("size-2.5 shrink-0 rounded-[3px]", OTHER)} />
+        <span className={cn("size-2.5 shrink-0 rounded-sm", OTHER)} />
         <span className="min-w-0 flex-1 truncate text-foreground">Apps, system, and other</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(other)}</span>
       </li>
@@ -287,7 +287,7 @@ function Suggestions({ overview, onOpen, onDelete, onAsk, busy }: {
           <button type="button" onClick={() => onOpen(item.path)} className="min-w-0 flex-1 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="flex items-baseline gap-2">
               <span className="truncate text-ui font-medium text-foreground">{item.label}</span>
-              <span className={cn("shrink-0 text-[11px]", item.safety === "safe" ? "text-success" : "text-muted-foreground")}>{item.safety === "safe" ? "Rebuilds itself" : "Review first"}</span>
+              <span className={cn("shrink-0 text-caption", item.safety === "safe" ? "text-success" : "text-muted-foreground")}>{item.safety === "safe" ? "Rebuilds itself" : "Review first"}</span>
             </span>
             <span className="mt-0.5 block truncate text-caption text-muted-foreground" title={item.description.replaceAll("`", "")}><Prose text={item.description} /></span>
           </button>
@@ -380,7 +380,7 @@ function Explorer({ listing, overview, root, selected, busy, sectionRef, onRoot,
               disabled={Boolean(entry.protectedReason)}
               title={entry.protectedReason ?? undefined}
               onClick={() => onToggle(entry)}
-              className={cn("grid size-4 shrink-0 place-items-center rounded-[5px] outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30", checked ? "bg-foreground ring-foreground" : "ring-border hover:ring-muted-foreground")}
+              className={cn("grid size-4 shrink-0 place-items-center rounded-sm outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30", checked ? "bg-foreground ring-foreground" : "ring-border hover:ring-muted-foreground")}
             >
               {checked && <Check size={11} strokeWidth={3} aria-hidden="true" className="text-background" />}
             </button>
@@ -470,7 +470,7 @@ function ConfirmDialog({ confirming, busy, home, onCancel, onPermanent, onRemove
           {entries.slice(0, 6).map(entry => <li key={entry.path} className="flex items-center gap-3 px-3 py-2">
             <span className="min-w-0 flex-1">
               <span className="block truncate text-foreground">{entry.name}</span>
-              <span className="block truncate font-mono text-[11px] text-muted-foreground">{displayPath(entry.path, home)}</span>
+              <span className="block truncate font-mono text-caption text-muted-foreground">{displayPath(entry.path, home)}</span>
             </span>
             <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(entry.sizeBytes)}</span>
           </li>)}

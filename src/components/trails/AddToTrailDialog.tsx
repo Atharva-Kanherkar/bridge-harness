@@ -65,7 +65,7 @@ export function AddToTrailDialog({ member, title: subjectTitle, workspaceId, tra
             </ul>
           )}
           <form onSubmit={create} className="flex flex-col gap-2 rounded-xl bg-card p-3" aria-label={`New trail from this ${noun}`}>
-            <span className="text-caption font-medium uppercase tracking-wide text-faint">New trail from this {noun}</span>
+            <span className="text-caption font-medium text-faint">New trail from this {noun}</span>
             <div className="flex gap-2">
               <input
                 value={title}

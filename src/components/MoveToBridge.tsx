@@ -109,10 +109,10 @@ function ImportProgress({ job }: { job: ImportJob }) {
   const imported = useGliding(job.imported);
   const now = useNow();
   return <section aria-label="Import progress" data-import-job={job.status} className="mb-6 rounded-xl border border-border-card bg-card p-4">
-    <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
+    <div className="flex items-center gap-2 text-ui font-medium text-foreground">
       <CircleNotch size={13} strokeWidth={1.8} className="animate-spin text-muted-foreground" aria-hidden="true" />
       {counting ? "Finding your chats…" : "Bringing your chats over"}
-      {!counting && <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">{percent}%</span>}
+      {!counting && <span className="ml-auto font-mono text-caption tabular-nums text-muted-foreground">{percent}%</span>}
     </div>
     <div className="mx-auto mt-4 max-w-md px-2"><ImportTransfer tool={job.tool} /></div>
     <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -126,20 +126,20 @@ function ImportProgress({ job }: { job: ImportJob }) {
         style={{ width: counting ? "100%" : `${Math.max(percent, 2)}%`, opacity: counting ? 0.35 : 1 }}
       />
     </div>
-    {!counting && <p className="mt-3 text-[12px] tabular-nums text-muted-foreground">
+    {!counting && <p className="mt-3 text-meta tabular-nums text-muted-foreground">
       <span className="text-foreground">{processed.toLocaleString()}</span> of {job.total.toLocaleString()}
       {" · "}<span data-import-result="imported">{imported.toLocaleString()}</span> came over
       {job.alreadyInBridge > 0 && <> · {job.alreadyInBridge.toLocaleString()} already in Bridge</>}
       <span className="float-right" data-import-time-left>{timeLeft(job, now)}</span>
     </p>}
-    {job.currentProject && <p className="mt-1 truncate text-[11.5px] text-muted-foreground/80">Now reading {folderLabel(job.currentProject)}</p>}
-    <p className="mt-3 text-[11.5px] text-muted-foreground">You can leave this page or close the window. Bridge lets you know when it is done.</p>
+    {job.currentProject && <p className="mt-1 truncate text-caption text-muted-foreground/80">Now reading {folderLabel(job.currentProject)}</p>}
+    <p className="mt-3 text-caption text-muted-foreground">You can leave this page or close the window. Bridge lets you know when it is done.</p>
   </section>;
 }
 
 function Count({ value, tone = "muted", result }: { value: number; tone?: "muted" | "plain" | "warning"; result?: string }) {
   const color = tone === "warning" ? "text-warning" : tone === "plain" ? "text-foreground" : "text-muted-foreground";
-  return <span data-import-result={result} className={`font-mono text-[11px] tabular-nums ${color}`}>{value.toLocaleString()}</span>;
+  return <span data-import-result={result} className={`font-mono text-caption tabular-nums ${color}`}>{value.toLocaleString()}</span>;
 }
 
 function ImportSummary({ job }: { job: ImportJob }) {

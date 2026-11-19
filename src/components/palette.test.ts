@@ -170,7 +170,7 @@ function syntaxRules(): Map<string, { color?: string; background?: string }> {
  * native vibrancy skin, which overrides `--code` but *not* the syntax ramp —
  * so the dark colours have to clear contrast against the lighter of the two.
  */
-const CODE_BACKGROUNDS = { light: ["#f3f3f1"], dark: ["#0a0a0a", "#0e0e0d"] };
+const CODE_BACKGROUNDS = { light: ["#f3f3f1"], dark: ["#0f0f11", "#0e0e0d"] };
 
 describe("the syntax palette", () => {
   it("still paints onto exactly the code backgrounds this file knows about", () => {

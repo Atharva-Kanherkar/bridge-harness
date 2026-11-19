@@ -33,8 +33,8 @@ export function SpeedControl({ tiers, value, onChange, disabled }: SpeedControlP
   const active = options.find(option => option.id === current);
   return <div className="flex flex-col gap-1.5" data-testid="speed-control">
     <div className="flex items-center gap-2">
-      <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Speed</span>
-      <div role="radiogroup" aria-label="Speed" className="ml-auto flex rounded-[7px] border border-border p-0.5">
+      <span className="text-caption font-medium text-muted-foreground">Speed</span>
+      <div role="radiogroup" aria-label="Speed" className="ml-auto flex rounded-md border border-border p-0.5">
         {options.map((option, i) => {
           const on = option.id === current;
           return <button
@@ -58,13 +58,13 @@ export function SpeedControl({ tiers, value, onChange, disabled }: SpeedControlP
               event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
             }}
             className={cn(
-              "rounded-[5px] px-2 py-0.5 text-[12px] font-medium transition-colors disabled:cursor-default",
+              "rounded-sm px-2 py-0.5 text-meta font-medium transition-colors disabled:cursor-default",
               on ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >{option.label}</button>;
         })}
       </div>
     </div>
-    {active?.description && current !== STANDARD_SPEED && <p className="text-[11px] leading-4 text-muted-foreground">{active.description}</p>}
+    {active?.description && current !== STANDARD_SPEED && <p className="text-caption leading-4 text-muted-foreground">{active.description}</p>}
   </div>;
 }

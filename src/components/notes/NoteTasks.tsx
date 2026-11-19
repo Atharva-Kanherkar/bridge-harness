@@ -32,8 +32,8 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
   const fresh = drafts.filter(draft => !tasks.some(task => task.sourceExcerpt === draft.excerpt || noteDisplayTitle(task) === draft.title));
   return <section aria-label="Tasks" className="mt-12">
     <div className="flex items-baseline gap-2 border-b border-border pb-2">
-      <h3 className="m-0 text-[13px] font-semibold text-foreground">Tasks</h3>
-      <span className="text-[12px] text-muted-foreground">{fresh.length ? "Finding tasks…" : open ? `${open} of ${tasks.length} open` : tasks.every(task => task.state === "done") ? "All done" : "No open tasks"}</span>
+      <h3 className="m-0 text-ui font-semibold text-foreground">Tasks</h3>
+      <span className="text-meta text-muted-foreground">{fresh.length ? "Finding tasks…" : open ? `${open} of ${tasks.length} open` : tasks.every(task => task.state === "done") ? "All done" : "No open tasks"}</span>
     </div>
     <ul className="m-0 list-none divide-y divide-border p-0">
       {tasks.map(task => {
@@ -52,12 +52,12 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
             <StatusGlyph state={task.state} size={15} />
           </button>
           <div className="min-w-0 flex-1">
-            <button type="button" onClick={() => onOpen(task)} className={`block max-w-full truncate text-left text-[14px] leading-6 hover:underline hover:decoration-border hover:underline-offset-4 ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{title}</button>
-            <p role="status" className={`m-0 mb-0.5 text-[12px] ${!done && session?.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{status}</p>
-            {task.sourceExcerpt && <blockquote className="m-0 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(task.sourceExcerpt)}</blockquote>}
+            <button type="button" onClick={() => onOpen(task)} className={`block max-w-full truncate text-left text-body leading-6 hover:underline hover:decoration-border hover:underline-offset-4 ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>{title}</button>
+            <p role="status" className={`m-0 mb-0.5 text-meta ${!done && session?.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{status}</p>
+            {task.sourceExcerpt && <blockquote className="m-0 line-clamp-2 text-meta leading-snug text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(task.sourceExcerpt)}</blockquote>}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            {lastChat && <button type="button" onClick={() => onOpenChat(lastChat)} className="inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-foreground transition-colors hover:bg-accent">
+            {lastChat && <button type="button" onClick={() => onOpenChat(lastChat)} className="inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-meta text-foreground transition-colors hover:bg-accent">
               {session && <HarnessMark harness={session.harness} size={12} />}Open chat
             </button>}
             {!lastChat && !done && task.state !== "archived" && <PopoverAction label="Start" triggerLabel={`Start ${title}`} panelLabel="Start a chat" align="end" busy={startingId === task.id} busyLabel="Starting…">
@@ -76,8 +76,8 @@ export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, 
       {fresh.map((draft, index) => <li key={`draft-${index}`} aria-label={`Draft: ${draft.title}`} data-draft="" className="flex items-start gap-3 py-2.5">
         <span aria-hidden="true" className="mt-[7px] grid size-5 shrink-0 place-items-center"><span className="size-2 animate-pulse rounded-full bg-faint" /></span>
         <div className="min-w-0 flex-1">
-          <p className="m-0 truncate text-[14px] leading-6 text-muted-foreground">{draft.title}</p>
-          {draft.excerpt && <blockquote className="m-0 line-clamp-2 text-[12.5px] leading-snug text-faint before:content-['“'] after:content-['”']">{quoteText(draft.excerpt)}</blockquote>}
+          <p className="m-0 truncate text-body leading-6 text-muted-foreground">{draft.title}</p>
+          {draft.excerpt && <blockquote className="m-0 line-clamp-2 text-meta leading-snug text-faint before:content-['“'] after:content-['”']">{quoteText(draft.excerpt)}</blockquote>}
         </div>
       </li>)}
     </ul>

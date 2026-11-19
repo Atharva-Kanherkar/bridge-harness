@@ -100,12 +100,12 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
     return property ? [{ notice, property }] : [];
   });
   return <div aria-label="Row properties">
-    {notices.map(({ notice, property }) => <p key={`${notice.kind}-${notice.propertyId}`} role="status" className="m-0 mb-1 flex flex-wrap items-baseline gap-x-1 rounded-md bg-muted px-2 py-1.5 text-[12.5px] text-foreground">
+    {notices.map(({ notice, property }) => <p key={`${notice.kind}-${notice.propertyId}`} role="status" className="m-0 mb-1 flex flex-wrap items-baseline gap-x-1 rounded-md bg-muted px-2 py-1.5 text-meta text-foreground">
       {property.name} in the file could not be read as a {(TYPE_LABELS[notice.expected] ?? notice.expected).toLowerCase()}:{" "}
-      <code className="rounded bg-background px-1 font-mono text-[12px] text-muted-foreground">{notice.raw}</code>
+      <code className="rounded bg-background px-1 font-mono text-meta text-muted-foreground">{notice.raw}</code>
     </p>)}
     {properties.map(property => <div key={property.id} className="flex min-h-8 items-start gap-2">
-      <dt className="flex w-28 shrink-0 items-center gap-1.5 py-1.5 text-[13px] text-muted-foreground">
+      <dt className="flex w-28 shrink-0 items-center gap-1.5 py-1.5 text-ui text-muted-foreground">
         <span className="shrink-0">{typeIcon(property.type)}</span>
         <span className="min-w-0 truncate">{property.name}</span>
       </dt>
@@ -114,7 +114,7 @@ export function RowProperties({ page, workspaces, notes, chatTitle, onOpenChat, 
       </dd>
     </div>)}
     <div ref={addAnchor} className="relative">
-      <button type="button" onClick={() => setAdding(current => !current)} aria-expanded={adding} className="-ml-1.5 mt-0.5 inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <button type="button" onClick={() => setAdding(current => !current)} aria-expanded={adding} className="-ml-1.5 mt-0.5 inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
         <Plus size={14} aria-hidden="true" />Add a property
       </button>
       {adding && <Floating anchor={addAnchor} label="Add a property" onClose={() => setAdding(false)}>

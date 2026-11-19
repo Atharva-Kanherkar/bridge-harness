@@ -43,7 +43,7 @@ export function Popover({ open, onClose, label, align = "start", side = "bottom"
 }
 
 export function MenuLabel({ children }: { children: ReactNode }) {
-  return <p className="m-0 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground first:pt-1">{children}</p>;
+  return <p className="m-0 px-2.5 pb-1 pt-2 text-caption font-medium text-muted-foreground first:pt-1">{children}</p>;
 }
 
 export function MenuDivider() {
@@ -66,11 +66,11 @@ export function Option({ selected, onSelect, leading, hint, children }: {
     role="option"
     aria-selected={selected}
     onClick={onSelect}
-    className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+    className="flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
   >
     {leading && <span className="grid w-4 shrink-0 place-items-center">{leading}</span>}
     <span data-option-label className="min-w-0 flex-1 truncate">{children}</span>
-    {hint && <span className="shrink-0 text-[11px] text-muted-foreground">{hint}</span>}
+    {hint && <span className="shrink-0 text-caption text-muted-foreground">{hint}</span>}
     <Check size={14} strokeWidth={2} aria-hidden="true" className={clsx("shrink-0", selected ? "text-foreground" : "invisible")} />
   </button>;
 }
@@ -81,7 +81,7 @@ export function Pill({ children, active = false, className, ...props }: React.Bu
     type="button"
     {...props}
     className={clsx(
-      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors disabled:pointer-events-none disabled:opacity-50",
+      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui transition-colors disabled:pointer-events-none disabled:opacity-50",
       active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
       className,
     )}
@@ -93,7 +93,7 @@ export function PrimaryButton({ children, className, ...props }: React.ButtonHTM
   return <button
     type="button"
     {...props}
-    className={clsx("inline-flex h-8 shrink-0 items-center rounded-full bg-primary px-3.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", className)}
+    className={clsx("inline-flex h-8 shrink-0 items-center rounded-full bg-primary px-3.5 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40", className)}
   >{children}</button>;
 }
 

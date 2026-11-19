@@ -143,7 +143,7 @@ function ChatRow({
   const intent = usePrefetchIntent(active ? undefined : onPrefetch);
   return (
     <span className={cn(
-      "group/row relative flex items-center rounded-[7px] transition-colors",
+      "group/row relative flex items-center rounded-md transition-colors",
       active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
     )}>
     <button
@@ -161,7 +161,7 @@ function ChatRow({
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] text-left font-sans transition-colors active:scale-[0.99]",
+        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
       )}
     >
@@ -172,13 +172,13 @@ function ChatRow({
           <FittedTitle
             title={name}
             ladder={chat.title ? chat.titleLadder : undefined}
-            className={cn("min-w-0 flex-1 truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", (active || unread) && "font-medium")}
+            className={cn("min-w-0 flex-1 truncate text-ui leading-4 tracking-[-0.008em] text-foreground", (active || unread) && "font-medium")}
           />
         </span>
         {/* The fork origin is extra context, not a replacement for the status
             line: a fork still has to show whether it is working and when it
             last moved, like any other chat. */}
-        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-caption leading-3.5 tracking-[-0.004em] text-muted-foreground">
           {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span></>}
           {/* The PR comes before the time: on a narrow rail the time is what
               truncates, never the word saying whether the PR landed. The
@@ -259,7 +259,7 @@ function ChatRowMenu({
 }) {
   const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
   const alias = toPublicAlias(chat.id);
-  const item = "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors hover:bg-accent";
+  const item = "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ui transition-colors hover:bg-accent";
   const run = (action: () => void) => () => { action(); menu.close(); };
   return (
     <>
@@ -295,7 +295,7 @@ function ChatRowMenu({
         <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
           <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
-          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{alias}</span>
+          <span className="shrink-0 font-mono text-caption text-muted-foreground">{alias}</span>
         </button>
         {onMention && (
           <button type="button" role="menuitem" className={item} onClick={run(onMention)}>
@@ -342,7 +342,7 @@ function ChatNoticeLevel({ chatId, item }: { chatId: string; item: string }) {
   return (
     <>
       <MenuSeparator />
-      <div className="px-2 pb-0.5 pt-1 text-[11px] text-muted-foreground">Worker notices</div>
+      <div className="px-2 pb-0.5 pt-1 text-caption text-muted-foreground">Worker notices</div>
       {NOTIFY_LEVELS.map(option => {
         const current = view?.level === option.value;
         const inherited = current && view?.sessionOverride == null;
@@ -359,7 +359,7 @@ function ChatNoticeLevel({ chatId, item }: { chatId: string; item: string }) {
           >
             <Check size={12} strokeWidth={1.7} className={cn("shrink-0", current ? "text-foreground" : "opacity-0")} aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">{option.label}</span>
-            {inherited && <span className="shrink-0 text-[11px] text-muted-foreground">default</span>}
+            {inherited && <span className="shrink-0 text-caption text-muted-foreground">default</span>}
           </button>
         );
       })}
@@ -371,7 +371,7 @@ function SectionLabel({ children, action }: { children: React.ReactNode; action?
   return (
     <div className="flex h-7 items-center gap-1.5 px-2">
       <Folder size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="text-[12px] font-medium tracking-[-0.004em] text-muted-foreground">{children}</span>
+      <span className="text-meta font-medium tracking-[-0.004em] text-muted-foreground">{children}</span>
       {action && <span className="ml-auto flex items-center gap-0.5">{action}</span>}
     </div>
   );
@@ -397,7 +397,7 @@ function GroupLabel({
   return (
     <div
       className={cn(
-        "group flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-1 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
+        "group flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-1 text-left text-ui tracking-[-0.008em] text-foreground/90 transition-colors",
         active ? "bg-accent font-medium text-foreground" : "hover:bg-accent/70 hover:text-foreground",
       )}
     >
@@ -415,9 +415,9 @@ function GroupLabel({
           className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
         />
         {Icon && <Icon size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-        <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>
+        <span className="min-w-0 truncate text-meta text-muted-foreground">{label}</span>
       </button>
-      <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/60">{count}</span>
+      <span className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground/60">{count}</span>
       {action}
     </div>
   );
@@ -471,7 +471,7 @@ function ActionRow({
       aria-label={badge ? `${label}, ${badge.label}` : label}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-[13px] tracking-[-0.008em] transition-colors",
+        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-ui tracking-[-0.008em] transition-colors",
         active ? "bg-selection font-medium text-selection-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
         disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
         unpinnable && !active && "group-hover/pin:bg-accent group-hover/pin:text-foreground",
@@ -856,7 +856,7 @@ export function BridgeSidebar({
                 }}
                 placeholder="Search chats and what was said…"
                 aria-label="Filter chats and projects"
-                className="h-8 w-full rounded-[7px] border border-ring/50 bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
+                className="h-8 w-full rounded-md border border-ring/50 bg-background pl-8 pr-2.5 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
               />
             </div>
           )}
@@ -867,12 +867,12 @@ export function BridgeSidebar({
             aria-label="New Chat"
             title={`New Chat  ${chordLabel("new-chat")}`}
             className={cn(
-              "inline-flex h-8 items-center gap-2 rounded-[7px] border border-border-card bg-card text-foreground shadow-control text-[13px] font-medium transition-colors enabled:hover:bg-accent disabled:cursor-default disabled:opacity-50",
+              "inline-flex h-8 items-center gap-2 rounded-md border border-border-card bg-card text-foreground shadow-control text-ui font-medium transition-colors enabled:hover:bg-accent disabled:cursor-default disabled:opacity-50",
               searchOpen ? "w-8 shrink-0 justify-center" : "min-w-0 flex-1 px-2.5 text-left",
             )}
           >
             <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-            {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-[11px] font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
+            {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-caption font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
           </button>
           {!searchOpen && (
             <button
@@ -880,7 +880,7 @@ export function BridgeSidebar({
               onClick={openSearch}
               aria-label="Search"
               title="Search"
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
             >
               <Search size={15} strokeWidth={1.6} aria-hidden="true" />
             </button>
@@ -1006,7 +1006,7 @@ export function BridgeSidebar({
                     aria-expanded={!capped}
                     onClick={() => toggleShownInFull(group.key)}
                     className={cn(
-                      "flex h-6 w-full items-center rounded-md text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                      "flex h-6 w-full items-center rounded-md text-left text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                       group.label ? "pl-7" : "px-2",
                     )}
                   >
@@ -1017,7 +1017,7 @@ export function BridgeSidebar({
             );
           })}
           {!visible.length && !(searching && chatSearch.result?.hits.length) && (
-            <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
+            <p className="px-2 py-1 text-caption leading-relaxed text-muted-foreground/70">
               {chats.length ? "No chat matches this filter." : "No chats yet. New Chat opens in the repo you were last in."}
             </p>
           )}
@@ -1026,7 +1026,7 @@ export function BridgeSidebar({
         {/* A rail pinned to the bottom: the account's settings entry and the
             usage dot. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
-          <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
+          <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-meta transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
           {/* The usage dot: a quick look at account quota, with the Usage app
               for the full screen. */}
           {railTrailing}

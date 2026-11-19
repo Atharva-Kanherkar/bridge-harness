@@ -322,7 +322,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     return () => clearTimeout(timer);
   }, [awaitingModel]);
   return <div ref={wrapper} className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-[12px] text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models…" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-meta text-foreground/90 enabled:hover:bg-accent")} title={showAwaiting ? "Loading models…" : disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-busy={showAwaiting || undefined} aria-label={showAwaiting ? `${roleLabel} model: loading` : `${roleLabel} model: ${harnessName} ${modelLabel}`}>
       {showAwaiting
         ? <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
         : <HarnessMark harness={activeHarness} size={14} />}
@@ -354,7 +354,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             onChange={event => setQuery(event.target.value)}
             placeholder="Search models"
             aria-label="Search models"
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"
           />
           {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
             setRefreshing(true);
@@ -391,16 +391,16 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                     flagged, its rows shown but greyed. */}
                 <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", index > 0 && "mt-1 border-t border-border/60")}>
                   <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
-                  <span className={cn("text-[11px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground" : "text-muted-foreground")}>{label}</span>
-                  {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
-                  {!adapter.available && <span className="ml-auto text-[11px] text-muted-foreground">unavailable</span>}
+                  <span className={cn("text-caption font-medium", adapter.available ? "text-muted-foreground" : "text-muted-foreground")}>{label}</span>
+                  {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">thinking</span>}
+                  {!adapter.available && <span className="ml-auto text-caption text-muted-foreground">unavailable</span>}
                 </div>
                 {models.map(option => {
                   const selected = adapter.id === activeHarness && groupAccount === activeAccount && (option.id ? option.id === activeModel : !activeModel);
                   const selectable = adapter.available && option.available !== false && option.compatible !== false;
-                  return <button key={`${adapter.id}:${groupAccount ?? ""}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
-                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-foreground">{cleanModelLabel(option.label)}</span>
-                    {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase text-muted-foreground">preview</span>}
+                  return <button key={`${adapter.id}:${groupAccount ?? ""}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)} className={cn("flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-ui text-foreground">{cleanModelLabel(option.label)}</span>
+                    {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
                   </button>;
                 })}
@@ -408,17 +408,17 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             ))}
         </div>
         {twoPane && <div className="flex min-w-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
-          <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
+          <div className="flex items-center gap-2 text-ui font-semibold text-foreground">
             <HarnessMark harness={activeHarness} size={12} />
             <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
-            {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
+            {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-caption text-muted-foreground font-medium">thinking</span>}
           </div>
           {speedControl && <div className="border-b border-border pb-2.5">{speedControl}</div>}
-          <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Thinking effort</div>
+          <div className="text-caption font-medium text-muted-foreground">Thinking effort</div>
           {showEffort
             ? <div data-testid="effort-control"><EffortList {...effortProps} /></div>
-            : <p className="text-[12px] leading-5 text-muted-foreground">No thinking control for this model.</p>}
-          {showEffort && <p className="mt-auto pt-1 text-[11px] text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
+            : <p className="text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
+          {showEffort && <p className="mt-auto pt-1 text-caption text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
         </div>}
         </div>
         {!twoPane && showEffort && (
@@ -428,7 +428,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         )}
         {!twoPane && speedControl && <div className="shrink-0 border-t border-border px-3.5 py-2.5">{speedControl}</div>}
         <div className="shrink-0 border-t border-border px-3 py-2.5">
-          <p className="text-[12px] leading-4 text-faint">Switching restarts the provider session. History stays.</p>
+          <p className="text-meta leading-4 text-faint">Switching restarts the provider session. History stays.</p>
         </div>
       </div>
     </>}

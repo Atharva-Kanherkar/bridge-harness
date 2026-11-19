@@ -54,7 +54,7 @@ export function RailSection({ title, aside, children }: { title: string; aside?:
   return (
     <section className="rounded-xl bg-card p-4">
       <div className="mb-2.5 flex items-baseline justify-between gap-2">
-        <h3 className="text-caption font-medium uppercase tracking-wide text-faint">{title}</h3>
+        <h3 className="text-caption font-medium text-faint">{title}</h3>
         {aside && <span className="shrink-0 font-mono text-caption text-faint">{aside}</span>}
       </div>
       {children}

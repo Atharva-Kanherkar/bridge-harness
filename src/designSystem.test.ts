@@ -90,6 +90,20 @@ describe("design system", () => {
     expect(offenders(whiteAlphaPattern)).toEqual([]);
   });
 
+  it("sizes UI text from the type scale, never an arbitrary pixel size", () => {
+    // micro · caption · meta · ui · body · message · heading · title. Arbitrary
+    // sizes from 16px up are left for one-off display type.
+    expect(offenders(/\btext-\[(?:[0-9]|1[0-5])(?:\.\d+)?px\]/g)).toEqual([]);
+  });
+
+  it("writes labels in sentence case, without all-caps or letter-spaced type", () => {
+    expect(offenders(/(?<![\w-])uppercase\b|\btracking-(?:wide|wider|widest|\[0\.\d+em\])/g)).toEqual([]);
+  });
+
+  it("rounds corners from the radius scale, not one-off pixel radii", () => {
+    expect(offenders(/\brounded-\[(?:[2-57]|10|12)px\]/g)).toEqual([]);
+  });
+
   it("keeps raw colour literals out of components", () => {
     expect(offenders(hexLiteralPattern, name => COLOR_LITERAL_ALLOWLIST.has(name))).toEqual([]);
   });
@@ -156,8 +170,8 @@ describe("theme tokens", () => {
   });
 
   it("locks the graphite and paper grounds", () => {
-    expect(tokenValue(":root {", "background")).toBe("#fafaf9");
-    expect(tokenValue(".dark {", "background")).toBe("#000000");
+    expect(tokenValue(":root {", "background")).toBe("#fbfbfa");
+    expect(tokenValue(".dark {", "background")).toBe("#0c0c0d");
   });
 
   it("keeps the ladder rungs distinct within each mode", () => {

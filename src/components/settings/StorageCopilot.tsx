@@ -101,10 +101,10 @@ function StorageCopilotIntro({ selectedCount, starting, recent, onOpenRecent, on
           Sees what this page measured, digs deeper with read-only commands, and proposes cleanups you approve. Nothing moves without you.
         </p>
       </div>
-      <p className="mb-1.5 mt-6 px-1 text-[11px] font-medium text-muted-foreground">Suggestions</p>
+      <p className="mb-1.5 mt-6 px-1 text-caption font-medium text-muted-foreground">Suggestions</p>
       <QuickAsks selectedCount={selectedCount} disabled={starting} onAsk={submit} />
       {recent.length > 0 && onOpenRecent && <>
-        <p className="mb-1.5 mt-5 px-1 text-[11px] font-medium text-muted-foreground">Recent</p>
+        <p className="mb-1.5 mt-5 px-1 text-caption font-medium text-muted-foreground">Recent</p>
         <ul aria-label="Recent storage chats" className="divide-y divide-border/60 overflow-hidden rounded-xl bg-muted/40 ring-1 ring-inset ring-border/60">
           {recent.map(item => <li key={item.id}>
             <button type="button" onClick={() => onOpenRecent(item.id)} className="flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-caption outline-none transition-colors hover:bg-accent focus-visible:bg-accent">

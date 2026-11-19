@@ -103,9 +103,9 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
           <span className={cn("flex-1 opacity-[0.18] transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />
         </span>)}
       </span>}
-      <span className={cn("relative leading-none tabular-nums", compact ? "text-[10.5px]" : "text-[11.5px]", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
+      <span className={cn("relative leading-none tabular-nums", compact ? "text-micro" : "text-caption", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
       {!hourly && axis[index] === window.untilDay && <span className={cn("absolute size-1.5 rounded-full bg-foreground", compact ? "right-1.5 top-1.5" : "right-2.5 top-2.5")} aria-hidden="true" />}
-      {!compact && value > 0 && <span className="relative mt-auto text-[14px] font-medium tracking-tight tabular-nums text-foreground">{format(value)}</span>}
+      {!compact && value > 0 && <span className="relative mt-auto text-body font-medium tracking-tight tabular-nums text-foreground">{format(value)}</span>}
     </button>;
   };
 
@@ -114,14 +114,14 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
       {hourly ? <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">
         {axis.map((_, index) => cell(index))}
       </div> : <div className={cn("grid gap-1.5", compact ? "grid-cols-7" : "grid-cols-[repeat(7,minmax(0,1fr))_5.5rem]")}>
-        {WEEKDAYS.map(day => <div key={day} className="px-1 pb-1 text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">{day}</div>)}
-        {!compact && <div className="px-2 pb-1 text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">Week</div>}
+        {WEEKDAYS.map(day => <div key={day} className="px-1 pb-1 text-caption text-muted-foreground/70 font-medium">{day}</div>)}
+        {!compact && <div className="px-2 pb-1 text-caption text-muted-foreground/70 font-medium">Week</div>}
         {weeks.map((week, row) => {
           const weekTotal = week.reduce<number>((sum, slot) => sum + (slot === null ? 0 : values[slot] ?? 0), 0);
           return [
             ...week.map((slot, column) => (slot === null ? <div key={`empty-${row}-${column}`} aria-hidden="true" /> : cell(slot))),
             ...(compact ? [] : [<div key={`week-${row}`} className="flex flex-col justify-end border-l border-border pb-2.5 pl-2.5">
-              <span className="text-[11px] text-muted-foreground/70">Week {row + 1}</span>
+              <span className="text-caption text-muted-foreground/70">Week {row + 1}</span>
               <span className="text-ui tabular-nums text-muted-foreground">{format(weekTotal)}</span>
             </div>]),
           ];
@@ -136,7 +136,7 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
     <section aria-label="Selection" className={cn(LAYOUT_CARD, "grid gap-0 p-0 md:grid-cols-2")}>
       <div className="p-5">
         <div className="flex items-center gap-2.5">
-          <span className={cn("rounded-full border px-2 py-0.5 text-[11.5px]", range ? "border-ring/40 text-ring" : "border-border text-muted-foreground")}>{range ? "Selected" : "Whole window"}</span>
+          <span className={cn("rounded-full border px-2 py-0.5 text-caption", range ? "border-ring/40 text-ring" : "border-border text-muted-foreground")}>{range ? "Selected" : "Whole window"}</span>
           <span className="text-caption tabular-nums text-muted-foreground">{range ? `${label(range[0])}${range[1] !== range[0] ? ` – ${label(range[1])}` : ""}` : `${label(whole[0])} – ${label(whole[1])}`} · {scoped.periods.length} {hourly ? (scoped.periods.length === 1 ? "hour" : "hours") : scoped.periods.length === 1 ? "day" : "days"}</span>
           {range && <button type="button" onClick={() => setSelection(null)} className="ml-auto rounded-md px-2 py-0.5 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Clear</button>}
         </div>
@@ -149,7 +149,7 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
         <HeroCaption report={scoped.report} metric={metric} className="mt-0.5" />
         {scopedTotal > 0 && <>
           <div className="mt-5 flex h-2 gap-[3px]" aria-hidden="true">
-            {scopedHarnesses.filter(entry => harnessValue(entry, metric) > 0).map(entry => <span key={entry.harness} className={cn("rounded-[2px]", harnessChartDot(entry.harness))} style={{ flexGrow: harnessValue(entry, metric) }} />)}
+            {scopedHarnesses.filter(entry => harnessValue(entry, metric) > 0).map(entry => <span key={entry.harness} className={cn("rounded-sm", harnessChartDot(entry.harness))} style={{ flexGrow: harnessValue(entry, metric) }} />)}
           </div>
           <ul className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5 text-caption text-muted-foreground" aria-label="By harness">
             {scopedHarnesses.map(entry => <li key={entry.harness} className="inline-flex items-center gap-1.5"><span className={cn("size-2 rounded-full", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessName harness={entry.harness} size={11} /><span className="font-medium tabular-nums text-foreground">{format(harnessValue(entry, metric))}</span></li>)}
@@ -160,7 +160,7 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
         <h2 className="mb-2 text-ui font-medium text-foreground">Top models {range ? "in selection" : "in window"}</h2>
         {topModels.length === 0 ? <p className="py-6 text-caption text-muted-foreground">No activity in this {range ? "selection" : "window"}.</p> : <ul>
           {topModels.map(model => <li key={`${model.harness}:${model.model}`} className="grid h-8 grid-cols-[minmax(0,9rem)_minmax(0,1fr)_4.5rem_4.5rem] items-center gap-3">
-            <span className="flex min-w-0 items-center gap-1.5"><span className="truncate font-mono text-caption text-foreground/85" title={`${harnessLabel(model.harness)} · ${model.model}`}>{model.model}</span>{model.costSource === "unpriced" && <span className="shrink-0 text-[11px] text-muted-foreground">unpriced</span>}</span>
+            <span className="flex min-w-0 items-center gap-1.5"><span className="truncate font-mono text-caption text-foreground/85" title={`${harnessLabel(model.harness)} · ${model.model}`}>{model.model}</span>{model.costSource === "unpriced" && <span className="shrink-0 text-caption text-muted-foreground">unpriced</span>}</span>
             <span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className={cn("block h-full rounded-full", harnessChartDot(model.harness))} style={{ width: `${topModel > 0 ? (modelValue(model, metric) / topModel) * 100 : 0}%` }} /></span>
             <span className="text-right text-ui tabular-nums text-foreground">{format(modelValue(model, metric))}</span>
             <span className="text-right text-caption tabular-nums text-muted-foreground">{metric === "cost" ? formatTokens(model.tokens) : formatUsd(model.costMicrousd)}</span>

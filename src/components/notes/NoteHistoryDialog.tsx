@@ -75,21 +75,21 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
       <div className="flex min-h-0 flex-1">
         <section aria-label="Selected version" className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center gap-2 px-6">
-            <DialogTitle className="m-0 flex-1 truncate text-[15px] font-semibold text-foreground">Page history</DialogTitle>
+            <DialogTitle className="m-0 flex-1 truncate text-message font-semibold text-foreground">Page history</DialogTitle>
             <div role="tablist" aria-label="Show" className="inline-flex rounded-full bg-muted p-0.5">
               {([["changes", "Changes"], ["version", "Version"]] as const).map(([key, label]) =>
-                <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setView(key)} className={clsx("h-7 rounded-full px-3 text-[12.5px] transition-colors", view === key ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
+                <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => setView(key)} className={clsx("h-7 rounded-full px-3 text-meta transition-colors", view === key ? "bg-selection font-medium text-selection-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
             </div>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
-            {failure && <p role="alert" className="m-0 text-[13px] text-destructive">{failure}</p>}
+            {failure && <p role="alert" className="m-0 text-ui text-destructive">{failure}</p>}
             {!failure && !shown && <SkeletonRegion label="Loading version"><SkeletonText lines={6} /></SkeletonRegion>}
             {shown && view === "version" && <div className="note-md"><Markdown text={shown.markdown} /></div>}
             {shown && view === "changes" && (same
-              ? <p className="m-0 text-[13px] text-muted-foreground">This is the page as it is now.</p>
+              ? <p className="m-0 text-ui text-muted-foreground">This is the page as it is now.</p>
               : <>
-                <p className="m-0 mb-3 text-[12px] text-muted-foreground">Restoring brings back the marked + lines and removes the − lines. Status, project and tags stay as they are.</p>
-                <ol aria-label="Changes" className="m-0 list-none overflow-hidden rounded-xl p-0 font-mono text-[12.5px] leading-6 ring-1 ring-border">
+                <p className="m-0 mb-3 text-meta text-muted-foreground">Restoring brings back the marked + lines and removes the − lines. Status, project and tags stay as they are.</p>
+                <ol aria-label="Changes" className="m-0 list-none overflow-hidden rounded-xl p-0 font-mono text-meta leading-6 ring-1 ring-border">
                   {rows.map((row, index) => <li key={index} data-diff={row.kind} className={clsx("flex gap-3 whitespace-pre-wrap px-3", row.kind === "added" && "bg-success/10", row.kind === "removed" && "bg-destructive/10 text-muted-foreground line-through decoration-destructive/40")}>
                     <span aria-hidden="true" className="w-3 shrink-0 select-none text-faint">{row.kind === "added" ? "+" : row.kind === "removed" ? "−" : ""}</span>
                     <span className="min-w-0 flex-1">{row.text || " "}</span>
@@ -105,12 +105,12 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
               const harness = /^agent:([^:]+):/.exec(entry.actor)?.[1];
               return <li key={entry.seq}>
                 <button type="button" aria-current={entry.seq === selected ? "true" : undefined} onClick={() => setSelected(entry.seq)} className={clsx("block w-full rounded-lg px-3 py-2 text-left transition-colors", entry.seq === selected ? "bg-selection" : "hover:bg-accent")}>
-                  <span className="flex items-center gap-1.5 text-[13px] text-foreground">
+                  <span className="flex items-center gap-1.5 text-ui text-foreground">
                     {harness && <HarnessMark harness={harness} size={12} />}
                     <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-                    {index === 0 && <span className="shrink-0 text-[11px] text-faint">Current</span>}
+                    {index === 0 && <span className="shrink-0 text-caption text-faint">Current</span>}
                   </span>
-                  <span className="mt-0.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
+                  <span className="mt-0.5 flex items-center gap-2 text-caption text-muted-foreground">
                     <span>{when(entry.at)}</span>
                     <span className="tabular-nums text-faint">+{entry.added} −{entry.removed}</span>
                     {entry.count > 1 && <span className="text-faint">{entry.count} edits</span>}
@@ -118,7 +118,7 @@ export function NoteHistoryDialog({ page, open, chatTitle, onClose, onRestore }:
                 </button>
               </li>;
             })}
-            {entries && !entries.length && <li className="px-3 py-6 text-center text-[12.5px] text-muted-foreground">No versions yet.</li>}
+            {entries && !entries.length && <li className="px-3 py-6 text-center text-meta text-muted-foreground">No versions yet.</li>}
           </ul>
           <div className="flex shrink-0 items-center justify-end gap-1 p-3">
             <Pill onClick={onClose}>Cancel</Pill>
