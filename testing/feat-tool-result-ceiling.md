@@ -37,13 +37,22 @@ paging for Bridge tool results (T2)" on the issue of this change.
   ceiling. An item is never cut between two of its fields. If the first item
   alone does not fit, the reply keeps that one item with its longest texts
   shortened, and `cut` says so. `next.offset` always moves on by at least 1.
+- A `List` reply never leaves out an item with no notice. If one item is above
+  the ceiling when each of its texts and lists is empty, the reply keeps no
+  item, and `cut` says that the item at that `offset` is too large for one
+  reply.
 - **Above the ceiling, `Document`**: the reply keeps the longest start of the
   text that fits and that ends directly after a line break. If no line break
   is in that range, the cut is at a character boundary. A cut is never inside
   a UTF-8 sequence. The reply keeps at least one character.
+- The text of a `Document` never loses a character between two pages. If the
+  parts with no pages cannot become small enough, the limiter removes them,
+  and `cut` names them.
 - A cut reply of a tool with pages gets two new keys, last in the object:
   `cut` (text for the model) and `next` (`{"offset": N}`). `N` is the `offset`
   of the call (0 when the call has none) plus the count of units in the reply.
+- If the part with pages is whole and only other parts are shortened, the
+  reply gets `cut` and no `next`. A next call has nothing more to return.
 - `cut` says: that the reply is cut, the ceiling in bytes, how many units the
   reply holds, how many units of this call are left out, the name of the tool,
   and the `offset` value for the next call.
@@ -58,8 +67,9 @@ paging for Bridge tool results (T2)" on the issue of this change.
   items from the end of the largest lists and keeps at least one item in each
   list. If that is not enough, it shortens the longest texts (at a line break,
   else at a character boundary) and keeps at least 256 bytes of each text. If
-  that is not enough, it removes the remaining items. The last fallback is an
-  object that holds only `cut`.
+  that is not enough, it removes the remaining items. If that is not enough,
+  it shortens each text below 256 bytes, down to an empty text. The last
+  fallback is an object that holds only `cut`.
 - `cut` names each shortened part by its JSON pointer with the kept amount and
   the full amount. If the shortened parts are more than 8, `cut` names the
   first 8 and gives the count of the others.
@@ -95,11 +105,13 @@ paging for Bridge tool results (T2)" on the issue of this change.
 - The tool descriptions do not change. The tool order of `tools/list`, the
   limits of `limit`, the `required` lists and `additionalProperties: false`
   do not change.
-- Each other tool refuses `offset` as it refuses each unknown argument.
+- No other tool declares `offset`. Each other tool treats `offset` as it
+  treats each unknown argument.
 - `notes_search`, plain path: skips the first `offset` matches of the same
-  ordered list (`rank` for a text query, then `updated_at DESC, id DESC`). If
-  `offset + limit` is above the largest list that the notes service returns,
-  the call is a 400 that says to narrow the search.
+  ordered list (`rank` for a text query, then `updated_at DESC, id DESC`). The
+  notes service returns a largest list. A call that goes past it returns the
+  matches up to that limit. If `offset` is at or above that limit, the call is
+  a 400 that says to narrow the search.
 - `notes_search`, database path: the same rule with the limit of a database
   query. `total` stays the total of the query.
 - `notes_read`: `offset` counts characters (Unicode scalar values) of
@@ -149,6 +161,11 @@ reply has no `cut`.
 - `a_line_longer_than_the_ceiling_is_cut_at_a_character`
 - `nested_json_inside_an_item_is_never_cut`
 - `a_single_item_over_the_ceiling_is_shortened_and_the_offset_moves_on`
+- `an_item_with_many_texts_is_kept_with_shorter_texts`
+- `an_item_that_cannot_fit_is_named_in_the_notice`
+- `a_document_keeps_each_character_when_other_parts_are_too_large`
+- `a_whole_part_with_pages_gets_no_next`
+- `a_document_page_ends_at_the_last_line_break_that_fits`
 - `large_parts_without_pages_are_shortened_and_named`
 - `a_bounded_reply_over_the_ceiling_loses_whole_items_first`
 - `a_write_reply_over_the_ceiling_says_the_change_is_complete`
@@ -187,12 +204,15 @@ reply has no `cut`.
 - `an_offset_past_the_end_returns_empty_markdown`
 - `a_call_with_no_offset_reads_the_same_bytes_as_before`
 - `an_offset_past_the_service_limit_is_refused`
+- `a_page_near_the_service_limit_returns_the_matches_up_to_it`
 - `a_bad_offset_is_refused`
 
 `memory_tools::tests`:
 
 - `memory_search_pages_with_offset_without_a_gap_or_a_repeat`
 - `a_bad_offset_is_refused`
+- `an_offset_past_the_end_returns_no_records` (also an `offset` above the
+  32-bit range)
 
 `history_tools::tests`:
 
