@@ -49,6 +49,8 @@ const CODEX_SKILLS_UNKNOWN_REASON: &str =
 pub const CODEX_SKILLS_UNCONFIRMED_REASON: &str =
     "Bridge cannot confirm the Codex skills config now. Open this list while the chat runs.";
 const OPENCODE_SKILLS_REASON: &str = "OpenCode has no verified switch for one skill.";
+const OPENCODE_MARKER_REASON: &str =
+    "This server name has { or }. OpenCode can expand it to another server, so Bridge cannot turn it off safely.";
 
 /// The stored row: the choice and its own revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,9 +196,20 @@ pub fn check(choice: &ChatToolSelection) -> Result<ChatToolSelection, BridgeErro
             if choice.claude_skills.is_some() || choice.codex_apps_off || !choice.codex_skills_off.is_empty() {
                 return Err(invalid("An OpenCode tool choice can leave out servers only"));
             }
+            if let Some(name) = choice.servers_off.iter().find(|name| has_substitution_marker(name)) {
+                return Err(invalid(format!(
+                    "The OpenCode server name {name:?} has {{ or }}. OpenCode reads it as a substitution marker"
+                )));
+            }
         }
     }
     Ok(ChatToolSelection { account, ..choice.clone() })
+}
+
+/// OpenCode expands `{env:NAME}` and `{file:path}` in its config text, so a
+/// key with a brace can become the key of another server.
+fn has_substitution_marker(name: &str) -> bool {
+    name.contains(['{', '}'])
 }
 
 fn check_size(row: &ToolSelectionRow) -> Result<(), BridgeError> {
@@ -1080,7 +1093,7 @@ pub fn merge_opencode(existing: Option<&str>, off: &[String]) -> OpenCodeMerge {
         Some(Ok(Value::Object(config))) => config,
         Some(_) => return OpenCodeMerge::NotApplied,
     };
-    let off: Vec<&String> = off.iter().filter(|key| !is_bridge(key)).collect();
+    let off: Vec<&String> = off.iter().filter(|key| !is_bridge(key) && !has_substitution_marker(key)).collect();
     if !off.is_empty() {
         let Some(servers) = config.entry("mcp").or_insert_with(|| Value::Object(serde_json::Map::new())).as_object_mut() else {
             return OpenCodeMerge::NotApplied;
@@ -1415,7 +1428,12 @@ pub fn opencode_units(source: &OpenCodeSource, row: Option<&ToolSelectionRow>) -
     let mut listed = BTreeSet::new();
     for name in opencode_server_names(source.mcp.as_ref()) {
         if listed.insert(name) {
-            items.push(server_state(unit(ChatToolKind::Server, name, name, "MCP servers"), &off));
+            let server = unit(ChatToolKind::Server, name, name, "MCP servers");
+            items.push(if has_substitution_marker(name) {
+                fixed(server, OPENCODE_MARKER_REASON)
+            } else {
+                server_state(server, &off)
+            });
         }
     }
     items.extend(saved_servers(&off, &listed, |_| "MCP servers"));

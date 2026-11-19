@@ -259,6 +259,17 @@ fn a_codex_key_outside_the_safe_set_is_refused() {
     assert!(refused(json!({"harness": "codex", "serversOff": ["codex_apps"]})).contains("Apps switch"));
     assert!(!refused(json!({"harness": "codex", "codexSkillsOff": ["a\"b"]})).is_empty());
     assert!(!refused(json!({"harness": "codex", "codexSkillsOff": ["a\\b"]})).is_empty());
+    // OpenCode expands `{env:NAME}` and `{file:path}` in its config text, so
+    // such a name can become the key of another server.
+    for name in ["{env:OPENCODE_SERVER_USERNAME}", "{file:/etc/name}", "a{b", "a}b"] {
+        let refusal = refused(json!({"harness": "opencode", "serversOff": [name]}));
+        assert!(refusal.contains("substitution"), "{name:?}: {refusal}");
+    }
+    let listed = OpenCodeSource { mcp: Some(json!({"{env:NAME}": {"status": "connected"}, "github": {"status": "connected"}})) };
+    let items = opencode_units(&listed, None);
+    let marked = item(&items, Server, "{env:NAME}");
+    assert_eq!((marked.state, marked.fixed_reason.as_deref()), (Fixed, Some(OPENCODE_MARKER_REASON)));
+    assert_eq!(item(&items, Server, "github").state, On);
     // The safe set is a Codex rule. A Claude server keeps its display name.
     check(&choice(json!({"harness": "claude", "serversOff": ["claude.ai Gmail"]}))).unwrap();
 }
@@ -553,7 +564,10 @@ impl Choices {
     /// A launch that skipped the checks: it can hold the Bridge server,
     /// unsafe keys, quotes and items of another harness.
     fn launch(&mut self, harness: &str) -> ToolLaunch {
-        const SERVERS: [&str; 10] = ["github", "sentry", "linear", "bridge", "Bridge", "codex_apps", "my.server", "a\"b", "x.enabled=true", "approval_policy"];
+        const SERVERS: [&str; 12] = [
+            "github", "sentry", "linear", "bridge", "Bridge", "codex_apps", "my.server", "a\"b", "x.enabled=true", "approval_policy",
+            "{env:OPENCODE_SERVER_USERNAME}", "{file:/etc/name}",
+        ];
         const SKILLS: [&str; 8] = ["review", "deploy", "plugin:skill", "say \"hi\"", "back\\slash", "tab\tname", "x\",enabled=true}", "é"];
         let servers_off = self.pick(&SERVERS);
         let codex_apps_off = self.next() & 1 == 1;
@@ -618,7 +632,9 @@ fn assert_codex_narrows(tools: &ToolLaunch) {
 }
 
 /// OpenCode: the content equals the input plus `enabled: false` leaves, and
-/// the permission object and the Bridge entry equal the baseline.
+/// the permission object and the Bridge entry equal the baseline. A name
+/// with a substitution marker gets no leaf, because OpenCode can expand it
+/// to the key of another server.
 fn assert_opencode_narrows(tools: &ToolLaunch, baseline: &Value) {
     let OpenCodeMerge::Applied(content) = merge_opencode(Some(&baseline.to_string()), &tools.servers_off) else {
         panic!("a JSON object always merges");
@@ -627,7 +643,7 @@ fn assert_opencode_narrows(tools: &ToolLaunch, baseline: &Value) {
     assert_eq!(content["permission"], baseline["permission"]);
     assert_eq!(content["mcp"]["bridge"], baseline["mcp"]["bridge"]);
     let servers = content["mcp"].as_object_mut().unwrap();
-    for name in tools.servers_off.iter().filter(|name| !is_bridge(name)) {
+    for name in tools.servers_off.iter().filter(|name| !is_bridge(name) && !name.contains(['{', '}'])) {
         let entry = servers.get_mut(name.as_str()).and_then(Value::as_object_mut).unwrap();
         assert_eq!(entry.remove("enabled"), Some(Value::Bool(false)), "{name}");
         match baseline["mcp"].get(name.as_str()) {
