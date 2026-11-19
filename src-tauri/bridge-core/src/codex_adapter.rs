@@ -343,17 +343,7 @@ fn launch(
     let writer = Arc::new(Mutex::new(stdin));
     let mut reader = BufReader::new(stdout);
     let realtime_voice = supports_realtime_voice();
-    write_value(
-        &writer,
-        &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true,"requestAttestation":false}}}),
-    )?;
-    if let Some(on_progress) = on_progress {
-        on_progress(crate::adapters::StartupPhase::Handshake);
-    }
-    // A config that Codex refuses ends the process before this reply, and
-    // only stderr names the reason.
-    let (_, mut startup_messages) = wait_for_response(&mut reader, 1)
-        .map_err(|error| crate::adapters::with_startup_stderr(error, child.child_mut(), &stderr_tail))?;
+    let mut startup_messages = initialize(child.child_mut(), &writer, &mut reader, &stderr_tail, on_progress)?;
     crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned_at);
     write_value(&writer, &json!({"method":"initialized"}))?;
     startup_messages.append(&mut verify_credential_policy(
@@ -1147,6 +1137,29 @@ fn verify_credential_policy(
     Ok(skipped)
 }
 
+/// Send `initialize` and wait for its reply. A config that Codex refuses ends
+/// the process before this reply, or before the write, and only stderr names
+/// the reason.
+fn initialize(
+    child: &mut Child,
+    writer: &Arc<Mutex<ChildStdin>>,
+    reader: &mut BufReader<ChildStdout>,
+    stderr_tail: &crate::adapters::StderrTail,
+    on_progress: Option<crate::adapters::StartupProgress<'_>>,
+) -> Result<Vec<Value>, BridgeError> {
+    write_value(
+        writer,
+        &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true,"requestAttestation":false}}}),
+    )
+    .map_err(|error| crate::adapters::with_startup_stderr(error, child, stderr_tail))?;
+    if let Some(on_progress) = on_progress {
+        on_progress(crate::adapters::StartupPhase::Handshake);
+    }
+    let (_, messages) =
+        wait_for_response(reader, 1).map_err(|error| crate::adapters::with_startup_stderr(error, child, stderr_tail))?;
+    Ok(messages)
+}
+
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
     let mut writer = lock_writer(writer, "Codex")?;
     serde_json::to_writer(&mut *writer, value)
@@ -1250,6 +1263,26 @@ mod tests {
         assert!(request["params"].get("sandboxPolicy").is_none());
         *runtime.current_turn.lock().unwrap() = None;
         assert!(runtime.steer_turn("too late", TurnContext::default(), &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_of_initialize_carries_the_last_stderr_line() {
+        let mut child = Command::new("sh")
+            .args(["-c", "echo 'Error: invalid transport in mcp_servers.github' >&2; exit 1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = crate::adapters::StderrTail::capture(&mut child);
+        let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        // The process is gone before the write, so the write fails.
+        child.wait().unwrap();
+        let error = initialize(&mut child, &writer, &mut reader, &tail, None).unwrap_err().to_string();
+        assert!(error.contains("exit status: 1"), "{error}");
+        assert!(error.contains("invalid transport in mcp_servers.github"), "{error}");
     }
 
     /// A stand-in app-server: answers `account/read` (id 3) with `reply` after
