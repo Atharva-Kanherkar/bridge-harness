@@ -180,12 +180,14 @@ pub(crate) fn offset(args: &Value) -> Result<usize, ToolError> {
     }
 }
 
-/// The rows a search fetches before it skips `offset`. A page past the longest
-/// list of the service is refused, never silently empty.
+/// The rows a search fetches before it skips `offset`. A page that goes past
+/// the longest list of the service returns the matches up to that list. A page
+/// that starts at or after its end is refused, never silently empty.
 fn fetched(offset: usize, limit: usize, most: usize, narrow: &str) -> Result<usize, ToolError> {
-    offset.checked_add(limit).filter(|end| *end <= most).ok_or_else(|| {
-        bad(format!("offset {offset} with limit {limit} goes past the first {most} matches, the most that notes_search pages through. Narrow the search with {narrow} instead."))
-    })
+    if offset >= most {
+        return Err(bad(format!("offset {offset} is at or past the first {most} matches, the most that notes_search pages through. Narrow the search with {narrow} instead.")));
+    }
+    Ok(offset.checked_add(limit).map_or(most, |end| end.min(most)))
 }
 
 fn strings(args: &Value, key: &str) -> Option<Vec<String>> {
@@ -1403,13 +1405,40 @@ mod tests {
         reading_list(&notes);
         let actor = "agent:codex:worker-1";
         let search = |args: Value| run(&notes, Access::ReadOnly, actor, "notes_search", &args);
-        assert!(search(json!({"offset": 1900, "limit": 100})).is_ok());
-        assert!(search(json!({"database": "Reading list", "offset": 400, "limit": 100})).is_ok());
-        for args in [json!({"offset": 1901, "limit": 100}), json!({"offset": 1981}), json!({"database": "Reading list", "offset": 401, "limit": 100}), json!({"where": {"property": "kind", "op": "is", "value": "note"}, "offset": 481})] {
+        assert!(search(json!({"offset": 1999, "limit": 100})).is_ok());
+        assert!(search(json!({"database": "Reading list", "offset": 499, "limit": 100})).is_ok());
+        for args in [json!({"offset": 2000, "limit": 100}), json!({"offset": 2001}), json!({"database": "Reading list", "offset": 500, "limit": 100}), json!({"where": {"property": "kind", "op": "is", "value": "note"}, "offset": 500})] {
             let error = search(args.clone()).unwrap_err();
             assert_eq!(error.status, 400, "{args}");
             assert!(error.message.contains("Narrow the search"), "{}", error.message);
         }
+    }
+
+    #[test]
+    fn a_page_near_the_service_limit_returns_the_matches_up_to_it() {
+        let (_dir, notes) = service();
+        let database = reading_list(&notes);
+        for index in 0..super::super::query::MAX_LIMIT {
+            notes.create(CreatePage { title: Some(format!("Book {index}")), parent_id: Some(database.clone()), ..Default::default() }, crate::notes::service::PERSON).unwrap();
+        }
+        let actor = "agent:codex:worker-1";
+        let search = |offset: usize| run(&notes, Access::ReadOnly, actor, "notes_search", &json!({"database": "Reading list", "offset": offset, "limit": 100})).unwrap();
+        let before = search(400);
+        assert_eq!(before["pages"].as_array().unwrap().len(), 100);
+        // A cut reply after 20 rows says to continue at 420 with the same limit.
+        let after = search(420);
+        assert_eq!(after["pages"].as_array().unwrap()[..], before["pages"].as_array().unwrap()[20..], "the rows up to the limit of a query");
+        assert_eq!(after["total"], before["total"]);
+        assert!(search(499)["pages"].as_array().unwrap().len() == 1);
+        // The plain path: the same arithmetic at the limit of a list.
+        let most = super::super::service::MAX_LIST_LIMIT;
+        assert_eq!(fetched(1950, 100, most, "query").unwrap(), most);
+        assert_eq!(fetched(1900, 100, most, "query").unwrap(), most);
+        assert_eq!(fetched(10, 20, most, "query").unwrap(), 30);
+        for offset in [most, most + 1, usize::MAX] {
+            assert_eq!(fetched(offset, 100, most, "query").unwrap_err().status, 400, "{offset}");
+        }
+        assert!(run(&notes, Access::ReadOnly, actor, "notes_search", &json!({"offset": 1950, "limit": 100})).unwrap()["pages"].as_array().unwrap().is_empty());
     }
 
     #[test]

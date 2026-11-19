@@ -37,6 +37,9 @@ is complete and that the agent must not send it again.
 `notes_search`, `notes_read` and `memory_search` take an optional `offset`
 (integer, minimum 0, default 0). Start with no `offset`, then send each
 `next.offset` until a reply has no `cut`. If the data does not change, the
-replies join to the full result with no gap and no repeat. The chat tools keep
+replies join to the full result with no gap and no repeat. `notes_search`
+pages through the first 2,000 matches, or 500 on the database path. A page
+that goes past that limit returns the matches up to it. An `offset` at or past
+the limit is a 400 that says to narrow the search. The chat tools keep
 the caps on their parts and counts, and their largest reply is below the
 ceiling, so they have no `offset`.
