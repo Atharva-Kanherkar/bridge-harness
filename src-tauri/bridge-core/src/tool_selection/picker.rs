@@ -23,6 +23,9 @@ pub const CLAUDE_FIGURE_SOURCE: &str = "claude.getContextUsage";
 const NO_CATALOG_NOTE: &str = "Bridge has not read the connector catalog yet. Open Connectors to read it";
 const NO_UNITS_REASON: &str = "This harness has no tool choice";
 const DONOR_NOTE: &str = "The newest chat of this account that started. A new chat can list other items";
+/// Live checks saw a larger next request after a change in a Codex chat with
+/// turns, so the skill figures promise no gain.
+const CODEX_SKILLS_NOTE: &str = "The skill figures are estimates. A change after the first turn can make the next request larger";
 /// How many recent Claude chats a draft looks at for an init to borrow.
 const DONOR_CANDIDATES: i64 = 50;
 
@@ -362,9 +365,13 @@ fn codex_list(core: &Arc<BridgeCore>, session_id: Option<&str>, row: Option<&Too
         (joined(servers), joined(skills), joined(config))
     });
     let at = chrono::Utc::now().to_rfc3339();
+    let mut skills_source = runtime_source("Codex skills/list", Some(&at), &skills);
+    if skills.is_ok() {
+        skills_source.note = Some(CODEX_SKILLS_NOTE.to_owned());
+    }
     let sources = vec![
         runtime_source("Codex mcpServerStatus/list", Some(&at), &servers),
-        runtime_source("Codex skills/list", Some(&at), &skills),
+        skills_source,
         runtime_source("Codex config/read", Some(&at), &config),
     ];
     let skills_dropped = core

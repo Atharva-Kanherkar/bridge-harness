@@ -18,6 +18,7 @@ const CODEX_SKILLS_UNKNOWN_REASON = "Bridge can check the Codex config for a ski
 const OPENCODE_SKILLS_REASON = "OpenCode has no verified switch for one skill.";
 const NO_UNITS_REASON = "This harness has no tool choice";
 const DONOR_NOTE = "The newest chat of this account that started. A new chat can list other items";
+const CODEX_SKILLS_NOTE = "The skill figures are estimates. A change after the first turn can make the next request larger";
 const STALE = "The tool choice changed in another window. Reload it and try again";
 const TURN_BUSY = "A turn of this chat runs now. Try again when it ends.";
 const BUSY: Record<string, string> = {
@@ -116,7 +117,7 @@ function codexList(warm: boolean, row: Choice | null): Listed {
     return warm ? item : fixed(item, CODEX_SKILLS_UNKNOWN_REASON);
   }));
   const sources = warm
-    ? ["Codex mcpServerStatus/list", "Codex skills/list", "Codex config/read"].map(label => source("runtime", label, at))
+    ? [source("runtime", "Codex mcpServerStatus/list", at), source("runtime", "Codex skills/list", at, CODEX_SKILLS_NOTE), source("runtime", "Codex config/read", at)]
     : [missing("runtime", "Codex app-server")];
   return { items, sources };
 }

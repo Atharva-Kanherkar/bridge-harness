@@ -15,6 +15,11 @@ describe("mock tools of a chat", () => {
     expect(find(codex.items, "Notion")).toMatchObject({ kind: "app", state: "fixed" });
     expect(find(codex.items, "pdf")?.tokens?.source).toBe("codex.skills/list bytes_div4_v1");
     expect(codex.sources.map(source => source.available)).toEqual([true, true, true]);
+    expect(codex.sources.map(source => [source.label, source.note])).toEqual([
+      ["Codex mcpServerStatus/list", null],
+      ["Codex skills/list", "The skill figures are estimates. A change after the first turn can make the next request larger"],
+      ["Codex config/read", null],
+    ]);
 
     const claude = await bridgeApi.chatTools({ draft: { harness: "claude", workspaceId: "demo-1" } });
     expect(find(claude.items, "claude.ai Gmail")).toMatchObject({ label: "Gmail", group: "claude.ai", tokens: { source: "claude.getContextUsage" } });

@@ -183,6 +183,7 @@ fn a_cold_codex_chat_keeps_its_choice_and_waits_for_the_first_turn() {
     let runtime = source_of(&result, Kind::Runtime);
     assert!(!runtime.available);
     assert_eq!(runtime.note.as_deref(), Some(COLD_NOTE));
+    assert!(result.sources.iter().all(|source| source.note.as_deref() != Some(CODEX_SKILLS_NOTE)), "{:#?}", result.sources);
     // No runtime started for the read.
     assert!(core.adapters.lock().unwrap().is_empty());
 
@@ -219,6 +220,12 @@ fn a_warm_codex_chat_reads_servers_skills_and_config_from_its_runtime() {
     assert_eq!((lint.state, tokens.value, tokens.source.as_str()), (On, 25, crate::tool_selection::CODEX_SKILL_SOURCE));
     assert!(tokens.at.is_some(), "each figure names its time");
     assert_eq!(result.sources.iter().filter(|source| source.kind == Kind::Runtime && source.available).count(), 3);
+    let notes: Vec<(&str, Option<&str>)> = result.sources.iter().map(|source| (source.label.as_str(), source.note.as_deref())).collect();
+    assert_eq!(
+        notes,
+        [("Codex mcpServerStatus/list", None), ("Codex skills/list", Some(CODEX_SKILLS_NOTE)), ("Codex config/read", None)],
+        "a late change can cost more"
+    );
 }
 
 #[test]
@@ -287,6 +294,7 @@ fn a_failed_read_never_drops_a_saved_choice() {
     let failed: Vec<&ChatToolSource> = result.sources.iter().filter(|source| source.kind == Kind::Runtime).collect();
     assert_eq!(failed.len(), 3);
     assert!(failed.iter().all(|source| !source.available && source.note.is_some()), "{failed:#?}");
+    assert!(failed.iter().all(|source| source.note.as_deref() != Some(CODEX_SKILLS_NOTE)), "a failed read keeps its error");
 
     // A row that fails its checks keeps its revision, so a save can replace it.
     let db = core.db.lock().unwrap();
