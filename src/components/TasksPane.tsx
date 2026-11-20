@@ -286,7 +286,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
             const started = Date.parse(session.startedAt ?? "");
             const stoppable = onStopWorker && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState);
             return <section key={runtime.sessionId} data-agent-row={runtime.sessionId} data-depth={depth} className="group/agent">
-              <div className={clsx("flex min-h-12 items-center gap-1 py-1.5 pr-1.5 transition-colors hover:bg-accent/50", DEPTH_INDENT[Math.min(depth, DEPTH_INDENT.length - 1)])}>
+              <div className={clsx("flex min-h-12 items-center gap-1 py-1.5 pr-3 transition-colors hover:bg-accent/50 group-focus-within/agent:bg-accent/50", DEPTH_INDENT[Math.min(depth, DEPTH_INDENT.length - 1)])}>
                 <button
                   type="button"
                   onClick={() => setSelected(runtime.sessionId)}
@@ -298,6 +298,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                   <span className="min-w-0 flex-1">
                     <span className="flex min-w-0 items-baseline gap-1.5">
                       <b className="shrink-0 text-meta font-medium text-foreground">{name}</b>
+                      {isPinned && <Pin size={10} className="shrink-0 self-center fill-current text-muted-foreground" aria-hidden="true"/>}
                       <span className="min-w-0 truncate text-meta text-foreground/80">{topic ?? role}</span>
                     </span>
                     {meta && <span className="block truncate text-caption text-faint" title={runtime.worktreePath ?? undefined}>{meta}</span>}
@@ -310,8 +311,12 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                     {Number.isFinite(started) && <span className="block text-caption tabular-nums text-faint">{formatWorkerClock(workerClock(session, runtime, now) - started)}</span>}
                   </span>
                 </button>
-                <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(runtime.sessionId)} quiet />
-                {stoppable && <StopButton name={name} onStop={() => void onStopWorker(runtime.sessionId)} quiet />}
+                {/* Actions take no room until the row is pointed at or
+                    focused, so states line up on the right edge. */}
+                <span className="hidden shrink-0 items-center gap-0.5 group-hover/agent:flex group-focus-within/agent:flex">
+                  <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(runtime.sessionId)} />
+                  {stoppable && <StopButton name={name} onStop={() => void onStopWorker(runtime.sessionId)} />}
+                </span>
               </div>
             </section>;
           })}
@@ -348,27 +353,23 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
   </div>;
 }
 
-/// Lineage row actions surface on hover or keyboard focus, so a tree of rows
-/// reads as names and states first. A pinned agent keeps its pin visible.
-const QUIET_ACTION = "opacity-0 transition-opacity group-hover/agent:opacity-100 focus-visible:opacity-100";
-
-function PinButton({ name, pinned, onToggle, quiet = false }: { name: string; pinned: boolean; onToggle: () => void; quiet?: boolean }) {
+function PinButton({ name, pinned, onToggle }: { name: string; pinned: boolean; onToggle: () => void }) {
   return <button
     type="button"
     onClick={onToggle}
     aria-pressed={pinned}
     aria-label={`${pinned ? "Unpin" : "Pin"} ${name}`}
     title={pinned ? "Unpin: it leaves this list when it finishes" : "Pin: keep it listed here, even after it finishes"}
-    className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md hover:bg-accent", pinned ? "text-foreground" : "text-muted-foreground hover:text-foreground", quiet && !pinned && QUIET_ACTION)}
+    className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md hover:bg-accent", pinned ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
   ><Pin size={12} className={cn(pinned && "fill-current")} aria-hidden="true" /></button>;
 }
 
-function StopButton({ name, onStop, quiet = false }: { name: string; onStop: () => void; quiet?: boolean }) {
+function StopButton({ name, onStop }: { name: string; onStop: () => void }) {
   return <button
     type="button"
     onClick={onStop}
     aria-label={`Stop worker ${name}`}
     title="Stop this worker"
-    className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground", quiet && QUIET_ACTION)}
+    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
   ><Square size={10} strokeWidth={1.8} aria-hidden="true" /></button>;
 }
