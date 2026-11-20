@@ -13308,24 +13308,29 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
     let mut attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
-        prepare_pending_worker_results(&core);
-        recover_prompt_mutation_feedback(&core);
-        let sessions = {
-            let db = core.db.lock().unwrap();
-            session_input::sessions_with_queued_input(&db).unwrap_or_default()
-        };
-        for session_id in sessions {
-            drain_queued_input(&core, &session_id);
-        }
-        // A bridge-wait past its deadline, including one a restart left armed.
-        fire_due_orchestrator_waits(&core);
-        // What is still queued now has no adapter to drain into, or is waiting
-        // on a turn. The first kind is the person's to know about.
-        escalate_stranded_input(&core);
-        // Last, so this tick's escalations and anything committed without an
-        // agent event go out as one hint.
-        publish_attention_if_moved(&core, &mut attention_seen);
+        queued_input_maintenance_tick(&core, &mut attention_seen);
     });
+}
+
+/// One pass of the maintenance sweep. A test runs it on its own clock.
+fn queued_input_maintenance_tick(core: &Arc<BridgeCore>, attention_seen: &mut i64) {
+    prepare_pending_worker_results(core);
+    recover_prompt_mutation_feedback(core);
+    let sessions = {
+        let db = core.db.lock().unwrap();
+        session_input::sessions_with_queued_input(&db).unwrap_or_default()
+    };
+    for session_id in sessions {
+        drain_queued_input(core, &session_id);
+    }
+    // A bridge-wait past its deadline, including one a restart left armed.
+    fire_due_orchestrator_waits(core);
+    // What is still queued now has no adapter to drain into, or is waiting
+    // on a turn. The first kind is the person's to know about.
+    escalate_stranded_input(core);
+    // Last, so this tick's escalations and anything committed without an
+    // agent event go out as one hint.
+    publish_attention_if_moved(core, attention_seen);
 }
 
 fn escalate_stranded_input(core: &Arc<BridgeCore>) {

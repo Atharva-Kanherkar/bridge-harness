@@ -1454,3 +1454,13 @@ fn an_old_claude_usage_entry_of_the_same_provider_session_still_gives_the_seed()
     assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-A"));
     assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
 }
+
+mod off_trace;
+
+/// The off guarantee of `testing/feat-early-compaction.md`. Each later commit
+/// of early compaction keeps this trace equal while the switch is off.
+#[test]
+fn with_the_switch_off_send_frame_and_manual_compaction_traces_are_unchanged() {
+    off_trace::check(off_trace::Switch::Absent);
+    off_trace::check(off_trace::Switch::SavedOff);
+}
