@@ -318,13 +318,12 @@ try {
   await shot("05-real-session-dark");
   await caption("Its Explore subagent opens from the sidebar");
   await click("1 subagent", "[aria-label*='subagents of Invoice.js test failures'], [aria-label*='subagent of Invoice.js test failures']");
-  await waitFor("the Explore subagent row", `[...document.querySelectorAll("[data-subagent-row]")].some(row => row.offsetParent !== null)`);
-  const explore = await js(`[...document.querySelectorAll("[data-subagent-row]")].find(row => row.offsetParent !== null).getAttribute("data-subagent-row")`);
-  await js(`document.querySelector(${JSON.stringify(`[data-subagent-row='${explore}']`)}).click()`);
-  await waitFor("the Explore subagent's chat", `document.querySelector("[data-subagent-row][aria-current='page']") !== null`);
+  await waitFor("the Explore subagent row", `[...document.querySelectorAll("[data-subagent-row]")].some(row => row.offsetParent !== null && row.textContent.includes("Explore:"))`);
+  await click("Explore:", "[data-subagent-row]");
+  await waitFor("the Explore subagent's chat", `document.querySelector("[data-subagent-row][aria-current='page']")?.textContent.includes("Explore:") === true && document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")?.startsWith("Imported · Claude Code") === true`);
   await sleep(1200);
   const exploreChat = await text();
-  check("The Explore subagent chat is reachable from the sidebar and opens as history", !exploreChat.includes("This is a background worker") && exploreChat.includes("A subagent's run cannot be resumed on its own"), exploreChat.slice(0, 400).replace(/\n+/g, " | "));
+  check("The Explore subagent chat is reachable from the sidebar and opens as history", !exploreChat.includes("This is a background worker") && exploreChat.includes("A subagent's run cannot be resumed on its own") && !exploreChat.includes("Found 3 call sites"), exploreChat.slice(0, 400).replace(/\n+/g, " | "));
   await shot("05f-claude-subagent-open-dark");
 
   await caption("Import again: nothing lands twice");
