@@ -46,12 +46,15 @@ export function EffortSentence(props: EffortControlProps) {
   const current = index >= 0 ? levels[index] : undefined;
   // Off the ladder (unset: the provider's own default) reads as "normally".
   const { text, settled } = useScramble(current ? effortWord(current.value) : "normally");
+  // Two lines, so the sentence fits the picker's narrow Thinking column without
+  // clipping the adverb: the subject truncates on its own line, and the word
+  // that carries the level always shows in full beneath it.
   return <div className="flex h-full flex-col justify-between" data-effort-style="sentence">
-    <p className="flex items-baseline gap-1 whitespace-nowrap text-ui leading-5 text-muted-foreground">
-      <span className="min-w-0 truncate">{modelLabel} thinks</span>
-      <span data-testid="effort-word" className={cn("font-semibold text-foreground transition-colors", !settled && "text-muted-foreground")}>{text}</span>
-      <span>.</span>
-      <span className="ml-auto font-mono text-caption text-faint">{current?.value ?? ""}</span>
+    <p className="flex min-w-0 flex-col">
+      <span className="truncate text-caption leading-4 text-muted-foreground">{modelLabel} thinks</span>
+      <span className="whitespace-nowrap text-ui leading-5 text-muted-foreground">
+        <span data-testid="effort-word" className={cn("font-semibold text-foreground transition-colors", !settled && "text-muted-foreground")}>{text}</span>.
+      </span>
     </p>
     <EffortRail {...props} />
   </div>;
