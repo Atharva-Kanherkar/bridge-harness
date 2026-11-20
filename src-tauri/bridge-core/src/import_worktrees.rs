@@ -176,6 +176,11 @@ impl Report {
     pub fn left_out_total(&self) -> usize {
         self.left_out.values().sum()
     }
+
+    /// Bridge's state changed: a workspace was added or a chat moved.
+    pub fn imported_any(&self) -> bool {
+        !self.adopted.is_empty() || self.relinked_chats > 0
+    }
 }
 
 fn install(db: &Connection) -> Result<(), BridgeError> {
@@ -322,4 +327,4 @@ pub fn adopt(db: &std::sync::Mutex<Connection>, candidates: Vec<Candidate>) -> R
 
 #[cfg(test)]
 #[path = "import_worktrees/tests.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -23,14 +23,6 @@ struct KnownTool {
 
 const OTHER_TOOLS: &[KnownTool] = &[
     KnownTool {
-        tool: "conductor",
-        label: "Conductor",
-        supported: false,
-        markers: &["Library/Application Support/com.conductor.app", "conductor/workspaces"],
-        worktree_roots: &["conductor/workspaces"],
-        note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming.",
-    },
-    KnownTool {
         tool: "t3code",
         label: "T3 Code",
         supported: false,
@@ -217,6 +209,7 @@ pub fn detect_with(
         claude(home, claude_config_dir, &accounts.claude),
         codex(home, codex_home, &accounts.codex),
         opencode(home, xdg_data_home, &accounts.opencode),
+        conductor(home),
     ]
     .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
@@ -290,6 +283,32 @@ fn opencode(home: &Path, xdg_data_home: Option<&Path>, accounts: &[PathBuf]) -> 
     }
 }
 
+/// Conductor: its workspaces, from its database when Bridge knows the
+/// version, else from the folders under `~/conductor/workspaces`. Archived
+/// workspaces are not counted. Reads the workspace tables only, never a
+/// message or a secret.
+fn conductor(home: &Path) -> wire::DetectedImportSource {
+    let paths = crate::conductor_import::Paths::for_home(home);
+    let installed = paths.installed();
+    let mut counts = wire::ImportSourceCounts::default();
+    if installed {
+        let discovery = crate::conductor_import::discover(&paths);
+        let active: Vec<_> = discovery.candidates.iter().filter(|candidate| !candidate.archived).collect();
+        counts.workspaces = active.len() as u64;
+        counts.projects = discovery.repos as u64;
+        counts.chats = discovery.chats.values().sum();
+    }
+    wire::DetectedImportSource {
+        tool: crate::conductor_import::PROVIDER.into(),
+        label: "Conductor".into(),
+        installed,
+        supported: true,
+        roots: if installed { vec![home.join("conductor").to_string_lossy().into_owned()] } else { Vec::new() },
+        counts,
+        note: Some("Workspaces come over as Bridge workspaces, left where they are, so Conductor keeps working with them. Their chats come over with the Claude Code and Codex imports.".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,8 +335,8 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.installed));
-        assert!(sources[0].supported && sources[1].supported && sources[2].supported, "Claude Code, Codex and OpenCode import today");
-        assert!(sources.iter().skip(3).all(|source| !source.supported));
+        assert!(sources.iter().take(4).all(|source| source.supported), "Claude Code, Codex, OpenCode and Conductor import today");
+        assert!(sources.iter().skip(4).all(|source| !source.supported));
     }
 
     #[test]
@@ -460,6 +479,23 @@ mod tests {
         assert!(by("t3code").installed);
         assert_eq!(by("codex").counts.chats, 2);
         assert!(!by("orca").installed);
+    }
+
+    #[test]
+    fn conductor_counts_come_from_its_database_without_archived_workspaces() {
+        use crate::conductor_import::fixture::{Fixture, Row};
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let fixture = Fixture::at(&crate::conductor_import::Paths::for_home(h).store, 181);
+        fixture.repo("r", "app", &h.join("code/app"), 3);
+        fixture.workspace(&Row { key: "a", repo: "r", directory: "tokyo", branch: Some("a"), state: "active", ..Row::default() });
+        fixture.workspace(&Row { key: "b", repo: "r", directory: "oslo", branch: Some("b"), state: "archived", ..Row::default() });
+        fixture.session("s1", "a", "claude");
+
+        let conductor = detect(h, None, &[]).into_iter().find(|source| source.tool == "conductor").unwrap();
+
+        assert!(conductor.installed && conductor.supported);
+        assert_eq!((conductor.counts.workspaces, conductor.counts.projects, conductor.counts.chats), (1, 1, 1));
     }
 }
 

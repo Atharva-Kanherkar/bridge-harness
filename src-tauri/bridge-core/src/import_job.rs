@@ -111,6 +111,8 @@ pub(crate) enum Source {
     Claude,
     Codex,
     OpenCode,
+    /// Workspaces, not chats: adopted in place by `conductor_import`.
+    Conductor,
 }
 
 impl Source {
@@ -119,6 +121,7 @@ impl Source {
             claude_import::PROVIDER => Some(Self::Claude),
             codex_import::PROVIDER => Some(Self::Codex),
             opencode_import::PROVIDER => Some(Self::OpenCode),
+            crate::conductor_import::PROVIDER => Some(Self::Conductor),
             _ => None,
         }
     }
@@ -127,6 +130,7 @@ impl Source {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
+            Self::Conductor => "Conductor",
         }
     }
     /// The folders this machine keeps the tool's data in, and each account
@@ -154,6 +158,11 @@ impl Source {
             Self::OpenCode => codex_import::existing_folders(folders(&homes.opencode).into_iter(), |folder| {
                 folder.join(opencode_import::STORE_FILE).is_file()
             }),
+            // Conductor's folders hang off the home folder.
+            Self::Conductor => {
+                let paths = crate::conductor_import::Paths::for_home(&host.home);
+                if paths.installed() { vec![host.home.clone()] } else { Vec::new() }
+            }
         }
     }
     fn work(self, roots: &[PathBuf]) -> Result<claude_import::JobWork, BridgeError> {
@@ -161,6 +170,7 @@ impl Source {
             Self::Claude => claude_import::job_work(roots),
             Self::Codex => codex_import::job_work(roots),
             Self::OpenCode => opencode_import::job_work(roots),
+            Self::Conductor => Ok(claude_import::JobWork { roots: roots.to_vec(), artifacts: Vec::new(), left_out: 0 }),
         }
     }
     fn key(self, artifact: &DiscoveredArtifact) -> String {
@@ -168,6 +178,7 @@ impl Source {
             Self::Claude => claude_import::job_key(artifact),
             Self::Codex => codex_import::job_key(artifact),
             Self::OpenCode => opencode_import::job_key(artifact),
+            Self::Conductor => artifact.canonical_source_ref.clone(),
         }
     }
     /// The folder a chat ran in, for "now importing": the listing's when it
@@ -181,7 +192,7 @@ impl Source {
         match self {
             Self::Claude => claude_import::transcript_folder(path),
             Self::Codex => codex_import::transcript_folder(path),
-            Self::OpenCode => None,
+            Self::OpenCode | Self::Conductor => None,
         }
     }
     fn preview(self, roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> Result<Vec<ImportCandidate>, BridgeError> {
@@ -192,6 +203,7 @@ impl Source {
             Self::Claude => ClaudeCodeImporter.preview(&claude_import::job_discovery(roots, artifacts), &selection),
             Self::Codex => CodexImporter.preview(&codex_import::job_discovery(roots, artifacts), &selection),
             Self::OpenCode => OpenCodeImporter.preview(&opencode_import::job_discovery(roots, artifacts), &selection),
+            Self::Conductor => Ok(Vec::new()),
         }
     }
     fn normalize(self, candidate: ImportCandidate) -> Result<crate::external_import::NormalizedImportCandidate, BridgeError> {
@@ -199,6 +211,7 @@ impl Source {
             Self::Claude => ClaudeCodeImporter.normalize(candidate),
             Self::Codex => CodexImporter.normalize(candidate),
             Self::OpenCode => OpenCodeImporter.normalize(candidate),
+            Self::Conductor => Err(BridgeError::Invalid(format!("Conductor has no chats of its own to import: {}", candidate.candidate_id))),
         }
     }
 }
@@ -287,7 +300,11 @@ fn spawn(core: Arc<BridgeCore>, job: wire::ImportJob, roots: Vec<PathBuf>, curso
 /// Run a job to the end, then record how it ended. Runs on its own thread.
 pub(crate) fn run(core: &Arc<BridgeCore>, mut job: wire::ImportJob, roots: &[PathBuf], cursor: Option<String>) {
     let source = Source::of(&job.tool).unwrap_or(Source::Claude);
-    let outcome = Runner { core, source, job: &mut job, last_publish: None }.run(roots, cursor);
+    let outcome = if source == Source::Conductor {
+        run_conductor(core, &mut job, roots)
+    } else {
+        Runner { core, source, job: &mut job, last_publish: None }.run(roots, cursor)
+    };
     job.status = if outcome.is_ok() { "done" } else { "failed" }.into();
     if let Err(error) = outcome {
         job.errors.push(error.to_string());
@@ -301,6 +318,38 @@ pub(crate) fn run(core: &Arc<BridgeCore>, mut job: wire::ImportJob, roots: &[Pat
     }
     core.events.publish(CoreEvent::ImportProgress(job));
     core.import_job_running.store(false, Ordering::SeqCst);
+}
+
+/// Conductor's import: find its workspaces, adopt them in place, and say
+/// what happened to each. Its chats come over with the Claude Code and Codex
+/// imports.
+fn run_conductor(core: &Arc<BridgeCore>, job: &mut wire::ImportJob, roots: &[PathBuf]) -> Result<(), BridgeError> {
+    let Some(home) = roots.first() else {
+        return Err(BridgeError::Invalid("Conductor was not found on this Mac".into()));
+    };
+    let discovery = crate::conductor_import::discover(&crate::conductor_import::Paths::for_home(home));
+    job.total = discovery.candidates.len() as u64;
+    job.updated_at = Utc::now().to_rfc3339();
+    save(core, job, None)?;
+    core.events.publish(CoreEvent::ImportProgress(job.clone()));
+    let report = crate::import_worktrees::adopt(&core.db, discovery.candidates)?;
+    job.processed = job.total;
+    job.imported = report.adopted.len() as u64;
+    job.already_in_bridge = report.already_in_bridge as u64;
+    for (reason, count) in &report.left_out {
+        if *reason == crate::import_worktrees::Reason::ArchivedInTool {
+            job.left_out += *count as u64;
+        } else {
+            not_carried(job, reason.text(), *count as u64);
+        }
+    }
+    if let Some(note) = discovery.note {
+        not_carried(job, &format!("Conductor's names, archived state and scripts: {note}"), 1);
+    }
+    if report.imported_any() {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(())
 }
 
 struct Runner<'a> {

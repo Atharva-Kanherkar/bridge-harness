@@ -792,6 +792,97 @@ fn measure_the_opencode_job_on_this_machine() {
     );
 }
 
+mod conductor {
+    use super::*;
+    use crate::conductor_import::fixture::{Fixture, Row};
+    use crate::import_worktrees::tests::{git, repo, worktree};
+
+    /// A home where Conductor holds, for one repo: an active workspace with a
+    /// chat imported from Claude Code, one archived in Conductor, one on a
+    /// detached HEAD, one whose folder is gone, and a stray folder.
+    fn home(root: &Path) -> (PathBuf, PathBuf) {
+        let home = root.canonicalize().unwrap();
+        let main = repo(&home.join("code"), "app");
+        let tokyo = worktree(&main, &home.join("conductor/workspaces/app/tokyo"), "fix-login");
+        worktree(&main, &home.join("conductor/workspaces/app/oslo"), "old-work");
+        let lima = home.join("conductor/workspaces/app/lima");
+        git(&main, &["worktree", "add", "-q", "--detach", &lima.to_string_lossy()]);
+        fs::create_dir_all(home.join("conductor/workspaces/app/stray")).unwrap();
+        let fixture = Fixture::at(&crate::conductor_import::Paths::for_home(&home).store, 181);
+        fixture.repo("r", "app", &main, 3);
+        fixture.scripts("r", "pnpm install", "pnpm dev", "");
+        for (key, directory, name, state) in [("a", "tokyo", Some("Fix the login"), "active"), ("b", "oslo", None, "archived"), ("c", "lima", None, "active"), ("d", "kyiv", None, "active")] {
+            fixture.workspace(&Row { key, repo: "r", directory, name, branch: Some(directory), state, path: None });
+        }
+        (home, tokyo)
+    }
+
+    fn run_conductor(core: &Arc<BridgeCore>, home: &Path) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = crate::conductor_import::PROVIDER.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        run(core, job, &[home.to_path_buf()], None);
+        status(core).unwrap().unwrap()
+    }
+
+    #[test]
+    fn conductors_workspaces_come_over_in_place_and_say_what_was_left() {
+        let root = tempfile::tempdir().unwrap();
+        let (home, tokyo) = home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,cwd) VALUES('chat',NULL,'claude','x','stopped','reported','imported',?1)",
+            params![tokyo.to_string_lossy()],
+        ).unwrap();
+
+        let job = run_conductor(&core, &home);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!((job.total, job.imported, job.left_out), (5, 1, 1), "{job:?}");
+        let texts: Vec<(&str, u64)> = job.not_carried.iter().map(|item| (item.text.as_str(), item.count)).collect();
+        for expected in [
+            ("workspaces on a detached HEAD, which need a branch first", 1),
+            ("workspaces whose folder is gone", 1),
+            ("folders that are not git worktrees", 1),
+        ] {
+            assert!(texts.contains(&expected), "{expected:?} in {texts:?}");
+        }
+        let db = core.db.lock().unwrap();
+        let (id, title): (String, String) = db.query_row("SELECT id, title FROM workspaces WHERE path=?1", params![tokyo.to_string_lossy()], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(title, "Fix the login");
+        let chat: Option<String> = db.query_row("SELECT workspace_id FROM sessions WHERE id='chat'", [], |row| row.get(0)).unwrap();
+        assert_eq!(chat.as_deref(), Some(id.as_str()), "the imported chat moved under its workspace");
+        drop(db);
+
+        let again = run_conductor(&core, &home);
+        assert_eq!((again.imported, again.already_in_bridge), (0, 1), "{again:?}");
+        assert!(tokyo.join("README.md").is_file(), "Conductor's folder is untouched");
+    }
+
+    #[test]
+    fn a_conductor_database_bridge_does_not_know_still_brings_the_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let (home, tokyo) = home(root.path());
+        let store = crate::conductor_import::Paths::for_home(&home).store;
+        rusqlite::Connection::open(&store).unwrap().execute(
+            "INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(250,'future',1,1,x'00',1)",
+            [],
+        ).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        let job = run_conductor(&core, &home);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!(job.imported, 2, "tokyo and oslo by folder; archived is unknown without the database: {job:?}");
+        assert!(job.not_carried.iter().any(|item| item.text.contains("newer than Bridge knows")), "{:?}", job.not_carried);
+        let title: String = core.db.lock().unwrap().query_row("SELECT title FROM workspaces WHERE path=?1", params![tokyo.to_string_lossy()], |row| row.get(0)).unwrap();
+        assert_eq!(title, "tokyo");
+    }
+}
+
 /// The Codex job against this Mac's real Codex home, into a scratch
 /// database. Prints aggregate numbers only.
 #[test]
