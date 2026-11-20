@@ -8606,7 +8606,8 @@ fn fail_over_exhausted_worker(
         if spent >= worker_retry::MAX_AUTOMATIC_ATTEMPTS_PER_OBJECTIVE {
             return FailoverOutcome::OutOfBudget;
         }
-        let request = spawned_request(&db, &parent, child_session_id);
+        let request = spawned_request(&db, &parent, child_session_id)
+            .map(|request| with_prior_attempt(&db, request, child_session_id));
         if let Some(key) = &key {
             let _ = worker_retry::consume_attempt(&db, key, &parent, signal);
         }
@@ -8672,6 +8673,89 @@ fn fail_over_exhausted_worker(
             FailoverOutcome::Relaunched { harness }
         }
     }
+}
+
+/// A worker whose process died mid-objective with a transient cause is
+/// relaunched once, carrying what it did, instead of leaving the objective
+/// failed for the orchestrator to notice. Same gates as an automatic retry:
+/// the workspace setting, and one automatic attempt per objective. A stall, a
+/// permanent failure or a formatting failure is not relaunched.
+fn relaunch_crashed_worker(core: &Arc<BridgeCore>, child_session_id: &str, result: &delegation::WorkerResult) -> bool {
+    let prepared = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Only reached for a worker Bridge itself moved to `failed` (a provider
+        // error or a process exit), so the result is Bridge's synthetic one,
+        // not worker prose. A process that died with no stated cause is the
+        // crash T3 Code recovers from; a stall or a quota wall is not this.
+        let process_exited = result.risks.first().is_some_and(|risk| risk == SYNTHETIC_EXIT_RISK);
+        let signal = match classify_worker_failure(&db, child_session_id, result) {
+            worker_retry::FailureClass::Transient { signal } if !worker_retry::is_quota_signal(&signal) => signal,
+            worker_retry::FailureClass::Permanent { .. } if process_exited => "process_exited".to_owned(),
+            _ => return false,
+        };
+        if !crate::worker_settings::for_session(&db, child_session_id).automatic_retry {
+            return false;
+        }
+        let Some(parent) = worker_parent_session(&db, child_session_id) else { return false };
+        let key = worker_objective_key(&db, child_session_id);
+        let spent = key.as_deref().map(|key| worker_retry::attempts_spent(&db, key).unwrap_or(0)).unwrap_or(0);
+        if spent >= worker_retry::MAX_AUTOMATIC_ATTEMPTS_PER_OBJECTIVE {
+            return false;
+        }
+        let Some(request) = spawned_request(&db, &parent, child_session_id) else { return false };
+        // Spent before the launch: a crash between the two must not hand back
+        // a free attempt.
+        if let Some(key) = &key {
+            drop(worker_retry::consume_attempt(&db, key, &parent, &signal));
+        }
+        drop(store::event(&db, "supervisor", "worker.relaunch.requested", child_session_id, &signal));
+        (parent, with_prior_attempt(&db, request, child_session_id), signal)
+    };
+    let (parent, request, signal) = prepared;
+    let turn_id = format!("recovery-{}", Uuid::new_v4());
+    let relaunched = match launch_worker_outcome(core, &parent, &turn_id, &request, true) {
+        WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
+        WorkerLaunchOutcome::Queued(queue_id) => Some(format!("{}{queue_id}", crate::orchestrator_wait::QUEUED_PREFIX)),
+        _ => None,
+    };
+    let Some(replacement) = relaunched else { return false };
+    {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(crate::session_input::enqueue(&db, &parent, &serde_json::json!({
+            "type": "bridge-worker-relaunched",
+            "childSessionId": child_session_id,
+            "replacementSessionId": replacement,
+            "signal": signal,
+            "instruction": "This worker's process ended before it finished (a transient failure). Bridge relaunched the same objective once as replacementSessionId, carrying what the failed attempt did. Do not re-delegate it; wait for the replacement's typed result."
+        }).to_string(), ""));
+    }
+    drain_queued_input(core, &parent);
+    true
+}
+
+/// What Bridge does for a worker it already moved to `failed`: a real usage
+/// limit is rerouted or resumed at the reset, anything else gets a crash
+/// relaunch if it qualifies.
+fn recover_failed_worker(core: &Arc<BridgeCore>, child_session_id: &str, result: &delegation::WorkerResult) {
+    if !matches!(result.status, delegation::WorkerResultStatus::Failed) {
+        return;
+    }
+    let limited = provider_limit_was_observed(&core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), child_session_id);
+    if limited {
+        recover_quota_blocked_worker(core, child_session_id, "provider_limit");
+    } else {
+        relaunch_crashed_worker(core, child_session_id, result);
+    }
+}
+
+/// Route around an exhausted provider, and when nothing else can take the
+/// objective, schedule it to continue at the provider's reset.
+fn recover_quota_blocked_worker(core: &Arc<BridgeCore>, child_session_id: &str, signal: &str) -> FailoverOutcome {
+    let outcome = fail_over_exhausted_worker(core, child_session_id, signal);
+    if !matches!(outcome, FailoverOutcome::Relaunched { .. }) {
+        schedule_quota_resume(core, child_session_id);
+    }
+    outcome
 }
 
 /// The harness a just-launched child ended up on.
@@ -8788,6 +8872,104 @@ fn spawned_turn_id(
     .flatten()
 }
 
+/// The request a relaunch of a failed worker sends: the original, plus what
+/// the failed attempt did, so the new worker continues rather than starting
+/// the objective over blind. Mirrors T3 Code's thread-history handoff when a
+/// native resume is not possible: the failed process is gone, its forest is not.
+fn with_prior_attempt(
+    db: &Connection,
+    mut request: delegation::DelegationRequest,
+    failed_session_id: &str,
+) -> delegation::DelegationRequest {
+    const PRIOR_ATTEMPT_WINDOW_TOKENS: i64 = 12_000;
+    if let Ok(Some(context)) = restoration::checkpoint_context_with_window(db, failed_session_id, PRIOR_ATTEMPT_WINDOW_TOKENS) {
+        request.known_facts.push(format!(
+            "A previous attempt at this objective (worker {failed_session_id}) ended before it finished. Continue from where it stopped instead of starting over, and check any partial work it left in the workspace before repeating it. What that attempt did:\n{context}"
+        ));
+    }
+    request
+}
+
+/// Event kinds for a quota-blocked worker Bridge relaunches when the limit
+/// resets. Kept in the append-only event log, so a restart keeps the schedule.
+const QUOTA_RESUME_SCHEDULED: &str = "worker.quota_resume.scheduled";
+const QUOTA_RESUME_SETTLED: &str = "worker.quota_resume.settled";
+/// Grace past the provider's stated reset, and a ceiling per objective so an
+/// account that never recovers does not relaunch forever.
+const QUOTA_RESUME_GRACE_SECONDS: i64 = 90;
+const QUOTA_RESUME_MAX_PER_OBJECTIVE: i64 = 3;
+
+/// Schedule a quota-blocked worker's objective to relaunch when its harness's
+/// limit resets. T3 Code continues a usage-limited thread at the reset time;
+/// Bridge's limit recovery skipped workers entirely, so a worker no other
+/// harness could take stayed failed until someone noticed. Returns the time.
+fn schedule_quota_resume(core: &Arc<BridgeCore>, child_session_id: &str) -> Option<chrono::DateTime<Utc>> {
+    let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, until) = learning_router::session_harness_cooldown(&db, child_session_id)?;
+    let parent = worker_parent_session(&db, child_session_id)?;
+    let key = worker_objective_key(&db, child_session_id).unwrap_or_else(|| child_session_id.to_owned());
+    let scheduled: i64 = db
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind=?1 AND json_extract(body,'$.objectiveKey')=?2",
+            params![QUOTA_RESUME_SCHEDULED, key],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if scheduled >= QUOTA_RESUME_MAX_PER_OBJECTIVE {
+        return None;
+    }
+    let due = until + chrono::Duration::seconds(QUOTA_RESUME_GRACE_SECONDS);
+    let detail = serde_json::json!({"dueAt": due.to_rfc3339(), "objectiveKey": key, "parent": parent}).to_string();
+    store::event(&db, "supervisor", QUOTA_RESUME_SCHEDULED, child_session_id, &detail).ok()?;
+    drop(crate::session_input::enqueue(&db, &parent, &serde_json::json!({
+        "type": "bridge-worker-resume-scheduled",
+        "childSessionId": child_session_id,
+        "resumeAt": due.to_rfc3339(),
+        "instruction": "This worker hit a usage limit and no other harness could take it. Bridge will relaunch the same objective automatically at resumeAt, carrying what the failed attempt did. Do not re-delegate it; tell the user when it will continue."
+    }).to_string(), ""));
+    drop(db);
+    drain_queued_input(core, &parent);
+    Some(due)
+}
+
+/// Relaunch quota-blocked workers whose reset time has come.
+fn resume_quota_blocked_workers(core: &Arc<BridgeCore>) {
+    let due: Vec<String> = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        db.prepare(
+            "SELECT e.entity_id FROM events e
+             WHERE e.kind=?1 AND json_extract(e.body,'$.dueAt')<=?2
+               AND NOT EXISTS(SELECT 1 FROM events d WHERE d.kind=?3 AND d.entity_id=e.entity_id AND d.id>e.id)
+             ORDER BY e.id",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![QUOTA_RESUME_SCHEDULED, Utc::now().to_rfc3339(), QUOTA_RESUME_SETTLED], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default()
+    };
+    for child in due {
+        // Settled before the launch: a crash mid-launch must not relaunch twice.
+        let live_parent = {
+            let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(store::event(&db, "supervisor", QUOTA_RESUME_SETTLED, &child, "due"));
+            db.query_row(
+                "SELECT p.status NOT IN ('cancelled','archived') AND p.archived_at IS NULL
+                 FROM sessions c JOIN sessions p ON p.id=c.parent_session_id WHERE c.id=?1",
+                params![child],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+        };
+        if live_parent {
+            if let Err(error) = retry_worker_task(core, &child) {
+                eprintln!("[worker-quota-resume] could not relaunch {child}: {error}");
+            }
+        }
+    }
+}
+
 /// Re-dispatch a worker's objective because the user asked for it.
 ///
 /// The counterpart to the automatic retry Bridge no longer takes on its own. A
@@ -8810,6 +8992,7 @@ pub fn retry_worker_task(
                 "Bridge has no record of the request this worker was launched with".into(),
             )
         })?;
+        let request = with_prior_attempt(&db, request, child_session_id);
         let turn_id = spawned_turn_id(&db, &parent, child_session_id)
             .unwrap_or_else(|| format!("retry-{}", Uuid::new_v4()));
         (parent, request, turn_id)
@@ -8881,6 +9064,11 @@ fn settle_worker_after_result(
             worker_lifecycle::WorkerLifecycleState::Completed,
             Some("terminal_failure_reported"),
         )?;
+        // A provider error frame moves the worker to `failed` before its
+        // result arrives, so a real usage limit always lands here. This early
+        // return used to skip the reroute below entirely: failover only ever
+        // ran in tests that started from `working`.
+        recover_failed_worker(core, child_session_id, result);
         return Ok(true);
     }
     // A cancellation is a decision about the worker, not a report from it, so
@@ -9003,7 +9191,7 @@ fn settle_worker_after_result(
     let failover = quota_signal.as_deref().filter(|_| {
         provider_limit_was_observed(&state.db.lock().unwrap(), child_session_id)
     })
-    .map(|signal| fail_over_exhausted_worker(core, child_session_id, signal));
+    .map(|signal| recover_quota_blocked_worker(core, child_session_id, signal));
     // Retrying the same harness in place is only ever declined here when it
     // was actually about to be retried; a decline `decide` already reached
     // for another reason keeps its own reason.
@@ -9271,7 +9459,52 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
                 .collect::<Result<Vec<_>, _>>()
         })
         .unwrap_or_default();
+    let mut rows = rows;
+    // Queued delegations are workers still to come. Leaving them out told the
+    // orchestrator it had fewer workers than it asked for.
+    let room = FLEET_DIGEST_MAX_WORKERS.saturating_sub(rows.len());
+    if room > 0 {
+        rows.extend(queued_fleet_entries(db, parent_session_id, room));
+    }
     serde_json::Value::Array(rows)
+}
+
+/// Fleet entries for the orchestrator's queued, not yet dispatched workers.
+/// `sessionId` is the `queue:<id>` a `bridge-wait` can name.
+fn queued_fleet_entries(db: &Connection, parent_session_id: &str, limit: usize) -> Vec<serde_json::Value> {
+    db.prepare(
+        "SELECT id,request,queue_status,created_at,last_error FROM worker_queue
+         WHERE parent_session_id=?1 AND queue_status IN ('queued','dispatching','blocked_on_human')
+         ORDER BY sequence LIMIT ?2",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map(params![parent_session_id, limit as i64], |row| {
+                let request: serde_json::Value =
+                    serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+                let role = request.get("role").and_then(|value| value.as_str()).unwrap_or("unknown").to_owned();
+                let tier = request.get("capabilityTier").and_then(|value| value.as_str()).unwrap_or("").to_owned();
+                let queue_status = row.get::<_, String>(2)?;
+                Ok(serde_json::json!({
+                    "sessionId": format!("{}{}", crate::orchestrator_wait::QUEUED_PREFIX, row.get::<_, String>(0)?),
+                    "label": format!("Queued {role}{}", if tier.is_empty() { String::new() } else { format!(" · {tier}") }),
+                    "lifecycle": "queued",
+                    "taskFamily": role,
+                    "retryCount": 0,
+                    "resultStatus": "pending",
+                    "currentActivity": null,
+                    "waitingReason": if queue_status == "blocked_on_human" { Some("waiting for your approval elsewhere") } else { row.get::<_, Option<String>>(4)?.map(|_| "waiting for a free slot") },
+                    "waitingSince": row.get::<_, String>(3)?,
+                    "lastActivityAt": null,
+                    "role": role,
+                    "elapsedSeconds": null,
+                    "harness": request.get("harness").cloned().unwrap_or(serde_json::Value::Null),
+                    "model": request.get("model").cloned().unwrap_or(serde_json::Value::Null),
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .unwrap_or_default()
 }
 
 /// Why a peek found nothing, told apart rather than flattened.
@@ -10083,16 +10316,17 @@ enum SyntheticFailure {
     Failed,
 }
 
+/// The first risk of the result Bridge writes for a worker whose process
+/// exited without reporting.
+const SYNTHETIC_EXIT_RISK: &str = "Worker process exited before a typed result was produced";
+
 fn synthetic_failure_result(
     label: &str,
     failure_context: Option<&str>,
     kind: SyntheticFailure,
 ) -> delegation::WorkerResult {
     let (risk, verb) = match kind {
-        SyntheticFailure::Exited => (
-            "Worker process exited before a typed result was produced",
-            "ended",
-        ),
+        SyntheticFailure::Exited => (SYNTHETIC_EXIT_RISK, "ended"),
         SyntheticFailure::Failed => (
             "Worker failed before a typed result was produced",
             "failed",
@@ -10627,20 +10861,34 @@ fn prepare_worker_result_delivery(
     Ok(())
 }
 
+/// Dispatch every queued worker that can start now, not just one: a single
+/// completion used to free one slot and launch one worker, leaving the rest
+/// queued behind it until another worker happened to finish.
 fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
+    // Bounded so a row that keeps re-queueing cannot spin this loop.
+    for _ in 0..256 {
+        if !dispatch_one_queued_worker(core, workspace_id) {
+            return;
+        }
+    }
+}
+
+/// Claim and launch one queued worker. False when nothing could be claimed.
+fn dispatch_one_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) -> bool {
     let state = core.clone();
     let queued =
-        worker_pool::WorkerPool::claim_next_queued(&state.db.lock().unwrap(), workspace_id)
+        worker_pool::WorkerPool::claim_next_queued(&state.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner), workspace_id)
             .ok()
             .flatten();
     let Some(queued) = queued else {
-        return;
+        return false;
     };
+    let parent_session_id = queued.parent_session_id.clone();
     let directive: delegation::DelegationRequest = match serde_json::from_value(queued.request) {
         Ok(directive) => directive,
         Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);
+            let db = state.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(store::fail_worker_queue(&db, &queued.id, &format!("invalid queued delegation request: {error}")));
             let _ = store::event(
                 &db,
                 "worker-pool",
@@ -10648,7 +10896,7 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
                 &queued.id,
                 &error.to_string(),
             );
-            return;
+            return true;
         }
     };
     let launched = launch_worker_outcome(
@@ -10658,10 +10906,12 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
         &directive,
         false,
     );
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     match launched {
         WorkerLaunchOutcome::Launched(session_id) => {
             let _ = store::update_worker_queue(&db, &queued.id, "dispatched", Some(&session_id));
+            // A wait armed while this worker was queued now waits on its session.
+            drop(crate::orchestrator_wait::adopt_dispatched(&db, &parent_session_id, &queued.id, &session_id));
         }
         // A live approval card can still start this work. Rejecting the row here
         // produced a terminal "no worker will start" notice beside an approval
@@ -10681,10 +10931,23 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
                 ),
             ));
         }
-        _ => {
-            let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);
+        // Every failed launch already told the orchestrator why, with the
+        // specific reason. The row is closed as reported so the queue sweep
+        // does not announce it a second time as a bare "worker launch failed".
+        WorkerLaunchOutcome::Failed => {
+            drop(store::close_reported_worker_queue(&db, &queued.id, "launch failed; the orchestrator was told the reason at launch"));
+        }
+        // Still blocked (a writer conflict or no child worktree): back in line,
+        // and stop this pass so the same row is not reclaimed in a loop.
+        WorkerLaunchOutcome::Queued(_) => {
+            drop(store::update_worker_queue(&db, &queued.id, "queued", None));
+            return false;
         }
     }
+    drop(db);
+    // A launch that failed or was closed may be what an armed wait was waiting for.
+    fire_orchestrator_wait_if_due(core, &parent_session_id);
+    true
 }
 
 /// How often terminal worker worktrees are collected. Reclaiming disk is
@@ -10702,6 +10965,7 @@ fn worktree_release_due() -> bool {
 }
 
 fn maintain_worker_pool(core: &Arc<BridgeCore>) {
+    resume_quota_blocked_workers(core);
     let state = core.clone();
     let expired = worker_pool::WorkerPool::warm_workers_due(&state.db.lock().unwrap(), Utc::now())
         .unwrap_or_default();
@@ -13968,6 +14232,37 @@ fn session_has_archived_ancestor(db: &Connection, session_id: &str) -> Result<bo
     )?)
 }
 
+/// Ending an orchestrator ends the work it owns: its queued delegations are
+/// cancelled and its live workers stopped. Only archive used to cascade, so
+/// ending a chat left its workers running with no parent to report to and its
+/// queue free to dispatch more. T3 Code cascades a stop to owned subagents.
+fn stop_orchestrator_workers(core: &Arc<BridgeCore>, parent_session_id: &str, why: &str) {
+    let live: Vec<String> = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(db.execute(
+            "UPDATE worker_queue SET queue_status='cancelled',blocked_at=NULL,last_error=?2,updated_at=?3
+             WHERE parent_session_id=?1 AND queue_status IN ('queued','dispatching','blocked_on_human')",
+            params![parent_session_id, why, Utc::now().to_rfc3339()],
+        ));
+        db.prepare(
+            "SELECT session_id FROM worker_runtime
+             WHERE parent_session_id=?1 AND lifecycle_state NOT IN ('completed','cancelled','failed','stopped')
+             ORDER BY rowid",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![parent_session_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default()
+    };
+    for child in live {
+        if let Err(error) = stop_worker_session(core, &child, StopCause::User) {
+            eprintln!("[stop] could not stop worker {child} of {parent_session_id}: {error}");
+        }
+    }
+}
+
 pub fn stop_session(
     core: &Arc<BridgeCore>,
     session_id: String,
@@ -13991,6 +14286,7 @@ pub fn stop_session(
         let db = state.db.lock().unwrap();
         return store::state(&db);
     }
+    stop_orchestrator_workers(core, &session_id, "parent session ended");
     let has_process = state.adapters.lock().unwrap().contains_key(&session_id);
     let shutdown_prompt = {
         let db = state.db.lock().unwrap();
@@ -19421,6 +19717,39 @@ mod permission_policy_tests {
     }
 
     #[test]
+    fn an_approval_the_agent_already_settled_does_not_leave_the_session_waiting() {
+        // OpenCode clears every pending call a "for this session" approval
+        // covers, so answering the second of two concurrent requests returns
+        // 404. That used to be recorded as a failed resolution and the session
+        // stayed "waiting for approval" while it kept running tools.
+        struct Settled;
+        impl adapters::AdapterRuntime for Settled {
+            fn process_id(&self)->u32 {0}
+            fn provider_session_id(&self)->&str {"root"}
+            fn current_turn(&self)->Arc<Mutex<Option<String>>> {Arc::new(Mutex::new(Some("root-turn".into())))}
+            fn send_turn(&self,_:&str)->Result<(),BridgeError>{Ok(())}
+            fn interrupt(&self)->Result<(),BridgeError>{Ok(())}
+            fn respond(&self,_:serde_json::Value,_:&str)->Result<(),BridgeError>{
+                Err(BridgeError::Invalid(r#"Adapter: Failed to resolve OpenCode permission (404 Not Found): {"_tag":"PermissionNotFoundError","requestID":"per_1"}"#.into()))
+            }
+            fn stop(&mut self,_:adapters::ShutdownReason){}
+        }
+        let (_fixture,core,_managed_root)=core_with_session(false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id='root',active_turn_id='root-turn' WHERE id='chat'",[]).unwrap();
+        core.adapters.lock().unwrap().insert("chat".into(),Box::new(Settled));
+        deliver(&core,&approval_frame(7));
+        let sequence:i64=core.db.lock().unwrap().query_row("SELECT sequence FROM session_entries WHERE kind='permission.requested'",[],|r|r.get(0)).unwrap();
+        let waiting:String=core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();
+        assert_eq!(waiting,"waiting");
+        crate::api::resolve_approval(&core,"chat",sequence,"acceptForSession",None).expect("an already-settled request resolves");
+        let db=core.db.lock().unwrap();
+        let status:String=db.query_row("SELECT status FROM sessions WHERE id='chat'",[],|r|r.get(0)).unwrap();
+        assert_eq!(status,"working");
+        let resolved=store::session_entries(&db,"chat").unwrap().into_iter().find(|entry|entry.kind=="permission.resolved").unwrap();
+        assert_ne!(resolved.payload["status"],"failed","{}",resolved.payload);
+    }
+
+    #[test]
     fn harness_child_stop_and_parent_stop_keep_siblings_and_the_shared_runtime() {
         struct Spy(Arc<Mutex<Vec<String>>>);
         impl adapters::AdapterRuntime for Spy {
@@ -21363,6 +21692,156 @@ mod retry_settlement_tests {
                 "from {state}"
             );
         }
+    }
+
+    #[test]
+    fn fleet_digest_lists_queued_workers_the_orchestrator_can_wait_on() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,created_at,updated_at)
+             VALUES('q1','parent','w','turn-1','{\"role\":\"research\",\"capabilityTier\":\"fast\"}','m','queued','now','now')",
+            [],
+        ).unwrap();
+        let fleet = fleet_digest(&db, "parent");
+        let entries = fleet.as_array().unwrap();
+        assert!(entries.iter().any(|entry| entry["sessionId"] == "child"), "{fleet}");
+        let queued = entries.iter().find(|entry| entry["sessionId"] == "queue:q1").expect("the queued worker is visible");
+        assert_eq!(queued["lifecycle"], "queued");
+        assert_eq!(queued["role"], "research");
+    }
+
+    fn record_spawn(core: &Arc<BridgeCore>) {
+        let request = serde_json::json!({"schemaVersion":1,"role":"research","objective":"Survey the auth module","acceptanceCriteria":["Lists the entry points"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":[],"ownedPaths":[],"writeMode":"readOnly","capabilityTier":"standard","effort":"low","verification":["cite paths"],"outputContract":"research-result"});
+        core.db.lock().unwrap().execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('spawn-1','parent',NULL,1,'delegation.spawned',?1,'now')",
+            params![serde_json::json!({"data":{"request":request,"childSessionId":"child","turnId":"turn-1"}}).to_string()],
+        ).unwrap();
+    }
+
+    /// A provider error frame moves a worker to `failed` before its result
+    /// arrives, so a real usage limit always took the early return in
+    /// `settle_worker_after_result` and never reached the reroute.
+    #[test]
+    fn a_real_usage_limit_reaches_the_reroute_and_schedules_a_resume_at_the_reset() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        record_spawn(&core);
+        {
+            let db = core.db.lock().unwrap();
+            store::event(&db, "provider", PROVIDER_LIMIT_OBSERVED, "child", "usage limit").unwrap();
+            learning_router::mark_harness_quota_exhausted(&db, "w", "claude", "usage limit", "child").unwrap();
+            db.execute("UPDATE worker_runtime SET lifecycle_state='failed' WHERE session_id='child'", []).unwrap();
+        }
+
+        assert!(settle_worker_after_result(&core, "child", &failed("You've hit your usage limit.")).unwrap());
+
+        let db = core.db.lock().unwrap();
+        let announced: String = db
+            .query_row(
+                "SELECT COALESCE(json_extract(payload,'$.text'),'') FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.rejected' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the reroute ran and said why it could not route");
+        assert!(announced.contains("out of quota"), "{announced}");
+        let scheduled: i64 = db
+            .query_row("SELECT COUNT(*) FROM events WHERE kind=?1 AND entity_id='child'", params![QUOTA_RESUME_SCHEDULED], |row| row.get(0))
+            .unwrap();
+        assert_eq!(scheduled, 1, "nothing else could take it, so it continues at the reset");
+        let told: i64 = db
+            .query_row("SELECT COUNT(*) FROM queued_session_input WHERE session_id='parent' AND provider_text LIKE '%bridge-worker-resume-scheduled%'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(told, 1, "the orchestrator is told when it will continue");
+    }
+
+    #[test]
+    fn a_due_quota_resume_relaunches_once_with_the_failed_attempt_carried() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        record_spawn(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("UPDATE worker_runtime SET lifecycle_state='completed',result_status='reported' WHERE session_id='child'", []).unwrap();
+            let mut progress = agent::NormalizedEvent::new("assistant.message");
+            progress.role = Some("assistant".into());
+            progress.text = Some("Read src/auth/login.rs and src/auth/token.rs so far.".into());
+            let transaction = db.unchecked_transaction().unwrap();
+            store::session_event_in_transaction(&transaction, "child", &progress, &serde_json::json!({})).unwrap();
+            transaction.commit().unwrap();
+            let due = (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+            store::event(&db, "supervisor", QUOTA_RESUME_SCHEDULED, "child", &serde_json::json!({"dueAt": due, "objectiveKey": "k", "parent": "parent"}).to_string()).unwrap();
+        }
+
+        resume_quota_blocked_workers(&core);
+        resume_quota_blocked_workers(&core);
+
+        let db = core.db.lock().unwrap();
+        let relaunched: i64 = db
+            .query_row("SELECT COUNT(*) FROM events WHERE kind='worker.retry.requested' AND entity_id='child'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(relaunched, 1, "one relaunch per schedule, even across ticks");
+        let carried = with_prior_attempt(&db, spawned_request(&db, "parent", "child").unwrap(), "child");
+        let fact = carried.known_facts.last().expect("the failed attempt is handed over");
+        assert!(fact.contains("previous attempt") && fact.contains("src/auth/token.rs"), "{fact}");
+    }
+
+    /// A worker whose process died used to stay failed until someone noticed:
+    /// the exit put it in `failed`, the early return skipped every retry path,
+    /// and nothing relaunched it.
+    #[test]
+    fn a_crashed_worker_is_relaunched_once_per_objective() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        record_spawn(&core);
+        let crashed = synthetic_failure_result("Research", None, SyntheticFailure::Exited);
+        for _ in 0..2 {
+            core.db.lock().unwrap().execute("UPDATE worker_runtime SET lifecycle_state='failed' WHERE session_id='child'", []).unwrap();
+            assert!(settle_worker_after_result(&core, "child", &crashed).unwrap());
+        }
+        let db = core.db.lock().unwrap();
+        let relaunches: i64 = db
+            .query_row("SELECT COUNT(*) FROM events WHERE kind='worker.relaunch.requested' AND entity_id='child'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(relaunches, 1, "one automatic attempt per objective, whatever spends it");
+    }
+
+    #[test]
+    fn a_stalled_worker_is_not_relaunched() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        record_spawn(&core);
+        {
+            let db = core.db.lock().unwrap();
+            store::event(&db, "supervisor", WORKER_STALLED_OBSERVED, "child", "no output").unwrap();
+            db.execute("UPDATE worker_runtime SET lifecycle_state='failed' WHERE session_id='child'", []).unwrap();
+        }
+        let crashed = synthetic_failure_result("Research", Some("timed out"), SyntheticFailure::Exited);
+        assert!(settle_worker_after_result(&core, "child", &crashed).unwrap());
+        let relaunches: i64 = core.db.lock().unwrap()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind='worker.relaunch.requested'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(relaunches, 0);
+    }
+
+    /// Only archive cascaded. Ending an orchestrator left its workers running
+    /// with nobody to report to, and its queue free to dispatch more.
+    #[test]
+    fn ending_an_orchestrator_stops_its_workers_and_cancels_its_queue() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,created_at,updated_at)
+                 VALUES('q1','parent','w','turn-1','{}','m','queued','now','now')",
+                [],
+            ).unwrap();
+        }
+
+        stop_orchestrator_workers(&core, "parent", "parent session ended");
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(store::worker_runtime(&db, "child").unwrap().unwrap().lifecycle_state, "cancelled");
+        let queue: String = db.query_row("SELECT queue_status FROM worker_queue WHERE id='q1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(queue, "cancelled");
     }
 
     /// When nothing else is installed, the orchestrator has to be told that

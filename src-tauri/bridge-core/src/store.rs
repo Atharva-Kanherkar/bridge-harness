@@ -4181,6 +4181,27 @@ pub fn update_worker_queue(
     )? == 1)
 }
 
+/// Close a queue row as failed with the reason the queue sweep reports to the
+/// orchestrator. A row closed with no reason was announced as a bare "worker
+/// launch failed", which tells the orchestrator nothing it can act on.
+pub fn fail_worker_queue(db: &Connection, id: &str, reason: &str) -> Result<bool, BridgeError> {
+    Ok(db.execute(
+        "UPDATE worker_queue SET queue_status='rejected',last_error=?2,updated_at=?3 WHERE id=?1",
+        params![id, reason, Utc::now().to_rfc3339()],
+    )? == 1)
+}
+
+/// Close a queue row whose launch failed after the launch path already told
+/// the orchestrator the specific reason. The receipt is the one the queue
+/// sweep checks, so the same failure is not announced twice.
+pub fn close_reported_worker_queue(db: &Connection, id: &str, reason: &str) -> Result<bool, BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let closed = fail_worker_queue(&transaction, id, reason)?;
+    event(&transaction, "worker-pool", "worker.queue.terminal_reported", id, reason)?;
+    transaction.commit()?;
+    Ok(closed)
+}
+
 /// Close a queue row whose launch is now owned by a live approval card.
 ///
 /// It is `cancelled`, not `rejected`: `report_terminal_queue_outcomes` treats a

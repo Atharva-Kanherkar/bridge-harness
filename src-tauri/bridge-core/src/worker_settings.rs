@@ -20,18 +20,26 @@ pub fn for_session(db: &Connection, session: &str) -> WorkerSettings {
 
 pub fn policy(db: &Connection, workspace: &str) -> Result<PolicyConfig, BridgeError> {
     let settings = load(db, workspace)?;
-    Ok(PolicyConfig { max_concurrent_workers: settings.max_concurrent_workers,
-        max_workers_per_turn: settings.max_workers_per_turn,
+    Ok(PolicyConfig { max_concurrent_workers: limit(settings.max_concurrent_workers),
+        max_workers_per_turn: limit(settings.max_workers_per_turn),
         max_automatic_retries: usize::from(settings.automatic_retry), ..PolicyConfig::default() })
 }
 
+/// A stored limit of `0` is "no limit", the default: workers are separate
+/// processes in their own sandboxes or worktrees, so nothing about correctness
+/// needs a count cap. Writer conflicts and write scope are policy invariants
+/// enforced elsewhere, not by this number.
+pub const fn limit(stored: usize) -> usize {
+    if stored == 0 { usize::MAX } else { stored }
+}
+
 pub fn save(db: &Connection, workspace: &str, settings: &WorkerSettings) -> Result<WorkerSettings, BridgeError> {
-    if !(1..=16).contains(&settings.max_concurrent_workers)
-        || !(1..=16).contains(&settings.max_workers_per_turn)
+    if settings.max_concurrent_workers > 64
+        || settings.max_workers_per_turn > 64
         || !(60..=7200).contains(&settings.stall_timeout_seconds)
         || !(0..=60).contains(&settings.warm_retention_minutes)
         || settings.default_harness.as_deref().is_some_and(|id| !matches!(id, "codex" | "claude" | "opencode")) {
-        return Err(BridgeError::Invalid("Invalid worker limits: concurrency/turn 1-16, stall 60-7200 seconds, warm retention 0-60 minutes, or unknown harness".into()));
+        return Err(BridgeError::Invalid("Invalid worker limits: concurrency/turn 0-64 (0 is no limit), stall 60-7200 seconds, warm retention 0-60 minutes, or unknown harness".into()));
     }
     db.query_row("SELECT id FROM workspaces WHERE id=?1", params![workspace], |_| Ok(()))?;
     db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
@@ -54,7 +62,9 @@ mod tests {
         save(&db, "w", &settings).unwrap();
         assert_eq!(policy(&db, "w").unwrap().max_concurrent_workers, 4);
         assert_eq!(policy(&db, "w").unwrap().max_automatic_retries, 0);
-        assert_eq!(load(&db, "other").unwrap().max_concurrent_workers, 2);
+        assert_eq!(load(&db, "other").unwrap().max_concurrent_workers, 0, "no limit by default");
+        assert_eq!(policy(&db, "other").unwrap().max_concurrent_workers, usize::MAX);
+        assert_eq!(policy(&db, "other").unwrap().max_workers_per_turn, usize::MAX);
         settings.stall_timeout_seconds = 0;
         assert!(save(&db, "w", &settings).is_err());
         assert_eq!(load(&db, "w").unwrap().stall_timeout_seconds, 600);

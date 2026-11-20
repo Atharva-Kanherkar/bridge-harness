@@ -701,6 +701,15 @@ mod tests {
         db.execute("UPDATE worker_queue SET queue_status='rejected' WHERE id=?1", [&id]).unwrap();
         assert_eq!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap(), vec!["parent"]);
         assert!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap().is_empty());
+
+        // A dispatch whose launch failed already told the orchestrator the
+        // specific reason. Closing it as reported keeps the sweep from sending
+        // a second, reasonless "worker launch failed" for the same item.
+        db.execute("UPDATE worker_queue SET queue_status='dispatching' WHERE id=?1", [&id]).unwrap();
+        store::close_reported_worker_queue(&db, &id, "launch failed; reported at launch").unwrap();
+        assert!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap().is_empty(), "announced once, at launch");
+        let error: Option<String> = db.query_row("SELECT last_error FROM worker_queue WHERE id=?1", [&id], |row| row.get(0)).unwrap();
+        assert!(error.is_some(), "a closed row records why");
     }
 
     #[test]

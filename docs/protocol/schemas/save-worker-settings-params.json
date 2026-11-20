@@ -16,11 +16,13 @@
           ]
         },
         "maxConcurrentWorkers": {
+          "description": "Workers running at once in this workspace. `0` means no limit.",
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"
         },
         "maxWorkersPerTurn": {
+          "description": "Workers one orchestrator message may start. `0` means no limit.",
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"

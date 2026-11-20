@@ -3417,6 +3417,52 @@ fn finish_interaction(
     finish_interaction_with_answers(core, session_id, event_id, interaction_kind, decision, option_id, actor, reason, adapter_id, is_worker, item_id, failure, None)
 }
 
+/// Record an approval the provider had already settled as resolved.
+#[allow(clippy::too_many_arguments)]
+fn finish_settled_permission(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    decision: &str,
+    option_id: Option<&str>,
+    actor: &str,
+    adapter_id: &str,
+    is_worker: bool,
+    item_id: Option<&str>,
+    provider_message: &str,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    drop(store::event(
+        &core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        "permission",
+        "permission.already_settled",
+        session_id,
+        provider_message,
+    ));
+    finish_interaction(
+        core,
+        session_id,
+        event_id,
+        "permission",
+        decision,
+        option_id,
+        actor,
+        Some("the agent had already settled this request"),
+        adapter_id,
+        is_worker,
+        item_id,
+        None,
+    )
+}
+
+/// Whether a provider's refusal to take an approval means it no longer has
+/// the request at all (already answered or cleared), rather than an error.
+fn provider_already_settled(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("permissionnotfound")
+        || (lower.contains("404") && lower.contains("permission"))
+        || lower.contains("permission request not found")
+}
+
 /// `finish_interaction`, also recording what a question was answered with so
 /// the card can say so after a reload. Secret fields never reach this map.
 #[allow(clippy::too_many_arguments)]
@@ -3665,6 +3711,16 @@ fn resolve_provider_permission(
         )),
     };
     drop(adapters);
+    // The agent may have settled this request itself before the answer
+    // reached it: OpenCode clears every pending call a "for this session"
+    // approval covers, so a second, concurrent approval comes back 404. That
+    // is a resolved request, not a failed one; recording it as failed left the
+    // session showing "waiting for approval" while it kept working.
+    if let Err(error) = &response {
+        if provider_already_settled(&error.to_string()) {
+            return finish_settled_permission(core, session_id, event_id, &decision, option_id.as_deref(), actor, &adapter_id, is_worker, item_id.as_deref(), &error.to_string());
+        }
+    }
     if let Err(error) = response {
         let message = error.to_string();
         let _ = finish_interaction(

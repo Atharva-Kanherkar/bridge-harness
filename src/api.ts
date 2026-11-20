@@ -2873,7 +2873,7 @@ export const bridgeApi = {
   },
   workerSettings: async (workspaceId: string): Promise<WorkerSettings> => {
     if (hasBackend()) return call("config/get_worker_settings", { workspaceId });
-    return { defaultHarness: null, maxConcurrentWorkers: 2, maxWorkersPerTurn: 3, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
+    return { defaultHarness: null, maxConcurrentWorkers: 0, maxWorkersPerTurn: 0, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
   },
   saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
     if (hasBackend()) return call("config/save_worker_settings", { workspaceId, settings });

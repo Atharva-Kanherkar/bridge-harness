@@ -1795,9 +1795,10 @@ pub fn session_forest_page_with_repository_state(
         usage,
         reasons,
         policy_limits: PolicyLimits {
-            max_workers_per_turn: config.max_workers_per_turn as i64,
-            max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
-            max_capability_units_per_turn: config.max_capability_units_per_turn,
+            // 0 is "no limit" on the wire; `usize::MAX` does not fit a JS number.
+            max_workers_per_turn: wire_limit(config.max_workers_per_turn as u128),
+            max_strong_workers_per_turn: wire_limit(config.max_strong_workers_per_turn as u128),
+            max_capability_units_per_turn: wire_limit(config.max_capability_units_per_turn.max(0) as u128),
         },
         repository_divergence: RepositoryDivergence {
             status: divergence_status.into(),
@@ -6462,4 +6463,9 @@ mod resolve_tests {
             assert!(resolve_reference_records(&db, bad).is_err(), "{bad:?} must be rejected");
         }
     }
+}
+
+/// A policy limit as the forest snapshot reports it: the cap, or `0` for no limit.
+fn wire_limit(limit: u128) -> i64 {
+    i64::try_from(limit).ok().filter(|limit| *limit <= (1_i64 << 53)).unwrap_or(0)
 }

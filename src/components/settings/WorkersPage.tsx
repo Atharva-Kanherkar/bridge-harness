@@ -49,8 +49,8 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
       </SettingsGroup>
       <SettingsGroup label="Task limits" note="Changes apply to new tasks. Lowering the limit does not stop tasks already running.">
         {([
-          ["maxConcurrentWorkers", "Tasks running at once", 1, 16, "Per workspace"],
-          ["maxWorkersPerTurn", "Tasks per message", 1, 16, "Other task budgets still apply"],
+          ["maxConcurrentWorkers", "Tasks running at once", 0, 64, "Per workspace. 0 means no limit."],
+          ["maxWorkersPerTurn", "Tasks per message", 0, 64, "0 means no limit."],
           ["stallTimeoutSeconds", "Stop waiting after (seconds)", 60, 7200, "Applies when an agent produces no output. Time waiting for your approval does not count."],
           ["warmRetentionMinutes", "Keep completed agents ready (minutes)", 0, 60, "Set to 0 to close an agent as soon as its task finishes."],
         ] as const).map(([key, label, min, max, description]) => <SettingsRow key={key} label={label} description={description} control={<input aria-label={label} type="number" required min={min} max={max} step={1} disabled={busy} value={settings[key]} onChange={event => change({ [key]: Number(event.target.value) })} className="h-8 w-24 rounded-lg border border-border bg-card px-2 text-sm tabular-nums" />} />)}
