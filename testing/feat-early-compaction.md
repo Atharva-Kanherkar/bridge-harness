@@ -335,7 +335,7 @@ Frontend:
 - Pass bar for each harness, all required:
   - Both arms finish every turn.
   - Arm `on` has at least one attempt with outcome `compacted`. On Claude, that attempt has `boundary_pre_tokens`.
-  - Claude: the ledger has a row with tokens above zero for each compaction request. If not, the harness fails with `compaction_usage_unobserved`.
+  - Claude: the ledger has a row with tokens above zero for each dispatched compaction request, with any outcome. If not, the harness fails with `compaction_usage_unobserved`.
   - Codex: each `compacted` attempt has a trigger reading for the bound. If not, the harness fails with `compaction_usage_unobserved`.
   - The score of arm `on` is at least the score of arm `off` minus 1. The score of arm `off` is at least 6.
   - The sum of uncached input, cache write and cache read of arm `on` is below the same sum of arm `off`. On Codex, the sum of arm `on` includes the bound.

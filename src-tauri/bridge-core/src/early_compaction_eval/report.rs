@@ -210,13 +210,15 @@ pub(super) fn codex_bound(attempts: &[AttemptRow]) -> Bound {
     })
 }
 
-/// The compacted Claude attempts with no ledger row of tokens above zero
-/// between the dispatch and the next scripted send. The wait after a turn
-/// lets the compaction turn end before the next send.
+/// The Claude compaction requests with no ledger row of tokens above zero
+/// between the dispatch and the next scripted send. Each dispatched attempt
+/// counts, with any outcome, because each one sent a request. A compacted
+/// attempt counts also with no dispatch time. The wait after a turn lets the
+/// compaction turn end before the next send.
 pub(super) fn claude_unobserved(attempts: &[AttemptRow], submissions: &[DateTime<Utc>], rows: &[LedgerRow]) -> usize {
     attempts
         .iter()
-        .filter(|attempt| attempt.compacted())
+        .filter(|attempt| attempt.dispatched_at.is_some() || attempt.compacted())
         .filter(|attempt| {
             let Some(start) = attempt.dispatched_at.or(attempt.created_at) else {
                 return true;
@@ -257,7 +259,7 @@ pub(super) struct ArmFigures {
     pub input_total: i64,
     pub score: u32,
     pub compacted: usize,
-    /// The compactions with no observed cost.
+    /// The compaction requests with no observed cost.
     pub unobserved: usize,
     pub price: String,
 }
@@ -338,7 +340,7 @@ fn compaction_failures(harness: &str, on: &ArmRun, figures: &ArmFigures) -> Vec<
         let what = if is_codex(harness) {
             "compacted attempts of arm on have no trigger reading for the bound"
         } else {
-            "compaction requests of arm on have no ledger row with tokens above zero"
+            "dispatched compaction requests of arm on, with any outcome, have no ledger row with tokens above zero before the next send"
         };
         failures.push(format!("{UNOBSERVED}: {} {what}", figures.unobserved));
     }
@@ -650,6 +652,31 @@ mod tests {
         assert_eq!(claude_unobserved(&attempts, &sends, &elsewhere), 1);
         // With no later send, the window has no end.
         assert_eq!(claude_unobserved(&attempts, &sends[..1], &[row(5_000, 0, 1, 0, 0)]), 0);
+    }
+
+    #[test]
+    fn each_dispatched_claude_attempt_needs_a_ledger_row_whatever_its_outcome() {
+        let mut runs = claude_pair();
+        if let [on, _] = runs.as_mut_slice() {
+            // The compaction at 820 s has its row at 840 s. This request ends
+            // with no boundary and has no row before the send at 1100 s.
+            let mut ended = compacted(1_020, Some(60_000), None);
+            ended.outcome = Some("ended_without_boundary".into());
+            on.attempts.push(ended);
+        }
+        let figures_on = figures("claude", &runs[0]);
+        assert_eq!((figures_on.compacted, figures_on.unobserved), (1, 1));
+        let failures = verdict("claude", &runs).failures.join("\n");
+        assert!(failures.contains(&format!("{UNOBSERVED}: 1 ")), "{failures}");
+        // An attempt that the host never dispatched sent no request.
+        let mut undispatched = claude_pair();
+        if let [on, _] = undispatched.as_mut_slice() {
+            let mut skipped = compacted(1_020, Some(60_000), None);
+            skipped.outcome = Some("unsupported".into());
+            skipped.dispatched_at = None;
+            on.attempts.push(skipped);
+        }
+        assert!(verdict("claude", &undispatched).passed());
     }
 
     #[test]

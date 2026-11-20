@@ -73,7 +73,7 @@ A harness passes when all of these are true:
 
 - The two arms finish each turn.
 - Arm `on` has at least one `compacted` attempt. On Claude, that attempt has `boundary_pre_tokens`.
-- On Claude, each compaction has a ledger row with tokens above zero before the next send. If one compaction has no such row, the harness fails with `compaction_usage_unobserved`.
+- On Claude, each dispatched compaction request, with any outcome, has a ledger row with tokens above zero before the next send. If one request has no such row, the harness fails with `compaction_usage_unobserved`.
 - On Codex, the harness does not report the tokens of the compaction request. The eval adds the trigger reading of each compacted attempt one time as uncached input, in the column `compaction bound (not observed)`. A compacted attempt with no trigger reading fails with `compaction_usage_unobserved`.
 - The score of arm `on` is at least the score of arm `off` minus 1, and arm `off` scores at least 6.
 - The input total of arm `on` (uncached, cache write and cache read, with the bound on Codex) is less than the total of arm `off`.
