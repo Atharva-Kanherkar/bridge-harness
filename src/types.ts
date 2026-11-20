@@ -212,6 +212,18 @@ export type {
 } from "./protocol/generated/protocol";
 
 export type {
+  ChatToolItem,
+  ChatToolKind,
+  ChatToolSelection,
+  ChatToolSelectionStatus,
+  ChatToolSource,
+  ChatToolState,
+  ChatToolTokens,
+  ChatToolsDraft,
+  GetChatToolsResult as ChatTools,
+} from "./protocol/generated/protocol";
+
+export type {
   HarnessId as Harness,
   Effort as ReasoningEffort,
   CheckRun as CompletionCheckRun,

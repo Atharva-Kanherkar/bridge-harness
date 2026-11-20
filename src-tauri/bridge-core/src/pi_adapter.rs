@@ -502,6 +502,7 @@ impl PiAdapter {
             runtime: Box::new(runtime),
             reader: Box::new(reader),
             startup_messages: Vec::new(),
+            skills_dropped: false,
         })
     }
 }

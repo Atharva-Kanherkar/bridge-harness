@@ -1,6 +1,7 @@
 use crate::{
     agent,
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
+    tool_selection::ToolLaunch,
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -169,7 +170,17 @@ pub fn start_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, SessionKind::Chat)
+    launch(request, None, settings, SessionKind::Chat, None)
+}
+
+/// `start_with_settings` for an interactive chat, with the tool launch of
+/// the chat.
+pub fn start_chat_with_settings(
+    request: StartRequest<'_>,
+    settings: &OpenCodeSettings,
+    tools: Option<&ToolLaunch>,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request, None, settings, SessionKind::Chat, tools)
 }
 
 /// A standalone draft completion, with every provider tool family denied.
@@ -179,7 +190,7 @@ pub fn start_completion_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, SessionKind::Completion)
+    launch(request, None, settings, SessionKind::Completion, None)
 }
 
 /// A personal-app courier: a session whose only authority is to ask for one
@@ -193,7 +204,7 @@ pub fn start_courier_with_settings(
     permission: &str,
     server: &str,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings, SessionKind::Courier { permission, server })
+    launch(request, None, settings, SessionKind::Courier { permission, server }, None)
 }
 
 #[derive(Clone, Copy)]
@@ -212,16 +223,56 @@ pub fn resume_with_settings(
         Some(request.provider_session_id),
         settings,
         SessionKind::Chat,
+        None,
     )
+}
+
+/// `resume_with_settings` for an interactive chat, with the tool launch of
+/// the chat.
+pub fn resume_chat_with_settings(
+    request: ResumeRequest<'_>,
+    settings: &OpenCodeSettings,
+    tools: Option<&ToolLaunch>,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request.as_start(), Some(request.provider_session_id), settings, SessionKind::Chat, tools)
 }
 
 /// The `OPENCODE_CONFIG_CONTENT` a session runs with: unchanged for a worker,
 /// and with Bridge's `visualize` server merged in for a chat that has it.
+/// After that merge, each server that the tool choice of the chat leaves out
+/// gets `enabled: false`, also when no `visualize` server attaches. When the
+/// inherited value does not parse, the choice is not applied and the value
+/// of today stays.
 fn chat_config_content(
     visualize: Option<&crate::mcp_apps::ServerLaunch>,
     existing: Option<&str>,
+    tools: Option<&ToolLaunch>,
 ) -> Option<String> {
-    visualize.map(|launch| crate::mcp_apps::merge_opencode_config(existing, launch))
+    use crate::tool_selection::{merge_opencode, OpenCodeMerge};
+    let today = visualize.map(|launch| crate::mcp_apps::merge_opencode_config(existing, launch));
+    let off = tools.filter(|tools| tools.harness == "opencode").map_or(&[][..], |tools| tools.servers_off.as_slice());
+    if off.is_empty() {
+        return today;
+    }
+    let OpenCodeMerge::Applied(alone) = merge_opencode(existing, off) else { return today };
+    let Some(today) = today else { return Some(alone) };
+    match merge_opencode(Some(&today), off) {
+        OpenCodeMerge::Applied(content) => Some(content),
+        OpenCodeMerge::NotApplied => Some(today),
+    }
+}
+
+/// Set the config content of a session on its command. With no content the
+/// command sets nothing, so the server inherits the value of Bridge as is.
+fn apply_chat_config(
+    command: &mut Command,
+    visualize: Option<&crate::mcp_apps::ServerLaunch>,
+    existing: Option<&str>,
+    tools: Option<&ToolLaunch>,
+) {
+    if let Some(config) = chat_config_content(visualize, existing, tools) {
+        command.env("OPENCODE_CONFIG_CONTENT", config);
+    }
 }
 
 fn launch(
@@ -229,6 +280,7 @@ fn launch(
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
     kind: SessionKind<'_>,
+    tools: Option<&ToolLaunch>,
 ) -> Result<StartedOpenCode, BridgeError> {
     ensure_read_only_transport_supported(request.read_only_sandbox)?;
     // OpenCode's permission rules are coarse families, so admitting one reviewed
@@ -278,12 +330,7 @@ fn launch(
         && crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing))
         .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id.filter(|_| request.interactive)))
         .flatten();
-    if let Some(config) = chat_config_content(
-        visualize.as_ref(),
-        std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
-    ) {
-        command.env("OPENCODE_CONFIG_CONTENT", config);
-    }
+    apply_chat_config(&mut command, visualize.as_ref(), std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(), tools);
     command
         .current_dir(request.cwd)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
@@ -1822,6 +1869,29 @@ impl AdapterRuntime for OpenCodeRuntime {
             client.post(url).timeout(Duration::from_secs(10)).send()
                 .and_then(Response::error_for_status)
                 .map(|_| ()).map_err(http_error("interrupt OpenCode subagent"))
+        }))
+    }
+    /// `GET /mcp` (V1) or `/api/mcp` (V2) on the server of this chat. The
+    /// exchange runs on its own thread, so the client clone drops off any
+    /// async runtime.
+    fn mcp_list_request(&self) -> Option<crate::adapters::McpListRequest> {
+        let client = self.client.as_ref()?.clone();
+        let path = match self.api {
+            ServerApi::V1 => "/mcp",
+            ServerApi::V2 => "/api/mcp",
+        };
+        let url = self.api.url(&self.base_url, path, &self.directory);
+        Some(Box::new(move || {
+            let action = "list OpenCode MCP servers";
+            thread::Builder::new()
+                .name("opencode-mcp-list".into())
+                .spawn(move || -> Result<Value, BridgeError> {
+                    let response = client.get(url).timeout(Duration::from_secs(10)).send().map_err(http_error(action))?;
+                    checked_json(response, action)
+                })
+                .map_err(|error| BridgeError::Adapter(error.to_string()))?
+                .join()
+                .map_err(|_| BridgeError::Adapter(format!("Failed to {action}")))?
         }))
     }
     fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
@@ -4071,6 +4141,136 @@ mod tests {
     fn auth_probe_reports_unknown_when_data_dir_is_missing() {
         assert_eq!(auth_state_from_data_dir(None), AuthState::Unknown);
     }
+
+    fn bridge_launch() -> crate::mcp_apps::ServerLaunch {
+        crate::mcp_apps::ServerLaunch {
+            command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
+            args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
+        }
+    }
+
+    fn opencode_tools(servers_off: &[&str]) -> ToolLaunch {
+        ToolLaunch::from_row(&crate::tool_selection::ToolSelectionRow {
+            revision: 1,
+            harness: "opencode".into(),
+            account: None,
+            servers_off: servers_off.iter().map(|name| (*name).to_owned()).collect(),
+            codex_apps_off: false,
+            claude_skills: None,
+            codex_skills_off: Vec::new(),
+        })
+    }
+
+    /// The `OPENCODE_CONFIG_CONTENT` that the real command sets. `None` means
+    /// the command sets nothing, so the server inherits the value as is.
+    fn config_env(visualize: Option<&crate::mcp_apps::ServerLaunch>, existing: Option<&str>, tools: Option<&ToolLaunch>) -> Option<String> {
+        let mut command = Command::new("/opt/fake/bin/opencode");
+        apply_chat_config(&mut command, visualize, existing, tools);
+        let set: Vec<Option<String>> = command
+            .get_envs()
+            .filter(|(key, _)| *key == "OPENCODE_CONFIG_CONTENT")
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+            .collect();
+        assert!(set.len() <= 1 && set.iter().all(Option::is_some), "{set:?}");
+        set.into_iter().flatten().next()
+    }
+
+    fn parsed(content: Option<String>) -> Value {
+        serde_json::from_str(&content.expect("the launch sets the config content")).unwrap()
+    }
+
+    #[test]
+    fn a_chat_without_a_selection_keeps_the_inherited_config_content() {
+        let inherited = r#"{"theme":"system","mcp":{"github":{"type":"local","command":["gh-mcp"]}}}"#;
+        let today = crate::mcp_apps::merge_opencode_config(Some(inherited), &bridge_launch());
+        // No server to attach: the command sets nothing, and the server inherits the value byte for byte.
+        assert_eq!(config_env(None, Some(inherited), None), None);
+        assert_eq!(config_env(None, None, None), None);
+        assert_eq!(config_env(Some(&bridge_launch()), Some(inherited), None), Some(today.clone()));
+        // A choice that leaves nothing out, and a choice for another harness, change nothing.
+        let nothing_off = opencode_tools(&[]);
+        let codex = ToolLaunch { harness: "codex".into(), ..opencode_tools(&["github"]) };
+        for tools in [&nothing_off, &codex] {
+            assert_eq!(config_env(None, Some(inherited), Some(tools)), None);
+            assert_eq!(config_env(None, None, Some(tools)), None);
+            assert_eq!(config_env(Some(&bridge_launch()), Some(inherited), Some(tools)), Some(today.clone()));
+        }
+    }
+
+    #[test]
+    fn the_selection_sets_only_enabled_false_leaves_and_keeps_the_rest() {
+        let inherited = json!({
+            "theme": "system",
+            "model": "anthropic/claude",
+            "mcp": {
+                "github": {"type": "local", "command": ["gh-mcp"], "environment": {"A": "1"}},
+                "sentry": {"type": "remote", "url": "https://sentry.example", "enabled": true},
+                "linear": {"type": "remote", "url": "https://linear.example"}
+            },
+            "permission": {"edit": "ask"}
+        })
+        .to_string();
+        let tools = opencode_tools(&["sentry", "github", "figma"]);
+        for visualize in [None, Some(bridge_launch())] {
+            let mut expected = match &visualize {
+                Some(launch) => parsed(Some(crate::mcp_apps::merge_opencode_config(Some(&inherited), launch))),
+                None => parsed(Some(inherited.clone())),
+            };
+            expected["mcp"]["github"]["enabled"] = json!(false);
+            expected["mcp"]["sentry"]["enabled"] = json!(false);
+            expected["mcp"]["figma"] = json!({"enabled": false});
+            let content = config_env(visualize.as_ref(), Some(&inherited), Some(&tools));
+            assert_eq!(parsed(content), expected);
+        }
+        // With no inherited value and no server to attach, the content holds the leaves only.
+        let alone = parsed(config_env(None, None, Some(&tools)));
+        assert_eq!(alone, json!({"mcp": {"figma": {"enabled": false}, "github": {"enabled": false}, "sentry": {"enabled": false}}}));
+    }
+
+    #[test]
+    fn an_inherited_config_that_does_not_parse_leaves_the_selection_unapplied() {
+        use crate::tool_selection::{merge_opencode, opencode_not_applied_reason, OpenCodeMerge, OPENCODE_CONFIG_REASON};
+        let tools = opencode_tools(&["github"]);
+        for bad in ["{bad", "", "[]", "\"text\"", "null", r#"{"mcp": []}"#, r#"{"mcp": {"github": true}}"#] {
+            assert_eq!(merge_opencode(Some(bad), &tools.servers_off), OpenCodeMerge::NotApplied, "{bad:?}");
+            // The command sets nothing, so the inherited value stays as is. It never becomes `{}`.
+            assert_eq!(config_env(None, Some(bad), Some(&tools)), None, "{bad:?}");
+            // With a server to attach, the launch keeps the value of today.
+            let today = crate::mcp_apps::merge_opencode_config(Some(bad), &bridge_launch());
+            let content = config_env(Some(&bridge_launch()), Some(bad), Some(&tools));
+            assert_eq!(content.as_deref(), Some(today.as_str()), "{bad:?}");
+            assert!(!today.contains("github") || bad.contains("github"), "{bad:?}");
+            // The picker can show why.
+            assert_eq!(opencode_not_applied_reason(Some(bad), &tools.servers_off), Some(OPENCODE_CONFIG_REASON), "{bad:?}");
+        }
+        assert_eq!(opencode_not_applied_reason(None, &tools.servers_off), None);
+        assert_eq!(opencode_not_applied_reason(Some(r#"{"theme":"system"}"#), &tools.servers_off), None);
+    }
+
+    #[test]
+    fn the_bridge_entry_and_each_permission_rule_stay() {
+        let inherited = json!({
+            "permission": {"edit": "ask", "bash": {"*": "ask", "git status": "allow"}, "github_*": "deny", "skill": {"deploy": "deny"}},
+            "mcp": {"github": {"type": "local", "command": ["gh-mcp"]}}
+        })
+        .to_string();
+        // A launch that skipped the checks names the Bridge server too.
+        let forged = ToolLaunch { servers_off: vec!["bridge".into(), "Bridge".into(), "github".into()], ..opencode_tools(&[]) };
+        let baseline = parsed(config_env(Some(&bridge_launch()), Some(&inherited), None));
+        let content = parsed(config_env(Some(&bridge_launch()), Some(&inherited), Some(&forged)));
+        assert_eq!(content["mcp"]["bridge"], baseline["mcp"]["bridge"]);
+        assert_eq!(content["mcp"]["bridge"]["enabled"], true);
+        assert!(content["mcp"].get("Bridge").is_none());
+        assert_eq!(content["permission"], baseline["permission"]);
+        assert_eq!(content["permission"], parsed(Some(inherited.clone()))["permission"]);
+        assert_eq!(content["mcp"]["github"], json!({"type": "local", "command": ["gh-mcp"], "enabled": false}));
+        // Without a server to attach, the permission object stays too, and no Bridge entry appears.
+        let alone = parsed(config_env(None, Some(&inherited), Some(&forged)));
+        assert_eq!(alone["permission"], baseline["permission"]);
+        assert!(alone["mcp"].get("bridge").is_none() && alone["mcp"].get("Bridge").is_none());
+        assert_eq!(alone["permission"], parsed(Some(inherited))["permission"]);
+    }
 }
 
 #[cfg(test)]
@@ -4091,7 +4291,7 @@ mod model_variant_tests {
             env: Vec::new(),
         };
         let content: serde_json::Value = serde_json::from_str(
-            &chat_config_content(Some(&launch), Some(r#"{"theme":"system"}"#)).unwrap(),
+            &chat_config_content(Some(&launch), Some(r#"{"theme":"system"}"#), None).unwrap(),
         )
         .unwrap();
         assert_eq!(content["theme"], "system");
@@ -4101,7 +4301,7 @@ mod model_variant_tests {
 
     #[test]
     fn opencode_workers_do_not() {
-        assert_eq!(chat_config_content(None, Some(r#"{"theme":"system"}"#)), None);
+        assert_eq!(chat_config_content(None, Some(r#"{"theme":"system"}"#), None), None);
     }
 
 }

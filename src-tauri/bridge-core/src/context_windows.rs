@@ -742,6 +742,28 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_rows_of_a_claude_frame_reach_the_stored_reading_whole() {
+        // The tool choice of a chat names each skill by these rows, so the
+        // stored reading keeps each name and figure as the sidecar sent them.
+        let skills = json!({"included": 3, "total": 3, "tokens": 900, "items": [
+            {"name": "vercel-plugin:deploy", "tokens": 500},
+            {"name": "review", "tokens": 300},
+            {"name": "chrome-devtools-mcp:a11y-debugging", "tokens": 100},
+        ]});
+        let db = db();
+        session(&db, "c", "claude", "claude-opus-5-5", "claude-thread");
+        let reading = reading_from_claude_frame(&json!({
+            "type": "context_usage", "usedTokens": 20_000, "windowTokens": 200_000, "skills": skills,
+        }))
+        .unwrap();
+        assert!(record_reading(&db, "c", Some("t1"), &reading).unwrap());
+        let stored: String = db
+            .query_row("SELECT breakdown_json FROM context_readings WHERE session_id='c'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&stored).unwrap()["skills"], skills);
+    }
+
+    #[test]
     fn codex_usage_uses_last_total_not_running_total() {
         let reading = reading_from_usage_event(
             "codex",

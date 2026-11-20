@@ -50,7 +50,7 @@ test("contextUsageFrame maps the SDK's /context data to Bridge's frame", () => {
     ["Free space", "free"], ["Messages", "used"], ["Autocompact buffer", "buffer"], ["System tools", "used"], ["Deferred tools", "deferred"],
   ]);
   assert.deepEqual(frame.memoryFiles, { count: 2, tokens: 3000 });
-  assert.deepEqual(frame.skills, { included: 40, total: 73, tokens: 6000 });
+  assert.deepEqual(frame.skills, { included: 40, total: 73, tokens: 6000, items: [] });
   assert.equal(frame.agentsTokens, 700);
   assert.equal(frame.messages.toolResults, 38000);
   assert.deepEqual(frame.messages.toolsByType, [{ name: "Bash", tokens: 21000 }, { name: "Read", tokens: 14000 }]);

@@ -780,7 +780,7 @@ mod tests {
             let result = serde_json::json!({"type":"result", "subtype":"success", "result":text});
             Ok(crate::adapters::StartedAdapter {
                 runtime: Box::new(CompletionRuntime { interrupted: self.interrupted.clone(), stopped: self.stopped.clone() }),
-                reader: Box::new(std::io::Cursor::new(format!("{frame}\n{result}\n"))), startup_messages: vec![],
+                reader: Box::new(std::io::Cursor::new(format!("{frame}\n{result}\n"))), startup_messages: vec![], skills_dropped: false,
             })
         }
         fn resume(&self, _: crate::adapters::ResumeRequest<'_>) -> Result<crate::adapters::StartedAdapter, BridgeError> { unreachable!() }

@@ -1304,9 +1304,9 @@ async fn save_app_preferences(values: bridge_protocol::messages::AppPreferenceVa
 #[tauri::command]
 async fn resolve_chat_settings(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:Option<bridge_protocol::messages::ChatDefaultsRevision>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ResolvedChatSettings, BridgeError> { api::resolve_chat_settings(state.inner(),&bridge_protocol::messages::ResolveChatSettingsParams {workspace_id,overrides,expected_revision}) }
 #[tauri::command]
-async fn create_configured_chat(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:bridge_protocol::messages::ChatDefaultsRevision, title:Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ConfiguredChatResult, BridgeError> {
+async fn create_configured_chat(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:bridge_protocol::messages::ChatDefaultsRevision, title:Option<String>, tool_selection:Option<bridge_protocol::messages::ChatToolSelection>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ConfiguredChatResult, BridgeError> {
     let core=state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move ||api::create_configured_chat(&core,&bridge_protocol::messages::CreateConfiguredChatParams {workspace_id,overrides,expected_revision,title})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move ||api::create_configured_chat(&core,&bridge_protocol::messages::CreateConfiguredChatParams {workspace_id,overrides,expected_revision,title,tool_selection})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
 }
 #[tauri::command]
 async fn get_chat_settings(session_id:String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSessionSettings, BridgeError> { api::get_chat_settings(state.inner(),&session_id) }
@@ -1314,6 +1314,17 @@ async fn get_chat_settings(session_id:String, state: State<'_, Arc<BridgeCore>>)
 async fn update_chat_options(session_id:String,expected_revision:u32,access:bridge_protocol::messages::ChatAccess,active_turn_input:bridge_protocol::messages::ActiveTurnInput,state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSessionSettings, BridgeError> {
     let core=state.inner().clone();
     tauri::async_runtime::spawn_blocking(move ||api::update_chat_options(&core,&bridge_protocol::messages::UpdateChatOptionsParams {session_id,expected_revision,access,active_turn_input})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
+}
+// A warm Codex read waits on its runtime, and a save waits on the input lease.
+#[tauri::command]
+async fn get_chat_tools(session_id:Option<String>,draft:Option<bridge_protocol::messages::ChatToolsDraft>,state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::GetChatToolsResult, BridgeError> {
+    let core=state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move ||api::get_chat_tools(&core,&bridge_protocol::messages::GetChatToolsParams {session_id,draft})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
+}
+#[tauri::command]
+async fn update_chat_tools(session_id:String,expected_revision:u32,selection:bridge_protocol::messages::ChatToolSelection,state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UpdateChatToolsResult, BridgeError> {
+    let core=state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move ||api::update_chat_tools(&core,&bridge_protocol::messages::UpdateChatToolsParams {session_id,expected_revision,selection})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
 }
 
 #[tauri::command]
@@ -3779,6 +3790,8 @@ pub fn run() -> i32 {
             create_configured_chat,
             get_chat_settings,
             update_chat_options,
+            get_chat_tools,
+            update_chat_tools,
             get_reviewer_settings,
             save_reviewer_settings,
             get_limit_recovery_settings,

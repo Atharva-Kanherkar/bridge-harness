@@ -695,6 +695,20 @@
       "resultSchema": "chat-session-settings.json"
     },
     {
+      "command": "get_chat_tools",
+      "domain": "sessions",
+      "method": "sessions/get_chat_tools",
+      "paramsSchema": "get-chat-tools-params.json",
+      "resultSchema": "get-chat-tools-result.json"
+    },
+    {
+      "command": "update_chat_tools",
+      "domain": "sessions",
+      "method": "sessions/update_chat_tools",
+      "paramsSchema": "update-chat-tools-params.json",
+      "resultSchema": "update-chat-tools-result.json"
+    },
+    {
       "command": "get_reviewer_settings",
       "domain": "config",
       "method": "config/get_reviewer_settings",
@@ -2440,7 +2454,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 45
+    "minor": 46
   },
   "reserved": {
     "cancel": "$/cancel",

@@ -37,6 +37,7 @@ mod common;
 mod completion;
 mod config;
 mod chat_defaults;
+mod chat_tools;
 mod connectors;
 mod forest;
 mod github;
@@ -80,6 +81,7 @@ pub use common::*;
 pub use completion::*;
 pub use config::*;
 pub use chat_defaults::*;
+pub use chat_tools::*;
 pub use connectors::*;
 pub use forest::*;
 pub use github::*;
@@ -427,6 +429,8 @@ typed_methods![
     (CreateConfiguredChat, CreateConfiguredChatParams, ConfiguredChatResult),
     (GetChatSettings, GetChatSettingsParams, ChatSessionSettings),
     (UpdateChatOptions, UpdateChatOptionsParams, ChatSessionSettings),
+    (GetChatTools, GetChatToolsParams, GetChatToolsResult),
+    (UpdateChatTools, UpdateChatToolsParams, UpdateChatToolsResult),
     (GetReviewerSettings, _, ReviewerSettingsResult),
     (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (GetAttributionSettings, _, AttributionSettings),

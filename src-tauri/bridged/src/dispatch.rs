@@ -850,6 +850,8 @@ pub fn dispatch(
         MethodName::CreateConfiguredChat => { let p:wire::CreateConfiguredChatParams=decode(method,params)?; reply(api::create_configured_chat(core,&p)) },
         MethodName::GetChatSettings => { let p:wire::GetChatSettingsParams=decode(method,params)?; reply(api::get_chat_settings(core,&p.session_id)) },
         MethodName::UpdateChatOptions => { let p:wire::UpdateChatOptionsParams=decode(method,params)?; reply(api::update_chat_options(core,&p)) },
+        MethodName::GetChatTools => { let p:wire::GetChatToolsParams=decode(method,params)?; reply(api::get_chat_tools(core,&p)) },
+        MethodName::UpdateChatTools => { let p:wire::UpdateChatToolsParams=decode(method,params)?; reply(api::update_chat_tools(core,&p)) },
         MethodName::GetLimitRecoverySettings => reply(api::get_limit_recovery_settings(core)),
         MethodName::SaveLimitRecoverySettings => {
             let p: wire::SaveLimitRecoverySettingsParams = decode(method, params)?;

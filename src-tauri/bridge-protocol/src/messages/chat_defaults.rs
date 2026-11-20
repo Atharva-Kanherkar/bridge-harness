@@ -1,5 +1,5 @@
 //! Personal defaults are preferences, never imported execution authority.
-use super::{ActiveTurnInput, BridgeState};
+use super::{ActiveTurnInput, BridgeState, ChatToolSelection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -122,6 +122,9 @@ pub struct CreateConfiguredChatParams {
     pub overrides: ChatDefaults,
     pub expected_revision: ChatDefaultsRevision,
     pub title: Option<String>,
+    /// The first tool choice of the new chat. Absent keeps every tool.
+    #[serde(default)]
+    pub tool_selection: Option<ChatToolSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -152,4 +155,26 @@ pub struct UpdateChatOptionsParams {
     pub expected_revision: u32,
     pub access: ChatAccess,
     pub active_turn_input: ActiveTurnInput,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn create_configured_chat_params_accept_an_optional_tool_selection() {
+        let base = json!({"workspaceId": null, "overrides": {}, "expectedRevision": {"application": 0, "project": 0}, "title": null});
+        let without: CreateConfiguredChatParams = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(without.tool_selection, None, "a 1.45 client never sends the field");
+        let mut with = base;
+        with["toolSelection"] = json!({"harness": "codex", "serversOff": ["github"], "codexAppsOff": true});
+        let parsed: CreateConfiguredChatParams = serde_json::from_value(with.clone()).unwrap();
+        let choice = parsed.tool_selection.unwrap();
+        assert_eq!(choice.harness, "codex");
+        assert_eq!(choice.servers_off, vec!["github".to_string()]);
+        assert!(choice.codex_apps_off);
+        with["toolSelection"]["grant"] = json!(true);
+        assert!(serde_json::from_value::<CreateConfiguredChatParams>(with).is_err(), "an unknown key in the choice is refused");
+    }
 }

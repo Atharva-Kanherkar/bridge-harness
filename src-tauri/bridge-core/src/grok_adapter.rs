@@ -990,6 +990,7 @@ fn launch(
                 consumed: 0,
             }),
             startup_messages: Vec::new(),
+            skills_dropped: false,
         },
         established_profile,
     ))

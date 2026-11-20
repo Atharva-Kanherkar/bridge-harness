@@ -1676,7 +1676,17 @@ pub fn start_session(
             &serde_json::json!({"adapter": adapter_id, "hidden": true}),
         );
     }
+    // A fresh start after a failed resume has a new provider session, so it
+    // gets no usage seed.
+    let mut usage_replay = if restoration_mode == RestorationMode::Native {
+        native_resume_usage(&db, &state.adapter_registry, adapter_id, &session_id, &thread_id)
+    } else {
+        None
+    };
     for message in &started.startup_messages {
+        if !passes_usage_replay(&mut usage_replay, message) {
+            continue;
+        }
         persist_agent_value(
             &db,
             &state.adapter_registry,
@@ -1686,6 +1696,9 @@ pub fn start_session(
         )?;
     }
     drop(db);
+    // This launch carries no tool choice. With no entry, a stored choice
+    // makes the next send relaunch through `start_chat`.
+    crate::tool_selection::forget_applied(state, &session_id);
     state
         .adapters
         .lock()
@@ -1701,6 +1714,7 @@ pub fn start_session(
         process_id,
         current_turn,
         reader,
+        usage_replay,
     );
     core.events.publish(CoreEvent::StateChanged);
     store::state(&state.db.lock().unwrap())
@@ -1983,7 +1997,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 &hot_check_prompt,
             )
         });
-        if hot_prompt_compatible {
+        // A saved tool choice applies at the next launch. The warm process
+        // keeps the revision that it launched with, so it stops here.
+        let runs_the_stored_choice = !crate::tool_selection::stale(state, &session_id);
+        if hot_prompt_compatible && runs_the_stored_choice {
             let db = state.db.lock().unwrap();
             restoration::set_head_state(
                 &db,
@@ -2089,8 +2106,30 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         });
     };
     let account_launch = launch_account(state, &session_id, adapter_id)?;
+    // The tool choice of the chat travels beside each request. Workers,
+    // briefings and workflows launch with none.
+    let inherited_opencode_config = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+    let tool_launch = crate::tool_selection::launch_for(
+        &*state.try_db()?,
+        &session_id,
+        &crate::tool_selection::LaunchTarget {
+            harness: adapter_id,
+            interactive,
+            workflow: is_workflow || workflow_policy.is_some(),
+            opencode_config: inherited_opencode_config.as_deref(),
+        },
+    )?;
+    // The effective set of this launch, compared with the set of the last
+    // change event of the chat.
+    let tool_record = crate::tool_selection::LaunchRecord::read(
+        &*state.try_db()?,
+        &session_id,
+        adapter_id,
+        tool_launch.as_ref(),
+        provider_id.is_some() || has_prior_history,
+    )?;
     let start_fresh = |instructions: &str| {
-        registry.start(
+        registry.start_chat(
             &launch_adapter_id,
             adapters::StartRequest {
                 session_id: Some(session_id.as_str()),
@@ -2106,7 +2145,9 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 account: account_launch.as_ref(),
                 on_progress: Some(&on_startup_progress),
             },
+            tool_launch.as_ref(),
         )
+        .map_err(|error| crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error))
     };
     let checkpoint_instructions = checkpoint_context
         .as_deref()
@@ -2125,7 +2166,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             let provider = provider_id
                 .as_deref()
                 .expect("native-fork plan has a provider id");
-            match registry.resume(
+            match registry.resume_chat(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
                     session_id: Some(session_id.as_str()),
@@ -2143,6 +2184,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
+                tool_launch.as_ref(),
             ) {
                 // The fork IS the aside's own thread from here: the runtime
                 // hands back the new forked thread id, which the persistence
@@ -2198,7 +2240,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             let provider = provider_id
                 .as_deref()
                 .expect("native plan has a provider id");
-            match registry.resume(
+            match registry.resume_chat(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
                     session_id: Some(session_id.as_str()),
@@ -2216,12 +2258,20 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
+                tool_launch.as_ref(),
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
                 Err(error) => {
                     let db = state.db.lock().unwrap();
                     restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
                     drop(db);
+                    // A changed tool set keeps the thread. A fork or a fresh
+                    // start would leave the conversation that the person
+                    // continues.
+                    if tool_record.keeps_the_thread_on_failure() {
+                        fail_a_kept_thread(state, &session_id)?;
+                        return Err(crate::tool_selection::kept_thread_error(tool_launch.as_ref(), tool_record.last_all_on(), error));
+                    }
                     match restoration::fallback_after_failure(
                         restoration::RestorationPlan::Native,
                         checkpoint_instructions.is_some(),
@@ -2298,13 +2348,19 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         restoration::RestorationPlan::Hot => unreachable!("hot sessions returned above"),
     };
     timing.mark("spawn");
+    // The event and the applied entry follow the set that the launch applied.
+    let tool_record = tool_record.after_launch(started.skills_dropped);
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
+    let mut usage_replay = None;
     {
         let db = state.db.lock().unwrap();
+        // The change event of a tool set commits with the row of the launch
+        // that applied it.
+        let transaction = db.unchecked_transaction()?;
         // `ready`, not `working`: the provider is up and nothing is running yet.
         // Claiming `working` here was a lie about a turn that did not exist, and
         // `turn_is_active` reads that as a turn in flight — so on any provider
@@ -2314,16 +2370,18 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         // `active_turn_id` for a `ready` session precisely because a ready
         // session has no turn.
         if is_orchestrator {
-            db.execute(
+            transaction.execute(
                 "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN NULL ELSE context_percent END,status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL, STARTED_IDLE_STATUS],
             )?;
         } else {
-            db.execute(
+            transaction.execute(
                 "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN NULL ELSE context_percent END,status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, STARTED_IDLE_STATUS],
             )?;
         }
+        tool_record.write_launch_event(&transaction, &session_id, &thread_id)?;
+        transaction.commit()?;
         launch_plan.commit(&db, &session_id)?;
         if let Err(error) = persist_prompt_compilation(
             &db,
@@ -2418,7 +2476,15 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 &serde_json::json!({"adapter": adapter_id, "hidden": true}),
             );
         }
+        // A fork gets a new provider session, so only a native resume of the
+        // same session gets the usage seed.
+        if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native {
+            usage_replay = native_resume_usage(&db, &state.adapter_registry, adapter_id, &session_id, &thread_id);
+        }
         for message in &started.startup_messages {
+            if !passes_usage_replay(&mut usage_replay, message) {
+                continue;
+            }
             persist_agent_value(
                 &db,
                 &state.adapter_registry,
@@ -2428,6 +2494,9 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             )?;
         }
     }
+    // Before the runtime is visible, so a send never finds a warm runtime with
+    // an old applied revision.
+    crate::tool_selection::record_applied(state, &session_id, tool_record.applied(&thread_id, &started_at));
     state
         .adapters
         .lock()
@@ -2442,6 +2511,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         process_id,
         current_turn,
         reader,
+        usage_replay,
     );
     // Workspace open is the one place a network fetch is affordable, so the
     // stale-base check runs against a freshly fetched ref here and against the
@@ -2546,7 +2616,8 @@ fn cleanup_reader_state(
     // wipe the new stream's normalization maps mid-flight.
     let is_current_launch =
         reader_launch_is_current(&db, session_id, launch_started_at, provider_session_id);
-    drop(db);
+    // Keep the guard until the state is gone. A new launch writes its row and
+    // its usage seed under the same guard, so this forget cannot clear them.
     if is_current_launch
         && !provider_session_id.is_empty()
         && active_provider.as_deref() != Some(provider_session_id)
@@ -2554,6 +2625,7 @@ fn cleanup_reader_state(
         core.adapter_registry
             .forget_session(adapter_id, provider_session_id);
     }
+    drop(db);
     if active_provider.is_none() {
         if tracks_worker {
             core.worker_activity.lock().unwrap().remove(session_id);
@@ -2596,6 +2668,7 @@ fn spawn_reader_thread(
     launch_process_id: u32,
     current_turn: Arc<Mutex<Option<String>>>,
     mut reader: Box<dyn BufRead + Send>,
+    mut usage_replay: Option<CodexUsageReplay>,
 ) {
     let launch_gate = Arc::new(Mutex::new(true));
     core.reader_launches
@@ -2646,6 +2719,11 @@ fn spawn_reader_thread(
                         // heartbeat before normalization so tool-run and
                         // reasoning frames all count.
                         record_session_activity(&core, &session_id, tracks_worker);
+                        // The repeat of the last usage of a resumed Codex
+                        // thread makes no entry, no ledger row and no reading.
+                        if !passes_usage_replay(&mut usage_replay, &value) {
+                            continue;
+                        }
                         // A detached model-switch summary runtime shares this
                         // session id with the incoming model. Its frames drive
                         // only the checkpoint pipeline and must never reach the
@@ -2673,6 +2751,7 @@ fn spawn_reader_thread(
                 }
             }
         }
+        crate::tool_selection::forget_applied_launch(&core, &session_id, &launch_started_at);
         if was_detached
             || switch_summary::is_detached_launch(
                 &core,
@@ -2822,6 +2901,144 @@ fn spawn_reader_thread(
     });
 }
 
+/// The usage setup of a launch that resumed the provider session `thread_id`
+/// natively. A Claude process starts from the session totals of the newest
+/// stored usage of that session, before the first frame of the launch. A resumed Codex thread
+/// sends its last usage again, so the result keeps that usage to drop the
+/// repeat. Call it only when the launch kept the same provider session.
+fn native_resume_usage(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+    adapter_id: &str,
+    session_id: &str,
+    thread_id: &str,
+) -> Option<CodexUsageReplay> {
+    if !matches!(adapter_id, "claude" | "codex") {
+        return None;
+    }
+    let usage_event = resume_usage_event(db, session_id, adapter_id, thread_id)?;
+    if adapter_id == "claude" {
+        registry.seed_usage_totals(adapter_id, thread_id, &usage_event);
+        return None;
+    }
+    CodexUsageReplay::from_usage_event(&usage_event, thread_id)
+}
+
+/// The stored payload of the newest `usage.updated` entry of the resumed
+/// provider session. The read looks at the 20 newest usage entries in the
+/// newest 5000 entries of the chat, so its cost has a cap. A launch calls it
+/// one time, never the frame path.
+///
+/// A Codex entry must name the thread in `threadId`. A Claude entry must name
+/// the session in `cumulative`. An older Claude entry with no `cumulative`
+/// fits only if the Claude `init` entry before it names the session. Only the
+/// newest such entry gets that check, so the launch does one more read at most.
+/// Bridge never subtracts the totals of a session that it cannot name.
+fn resume_usage_event(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    provider_session_id: &str,
+) -> Option<serde_json::Value> {
+    let mut statement = db
+        .prepare(
+            "SELECT sequence,payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' AND sequence>(SELECT COALESCE(MAX(sequence),0)-5000 FROM session_entries WHERE session_id=?1) ORDER BY sequence DESC LIMIT 20",
+        )
+        .ok()?;
+    let entries = statement
+        .query_map(params![session_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()?;
+    let mut init_read = false;
+    for (sequence, payload) in entries.flatten() {
+        let Ok(usage_event) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            continue;
+        };
+        if usage_event.pointer("/providerMeta/adapter").and_then(serde_json::Value::as_str) != Some(adapter_id) {
+            continue;
+        }
+        let named = |pointer: &str| {
+            usage_event.pointer(pointer).and_then(serde_json::Value::as_str) == Some(provider_session_id)
+        };
+        let fits = if adapter_id == "codex" {
+            named("/data/threadId")
+        } else if usage_event.pointer("/data/cumulative").is_some_and(serde_json::Value::is_object) {
+            named("/data/cumulative/sessionId")
+        } else if init_read {
+            false
+        } else {
+            init_read = true;
+            claude_init_session(db, session_id, sequence).as_deref() == Some(provider_session_id)
+        };
+        if fits {
+            return Some(usage_event);
+        }
+    }
+    None
+}
+
+/// The provider session of the newest Claude `init` entry before `sequence`,
+/// in the newest 5000 entries of the chat.
+fn claude_init_session(db: &Connection, session_id: &str, sequence: i64) -> Option<String> {
+    db.query_row(
+        "SELECT json_extract(payload,'$.data.session_id') FROM session_entries WHERE session_id=?1 AND kind='session.started' AND sequence<?2 AND sequence>(SELECT COALESCE(MAX(sequence),0)-5000 FROM session_entries WHERE session_id=?1) AND json_extract(payload,'$.providerMeta.adapter')='claude' AND json_extract(payload,'$.data.subtype')='init' ORDER BY sequence DESC LIMIT 1",
+        params![session_id, sequence],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// The last usage of a resumed Codex thread. After `thread/resume`, Codex
+/// sends the usage of the last turn again. That repeat is no new usage.
+struct CodexUsageReplay {
+    thread_id: String,
+    turn_id: String,
+    token_usage: serde_json::Value,
+}
+
+impl CodexUsageReplay {
+    /// The seed of a native resume of `thread_id`, from the stored payload of
+    /// the newest `usage.updated` entry of that thread. An entry of another
+    /// adapter gives nothing.
+    fn from_usage_event(usage_event: &serde_json::Value, thread_id: &str) -> Option<Self> {
+        if usage_event.pointer("/providerMeta/adapter").and_then(serde_json::Value::as_str) != Some("codex") {
+            return None;
+        }
+        let data = usage_event.get("data")?;
+        Some(Self {
+            thread_id: thread_id.to_owned(),
+            turn_id: data.get("turnId")?.as_str()?.to_owned(),
+            token_usage: data.get("tokenUsage").filter(|usage| usage.is_object())?.clone(),
+        })
+    }
+}
+
+/// False for a root usage frame with the turn id and the `tokenUsage` of the
+/// seed. The first root `turn/started` retires the seed, so each later frame
+/// passes. The check reads memory only.
+fn passes_usage_replay(seed: &mut Option<CodexUsageReplay>, frame: &serde_json::Value) -> bool {
+    let Some(replay) = seed.as_ref() else {
+        return true;
+    };
+    let params = frame.get("params");
+    let field = |name: &str| params.and_then(|params| params.get(name));
+    let thread = field("threadId").and_then(serde_json::Value::as_str);
+    match frame.get("method").and_then(serde_json::Value::as_str) {
+        Some("turn/started") if thread.is_none_or(|thread| thread == replay.thread_id) => {
+            *seed = None;
+            true
+        }
+        Some("thread/tokenUsage/updated") => {
+            thread != Some(replay.thread_id.as_str())
+                || field("turnId").and_then(serde_json::Value::as_str) != Some(replay.turn_id.as_str())
+                || field("tokenUsage") != Some(&replay.token_usage)
+        }
+        _ => true,
+    }
+}
+
 fn persist_agent_value(
     db: &Connection,
     registry: &adapters::AdapterRegistry,
@@ -2931,6 +3148,15 @@ fn handle_agent_value_timed(
             &body,
         );
         return;
+    }
+    // The init frame of a Claude launch is the proof of its pending tool
+    // event. It goes to memory, so the end of the turn reads no history.
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("system")
+        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("init")
+    {
+        if let Some(init_session_id) = value.get("session_id").and_then(serde_json::Value::as_str) {
+            crate::tool_selection::note_init(core, session_id, expected_launch, init_session_id);
+        }
     }
     let state = core.clone();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
@@ -4250,6 +4476,12 @@ fn handle_agent_value_timed(
     }
     if let Some(reason) = &pending_invalid_wait {
         refuse_orchestrator_wait(core, session_id, reason);
+    }
+    // A Claude launch proves a changed tool set with its first good turn on
+    // the same session id. The event goes in before the queued input starts
+    // the next turn.
+    if turn_completed {
+        crate::tool_selection::settle_after_turn(core, session_id, turn_failed, expected_launch);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -6525,6 +6757,7 @@ pub fn launch_worker_outcome(
         .unwrap()
         .arm(&session_id, &thread_id, launch_context);
 
+    let mut usage_replay = None;
     {
         let db = state.db.lock().unwrap();
         let _ = db.execute(
@@ -6568,7 +6801,15 @@ pub fn launch_worker_outcome(
             "UPDATE workspaces SET status='working' WHERE id=?1",
             params![reservation.workspace_id],
         );
+        // A fresh or restored worker has a new provider session, so it gets
+        // no usage seed.
+        if activation == WorkerActivation::Native {
+            usage_replay = native_resume_usage(&db, &state.adapter_registry, &harness, &session_id, &thread_id);
+        }
         for message in &startup_messages {
+            if !passes_usage_replay(&mut usage_replay, message) {
+                continue;
+            }
             let _ =
                 persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
         }
@@ -6669,6 +6910,7 @@ pub fn launch_worker_outcome(
         process_id,
         current_turn,
         reader,
+        usage_replay,
     );
     if let Err(error) = deliver_worker_objective(&state, &session_id, &directive.objective)
     {
@@ -12075,6 +12317,17 @@ pub fn dispatch_agent_shortcut(
     })
 }
 
+/// True for a chat with no runtime, and for a warm runtime that applies an
+/// old tool choice. The adapters lock ends before the revision read.
+fn needs_a_launch_for_send(core: &Arc<BridgeCore>, session_id: &str) -> bool {
+    let warm = core
+        .adapters
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(session_id);
+    !warm || crate::tool_selection::stale(core, session_id)
+}
+
 /// Relaunch a session's adapter so a user-initiated send can be delivered,
 /// naming the send as the reason when the resume itself fails.
 fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
@@ -12441,14 +12694,15 @@ fn submit_input_internal(
             has_live_runtime,
         )
         .map_err(|refusal| BridgeError::Invalid(refusal.message().into()))?;
-    } else if !state.adapters.lock().unwrap().contains_key(&session_id) {
+    } else if needs_a_launch_for_send(core, &session_id) {
         // A send into a session whose adapter is gone — the app restarted, or the
         // provider process died — is explicit consent to bring it back. Resume
         // through the same seam the UI uses before routing; without this the
         // delivery dead-ends on "Structured adapter session is not running" and
         // the person just sees a toast (#252). Never for a worker: the gate above
         // already refused a worker with no live runtime, because launching one is
-        // the pool's decision, not a side effect of typing.
+        // the pool's decision, not a side effect of typing. A warm runtime with
+        // an old tool choice relaunches too, so it never takes the turn.
         resume_for_send(core, &session_id)?;
         resumed = true;
         timing.mark("resume");
@@ -13153,6 +13407,16 @@ pub(crate) fn publish_attention_if_moved(core: &Arc<BridgeCore>, seen: &mut i64)
     *seen = revision;
     core.events.publish(CoreEvent::AttentionChanged);
     true
+}
+
+/// The end of a failed native resume that keeps the thread. The row keeps
+/// its provider session id, and `failed` lets a save roll the choice back.
+fn fail_a_kept_thread(state: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    state.try_db()?.execute(
+        "UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1",
+        params![session_id, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
 }
 
 fn record_recoverable_adapter_failure(
@@ -16441,6 +16705,7 @@ mod submit_input_tests {
             0,
             Arc::new(Mutex::new(Some("turn-1".into()))),
             Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            None,
         );
 
         for _ in 0..100 {
@@ -20336,6 +20601,7 @@ mod retry_settlement_tests {
             0,
             Arc::new(Mutex::new(Some("turn-1".into()))),
             Box::new(FedLines(lines, Vec::new(), 0)),
+            None,
         );
         // The launch seeds a baseline; age it so a refresh is observable.
         thread::sleep(Duration::from_millis(50));
@@ -22008,3 +22274,6 @@ mod chat_reference_turn_tests {
         assert_eq!(prepared.provider_text, "look at brio_deadbeef");
     }
 }
+
+#[cfg(test)]
+mod tests;
