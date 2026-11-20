@@ -126,6 +126,7 @@ import type {
   ConnectorItemResolvedPayload,
 } from "./connectorSurface";
 import { recommendedProfileDrafts } from "./modelProfiles";
+import { mockDeckForest, mockDeckWorkers } from "./mockWorkerFanOut";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 /** The browser's daemon connection, when this tab has one. Never in Tauri. */
@@ -543,7 +544,8 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", title: "Refactor the auth module to use the new token store", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
     { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", kind: "worker" },
     { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" },
-    { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" }
+    { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", title: "Sidebar running section", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
+    ...mockDeckWorkers(now),
   ],
   events: [
     { id: 2, source: "git", kind: "workspace.changed", entityId: "demo-1", body: "4 files changed · +284 −31", createdAt: now },
@@ -718,6 +720,7 @@ let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:loca
 const mockMemoryMaxRecords = 200;
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
+  "session-2": mockDeckForest(now),
   "session-1": {
     sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-app-open", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
     workerLeases: [
