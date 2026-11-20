@@ -7,7 +7,9 @@ import type { DetectedImportSource, ImportJob } from "./protocol/generated/proto
 /**
  * "312 chats in 14 projects · 1 setup item" for a found tool, or why it is
  * empty. Memories are not listed: the agent keeps using its own memory, so
- * the import leaves them where they are.
+ * the import leaves them where they are. When a tool Bridge imports keeps
+ * chats in more than one folder (your own and an account's in Settings),
+ * it says how many, so an account's chats are visibly included.
  */
 export function sourceSummary(source: DetectedImportSource): string {
   if (!source.installed) return "Not found on this Mac";
@@ -16,6 +18,7 @@ export function sourceSummary(source: DetectedImportSource): string {
   const parts: string[] = [];
   if (chats > 0) parts.push(`${chats.toLocaleString()} ${chats === 1 ? "chat" : "chats"}${projects > 0 && workspaces === 0 ? ` in ${projects.toLocaleString()} ${projects === 1 ? "project" : "projects"}` : ""}`);
   if (workspaces > 0) parts.push(`${workspaces.toLocaleString()} ${workspaces === 1 ? "workspace" : "workspaces"} in ${projects.toLocaleString()} ${projects === 1 ? "repo" : "repos"}`);
+  if (source.supported && chats > 0 && source.roots.length > 1) parts.push(`from ${source.roots.length.toLocaleString()} folders`);
   if (setup > 0) parts.push(`${setup.toLocaleString()} setup ${setup === 1 ? "item" : "items"}`);
   if (background > 0) parts.push(`${background.toLocaleString()} background ${background === 1 ? "run" : "runs"} left out`);
   return parts.length > 0 ? parts.join(" · ") : "Found, but nothing to bring over yet";
