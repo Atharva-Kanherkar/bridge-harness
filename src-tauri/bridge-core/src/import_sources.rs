@@ -99,6 +99,8 @@ fn claude(
 ) -> wire::DetectedImportSource {
     let roots = crate::claude_import::config_roots(home, config_dir, accounts);
     let mut counts = wire::ImportSourceCounts::default();
+    // A project used from two accounts is one project.
+    let mut projects = std::collections::HashSet::new();
     for root in &roots {
         for project in subdirs(&root.join("projects")) {
             let chats = files_with(&project, "jsonl");
@@ -108,7 +110,7 @@ fn claude(
             }
             counts.chats += chats;
             if chats > 0 {
-                counts.projects += 1;
+                projects.insert(project.file_name().map(std::ffi::OsStr::to_os_string));
             }
             counts.memories += files_with(&project.join("memory"), "md");
         }
@@ -122,6 +124,7 @@ fn claude(
                 .unwrap_or(0);
         }
     }
+    counts.projects = projects.len() as u64;
     wire::DetectedImportSource {
         tool: crate::claude_import::PROVIDER.into(),
         label: "Claude Code".into(),
@@ -418,6 +421,7 @@ mod tests {
         work.session("ses_c", None, "/work/web", Some("c"), 3);
         touch(&h.join(".claude/projects/-a/1.jsonl"));
         touch(&h.join("claude-work/projects/-b/2.jsonl"));
+        touch(&h.join("claude-work/projects/-a/3.jsonl"));
         let accounts = AccountFolders {
             claude: vec![h.join("claude-work"), h.join(".claude")],
             codex: vec![h.join("codex-work"), h.join("codex-missing")],
@@ -428,7 +432,7 @@ mod tests {
         let by = |tool: &str| sources.iter().find(|source| source.tool == tool).unwrap().clone();
 
         let claude = by("claude_code");
-        assert_eq!((claude.counts.chats, claude.roots.len()), (2, 2), "your own folder listed once");
+        assert_eq!((claude.counts.chats, claude.counts.projects, claude.roots.len()), (3, 2, 2), "your own folder listed once; a project in both folders is one project");
         let codex = by("codex");
         assert_eq!((codex.counts.chats, codex.counts.projects, codex.roots.len()), (2, 2, 2), "a missing account home is skipped");
         let opencode = by("opencode");
