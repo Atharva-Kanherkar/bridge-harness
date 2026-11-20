@@ -406,7 +406,8 @@ fn approval_probe(db: &Connection, session_id: &str, status: &str) -> Probe {
 }
 
 /// Walk the newest entries back to the last `turn.started`. A start with no
-/// later completion of the same item is an open tool.
+/// later completion of the same item is an open tool. Only a turn start
+/// inside the cap makes the walk a proof.
 fn tool_probe(db: &Connection, session_id: &str) -> Probe {
     let cap = i64::try_from(TOOL_SCAN_CAP).unwrap_or(i64::MAX);
     let Ok(mut statement) = db.prepare_cached(
@@ -420,19 +421,20 @@ fn tool_probe(db: &Connection, session_id: &str) -> Probe {
         return Probe::Unknown;
     };
     let mut completed: HashSet<String> = HashSet::new();
+    let mut open = false;
     for row in rows {
         let Ok((kind, item)) = row else {
             return Probe::Unknown;
         };
         if kind == "turn.started" {
-            return Probe::Clear;
+            return probe(open);
         }
         if TOOL_COMPLETIONS.contains(&kind.as_str()) {
             completed.extend(item);
         } else if TOOL_STARTS.contains(&kind.as_str())
             && item.as_ref().is_none_or(|item| !completed.contains(item))
         {
-            return Probe::Present;
+            open = true;
         }
     }
     // No turn start within the cap, so the walk proves nothing.

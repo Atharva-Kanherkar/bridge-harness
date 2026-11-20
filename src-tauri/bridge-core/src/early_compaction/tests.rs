@@ -865,6 +865,24 @@ fn a_tool_scan_past_the_cap_is_state_unknown() -> StoreResult {
 }
 
 #[test]
+fn an_open_tool_with_no_turn_start_inside_the_cap_is_unknown() -> StoreResult {
+    let store = Store::new()?;
+    store.entry("tool.started", serde_json::json!({"status": "inProgress"}), Some("item-1"))?;
+    assert_eq!(store.state().tool, Probe::Present, "the turn start is inside the cap");
+    // Newer rows push the turn start out of the cap. The open tool stays inside it.
+    let base: i64 = store.db().query_row("SELECT MAX(sequence) FROM session_entries WHERE session_id='chat-1'", [], |row| row.get(0))?;
+    store.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?2)
+         INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at)
+         SELECT 'filler-'||(?1+i),'chat-1',?1+i,'assistant.message','{}','2026-11-20T10:00:00+00:00' FROM n",
+        rusqlite::params![base, i64::try_from(TOOL_SCAN_CAP - 1)?],
+    )?;
+    assert_eq!(store.state().tool, Probe::Unknown, "an open tool with no turn start proves nothing");
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::StateUnknown));
+    Ok(())
+}
+
+#[test]
 fn a_failed_state_query_is_state_unknown() -> StoreResult {
     let probes: [(&str, fn(ChatState) -> Probe); 3] = [
         ("queued_session_input", |state| state.queue),
