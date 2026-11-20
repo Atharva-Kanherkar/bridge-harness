@@ -1721,11 +1721,6 @@ mod tests {
         SessionForest::new(&db)
             .append("s", EntryKind::AssistantMessage, json!({"text":"an hour of earlier work"}))
             .unwrap();
-        let head_before: Option<String> = db
-            .query_row("SELECT active_entry_id FROM session_heads WHERE session_id='s'", [], |row| row.get(0))
-            .optional()
-            .unwrap()
-            .flatten();
         CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 978_872)
             .unwrap().prompt()
             .unwrap();
@@ -1743,12 +1738,14 @@ mod tests {
         assert_eq!(entries.last().unwrap().payload["landing"], "switch");
         assert!(!entries.iter().any(|entry| entry.kind == "compaction"), "no boundary");
         assert!(!entries.iter().any(|entry| entry.kind == "branch.summary"), "no retained marker");
-        let head_after: Option<String> = db
+        // The head is the checkpoint itself, an ordinary append: not a
+        // pre-allocated retained marker that cuts everything before it.
+        let head: Option<String> = db
             .query_row("SELECT active_entry_id FROM session_heads WHERE session_id='s'", [], |row| row.get(0))
             .optional()
             .unwrap()
             .flatten();
-        assert_eq!(head_after, head_before, "the head did not move");
+        assert_eq!(head.as_deref(), Some(entries.last().unwrap().id.as_str()));
         assert!(CompactionController::pending(&db, "s").unwrap().is_none(), "the request is settled");
         let branch = SessionForest::new(&db).active_branch("s").unwrap();
         let projection = crate::context::ContextProjector::project(&branch, 128_000).unwrap();

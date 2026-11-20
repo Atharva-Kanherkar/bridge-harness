@@ -1383,9 +1383,14 @@ mod tests {
             "the helper definition plus the single frame builder that calls it"
         );
         assert_eq!(
+            live_turn.matches("launch_context_parts(").count(),
+            3,
+            "the packet-reading parts builder, the frame builder that wraps it, and the chat launch"
+        );
+        assert_eq!(
             live_turn.matches("launch_session_context(").count(),
-            4,
-            "the frame builder plus one arming site per launch: orchestrator, chat, worker"
+            3,
+            "the frame builder plus the orchestrator and worker arming sites; the chat arms from the parts"
         );
         assert_eq!(
             live_turn.matches("memory_ledger::list").count(),

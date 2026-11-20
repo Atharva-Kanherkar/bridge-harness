@@ -397,6 +397,7 @@ mod launch_tests {
                 runtime: Box::new(Runtime(thread.to_owned())),
                 reader: Box::new(BufReader::new(Held(receiver))),
                 startup_messages: Vec::new(),
+                skills_dropped: false,
             }
         }
     }

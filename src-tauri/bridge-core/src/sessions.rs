@@ -4423,12 +4423,17 @@ mod tests {
 
     #[test]
     fn an_app_without_native_resume_is_never_returned_to() {
-        // `fixture` registers stubs that cannot resume natively.
-        let (_scratch, core) = fixture();
-        let session_id = core.create_chat_id(&Harness::Codex, None, None).unwrap();
-        set_thread(&core, &session_id, "codex-thread");
-        let change = core.plan_chat_model_change(&session_id, &Harness::Claude, None).unwrap().unwrap();
+        // `resume_fixture`: Claude resumes natively, its Codex stub does not.
+        let (_scratch, core) = resume_fixture();
+        let session_id = core.create_chat_id(&Harness::Claude, Some("stub-opus"), None).unwrap();
+        set_thread(&core, &session_id, "claude-thread");
+        let change = core.plan_chat_model_change(&session_id, &Harness::Codex, None).unwrap().unwrap();
         core.commit_chat_model_change(change).unwrap();
+        set_thread(&core, &session_id, "codex-thread");
+        let change = core.plan_chat_model_change(&session_id, &Harness::Claude, Some("stub-opus")).unwrap().unwrap();
+        assert!(change.returns_to_thread(), "Claude resumes natively");
+        core.commit_chat_model_change(change).unwrap();
+        // Codex left a thread too, but its adapter cannot resume it.
         let back = core.plan_chat_model_change(&session_id, &Harness::Codex, None).unwrap().unwrap();
         assert!(!back.returns_to_thread() && !back.resumes_natively());
         core.commit_chat_model_change(back).unwrap();
