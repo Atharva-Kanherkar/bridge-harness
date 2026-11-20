@@ -354,16 +354,16 @@ function ChatEarlyCompaction({ chatId }: { chatId: string }) {
         role="menuitemcheckbox"
         aria-checked={on}
         disabled={busy}
-        className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-accent"
+        className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-ui transition-colors hover:bg-accent"
         onClick={() => set(view.sessionOptedOut ? null : false)}
       >
         <Check size={12} strokeWidth={1.7} className={cn("mt-1 shrink-0", on ? "text-foreground" : "opacity-0")} aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="block truncate">Compact early</span>
-          <span className="block text-[11px] leading-snug text-muted-foreground">{EARLY_COMPACTION_CHAT_NOTE}</span>
+          <span className="block text-caption leading-snug text-muted-foreground">{EARLY_COMPACTION_CHAT_NOTE}</span>
         </span>
       </button>
-      {error && <p role="alert" className="pb-1 pl-7 pr-2 text-[11px] leading-snug text-destructive">{error}</p>}
+      {error && <p role="alert" className="pb-1 pl-7 pr-2 text-caption leading-snug text-destructive">{error}</p>}
     </>
   );
 }
