@@ -103,6 +103,10 @@ left open:
   and the session is a top-level chat, the facts block adds
   `earlier: N older messages are not in this handoff; call chats_history with before=<S> to read them, tool output included.`
   `<S>` is the oldest sequence the tail carried.
+  - Amended during implementation (found by the offline eval): when the tail
+    carried every message but the branch has tool calls, whose output a
+    handoff never carries, the block says so instead:
+    `tool output: not in this handoff; call chats_history to read it.`
 
 ### F4 (D5). An account change on the same app carries the thread
 
