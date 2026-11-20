@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 86;
+const LATEST_SCHEMA_VERSION: i64 = 87;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -807,6 +807,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // The provider threads a chat left on a model switch, per app and
             // account, so switching back resumes them. See `provider_threads`.
             86 => crate::provider_threads::install_store(&transaction)?,
+            // Claude rows the per-turn fix of migration 54 still wrote as
+            // session running totals, made per-turn.
+            87 => migration_87_claude_running_total_repair(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1030,6 +1033,106 @@ fn repair_claude_cumulative_cost(transaction: &Transaction<'_>) -> Result<(), Br
             transaction.execute("UPDATE usage_ledger SET cost_microusd=?1 WHERE id=?2", params![turn, id])?;
         }
         previous = Some((session, model, cost));
+    }
+    Ok(())
+}
+
+/// The Claude rows written as session running totals, made per-turn.
+///
+/// Migration 54 shipped with code meant to store each Claude `result` as its
+/// difference from the one before. That code cleared the previous totals at
+/// every `system/init`, and the SDK sends one at every turn, so nothing was
+/// ever subtracted: from then until the code that keeps the totals across
+/// `init` and seeds them on a resume, each Claude row held the session's
+/// totals so far, and every usage view summed them. One day read 13.8B tokens
+/// where Claude's own transcripts put it at 226M.
+///
+/// The window is this install's own. It opens at migration 54's `applied_at`,
+/// the first moment that code could write: rows before it were per-turn, and
+/// migration 54 already repaired their cost. Per session it closes at the
+/// first row the fixed code wrote, the first with `context_used_tokens`, which
+/// no earlier code set on a Claude row. Inside the window, per session and
+/// model in id order, a row whose every figure is at least the row before it
+/// carries on the same totals and keeps the difference; a row with any figure
+/// lower is the totals starting again and stays as it is. Without a record of
+/// migration 54 nothing is touched.
+fn migration_87_claude_running_total_repair(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    if !table_exists(transaction, "usage_ledger")? || !table_exists(transaction, "schema_version")? {
+        return Ok(());
+    }
+    let since: Option<String> = transaction
+        .query_row("SELECT applied_at FROM schema_version WHERE version=54", [], |row| row.get(0))
+        .optional()?;
+    let Some(since) = since.and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()) else {
+        return Ok(());
+    };
+    // The running figures, in one order for reading and writing back.
+    const FIGURES: [&str; 8] = [
+        "input_tokens",
+        "uncached_input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "cost_microusd",
+        "cache_savings_microusd",
+    ];
+    type Figures = [Option<i64>; 8];
+    let mut statement = transaction.prepare(&format!(
+        "WITH fixed AS (
+             SELECT session_id, MIN(created_at) AS at FROM usage_ledger
+             WHERE source='provider.claude' AND context_used_tokens IS NOT NULL
+             GROUP BY session_id
+         )
+         SELECT l.id, COALESCE(l.session_id,''), COALESCE(l.model,''), l.created_at, {}
+         FROM usage_ledger l LEFT JOIN fixed f ON f.session_id = l.session_id
+         WHERE l.source='provider.claude' AND (f.at IS NULL OR l.created_at < f.at)
+         ORDER BY l.session_id, l.model, l.id",
+        FIGURES.map(|figure| format!("l.{figure}")).join(", ")
+    ))?;
+    let rows = statement
+        .query_map([], |row| {
+            let mut figures: Figures = [None; 8];
+            for (index, figure) in figures.iter_mut().enumerate() {
+                *figure = row.get(4 + index)?;
+            }
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, figures))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let update = format!(
+        "UPDATE usage_ledger SET {} WHERE id=?9",
+        FIGURES.iter().enumerate().map(|(index, figure)| format!("{figure}=?{}", index + 1)).collect::<Vec<_>>().join(", ")
+    );
+    let mut previous: Option<(String, String, Figures)> = None;
+    for (id, session, model, created_at, figures) in rows {
+        let in_window = chrono::DateTime::parse_from_rfc3339(&created_at).is_ok_and(|at| at >= since);
+        if !in_window {
+            continue;
+        }
+        let carried_on_from = previous.as_ref().and_then(|(prev_session, prev_model, prev)| {
+            let pairs = || figures.iter().zip(prev.iter()).filter_map(|(now, before)| Some(((*now)?, (*before)?)));
+            (*prev_session == session
+                && *prev_model == model
+                && pairs().next().is_some()
+                && pairs().all(|(now, before)| now >= before))
+            .then_some(prev)
+        });
+        if let Some(prev) = carried_on_from {
+            let mut turn = figures;
+            for (figure, before) in turn.iter_mut().zip(prev.iter()) {
+                if let (Some(now), Some(before)) = (figure.as_mut(), before) {
+                    *now -= before;
+                }
+            }
+            if turn != figures {
+                transaction.execute(
+                    &update,
+                    params![turn[0], turn[1], turn[2], turn[3], turn[4], turn[5], turn[6], turn[7], id],
+                )?;
+            }
+        }
+        previous = Some((session, model, figures));
     }
     Ok(())
 }
@@ -8379,6 +8482,135 @@ mod tests {
         assert_eq!(inputs("x-last"), vec![(Some(1000), Some(1000), Some(300)), (Some(1500), Some(1500), Some(90)), (Some(2100), Some(2100), Some(400))]);
         assert_eq!(inputs("x-new"), vec![(Some(1000), Some(100), Some(10)), (Some(2000), Some(100), Some(20)), (Some(3000), Some(100), Some(30))]);
         assert_eq!(inputs("x-fresh"), vec![(Some(100), Some(100), Some(10)), (Some(200), Some(200), Some(20)), (Some(300), Some(300), Some(30))]);
+    }
+
+    fn claude_running_total_ledger(applied_54: Option<&str>) -> Connection {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-running-totals','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-running-totals/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('c','w','claude','c','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('n','w','claude','n','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x','w','codex','x','ready');",
+        )
+        .unwrap();
+        match applied_54 {
+            Some(at) => db.execute("UPDATE schema_version SET applied_at=?1 WHERE version=54", params![at]).unwrap(),
+            None => db.execute("DELETE FROM schema_version WHERE version=54", []).unwrap(),
+        };
+        let row = |session: &str, model: &str, at: &str, figures: [i64; 8], context_used: Option<i64>| {
+            db.execute(
+                "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,cost_microusd,cache_savings_microusd,context_used_tokens,source,created_at)
+                 VALUES('w',?1,'t',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![
+                    session, figures[0], figures[1], figures[2], figures[3], figures[4], figures[5], figures[6], figures[7], context_used,
+                    if session == "x" { "provider.codex" } else { "provider.claude" },
+                    at
+                ],
+            )
+            .unwrap();
+            db.execute("UPDATE usage_ledger SET model=?1 WHERE id=last_insert_rowid()", params![model]).unwrap();
+        };
+        // Before migration 54: per-turn rows, monotonic by chance. Never touched.
+        row("c", "opus", "2026-09-08T10:00:00+00:00", [1, 1, 10, 100, 5, 0, 50, 7], None);
+        row("c", "opus", "2026-09-08T11:00:00+00:00", [2, 2, 20, 200, 6, 0, 60, 8], None);
+        // After it: the session's running totals, one row per model per result.
+        row("c", "opus", "2026-09-10T10:00:00.5+00:00", [10, 10, 100, 1_000, 50, 1, 500, 70], None);
+        row("c", "haiku", "2026-09-10T10:00:00.5+00:00", [3, 3, 30, 0, 0, 0, 9, 0], None);
+        row("c", "opus", "2026-09-10T11:00:00+00:00", [15, 15, 160, 1_800, 60, 1, 900, 120], None);
+        row("c", "haiku", "2026-09-10T11:00:00+00:00", [3, 3, 30, 0, 0, 0, 9, 0], None);
+        row("c", "opus", "2026-09-10T12:00:00+00:00", [17, 17, 200, 2_900, 61, 2, 1_400, 190], None);
+        // The totals start again (a /clear): kept as it is, and the next row
+        // carries on from it.
+        row("c", "opus", "2026-09-10T13:00:00+00:00", [4, 4, 40, 300, 20, 0, 200, 30], None);
+        row("c", "opus", "2026-09-10T14:00:00+00:00", [6, 6, 70, 900, 25, 0, 450, 80], None);
+        // Session n: old running totals, then the fixed code from its first
+        // `context_used_tokens` row on, helper row included. The fixed rows
+        // are per-turn and grow by chance; none may change.
+        row("n", "opus", "2026-11-20T10:00:00+00:00", [10, 10, 100, 1_000, 10, 0, 100, 10], None);
+        row("n", "opus", "2026-11-20T11:00:00+00:00", [12, 12, 150, 1_500, 15, 0, 150, 15], None);
+        row("n", "opus", "2026-11-20T12:00:00+00:00", [13, 13, 160, 1_600, 16, 0, 160, 16], Some(1_000));
+        row("n", "haiku", "2026-11-20T12:00:00+00:00", [3, 3, 30, 0, 0, 0, 9, 0], None);
+        row("n", "opus", "2026-11-20T13:00:00+00:00", [14, 14, 170, 1_700, 17, 0, 170, 17], Some(1_100));
+        row("n", "haiku", "2026-11-20T13:00:00+00:00", [4, 4, 40, 0, 0, 0, 10, 0], None);
+        // Another provider, monotonic: never touched.
+        row("x", "gpt", "2026-09-10T10:00:00+00:00", [100, 100, 10, 0, 0, 0, 0, 0], None);
+        row("x", "gpt", "2026-09-10T11:00:00+00:00", [200, 200, 20, 0, 0, 0, 0, 0], None);
+        db
+    }
+
+    fn ledger_figures(db: &Connection, session: &str, model: &str) -> Vec<[i64; 8]> {
+        let mut statement = db
+            .prepare(
+                "SELECT input_tokens,uncached_input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,cost_microusd,cache_savings_microusd
+                 FROM usage_ledger WHERE session_id=?1 AND model=?2 ORDER BY id",
+            )
+            .unwrap();
+        statement
+            .query_map(params![session, model], |row| {
+                let mut figures = [0; 8];
+                for (index, figure) in figures.iter_mut().enumerate() {
+                    *figure = row.get(index)?;
+                }
+                Ok(figures)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn claude_running_totals_written_since_migration_54_become_per_turn() {
+        let mut db = claude_running_total_ledger(Some("2026-09-09T09:46:37.052511+00:00"));
+        let transaction = db.transaction().unwrap();
+        migration_87_claude_running_total_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        assert_eq!(
+            ledger_figures(&db, "c", "opus"),
+            vec![
+                [1, 1, 10, 100, 5, 0, 50, 7],
+                [2, 2, 20, 200, 6, 0, 60, 8],
+                [10, 10, 100, 1_000, 50, 1, 500, 70],
+                [5, 5, 60, 800, 10, 0, 400, 50],
+                [2, 2, 40, 1_100, 1, 1, 500, 70],
+                [4, 4, 40, 300, 20, 0, 200, 30],
+                [2, 2, 30, 600, 5, 0, 250, 50],
+            ],
+            "rows before migration 54 stay; running totals become differences; a restart stays as it is",
+        );
+        assert_eq!(
+            ledger_figures(&db, "c", "haiku"),
+            vec![[3, 3, 30, 0, 0, 0, 9, 0], [0, 0, 0, 0, 0, 0, 0, 0]],
+            "a helper model's unchanged totals mean it did nothing that turn",
+        );
+        assert_eq!(
+            ledger_figures(&db, "n", "opus"),
+            vec![
+                [10, 10, 100, 1_000, 10, 0, 100, 10],
+                [2, 2, 50, 500, 5, 0, 50, 5],
+                [13, 13, 160, 1_600, 16, 0, 160, 16],
+                [14, 14, 170, 1_700, 17, 0, 170, 17],
+            ],
+            "rows from the fixed code on are left alone",
+        );
+        assert_eq!(ledger_figures(&db, "n", "haiku"), vec![[3, 3, 30, 0, 0, 0, 9, 0], [4, 4, 40, 0, 0, 0, 10, 0]]);
+        assert_eq!(
+            ledger_figures(&db, "x", "gpt"),
+            vec![[100, 100, 10, 0, 0, 0, 0, 0], [200, 200, 20, 0, 0, 0, 0, 0]],
+            "other providers are left alone",
+        );
+    }
+
+    #[test]
+    fn claude_running_total_repair_without_a_migration_54_record_changes_nothing() {
+        let mut db = claude_running_total_ledger(None);
+        let before = ledger_figures(&db, "c", "opus");
+        let transaction = db.transaction().unwrap();
+        migration_87_claude_running_total_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+        assert_eq!(ledger_figures(&db, "c", "opus"), before);
+        assert_eq!(ledger_figures(&db, "c", "haiku")[1], [3, 3, 30, 0, 0, 0, 9, 0]);
     }
 
     #[test]
