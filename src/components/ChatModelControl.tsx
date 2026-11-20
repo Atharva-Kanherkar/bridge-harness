@@ -8,7 +8,7 @@ import { accountLabel, normalizeAccount, type AccountChoice } from "../providerA
 import { HarnessMark } from "./harnessMarks";
 import { useEffortSelectorStyle } from "../theme";
 import { isModelFavorite, useModelFavorites, type ModelFavorite } from "../modelFavorites";
-import { effortLevelsFrom } from "./effort/effortLevels";
+import { effortIndex, effortLevelsFrom, effortMeaning } from "./effort/effortLevels";
 import { EffortSlider } from "./effort/EffortSlider";
 import { EffortSentence } from "./effort/EffortSentence";
 import { EffortList } from "./effort/EffortList";
@@ -451,11 +451,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     if (first) setSection(first);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
-  const onListScroll = () => {
+  // Lights the rail mark for the section at the top of the list.
+  const syncRail = () => {
     const list = listRef.current;
     if (!list) return;
-    if (ownScroll.current !== null && Math.abs(list.scrollTop - ownScroll.current) < 2) return;
-    ownScroll.current = null;
     const sections = [...list.querySelectorAll<HTMLElement>("[data-section]")];
     if (!sections.length) return;
     const origin = sections[0].offsetTop;
@@ -465,6 +464,22 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     const next = current.dataset.section;
     if (next && next !== railSection) setSection(next);
   };
+  const onListScroll = () => {
+    const list = listRef.current;
+    if (!list) return;
+    if (ownScroll.current !== null && Math.abs(list.scrollTop - ownScroll.current) < 2) return;
+    ownScroll.current = null;
+    syncRail();
+  };
+  // Starring the first model (or un-starring the last) adds or removes the
+  // favorites section above whatever is in view; the rail follows.
+  const lastShowFavorites = useRef(showFavorites);
+  useLayoutEffect(() => {
+    if (lastShowFavorites.current === showFavorites) return;
+    lastShowFavorites.current = showFavorites;
+    if (open) syncRail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showFavorites]);
 
   // Keyboard. Tab and Shift+Tab move between the columns (rail, models,
   // thinking, footer) and wrap inside the popover; arrows move within one;
@@ -546,6 +561,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     const level = effortLevels[Number(event.key) - 1];
     if (level) { event.preventDefault(); changeEffort(level.value); }
   };
+
+  // Picking restarts the provider session; said once, at the foot of the
+  // Thinking column where there is room, or under the list without one.
+  const switchNote = <p className="shrink-0 px-3 pb-2 pt-1 text-caption leading-4 text-faint">Switching restarts the provider session. History stays.</p>;
 
   const renderRow = (adapter: AdapterDescriptor, groupAccount: string | null, option: ModelOption, extra: { favoritesRow?: boolean; accountName?: string | null } = {}) => {
     const selected = adapter.id === activeHarness && groupAccount === activeAccount && (option.id ? option.id === activeModel : !activeModel);
@@ -667,7 +686,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                     ))}
                   </>}
               </div>
-              <p className="shrink-0 px-3 pb-2 pt-1 text-caption leading-4 text-faint">Switching restarts the provider session. History stays.</p>
+              {!effortSurface && switchNote}
             </div>
             {effortSurface && <div data-picker-zone="thinking" className="flex w-44 shrink-0 flex-col border-l border-border @max-[400px]/model-picker:w-full @max-[400px]/model-picker:border-l-0 @max-[400px]/model-picker:border-t">
               <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-3 text-meta text-muted-foreground">
@@ -678,11 +697,18 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                 {showAwaiting ? null : showEffort
                   ? effortStyle === "list"
                     ? <div data-testid="effort-control" className="p-1.5"><EffortList {...effortProps} /></div>
-                    : <div data-testid="effort-control" className="h-[72px] shrink-0 px-3 pb-2 pt-2.5 [contain:layout]">
-                      {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
-                    </div>
+                    : <>
+                      <div data-testid="effort-control" className="h-[72px] shrink-0 px-3 pb-2 pt-2.5 [contain:layout]">
+                        {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
+                      </div>
+                      {/* What the level means; the rail alone only says where it sits. */}
+                      <p className="px-3 text-caption leading-4 text-muted-foreground">{effortIndex(effortLevels, effortValue) >= 0 ? effortMeaning(effortValue!) : "The provider's own default."}</p>
+                    </>
                   : <p className="px-3 py-2.5 text-meta leading-5 text-muted-foreground">No thinking control for this model.</p>}
-                {showEffort && effortStyle === "list" && <p className="mt-auto px-3 pb-2 pt-1 text-caption text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
+                <div className="mt-auto">
+                  {showEffort && effortStyle === "list" && <p className="px-3 pt-1 text-caption text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
+                  {switchNote}
+                </div>
               </div>
             </div>}
           </div>
