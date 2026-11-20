@@ -1,0 +1,178 @@
+1|create main schema
+2|create settings table
+3|add unread_count to sessions table
+4|add pending_message to sessions table
+5|add columns for compaction tracking to sessions table
+6|add notes column to sessions table
+7|drop pending_message column from sessions table
+8|create attachments table
+9|add sent_at for message queueing
+10|add full_message column for slash commands
+11|add is_compacting column to track compaction state
+12|add model column to sessions table for per-chat model selection
+13|update default model to opus
+14|add cancelled_at column to track cancelled messages
+15|add model column to session_messages for per-message model selection
+16|add storage_version and archive_script columns
+17|add unread column to workspaces table
+18|add display_order column to repos table
+19|add placeholder_branch_name column to workspaces table
+20|migrate openai provider users back to default provider
+21|add state column to workspaces table for lifecycle management
+22|add permission_mode column to sessions table
+23|deprecate cityName column in favor of directoryName
+24|add run_script column to repos table
+25|add run script configuration columns to repos table
+26|add parent_branch column to workspaces table
+27|add remote column to repos table
+28|add thinking_level column to sessions table
+29|add big_terminal_mode column to workspaces table for per-workspace big terminal setting
+30|update workspace states to 5-state system
+31|add setup_log_path column to workspaces table
+32|add initialization_log_path column to workspaces table
+33|add initialization_files_copied column to workspaces table
+34|update default model to sonnet
+35|add last_user_message_at column to sessions table
+36|reset permission_mode to default for all sessions
+37|add columns for checkpointing 
+38|add workspace_id to sessions for multiple sessions per workspace
+39|add is_hidden column to sessions table
+40|add agent_type column to sessions table
+41|rename claude_model setting to default_model
+42|migrate automatic and opusplan models to sonnet
+43|clear checkpointing data for pre-release messages
+44|add turn_id column to session_messages and backfill turn data
+45|add title column to sessions table
+46|migrate provider settings to claude_env_vars
+47|migrate all codex models to gpt-5.1-codex
+48|update default model to opus
+49|clear checkpointing data for all bugged messages
+50|add pinned_at column to workspaces table
+51|set default branch prefix type to github_username
+52|add linked_workspace_ids for directory linking
+53|move notes from sessions to workspaces table
+54|migrate gpt-5.1-codex to gpt-5.2-codex
+55|add context_used_percent column to sessions
+56|split parent_branch and intended_target_branch
+57|create diff_comments table
+58|add custom prompt columns to repos table
+59|add thinking_enabled boolean column to sessions
+60|add conductor_config column to repos table
+61|add codex_thinking_level column and default settings
+62|add custom_prompt_general column to repos table
+63|add updated_at column to diff_comments table
+64|append slash to existing branch_prefix_custom values
+65|add manual_status and derived_status columns to workspaces
+66|add archive_commit column to workspaces
+67|add pr_title and pr_description columns to workspaces
+68|migrate deprecated codex models to gpt-5.3-codex
+69|deprecate update_memory column in diff_comments
+70|rename strict_data_privacy to enterprise_data_privacy
+71|add author_avatar_url to diff_comments
+72|add outdated and resolved tracking to diff comments
+73|add end_line_number to diff_comments for multi-line range comments
+74|add icon column to repos
+75|add hidden column to repos
+76|create symlinks_pending_deletion table
+77|add secondary_directory_name to workspaces
+78|add index on workspaces repository_id
+79|add fast_mode column to sessions
+80|add migration_rollbacks table
+81|add fix error and resolve conflict prompt columns
+82|add linked directory paths column to workspaces
+83|add agent personality column to sessions
+84|add is_resumable_message column to session_messages
+85|drop workspaces updated_at trigger so only enqueue and unarchive bump it
+86|add hosting_server_url column to workspaces
+87|add terminal history metadata table
+88|add has_received_user_input to terminal_sessions
+89|add claude_effort_level column to sessions
+90|rename thinking_enabled to DEPRECATED_thinking_enabled
+91|add feed_offset column to sessions
+92|add queue_order to session_messages and queue_paused_at to sessions
+93|add comment_id column to attachments
+94|disable graphite stack support by default
+95|add sandbox_provider column to workspaces
+96|add workspace_path column to workspaces
+97|add file_include_globs column to repos
+98|clear workspace_path for recomputation
+99|merge completion sound enabled setting into sound_type
+100|create port_forwards table
+101|add sender_id column to session_messages
+102|create env_vars table
+103|set new installs default model to gpt-5.5
+104|track user-set workspace and branch names
+105|add workspace permission level
+106|track remote workspace creators
+107|add spotlight testing setting to repos
+108|remove deprecated cloud workspaces setting
+109|migrate deprecated codex models to gpt-5.5
+110|track remote workspace file sync intent
+111|add deprecated_at to settings for file-backed migration
+112|track which client created each workspace
+113|preserve Cursor Composer fast default
+114|track owning organization for cloud workspaces
+115|track workspace assignee and watchers
+116|add sender_session_id and sender_api_key_name to session_messages
+117|add workspace_template_id to workspaces
+118|index queued session messages
+119|add is_computer_admin to workspaces
+120|index sdk message dedupe and user turn lookups
+121|track remote session archive events
+122|clear creator stamps on local workspaces
+123|create session message and asset outboxes
+127|retain uploaded composer attachment state
+128|track auto forward toggle and auto-detected forwards
+129|track workspace access summaries
+130|add cloud workspace numbers
+131|track per-workspace port forwarding master toggle
+132|add navigation_sections and navigation_section_memberships tables
+133|add favorite_models table
+134|store local workspace identities separately from Roundhouse identities
+135|remove separate local workspace identities
+136|set unused installs default model to gpt-5.6-sol
+137|separate stable local and server workspace identities
+138|add navigation section emoji
+139|add description to workspaces
+140|persist ACP session config options
+141|backfill local workspace server identities
+142|add suggestion_base_code to diff_comments
+143|add sender_source to session_messages
+144|persist server identity acceptance
+145|persist generic identity associations
+146|add edited_at to diff_comments
+147|add revision to workspaces
+148|add navigation section kind
+149|separate workspace activity from row updates
+150|track local workspace revisions
+151|add local session raw events and state
+152|add reverted_at to session_events
+153|add last_message_at to sessions
+154|add local control api session provenance and workspace initialization error
+155|add repo_settings table
+156|prepare favorite models and navigation sections for the control plane
+157|prepare diff comments and shared fields for the control plane
+158|track settings ownership and drop unused primary database tables
+159|prepare deferred workspace symlink deletions for the control plane
+160|backfill typed local workspace links for the control plane
+161|add a primary key to repository settings
+162|separate semantic timestamps from mechanical row updates
+163|rename provider-specific local setting keys
+164|normalize legacy client timestamp columns to ISO UTC
+165|rebuild review comments with ISO timestamps and shared names
+166|add local control api triggering message provenance
+167|add local workspace number allocation schema
+168|add agent cost and token totals to sessions
+169|prepare session versions
+170|add workspace lifecycle step and failure fields
+171|create the installation id
+172|add env var ids and owning users
+173|add repository lifecycle step, failure fields and missing root
+174|add workspace failure code
+175|add workspace lifecycle warning
+176|drop description from workspaces
+177|add local control api sender turn and message
+178|add workspace branch detached
+179|add projects, project repositories and workspace checkouts
+180|rename workspace repository and repository settings to project
+181|add the control plane's session message inbox

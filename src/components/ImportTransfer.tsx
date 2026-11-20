@@ -11,17 +11,21 @@ import { HarnessMark } from "./harnessMarks";
 
 const FLIGHTS = 6;
 
-const TOOLS: Record<string, { label: string; harness: string }> = {
+/** Tools Bridge draws a mark for; others show their initial. */
+const TOOLS: Record<string, { label: string; harness?: string }> = {
   claude_code: { label: "Claude Code", harness: "claude" },
   codex: { label: "Codex", harness: "codex" },
   opencode: { label: "OpenCode", harness: "opencode" },
+  conductor: { label: "Conductor" },
 };
 
 export function ImportTransfer({ tool, done = false }: { tool: string; done?: boolean }) {
-  const source = TOOLS[tool] ?? { label: tool, harness: tool };
+  const source = TOOLS[tool] ?? { label: tool };
   return <div className="import-transfer flex items-center gap-3" data-transfer={done ? "done" : "running"}>
     <Tile label={source.label}>
-      <HarnessMark harness={source.harness} size={26} />
+      {source.harness
+        ? <HarnessMark harness={source.harness} size={26} />
+        : <span className="text-title font-semibold text-muted-foreground" data-tool-initial={tool}>{source.label.slice(0, 1)}</span>}
     </Tile>
     <div className="import-transfer-lane relative h-16 min-w-0 flex-1" aria-hidden="true">
       <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox="0 0 100 64" preserveAspectRatio="none">

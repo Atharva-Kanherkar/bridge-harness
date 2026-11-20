@@ -1,0 +1,80 @@
+1|create main schema
+2|create settings table
+3|add unread_count to sessions table
+4|add pending_message to sessions table
+5|add columns for compaction tracking to sessions table
+6|add notes column to sessions table
+7|drop pending_message column from sessions table
+8|create attachments table
+9|add sent_at for message queueing
+10|add full_message column for slash commands
+11|add is_compacting column to track compaction state
+12|add model column to sessions table for per-chat model selection
+13|update default model to opus
+14|add cancelled_at column to track cancelled messages
+15|add model column to session_messages for per-message model selection
+16|add storage_version and archive_script columns
+17|add unread column to workspaces table
+18|add display_order column to repos table
+19|add placeholder_branch_name column to workspaces table
+20|migrate openai provider users back to default provider
+21|add state column to workspaces table for lifecycle management
+22|add permission_mode column to sessions table
+23|deprecate cityName column in favor of directoryName
+24|add run_script column to repos table
+25|add run script configuration columns to repos table
+26|add parent_branch column to workspaces table
+27|add remote column to repos table
+28|add thinking_level column to sessions table
+29|add big_terminal_mode column to workspaces table for per-workspace big terminal setting
+30|update workspace states to 5-state system
+31|add setup_log_path column to workspaces table
+32|add initialization_log_path column to workspaces table
+33|add initialization_files_copied column to workspaces table
+34|update default model to sonnet
+35|add last_user_message_at column to sessions table
+36|reset permission_mode to default for all sessions
+37|add columns for checkpointing 
+38|add workspace_id to sessions for multiple sessions per workspace
+39|add is_hidden column to sessions table
+40|add agent_type column to sessions table
+41|rename claude_model setting to default_model
+42|migrate automatic and opusplan models to sonnet
+43|clear checkpointing data for pre-release messages
+44|add turn_id column to session_messages and backfill turn data
+45|add title column to sessions table
+46|migrate provider settings to claude_env_vars
+47|migrate all codex models to gpt-5.1-codex
+48|update default model to opus
+49|clear checkpointing data for all bugged messages
+50|add pinned_at column to workspaces table
+51|set default branch prefix type to github_username
+52|add linked_workspace_ids for directory linking
+53|move notes from sessions to workspaces table
+54|migrate gpt-5.1-codex to gpt-5.2-codex
+55|add context_used_percent column to sessions
+56|split parent_branch and intended_target_branch
+57|create diff_comments table
+58|add custom prompt columns to repos table
+59|add thinking_enabled boolean column to sessions
+60|add conductor_config column to repos table
+61|add codex_thinking_level column and default settings
+62|add custom_prompt_general column to repos table
+63|add updated_at column to diff_comments table
+64|append slash to existing branch_prefix_custom values
+65|add manual_status and derived_status columns to workspaces
+66|add archive_commit column to workspaces
+67|add pr_title and pr_description columns to workspaces
+68|migrate deprecated codex models to gpt-5.3-codex
+69|deprecate update_memory column in diff_comments
+70|rename strict_data_privacy to enterprise_data_privacy
+71|add author_avatar_url to diff_comments
+72|add outdated and resolved tracking to diff comments
+73|add end_line_number to diff_comments for multi-line range comments
+74|add icon column to repos
+75|add hidden column to repos
+76|create symlinks_pending_deletion table
+77|add secondary_directory_name to workspaces
+78|add index on workspaces repository_id
+79|add fast_mode column to sessions
+80|add migration_rollbacks table

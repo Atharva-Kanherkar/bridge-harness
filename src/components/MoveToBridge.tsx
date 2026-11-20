@@ -205,10 +205,12 @@ function ImportSummary({ job }: { job: ImportJob }) {
       <Stat label="Came over"><Count value={job.imported} tone="plain" result="imported" /></Stat>
       <Stat label="Already in Bridge"><Count value={job.alreadyInBridge} result="skipped" /></Stat>
       {job.changed > 0 && <Stat label="Changed since the last import"><Count value={job.changed} /></Stat>}
-      {job.leftOut > 0 && <Stat label="Background runs left out"><Count value={job.leftOut} /></Stat>}
+      {job.leftOut > 0 && <Stat label={job.tool === "conductor" ? "Archived in Conductor, left out" : "Background runs left out"}><Count value={job.leftOut} /></Stat>}
       {job.failed > 0 && <Stat label="Could not be imported"><Count value={job.failed} tone="warning" /></Stat>}
     </dl>
-    {job.imported > 0 && <p className="mt-3 text-caption text-muted-foreground">Imported chats are in the sidebar, under their project when Bridge knows the folder.</p>}
+    {job.imported > 0 && <p className="mt-3 text-caption text-muted-foreground">{job.tool === "conductor"
+      ? "The workspaces are in the sidebar under their project, in the same folders, so Conductor keeps working with them. Import Claude Code and Codex to bring their chats."
+      : "Imported chats are in the sidebar, under their project when Bridge knows the folder."}</p>}
     {notCarried.length > 0 && <div className="mt-3">
       <p className="text-meta font-medium text-foreground">What did not come over</p>
       <ul className="mt-1 space-y-0.5 text-caption text-muted-foreground">{notCarried.map(item => <li key={item.text}>{item.count.toLocaleString()} × {item.text}</li>)}</ul>

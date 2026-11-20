@@ -202,11 +202,17 @@ impl BridgeCore {
                 "Stop every running session before archiving this workspace".into(),
             ));
         }
-        let (dirty, _, _) = git::stats(Path::new(&path))?;
-        if dirty > 0 {
-            return Err(BridgeError::Invalid(format!(
-                "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
-            )));
+        // Another tool's worktree, adopted in place: archiving it here only
+        // forgets it. Its folder, and any uncommitted work in it, stay as they
+        // are, so there is nothing to protect by refusing.
+        let external = crate::import_worktrees::is_external(&db, workspace_id)?;
+        if !external {
+            let (dirty, _, _) = git::stats(Path::new(&path))?;
+            if dirty > 0 {
+                return Err(BridgeError::Invalid(format!(
+                    "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
+                )));
+            }
         }
         // Enumerate before mutating: the worker rows cascade away with the
         // sessions this archive deletes, so anything missed here becomes an
@@ -219,7 +225,7 @@ impl BridgeCore {
                 at_risk.len()
             )));
         }
-        archive_workspace_records(&db, workspace_id, workers.len() + 1, || {
+        archive_workspace_records(&db, workspace_id, workers.len() + usize::from(!external), || {
             // Workers first: if one of these fails the whole archive rolls back,
             // and rolling back with the task worktree already gone would leave
             // the workspace row pointing at nothing.
@@ -227,6 +233,9 @@ impl BridgeCore {
                 if worker.exists() {
                     git::remove_worktree(Path::new(&repo), worker)?;
                 }
+            }
+            if external {
+                return Ok(());
             }
             git::remove_worktree(Path::new(&repo), Path::new(&path))
         })?;
@@ -325,6 +334,7 @@ pub fn archive_workspace_records(
         "DELETE FROM work_fact_cache WHERE kind=?1 AND cache_key=?2",
         params![crate::work::FACT_CACHE_BASE_DIVERGENCE, workspace_id],
     )?;
+    crate::import_worktrees::forget(&transaction, workspace_id)?;
     transaction.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
     store::event(
         &transaction,

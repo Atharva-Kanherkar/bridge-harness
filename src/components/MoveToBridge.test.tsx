@@ -74,9 +74,11 @@ describe("MoveToBridge", () => {
     expect(button(section("claude_code"), "Import").disabled).toBe(false);
     expect(button(section("codex"), "Import").disabled).toBe(false);
     expect(button(section("opencode"), "Import").disabled).toBe(false);
-    expect(section("conductor").querySelector("button")).toBeNull();
-    expect(section("conductor").textContent).toContain("Coming");
-    expect(container.querySelectorAll("button").length).toBe(3);
+    expect(button(section("conductor"), "Import").disabled).toBe(false);
+    expect(section("conductor").textContent).toContain("5 workspaces in 2 repos");
+    expect(section("conductor").textContent).toContain("left where they are");
+    expect(section("t3code").textContent).toContain("Not found on this Mac");
+    expect(container.querySelectorAll("button").length).toBe(4);
   });
 
   it("each tool keeps its own last import", async () => {
@@ -154,6 +156,20 @@ describe("MoveToBridge", () => {
     expect(stage.textContent).toContain("OpenCode");
     expect(stage.querySelector("[data-harness='opencode']")).not.toBeNull();
     expect(section("claude_code").querySelector("[data-transfer]")).toBeNull();
+  });
+
+  it("imports Conductor's workspaces and says the archived ones were left out", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ jobs: [
+      job({ jobId: "w", tool: "conductor", status: "done", total: 6, processed: 6, imported: 4, alreadyInBridge: 0, leftOut: 1, notCarried: [{ text: "workspaces on a detached HEAD, which need a branch first", count: 1 }], finishedAt: "2026-11-20T10:00:00Z" }),
+    ] });
+    await render();
+    const conductor = section("conductor");
+    expect(conductor.querySelector("[data-import-result='imported']")?.textContent).toBe("4");
+    expect(conductor.textContent).toContain("Archived in Conductor, left out");
+    expect(conductor.textContent).not.toContain("Background runs left out");
+    expect(conductor.textContent).toContain("so Conductor keeps working with them");
+    expect(conductor.textContent).toContain("need a branch first");
+    expect(conductor.querySelector("[data-tool-initial='conductor']")?.textContent).toBe("C");
   });
 
   it("lands the transfer with a check when the import ends", async () => {
