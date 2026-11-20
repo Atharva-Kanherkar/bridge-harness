@@ -865,7 +865,7 @@ impl BridgeCore {
         let (leaving, returning_to) = if native_continuation || pending_fork {
             (None, None)
         } else {
-            let db = self.db.lock().unwrap();
+            let db = self.try_db()?;
             let leaving = provider_session_id.as_deref().and_then(|thread| {
                 crate::provider_threads::continuation_key(&db, &previous_harness, previous_account.as_deref())
                     .map(|continuation_key| RememberedThread {

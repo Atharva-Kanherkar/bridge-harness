@@ -347,7 +347,8 @@ mod launch_tests {
     struct Held(mpsc::Receiver<Vec<u8>>);
     impl Read for Held {
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            let _ = self.0.recv();
+            // Nothing is ever sent: this returns once the sender is dropped.
+            while self.0.recv().is_ok() {}
             Ok(0)
         }
     }
