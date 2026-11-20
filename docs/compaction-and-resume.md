@@ -44,15 +44,21 @@ Checkpoints are triggered at phase boundaries, before suspension or model downgr
 
 The `ContextPressure` trigger stays reachable only where Bridge is the sole owner of the window: a harness that reports a context gauge and has no compaction of its own, which today means the agent-protocol harnesses. A direct chat never gets an automatic Bridge checkpoint, and that exclusion is deliberate rather than an oversight. Its harness owns the live window, so Bridge has no pressure to relieve, and its boundaries are the four above.
 
-Early compaction is the one case where Bridge asks for a native compaction on its own. It applies only to a top-level direct Claude or Codex chat: OpenCode chats, orchestrators, workers and workflow sessions never get one. After a turn of such a chat ends, the maintenance sweep waits 20 seconds, then compares the window reading of the turn with the threshold. If the reading is at or above the threshold and the chat is idle, Bridge sends the harness its own compaction command, with no focus. This is the same call that a manual `/compact` makes, and an early compaction never starts a Bridge checkpoint. Idle means: no send that runs, no open approval, no open tool, no live child and no queued input.
+Early compaction is the one case where Bridge asks for a native compaction on its own. It applies only to a top-level direct Claude or Codex chat: OpenCode chats, orchestrators, workers and workflow sessions never get one. After a turn of such a chat ends, the maintenance sweep waits 20 seconds, then compares the window reading of the turn with the threshold. If the reading is at or above the threshold and the chat is idle, Bridge sends the harness its own compaction command, with no focus. This is the same call that a manual `/compact` makes. Idle means: no send that runs, no open approval, no open tool, no live child and no queued input.
 
-The threshold is 100,000 tokens, and it is provisional: the live eval and a ledger query set the final value. Bridge keeps an attempt record for each early compaction and settles it from the boundary, from the end of the turn, or after 300 seconds. A Claude boundary gives token figures before and after the compaction. A Codex boundary gives no figures. So the record compares the trigger reading with the next reading of the chat, which has the same base for both harnesses. After a failed attempt, or a next reading still at or above the threshold, Bridge makes no other attempt on that launch of the process.
+Early compaction itself never starts a Bridge checkpoint. A stop of a warm direct chat, which has a live harness process, can still run a Bridge checkpoint turn. A send while an early compaction runs takes the same route as a send while a manual `/compact` runs. The default send stops the compaction and delivers the text.
 
-A global switch controls the trigger, and a chat can opt out. The switch is off by default. With the switch off, this feature writes no row and sends no command.
+The threshold is 100,000 tokens, and it is provisional: the live eval and a ledger query set the final value. Bridge keeps an attempt record for each early compaction and settles it from the boundary, from the end of the turn, or after 300 seconds. A Claude boundary gives token figures before and after the compaction. Claude can leave `postTokens` out, so `boundary_post_tokens` can be null. A Codex boundary gives no figures. So the record compares the trigger reading with the next reading of the chat, which has the same base for both harnesses. After a failed attempt, or a next reading still at or above the threshold, Bridge makes no other attempt on that launch of the process.
+
+A global switch controls the trigger, and a chat can opt out. The switch is off by default. With the switch off, this feature makes no new attempt and sends no command. An attempt that is open already can still settle, and its next reading can still fill.
 
 ### The live eval
 
-The live eval plays one scripted chat two times on a real harness: with the switch on, and with no switch. Each run costs real tokens, so the test has the `#[ignore]` mark and needs a gate value. Run it from the root of the repository:
+The live eval plays one scripted chat two times on a real harness: with the switch on, and with no switch. Each run costs real tokens, so the test has the `#[ignore]` mark and needs a gate value.
+
+The gated eval starts real chats with full access in a temporary fixture directory. It uses the provider logins and the user settings of the person who runs it, for example the Claude user hooks and the Codex home. Run it only on a development machine.
+
+Run it from the root of the repository:
 
 ```bash
 BRIDGE_EARLY_COMPACTION_EVAL=1 cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core --lib early_compaction_eval::live -- --ignored --nocapture
