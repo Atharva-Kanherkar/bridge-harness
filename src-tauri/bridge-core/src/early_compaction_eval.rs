@@ -286,7 +286,8 @@ impl World {
     fn turn_end(&mut self, end: &TurnEnd) {
         let turn_id = self.session.active_turn_id.take();
         self.session.status = "ready".to_owned();
-        let compaction_end = self.tracker.take_compaction_end(SESSION);
+        let launch = (!end.no_launch).then_some(&self.launch);
+        let compaction_end = self.tracker.take_compaction_end(SESSION, launch);
         let attempt_open = self.tracker.open_attempt(SESSION).is_some();
         if end.marks && self.tracker.enabled() && !compaction_end && !attempt_open {
             self.tracker.accept(Receipt::Due(self.mark(turn_id, !end.no_launch)));
@@ -295,7 +296,7 @@ impl World {
 
     /// The frame path: a boundary sets the flag and settles the open attempt.
     fn boundary(&mut self) {
-        self.tracker.note_boundary(SESSION);
+        self.tracker.note_boundary(SESSION, Some(&self.launch));
         if let Some(open) = self.tracker.open_attempt(SESSION) {
             self.tracker.accept(Receipt::Settle(settlement(&open, Outcome::Compacted)));
             self.compacted_launch = Some(open.launch);

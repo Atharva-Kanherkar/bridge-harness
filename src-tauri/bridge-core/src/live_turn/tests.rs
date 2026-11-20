@@ -1599,6 +1599,25 @@ fn the_turn_after_a_compaction_is_marked_again() -> TestResult {
 }
 
 #[test]
+fn a_boundary_flag_of_an_old_launch_does_not_hide_a_turn_end() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = World::new()?;
+        world.switch(true)?;
+        // A manual `/compact` gets its boundary. Its process stops before its turn end.
+        world.send(chat, "/compact")?;
+        let (turn, item) = ("codex-turn-old", "codex-compaction-old");
+        let mut frames = if chat == CLAUDE_CHAT { claude_compaction_start() } else { codex_compaction_start(3, turn, item) };
+        frames.push(if chat == CLAUDE_CHAT { claude_boundary(Some(POST_TOKENS)) } else { codex_boundary(turn, item) });
+        world.feed(chat, &frames)?;
+        // The resume is a new launch. Its first turn ends as a normal turn.
+        world.relaunch(chat)?;
+        world.turn(chat, LARGE)?;
+        assert!(world.mark(chat).is_some(), "{chat}: the flag of the old launch hid the turn end");
+    }
+    Ok(())
+}
+
+#[test]
 fn a_fire_removes_the_due_mark() -> TestResult {
     for chat in FIRING_CHATS {
         let (world, _) = marked(chat)?;
@@ -1623,7 +1642,8 @@ fn a_mark_that_goes_before_the_decision_does_not_fire() -> TestResult {
         let core = Arc::downgrade(&world.core);
         world.levers.on_support(move || {
             if let Some(core) = core.upgrade() {
-                core.early_compaction.note_boundary(chat);
+                let launch = core.early_compaction.due_mark(chat).and_then(|mark| mark.launch);
+                core.early_compaction.note_boundary(chat, launch.as_ref());
             }
         });
         world.fire();

@@ -10,7 +10,7 @@
 //! reads one [`Snapshot`] of the chat and asks [`rule::decide`]. The
 //! [`attempts`] module holds the sweep, the dispatch and the attempt record.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -628,8 +628,9 @@ pub struct Tracker {
 #[derive(Debug, Default)]
 struct Memory {
     due: HashMap<String, DueMark>,
-    /// Chats with a native boundary after their last turn end.
-    compacted: HashSet<String>,
+    /// Chats with a native boundary after their last turn end, with the
+    /// launch of the boundary frame.
+    compacted: HashMap<String, Option<Launch>>,
     open: HashMap<String, OpenAttempt>,
     /// One entry for each chat, because a chat has one current launch.
     stopped: HashMap<String, (Launch, LaunchStop)>,
@@ -671,18 +672,24 @@ impl Tracker {
     /// chat. Then the next turn end of the chat makes no due mark. A mark
     /// from before the boundary no longer tells the size of the window, so
     /// it goes too.
-    pub fn note_boundary(&self, session_id: &str) {
+    pub fn note_boundary(&self, session_id: &str, launch: Option<&Launch>) {
         let mut memory = self.memory();
-        memory.compacted.insert(session_id.to_owned());
+        memory.compacted.insert(session_id.to_owned(), launch.cloned());
         memory.due.remove(session_id);
     }
 
     /// The frame path calls this for each completed turn of the chat. True
     /// means that the turn closed a compaction, so it gives no due mark. The
     /// flag holds no turn id: Claude sends no turn start for a compaction,
-    /// and its turn end has no turn id.
-    pub fn take_compaction_end(&self, session_id: &str) -> bool {
-        self.memory().compacted.remove(session_id)
+    /// and its turn end has no turn id. A process can stop after a boundary
+    /// and before its turn end, so a flag of another launch goes and gives
+    /// false. A frame or a flag with no launch matches each launch.
+    pub fn take_compaction_end(&self, session_id: &str, launch: Option<&Launch>) -> bool {
+        match self.memory().compacted.remove(session_id) {
+            Some(Some(flagged)) => launch.is_none_or(|launch| *launch == flagged),
+            Some(None) => true,
+            None => false,
+        }
     }
 
     pub fn due_mark(&self, session_id: &str) -> Option<DueMark> {
@@ -773,10 +780,6 @@ impl Tracker {
     /// no due mark. An open attempt of the same launch takes the boundary
     /// or the turn end, and its turn gives no due mark.
     pub fn receipt(&self, frame: &Frame<'_>, now: DateTime<Utc>) -> Option<Receipt> {
-        if frame.boundary.is_some() {
-            self.note_boundary(frame.session_id);
-        }
-        let compaction_end = frame.turn_completed && self.take_compaction_end(frame.session_id);
         if frame.boundary.is_none() && !frame.turn_completed {
             return None;
         }
@@ -784,6 +787,11 @@ impl Tracker {
             started_at: started_at.to_owned(),
             provider_session_id: provider_session_id.to_owned(),
         });
+        if frame.boundary.is_some() {
+            self.note_boundary(frame.session_id, launch.as_ref());
+        }
+        let compaction_end =
+            frame.turn_completed && self.take_compaction_end(frame.session_id, launch.as_ref());
         if let Some(open) = self.open_attempt(frame.session_id) {
             if launch.as_ref() != Some(&open.launch) {
                 return None;
