@@ -173,6 +173,14 @@ describe("the keymap", () => {
     expect(chordLabel("expand-dock")).toBe("⌥⌘↩");
   });
 
+  it("names one member of a digit family when asked", () => {
+    expect(chordLabel("open-dock-pane")).toBe("⌥⌘1-9");
+    expect(chordLabel("open-dock-pane", 3)).toBe("⌥⌘3");
+    expect(chordLabel("jump-to-chat", 1)).toBe("⌘1");
+    // A digit means nothing to a single chord.
+    expect(chordLabel("new-chat", 2)).toBe("⌘N");
+  });
+
   it("spells every menu accelerator the way its chord matches", () => {
     const withMenus = SHORTCUTS.filter(shortcut => shortcut.accelerator);
     expect(withMenus.length).toBeGreaterThan(0);
