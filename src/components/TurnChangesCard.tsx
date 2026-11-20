@@ -5,7 +5,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { formatShortcut } from "@/lib/platform";
 import { dockPaneChord } from "../dockLayout";
 import { shortcutFor } from "../keymap";
-import { changeTree, fileName, type ChangeMark, type TurnChanges, type TurnEnd, type TurnFileChange } from "../turnChanges";
+import { changeTree, fileName, patchBody, type ChangeMark, type TurnChanges, type TurnEnd, type TurnFileChange } from "../turnChanges";
 import { PatchView } from "./DiffView";
 
 /// A turn that touched many files would otherwise stand a hundred rows in the
@@ -156,7 +156,7 @@ function FileRow({ file, nested, open, onToggle }: { file: TurnFileChange; neste
       ? <button type="button" aria-expanded={open} title={file.path} onClick={onToggle} className={clsx(row, "transition-colors hover:bg-accent/50")}>{body}</button>
       : <div title={file.path} className={row}>{body}</div>}
     {expandable && open && <div className={clsx("my-1 overflow-hidden rounded-lg border border-border/60", nested ? "ml-7" : "ml-1.5")}>
-      <PatchView patch={file.patches.join("\n")} path={file.path} className="max-h-[360px]" foldAfterHunks={2}/>
+      <PatchView patch={file.patches.map(patchBody).join("\n")} path={file.path} className="max-h-[360px]" foldAfterHunks={2}/>
     </div>}
   </div>;
 }

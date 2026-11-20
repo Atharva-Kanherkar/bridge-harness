@@ -400,6 +400,19 @@ export function changeTree(files: readonly TurnFileChange[]): TurnFolder[] {
     .map(([folder, entries]) => ({ folder, files: [...entries].sort((a, b) => byName(a.path, b.path)) }));
 }
 
+/**
+ * A patch without its file headers. The card's row already names the file and
+ * its mark says whether it was created, so `diff --git`, `index`, `---` and
+ * `+++` lines ahead of the first hunk would only repeat it.
+ */
+export function patchBody(patch: string): string {
+  const lines = patch.split("\n");
+  const first = lines.findIndex(line => line.startsWith("@@"));
+  if (first <= 0) return patch;
+  const header = /^(diff --git |index |--- |\+\+\+ |new file mode |deleted file mode |similarity index |rename (from|to) |old mode |new mode )/;
+  return lines.slice(0, first).every(line => !line.trim() || header.test(line)) ? lines.slice(first).join("\n") : patch;
+}
+
 export function fileName(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1) || path;
 }

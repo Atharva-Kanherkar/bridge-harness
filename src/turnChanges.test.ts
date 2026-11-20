@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { alignTurns, groupItems, reduceConversation, type ConversationItem } from "./conversation";
 import { asWireKind } from "./transcript/wire";
 import type { AgentEvent } from "./types";
-import { changeTree, describeTurnEnds, diffstat, formatWorked, keepStable, splitPatchByFile, turnChangesByTurn, turnEndKeys, turnModels, workedMs } from "./turnChanges";
+import { changeTree, describeTurnEnds, diffstat, formatWorked, keepStable, patchBody, splitPatchByFile, turnChangesByTurn, turnEndKeys, turnModels, workedMs } from "./turnChanges";
 
 let id = 0;
 const event = (kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => {
@@ -164,6 +164,16 @@ describe("diffstat", () => {
   it("counts body lines and skips every header", () => {
     expect(diffstat(MODIFY)).toEqual({ additions: 2, deletions: 1 });
     expect(diffstat("diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file")).toEqual({ additions: 1, deletions: 1 });
+  });
+});
+
+describe("patchBody", () => {
+  it("drops the file headers ahead of the first hunk and keeps everything else", () => {
+    expect(patchBody(CREATE)).toBe("@@ -0,0 +1,2 @@\n+# Retry\n+budget");
+    expect(patchBody("diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b")).toBe("@@ -1 +1 @@\n-a\n+b");
+    // Prose ahead of a fragment is not a header; leave the patch alone.
+    expect(patchBody("Success\n@@ -1 +1 @@\n-a\n+b")).toBe("Success\n@@ -1 +1 @@\n-a\n+b");
+    expect(patchBody("@@ -1 +1 @@\n-a\n+b")).toBe("@@ -1 +1 @@\n-a\n+b");
   });
 });
 
