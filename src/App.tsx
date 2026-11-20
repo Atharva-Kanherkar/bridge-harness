@@ -62,6 +62,7 @@ import { GitHubPane } from "./components/GitHubPane";
 import { useChatPullRequests, useSidebarPullRequests } from "./components/ChatPullRequests";
 import { ChatWorkShelf } from "./components/WorkShelf";
 import { ChatWorkPane, type WorkFocus } from "./components/WorkPane";
+import { ChatOverview } from "./components/ChatOverview";
 import { useBackgroundTaskCount } from "./components/useBackgroundTasks";
 import { backgroundWork } from "./backgroundTasks";
 import { chatPrStatus } from "./chatPullRequests";
@@ -4310,6 +4311,7 @@ function AppContent() {
                 onFix={draftPullRequestFix}
                 onOpenGithub={hasRepo && workspace ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
                 onEscape={() => (document.querySelector<HTMLElement>("[data-work-shelf-open]") ?? composerRef.current)?.focus()}
+                overview={<ChatOverview session={session} workspace={hasRepo ? workspace : undefined} projectName={projectName} entries={forest?.entries} activeLeafId={forest?.head?.activeEntryId ?? null} events={sessionEvents} completion={forest?.completion} turnActive={turnActive} visible={dock.open && dock.pane === "work" && !fullscreen} onOpenPane={pane => dispatchDock({ type: "open-pane", pane })} onOpenTurn={revealEntryInConversation} />}
               />;
               if (pane === "tasks") return <TasksPane
                 key={session.id}
