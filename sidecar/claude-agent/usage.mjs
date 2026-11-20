@@ -95,6 +95,26 @@ const tokenCount = (value) => Number.isFinite(value) && value >= 0 ? Math.round(
 const contextName = (value) => typeof value === "string" && value.trim()
   ? value.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 80) : undefined;
 const bySize = (left, right) => right.tokens - left.tokens;
+const MAX_SKILL_ROWS = 64;
+const MAX_SKILL_NAME_BYTES = 128;
+
+// A skill name is the identity that the tool choice of a chat keeps, in the
+// form of the init list (`plugin:skill` for a plugin skill). The frame drops a
+// name that is not a valid identity. The frame never cuts a name, so a row
+// cannot name another skill.
+const skillName = (value) => typeof value === "string" && value && !/[\x00-\x1f\x7f]/.test(value)
+  && Buffer.byteLength(value) <= MAX_SKILL_NAME_BYTES ? value : undefined;
+
+/** The largest skills by their own token figure, one row for each name. */
+function skillRows(frontmatter) {
+  const seen = new Set();
+  return (Array.isArray(frontmatter) ? frontmatter : [])
+    .map((skill) => ({ name: skillName(skill?.name), tokens: tokenCount(skill?.tokens) }))
+    .filter((skill) => skill.name)
+    .sort(bySize)
+    .filter((skill) => !seen.has(skill.name) && seen.add(skill.name))
+    .slice(0, MAX_SKILL_ROWS);
+}
 
 export function contextUsageFrame(usage) {
   if (!usage || typeof usage !== "object") return null;
@@ -147,7 +167,12 @@ export function contextUsageFrame(usage) {
       tokens: memoryFiles.reduce((sum, file) => sum + tokenCount(file?.tokens), 0),
     },
     skills: usage.skills && typeof usage.skills === "object"
-      ? { included: tokenCount(usage.skills.includedSkills), total: tokenCount(usage.skills.totalSkills), tokens: tokenCount(usage.skills.tokens) }
+      ? {
+          included: tokenCount(usage.skills.includedSkills),
+          total: tokenCount(usage.skills.totalSkills),
+          tokens: tokenCount(usage.skills.tokens),
+          items: skillRows(usage.skills.skillFrontmatter),
+        }
       : null,
     agentsTokens: (Array.isArray(usage.agents) ? usage.agents : []).reduce((sum, agent) => sum + tokenCount(agent?.tokens), 0),
     messages: breakdown && typeof breakdown === "object" ? {

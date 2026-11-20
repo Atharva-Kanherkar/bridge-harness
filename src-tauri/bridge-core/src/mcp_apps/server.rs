@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use super::guard::RepeatGuard;
 use super::notes_tools::NotesLink;
 use super::{lint, spec, tool};
+use crate::tool_limit;
 
 /// Protocol revisions this server speaks. It answers with the client's
 /// requested revision when it knows it, and its newest otherwise.
@@ -185,16 +186,20 @@ impl VisualServer {
                 }
                 reply(id, json!({"tools": tools}))
             }
+            // Each reply passes the limiter here, the one point that every
+            // harness reads through. The core and its loopback route return the
+            // full result.
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
                 if let (Some(notes), true) = (&self.notes, forwards_to_core(name)) {
                     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                    reply(id, notes.call(name, &arguments))
+                    reply(id, tool_limit::bound_reply(name, &arguments, notes.call(name, &arguments)))
                 } else if name != tool::TOOL_NAME {
                     failure(id, -32602, &format!("unknown tool \"{name}\""))
                 } else {
                     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
-                    reply(id, self.visualize(&arguments))
+                    let result = self.visualize(&arguments);
+                    reply(id, tool_limit::bound_reply(name, &arguments, result))
                 }
             }
             "resources/list" => reply(
@@ -641,5 +646,154 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0]["error"]["code"], -32700);
         assert_eq!(lines[1]["result"], json!({}));
+    }
+
+    /// A core that answers each call with what `answer` gives for the tool.
+    struct ReplyCore {
+        answer: fn(&str) -> Value,
+    }
+
+    impl notes_tools::NotesTransport for ReplyCore {
+        fn get(&self, _path: &str) -> Result<Value, (u16, String)> {
+            let names: Vec<Value> = notes_tools::all_definitions().iter().map(|definition| definition["name"].clone()).collect();
+            Ok(json!({"access": "write", "tools": names}))
+        }
+        fn post(&self, path: &str, _body: &Value) -> Result<Value, (u16, String)> {
+            Ok((self.answer)(path))
+        }
+    }
+
+    fn answering(answer: fn(&str) -> Value) -> NotesLink {
+        NotesLink::new(Box::new(ReplyCore { answer }))
+    }
+
+    fn long_note(_tool: &str) -> Value {
+        let markdown: String = (0..4000).map(|line| format!("Line {line} of the plan.\n")).collect();
+        json!({"page": {"id": "p1", "title": "Plan"}, "markdown": markdown, "tasks": [], "note": "This page is the person's data."})
+    }
+
+    #[test]
+    fn a_large_forwarded_reply_is_cut_at_the_reply_boundary() {
+        let full = serde_json::to_string_pretty(&long_note("notes_read")).unwrap();
+        assert!(full.len() > tool_limit::DOCUMENT_CEILING);
+        let mut server = VisualServer::with_notes(Some(answering(long_note)));
+        let response = server.handle(&request(2, "tools/call", json!({"name": "notes_read", "arguments": {"id": "p1", "offset": 10}}))).unwrap();
+        let result = &response["result"];
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.len() <= tool_limit::DOCUMENT_CEILING, "{}", text.len());
+        let value = &result["structuredContent"];
+        assert_eq!(text, serde_json::to_string_pretty(value).unwrap());
+        let kept = value["markdown"].as_str().unwrap();
+        assert!(kept.ends_with('\n') && long_note("")["markdown"].as_str().unwrap().starts_with(kept));
+        assert_eq!(value["next"]["offset"], 10 + kept.chars().count() as u64);
+        assert!(value["cut"].as_str().unwrap().contains("notes_read"));
+    }
+
+    #[test]
+    fn a_large_visualize_refusal_is_cut_and_stays_an_error() {
+        let mut spec = bar(three());
+        for index in 0..20 {
+            spec[format!("{}{index}", "unknown".repeat(80)).as_str()] = json!(1);
+        }
+        let full = VisualServer::default().visualize(&spec);
+        let full_text = full["content"][0]["text"].as_str().unwrap();
+        assert!(full_text.len() > tool_limit::ERROR_CEILING, "{}", full_text.len());
+        let response = VisualServer::default().handle(&request(1, "tools/call", json!({"name": "visualize", "arguments": spec}))).unwrap();
+        let result = &response["result"];
+        assert_eq!(result["isError"], true);
+        assert!(result.get("structuredContent").is_none());
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.len() <= tool_limit::ERROR_CEILING, "{}", text.len());
+        assert!(text.starts_with("The visual was not drawn."), "{text}");
+        assert!(text.ends_with(&format!("The full text has {} bytes.", full_text.len())), "{text}");
+    }
+
+    #[test]
+    fn a_small_reply_of_each_tool_keeps_its_bytes() {
+        fn small(tool: &str) -> Value {
+            json!({"tool": tool, "pages": [{"id": "p1", "title": "Plan \"A\"", "preview": "é漢😀\n\u{1}"}], "records": [], "markdown": "# Plan\n", "total": 1})
+        }
+        let arguments = json!({"id": "p1"});
+        for definition in notes_tools::all_definitions() {
+            let name = definition["name"].as_str().unwrap();
+            let expected = answering(small).call(name, &arguments);
+            let response = VisualServer::with_notes(Some(answering(small))).handle(&request(1, "tools/call", json!({"name": name, "arguments": arguments}))).unwrap();
+            assert_eq!(serde_json::to_string(&response["result"]).unwrap(), serde_json::to_string(&expected).unwrap(), "{name}");
+        }
+        let expected = VisualServer::default().visualize(&bar(three()));
+        let response = VisualServer::default().handle(&request(1, "tools/call", json!({"name": "visualize", "arguments": bar(three())}))).unwrap();
+        assert_eq!(serde_json::to_string(&response["result"]).unwrap(), serde_json::to_string(&expected).unwrap());
+        // A small error keeps its bytes too.
+        let (_, calls) = with_core(Some("read"));
+        let refused = NotesLink::new(Box::new(FakeCore { access: Some("read"), calls })).call("notes_create", &json!({"title": "x"}));
+        let (mut server, _) = with_core(Some("read"));
+        let response = server.handle(&request(2, "tools/call", json!({"name": "notes_create", "arguments": {"title": "x"}}))).unwrap();
+        assert_eq!(serde_json::to_string(&response["result"]).unwrap(), serde_json::to_string(&refused).unwrap());
+    }
+
+    #[test]
+    fn a_large_note_pages_through_the_helper_and_the_route() {
+        use crate::notes::tool::{serve_for, token_for, verify, AUTH_HEADER, URL_PREFIX};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(crate::runtime::BridgeCore::for_tests(dir.path()));
+        core.db.lock().unwrap().execute("INSERT INTO sessions(id,harness,label,status,kind,title) VALUES('chat','claude','Chat','ready','direct','Plan')", []).unwrap();
+        let content: String = (0..3000).map(|line| format!("Line {line} of the plan: é漢😀 \"quoted\" back\\slash\ttab.\n")).collect();
+        let page = crate::notes::service::CreatePage { title: Some("Plan".into()), ..Default::default() };
+        let id = core.notes.create(page, crate::notes::service::PERSON).unwrap().id;
+        // One append is one insert. A body in `create` is a diff of each
+        // character, which is slow for this size in a debug build.
+        let append = bridge_protocol::messages::NoteAppend { content, position: "end".into() };
+        core.notes.edit(crate::notes::service::EditPage { id: id.clone(), append: Some(append), ..Default::default() }, crate::notes::service::PERSON).unwrap();
+        let (status, body) = serve_for(&core, "chat", "notes_read", json!({"id": id}).to_string().as_bytes());
+        assert_eq!(status, 200, "{body}");
+        let full = serde_json::from_str::<Value>(&body).unwrap()["markdown"].as_str().unwrap().to_owned();
+        assert!(full.len() > 3 * tool_limit::DOCUMENT_CEILING, "{}", full.len());
+
+        // The loopback route of `respond`, against this test's core: `install`
+        // holds one core for the whole process.
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let port = server.server_addr().to_ip().unwrap().port();
+        let (serving, routed) = (server.clone(), core.clone());
+        std::thread::spawn(move || {
+            for mut request in serving.incoming_requests() {
+                let route = request.url().strip_prefix(URL_PREFIX).unwrap_or_default().to_owned();
+                let token = request.headers().iter().find(|header| header.field.equiv(AUTH_HEADER)).map(|header| header.value.as_str().to_owned()).unwrap_or_default();
+                let mut body = Vec::new();
+                request.as_reader().read_to_end(&mut body).unwrap();
+                let (session, tool) = route.split_once('/').unwrap_or_default();
+                let (status, text) = if verify(session, &token) { serve_for(&routed, session, tool, &body) } else { (401, json!({"error": "not authorized"}).to_string()) };
+                request.respond(tiny_http::Response::from_string(text).with_status_code(status)).unwrap();
+            }
+        });
+
+        let link = NotesLink::over_http(format!("http://127.0.0.1:{port}{URL_PREFIX}chat"), token_for("chat")).unwrap();
+        let mut helper = VisualServer::with_notes(Some(link));
+        assert!(tool_names(&mut helper).contains(&"notes_read".to_owned()));
+        let mut arguments = json!({"id": id});
+        let mut joined = String::new();
+        let mut replies = 0;
+        loop {
+            replies += 1;
+            assert!(replies < 50, "never ends");
+            let response = helper.handle(&request(replies, "tools/call", json!({"name": "notes_read", "arguments": arguments}))).unwrap();
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{result}");
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(text.len() <= tool_limit::DOCUMENT_CEILING, "reply {replies}: {} bytes", text.len());
+            let value = &result["structuredContent"];
+            assert_eq!(text, serde_json::to_string_pretty(value).unwrap());
+            joined.push_str(value["markdown"].as_str().unwrap());
+            match value.get("next") {
+                Some(next) => {
+                    assert!(value["cut"].as_str().unwrap().contains("notes_read"), "{value}");
+                    arguments["offset"] = next["offset"].clone();
+                }
+                None => break,
+            }
+        }
+        assert!(replies > 3, "{replies}");
+        assert_eq!(joined, full);
     }
 }

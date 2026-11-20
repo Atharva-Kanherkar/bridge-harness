@@ -119,6 +119,36 @@ export function sdkFlagSettings({ effort = null, speed = null } = {}) {
   return Object.keys(settings).length ? settings : null;
 }
 
+const isBridgeServer = (name) => name.trim().toLowerCase() === "bridge";
+
+/** The tool choice of a chat, as Rust sends it: the servers to deny and the
+ * skills to keep. `skills` is null when the chat keeps every skill. A choice
+ * can only remove, so a value of the wrong shape counts as no choice. */
+export function chatToolSelection(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const names = (list) => [...new Set((Array.isArray(list) ? list : []).filter((name) => typeof name === "string" && name))];
+  return {
+    skills: Array.isArray(value.skills) ? names(value.skills) : null,
+    // The Bridge server stays attached, whatever the choice says.
+    deniedMcpServers: names(value.deniedMcpServers).filter((name) => !isBridgeServer(name)),
+  };
+}
+
+/** Add servers to the flag-tier `deniedMcpServers`. The result is a union:
+ * each entry that is there stays, so no choice can remove a deny. The deny
+ * matches the display name of a server and stops it before it starts. */
+export function withDeniedServers(settings, names = []) {
+  const existing = Array.isArray(settings?.deniedMcpServers) ? settings.deniedMcpServers : [];
+  const denied = new Set(existing.map((entry) => entry?.serverName));
+  const added = [];
+  for (const name of names) {
+    if (typeof name !== "string" || !name || denied.has(name) || isBridgeServer(name)) continue;
+    denied.add(name);
+    added.push({ serverName: name });
+  }
+  return added.length ? { ...settings, deniedMcpServers: [...existing, ...added] } : settings;
+}
+
 /** PreToolUse runs before user allow rules, including on native subagents.
  * File and shell tools keep Isolated permissions; MCP is always refused. */
 function worktreeWorkflowOptions() {
@@ -143,7 +173,10 @@ function worktreeWorkflowOptions() {
   };
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, outputDir = null, plugins = [], mcpServers = {}, briefing = null, effort = null, speed = null, projectTrusted = false }, ask = null) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, outputDir = null, plugins = [], mcpServers = {}, briefing = null, effort = null, speed = null, projectTrusted = false, toolSelection = null }, ask = null) {
+  // Only a chat applies its tool choice. A briefing or a workflow keeps the
+  // authority that Bridge compiled for it.
+  const selection = isBriefing({ briefing }) ? null : chatToolSelection(toolSelection);
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -158,7 +191,9 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
         // A folder's own settings can run commands and widen permissions, so
         // they load only for a folder Claude Code trusts (see trust.mjs).
         settingSources: projectTrusted ? ["user", "project", "local"] : ["user"],
-        skills: "all",
+        // A list gives `Skill(<name>)` allow rules, each narrower than the
+        // `Skill` rule of "all". An empty list gives no Skill rule.
+        skills: selection?.skills ?? "all",
         strictMcpConfig: false,
         mcpServers,
         // Keep plugin skills/commands/agents, but fail closed on plugin-bundled
@@ -175,7 +210,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.
   const resolvedEffort = sdkEffort(effort);
-  const flagSettings = sdkFlagSettings({ effort, speed });
+  const flagSettings = withDeniedServers(sdkFlagSettings({ effort, speed }), selection?.deniedMcpServers);
   // A toolless briefing answers from text alone: no tool definitions are sent
   // at all, and its instructions replace the coding preset instead of riding
   // on it. Rust only sets this for a policy with an empty scope, and the

@@ -36,7 +36,8 @@ history" in Bridge Notes.
   cut around the match. They come in chronological order.
 - With `query` and no match, it returns `windows: []` and a note. That is not an
   error.
-- The whole result is at most 6,000 characters of text.
+- Each part of the result keeps its character cap. The tool does not cut the
+  whole result: the limiter of the bridge server bounds each reply.
 
 ### Scope
 
@@ -106,7 +107,7 @@ snippet is cut, so a secret cannot be split into a fragment no detector knows:
 - `history_tools::tests::tool_output_and_commands_are_never_returned`
 - `history_tools::tests::every_detector_and_live_value_is_scrubbed_before_windowing`
 - `history_tools::tests::a_secret_split_by_a_window_edge_is_still_scrubbed`
-- `history_tools::tests::output_is_bounded`
+- `history_tools::tests::the_largest_reply_of_each_chat_tool_is_below_the_ceiling`
 - `history_tools::tests::rate_limit_refuses_the_thirty_first_call`
 - `notes::tool::tests` (extended): `Access::Write.tools()` has both,
   `Access::ReadOnly.tools()` has neither; a worker's POST is 403.

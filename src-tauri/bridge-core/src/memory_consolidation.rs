@@ -1386,7 +1386,7 @@ mod tests {
         assert_eq!(unbounded.status, "active");
 
         assert!(
-            memory_ledger::search(&db, ACCOUNT_MEMORY_SCOPE, "freeze", None)
+            memory_ledger::search(&db, ACCOUNT_MEMORY_SCOPE, "freeze", None, 0)
                 .unwrap()
                 .iter()
                 .all(|record| record.id != due.id),

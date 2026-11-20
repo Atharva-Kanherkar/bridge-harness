@@ -24,6 +24,8 @@ Every controller append stamps the entry with the repository `HEAD` and a determ
 - `payload`: semantic content plus provider metadata when needed for inspection.
 - `context_visibility`: whether the projector may include the entry in restored context.
 
+`session.tool_selection_changed` records that a launch applied a changed tool set of the chat. Its payload holds the revision, the harness, the effective hash, the lists of what is off, the provider session id and `prefixRewritten`. The entry is stored `hidden`, so the projector never includes it and the search indexes never read it. Codex and OpenCode write it with the `sessions` row of the launch. Claude writes it after the first good turn on the same session id.
+
 The React UI requests a forest snapshot and walks from the active leaf to the root. Raw provider notifications stay inspectable but collapsed. The legacy linear `agent_events` table is removed at schema version 6; normalized adapter events append directly to the forest.
 
 How that projection is drawn, and what a reader is entitled to see identically whichever agent produced the turn, is [`transcript-behavior-contract.md`](transcript-behavior-contract.md): thinking presentation, grouping invariants, stream-state meanings, and the rule that a harness id is display and never behavior. It also explains why a frame the forest refuses to persist (anything ending in `.delta`) has to be assembled into a durable one by the adapter rather than left to the live window.

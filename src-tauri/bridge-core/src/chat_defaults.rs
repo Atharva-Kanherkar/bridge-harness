@@ -40,7 +40,7 @@ fn project_key(db: &Connection, project_id: Option<&str>) -> Result<String, Brid
         }
     }
 }
-fn read<T: serde::de::DeserializeOwned>(
+pub(crate) fn read<T: serde::de::DeserializeOwned>(
     db: &Connection,
     kind: &str,
     id: &str,
@@ -62,7 +62,7 @@ fn read<T: serde::de::DeserializeOwned>(
         })
         .transpose()
 }
-fn write<T: serde::Serialize>(
+pub(crate) fn write<T: serde::Serialize>(
     db: &Connection,
     kind: &str,
     id: &str,
@@ -552,9 +552,12 @@ pub fn root_write_mode(
     }))
 }
 
+/// Create a chat. `tool_selection` is its first tool choice: it commits in the
+/// same transaction, or the whole create fails.
 pub fn create(
     core: &Arc<BridgeCore>,
     params: &CreateConfiguredChatParams,
+    tool_selection: Option<&bridge_protocol::messages::ChatToolSelection>,
 ) -> Result<ConfiguredChatResult, BridgeError> {
     if params.title.as_ref().is_some_and(|s| s.len() > 512) {
         return Err(invalid("Chat title is too long"));
@@ -631,6 +634,9 @@ pub fn create(
             settings,
         };
         write(&tx, SESSION_KIND, &id, &configuration)?;
+        if let Some(choice) = tool_selection {
+            crate::tool_selection::write_first(&tx, &id, &configuration.settings.model, choice)?;
+        }
         if let ChatLaunchTarget::Agent { agent_id } = &configuration.settings.target {
             let mut agent = agent_by_id(&tx, agent_id)?;
             agent.harness = configuration.settings.model.harness.clone();
@@ -920,7 +926,9 @@ mod tests {
                 overrides: defaults(value),
                 expected_revision: settings.revision,
                 title: None,
+                tool_selection: None,
             },
+            None,
         )
         .unwrap()
     }
@@ -1157,6 +1165,78 @@ mod tests {
         .to_string();
         assert!(error.contains("Codex account \"work\" is no longer in Settings"), "{error}");
     }
+    fn create_with_tools(
+        core: &Arc<BridgeCore>,
+        value: Value,
+        tools: Value,
+    ) -> Result<ConfiguredChatResult, BridgeError> {
+        let settings = resolve_value(core, Some("a"), value.clone());
+        let choice: ChatToolSelection = serde_json::from_value(tools).unwrap();
+        create(
+            core,
+            &CreateConfiguredChatParams {
+                workspace_id: Some("a".into()),
+                overrides: defaults(value),
+                expected_revision: settings.revision,
+                title: None,
+                tool_selection: None,
+            },
+            Some(&choice),
+        )
+    }
+    /// Sessions, tool choice rows and chat.created events.
+    fn chat_rows(core: &BridgeCore) -> (i64, i64, i64) {
+        let db = core.db.lock().unwrap();
+        let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        (
+            count("SELECT count(*) FROM sessions"),
+            count("SELECT count(*) FROM configuration_entries WHERE kind='chat_tool_selection_v1'"),
+            count("SELECT count(*) FROM events WHERE kind='chat.created'"),
+        )
+    }
+    #[test]
+    fn create_saves_the_first_tool_selection_in_the_same_transaction() {
+        let (_dir, core) = fixture();
+        let codex = json!({"model":{"harness":"codex","model":"standard"}});
+        let created = create_with_tools(&core, codex.clone(), json!({"harness":"codex","serversOff":["github"],"codexAppsOff":true})).unwrap();
+        let row = crate::tool_selection::read(&core.db.lock().unwrap(), &created.session_id).unwrap().unwrap();
+        assert_eq!((row.revision, row.harness.as_str(), row.account.as_deref()), (1, "codex", None));
+        assert_eq!((row.servers_off.as_slice(), row.codex_apps_off), (["github".to_owned()].as_slice(), true));
+        assert_eq!(chat_rows(&core), (1, 1, 1));
+
+        // Create checks the choice after the session insert, inside the same
+        // transaction. A refused choice rolls the insert back, so no chat
+        // exists without the choice that the person made for it.
+        let error = create_with_tools(&core, codex, json!({"harness":"codex","serversOff":["my.server"]})).unwrap_err().to_string();
+        assert!(error.contains("safe set"), "{error}");
+        assert_eq!(chat_rows(&core), (1, 1, 1));
+    }
+    #[test]
+    fn create_refuses_a_tool_selection_for_another_harness_and_commits_nothing() {
+        let (_dir, core) = fixture();
+        add_codex_account(&core);
+        let own = json!({"model":{"harness":"codex","model":"standard"}});
+        let error = create_with_tools(&core, own.clone(), json!({"harness":"claude","serversOff":["github"]})).unwrap_err().to_string();
+        assert!(error.contains("made for Claude Code (own login), but the chat starts on Codex (own login)"), "{error}");
+        let work = json!({"model":{"harness":"codex","model":"standard","account":"work"}});
+        let error = create_with_tools(&core, work, json!({"harness":"codex"})).unwrap_err().to_string();
+        assert!(error.contains("made for Codex (own login), but the chat starts on Codex (account work)"), "{error}");
+        let error = create_with_tools(&core, own, json!({"harness":"codex","account":"work"})).unwrap_err().to_string();
+        assert!(error.contains("Codex (account work)"), "{error}");
+        assert_eq!(chat_rows(&core), (0, 0, 0));
+        assert!(core.adapters.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn create_without_a_tool_selection_writes_no_row() {
+        let (_dir, core) = fixture();
+        let created = create_value(&core, "a", json!({"model":{"harness":"codex","model":"standard"}}));
+        let db = core.db.lock().unwrap();
+        assert_eq!(crate::tool_selection::read(&db, &created.session_id).unwrap(), None);
+        let target = crate::tool_selection::LaunchTarget { harness: "codex", interactive: true, workflow: false, opencode_config: None };
+        assert_eq!(crate::tool_selection::launch_for(&db, &created.session_id, &target).unwrap(), None);
+        drop(db);
+        assert_eq!(chat_rows(&core), (1, 0, 1));
+    }
     #[test]
     fn stale_reviewed_revision_creates_no_session() {
         let (_dir, core) = fixture();
@@ -1168,8 +1248,10 @@ mod tests {
                 workspace_id: Some("a".into()),
                 overrides: ChatDefaults::default(),
                 expected_revision: reviewed.revision,
-                title: None
-            }
+                title: None,
+                tool_selection: None,
+            },
+            None
         )
         .is_err());
         assert_eq!(
@@ -1307,8 +1389,10 @@ mod tests {
                 workspace_id: Some("a".into()),
                 overrides: ChatDefaults::default(),
                 expected_revision: resolved.revision,
-                title: None
-            }
+                title: None,
+                tool_selection: None,
+            },
+            None
         )
         .is_err());
         assert_eq!(
@@ -1678,8 +1762,10 @@ mod tests {
                             workspace_id: Some("a".into()),
                             overrides: defaults(value),
                             expected_revision: settings.revision,
-                            title: None
-                        }
+                            title: None,
+                            tool_selection: None,
+                        },
+                        None
                     )
                     .is_ok(),
                     "{effort}"

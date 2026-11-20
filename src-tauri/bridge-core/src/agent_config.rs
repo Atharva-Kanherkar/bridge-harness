@@ -472,8 +472,9 @@ pub fn reset_all(db: &Connection) -> Result<ConfigState, BridgeError> {
     let transaction = db.unchecked_transaction()?;
     crate::prompt_sections::append_reset_all_revisions(&transaction)?;
     // Session authority is a durable snapshot, not a default. Resetting
-    // preferences must not erase the policy an existing chat runs under.
-    transaction.execute("DELETE FROM configuration_entries WHERE kind NOT IN ('chat_session_settings_v1','chat_agent_snapshot_v1')", [])?;
+    // preferences must not erase the policy an existing chat runs under. The
+    // tool choice of a chat belongs to that chat, so it stays too.
+    transaction.execute("DELETE FROM configuration_entries WHERE kind NOT IN ('chat_session_settings_v1','chat_agent_snapshot_v1','chat_tool_selection_v1')", [])?;
     transaction.commit()?;
     state(db)
 }
@@ -1101,5 +1102,23 @@ mod tests {
             opencode.advanced = invalid;
             assert!(save_harness(&db, opencode.clone()).is_err());
         }
+    }
+
+    #[test]
+    fn reset_all_keeps_the_tool_selection() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('chat','claude','Chat','ready','reported','direct')", []).unwrap();
+        let choice: bridge_protocol::messages::ChatToolSelection =
+            serde_json::from_value(json!({"harness": "claude", "serversOff": ["github"]})).unwrap();
+        let saved = crate::tool_selection::write_checked(&db, "chat", 0, &choice).unwrap();
+        db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('chat_defaults_v1','global','{}','now','now')", []).unwrap();
+
+        reset_all(&db).unwrap();
+
+        assert_eq!(crate::tool_selection::read(&db, "chat").unwrap(), Some(saved));
+        let defaults: i64 = db
+            .query_row("SELECT count(*) FROM configuration_entries WHERE kind='chat_defaults_v1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(defaults, 0, "a preference row goes, so the reset still ran");
     }
 }

@@ -1334,4 +1334,151 @@ describe("a new chat's model before the host answers", () => {
     expect(pill()?.textContent).toContain("Loading models…");
     expect(pill()?.getAttribute("aria-busy")).toBe("true");
   });
+
+  it("sends the draft tool choice inside createConfiguredChat and sends the first message after it", async () => {
+    const readTools = bridgeApi.chatTools;
+    const createChat = bridgeApi.createConfiguredChat;
+    // A draft lists one server for whichever harness the draft resolves to.
+    const drafts = vi.spyOn(bridgeApi, "chatTools").mockImplementation(async params => params.draft ? {
+      harness: params.draft.harness,
+      account: params.draft.account ?? null,
+      choice: null,
+      items: [{ kind: "server", id: "github", label: "github", group: "MCP servers", state: "on", fixedReason: null, seen: true, tokens: null }],
+      sources: [{ kind: "catalog", label: "Bridge catalog", available: true, at: null, note: null }],
+      selection: { revision: 0, harness: params.draft.harness, account: params.draft.account ?? null, applies: true, notAppliedReason: null },
+    } : readTools(params));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat").mockImplementation(async params => {
+      await gate;
+      return createChat(params);
+    });
+    const prepare = vi.spyOn(bridgeApi, "prepareTurn");
+    const submit = vi.spyOn(bridgeApi, "submitInput");
+    await mountApp();
+    await settle(2);
+
+    const chip = container.querySelector<HTMLButtonElement>('button[aria-label^="Tools:"]');
+    expect(chip).not.toBeNull();
+    const draft = drafts.mock.calls.map(([params]) => params.draft).find(Boolean)!;
+    expect(draft.harness).toBeTruthy();
+    await click(chip!);
+    await click(document.querySelector('[data-tool-item="github"] [role="menuitemcheckbox"]')!);
+    expect(chip!.getAttribute("aria-label")).toBe("Tools: 1 left out");
+
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Plan the next step");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0].toolSelection).toEqual(expect.objectContaining({ harness: draft.harness, account: draft.account ?? null, serversOff: ["github"] }));
+    // The create has not returned, so the first message waits.
+    expect(prepare).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+
+    release();
+    await settle(10);
+    const created = await create.mock.results[0]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
+    expect(prepare).toHaveBeenCalledWith(created.sessionId, "Plan the next step");
+    expect(prepare.mock.invocationCallOrder[0]).toBeGreaterThan(create.mock.invocationCallOrder[0]!);
+    const saved = await readTools({ sessionId: created.sessionId });
+    expect(saved.selection).toMatchObject({ revision: 1, applies: true });
+    expect(saved.choice?.serversOff).toEqual(["github"]);
+  });
+
+  it("lets a draft clear a tool choice that does not fit its model", async () => {
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
+    await mountApp();
+    await settle(2);
+    const chip = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Tools:"]')!;
+    const pick = async (label: string) => {
+      // The picker stays open after a pick that offers an effort.
+      if (pill()!.getAttribute("aria-expanded") !== "true") await click(pill()!);
+      await click([...container.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes(label))!);
+      await settle(2);
+    };
+    const send = async () => {
+      const box = composer()!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, "Plan the next step");
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+      await settle(4);
+    };
+
+    // Apps off in a Codex draft, then the draft moves to OpenCode before its first turn.
+    await pick("GPT Luna");
+    await click(chip());
+    await click(document.querySelector('[data-tool-item="codex_apps"] [role="menuitemcheckbox"]')!);
+    expect(chip().getAttribute("aria-label")).toBe("Tools: 1 left out");
+    await click(chip());
+    await pick("Big Pickle");
+    expect(chip().getAttribute("aria-label")).toBe("Tools: not applied");
+
+    // The create refuses the choice and says why.
+    await send();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0].toolSelection).toMatchObject({ harness: "codex", codexAppsOff: true });
+    expect(document.body.textContent).toContain("The tool choice was made for Codex (own login), but the chat starts on OpenCode (own login)");
+
+    // The panel of the OpenCode draft clears the choice, and the next create starts the chat without one.
+    await click(chip());
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe("Chosen for Codex (own login), not applied");
+    const clear = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Clear this choice");
+    expect(clear, "the panel offers a way to clear the choice").toBeDefined();
+    await click(clear!);
+    expect(chip().getAttribute("aria-label")).toBe("Tools: all on");
+    expect(document.querySelector('[role="menu"] [role="note"]')).toBeNull();
+    await click(chip());
+    await send();
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]![0]).not.toHaveProperty("toolSelection");
+    const created = await create.mock.results[1]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
+    expect(created.state.sessions.find(session => session.id === created.sessionId)?.harness).toBe("opencode");
+  });
+
+  it("keeps a draft tool choice in view on a harness with no tool rows until the person clears it", async () => {
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
+    await mountApp();
+    await settle(2);
+    const chip = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Tools:"]');
+    const pick = async (label: string) => {
+      if (pill()!.getAttribute("aria-expanded") !== "true") await click(pill()!);
+      await click([...container.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes(label))!);
+      await settle(2);
+    };
+
+    // Apps off in a Codex draft, then the draft moves to Cursor, which lists no tools.
+    await pick("GPT Luna");
+    await click(chip()!);
+    await click(document.querySelector('[data-tool-item="codex_apps"] [role="menuitemcheckbox"]')!);
+    await click(chip()!);
+    await pick("Composer 2.5");
+    expect(chip()?.getAttribute("aria-label")).toBe("Tools: not applied");
+
+    await click(chip()!);
+    expect(document.querySelector('[role="menu"] [role="note"]')?.textContent).toBe("Chosen for Codex (own login), not applied");
+    const clear = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].find(button => button.textContent === "Clear this choice");
+    await click(clear!);
+    expect(chip()).toBeNull();
+
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Plan the next step");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("toolSelection");
+    const created = await create.mock.results[0]!.value as Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>>;
+    expect(created.state.sessions.find(session => session.id === created.sessionId)?.harness).toBe("cursor");
+  });
 });
