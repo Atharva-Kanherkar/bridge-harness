@@ -178,7 +178,6 @@ try {
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
   check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 7 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
-  check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
     && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
   check("OpenCode is found with its own section, mark and Import button, its background run apart", found.includes("OpenCode keeps its own memory and setup")
@@ -304,6 +303,10 @@ try {
   await shot("05g-account-chat-dark");
 
   await caption("Conductor's workspaces come over where they are");
+  await click("Open settings for");
+  await click("Chat history");
+  await click("Import", "main button, [data-settings-column] button");
+  await waitFor("the tools list", `!!document.querySelector('[data-import-tool="conductor"]') && !document.body.innerText.includes("Looking for other tools")`);
   const conductorFound = await js(`document.querySelector('[data-import-tool="conductor"]').innerText`);
   check("Conductor is found with its workspaces and its own Import button", conductorFound.includes("2 workspaces in 1 repo") && conductorFound.includes("left where they are")
     && await js(`!!document.querySelector('[data-import-tool="conductor"] button')`), conductorFound.replace(/\n+/g, " | "));

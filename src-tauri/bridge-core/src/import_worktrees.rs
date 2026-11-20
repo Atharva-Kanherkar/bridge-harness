@@ -102,12 +102,22 @@ pub enum Outcome {
     LeftOut(Reason),
 }
 
+/// Each repository's worktrees as git lists them, asked once per repository.
+type Listings = std::collections::HashMap<PathBuf, Option<Vec<git::GitWorktreeEntry>>>;
+
 /// Ask git what `path` is. Runs git; never call it while the database is held.
 pub fn probe(path: &Path) -> Probe {
+    probe_with(path, &mut Listings::new())
+}
+
+/// [`probe`], reusing each repository's worktree list. A linked worktree
+/// names its repository in its `.git` file, read without starting git; git
+/// answers for anything else.
+fn probe_with(path: &Path, listings: &mut Listings) -> Probe {
     if !path.is_dir() {
         return Probe::Missing;
     }
-    let Some(root) = git::main_worktree_root(path) else {
+    let Some(root) = git::linked_worktree_repo_root(path).or_else(|| git::main_worktree_root(path)) else {
         return Probe::NotGit;
     };
     let real = real_path(path);
@@ -115,7 +125,7 @@ pub fn probe(path: &Path) -> Probe {
     if real == root {
         return Probe::MainCheckout;
     }
-    let Ok(entries) = git::list_worktrees(&root) else {
+    let Some(entries) = listings.entry(root.clone()).or_insert_with(|| git::list_worktrees(&root).ok()) else {
         return Probe::NotGit;
     };
     match entries.iter().find(|entry| real_path(&entry.path) == real) {
@@ -308,10 +318,11 @@ pub fn write(db: &Connection, candidates: &[Candidate], outcomes: &[Outcome]) ->
 /// Probe every candidate without the database held, then plan and write
 /// under it.
 pub fn adopt(db: &std::sync::Mutex<Connection>, candidates: Vec<Candidate>) -> Result<Report, BridgeError> {
+    let mut listings = Listings::new();
     let probed: Vec<(Candidate, Probe)> = candidates
         .into_iter()
         .map(|candidate| {
-            let probe = probe(&candidate.path);
+            let probe = probe_with(&candidate.path, &mut listings);
             (candidate, probe)
         })
         .collect();

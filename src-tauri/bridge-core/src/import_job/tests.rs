@@ -951,3 +951,43 @@ fn the_latest_import_of_each_tool_is_kept() {
     let ids: Vec<(&str, &str)> = jobs.iter().map(|job| (job.tool.as_str(), job.job_id.as_str())).collect();
     assert_eq!(ids, vec![(claude_import::PROVIDER, second.job_id.as_str()), (crate::codex_import::PROVIDER, codex.job_id.as_str())]);
 }
+
+/// Conductor at scale: 50 repos with 40 real worktrees each and a database
+/// from the real schema, adopted through the job. Prints time only.
+#[test]
+#[ignore = "builds 2,000 real worktrees; run by hand to measure"]
+fn measure_conductor_at_scale() {
+    use crate::conductor_import::fixture::{Fixture, Row};
+    use crate::import_worktrees::tests::{git, repo};
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let fixture = Fixture::at(&crate::conductor_import::Paths::for_home(&home).store, 181);
+    let started = Instant::now();
+    for r in 0..50 {
+        let name = format!("repo{r:02}");
+        let main = repo(&home.join("code"), &name);
+        fixture.repo(&format!("r{r}"), &name, &main, 3);
+        for w in 0..40 {
+            let directory = format!("ws{w:02}");
+            let path = home.join("conductor/workspaces").join(&name).join(&directory);
+            git(&main, &["worktree", "add", "-q", "-b", &format!("{name}-{directory}"), &path.to_string_lossy()]);
+            let key = format!("k{r}-{w}");
+            fixture.workspace(&Row { key: &key, repo: &format!("r{r}"), directory: &directory, name: Some("Some work"), branch: Some("b"), state: if w % 10 == 0 { "archived" } else { "active" }, path: None });
+        }
+    }
+    println!("MEASURE setup_secs={:.1}", started.elapsed().as_secs_f64());
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let started = Instant::now();
+    let mut job = new_job();
+    job.tool = crate::conductor_import::PROVIDER.into();
+    save(&core, &job, None).unwrap();
+    core.import_job_running.store(true, Ordering::SeqCst);
+    run(&core, job, &[home.clone()], None);
+    let job = status(&core).unwrap().unwrap();
+    println!(
+        "MEASURE job_secs={:.1} status={} total={} imported={} left_out={} not_carried={}",
+        started.elapsed().as_secs_f64(), job.status, job.total, job.imported, job.left_out, job.not_carried.len()
+    );
+    assert_eq!((job.imported, job.left_out), (1800, 200));
+}
