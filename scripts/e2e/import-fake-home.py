@@ -7,10 +7,11 @@ It holds a real Claude Code 2.1.325 session (the sanitized fixture, with an
 Explore subagent), a billing chat with a pasted screenshot, thinking, a search,
 a failing command, a compaction and a /rename title, three small docs chats,
 600 short chats in three more projects, one background run in the OS temp
-folder, one Claude memory and a CLAUDE.md, plus traces of Codex, Conductor and
-T3 Code so the "Found on this Mac" list shows what is coming.
+folder, one Claude memory and a CLAUDE.md, one Codex chat, an OpenCode store
+with a chat and its subagent, plus traces of Conductor and T3 Code so the
+"Found on this Mac" list shows what is coming.
 """
-import base64, json, os, shutil, sys, uuid
+import base64, json, os, shutil, sqlite3, sys, uuid
 
 home = os.path.abspath(sys.argv[1])
 repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,4 +84,40 @@ with open(os.path.join(home, ".codex/sessions/2026/11/17/rollout-2026-11-17T10-0
     ]) + "\n")
 with open(os.path.join(home, ".codex/session_index.jsonl"), "w") as out:
     out.write(json.dumps({"id": "codex-thread-1", "thread_name": "Speed up the refund job", "updated_at": "2026-11-17T10:05:00Z"}) + "\n")
+# An OpenCode store, with the columns of OpenCode 2.1's own schema: a chat
+# with a command and an edit, its subagent, and a background run in the temp
+# folder. Its credential table holds a canary nothing may ever show.
+store = os.path.join(home, ".local/share/opencode/opencode.db")
+os.makedirs(os.path.dirname(store), exist_ok=True)
+db = sqlite3.connect(store)
+db.executescript("""
+CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, connector_id text, method_id text, active integer, time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text NOT NULL, workspace_id text, parent_id text, fork_session_id text, fork_boundary text, slug text NOT NULL, directory text NOT NULL, path text, title text, version text NOT NULL, share_url text, metadata text, agent text, model text, time_created integer NOT NULL, time_updated integer NOT NULL, time_compacting integer, time_archived integer);
+CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+""")
+db.execute("INSERT INTO credential VALUES('c1',NULL,'key','CANARY-opencode-secret',NULL,NULL,1,1,1)")
+def oc_session(sid, parent, directory, title, at):
+    db.execute("INSERT INTO session_v2(id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES(?,?,?,?,?,?,?,?,?)", (sid, "p", parent, sid, directory, title, "2.1.1", at, at))
+def oc_row(sid, seq, kind, data):
+    db.execute("INSERT INTO session_message VALUES(?,?,?,?,?,?,?)", (f"{sid}-{seq}", sid, kind, seq, 1_795_000_000_000 + seq, 1_795_000_000_000 + seq, json.dumps(data)))
+def oc_tool(call, name, inp, out, meta): return {"type": "tool", "id": call, "name": name, "state": {"status": "completed", "input": inp, "content": [{"type": "text", "text": out}], "metadata": meta}}
+oc_session("ses_checkout", None, "/work/storefront", "Speed up the checkout page", 1_795_000_000_000)
+oc_row("ses_checkout", 1, "user", {"time": {}, "text": "The checkout page takes four seconds to load. Why?"})
+oc_row("ses_checkout", 2, "assistant", {"time": {}, "agent": "build", "model": {"id": "big-pickle", "providerID": "opencode", "variant": "high"}, "content": [
+    {"type": "reasoning", "text": "Probably the cart query. Let me measure before changing anything."},
+    oc_tool("call_1", "shell", {"command": "npm run profile -- checkout"}, "cart.load 3.6s (N+1: 48 queries)", {"exit": 0}),
+    oc_tool("call_2", "task", {"description": "Find every cart query", "prompt": "List the cart queries", "subagent_type": "explore"}, "Found 3 call sites.", {"sessionId": "ses_explore"}),
+    oc_tool("call_3", "edit", {"filePath": "/work/storefront/src/cart.ts", "oldString": "for", "newString": "join"}, "Edited", {"diff": "--- a/src/cart.ts\n+++ b/src/cart.ts\n-for (const item of items) await load(item)\n+await loadAll(items)\n"}),
+    {"type": "text", "text": "The cart loaded each item with its own query. One joined query brings the page to 0.4 s."},
+]})
+oc_session("ses_explore", "ses_checkout", "/work/storefront", "Find every cart query (@explore subagent)", 1_795_000_000_100)
+oc_row("ses_explore", 1, "user", {"time": {}, "text": "List the cart queries"})
+oc_row("ses_explore", 2, "assistant", {"time": {}, "model": {"id": "big-pickle", "variant": "default"}, "content": [
+    oc_tool("call_9", "grep", {"pattern": "cart.load", "path": "/work/storefront"}, "src/cart.ts:12\nsrc/checkout.ts:40\nsrc/api.ts:8", {}),
+    {"type": "text", "text": "Found 3 call sites: cart.ts, checkout.ts and api.ts."},
+]})
+oc_session("ses_probe", None, "/private/var/folders/h7/T/probe", "probe", 1_795_000_000_200)
+oc_row("ses_probe", 1, "user", {"time": {}, "text": "ping"})
+db.commit()
+db.close()
 print(home)
