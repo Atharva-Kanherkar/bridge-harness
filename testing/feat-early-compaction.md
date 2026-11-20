@@ -326,6 +326,9 @@ Frontend:
 - Both arms start `start_queued_input_maintenance`, the loop that the daemon starts. Both arms use the shipped constants.
 - After each turn, both arms wait until the due mark has a final decision, or until `WARM_LIMIT`.
 - Rubric for turns 11 to 14: R1 gives 1 point when the check command passes. R2 gives 1 point when the files keep each decision. The maximum is 8 points for each arm.
+- The check of each function has two or more half-even ties, where `Math.round` and `toFixed` give a different answer. It also needs a `LedgerError` with an UPPER_SNAKE `code` for each error case.
+- R2 reads the file with no comments, so a rule only in a comment gives no point. Only the header rule reads its comment line. R2 also refuses `Math["round"]`, `Math['round']` and `["toFixed"]`.
+- Unit tests in `early_compaction_eval::workload::tests`: `a_rule_only_in_a_comment_gives_no_point`, `a_forbidden_rounding_by_its_quoted_name_gives_no_point`.
 - The eval reads `usage_ledger` for the whole chat, with the compaction turn. It prints uncached input, cache write, cache read and output for each arm.
 - The eval reads the ledger sums after the last scripted turn and before the session stops. A stop runs one Bridge checkpoint turn with its own ledger rows.
 - Claude: the ledger row of a compaction request holds the real share of that request. The eval sums the rows as they are.

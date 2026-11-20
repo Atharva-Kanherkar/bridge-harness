@@ -64,12 +64,17 @@ pub(super) struct Decision {
 }
 
 /// The file text must match `pattern` when `present` is true, and must not
-/// match it when `present` is false.
+/// match it when `present` is false. The check reads the text with no
+/// comments, so a rule only in a comment gives no point.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Check {
     pub pattern: String,
     pub present: bool,
+    /// The check reads the comments too. Only the header rule needs them,
+    /// because its line is a comment.
+    #[serde(default)]
+    pub with_comments: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -97,9 +102,10 @@ pub(super) struct Turn {
     pub reference: Option<String>,
 }
 
-/// The compiled checks of each decision.
+/// The compiled checks of each decision: the pattern, `present` and
+/// `with_comments`.
 pub(super) struct Rubric {
-    decisions: Vec<(String, Vec<(Regex, bool)>)>,
+    decisions: Vec<(String, Vec<(Regex, bool, bool)>)>,
 }
 
 /// The points of one recall turn.
@@ -183,7 +189,7 @@ impl Workload {
                     .iter()
                     .map(|check| {
                         Regex::new(&check.pattern)
-                            .map(|regex| (regex, check.present))
+                            .map(|regex| (regex, check.present, check.with_comments))
                             .map_err(|error| format!("{}: {error}", decision.name))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -247,14 +253,59 @@ pub(super) fn generated_text(spec: &Generated, words: &[String], statuses: &[Str
     text
 }
 
+/// `text` with no line comment and no block comment. A quoted string or a
+/// template keeps its text, so `'http://'` stays. A block comment becomes one
+/// space, so the code on its two sides stays apart.
+fn strip_comments(text: &str) -> String {
+    let mut code = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        if let Some(open) = quote {
+            code.push(c);
+            if c == '\\' {
+                code.extend(chars.next());
+            } else if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match (c, chars.peek().copied()) {
+            ('/', Some('/')) => {
+                while chars.next_if(|next| *next != '\n').is_some() {}
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let mut last = '\0';
+                for next in chars.by_ref() {
+                    if last == '*' && next == '/' {
+                        break;
+                    }
+                    last = next;
+                }
+                code.push(' ');
+            }
+            ('"' | '\'' | '`', _) => {
+                quote = Some(c);
+                code.push(c);
+            }
+            _ => code.push(c),
+        }
+    }
+    code
+}
+
 impl Rubric {
     /// Whether `text` keeps each decision. A missing file keeps none.
     pub fn keeps(&self, text: Option<&str>) -> Vec<(String, bool)> {
+        let code = text.map(strip_comments);
         self.decisions
             .iter()
             .map(|(name, checks)| {
-                let kept = text.is_some_and(|text| {
-                    checks.iter().all(|(regex, present)| regex.is_match(text) == *present)
+                let kept = text.zip(code.as_deref()).is_some_and(|(text, code)| {
+                    checks.iter().all(|(regex, present, with_comments)| {
+                        regex.is_match(if *with_comments { text } else { code }) == *present
+                    })
                 });
                 (name.clone(), kept)
             })
@@ -423,6 +474,64 @@ mod tests {
         let missing = score_turn(number, false, rubric.keeps(None), "no file".into());
         if missing.points() != 0 || missing.kept.iter().any(|(_, kept)| *kept) {
             return Err(format!("a missing file scored {missing:?}"));
+        }
+        Ok(())
+    }
+
+    /// The names of the decisions that `text` loses.
+    fn lost(rubric: &Rubric, text: &str) -> Vec<String> {
+        rubric.keeps(Some(text)).into_iter().filter(|(_, kept)| !kept).map(|(name, _)| name).collect()
+    }
+
+    #[test]
+    fn a_rule_only_in_a_comment_gives_no_point() -> Result<(), String> {
+        let workload = load()?;
+        let rubric = workload.rubric()?;
+        let (_, turn) = recall(&workload).next().ok_or("no recall turn")?;
+        let reference = turn.reference.as_deref().ok_or("no reference")?;
+        // The rounding rule only in a block comment, the error rule only in a
+        // line comment.
+        let commented = [
+            (reference.replace("return roundHalfEven(", "/* roundHalfEven( */ return Math.floor(0.5 + "), "rounding"),
+            (reference.replace("throw new LedgerError(", "// new LedgerError(\n    throw fail("), "errors"),
+        ];
+        for (text, name) in &commented {
+            if lost(&rubric, text) != [*name] {
+                return Err(format!("{name} only in a comment: lost {:?}\n{text}", lost(&rubric, text)));
+            }
+        }
+        // A forbidden call only in a comment costs no point, and a string
+        // that holds two slashes is not a comment.
+        let kept = [
+            reference.replace("  return roundHalfEven(", "  // Not Math.round( or .toFixed(.\n  /* new Error( */\n  return roundHalfEven("),
+            reference.replace("return roundHalfEven(", "const note = 'see http://ledger'; return roundHalfEven("),
+        ];
+        for text in &kept {
+            if !lost(&rubric, text).is_empty() {
+                return Err(format!("lost {:?}\n{text}", lost(&rubric, text)));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_forbidden_rounding_by_its_quoted_name_gives_no_point() -> Result<(), String> {
+        let workload = load()?;
+        let rubric = workload.rubric()?;
+        let (number, turn) = recall(&workload).next().ok_or("no recall turn")?;
+        let reference = turn.reference.as_deref().ok_or("no reference")?;
+        for form in [
+            "Math[\"round\"](",
+            "Math['round'](",
+            "Math [ 'round' ] (",
+            "Number((1.5)[\"toFixed\"](0)) * 0 + (",
+            "Number((1.5)['toFixed'](0)) * 0 + (",
+        ] {
+            let text = reference.replace("return roundHalfEven(", &format!("return roundHalfEven(0) + {form}"));
+            let score = score_turn(number, true, rubric.keeps(Some(&text)), String::new());
+            if lost(&rubric, &text) != ["rounding"] || score.r2() != 0 {
+                return Err(format!("{form}: lost {:?}, {score:?}", lost(&rubric, &text)));
+            }
         }
         Ok(())
     }

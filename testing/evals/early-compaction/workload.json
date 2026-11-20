@@ -15,7 +15,7 @@
       },
       {
         "path": "check.mjs",
-        "text": "// Checks one module of src/. Usage: node check.mjs <name>\nimport { resolve } from 'node:path';\nimport { pathToFileURL } from 'node:url';\n\nconst checks = {\n  discount: {\n    file: 'src/discount.js',\n    name: 'applyDiscount',\n    ok: [[[10000, 15], 8500], [[2000, 50], 1000], [[0, 30], 0], [[10000, 0], 10000]],\n    bad: [[10000, 150], [10000, -5]],\n  },\n  tax: {\n    file: 'src/tax.js',\n    name: 'addTax',\n    ok: [[[10000, 7], 10700], [[2000, 25], 2500], [[0, 7], 0]],\n    bad: [[-1, 7]],\n  },\n  fee: {\n    file: 'src/fee.js',\n    name: 'cardFee',\n    ok: [[[10000], 320], [[1000], 59], [[2000], 88]],\n    bad: [[10.5]],\n  },\n  interest: {\n    file: 'src/interest.js',\n    name: 'simpleInterest',\n    ok: [[[120000, 5, 12], 6000], [[120000, 10, 6], 6000], [[0, 5, 3], 0]],\n    bad: [[120000, 5, -1]],\n  },\n};\n\nfunction fail(message) {\n  console.error(message);\n  process.exit(1);\n}\n\nconst key = process.argv[2];\nconst check = checks[key];\nif (!check) fail(`unknown check: ${key}`);\nconst loaded = await import(pathToFileURL(resolve(check.file)).href);\nconst fn = loaded[check.name];\nif (typeof fn !== 'function') fail(`${check.file} does not export ${check.name}`);\nfor (const [args, want] of check.ok) {\n  const got = fn(...args);\n  if (got !== want) fail(`${check.name}(${args.join(', ')}) gave ${got}, want ${want}`);\n}\nfor (const args of check.bad) {\n  let threw = false;\n  try {\n    fn(...args);\n  } catch {\n    threw = true;\n  }\n  if (!threw) fail(`${check.name}(${args.join(', ')}) did not throw`);\n}\nconsole.log(`${key}: ok`);\n"
+        "text": "// Checks one module of src/. Usage: node check.mjs <name>\nimport { resolve } from 'node:path';\nimport { pathToFileURL } from 'node:url';\n\nconst checks = {\n  discount: {\n    file: 'src/discount.js',\n    name: 'applyDiscount',\n    ok: [[[10000, 15], 8500], [[2000, 50], 1000], [[0, 30], 0], [[10000, 0], 10000], [[50, 95], 2], [[130, 95], 6]],\n    bad: [[10000, 150], [10000, -5]],\n  },\n  tax: {\n    file: 'src/tax.js',\n    name: 'addTax',\n    ok: [[[10000, 7], 10700], [[2000, 25], 2500], [[0, 7], 0], [[50, 5], 52], [[130, 5], 136]],\n    bad: [[-1, 7]],\n  },\n  fee: {\n    file: 'src/fee.js',\n    name: 'cardFee',\n    ok: [[[10000], 320], [[1000], 59], [[2000], 88], [[500], 44], [[2500], 102]],\n    bad: [[10.5]],\n  },\n  interest: {\n    file: 'src/interest.js',\n    name: 'simpleInterest',\n    ok: [[[120000, 5, 12], 6000], [[120000, 10, 6], 6000], [[0, 5, 3], 0], [[3000, 1, 1], 2], [[900, 2, 3], 4]],\n    bad: [[120000, 5, -1]],\n  },\n};\n\nfunction fail(message) {\n  console.error(message);\n  process.exit(1);\n}\n\nconst key = process.argv[2];\nconst check = checks[key];\nif (!check) fail(`unknown check: ${key}`);\nconst loaded = await import(pathToFileURL(resolve(check.file)).href);\nconst fn = loaded[check.name];\nif (typeof fn !== 'function') fail(`${check.file} does not export ${check.name}`);\nconst { LedgerError } = await import(pathToFileURL(resolve('src/errors.js')).href);\nfor (const [args, want] of check.ok) {\n  const got = fn(...args);\n  if (got !== want) fail(`${check.name}(${args.join(', ')}) gave ${got}, want ${want}`);\n}\nfor (const args of check.bad) {\n  let threw = false;\n  let error;\n  try {\n    fn(...args);\n  } catch (caught) {\n    threw = true;\n    error = caught;\n  }\n  if (!threw) fail(`${check.name}(${args.join(', ')}) did not throw`);\n  if (!(error instanceof LedgerError) || !/^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$/.test(String(error.code))) {\n    fail(`${check.name}(${args.join(', ')}) threw ${String(error)}, which breaks a rule of this chat`);\n  }\n}\nconsole.log(`${key}: ok`);\n"
       },
       {
         "path": "src/money.js",
@@ -150,7 +150,8 @@
       "checks": [
         {
           "pattern": "\\A// owner: ledger-team\\r?\\n",
-          "present": true
+          "present": true,
+          "withComments": true
         }
       ]
     },
@@ -163,7 +164,7 @@
           "present": true
         },
         {
-          "pattern": "Math\\.round\\(|\\.toFixed\\(",
+          "pattern": "Math\\s*\\.\\s*round\\s*\\(|Math\\s*\\[\\s*[\\\"'`]round[\\\"'`]\\s*\\]|\\.\\s*toFixed\\s*\\(|\\[\\s*[\\\"'`]toFixed[\\\"'`]\\s*\\]",
           "present": false
         }
       ]

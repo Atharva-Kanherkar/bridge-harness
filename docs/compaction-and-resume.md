@@ -65,7 +65,7 @@ These values change the run:
 - `BRIDGE_EARLY_COMPACTION_EVAL_ONLY`: `claude`, `codex`, `on` or `off`. It runs one harness or one arm. A run of one arm writes the figures, but it gives no verdict.
 - `BRIDGE_EARLY_COMPACTION_EVAL_REPORT_DIR`: the directory of the report. The default is `bridge-early-compaction-eval` in the temp directory of the system.
 
-The workload is `testing/evals/early-compaction/workload.json`. Turns 1 to 3 give three rules in the chat only. Turns 4 to 10 read large data files, so the window goes past the threshold. Turns 11 to 14 need the rules. Each of these turns gets 1 point when its check command passes, and 1 point when its file obeys each rule. The maximum is 8 points for each arm.
+The workload is `testing/evals/early-compaction/workload.json`. Turns 1 to 3 give three rules in the chat only. Turns 4 to 10 read large data files, so the window goes past the threshold. Turns 11 to 14 need the rules. Each of these turns gets 1 point when its check command passes, and 1 point when its file obeys each rule. The maximum is 8 points for each arm. The check has half-even ties that `Math.round` and `toFixed` fail, and it needs a `LedgerError` with an UPPER_SNAKE code. The rule check reads the file with no comments, except for the header line.
 
 The two arms of one harness run at the same time, each with its own data directory. After each turn, the two arms wait until the due mark has a final decision, or until the warm limit. An open attempt gets up to the settle limit. The eval adds the tokens of each chat from `usage_ledger` after the last turn. Then it stops the harness process with no checkpoint turn, so no checkpoint row goes into the sums.
 
