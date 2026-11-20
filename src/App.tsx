@@ -10,12 +10,14 @@ import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { useChatChangedFiles } from "./chatChangedFiles";
+import { COMPOSER_MENTION_TRIGGERS, FileMentionMenu } from "./components/FileMentionMenu";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ImportContinuation, ImportJob, ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
 import { workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, History, FileCode2, FileDiff, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, ListChecks, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, SquarePen, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { continuationNotice, importedChatBadge, importSourceLabel } from "./importSources";
 import { abandonFlight, beginNewChat, beginSend, bindNewChat, markFlight, markSubmitted } from "./sendLatency";
@@ -1736,6 +1738,8 @@ function AppContent() {
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
+  // Files this chat already wrote, marked M or A in the menu. Read only while it is open.
+  const mentionChanges = useChatChangedFiles({ enabled: mentionOpen, sessionId: session?.id, entries: forest?.entries, activeLeafId: forest?.head?.activeEntryId, events: sessionEvents, roots: [session?.cwd, workspace?.path] });
   // #agent shortcut: leading-only, and only while the target token is being
   // typed. The host resolves the selected token again from persisted config;
   // these rows are discovery, never execution authority.
@@ -4170,18 +4174,7 @@ function AppContent() {
                       })}
                     </div>
                   </div>}
-                  {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
-                      <span>Reference a file</span>
-                      <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
-                    </div>
-                    <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                        <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                        <span className="flex-1 min-w-0 text-meta whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
-                      </button>; })}
-                    </div>
-                  </div>}
+                  {mentionOpen && <FileMentionMenu id="file-mention-listbox" optionIdPrefix="file-mention-option-" files={fileMatches} query={mentionQuery ?? ""} activeIndex={mentionIndex} changes={mentionChanges} triggers={COMPOSER_MENTION_TRIGGERS} listRef={mentionListRef} className="absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 max-h-[min(420px,55vh)]" onActiveIndexChange={setMentionIndex} onPick={applyFileMention} />}
                   {slashOpen && <div id="slash-listbox" role="listbox" aria-label="Commands and skills" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-caption text-muted-foreground/70 border-b border-border flex items-center gap-2 font-medium">
                       <span>Commands & skills</span>
