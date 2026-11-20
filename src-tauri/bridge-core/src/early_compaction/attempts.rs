@@ -279,8 +279,10 @@ fn consider(core: &Arc<BridgeCore>, mark: &DueMark, now: DateTime<Utc>) {
         snapshot: Snapshot { enabled, opted_out, session, native_compaction, has_runtime, state, reading },
     };
     let decision = rule::decide(&inputs);
-    tracker.apply(&inputs.memory.mark, decision);
-    if let Decision::Fire(reason) = decision {
+    // A boundary or a newer turn end can take the mark after the memory
+    // check. Only the call that removes the mark can fire for it.
+    let taken = tracker.apply(&inputs.memory.mark, decision);
+    if let (Decision::Fire(reason), true) = (decision, taken) {
         fire(core, &inputs, reason, now);
     }
 }

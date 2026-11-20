@@ -59,6 +59,7 @@ pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(super) struct Levers {
     compact_hook: Slot<Hook>,
     send_hook: Slot<Hook>,
+    support_hook: Slot<Hook>,
     error: Slot<String>,
     /// One value for each send that reached a runtime: whether a holder of
     /// the input lease kept the sweep out while it ran.
@@ -75,6 +76,13 @@ impl Levers {
     /// Run `hook` inside the next adapter call of a send.
     pub(super) fn on_send(&self, hook: impl FnOnce() + Send + 'static) {
         *lock(&self.send_hook) = Some(Box::new(hook));
+    }
+
+    /// Run `hook` inside the next question to a runtime about its native
+    /// compaction. The sweep asks it after its memory check and before its
+    /// decision.
+    pub(super) fn on_support(&self, hook: impl FnOnce() + Send + 'static) {
+        *lock(&self.support_hook) = Some(Box::new(hook));
     }
 
     /// Each later adapter call of a compaction returns this error.
@@ -155,6 +163,10 @@ impl AdapterRuntime for EarlyRuntime {
         self.inner.read_usage()
     }
     fn native_compaction(&self) -> NativeCompaction {
+        let hook = lock(&self.levers.support_hook).take();
+        if let Some(hook) = hook {
+            hook();
+        }
         self.inner.native_compaction()
     }
     fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {

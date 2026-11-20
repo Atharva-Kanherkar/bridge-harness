@@ -1615,6 +1615,41 @@ fn a_fire_removes_the_due_mark() -> TestResult {
 }
 
 #[test]
+fn a_mark_that_goes_before_the_decision_does_not_fire() -> TestResult {
+    for chat in FIRING_CHATS {
+        // The boundary of a manual `/compact` takes the mark after the sweep
+        // copied it and before the sweep decides.
+        let (world, _) = marked(chat)?;
+        let core = Arc::downgrade(&world.core);
+        world.levers.on_support(move || {
+            if let Some(core) = core.upgrade() {
+                core.early_compaction.note_boundary(chat);
+            }
+        });
+        world.fire();
+        assert!(world.compacts(chat).is_empty() && world.attempts(chat)?.is_empty(), "{chat}: a removed mark fired");
+        assert!(world.mark(chat).is_none(), "{chat}");
+        // A newer turn end replaces the mark in the same window.
+        let (world, _) = marked(chat)?;
+        let core = Arc::downgrade(&world.core);
+        world.levers.on_support(move || {
+            if let Some(core) = core.upgrade() {
+                if let Some(mut newer) = core.early_compaction.due_mark(chat) {
+                    newer.turn_id = Some("a-newer-turn".to_owned());
+                    newer.completed_at += chrono::TimeDelta::seconds(1);
+                    core.early_compaction.accept(crate::early_compaction::Receipt::Due(newer));
+                }
+            }
+        });
+        world.fire();
+        assert!(world.compacts(chat).is_empty() && world.attempts(chat)?.is_empty(), "{chat}: a replaced mark fired");
+        let kept = world.mark(chat).ok_or("the newer mark went")?;
+        assert_eq!(kept.turn_id.as_deref(), Some("a-newer-turn"), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
 fn an_orchestrator_or_worker_turn_is_not_marked() -> TestResult {
     let changes = [
         "UPDATE sessions SET kind='orchestrator' WHERE id=?1",
