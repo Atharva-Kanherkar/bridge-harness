@@ -1559,6 +1559,18 @@ fn start_session_reuse_skips_workers_and_harness_subagents() {
     assert!(warm_thread(&core, &worker).is_none());
     assert_eq!(lineage(&core, &worker), worker_lineage);
 
+    // A newer worker row with no parent on the session: an old row from before
+    // the guards. Only its worker runtime keeps it out of the reuse.
+    {
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,provider_session_id) VALUES('orphan-worker','w','claude','Research','stopped','reported',0,'direct','orphan-thread')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('orphan-worker',?1,'stopped','research','key','reported','now')", params![chat]).unwrap();
+    }
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    let launched = asked(&script);
+    assert!(launched.iter().all(|launch| launch.provider.as_deref() == Some("thread-0")), "{:?}", verbs(&launched));
+    assert!(warm_thread(&core, "orphan-worker").is_none());
+
     // A newer harness subagent of the chat.
     core.db
         .lock()
@@ -2674,4 +2686,28 @@ fn with_the_switch_off_the_attempt_table_stays_empty() -> TestResult {
         assert_eq!(world.count("SELECT COUNT(*) FROM early_compaction_attempts", [])?, 0, "{saved:?}");
     }
     Ok(())
+}
+
+#[test]
+fn start_session_skips_an_aside_with_a_pending_fork() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "source-thread");
+    let aside = "aside";
+    {
+        let db = core.db.lock().unwrap();
+        // The aside keeps the thread of its source and a pending fork.
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,provider_session_id) VALUES(?1,'w','claude','Aside','stopped','reported',0,'direct','source-thread')",
+            params![aside],
+        )
+        .unwrap();
+        restoration::set_head_state(&db, aside, RestorationMode::NativeFork, crate::model::ResumeEligibility::Native, Some("source-thread")).unwrap();
+        db.execute("UPDATE sessions SET harness='codex' WHERE id=?1", params![chat]).unwrap();
+    }
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    let launched = asked(&script);
+    assert_eq!(verbs(&launched), [("start", None)], "{:?}", verbs(&launched));
+    assert!(warm_thread(&core, aside).is_none());
+    let started = new_session_of(&core, "w", "claude", &[aside]);
+    assert!(warm_thread(&core, &started).is_some());
 }
