@@ -2902,8 +2902,8 @@ fn spawn_reader_thread(
 }
 
 /// The usage setup of a launch that resumed the provider session `thread_id`
-/// natively. A Claude process starts from the session totals of the last
-/// stored usage, before the first frame of the launch. A resumed Codex thread
+/// natively. A Claude process starts from the session totals of the newest
+/// stored usage of that session, before the first frame of the launch. A resumed Codex thread
 /// sends its last usage again, so the result keeps that usage to drop the
 /// repeat. Call it only when the launch kept the same provider session.
 fn native_resume_usage(
@@ -2916,7 +2916,7 @@ fn native_resume_usage(
     if !matches!(adapter_id, "claude" | "codex") {
         return None;
     }
-    let usage_event = last_usage_event(db, session_id)?;
+    let usage_event = resume_usage_event(db, session_id, adapter_id, thread_id)?;
     if adapter_id == "claude" {
         registry.seed_usage_totals(adapter_id, thread_id, &usage_event);
         return None;
@@ -2924,17 +2924,70 @@ fn native_resume_usage(
     CodexUsageReplay::from_usage_event(&usage_event, thread_id)
 }
 
-/// The stored payload of the last `usage.updated` entry of a chat. The read
-/// looks at the newest 5000 entries only, so its cost has a cap. A launch
-/// calls it one time, never the frame path.
-fn last_usage_event(db: &Connection, session_id: &str) -> Option<serde_json::Value> {
+/// The stored payload of the newest `usage.updated` entry of the resumed
+/// provider session. The read looks at the 20 newest usage entries in the
+/// newest 5000 entries of the chat, so its cost has a cap. A launch calls it
+/// one time, never the frame path.
+///
+/// A Codex entry must name the thread in `threadId`. A Claude entry must name
+/// the session in `cumulative`. An older Claude entry with no `cumulative`
+/// fits only if the Claude `init` entry before it names the session. Only the
+/// newest such entry gets that check, so the launch does one more read at most.
+/// Bridge never subtracts the totals of a session that it cannot name.
+fn resume_usage_event(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    provider_session_id: &str,
+) -> Option<serde_json::Value> {
+    let mut statement = db
+        .prepare(
+            "SELECT sequence,payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' AND sequence>(SELECT COALESCE(MAX(sequence),0)-5000 FROM session_entries WHERE session_id=?1) ORDER BY sequence DESC LIMIT 20",
+        )
+        .ok()?;
+    let entries = statement
+        .query_map(params![session_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()?;
+    let mut init_read = false;
+    for (sequence, payload) in entries.flatten() {
+        let Ok(usage_event) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            continue;
+        };
+        if usage_event.pointer("/providerMeta/adapter").and_then(serde_json::Value::as_str) != Some(adapter_id) {
+            continue;
+        }
+        let named = |pointer: &str| {
+            usage_event.pointer(pointer).and_then(serde_json::Value::as_str) == Some(provider_session_id)
+        };
+        let fits = if adapter_id == "codex" {
+            named("/data/threadId")
+        } else if usage_event.pointer("/data/cumulative").is_some_and(serde_json::Value::is_object) {
+            named("/data/cumulative/sessionId")
+        } else if init_read {
+            false
+        } else {
+            init_read = true;
+            claude_init_session(db, session_id, sequence).as_deref() == Some(provider_session_id)
+        };
+        if fits {
+            return Some(usage_event);
+        }
+    }
+    None
+}
+
+/// The provider session of the newest Claude `init` entry before `sequence`,
+/// in the newest 5000 entries of the chat.
+fn claude_init_session(db: &Connection, session_id: &str, sequence: i64) -> Option<String> {
     db.query_row(
-        "SELECT payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' AND sequence>(SELECT COALESCE(MAX(sequence),0)-5000 FROM session_entries WHERE session_id=?1) ORDER BY sequence DESC LIMIT 1",
-        params![session_id],
-        |row| row.get::<_, String>(0),
+        "SELECT json_extract(payload,'$.data.session_id') FROM session_entries WHERE session_id=?1 AND kind='session.started' AND sequence<?2 AND sequence>(SELECT COALESCE(MAX(sequence),0)-5000 FROM session_entries WHERE session_id=?1) AND json_extract(payload,'$.providerMeta.adapter')='claude' AND json_extract(payload,'$.data.subtype')='init' ORDER BY sequence DESC LIMIT 1",
+        params![session_id, sequence],
+        |row| row.get::<_, Option<String>>(0),
     )
     .ok()
-    .and_then(|payload| serde_json::from_str(&payload).ok())
+    .flatten()
 }
 
 /// The last usage of a resumed Codex thread. After `thread/resume`, Codex
@@ -2947,8 +3000,8 @@ struct CodexUsageReplay {
 
 impl CodexUsageReplay {
     /// The seed of a native resume of `thread_id`, from the stored payload of
-    /// the last `usage.updated` entry of the chat. An entry of another adapter
-    /// gives nothing.
+    /// the newest `usage.updated` entry of that thread. An entry of another
+    /// adapter gives nothing.
     fn from_usage_event(usage_event: &serde_json::Value, thread_id: &str) -> Option<Self> {
         if usage_event.pointer("/providerMeta/adapter").and_then(serde_json::Value::as_str) != Some("codex") {
             return None;

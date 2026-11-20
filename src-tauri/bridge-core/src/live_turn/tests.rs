@@ -1015,8 +1015,8 @@ fn seeds(script: &Shared) -> Vec<(&'static str, String, Value)> {
 fn a_native_resume_seeds_the_claude_totals_from_the_last_usage_entry() {
     let (_dir, core, script) = live();
     let chat = chat_on(&core, "claude", Some("thread-0"));
-    store_usage(&core, &chat, "claude", 0.25);
-    store_usage(&core, &chat, "claude", 0.5);
+    store_claude_usage(&core, &chat, "thread-0", 0.25);
+    store_claude_usage(&core, &chat, "thread-0", 0.5);
     // A later entry of another kind does not hide the last usage entry.
     store::session_event(&core.db.lock().unwrap(), &chat, &agent::NormalizedEvent::new("turn.completed"), &json!({"adapter": "claude"})).unwrap();
     start_chat(&core, chat.clone()).unwrap();
@@ -1214,6 +1214,20 @@ fn a_codex_usage_frame_that_differs_from_the_seed_still_records() {
     wait_for_entries(&core, &chat, "turn.completed", 2);
     // D2 before the resume, then the two frames that differ and the late equal frame.
     assert_eq!(usage_counts(&core, &chat), (4, 4, 4));
+    let db = core.db.lock().unwrap();
+    let mut entries = db.prepare("SELECT payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' ORDER BY sequence").unwrap();
+    let entries: Vec<(String, i64)> = entries
+        .query_map([&chat], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|payload| {
+            let data = serde_json::from_str::<Value>(&payload.unwrap()).unwrap()["data"].clone();
+            (data["turnId"].as_str().unwrap().to_owned(), data["tokenUsage"]["last"]["outputTokens"].as_i64().unwrap())
+        })
+        .collect();
+    assert_eq!(entries, [("D2".into(), 5), ("D2".into(), 6), ("D1".into(), 5), ("D2".into(), 5)]);
+    let mut ledger = db.prepare("SELECT output_tokens FROM usage_ledger WHERE session_id=?1 ORDER BY id").unwrap();
+    let ledger: Vec<i64> = ledger.query_map([&chat], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(ledger, [5, 6, 5, 5]);
 }
 
 #[test]
@@ -1256,7 +1270,7 @@ fn workspace_chat(core: &BridgeCore, data_dir: &Path, harness: &str, thread: &st
 fn a_native_resume_of_a_workspace_chat_seeds_the_claude_totals() {
     let (dir, core, script) = live();
     let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
-    store_usage(&core, &chat, "claude", 0.5);
+    store_claude_usage(&core, &chat, "thread-0", 0.5);
     start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
     assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
     let seeded = seeds(&script);
@@ -1325,7 +1339,7 @@ fn a_cold_worker_that_resumes_natively_gets_the_seed() {
         )
         .unwrap();
     }
-    store_usage(&core, "worker", "claude", 0.5);
+    store_claude_usage(&core, "worker", "worker-thread", 0.5);
     match launch_worker_outcome(&core, "parent", "turn-1", &request, false) {
         WorkerLaunchOutcome::Launched(id) => assert_eq!(id, "worker"),
         _ => {
@@ -1337,4 +1351,106 @@ fn a_cold_worker_that_resumes_natively_gets_the_seed() {
     let seeded = seeds(&script);
     assert_eq!(seeded.len(), 1, "{seeded:?}");
     assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "worker-thread"));
+}
+
+/// Store the Claude `init` entry of the provider session `thread`.
+fn store_claude_init(core: &BridgeCore, chat: &str, thread: &str) {
+    let db = core.db.lock().unwrap();
+    for event in agent::normalize_claude_message(&claude_init(thread)) {
+        store::session_event(&db, chat, &event, &json!({"adapter": "claude"})).unwrap();
+    }
+}
+
+/// Store one Claude `usage.updated` entry with the saved totals of the
+/// provider session `thread`, as the normalizer writes it now.
+fn store_claude_usage(core: &BridgeCore, chat: &str, thread: &str, cost: f64) {
+    let model_usage = json!({"m": {"inputTokens": 1, "costUSD": cost}});
+    let mut event = agent::NormalizedEvent::new("usage.updated");
+    event.data = json!({
+        "usage": {"input_tokens": 1}, "totalCostUsd": cost, "modelUsage": model_usage,
+        "cumulative": {"sessionId": thread, "totalCostUsd": cost, "modelUsage": model_usage}
+    });
+    store::session_event(&core.db.lock().unwrap(), chat, &event, &json!({"adapter": "claude"})).unwrap();
+}
+
+/// Store one Codex `usage.updated` entry with the raw usage of `thread`.
+fn store_codex_usage(core: &BridgeCore, chat: &str, thread: Option<&str>, turn: &str) {
+    let mut event = agent::NormalizedEvent::new("usage.updated");
+    event.data = codex_usage(thread.unwrap_or_default(), turn, [9, 0, 9], [9, 0, 9])["params"].clone();
+    if thread.is_none() {
+        event.data.as_object_mut().unwrap().remove("threadId");
+    }
+    store::session_event(&core.db.lock().unwrap(), chat, &event, &json!({"adapter": "codex"})).unwrap();
+}
+
+#[test]
+fn a_newer_usage_entry_of_another_thread_does_not_hide_the_codex_seed() {
+    let (_dir, core, script) = live();
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    // An entry of another thread, and an entry that names no thread.
+    store_codex_usage(&core, &chat, Some("other-thread"), "X1");
+    store_codex_usage(&core, &chat, None, "X2");
+    script.lock().unwrap().output = vec![d2_usage(D_THREAD), codex_turn("turn/started", D_THREAD, "D3")];
+    start_chat(&core, chat.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some(D_THREAD))]);
+    wait_for_entries(&core, &chat, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &chat), (3, 1, 1));
+}
+
+#[test]
+fn a_newer_usage_entry_of_another_adapter_does_not_hide_the_seed() {
+    let (_dir, core, script) = live();
+    let claude = chat_on(&core, "claude", Some("thread-0"));
+    store_claude_usage(&core, &claude, "thread-0", 0.5);
+    store_codex_usage(&core, &claude, Some("thread-0"), "X1");
+    start_chat(&core, claude).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!(seeded[0].2["data"]["cumulative"]["totalCostUsd"], json!(0.5));
+
+    let codex = codex_chat_after_d2(&core, D_THREAD);
+    store_claude_usage(&core, &codex, D_THREAD, 0.5);
+    script.lock().unwrap().output = vec![d2_usage(D_THREAD), codex_turn("turn/started", D_THREAD, "D3")];
+    start_chat(&core, codex.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some(D_THREAD))]);
+    wait_for_entries(&core, &codex, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &codex), (2, 1, 1));
+}
+
+#[test]
+fn an_old_claude_usage_entry_of_another_provider_session_gives_no_seed() {
+    let (_dir, core, script) = live();
+    // Session A left an entry with no saved totals. Session B started in the
+    // same chat and stored no usage, and now B resumes.
+    let chat = chat_on(&core, "claude", Some("thread-B"));
+    store_claude_init(&core, &chat, "thread-A");
+    store_usage(&core, &chat, "claude", 0.5);
+    store_claude_init(&core, &chat, "thread-B");
+    start_chat(&core, chat).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-B"))]);
+    assert!(seeds(&script).is_empty());
+
+    // An old entry with no `init` entry before it names no session.
+    let unnamed = chat_on(&core, "claude", Some("thread-C"));
+    store_usage(&core, &unnamed, "claude", 0.5);
+    start_chat(&core, unnamed).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-C"))]);
+    assert!(seeds(&script).is_empty());
+}
+
+#[test]
+fn an_old_claude_usage_entry_of_the_same_provider_session_still_gives_the_seed() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", Some("thread-A"));
+    store_claude_init(&core, &chat, "thread-A");
+    store_usage(&core, &chat, "claude", 0.5);
+    // A newer entry of another adapter comes first, so the read goes past it.
+    store_codex_usage(&core, &chat, None, "X1");
+    start_chat(&core, chat).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-A"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-A"));
+    assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
 }

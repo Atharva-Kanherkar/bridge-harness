@@ -46,10 +46,14 @@ or what it cost — the two questions an observability read starts from.
 The Claude Agent SDK reports usage and cost as totals of the session. A Claude
 `usage.updated` entry holds the share of one turn in `modelUsage` and
 `totalCostUsd`, and the raw totals in `cumulative`. After a native resume in a
-new process, the normalizer starts from the totals of the last stored entry of
-the chat. After `thread/resume`, Codex sends the usage of the last turn again.
-Until the first turn starts, Bridge drops a frame equal to the last stored
-entry, so the repeat adds no ledger row.
+new process, the normalizer starts from the totals of the newest stored entry
+of the resumed session. A native resume of a chat, a workspace chat or a worker
+gets this seed. An older entry with no `cumulative` counts only if the Claude
+`init` entry before it names that session.
+
+After `thread/resume`, Codex sends the usage of the last turn again. Until the
+first turn starts, Bridge drops a frame equal to the newest stored entry of
+that thread, so the repeat adds no ledger row.
 
 ### What is never stored
 
