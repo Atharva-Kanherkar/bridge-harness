@@ -23,8 +23,9 @@ const LINK = process.env.LINK;
 const OUT = process.env.OUT ?? "/tmp/import-fake-user";
 const PORT = Number(process.env.CDP_PORT ?? 9377);
 const RECORD = process.env.RECORD !== "0";
-// How many generated chats the fake home holds (import-fake-home.py), plus 5 hand-made.
-const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 5;
+// How many generated chats the fake home holds (import-fake-home.py), plus 5
+// hand-made in ~/.claude and 1 in the work account's folder.
+const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 6;
 if (!LINK) throw new Error("Set LINK to a daemon link from scripts/web-link.mjs");
 
 rmSync(OUT, { recursive: true, force: true });
@@ -152,6 +153,16 @@ try {
     }
     return false;
   })()`);
+  // The fake user also has a work Claude account, added in Settings with its
+  // own folder.
+  const accountSaved = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.configState();
+    const claude = state.harnesses.find(item => item.id === "claude");
+    const saved = await bridgeApi.saveHarnessConfig({ ...claude, advanced: { ...(claude.advanced ?? {}), accounts: [{ id: "work", label: "Work", homePath: "~/.claude-work" }] } });
+    return saved.harnesses.find(item => item.id === "claude").advanced.accounts.length;
+  })()`);
+  check("A work Claude account with its own folder is in Settings", accountSaved === 1, String(accountSaved));
   await caption("Open Settings, then Chat history, then Import");
   await click("Open settings for");
   await click("Chat history");
@@ -163,7 +174,7 @@ try {
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 6 projects · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 6 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
     && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
@@ -281,6 +292,13 @@ try {
   check("The imported subagent opens as history, not as a background worker", !subagentChat.includes("This is a background worker") && subagentChat.includes("Starts a new chat with this history"), subagentChat.slice(0, 400).replace(/\n+/g, " | "));
   check("The open subagent's row is marked in the sidebar", await js(`document.querySelector("[data-subagent-row][aria-current='page']")?.textContent.includes("Find every cart query") === true`));
   await shot("05e-opencode-subagent-open-dark");
+
+  await caption("The work account's chat came over too");
+  await click("Rotate the Stripe keys");
+  await waitFor("the work account's chat", `document.body.innerText.includes("Rotated both keys")`);
+  await sleep(1000);
+  check("The chat from the work account's folder is in the sidebar and opens", (await text()).includes("Rotated both keys and updated the deploy secrets."));
+  await shot("05g-account-chat-dark");
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
