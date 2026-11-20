@@ -186,6 +186,9 @@ pub struct BridgeCore {
     /// keystroke pause would make the feature unusable.
     pub suggestion_engine: SuggestionEngine,
     pub usage_overview: crate::usage_overview::UsageOverviewService,
+    /// The early compaction switch in memory and the marks of the trigger.
+    /// Only `early_compaction_settings` sets the switch, after a write.
+    pub early_compaction: crate::early_compaction::Tracker,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -419,6 +422,7 @@ impl BridgeCore {
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
+            early_compaction: crate::early_compaction::Tracker::default(),
         }
     }
 
@@ -539,6 +543,8 @@ impl BridgeCore {
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
         );
+        let early_compaction = crate::early_compaction::Tracker::default();
+        early_compaction.set_enabled(crate::early_compaction_settings::stored_switch(&connection));
         Ok(Self {
             app_badges: Default::default(),
             db: Mutex::new(connection),
@@ -590,6 +596,7 @@ impl BridgeCore {
             external_import_previews: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
+            early_compaction,
         })
     }
 }

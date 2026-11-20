@@ -751,6 +751,20 @@
       "resultSchema": "delegation-notify-settings-view.json"
     },
     {
+      "command": "get_early_compaction_settings",
+      "domain": "config",
+      "method": "config/get_early_compaction_settings",
+      "paramsSchema": "get-early-compaction-settings-params.json",
+      "resultSchema": "early-compaction-settings-view.json"
+    },
+    {
+      "command": "save_early_compaction_settings",
+      "domain": "config",
+      "method": "config/save_early_compaction_settings",
+      "paramsSchema": "save-early-compaction-settings-params.json",
+      "resultSchema": "early-compaction-settings-view.json"
+    },
+    {
       "command": "get_chat_search_settings",
       "domain": "config",
       "method": "config/get_chat_search_settings",
@@ -2454,7 +2468,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 46
+    "minor": 47
   },
   "reserved": {
     "cancel": "$/cancel",

@@ -157,6 +157,34 @@ pub struct SaveDelegationNotifySettingsParams {
     pub level: Option<DelegationNotifyLevel>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct GetEarlyCompactionSettingsParams {
+    /// The chat to resolve. Absent returns only the global switch.
+    pub session_id: Option<String>,
+}
+
+/// `enabled` is the global switch with the opt-out of `session_id` applied.
+/// A chat can only opt out, so it is never on while the global switch is off.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct EarlyCompactionSettingsView {
+    pub enabled: bool,
+    pub global_enabled: bool,
+    pub session_opted_out: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveEarlyCompactionSettingsParams {
+    /// Present: `false` opts that chat out, null removes the opt-out, and `true`
+    /// is refused. Absent: set the global switch, which `enabled` must then carry.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkerSettingsParams { pub workspace_id: String, pub settings: WorkerSettings }
@@ -752,6 +780,28 @@ mod tests {
             serde_json::from_value::<RefreshOpencodeCatalogParams>(json!({"cwd": "/x"})).is_err(),
             "params reject arguments the contract does not name"
         );
+    }
+
+    #[test]
+    fn early_compaction_settings_params_refuse_unknown_fields() {
+        let get: GetEarlyCompactionSettingsParams = serde_json::from_value(json!({"sessionId": "chat-1"})).unwrap();
+        assert_eq!(get.session_id.as_deref(), Some("chat-1"));
+        assert_eq!(serde_json::from_value::<GetEarlyCompactionSettingsParams>(json!({})).unwrap().session_id, None);
+        assert!(serde_json::from_value::<GetEarlyCompactionSettingsParams>(json!({"session_id": "chat-1"})).is_err());
+        assert!(serde_json::from_value::<GetEarlyCompactionSettingsParams>(json!({"sessionId": "chat-1", "threshold": 1})).is_err());
+
+        let save: SaveEarlyCompactionSettingsParams = serde_json::from_value(json!({"sessionId": "chat-1", "enabled": null})).unwrap();
+        assert_eq!((save.session_id.as_deref(), save.enabled), (Some("chat-1"), None));
+        let global: SaveEarlyCompactionSettingsParams = serde_json::from_value(json!({"enabled": true})).unwrap();
+        assert_eq!((global.session_id, global.enabled), (None, Some(true)));
+        assert!(serde_json::from_value::<SaveEarlyCompactionSettingsParams>(json!({"enabled": true, "thresholdTokens": 1})).is_err());
+        assert!(serde_json::from_value::<SaveEarlyCompactionSettingsParams>(json!({"session_id": "chat-1", "enabled": false})).is_err());
+        assert!(serde_json::from_value::<SaveEarlyCompactionSettingsParams>(json!({"enabled": "yes"})).is_err());
+
+        let view = EarlyCompactionSettingsView { enabled: false, global_enabled: true, session_opted_out: true };
+        assert_eq!(serde_json::to_value(&view).unwrap(), json!({"enabled": false, "globalEnabled": true, "sessionOptedOut": true}));
+        assert!(serde_json::from_value::<EarlyCompactionSettingsView>(json!({"enabled": true, "extra": 1})).is_err());
+        assert_eq!(round_trip(&view), view);
     }
 
     #[test]

@@ -13,6 +13,7 @@ import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsGroup, SettingsPage, SettingsRow, TextButton } from "./settings/kit";
 import { SettingsRail } from "./settings/SettingsRail";
 import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
+import { EarlyCompactionSetting } from "./settings/EarlyCompactionSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
 import { NotificationsPage } from "./settings/NotificationsPage";
@@ -244,6 +245,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       <SettingsRow label="Model preferences" description="Choose models for chats and background tasks. Start with Bridge's defaults." onOpen={() => navigate("models")} />
       <SettingsRow label="Agents" description="Your own agents, plus Bridge's built-in ones. Pick one when you start a new chat." onOpen={() => navigate("agents")} />
     </SettingsGroup>
+    <EarlyCompactionSetting />
     <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced</summary><div className="mt-3">
       <SettingsGroup>
         <SettingsRow label="Background tasks" description="Tasks running at once, retries, and how long Bridge waits for an agent." onOpen={() => navigate("workers")} />

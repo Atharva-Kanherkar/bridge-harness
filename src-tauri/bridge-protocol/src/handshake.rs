@@ -172,9 +172,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `sessions/update_chat_tools` and an optional `toolSelection` on
 /// `sessions/create_configured_chat`. A 1.45 client still pairs: it never
 /// sends the field.
+///
+/// **1.47 adds the early compaction switch**:
+/// `config/get_early_compaction_settings` and
+/// `config/save_early_compaction_settings`. A 1.46 client still pairs: it
+/// never calls them.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 46,
+    minor: 47,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -499,10 +504,19 @@ mod tests {
     fn a_1_45_client_pairs_with_a_1_46_daemon() {
         let before = ProtocolVersion { major: 1, minor: 45 };
         let tools = ProtocolVersion { major: 1, minor: 46 };
-        assert_eq!(PROTOCOL_VERSION, tools);
         assert!(tools.accepts(before), "a 1.45 client still pairs with a 1.46 daemon");
         assert!(PROTOCOL_VERSION.accepts(before));
         assert!(!before.accepts(tools), "a 1.46 client needs the tool methods");
+    }
+
+    #[test]
+    fn early_compaction_client_rejects_a_daemon_without_it() {
+        let before = ProtocolVersion { major: 1, minor: 46 };
+        let early = ProtocolVersion { major: 1, minor: 47 };
+        assert_eq!(PROTOCOL_VERSION, early);
+        assert!(!before.accepts(early), "a 1.47 client needs the switch methods");
+        assert!(early.accepts(before), "a 1.46 client still pairs with a 1.47 daemon");
+        assert!(PROTOCOL_VERSION.accepts(before));
     }
 
     #[test]

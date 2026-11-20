@@ -152,6 +152,8 @@ methods![
     (SaveAttributionSettings, "config", "save_attribution_settings"),
     (GetDelegationNotifySettings, "config", "get_delegation_notify_settings"),
     (SaveDelegationNotifySettings, "config", "save_delegation_notify_settings"),
+    (GetEarlyCompactionSettings, "config", "get_early_compaction_settings"),
+    (SaveEarlyCompactionSettings, "config", "save_early_compaction_settings"),
     (GetChatSearchSettings, "config", "get_chat_search_settings"),
     (SaveChatSearchSettings, "config", "save_chat_search_settings"),
     (GetLimitRecoverySettings, "config", "get_limit_recovery_settings"),

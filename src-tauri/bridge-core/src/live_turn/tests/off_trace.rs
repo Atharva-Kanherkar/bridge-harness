@@ -213,11 +213,16 @@ fn seed_chat(core: &BridgeCore, session: &str, provider: &str, claude: bool) {
     ).unwrap();
 }
 
+/// The real save path writes the row, so this run holds the same row as a
+/// person who turned the switch off.
 fn save_switch_off(core: &BridgeCore) {
-    core.db.lock().unwrap().execute(
-        "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES(?1,'global','{\"enabled\":false}',?2,?2)",
-        params![SETTINGS_KIND, STARTED_AT],
-    ).unwrap();
+    let params = bridge_protocol::messages::SaveEarlyCompactionSettingsParams { session_id: None, enabled: Some(false) };
+    let view = crate::early_compaction_settings::save(core, &params).unwrap();
+    assert!(!view.enabled && !core.early_compaction.enabled());
+    let payload: String = core.db.lock().unwrap()
+        .query_row("SELECT payload FROM configuration_entries WHERE kind=?1 AND id='global'", params![SETTINGS_KIND], |row| row.get(0))
+        .unwrap();
+    assert_eq!(payload, r#"{"enabled":false}"#);
 }
 
 /// A harness that starts nothing and normalizes frames as the real Claude and

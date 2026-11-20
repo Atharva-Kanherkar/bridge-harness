@@ -22,6 +22,7 @@ import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryConsolidationSettings, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
+import type { EarlyCompactionSettings } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ApiKeysSnapshot, ChatApiKey, SaveApiKeyParams, SavedApiKey } from "./types";
 import { guessKeyKind } from "./apiKeys";
@@ -1559,6 +1560,13 @@ function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
   return { level: sessionOverride ?? mockNotifyGlobal, globalLevel: mockNotifyGlobal, sessionOverride };
 }
 
+let mockEarlyCompactionGlobal = false;
+const mockEarlyCompactionOptOuts = new Set<string>();
+function mockEarlyCompactionView(sessionId?: string): EarlyCompactionSettings {
+  const sessionOptedOut = sessionId ? mockEarlyCompactionOptOuts.has(sessionId) : false;
+  return { enabled: mockEarlyCompactionGlobal && !sessionOptedOut, globalEnabled: mockEarlyCompactionGlobal, sessionOptedOut };
+}
+
 // Workflows in mock mode: an in-memory store that follows the Rust rules the
 // screens depend on (a revision per save, approval cleared by any widening,
 // a stale revision refused). Validation proper is Rust's.
@@ -2636,6 +2644,8 @@ export const bridgeApi = {
     // Prompt-section overrides are configuration rows too: cleared, but their
     // history survives as appended reset revisions.
     mockPromptResetAll();
+    mockEarlyCompactionGlobal = false;
+    mockEarlyCompactionOptOuts.clear();
     return Promise.resolve(structuredClone(mockConfigState));
   },
   promptStack: (target: PromptTargetChoice, depth?: number): Promise<PromptStackView> =>
@@ -2919,6 +2929,25 @@ export const bridgeApi = {
     else if (level === null) mockNotifyOverrides.delete(sessionId);
     else mockNotifyOverrides.set(sessionId, level);
     return mockNotifyView(sessionId ?? undefined);
+  },
+  earlyCompactionSettings: async (sessionId?: string): Promise<EarlyCompactionSettings> => {
+    if (hasBackend()) return call("config/get_early_compaction_settings", { sessionId: sessionId ?? null });
+    return mockEarlyCompactionView(sessionId);
+  },
+  /** A null `sessionId` sets the global switch. A chat can only opt out (`false`) or remove its opt-out (`null`). */
+  saveEarlyCompactionSettings: async (sessionId: string | null, enabled: boolean | null): Promise<EarlyCompactionSettings> => {
+    if (hasBackend()) return call("config/save_early_compaction_settings", { sessionId, enabled });
+    if (sessionId === null) {
+      if (enabled === null) throw new Error("the global early compaction switch must be set, not cleared");
+      mockEarlyCompactionGlobal = enabled;
+    } else if (enabled === true) {
+      throw new Error("a chat can only opt out of early compaction, the global switch turns it on");
+    } else if (enabled === false) {
+      mockEarlyCompactionOptOuts.add(sessionId);
+    } else {
+      mockEarlyCompactionOptOuts.delete(sessionId);
+    }
+    return mockEarlyCompactionView(sessionId ?? undefined);
   },
   attributionSettings: async (): Promise<AttributionSettings> => {
     if (hasBackend()) return call("config/get_attribution_settings");

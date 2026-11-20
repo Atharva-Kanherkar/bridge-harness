@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
 import { NOTIFY_LEVELS, useDelegationNotify } from "../delegationNotify";
+import { EARLY_COMPACTION_CHAT_NOTE, useEarlyCompaction } from "../earlyCompaction";
 import { mentionToken, toPublicAlias } from "../referenceChip";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
@@ -230,7 +231,7 @@ function ChatRow({
 }
 
 const ROW_MENU_WIDTH = 224;
-const ROW_MENU_HEIGHT_ESTIMATE = 300;
+const ROW_MENU_HEIGHT_ESTIMATE = 400;
 
 function ChatRowMenu({
   chat,
@@ -321,6 +322,7 @@ function ChatRowMenu({
             <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
           </button>
         )}
+        {earlyCompactionApplies(chat) && <ChatEarlyCompaction chatId={chat.id} />}
         {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} item={item} />}
         {onArchive && (
           <>
@@ -332,6 +334,37 @@ function ChatRowMenu({
           </>
         )}
       </MenuPanel>
+    </>
+  );
+}
+
+/** Early compaction covers top-level direct chats on Claude and Codex, so only those get the opt-out. */
+function earlyCompactionApplies(chat: Session): boolean {
+  return chat.kind === "direct" && !chat.parentSessionId && (chat.harness === "claude" || chat.harness === "codex");
+}
+
+/** The opt-out of one chat. It shows only while the global switch is on, because a chat cannot turn the feature on. */
+function ChatEarlyCompaction({ chatId }: { chatId: string }) {
+  const { view, busy, set } = useEarlyCompaction(chatId);
+  if (!view?.globalEnabled) return null;
+  const on = view.enabled === true;
+  return (
+    <>
+      <MenuSeparator />
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        aria-checked={on}
+        disabled={busy}
+        className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-accent"
+        onClick={() => set(view.sessionOptedOut ? null : false)}
+      >
+        <Check size={12} strokeWidth={1.7} className={cn("mt-1 shrink-0", on ? "text-foreground" : "opacity-0")} aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">Compact early</span>
+          <span className="block text-[11px] leading-snug text-muted-foreground">{EARLY_COMPACTION_CHAT_NOTE}</span>
+        </span>
+      </button>
     </>
   );
 }

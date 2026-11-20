@@ -93,6 +93,7 @@ pub mod diagnostics;
 pub mod early_compaction;
 #[cfg(test)]
 mod early_compaction_eval;
+pub mod early_compaction_settings;
 pub mod events;
 pub mod external_import;
 pub mod import_bundle;

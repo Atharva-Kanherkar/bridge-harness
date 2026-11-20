@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
 import { appById, builtinEntry } from "../apps/registry";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bridgeApi } from "../api";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
 import { chordLabel } from "../keymap";
@@ -67,8 +71,19 @@ const daysAgo = (days: number, hour = 12) => {
   return date.toISOString();
 };
 
-// These tests run in the default node environment; the rail reads persisted
-// width/collapse/view state during render, so it needs a minimal storage stub.
+// The chat menu test mounts in jsdom. The static renders then see a window, so
+// some components pick useLayoutEffect, and the server renderer warns about it.
+// Only that warning is muted.
+beforeAll(() => {
+  const consoleError = console.error.bind(console);
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    if (String(args[0]).includes("useLayoutEffect does nothing on the server")) return;
+    consoleError(...args);
+  });
+});
+
+// The rail reads persisted width, collapse and view state during render, so it
+// needs a minimal storage stub.
 beforeEach(() => {
   const store = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
@@ -663,5 +678,63 @@ describe("portable chat ids", () => {
     expect(html).toContain('Chat actions for Kyoto');
     expect(html).toContain('aria-haspopup="menu"');
     expect(html).not.toContain('Copy chat ID chat-1');
+  });
+});
+
+describe("BridgeSidebar chat menu early compaction", () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  let container: HTMLDivElement, root: Root;
+  beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
+  afterEach(async () => {
+    act(() => root.unmount());
+    container.remove();
+    await bridgeApi.saveEarlyCompactionSettings(null, false);
+  });
+  const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  const optOut = () => document.body.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]');
+  const openMenu = async (chat: Session) => {
+    act(() => root.render(<BridgeSidebar {...props({ chats: [chat] })} />));
+    await settle();
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label^="Chat actions for"]')!.click());
+    await settle();
+  };
+  const closeMenu = async () => {
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label^="Chat actions for"]')!.click());
+    await settle();
+  };
+  const direct = session("chat-1", { title: "Policy engine budget", harness: "claude", kind: "direct", status: "ready" });
+
+  it("the chat menu shows the opt-out only when the global switch is on", async () => {
+    await bridgeApi.saveEarlyCompactionSettings(null, false);
+    await openMenu(direct);
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+    expect(optOut()).toBeNull();
+    await closeMenu();
+
+    await bridgeApi.saveEarlyCompactionSettings(null, true);
+    await openMenu(direct);
+    expect(optOut()?.getAttribute("aria-checked")).toBe("true");
+    expect(optOut()?.textContent).toContain("Compact early");
+    expect(optOut()?.textContent).toContain("context smaller at an idle turn end");
+    expect(optOut()?.textContent).toContain("Off by default");
+
+    act(() => optOut()!.click()); await settle();
+    expect(optOut()?.getAttribute("aria-checked")).toBe("false");
+    expect(await bridgeApi.earlyCompactionSettings("chat-1")).toEqual({ enabled: false, globalEnabled: true, sessionOptedOut: true });
+    act(() => optOut()!.click()); await settle();
+    expect(optOut()?.getAttribute("aria-checked")).toBe("true");
+    expect((await bridgeApi.earlyCompactionSettings("chat-1")).sessionOptedOut).toBe(false);
+    await closeMenu();
+
+    for (const other of [
+      session("chat-2", { title: "OpenCode chat", harness: "opencode", kind: "direct", status: "ready" }),
+      session("chat-3", { title: "Orchestrator", harness: "claude", kind: "orchestrator", status: "ready" }),
+      session("chat-4", { title: "Child chat", harness: "codex", kind: "direct", parentSessionId: "chat-1", status: "ready" }),
+    ]) {
+      await openMenu(other);
+      expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+      expect(optOut()).toBeNull();
+      await closeMenu();
+    }
   });
 });
