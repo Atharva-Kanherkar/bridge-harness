@@ -281,12 +281,12 @@ pub fn restoration_handoff(
     let entries = projection.render_entries.iter().collect::<Vec<_>>();
     let eligible_entries = entries.iter().filter(|entry| entry_text(entry).is_some()).count();
     let tail = render_tail(&entries, budget.saturating_sub(header_bytes), restoration_entry_bytes(budget));
-    if header.is_empty() && tail.is_empty() {
+    if header.is_empty() && tail.lines.is_empty() {
         return Ok(None);
     }
-    let carried_entries = tail.len();
+    let carried_entries = tail.messages;
     let mut lines = header;
-    lines.extend(tail);
+    lines.extend(tail.lines);
     // By construction: header ≤ MAX, tail ≤ budget − header ≤ MAX − header.
     let context = lines.join("\n");
     Ok(Some(RestorationHandoff {
@@ -319,20 +319,76 @@ pub(crate) fn entry_text(entry: &crate::model::SessionEntry) -> Option<&str> {
     .filter(|value| !value.is_empty())
 }
 
+/// What [`render_tail`] carried.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Tail {
+    /// The lines, oldest first.
+    pub lines: Vec<String>,
+    /// How many of the lines are conversation entries (not `tools:` lines).
+    pub messages: usize,
+    /// The sequence of the oldest conversation entry carried.
+    pub oldest_sequence: Option<i64>,
+}
+
+/// One thing a tail can carry: a conversation entry, or the facts of the tool
+/// calls that ran between two of them.
+enum TailItem<'a> {
+    Message(&'a crate::model::SessionEntry, &'a str),
+    Tools(Vec<crate::tool_facts::ToolFact>),
+}
+
+/// `entries` (oldest first) as tail items: each conversation entry on its own,
+/// and each run of completed tool calls between two of them as one item.
+fn tail_items<'a>(entries: &[&'a crate::model::SessionEntry]) -> Vec<TailItem<'a>> {
+    let started = crate::tool_facts::StartedIndex::new(entries.iter().copied());
+    let mut items = Vec::new();
+    let mut run = Vec::new();
+    for entry in entries {
+        if let Some(text) = entry_text(entry) {
+            if !run.is_empty() {
+                items.push(TailItem::Tools(std::mem::take(&mut run)));
+            }
+            items.push(TailItem::Message(entry, text));
+        } else if let Some(fact) = crate::tool_facts::fact(entry, &started) {
+            run.push(fact);
+        }
+    }
+    if !run.is_empty() {
+        items.push(TailItem::Tools(run));
+    }
+    items
+}
+
 /// Labelled lines for `entries` (oldest first), kept newest-first until
 /// `budget` bytes are spent, each clipped to `entry_allowance`, and returned
 /// oldest first. If even the newest entry does not fit, its most recent bytes
 /// are kept rather than nothing.
+///
+/// The tool calls between two conversation entries ride as one `tools:` line
+/// ([`crate::tool_facts::line`]): what ran and what it touched, never its
+/// output. They spend the same budget, so a tool-heavy turn costs a line.
 pub(crate) fn render_tail(
     entries: &[&crate::model::SessionEntry],
     budget: usize,
     entry_allowance: usize,
-) -> Vec<String> {
+) -> Tail {
     let mut remaining = budget;
-    let mut tail = Vec::new();
-    for entry in entries.iter().rev() {
-        let Some(value) = entry_text(entry) else {
-            continue;
+    let mut tail = Tail::default();
+    for item in tail_items(entries).iter().rev() {
+        let (entry, value) = match item {
+            TailItem::Message(entry, value) => (*entry, *value),
+            TailItem::Tools(facts) => {
+                let Some(line) = crate::tool_facts::line(facts) else {
+                    continue;
+                };
+                let cost = line.len() + 1;
+                if cost > remaining {
+                    break;
+                }
+                remaining -= cost;
+                tail.lines.push(line);
+                continue;
+            }
         };
         let clipped = clip_middle(value, entry_allowance);
         let value = clipped.as_str();
@@ -340,17 +396,21 @@ pub(crate) fn render_tail(
         let cost = line.len() + 1;
         if cost <= remaining {
             remaining -= cost;
-            tail.push(line);
+            tail.lines.push(line);
+            tail.messages += 1;
+            tail.oldest_sequence = Some(entry.sequence);
             continue;
         }
         let prefix = format!("{}: …", entry.kind);
-        if tail.is_empty() && remaining > prefix.len() + 1 {
+        if tail.lines.is_empty() && remaining > prefix.len() + 1 {
             let kept = keep_tail(value, remaining - prefix.len() - 1);
-            tail.push(format!("{prefix}{kept}"));
+            tail.lines.push(format!("{prefix}{kept}"));
+            tail.messages += 1;
+            tail.oldest_sequence = Some(entry.sequence);
         }
         break;
     }
-    tail.reverse();
+    tail.lines.reverse();
     tail
 }
 
@@ -511,7 +571,7 @@ pub fn set_head_state(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::session_forest::EntryKind;
     use std::path::Path;
@@ -680,6 +740,62 @@ mod tests {
         assert_eq!(header.label, "checkpoint");
         assert_eq!(header.files_touched, vec!["scripts/probe.sh".to_owned()]);
         assert_eq!((handoff.carried_entries, handoff.eligible_entries), (2, 2));
+    }
+
+    /// A tool entry as an adapter writes it: through the normalized-event
+    /// envelope, not `forest.append`.
+    pub(crate) fn tool_event(db: &Connection, session: &str, kind: &str, item: &str, title: Option<&str>, text: Option<&str>, data: serde_json::Value) {
+        let mut event = crate::agent::NormalizedEvent::new(kind);
+        event.item_id = Some(item.into());
+        event.title = title.map(str::to_owned);
+        event.text = text.map(str::to_owned);
+        event.status = Some(if kind.ends_with(".started") { "inProgress" } else { "completed" }.into());
+        event.data = data;
+        store::session_event(db, session, &event, &serde_json::json!({})).unwrap();
+    }
+
+    #[test]
+    fn tool_lines_ride_in_the_tail_and_messages_are_still_what_is_counted() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"run the tests and open the PR"})).unwrap();
+        tool_event(&db, "s", "command.started", "exec-1", Some("/bin/zsh -lc 'cargo test'"), None, serde_json::json!({"command":"/bin/zsh -lc 'cargo test'"}));
+        tool_event(&db, "s", "command.output_delta", "exec-1", None, Some("RAW TEST OUTPUT"), serde_json::json!({}));
+        tool_event(&db, "s", "command.completed", "exec-1", None, Some("RAW TEST OUTPUT"), serde_json::json!({"command":"/bin/zsh -lc 'cargo test'","exitCode":101,"aggregatedOutput":"RAW TEST OUTPUT"}));
+        tool_event(&db, "s", "file_change.completed", "exec-2", None, None, serde_json::json!({"type":"fileChange","changes":[{"path":"src/retry.rs","diff":"RAW DIFF"}]}));
+        forest.append("s", EntryKind::AssistantMessage, serde_json::json!({"text":"one test fails; I fixed retry.rs"})).unwrap();
+        tool_event(&db, "s", "command.completed", "exec-3", None, None, serde_json::json!({"command":"gh pr create --fill","exitCode":0}));
+
+        let handoff = restoration_handoff(&db, "s", 200_000).unwrap().unwrap();
+        let text = &handoff.text;
+        let lines = text.lines().collect::<Vec<_>>();
+        let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("no {needle} in {text}"));
+        assert!(at("user.message: run the tests") < at("tools: ran `cargo test` (exit 101); edited src/retry.rs"), "{text}");
+        assert!(at("tools: ran `cargo test`") < at("assistant.message: one test fails"), "{text}");
+        assert!(at("assistant.message: one test fails") < at("tools: ran `gh pr create --fill` (exit 0)"), "{text}");
+        assert!(!text.contains("RAW"), "no output reaches the handoff: {text}");
+        assert_eq!((handoff.carried_entries, handoff.eligible_entries), (2, 2), "tool lines are not messages");
+    }
+
+    #[test]
+    fn a_tool_line_that_does_not_fit_stops_the_tail_like_a_message() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"older ask"})).unwrap();
+        for index in 0..6 {
+            tool_event(&db, "s", "command.completed", &format!("e{index}"), None, None, serde_json::json!({"command": format!("echo {}", "y".repeat(70)), "exitCode": 0}));
+        }
+        forest.append("s", EntryKind::AssistantMessage, serde_json::json!({"text":"newest reply"})).unwrap();
+        let entries = SessionForest::new(&db).active_branch("s").unwrap();
+        let refs = entries.iter().collect::<Vec<_>>();
+        let newest_only = "assistant.message: newest reply".len() + 1;
+        let tail = render_tail(&refs, newest_only + 10, 2_000);
+        assert_eq!(tail.lines, vec!["assistant.message: newest reply".to_owned()]);
+        assert_eq!((tail.messages, tail.oldest_sequence), (1, Some(entries.last().unwrap().sequence)));
+        let all = render_tail(&refs, 10_000, 2_000);
+        assert_eq!(all.lines.len(), 3, "{:?}", all.lines);
+        assert_eq!(all.messages, 2);
+        assert_eq!(all.oldest_sequence, Some(entries[0].sequence));
     }
 
     #[test]

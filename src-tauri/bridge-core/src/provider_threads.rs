@@ -153,9 +153,25 @@ pub fn owed_after(
 
 /// How many conversation entries the active branch holds after `sequence`.
 pub fn entries_since(db: &Connection, session_id: &str, sequence: i64) -> Result<usize, BridgeError> {
-    Ok(conversation_since(db, session_id, sequence)?.len())
+    Ok(conversation_since(db, session_id, sequence)?
+        .iter()
+        .filter(|entry| is_said(entry))
+        .count())
 }
 
+/// A conversation entry the delta lists as said: not a summary of it.
+fn is_said(entry: &SessionEntry) -> bool {
+    // A switch checkpoint landing in this window is the returning thread's own
+    // summary of itself, or the other model's summary of turns already listed.
+    matches!(
+        entry.kind.as_str(),
+        "user.message" | "assistant.message" | "worker.result" | "handoff.brief"
+    ) && restoration::entry_text(entry).is_some()
+}
+
+/// The active branch after `sequence`: what was said, and the tool calls the
+/// other app made in between (their started entries too, which name what a
+/// Claude tool result ran).
 fn conversation_since(
     db: &Connection,
     session_id: &str,
@@ -167,16 +183,11 @@ fn conversation_since(
     Ok(branch
         .into_iter()
         .filter(|entry| entry.sequence > sequence)
-        // What was said, not summaries of it: a switch checkpoint landing in
-        // this window is the returning thread's own summary of itself, or the
-        // other model's summary of turns already listed here.
         .filter(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "handoff.brief"
-            )
+            is_said(entry)
+                || crate::tool_facts::is_completed_tool(&entry.kind)
+                || crate::tool_facts::is_started_tool(&entry.kind)
         })
-        .filter(|entry| restoration::entry_text(entry).is_some())
         .collect())
 }
 
@@ -196,15 +207,18 @@ pub fn owed_delta(
     let entries = conversation_since(db, session_id, after)?;
     let refs = entries.iter().collect::<Vec<_>>();
     let budget = restoration::restoration_budget_bytes(context_window_tokens);
-    let lines = restoration::render_tail(&refs, budget, restoration::restoration_entry_bytes(budget));
-    if lines.is_empty() {
+    let tail = restoration::render_tail(&refs, budget, restoration::restoration_entry_bytes(budget));
+    if tail.lines.is_empty() {
         return Ok(None);
     }
-    let omitted = entries.len().saturating_sub(lines.len());
+    let said = entries.iter().filter(|entry| is_said(entry)).count();
+    let omitted = said.saturating_sub(tail.messages);
+    let lines = tail.lines;
     let mut text = String::from(
         "You are back on this conversation after it ran on another model for a while. \
          Your own thread above is unchanged; this is what was said in this chat since \
-         your last turn here, oldest first. Files and tools may have changed since then.",
+         your last turn here, and what the other model's tools did, oldest first. Files \
+         may have changed since then.",
     );
     if omitted > 0 {
         text.push_str(&format!(" The {omitted} oldest of these entries did not fit and are left out."));
@@ -296,6 +310,23 @@ mod tests {
 
         settle(&db, "s", "thread-1").unwrap();
         assert!(owed_delta(&db, "s", "thread-1", 200_000).unwrap().is_none(), "owed once");
+    }
+
+    #[test]
+    fn the_delta_for_a_returned_thread_carries_tool_lines() {
+        let db = db();
+        say(&db, EntryKind::UserMessage, "already in the thread");
+        record_left(&db, "s", "claude", None, "k", "thread-1").unwrap();
+        say(&db, EntryKind::UserMessage, "fix the flaky test on the other model");
+        crate::restoration::tests::tool_event(&db, "s", "command.completed", "exec-1", None, Some("OUTPUT"), json!({"command": "/bin/zsh -lc 'cargo test retry'", "exitCode": 0}));
+        crate::restoration::tests::tool_event(&db, "s", "file_change.completed", "exec-2", None, None, json!({"changes": [{"path": "src/retry.rs"}]}));
+        say(&db, EntryKind::AssistantMessage, "fixed and green");
+        mark_returned(&db, "s", "k").unwrap();
+        assert_eq!(entries_since(&db, "s", find(&db, "s", "k").unwrap().unwrap().left_at_sequence).unwrap(), 2, "tools are not messages");
+        let delta = owed_delta(&db, "s", "thread-1", 200_000).unwrap().unwrap();
+        let tools = delta.find("tools: ran `cargo test retry` (exit 0); edited src/retry.rs").unwrap_or_else(|| panic!("{delta}"));
+        assert!(delta.find("fix the flaky test").unwrap() < tools && tools < delta.find("fixed and green").unwrap(), "{delta}");
+        assert!(!delta.contains("OUTPUT") && !delta.contains("did not fit"), "{delta}");
     }
 
     #[test]
