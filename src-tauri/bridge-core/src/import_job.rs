@@ -11,6 +11,7 @@
 
 use crate::claude_import::{self, ClaudeCodeImporter};
 use crate::codex_import::{self, CodexImporter};
+use crate::opencode_import::{self, OpenCodeImporter};
 use crate::BridgeError;
 use crate::events::CoreEvent;
 use crate::external_import::{
@@ -107,6 +108,7 @@ pub fn status(core: &BridgeCore) -> Result<Option<wire::ImportJob>, BridgeError>
 pub(crate) enum Source {
     Claude,
     Codex,
+    OpenCode,
 }
 
 impl Source {
@@ -114,6 +116,7 @@ impl Source {
         match tool {
             claude_import::PROVIDER => Some(Self::Claude),
             codex_import::PROVIDER => Some(Self::Codex),
+            opencode_import::PROVIDER => Some(Self::OpenCode),
             _ => None,
         }
     }
@@ -121,6 +124,7 @@ impl Source {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::OpenCode => "OpenCode",
         }
     }
     /// The folders this machine keeps the tool's data in.
@@ -128,24 +132,35 @@ impl Source {
         match self {
             Self::Claude => claude_import::machine_config_roots(),
             Self::Codex => codex_import::machine_codex_homes(),
+            Self::OpenCode => opencode_import::machine_opencode_homes(),
         }
     }
     fn work(self, roots: &[PathBuf]) -> Result<claude_import::JobWork, BridgeError> {
         match self {
             Self::Claude => claude_import::job_work(roots),
             Self::Codex => codex_import::job_work(roots),
+            Self::OpenCode => opencode_import::job_work(roots),
         }
     }
     fn key(self, artifact: &DiscoveredArtifact) -> String {
         match self {
             Self::Claude => claude_import::job_key(artifact),
             Self::Codex => codex_import::job_key(artifact),
+            Self::OpenCode => opencode_import::job_key(artifact),
         }
     }
-    fn folder(self, path: &Path) -> Option<String> {
+    /// The folder a chat ran in, for "now importing": the listing's when it
+    /// has one (OpenCode's sessions are rows, not files), else read from the
+    /// file.
+    fn folder(self, artifact: &DiscoveredArtifact) -> Option<String> {
+        if let Some(folder) = artifact.project_path.clone() {
+            return Some(folder);
+        }
+        let path = Path::new(&artifact.canonical_source_ref);
         match self {
             Self::Claude => claude_import::transcript_folder(path),
             Self::Codex => codex_import::transcript_folder(path),
+            Self::OpenCode => None,
         }
     }
     fn preview(self, roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> Result<Vec<ImportCandidate>, BridgeError> {
@@ -155,12 +170,14 @@ impl Source {
         match self {
             Self::Claude => ClaudeCodeImporter.preview(&claude_import::job_discovery(roots, artifacts), &selection),
             Self::Codex => CodexImporter.preview(&codex_import::job_discovery(roots, artifacts), &selection),
+            Self::OpenCode => OpenCodeImporter.preview(&opencode_import::job_discovery(roots, artifacts), &selection),
         }
     }
     fn normalize(self, candidate: ImportCandidate) -> Result<crate::external_import::NormalizedImportCandidate, BridgeError> {
         match self {
             Self::Claude => ClaudeCodeImporter.normalize(candidate),
             Self::Codex => CodexImporter.normalize(candidate),
+            Self::OpenCode => OpenCodeImporter.normalize(candidate),
         }
     }
 }
@@ -295,7 +312,7 @@ impl Runner<'_> {
             self.job.current_project = batch
                 .iter()
                 .find(|artifact| artifact.kind == CandidateKind::Conversation)
-                .and_then(|artifact| self.source.folder(Path::new(&artifact.canonical_source_ref)));
+                .and_then(|artifact| self.source.folder(artifact));
             match import_batch(self.core, self.source, &work.roots, batch) {
                 Ok(outcome) => {
                     add_batch(self.job, &outcome.candidates, outcome.commit.as_ref());
@@ -525,7 +542,7 @@ fn skipped_record_text(reason: &str) -> Option<String> {
         "tool_result_without_call" => "tool results with no matching call",
         "malformed_line" => "unreadable lines",
         "oversized_line" => "lines over 64 MB",
-        "non_object_line" | "untyped_record" => "unreadable records",
+        "non_object_line" | "untyped_record" | "unreadable_row" => "unreadable records",
         "invalid_timestamp" => "records with an unreadable time",
         "missing_uuid" => "records without an id",
         "missing_message_payload" => "records with no message",
@@ -542,6 +559,10 @@ fn skipped_record_text(reason: &str) -> Option<String> {
         format!("items of a kind Bridge does not show ({kind})")
     } else if let Some(kind) = reason.strip_prefix("event:") {
         format!("events of a kind Bridge does not know ({kind})")
+    } else if let Some(kind) = reason.strip_prefix("row:") {
+        format!("records of a kind Bridge does not know ({kind})")
+    } else if let Some(kind) = reason.strip_prefix("part:") {
+        format!("message parts of a kind Bridge does not show ({kind})")
     } else if let Some(kind) = reason.strip_prefix("system:") {
         format!("system records of a kind Bridge does not know ({kind})")
     } else if let Some(kind) = reason.strip_prefix("content:") {
