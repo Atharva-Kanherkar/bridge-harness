@@ -34,6 +34,11 @@ left open:
 - Consecutive facts between two conversation entries merge into one
   `tools:` line. A line shows at most 6 facts and at most 480 bytes, then
   `(+N more)`.
+  - Amended during implementation: the line names the newest facts of the
+    run, in the order they ran, after `(+N earlier)`. The last calls before a
+    reply (the test run that passed, the PR it opened) say where the work
+    stands. Facts are extracted raw and scrubbed only when shown, so a branch
+    of thousands of tool calls costs a scrub only for the lines that fit.
 - Every fact goes through the history scrubber, so a token in a command
   line never reaches the handoff.
 - Tool lines count against the same tail budget as messages. A branch with no
@@ -84,6 +89,9 @@ left open:
     clipped to 2000 chars and tool output to 1200.
   - `limit` defaults to 20, clamped to 1..=50. The reply has `nextBefore`
     (the oldest sequence returned, or null at the start) and the data note.
+  - Amended during implementation: a page also stops at 24 KiB of entries, so
+    the server's 32 KiB ceiling never cuts a page and `nextBefore` is always
+    exact.
 - Refused: a worker session or a session with a parent (404), and the route's
   own refusals (read-only access, rate limit) apply as for the other history
   tools.
