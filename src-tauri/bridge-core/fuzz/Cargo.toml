@@ -3,6 +3,8 @@
 #   cd src-tauri/bridge-core/fuzz
 #   cargo +nightly fuzz run memory_gate corpus/memory_gate seeds/memory_gate -- -max_total_time=300
 #   cargo +nightly fuzz run memory_tools corpus/memory_tools seeds/memory_tools -- -max_total_time=300
+#   cargo +nightly fuzz run handoff corpus/handoff seeds/handoff -- -max_total_time=300
+#   cargo +nightly fuzz run chats_history corpus/chats_history seeds/chats_history -- -max_total_time=300
 #
 # Its own workspace so the main build never compiles libfuzzer.
 [package]
@@ -20,6 +22,7 @@ bridge-core = { path = ".." }
 bridge-protocol = { path = "../../bridge-protocol" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
+chrono = "0.4"
 tempfile = "3"
 
 [workspace]
@@ -35,6 +38,20 @@ bench = false
 [[bin]]
 name = "memory_tools"
 path = "fuzz_targets/memory_tools.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handoff"
+path = "fuzz_targets/handoff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chats_history"
+path = "fuzz_targets/chats_history.rs"
 test = false
 doc = false
 bench = false

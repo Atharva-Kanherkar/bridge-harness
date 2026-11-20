@@ -227,7 +227,9 @@ fn tool_facts_survive_any_payload_and_stay_bounded() {
                     prop_assert!(facts.is_empty());
                 }
                 for (_, data) in &payloads {
-                    let _ = tool_facts::output(&json!({"data": data}));
+                    if let Some(output) = tool_facts::output(&json!({"data": data})) {
+                        prop_assert!(!output.is_empty() && output.trim() == output);
+                    }
                 }
                 Ok(())
             },

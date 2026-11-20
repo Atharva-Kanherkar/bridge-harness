@@ -158,7 +158,13 @@ pub fn copy(carry: &Carry) -> Result<Copied, BridgeError> {
         .map_err(|error| fail("copy to", &temp, error))
         .and_then(|_| fs::rename(&temp, &carry.destination).map_err(|error| fail("move into", &carry.destination, error)));
     if let Err(error) = written {
-        let _ = fs::remove_file(&temp);
+        // Best effort: a temp file that will not go is named for this carry
+        // and is never read as a transcript.
+        if let Err(cleanup) = fs::remove_file(&temp) {
+            if cleanup.kind() != io::ErrorKind::NotFound {
+                return Err(BridgeError::Invalid(format!("{error}; and could not remove {}: {cleanup}", temp.display())));
+            }
+        }
         return Err(error);
     }
     Ok(Copied::Written)
