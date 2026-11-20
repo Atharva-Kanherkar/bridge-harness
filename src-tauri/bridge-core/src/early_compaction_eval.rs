@@ -418,6 +418,7 @@ fn settlement(open: &OpenAttempt, outcome: Outcome) -> Settlement {
         boundary_pre_tokens: None,
         boundary_post_tokens: None,
         compaction_turn_id: None,
+        error: None,
     }
 }
 

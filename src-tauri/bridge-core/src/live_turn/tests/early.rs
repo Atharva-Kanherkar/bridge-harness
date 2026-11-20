@@ -528,6 +528,26 @@ impl World {
         self.feed(chat, &frames)
     }
 
+    /// The failed end of the compaction turn, with `error` as the text of
+    /// the provider.
+    pub(super) fn failed_turn_end(&self, chat: &str, error: &str) -> TestResult {
+        let turn = format!("codex-turn-{}", self.next_number());
+        let frames = if chat == CLAUDE_CHAT {
+            let mut result = claude_result("", 0, claude_usage(0, 0, 0, 0), (1, 1, 1, 1, 0.001));
+            result["is_error"] = json!(true);
+            result["result"] = json!(error);
+            vec![claude_frame(result)]
+        } else {
+            let mut failed = codex_turn(&turn, "failed");
+            failed["error"] = json!({"message": error});
+            vec![
+                codex("turn/started", json!({"threadId": CODEX_THREAD, "turn": codex_turn(&turn, "inProgress")})),
+                codex("turn/completed", json!({"threadId": CODEX_THREAD, "turn": failed})),
+            ]
+        };
+        self.feed(chat, &frames)
+    }
+
     pub(super) fn sweep_after(&self, seconds: i64) {
         crate::early_compaction::sweep(&self.core, Utc::now() + chrono::TimeDelta::seconds(seconds));
     }

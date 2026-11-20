@@ -44,6 +44,8 @@ pub const HARNESSES: [&str; 2] = ["claude", "codex"];
 const _: () = assert!(WARM_LIMIT.as_secs() < crate::runtime_budget::IDLE_TTL.as_secs());
 
 const DIRECT_KIND: &str = "direct";
+/// The `error` column keeps at most this many characters of a provider error.
+const ERROR_CHARS: usize = 500;
 /// A new chat is `idle`. A chat after a turn or a compaction is `ready`.
 const IDLE_STATUSES: [&str; 2] = ["ready", "idle"];
 /// The sidecar reads the Claude window after the `result` frame, when the
@@ -128,6 +130,9 @@ pub struct Settlement {
     /// The active turn at the boundary. The next reading never has this turn
     /// id. `None` on Claude.
     pub compaction_turn_id: Option<String>,
+    /// The error text of the provider for a `failed` turn, cut to
+    /// `ERROR_CHARS`.
+    pub error: Option<String>,
 }
 
 /// What the frame path hands over after its lock. It builds the receipt from
@@ -171,6 +176,8 @@ pub struct Frame<'a> {
     pub boundary: Option<Boundary>,
     /// The `started_at` and `provider_session_id` of the reader launch.
     pub launch: Option<(&'a str, &'a str)>,
+    /// The error text of the provider in a failed frame, if it gave one.
+    pub error: Option<&'a str>,
 }
 
 /// A compacted attempt that waits for its next reading.
@@ -801,6 +808,10 @@ impl Tracker {
                 None if frame.turn_failed => (Outcome::Failed, Boundary::default()),
                 None => (Outcome::EndedWithoutBoundary, Boundary::default()),
             };
+            let error = frame
+                .error
+                .filter(|_| outcome == Outcome::Failed)
+                .map(|error| error.chars().take(ERROR_CHARS).collect());
             return Some(Receipt::Settle(Settlement {
                 session_id: frame.session_id.to_owned(),
                 attempt_id: open.attempt_id,
@@ -808,6 +819,7 @@ impl Tracker {
                 boundary_pre_tokens: boundary.pre_tokens,
                 boundary_post_tokens: boundary.post_tokens,
                 compaction_turn_id: boundary.turn_id,
+                error,
             }));
         }
         let due = self.enabled()

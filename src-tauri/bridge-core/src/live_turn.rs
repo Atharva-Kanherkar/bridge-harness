@@ -3187,6 +3187,9 @@ fn handle_agent_value_timed(
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
     let mut turn_failed = false;
+    // The text of a provider error in this frame. An early compaction attempt
+    // that fails keeps it.
+    let mut provider_error: Option<String> = None;
     // Set when a native boundary released the optimistic `working` mark a
     // forwarded `/compact` wrote. The release's side effects run after the
     // database guard is dropped, because draining takes the lock itself.
@@ -3708,6 +3711,9 @@ fn handle_agent_value_timed(
                     if status == "failed" {
                         turn_completed = true;
                         turn_failed = true;
+                        if event.text.is_some() {
+                            provider_error.clone_from(&event.text);
+                        }
                         *current_turn.lock().unwrap() = None;
                         void_orphaned_questions(&db, session_id, "provider_error");
                         // The provider's own words are the only place a usage
@@ -4295,6 +4301,7 @@ fn handle_agent_value_timed(
                 turn_id: observed_turn_id.as_deref(),
                 boundary: native_boundary,
                 launch: expected_launch,
+                error: provider_error.as_deref(),
             },
             Utc::now(),
         );

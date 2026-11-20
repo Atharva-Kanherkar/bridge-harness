@@ -2148,6 +2148,23 @@ fn an_adapter_error_settles_as_failed_and_leaves_the_status() -> TestResult {
 }
 
 #[test]
+fn a_failed_compaction_turn_keeps_the_provider_error() -> TestResult {
+    let long = "The request failed. ".repeat(40);
+    for chat in FIRING_CHATS {
+        for error in ["The model is overloaded.", long.as_str()] {
+            let world = fired(chat)?;
+            world.failed_turn_end(chat, error)?;
+            let attempt = world.attempt(chat)?;
+            assert_eq!(attempt.outcome.as_deref(), Some("failed"), "{chat}");
+            // The column keeps the first 500 characters.
+            let kept: String = error.chars().take(500).collect();
+            assert_eq!(attempt.error.as_deref(), Some(kept.as_str()), "{chat}: the provider error is lost");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn no_terminal_signal_within_the_limit_settles_as_unsettled() -> TestResult {
     // The attempt starts at `WARM_SECONDS` and the limit is 300 seconds.
     for chat in FIRING_CHATS {

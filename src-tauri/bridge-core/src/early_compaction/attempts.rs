@@ -79,7 +79,7 @@ pub(crate) fn accept(core: &BridgeCore, receipt: Receipt, now: DateTime<Utc>) {
     match receipt {
         Receipt::Due(mark) => core.early_compaction.accept(Receipt::Due(mark)),
         Receipt::Settle(settlement) => {
-            settle(core, &settlement, None, now);
+            settle(core, &settlement, settlement.error.as_deref(), now);
         }
     }
 }
@@ -125,6 +125,7 @@ fn closing(session_id: &str, attempt_id: &str, outcome: Outcome) -> Settlement {
         boundary_pre_tokens: None,
         boundary_post_tokens: None,
         compaction_turn_id: None,
+        error: None,
     }
 }
 

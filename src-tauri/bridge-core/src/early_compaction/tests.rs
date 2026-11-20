@@ -332,6 +332,7 @@ fn suppresses_launch_attempt_failed() {
             boundary_pre_tokens: None,
             boundary_post_tokens: None,
             compaction_turn_id: None,
+            error: None,
         }));
         let mut relaunched = mark(harness);
         relaunched.launch = Some(Launch { started_at: at(-100).to_rfc3339(), provider_session_id: "thread-1".to_owned() });
