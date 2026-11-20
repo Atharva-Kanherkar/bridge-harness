@@ -815,11 +815,13 @@ describe("AgentConversation", () => {
     data: { childSessionId: "w1", modelLabel: "Fable", effort: "high" },
   });
 
-  it("keeps a running worker to one quiet row, never a live card", () => {
+  it("keeps a running worker to one quiet row, never a live worker card", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned]} onOpenSession={() => undefined} onOpenAgent={() => undefined}/>);
     expect(html).toContain("Delegated");
     expect(html).toContain("Fable · high");
-    // The worker is watched in the Agents pane: no status, feed, clock or Stop here.
+    // The worker is watched in the Agents pane: its row carries no status,
+    // feed or Stop. Counting the delegation's workers is the fan-out card's
+    // job (FanOutCard.test.tsx), and it offers Stop only when the host can.
     expect(html).not.toContain('aria-label="Worker ');
     expect(html).not.toContain("WORKING");
     expect(html).not.toContain(">Stop<");

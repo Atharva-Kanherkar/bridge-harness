@@ -37,6 +37,9 @@ import { useSmoothText } from "./smoothText";
 import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
 import { backgroundOutcome, backgroundTaskKey, type BackgroundWork } from "../backgroundTasks";
 import { CHECK_LABEL } from "../transcript/checks";
+import { FanOutCard } from "./FanOutCard";
+import { fanOutWorkers, groupFanOuts, isQuietWorkerRow, summarizeFanOut, type FanOuts, type WorkerLookup } from "./workerFanOut";
+import type { WorkerRuntimeRecord } from "../types";
 
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import { QuestionCard, type ResolveQuestion } from "./QuestionCard";
@@ -859,7 +862,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, workerSessions, workerRuntimes, onStopWorker, onOpenAgents, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; /** Where a fan-out card reads each worker's live state; without them it reads the transcript alone. */ workerSessions?: readonly Session[]; workerRuntimes?: readonly WorkerRuntimeRecord[]; /** Stop one worker, the way every other surface stops one. */ onStopWorker?: (childSessionId: string) => Promise<void>; /** Open the dock's Agents pane on the lineage. */ onOpenAgents?: () => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -908,6 +911,17 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const [showThinking] = useShowThinking();
   const [autoExpandEditActivity] = useAutoExpandEditActivity();
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
+  // One card per delegation, drawn at its first worker row; the rows it holds
+  // skip their own slot. Read through context so a later worker's row moving
+  // re-draws the card even when the row it is anchored at did not change.
+  const fanOuts = useMemo(() => groupFanOuts(visibleItems), [visibleItems]);
+  const fanOutView = useMemo<FanOutView>(() => ({
+    fanOuts,
+    lookup: { sessions: workerSessions, runtimes: workerRuntimes },
+    readOnly,
+    onOpenAgents,
+    onStopWorkers: readOnly || !onStopWorker ? undefined : ids => Promise.all(ids.map(id => onStopWorker(id))).then(() => undefined),
+  }), [fanOuts, workerSessions, workerRuntimes, readOnly, onOpenAgents, onStopWorker]);
   // A thought the reader has hidden leaves no row at all once it settles:
   // drawing the empty wrapper would leave its 20px gap behind in the turn.
   // Streaming thoughts stay, because their pulsing row is the "still going"
@@ -1123,7 +1137,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
     onEditTurn={retryFor(entry) ? onEditTurn : undefined}
   />;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
+  return <FanOutContext.Provider value={fanOutView}><TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -1166,7 +1180,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {trailing}
       </div>
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></VisualActionsContext.Provider></ChatRunInTerminal.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></ChatRunInTerminal.Provider></FileLinkContext.Provider></RuntimeActive.Provider></ShowThinking.Provider></TranscriptHarness.Provider></FanOutContext.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1714,7 +1728,7 @@ const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, rea
   if (interaction) return readOnly
     ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
     : interaction;
-  if (item.type === "delegation") return <DelegationRow item={item} onOpenSession={onOpenSession} onOpenAgent={onOpenAgent} onRetryWorker={onRetryWorker}/>;
+  if (item.type === "delegation") return <DelegationSlot item={item} onOpenSession={onOpenSession} onOpenAgent={onOpenAgent} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") {
     // Bookkeeping reads past as a faint line. Only a failure the reader can act
     // on keeps the card, because it carries the retry.
@@ -1738,6 +1752,10 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
   instant: boolean;
   highlighted: boolean;
 } & Omit<React.ComponentProps<typeof ItemView>, "item">) {
+  // A worker row its fan-out card draws has no slot of its own: an empty
+  // row would still take the column's gap.
+  const fanOutView = useContext(FanOutContext);
+  if (entry.kind === "item" && fanOutView?.fanOuts.absorbed.has(entry.item.key)) return null;
   if (entry.kind === "group") return <TranscriptRow instant={instant}>
     <ActivityGroup items={entry.items} turnActive={itemProps.turnActive} autoExpandEditActivity={itemProps.autoExpandEditActivity}/>
   </TranscriptRow>;
@@ -2210,7 +2228,37 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item, onOpenSession, onOpenAgent, onRetryWorker }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void; onOpenAgent?: (childSessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
+/// The fan-outs of one transcript and what their cards need from the host.
+type FanOutView = {
+  fanOuts: FanOuts;
+  lookup: WorkerLookup;
+  readOnly: boolean;
+  onOpenAgents?: () => void;
+  onStopWorkers?: (childSessionIds: string[]) => Promise<void>;
+};
+const FanOutContext = createContext<FanOutView | null>(null);
+
+type DelegationActions = { onOpenSession?: (sessionId: string) => void; onOpenAgent?: (childSessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> };
+
+/// A delegation row, or, at the first worker row of a delegation, the fan-out
+/// card holding that delegation's quiet worker rows. A worker that failed keeps
+/// its own alert row where it was, with its Retry; the card only counts it.
+function DelegationSlot({ item, ...actions }: { item: ConversationItem } & DelegationActions) {
+  const view = useContext(FanOutContext);
+  const fanOut = view?.fanOuts.byHead.get(item.key);
+  const summary = useMemo(
+    () => fanOut && view ? summarizeFanOut(fanOutWorkers(fanOut, view.fanOuts.blocked, view.lookup)) : undefined,
+    [fanOut, view],
+  );
+  if (!fanOut || !summary || !view) return <DelegationRow item={item} {...actions}/>;
+  const rows = fanOut.members.filter(isQuietWorkerRow).map(member => <DelegationRow key={member.key} item={member} nested {...actions}/>);
+  return <>
+    <FanOutCard summary={summary} rows={rows.length ? rows : undefined} readOnly={view.readOnly} onOpenAgents={view.onOpenAgents} onStopWorkers={view.onStopWorkers}/>
+    {!isQuietWorkerRow(item) && <DelegationRow item={item} {...actions}/>}
+  </>;
+}
+
+function DelegationRow({ item, nested = false, onOpenSession, onOpenAgent, onRetryWorker }: { item: ConversationItem; /** Drawn inside a fan-out card rather than on the canvas. */ nested?: boolean } & DelegationActions) {
   // Every hook before the first early return: an item's facet changes under it
   // (a spawn becomes a result when the envelope lands), so the hook count must
   // not depend on which branch renders.
@@ -2272,9 +2320,9 @@ function DelegationRow({ item, onOpenSession, onOpenAgent, onRetryWorker }: { it
     />;
   }
   // The worker itself lives in the dock's Agents pane, which opens on its own
-  // when one starts. The transcript keeps one quiet line per delegation and a
-  // way back to that agent, never a live card of its own.
-  return <div className="my-3 min-w-0">
+  // when one starts. The transcript keeps one quiet line per worker and a way
+  // back to that agent; its delegation's fan-out card is what counts them.
+  return <div className={nested ? "min-w-0" : "my-3 min-w-0"}>
     <div className="flex min-w-0 items-center gap-1 -ml-2">
       <button className="min-w-0 flex-1 flex items-center gap-[9px] min-h-[30px] px-2 py-1 rounded-md text-left text-muted-foreground text-ui hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
         {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
