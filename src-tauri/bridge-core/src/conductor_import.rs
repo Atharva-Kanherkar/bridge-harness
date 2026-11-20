@@ -143,10 +143,37 @@ fn log(sql: &str) {
     let _ = sql;
 }
 
+/// Open `conductor.db` without writing anything next to it.
+///
+/// It is a WAL database. While Conductor runs, its `-wal` and `-shm` files
+/// hold changes not yet in the main file, so Bridge opens it read-only and
+/// reads through them. Once Conductor quits they are gone, and even a
+/// read-only open would create them; so with no live WAL the file is opened
+/// immutable, which reads it as it is and creates nothing.
 fn open(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    let wal = PathBuf::from(format!("{}-wal", path.to_string_lossy()));
+    let live = std::fs::metadata(&wal).is_ok_and(|metadata| metadata.len() > 0);
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
+    let uri = |query: &str| format!("file:{}?{query}", uri_path(path));
+    let conn = if live {
+        Connection::open_with_flags(uri("mode=ro"), flags).or_else(|_| Connection::open_with_flags(uri("mode=ro&immutable=1"), flags))?
+    } else {
+        Connection::open_with_flags(uri("mode=ro&immutable=1"), flags)?
+    };
     conn.busy_timeout(Duration::from_secs(3))?;
     Ok(conn)
+}
+
+/// A path as a `file:` URI path: everything but unreserved characters and
+/// `/` percent-encoded (`Application Support` has a space).
+fn uri_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => (byte as char).to_string(),
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 /// A table's columns, for an allowed table only.

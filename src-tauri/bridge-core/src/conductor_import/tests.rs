@@ -206,3 +206,61 @@ fn a_database_bridge_cannot_read_falls_back_to_folders_and_says_why() {
     assert_eq!(discovery.candidates.len(), 1);
     assert_eq!((discovery.candidates[0].name.as_str(), discovery.candidates[0].title.as_deref()), ("tokyo", None));
 }
+
+#[test]
+fn a_database_conductor_closed_is_still_read() {
+    // Once Conductor quits, SQLite removes its WAL files; a read-only open has
+    // to work without them.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let path = paths(home).store;
+    {
+        let fixture = store(home, 181);
+        fixture.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    }
+    assert!(!path.with_extension("db-shm").exists() && !path.with_extension("db-wal").exists(), "the last connection closed cleanly");
+    let before: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+
+    let read = read(&path).unwrap();
+
+    assert_eq!(read.workspaces.len(), 3);
+    let after: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    assert_eq!(before, after, "reading creates no file next to Conductor's database");
+}
+
+#[test]
+fn a_database_conductor_has_open_is_read_with_what_it_has_not_checkpointed() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let fixture = store(home, 181);
+    fixture.conn.execute_batch("PRAGMA wal_autocheckpoint=0;").unwrap();
+    fixture.workspace(&Row { key: "w-new", repo: "r-app", directory: "kyiv", name: Some("Only in the WAL"), branch: Some("k"), state: "active", path: None });
+
+    let read = read(&fixture.path).unwrap();
+
+    assert!(read.workspaces.iter().any(|workspace| workspace.name.as_deref() == Some("Only in the WAL")));
+}
+
+
+/// This Mac's real Conductor database, read as the import reads it. Prints
+/// the version and counts only, and checks nothing appears beside it.
+#[test]
+#[ignore = "reads the real Conductor database; run by hand"]
+fn read_this_macs_conductor_database() {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+    let paths = Paths::for_home(&home);
+    let folder = paths.store.parent().unwrap().to_path_buf();
+    let before: std::collections::BTreeSet<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    let discovery = discover(&paths);
+    let after: std::collections::BTreeSet<_> = std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    let read = read(&paths.store);
+    println!(
+        "MEASURE version={:?} workspaces={:?} candidates={} note={:?} files_unchanged={}",
+        read.as_ref().map(|store| store.version),
+        read.as_ref().map(|store| store.workspaces.len()),
+        discovery.candidates.len(),
+        discovery.note,
+        before == after
+    );
+    assert_eq!(before, after);
+}
