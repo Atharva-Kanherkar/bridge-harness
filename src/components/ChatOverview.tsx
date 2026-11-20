@@ -125,7 +125,7 @@ function TurnRow({ turn, harness, onOpen }: { turn: TurnHistoryEntry; harness?: 
   const row = "flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-meta text-muted-foreground";
   if (onOpen && turn.entryId) {
     const entryId = turn.entryId;
-    return <li data-overview-turn={turn.turn}>
+    return <li data-overview-turn={turn.turn} className="min-w-0">
       <button type="button" onClick={() => onOpen(entryId)} aria-label={`Show turn: ${turn.title}`} className={clsx(row, "transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring")}>{body}</button>
     </li>;
   }
@@ -160,7 +160,7 @@ export function ChatOverviewView({ model, harness, onReview, onOpenCode, onOpenT
       <h3 className="mb-1 flex items-center gap-2 px-2 text-caption font-medium text-faint">
         Turn history<span className="ml-auto tabular-nums">{model.turns.length} {model.turns.length === 1 ? "turn" : "turns"}</span>
       </h3>
-      <ul aria-label="Turn history" className="grid gap-px">
+      <ul aria-label="Turn history" className="grid grid-cols-1 gap-px">
         {turns.map(turn => <TurnRow key={turn.key} turn={turn} harness={harness} onOpen={onOpenTurn} />)}
       </ul>
       {(hidden > 0 || allTurns) && model.turns.length > TURNS_SHOWN && <button

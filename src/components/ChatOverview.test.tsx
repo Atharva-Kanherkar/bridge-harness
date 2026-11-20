@@ -165,5 +165,8 @@ describe("WorkPane overview slot", () => {
     const pane = host.querySelector("[data-work-pane]")!;
     expect(pane.firstElementChild!.hasAttribute("data-chat-overview")).toBe(true);
     expect(pane.textContent).toContain("Attach a pull request");
+    // A working chat's overview must not sit above "Nothing running".
+    expect(pane.textContent).not.toContain("Nothing running");
+    expect(pane.textContent).toContain("Pull requests this chat opens");
   });
 });
