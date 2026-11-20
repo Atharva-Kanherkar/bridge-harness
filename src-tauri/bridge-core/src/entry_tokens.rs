@@ -50,6 +50,35 @@ const INPUT_FIELDS: [&str; 7] = [
     "/data/patch",
 ];
 
+/// The kinds that [`model_readable_bytes`] reads. Each other kind gives
+/// `None`. The token report reads only these kinds.
+pub const ESTIMATED_KINDS: [&str; 18] = [
+    "user.message",
+    "assistant.message",
+    "reasoning.completed",
+    "reasoning",
+    "session.context",
+    "delegation.result",
+    "context.compacted",
+    "tool.started",
+    "command.started",
+    "file_change.started",
+    "tool.completed",
+    "command.completed",
+    "file_change.completed",
+    "checkpoint",
+    "compaction",
+    "branch.summary",
+    "handoff.brief",
+    "worker.result",
+];
+
+/// True for the first start that Claude writes for a tool call, while the
+/// model still writes the arguments. That start has no input.
+pub(crate) fn is_preparing_start(payload: &Value) -> bool {
+    payload.pointer("/data/phase").and_then(Value::as_str) == Some("preparing")
+}
+
 /// Estimated tokens a model reads from an entry of `kind` with `payload`.
 pub fn estimate(kind: &str, payload: &Value) -> Option<i64> {
     model_readable_bytes(kind, payload)
@@ -76,7 +105,7 @@ pub fn model_readable_bytes(kind: &str, payload: &Value) -> Option<usize> {
             // Claude writes a start at `content_block_start`, while the model
             // is still writing the arguments (`{}` so far), and another when
             // they are complete. Only the second carries the input.
-            if payload.pointer("/data/phase").and_then(Value::as_str) == Some("preparing") {
+            if is_preparing_start(payload) {
                 return None;
             }
             first_value(payload, &INPUT_FIELDS)
@@ -331,6 +360,41 @@ mod tests {
         assert_eq!(estimate("command.started", &preparing), None);
         assert_eq!(estimate("tool.started", &preparing), None);
         assert_eq!(estimate("command.started", &running), tokens(r#"{"command":"ls"}"#.len()));
+    }
+
+    #[test]
+    fn estimated_kinds_match_the_estimator() {
+        // This payload has one field that each estimated kind reads.
+        let full = json!({
+            "text": "x",
+            "summary": "s",
+            "data": {"input": {"a": 1}, "summary": "s"},
+        });
+        for kind in ESTIMATED_KINDS {
+            assert!(estimate(kind, &full).is_some(), "{kind}");
+        }
+        let mut kinds = ESTIMATED_KINDS.to_vec();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), ESTIMATED_KINDS.len(), "each kind is in the list one time");
+        for kind in [
+            "turn.started",
+            "turn.completed",
+            "usage.updated",
+            "session.status",
+            "message.delta",
+            "command.output_delta",
+            "subagent.status",
+            "model_changed",
+            "artifact.completed",
+            "something.new",
+        ] {
+            assert!(!ESTIMATED_KINDS.contains(&kind), "{kind}");
+            assert_eq!(estimate(kind, &full), None, "{kind}");
+        }
+        let preparing = json!({"data": {"phase": "preparing", "input": {}}});
+        assert!(is_preparing_start(&preparing));
+        assert!(!is_preparing_start(&full));
     }
 
     #[test]
