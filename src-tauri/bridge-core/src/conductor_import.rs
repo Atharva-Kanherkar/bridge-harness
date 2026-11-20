@@ -415,7 +415,7 @@ pub fn from_store(store: &Store, paths: &Paths) -> Vec<Candidate> {
         if workspace.checkouts.is_empty() {
             let Some(repo) = workspace.repo_id.as_ref().and_then(|id| store.repos.get(id)) else { continue };
             let path = workspace.path.clone().or_else(|| workspace_folder(repo, &workspace.directory, &paths.workspaces_root));
-            if let Some(path) = path {
+            if let Some(path) = path.filter(|path| path.is_absolute()) {
                 out.push(candidate(path, workspace.name.clone(), workspace.archived, format!("conductor:{key}"), Some(repo.scripts.clone())));
             }
             continue;
@@ -427,7 +427,9 @@ pub fn from_store(store: &Store, paths: &Paths) -> Vec<Candidate> {
                 .clone()
                 .or_else(|| (index == 0).then(|| workspace.path.clone()).flatten())
                 .or_else(|| workspace_folder(repo, &workspace.directory, &paths.workspaces_root));
-            let Some(path) = path else { continue };
+            // Conductor writes absolute paths; anything else would resolve
+            // against Bridge's own working folder.
+            let Some(path) = path.filter(|path| path.is_absolute()) else { continue };
             // One Bridge workspace per folder: a multi-repo workspace's other
             // checkouts are named for their repository.
             let title = match (&workspace.name, multi && index > 0) {
@@ -501,6 +503,9 @@ pub fn discover(paths: &Paths) -> Discovery {
 
 #[cfg(test)]
 pub(crate) mod fixture;
+
+#[cfg(test)]
+mod fuzz;
 
 #[cfg(test)]
 #[path = "conductor_import/tests.rs"]

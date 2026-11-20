@@ -86,9 +86,14 @@ impl Fixture {
 
     /// Insert into the columns this version has; others are dropped.
     pub fn insert(&self, table: &str, values: &[(&str, Value)]) {
+        self.try_insert(table, values).unwrap();
+    }
+
+    /// [`Self::insert`], returning what SQLite says (a repeated key, say).
+    pub fn try_insert(&self, table: &str, values: &[(&str, Value)]) -> rusqlite::Result<()> {
         let present = self.columns(table);
         if present.is_empty() {
-            return;
+            return Ok(());
         }
         let kept: Vec<&(&str, Value)> = values.iter().filter(|(column, _)| present.contains(*column)).collect();
         let sql = format!(
@@ -96,7 +101,8 @@ impl Fixture {
             kept.iter().map(|(column, _)| format!("\"{column}\"")).collect::<Vec<_>>().join(","),
             vec!["?"; kept.len()].join(",")
         );
-        self.conn.execute(&sql, params_from_iter(kept.iter().map(|(_, value)| value.clone()))).unwrap();
+        self.conn.execute(&sql, params_from_iter(kept.iter().map(|(_, value)| value.clone())))?;
+        Ok(())
     }
 
     pub fn repo(&self, id: &str, name: &str, root: &Path, storage_version: i64) {
@@ -142,7 +148,7 @@ impl Fixture {
     }
 
     pub fn checkout(&self, workspace: &str, repo: &str, path: Option<&Path>, position: i64) {
-        self.insert("workspace_checkouts", &[
+        let _ = self.try_insert("workspace_checkouts", &[
             ("id", t(format!("co-{workspace}-{repo}"))),
             ("workspace_id", t(workspace)),
             ("repository_id", t(repo)),
