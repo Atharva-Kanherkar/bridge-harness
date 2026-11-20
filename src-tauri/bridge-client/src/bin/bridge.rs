@@ -778,7 +778,10 @@ struct TokensFlags {
 
 /// The value after `flag`, or a usage error.
 fn flag_value<'a>(iter: &mut std::slice::Iter<'a, String>, flag: &str) -> Result<&'a str, String> {
-    iter.next().map(String::as_str).ok_or_else(|| format!("{flag} needs a value"))
+    iter.next()
+        .map(String::as_str)
+        .filter(|value| !value.starts_with("--"))
+        .ok_or_else(|| format!("{flag} needs a value"))
 }
 
 /// Parses the flags of `bridge tokens`. Each error is a usage error.
@@ -929,7 +932,7 @@ mod tests {
         assert_eq!(code, 2);
         assert!(message.contains(TOKENS_USAGE), "{message}");
         // An unknown flag and a top of 0 are usage errors too.
-        for args in [&["--cohort"][..], &["--verbose"], &["extra"], &["--top", "0"], &["--top", "many"]] {
+        for args in [&["--cohort"][..], &["--verbose"], &["extra"], &["--top", "0"], &["--top", "many"], &["--session", "--bogus"], &["--database", "--json"]] {
             let (code, message) = run_tokens(&strings(args)).unwrap_err();
             assert_eq!(code, 2, "{args:?}");
             assert!(message.contains(TOKENS_USAGE), "{message}");
