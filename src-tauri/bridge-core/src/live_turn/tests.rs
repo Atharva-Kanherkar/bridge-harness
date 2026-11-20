@@ -1750,38 +1750,43 @@ fn the_slash_command_and_the_early_trigger_share_forward_native_compaction() -> 
 
 #[test]
 fn a_user_send_and_the_early_trigger_cannot_both_dispatch() -> TestResult {
+    let text = "And list the line numbers.";
     for chat in FIRING_CHATS {
         // The send first: a sweep inside its adapter call finds the lease
         // taken and keeps the mark.
         let (world, _) = marked(chat)?;
+        world.take_calls();
         let core = Arc::downgrade(&world.core);
         world.levers.on_send(move || {
             if let Some(core) = core.upgrade() {
                 crate::early_compaction::sweep(&core, Utc::now() + chrono::TimeDelta::seconds(WARM_SECONDS));
             }
         });
-        world.send(chat, "And list the line numbers.")?;
+        world.send(chat, text)?;
         assert!(world.compacts(chat).is_empty(), "{chat}: the sweep dispatched during a send");
         assert!(world.mark(chat).is_some(), "{chat}: a busy lease keeps the mark");
         assert!(lock(&world.levers.leased_sends).iter().all(|leased| *leased), "{chat}: a send ran without the lease");
+        let calls = world.take_calls();
+        assert!(!world.routes(chat, text, &calls)?.is_empty(), "{chat}: the send lost the text: {calls:?}");
         // The sweep first: a send that starts inside its adapter call waits
         // for the dispatch to finish.
         let (world, _) = marked(chat)?;
         world.take_calls();
-        let race = Race::arm(&world, move |core| submit_input(&core, chat.to_owned(), "And list the line numbers.".to_owned()).is_ok());
+        let race = Race::arm(&world, move |core| submit_input(&core, chat.to_owned(), text.to_owned()).is_ok());
         world.fire();
         let (waited, sent) = race.finish()?;
         assert!(waited && sent, "{chat}: waited {waited}, sent {sent}");
         let calls = world.take_calls();
         assert_eq!(calls.first().map(|call| call["call"].clone()), Some(json!("compact_native")), "{chat}: {calls:?}");
         assert_eq!(world.compacts(chat).len(), 0, "{chat}: the log was taken");
+        assert!(!world.routes(chat, text, &calls)?.is_empty(), "{chat}: the send after the dispatch lost the text: {calls:?}");
     }
     Ok(())
 }
 
-/// The result, the adapter calls and the status of one send after a
-/// compaction that a person or the sweep asked for.
-fn send_after_compaction(chat: &str, variant: Variant, early: bool) -> Outcome<(String, Vec<Value>, String)> {
+/// The result, the adapter calls, the status and the routes of the text of
+/// one send after a compaction that a person or the sweep asked for.
+fn send_after_compaction(chat: &str, variant: Variant, early: bool) -> Outcome<(String, Vec<Value>, String, Vec<String>)> {
     let (world, _) = marked(chat)?;
     if early {
         world.fire();
@@ -1790,15 +1795,24 @@ fn send_after_compaction(chat: &str, variant: Variant, early: bool) -> Outcome<(
     }
     world.take_calls();
     let result = world.send_variant(chat, variant);
-    Ok((without_ids(&result)?, world.take_calls(), world.status(chat)?))
+    let calls = world.take_calls();
+    let routes = world.routes(chat, FOLLOW_UP, &calls)?;
+    Ok((without_ids(&result)?, calls, world.status(chat)?, routes))
 }
 
 #[test]
 fn a_send_after_an_early_dispatch_routes_as_after_a_manual_compact() -> TestResult {
+    // The text reaches the runtime or the queue, or the caller gets an error
+    // and keeps the text.
+    let kept = |(result, _, _, routes): &(String, Vec<Value>, String, Vec<String>)| {
+        !routes.is_empty() || result.starts_with("{\"error\":")
+    };
     for chat in FIRING_CHATS {
         for variant in VARIANTS {
             let manual = send_after_compaction(chat, variant, false)?;
             let early = send_after_compaction(chat, variant, true)?;
+            assert!(kept(&manual), "{chat}: {variant:?}: the send after a manual compact lost the text: {manual:?}");
+            assert!(kept(&early), "{chat}: {variant:?}: the send after an early dispatch lost the text: {early:?}");
             assert_eq!(early, manual, "{chat}: {variant:?}");
         }
     }
@@ -1883,6 +1897,7 @@ fn idle_release_and_the_early_trigger_cannot_both_act() -> TestResult {
     assert!(!lock(&world.core.adapters).contains_key(CLAUDE_CHAT), "the release kept the Claude runtime");
     world.fire();
     assert!(world.compacts(CLAUDE_CHAT).is_empty() && world.attempts(CLAUDE_CHAT)?.is_empty());
+    assert!(lock(&world.levers.launches).is_empty(), "the sweep started a process: {:?}", lock(&world.levers.launches));
     // The sweep first: while it dispatches it holds the lease alone, so the
     // release does nothing.
     let (world, _) = marked(CLAUDE_CHAT)?;
@@ -1898,6 +1913,7 @@ fn idle_release_and_the_early_trigger_cannot_both_act() -> TestResult {
     assert_eq!(*lock(&exclusive), Some(true), "the dispatch ran without the lease");
     assert_eq!(world.compacts(CLAUDE_CHAT).len(), 1);
     assert_eq!(lock(&world.core.adapters).len(), 3, "the release acted during the dispatch");
+    assert!(lock(&world.levers.launches).is_empty(), "a process started: {:?}", lock(&world.levers.launches));
     Ok(())
 }
 
@@ -1922,6 +1938,26 @@ fn an_early_compaction_never_starts_a_bridge_checkpoint() -> TestResult {
         assert_eq!(world.count(checkpoint, params![chat])?, 0, "{chat}");
         let pending = compaction_controller::CompactionController::pending(&lock(&world.core.db), chat)?;
         assert!(pending.is_none(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_early_dispatch_that_finds_no_support_writes_no_checkpoint() -> TestResult {
+    let checkpoint = "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind IN ('compaction','compaction.failed','checkpoint','compaction.requested')";
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        world.take_calls();
+        // The decision finds support. The dispatch asks again and finds none.
+        world.levers.answer_support([None, Some(crate::adapters::NativeCompaction::Unsupported)]);
+        world.fire();
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("unsupported"), "{chat}");
+        assert_eq!(world.count(checkpoint, params![chat])?, 0, "{chat}: a checkpoint entry");
+        let pending = compaction_controller::CompactionController::pending(&lock(&world.core.db), chat)?;
+        assert!(pending.is_none(), "{chat}: a pending checkpoint");
+        let calls = world.take_calls();
+        assert!(calls.is_empty(), "{chat}: a turn went to the runtime: {calls:?}");
+        assert_eq!(world.status(chat)?, "ready", "{chat}: the status changed");
     }
     Ok(())
 }

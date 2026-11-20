@@ -13,7 +13,7 @@ use crate::adapters::{AdapterRuntime, InterruptRequest, NativeCompaction, Shutdo
 use crate::early_compaction::{DueMark, Receipt};
 use bridge_protocol::messages::{SaveEarlyCompactionSettingsParams, TurnImage};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{MutexGuard, PoisonError, Weak};
@@ -41,6 +41,8 @@ pub(super) const WARM_SECONDS: i64 = 30;
 /// A thread that is still blocked after this time waits for a lock.
 const WAIT: std::time::Duration = std::time::Duration::from_millis(200);
 const ANSWER: &str = "The file has 400 numbered lines.";
+/// The text of a send while a compaction can run.
+pub(super) const FOLLOW_UP: &str = "And list the line numbers.";
 /// A prompt change fence with a body that does not parse. The frame path
 /// records the control turn and creates no proposal.
 const CONTROL_REPLY: &str = "```bridge-prompt-change\nnot json\n```";
@@ -60,10 +62,13 @@ pub(super) struct Levers {
     compact_hook: Slot<Hook>,
     send_hook: Slot<Hook>,
     support_hook: Slot<Hook>,
+    support_answers: Arc<Mutex<VecDeque<Option<NativeCompaction>>>>,
     error: Slot<String>,
     /// One value for each send that reached a runtime: whether a holder of
     /// the input lease kept the sweep out while it ran.
     pub(super) leased_sends: Arc<Mutex<Vec<bool>>>,
+    /// One entry for each call to a harness to start or resume a process.
+    pub(super) launches: Arc<Mutex<Vec<String>>>,
 }
 
 impl Levers {
@@ -83,6 +88,12 @@ impl Levers {
     /// decision.
     pub(super) fn on_support(&self, hook: impl FnOnce() + Send + 'static) {
         *lock(&self.support_hook) = Some(Box::new(hook));
+    }
+
+    /// Give these answers to the next questions about native compaction, in
+    /// order. `None` gives the answer of the trace runtime.
+    pub(super) fn answer_support(&self, answers: impl IntoIterator<Item = Option<NativeCompaction>>) {
+        lock(&self.support_answers).extend(answers);
     }
 
     /// Each later adapter call of a compaction returns this error.
@@ -167,7 +178,8 @@ impl AdapterRuntime for EarlyRuntime {
         if let Some(hook) = hook {
             hook();
         }
-        self.inner.native_compaction()
+        let answer = lock(&self.levers.support_answers).pop_front().flatten();
+        answer.unwrap_or_else(|| self.inner.native_compaction())
     }
     fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {
         let hook = lock(&self.levers.compact_hook).take();
@@ -181,6 +193,42 @@ impl AdapterRuntime for EarlyRuntime {
     }
     fn stop(&mut self, reason: ShutdownReason) {
         self.inner.stop(reason);
+    }
+}
+
+/// The trace harness with a record of each start and each resume.
+struct EarlyHarness {
+    id: &'static str,
+    inner: TraceHarness,
+    launches: Arc<Mutex<Vec<String>>>,
+}
+
+impl HarnessAdapter for EarlyHarness {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn descriptor(&self) -> AdapterDescriptor {
+        self.inner.descriptor()
+    }
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        lock(&self.launches).push(format!("start {}", self.id));
+        self.inner.start(request)
+    }
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        lock(&self.launches).push(format!("resume {}", self.id));
+        self.inner.resume(request)
+    }
+    fn supports_native_resume(&self) -> bool {
+        self.inner.supports_native_resume()
+    }
+    fn supports_native_compaction(&self) -> bool {
+        self.inner.supports_native_compaction()
+    }
+    fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
+        self.inner.normalize(value)
+    }
+    fn forget_session(&self, provider_session_id: &str) {
+        self.inner.forget_session(provider_session_id);
     }
 }
 
@@ -344,14 +392,14 @@ impl World {
     pub(super) fn new() -> Outcome<Self> {
         let scratch = tempfile::tempdir()?;
         let mut core = BridgeCore::for_tests(scratch.path());
+        let levers = Levers::default();
         let mut registry = AdapterRegistry::empty();
         for id in ["claude", "codex", "opencode"] {
-            registry.register(Box::new(TraceHarness::new(id)))?;
+            registry.register(Box::new(EarlyHarness { id, inner: TraceHarness::new(id), launches: levers.launches.clone() }))?;
         }
         core.adapter_registry = Arc::new(registry);
         let core = Arc::new(core);
         let calls = CallLog::default();
-        let levers = Levers::default();
         let started_at = (Utc::now() - chrono::TimeDelta::hours(1)).to_rfc3339();
         let mut turns = HashMap::new();
         for (session, harness, provider) in CHATS {
@@ -464,9 +512,10 @@ impl World {
         submit_input(&self.core, chat.to_owned(), text.to_owned())
     }
 
-    /// One send through `variant`, as JSON: the result or the error text.
+    /// One send of `FOLLOW_UP` through `variant`, as JSON: the result or the
+    /// error text.
     pub(super) fn send_variant(&self, chat: &str, variant: Variant) -> Value {
-        let (core, id, text) = (&self.core, chat.to_owned(), "And list the line numbers.".to_owned());
+        let (core, id, text) = (&self.core, chat.to_owned(), FOLLOW_UP.to_owned());
         let result = match variant {
             Variant::Legacy => send_turn(core, id, text).map(|()| Value::Null),
             Variant::Composer => submit_input(core, id, text).map(json_of),
@@ -568,6 +617,25 @@ impl World {
 
     pub(super) fn take_calls(&self) -> Vec<Value> {
         std::mem::take(&mut *lock(&self.calls))
+    }
+
+    /// Where `text` went: the name of each call in `calls` that carries it to
+    /// the runtime of `chat`, then the state of each queue row that holds it.
+    pub(super) fn routes(&self, chat: &str, text: &str, calls: &[Value]) -> rusqlite::Result<Vec<String>> {
+        let carries = |call: &&Value| {
+            call["session"] == chat
+                && call["args"].as_array().is_some_and(|args| args.iter().any(|arg| arg.as_str().is_some_and(|arg| arg.contains(text))))
+        };
+        let mut routes: Vec<String> = calls.iter().filter(carries).map(|call| call["call"].to_string()).collect();
+        let db = lock(&self.core.db);
+        let mut statement = db.prepare(
+            "SELECT state FROM queued_session_input WHERE session_id=?1 AND instr(provider_text,?2)>0 ORDER BY sequence",
+        )?;
+        let rows = statement.query_map(params![chat, text], |row| row.get::<_, String>(0))?;
+        for state in rows {
+            routes.push(format!("queue {}", state?));
+        }
+        Ok(routes)
     }
 
     pub(super) fn attempts(&self, chat: &str) -> rusqlite::Result<Vec<Attempt>> {
