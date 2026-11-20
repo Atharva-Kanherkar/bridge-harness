@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Continue an imported chat with the real Claude Code or Codex CLI (#1061,
-// #1054; TOOL=claude_code or codex). It drives
+// Continue an imported chat with the real Claude Code, Codex or OpenCode CLI
+// (#1061, #1054, #1055; TOOL=claude_code, codex or opencode). It drives
 // the real app in a browser tab attached to a real `bridged` that signs in as
-// the person, imports two real sessions (made with `claude -p` or `codex exec`),
-// and then, like a person would:
+// the person, imports two real sessions (made with `claude -p`, `codex exec`
+// or `opencode run`), and then, like a person would:
 //   1. opens the first, sees "Continues the <tool> session", asks for the
 //      code word it was told, and gets it from the same native session,
 //      whose transcript grows by the new turn;
@@ -16,6 +16,11 @@
 //   CLAUDE_CONFIG_DIR=<config> bridged --data-dir <dir> --listen 127.0.0.1:4391 --allowed-origin http://127.0.0.1:1471
 //   LINK=... OUT=... DB=<dir>/bridge.db IMPORT_HOME=<folder holding the two sessions as projects/<slug>/<id>.jsonl>
 //   SESSIONS="<id1> <word1>,<id2> <word2>" TRANSCRIPTS="<real path 1>,<real path 2>" node scripts/e2e/import-continue-real.mjs
+//
+// OpenCode keeps sessions as rows, not files: IMPORT_HOME is its data folder
+// and both TRANSCRIPTS are its store (`opencode.db`). A session's length is its
+// rows, and "deleting its transcript" deletes its rows, so run it against a
+// scratch data folder (XDG_DATA_HOME), never your own.
 
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -117,9 +122,10 @@ async function click(label, selector = "button, a, [role=button], [role=switch]"
 }
 
 const TOOL = process.env.TOOL ?? "claude_code";
-const LABEL = { claude_code: "Claude Code", codex: "Codex" }[TOOL];
-const NATIVE = { claude_code: "claude", codex: "codex" }[TOOL];
-if (!LABEL) throw new Error(`TOOL must be claude_code or codex, not ${TOOL}`);
+const LABEL = { claude_code: "Claude Code", codex: "Codex", opencode: "OpenCode" }[TOOL];
+const NATIVE = { claude_code: "claude", codex: "codex", opencode: "opencode" }[TOOL];
+if (!LABEL) throw new Error(`TOOL must be claude_code, codex or opencode, not ${TOOL}`);
+const ROWS = TOOL === "opencode";
 // The second session's copy in IMPORT_HOME, removed with the real one.
 const SECOND_LINK = process.env.SECOND_LINK;
 const DB = process.env.DB;
@@ -132,7 +138,24 @@ const sql = query => {
   if (run.status !== 0) throw new Error(`sqlite3: ${run.stderr}`);
   return run.stdout.trim() ? JSON.parse(run.stdout) : [];
 };
-const lines = path => readFileSync(path, "utf8").split("\n").filter(Boolean).length;
+const storeSql = (store, query) => {
+  const run = spawnSync("sqlite3", [store, query], { encoding: "utf8" });
+  if (run.status !== 0) throw new Error(`sqlite3 ${store}: ${run.stderr}`);
+  return run.stdout.trim();
+};
+/** How long a session is: its transcript's lines, or OpenCode's rows. */
+const length = (path, session) => ROWS
+  ? Number(storeSql(path, `SELECT COUNT(*) FROM session_message WHERE session_id='${session}'`))
+  : readFileSync(path, "utf8").split("\n").filter(Boolean).length;
+/** The tool forgets a session: its transcript goes, or OpenCode's rows do. */
+function forget(path, session) {
+  if (ROWS) {
+    storeSql(path, `DELETE FROM session_message WHERE session_id='${session}'; DELETE FROM session_v2 WHERE id='${session}';`);
+    return;
+  }
+  rmSync(path, { force: true });
+  rmSync(SECOND_LINK ?? join(IMPORT_HOME, "projects", path.split("/").at(-2), path.split("/").at(-1)), { force: true });
+}
 const entries = id => JSON.stringify(sql(`SELECT id, kind, payload, created_at FROM session_entries WHERE session_id='${id}' ORDER BY sequence`));
 
 const QUESTION = "What code word did I ask you to remember earlier in this conversation? Answer from the conversation alone, without running any tools. Reply with just the word, in lowercase.";
@@ -161,7 +184,7 @@ try {
       const setup = await bridgeApi.saveModelProfiles(recommendedProfileDrafts(health.adapters.filter(a => a.id === ${JSON.stringify(NATIVE)}), { allowAvailableFallback: true }));
       return setup.complete;
     })()`);
-    check(`Setup completes for a ${LABEL} user`, done === true);
+    check(`Setup completes for someone who uses ${LABEL}`, done === true);
   }
 
   // The two real sessions, imported the way a folder import does.
@@ -191,7 +214,7 @@ try {
   check(`The composer says the next message continues the ${LABEL} session`, nativeNotice.includes(`Continues the ${LABEL} session`) && /stay behind/.test(nativeNotice), nativeNotice.replace(/\n+/g, " | "));
   check("It says so before anything is sent", await js(`document.querySelector("[data-import-continuation]").dataset.importContinuation === "native"`));
   await shot("01-native-notice-dark");
-  const linesBefore = lines(firstTranscript);
+  const linesBefore = length(firstTranscript, first.id);
 
   await caption("Ask it what it was told to remember");
   await ask(QUESTION);
@@ -202,14 +225,13 @@ try {
   const firstContinuation = sql(`SELECT id, kind, provider_session_id FROM sessions WHERE fork_parent_session_id='${firstImported}'`);
   check("A new chat continues it", firstContinuation.length === 1 && firstContinuation[0].kind === "direct", JSON.stringify(firstContinuation));
   check(`It resumed the same ${LABEL} session`, firstContinuation[0]?.provider_session_id === first.id, firstContinuation[0]?.provider_session_id);
-  const linesAfter = lines(firstTranscript);
+  const linesAfter = length(firstTranscript, first.id);
   check(`${LABEL}'s own transcript gained the new turn`, linesAfter > linesBefore, `${linesBefore} -> ${linesAfter}`);
   check("The answer came from that session's memory", (await text()).includes(first.word.toLowerCase()));
   await shot("02-native-reply-dark");
 
   await caption(`${LABEL} no longer has the second session`);
-  rmSync(secondTranscript, { force: true });
-  rmSync(SECOND_LINK ?? join(IMPORT_HOME, "projects", secondTranscript.split("/").at(-2), secondTranscript.split("/").at(-1)), { force: true });
+  forget(secondTranscript, second.id);
   await click(second.word, "[data-session-id], button, a, [role=button]");
   await waitFor("the continuation notice", `document.querySelector("[data-import-continuation]")?.dataset.importContinuation === "history"`, 15000);
   const historyNotice = await js(`document.querySelector("[data-import-continuation]").innerText`);

@@ -142,6 +142,7 @@ pub fn discover_external_import(
     let discovery = match request.provider.as_str() {
         claude_import::PROVIDER => claude_import::ClaudeCodeImporter.discover(&request)?,
         crate::codex_import::PROVIDER => crate::codex_import::CodexImporter.discover(&request)?,
+        crate::opencode_import::PROVIDER => crate::opencode_import::OpenCodeImporter.discover(&request)?,
         provider => {
             return Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
@@ -174,6 +175,9 @@ pub fn preview_external_import(
         }
         crate::codex_import::PROVIDER => {
             crate::codex_import::CodexImporter.preview(&discovery, &selection)?
+        }
+        crate::opencode_import::PROVIDER => {
+            crate::opencode_import::OpenCodeImporter.preview(&discovery, &selection)?
         }
         provider => {
             return Err(BridgeError::Invalid(format!(
@@ -219,6 +223,7 @@ pub fn detect_import_sources(
             claude_config_dir.as_deref(),
             &[],
             std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
+            std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
         ),
         detected_at: chrono::Utc::now().to_rfc3339(),
     })
@@ -425,6 +430,9 @@ pub fn commit_external_import(
         crate::codex_import::PROVIDER => {
             crate::codex_import::CodexImporter.preview(&discovery, &selection)?
         }
+        crate::opencode_import::PROVIDER => {
+            crate::opencode_import::OpenCodeImporter.preview(&discovery, &selection)?
+        }
         provider => {
             return Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
@@ -441,6 +449,7 @@ pub fn commit_external_import(
         .map(|candidate| match candidate.source.provider.as_str() {
             claude_import::PROVIDER => claude_import::ClaudeCodeImporter.normalize(candidate),
             crate::codex_import::PROVIDER => crate::codex_import::CodexImporter.normalize(candidate),
+            crate::opencode_import::PROVIDER => crate::opencode_import::OpenCodeImporter.normalize(candidate),
             provider => Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
             ))),

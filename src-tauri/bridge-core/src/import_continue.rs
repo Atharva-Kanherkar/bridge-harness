@@ -76,11 +76,14 @@ fn transcript_path(home: &Path, cwd: &str, session: &str) -> PathBuf {
 pub struct SignInHomes {
     pub claude: Vec<ClaudeHome>,
     pub codex: Vec<ClaudeHome>,
+    /// OpenCode's data folders (`<data home>/opencode`): the user's own,
+    /// then each OpenCode account's.
+    pub opencode: Vec<ClaudeHome>,
 }
 
 impl SignInHomes {
     pub fn claude_only(homes: &[ClaudeHome]) -> Self {
-        Self { claude: homes.to_vec(), codex: Vec::new() }
+        Self { claude: homes.to_vec(), ..Self::default() }
     }
 }
 
@@ -89,24 +92,66 @@ impl SignInHomes {
 struct Resumable {
     label: &'static str,
     still_has: fn(home: &Path, cwd: &str, session: &str) -> bool,
+    /// Whether the place the chat was imported from still holds it.
+    at_source: fn(source_ref: &str, session: &str) -> bool,
+}
+
+fn source_file_exists(source_ref: &str, _session: &str) -> bool {
+    Path::new(source_ref).is_file()
 }
 
 const CLAUDE: Resumable = Resumable {
     label: "Claude Code",
     still_has: |home, cwd, session| transcript_path(home, cwd, session).is_file(),
+    at_source: source_file_exists,
 };
 
 const CODEX: Resumable = Resumable {
     label: "Codex",
     // A Codex thread's rollout is filed by date, not by folder.
     still_has: |home, _cwd, session| crate::codex_import::find_rollout(home, session).is_some(),
+    at_source: source_file_exists,
 };
+
+const OPENCODE: Resumable = Resumable {
+    label: "OpenCode",
+    // A session is a row in the store under the data folder.
+    still_has: |home, _cwd, session| crate::opencode_import::still_has(home, session),
+    at_source: |source_ref, session| {
+        crate::opencode_import::parse_source_ref(source_ref)
+            .is_some_and(|(store, _)| crate::opencode_import::store_has(&store, session))
+    },
+};
+
+/// The OpenCode data folders Bridge signs in with: the user's own, then each
+/// OpenCode account in Settings (its data home's `opencode` folder).
+pub fn opencode_homes(db: &Connection) -> Result<Vec<ClaudeHome>, BridgeError> {
+    let host = HostHomes::from_env();
+    let own = host.xdg_data_home.clone().unwrap_or_else(|| host.home.join(".local/share"));
+    let mut homes = vec![(None, crate::opencode_import::data_folder(&own))];
+    let advanced = crate::agent_config::state(db)?
+        .harnesses
+        .into_iter()
+        .find(|item| item.id == "opencode")
+        .map(|item| item.advanced);
+    if let Some(advanced) = advanced {
+        for account in provider_accounts::accounts("opencode", &advanced)? {
+            if account.home_path.is_empty() {
+                continue;
+            }
+            let data_home = provider_accounts::expand_home_path(&account.home_path, &host.home);
+            homes.push((Some(account.id), crate::opencode_import::data_folder(&data_home)));
+        }
+    }
+    Ok(homes)
+}
 
 pub fn plan(core: &BridgeCore, imported_id: &str) -> Result<Plan, BridgeError> {
     let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let homes = SignInHomes {
         claude: claude_homes(&db)?,
         codex: crate::codex_import::machine_codex_homes().into_iter().map(|home| (None, home)).collect(),
+        opencode: opencode_homes(&db)?,
     };
     plan_in(&db, imported_id, &homes)
 }
@@ -127,7 +172,8 @@ pub fn plan_in(db: &Connection, imported_id: &str, homes: &SignInHomes) -> Resul
     let (tool, homes) = match harness.as_str() {
         "claude" => (CLAUDE, &homes.claude),
         "codex" => (CODEX, &homes.codex),
-        _ => return Ok(Plan::history("Bridge continues only Claude Code and Codex sessions natively so far.")),
+        "opencode" => (OPENCODE, &homes.opencode),
+        _ => return Ok(Plan::history("Bridge continues only Claude Code, Codex and OpenCode sessions natively so far.")),
     };
     let label = tool.label;
     if parent.is_some() {
@@ -172,8 +218,8 @@ pub fn plan_in(db: &Connection, imported_id: &str, homes: &SignInHomes) -> Resul
             |row| row.get(0),
         )
         .optional()?;
-    if source.is_some_and(|path| Path::new(&path).is_file()) {
-        return Ok(Plan::history(&format!("The session is saved under a {label} folder Bridge does not sign in with.")));
+    if source.is_some_and(|source| (tool.at_source)(&source, &session)) {
+        return Ok(Plan::history(&format!("{label} keeps this session in a folder Bridge does not sign in with.")));
     }
     Ok(Plan::history(&format!("{label} no longer has this session.")))
 }

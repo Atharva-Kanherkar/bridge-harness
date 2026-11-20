@@ -39,7 +39,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { byRecency, chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { byRecency, chatName, importedSubagents, isHiddenSession, isWorkerSession, liveAgentSessions } from "./components/sidebarChats";
 import { AppLauncher } from "./components/AppLauncher";
 import { appById, appForView, appsBadge, badgeText, builtinEntry, isAppId, personalEntry, personalIdOf, personalKey, type AppKey, type LaunchEntry } from "./apps/registry";
 import { setPinned, togglePin } from "./apps/pins";
@@ -1491,7 +1491,7 @@ function AppContent() {
   // A focused worker is watchable, its approvals are resolvable, and it can be
   // steered — the composer says "steer", not "message", because the worker still
   // answers to the objective its orchestrator gave it.
-  const isWorkerView = !!session?.parentSessionId;
+  const isWorkerView = isWorkerSession(session);
   const workerRuntime = useMemo(
     () => forest?.workerRuntimes.find(runtime => runtime.sessionId === session?.id),
     [forest?.workerRuntimes, session?.id],
@@ -1532,6 +1532,7 @@ function AppContent() {
   // Agents still running under each chat. The sidebar reads the whole map; the
   // composer reads this chat's slice to stay stoppable after the turn ends.
   const liveAgents = useMemo(() => liveAgentSessions(state.sessions), [state.sessions]);
+  const subagents = useMemo(() => importedSubagents(visibleSessions), [visibleSessions]);
   const chatAgents = useMemo(() => (session ? liveAgents.get(session.id) ?? [] : []), [liveAgents, session]);
   useAgentSpawns(session?.id, chatAgents, showAgentInDock);
   const [worktreeOn, setWorktreeOn] = useState(false);
@@ -3775,6 +3776,7 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      subagents={subagents}
       unread={unread.byChat}
       pullRequests={sidebarPrs}
       workspaces={state.workspaces}

@@ -14,7 +14,7 @@ Issue #1061. A person can keep talking to a chat imported from Claude Code. When
 - Otherwise the new chat starts fresh, seeded with the imported history through the existing checkpoint path, and the reason is given:
   - Claude Code no longer has this session.
   - This chat's folder no longer exists.
-  - The session is saved under a Claude Code folder Bridge does not sign in with.
+  - Claude Code keeps this session in a folder Bridge does not sign in with.
   - Another Bridge chat already continues this session.
   - Bridge did not record which Claude Code session this was.
 - The composer on an imported chat shows, before any send, either "Continues the Claude Code session" or "Starts a new chat with this history" with the reason. It also says that unfinished tool calls, background processes and hidden reasoning stay behind.

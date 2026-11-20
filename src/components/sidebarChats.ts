@@ -164,6 +164,54 @@ export function liveAgentSessions(sessions: readonly Session[]): LiveAgents {
   return live;
 }
 
+/** A delegated worker Bridge runs, which the chat view steers. An imported
+ *  subagent also has a parent, but it is history: it opens like any
+ *  imported chat. */
+export function isWorkerSession(session: Pick<Session, "parentSessionId" | "kind"> | undefined): boolean {
+  return !!session?.parentSessionId && session.kind !== "imported";
+}
+
+/** One imported subagent chat under the chat it belongs to: 1 for a direct
+ *  child, 2 for a subagent's own subagent, and so on. */
+export type ImportedSubagent = { chat: Session; depth: number };
+
+/**
+ * Imported subagent chats, keyed by the chat at the top of their tree.
+ *
+ * Imported subagents carry a parent like Bridge's own workers, so the rail's
+ * top-level list never shows them. They are history to read, not workers to
+ * watch, so the row they belong to lists them instead. Each is listed in
+ * tree order: a subagent right after its parent, siblings by when they
+ * started. One whose parent is not in the list belongs to nothing shown.
+ */
+export function importedSubagents(sessions: readonly Session[]): ReadonlyMap<string, readonly ImportedSubagent[]> {
+  const byId = new Map(sessions.map(session => [session.id, session]));
+  const children = new Map<string, Session[]>();
+  for (const session of sessions) {
+    if (session.kind !== "imported" || !session.parentSessionId || !byId.has(session.parentSessionId)) continue;
+    children.set(session.parentSessionId, [...(children.get(session.parentSessionId) ?? []), session]);
+  }
+  const started = (session: Session) => session.startedAt ?? "";
+  const out = new Map<string, ImportedSubagent[]>();
+  for (const session of sessions) {
+    if (session.parentSessionId || !children.has(session.id)) continue;
+    const rows: ImportedSubagent[] = [];
+    const seen = new Set<string>([session.id]);
+    const walk = (parent: string, depth: number) => {
+      const kids = [...(children.get(parent) ?? [])].sort((a, b) => started(a).localeCompare(started(b)) || a.id.localeCompare(b.id));
+      for (const kid of kids) {
+        if (seen.has(kid.id)) continue;
+        seen.add(kid.id);
+        rows.push({ chat: kid, depth });
+        walk(kid.id, depth + 1);
+      }
+    };
+    walk(session.id, 1);
+    out.set(session.id, rows);
+  }
+  return out;
+}
+
 /** A chat's bucket: its own status, or active while its agents run under an idle turn. */
 export function chatBucket(chat: Session, liveAgents?: LiveAgents): StatusBucket {
   const own = statusBucket(chat.status);

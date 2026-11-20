@@ -167,6 +167,9 @@ try {
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
     && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
+  check("OpenCode is found with its own section, mark and Import button, its background run apart", found.includes("OpenCode keeps its own memory and setup")
+    && /1 chat in 1 project · 1 background run left out/.test(await js(`document.querySelector('[data-import-tool="opencode"]').innerText`))
+    && await js(`!!document.querySelector('[data-import-tool="opencode"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="opencode"] button')`));
   check("Tools that are not installed say so", found.includes("Not found on this Mac"));
   await shot("01-found-dark");
 
@@ -239,6 +242,46 @@ try {
   await sleep(600);
   await shot("05-codex-summary-dark");
 
+  await caption("OpenCode has its own section and its own Import");
+  await click("Import", '[data-import-tool="opencode"] button');
+  await waitFor("the OpenCode import to finish", `!!document.querySelector('[data-import-tool="opencode"] [data-import-result="imported"]')`, 60000);
+  const openCodeImported = Number(await js(`document.querySelector('[data-import-tool="opencode"] [data-import-result="imported"]').textContent`));
+  check("OpenCode imports its chat and the chat's subagent from its own section", openCodeImported === 2, `imported=${openCodeImported}`);
+  check("Codex's section keeps its own result", Number(await js(`document.querySelector('[data-import-tool="codex"] [data-import-result="imported"]').textContent`)) === 1);
+  check("Nothing shows OpenCode's credentials", !(await text()).includes("CANARY"));
+  await js(`document.querySelector('[data-import-tool="opencode"]').scrollIntoView({ block: "center" })`);
+  await sleep(600);
+  await shot("05b-opencode-summary-dark");
+
+  await caption("The OpenCode chat, with its commands, edit and subagent");
+  await click("Speed up the checkout page");
+  await waitFor("the OpenCode chat", `document.body.innerText.includes("0.4 s")`);
+  await sleep(1200);
+  const openCodeChat = await text();
+  writeFileSync(join(OUT, "opencode-chat.txt"), openCodeChat);
+  await shot("05c-opencode-chat-dark");
+  const openCodeBadge = await js(`document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")`);
+  check("The OpenCode chat is badged with where it came from", (openCodeBadge ?? "").startsWith("Imported · OpenCode"), String(openCodeBadge));
+  check("Its command, edit and delegation came over, grouped the way Bridge shows live work", openCodeChat.includes("Ran 1 command, edited 1 file, used 1 tool"), openCodeChat.slice(openCodeChat.indexOf("Imported · OpenCode"), openCodeChat.indexOf("Imported · OpenCode") + 700).replace(/\n+/g, " | "));
+  check("Its thinking came over", openCodeChat.includes("Thought"));
+  await click("Ran 1 command, edited 1 file", "[aria-expanded]");
+  await waitFor("the OpenCode tool group to open", `[...document.querySelectorAll("[aria-expanded]")].some(el => el.textContent.includes("Ran 1 command, edited 1 file") && el.getAttribute("aria-expanded") === "true")`);
+  await sleep(800);
+  const openCodeTools = await text();
+  check("The command, the edited file and the delegation are listed", openCodeTools.includes("npm run profile") && openCodeTools.includes("cart.ts") && openCodeTools.includes("Find every cart query"), openCodeTools.slice(openCodeTools.indexOf("Ran 1 command"), openCodeTools.indexOf("Ran 1 command") + 400).replace(/\n+/g, " | "));
+  await shot("05c2-opencode-tools-open-dark");
+  await caption("Its subagent is listed under it in the sidebar");
+  await click("1 subagent", "[aria-label*='of Speed up the checkout page']");
+  await waitFor("the subagent row", `!!document.querySelector("[data-subagent-row]")`);
+  await shot("05d-opencode-subagent-row-dark");
+  await click("Find every cart query", "[data-subagent-row]");
+  await waitFor("the subagent's chat", `document.body.innerText.includes("Found 3 call sites: cart.ts")`);
+  await sleep(1000);
+  const subagentChat = await text();
+  check("The imported subagent opens as history, not as a background worker", !subagentChat.includes("This is a background worker") && subagentChat.includes("Starts a new chat with this history"), subagentChat.slice(0, 400).replace(/\n+/g, " | "));
+  check("The open subagent's row is marked in the sidebar", await js(`document.querySelector("[data-subagent-row][aria-current='page']")?.textContent.includes("Find every cart query") === true`));
+  await shot("05e-opencode-subagent-open-dark");
+
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
   await waitFor("the conversation to render", `document.body.innerText.includes("max-width")`);
@@ -273,9 +316,15 @@ try {
   const real = await text();
   check("The real session's tool calls and answer came over", real.includes("discount") && /Ran \d+ command|Read|Explored/.test(real));
   await shot("05-real-session-dark");
-  const subagentVisible = await js(`document.body.innerText.includes("Explore:")`);
-  results.push({ name: "The Explore subagent chat is reachable from the sidebar", ok: subagentVisible, gap: !subagentVisible });
-  log(subagentVisible ? "PASS" : "GAP ", "The Explore subagent chat is reachable from the sidebar");
+  await caption("Its Explore subagent opens from the sidebar");
+  await click("1 subagent", "[aria-label*='subagents of Invoice.js test failures'], [aria-label*='subagent of Invoice.js test failures']");
+  await waitFor("the Explore subagent row", `[...document.querySelectorAll("[data-subagent-row]")].some(row => row.offsetParent !== null && row.textContent.includes("Explore:"))`);
+  await click("Explore:", "[data-subagent-row]");
+  await waitFor("the Explore subagent's chat", `document.querySelector("[data-subagent-row][aria-current='page']")?.textContent.includes("Explore:") === true && document.querySelector('[data-testid="import-source-badge"]')?.getAttribute("title")?.startsWith("Imported · Claude Code") === true`);
+  await sleep(1200);
+  const exploreChat = await text();
+  check("The Explore subagent chat is reachable from the sidebar and opens as history", !exploreChat.includes("This is a background worker") && exploreChat.includes("A subagent's run cannot be resumed on its own") && !exploreChat.includes("Found 3 call sites"), exploreChat.slice(0, 400).replace(/\n+/g, " | "));
+  await shot("05f-claude-subagent-open-dark");
 
   await caption("Import again: nothing lands twice");
   await click("Open settings for");
