@@ -16,7 +16,7 @@ use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::{
     adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion,
-    context::ContextProjector, git, handoff, model_profiles, orchestrator, restoration,
+    git, handoff, model_profiles, orchestrator, restoration,
     session_forest, session_supervisor, store, BridgeError,
 };
 pub use bridge_protocol::messages::WorkspaceSessionKind;
@@ -70,7 +70,7 @@ pub struct SwitchSummaryRequest {
 /// What became of a [`SwitchSummaryRequest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitchSummaryOutcome {
-    /// A valid typed summary landed in the forest (`compaction` entry).
+    /// A valid typed summary landed in the forest (a `checkpoint` entry).
     Summarised,
     /// The pipeline recorded a failure (`compaction.failed`) — parse errors,
     /// repair exhaustion, or a cancelled request.
@@ -86,58 +86,43 @@ pub struct CarriedContext {
     pub summary: bool,
     pub decisions: usize,
     pub files_touched: usize,
+    /// Conversation entries that fit the incoming model's handoff budget.
     pub recent_entries: usize,
+    /// Conversation entries the stored history holds, carried or not.
+    pub stored_entries: usize,
 }
 
 impl CarriedContext {
     fn describe(&self) -> String {
+        let messages = if self.recent_entries >= self.stored_entries {
+            format!("all {} messages", self.recent_entries)
+        } else {
+            format!("the latest {} of {} messages", self.recent_entries, self.stored_entries)
+        };
         if self.summary {
             format!(
-                "carried forward: summary + {} decisions + {} files",
+                "carried forward: summary + {} decisions + {} files, and {messages}",
                 self.decisions, self.files_touched
             )
         } else {
-            format!(
-                "carried forward: {} recent entries (no summary available)",
-                self.recent_entries
-            )
+            format!("carried forward: {messages} (no summary available)")
         }
     }
 }
 
-/// Project what the next provider would receive from stored history. `None`
-/// means nothing can be carried: an empty branch projects to nothing.
+/// What the next provider would receive from stored history, sized for the
+/// model the session row now names. `None` means nothing can be carried: an
+/// empty branch projects to nothing.
 fn carried_context(db: &Connection, session_id: &str) -> Option<CarriedContext> {
-    let branch = session_forest::SessionForest::new(db)
-        .active_branch(session_id)
-        .ok()?;
-    let projection = ContextProjector::project(&branch, 128_000).ok()?;
-    let recent_entries = projection
-        .render_entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "handoff.brief"
-            )
-        })
-        .count();
-    if recent_entries == 0 && projection.restoration_context.is_none() {
-        return None;
-    }
+    let window = restoration::session_context_window_tokens(db, session_id).ok()?;
+    let handoff = restoration::restoration_handoff(db, session_id, window).ok()??;
+    let header = handoff.header.as_ref();
     Some(CarriedContext {
-        summary: projection.restoration_context.is_some(),
-        decisions: projection
-            .restoration_context
-            .as_ref()
-            .map(|context| context.decisions.len())
-            .unwrap_or(0),
-        files_touched: projection
-            .restoration_context
-            .as_ref()
-            .map(|context| context.files_touched.len())
-            .unwrap_or(0),
-        recent_entries,
+        summary: header.is_some(),
+        decisions: header.map_or(0, |header| header.decisions.len()),
+        files_touched: header.map_or(0, |header| header.files_touched.len()),
+        recent_entries: handoff.carried_entries,
+        stored_entries: handoff.eligible_entries,
     })
 }
 
@@ -220,6 +205,19 @@ pub struct ChatModelChange {
     /// the first launch can fork it. A switch that keeps the thread must keep
     /// that instruction too, or the next launch resumes the source instead.
     pending_fork: bool,
+    /// The provider thread this switch leaves, remembered so a later switch
+    /// back to the same app and account resumes it. See `provider_threads`.
+    leaving: Option<RememberedThread>,
+    /// A thread this chat ran earlier on the target app and account. The
+    /// switch goes back to it instead of starting fresh.
+    returning_to: Option<RememberedThread>,
+}
+
+/// A provider thread under its continuation key.
+#[derive(Debug, Clone)]
+struct RememberedThread {
+    continuation_key: String,
+    provider_session_id: String,
 }
 
 /// What a switch does with the chat's account (`provider_accounts`).
@@ -241,7 +239,13 @@ impl ChatModelChange {
     /// Whether this change resumes the stored provider thread under the new
     /// model instead of handing over a summary and starting fresh.
     pub fn resumes_natively(&self) -> bool {
-        self.native_continuation
+        self.native_continuation || self.returning_to.is_some()
+    }
+
+    /// Whether this change goes back to a thread the chat ran earlier on the
+    /// target app and account, rather than continuing the current one.
+    pub fn returns_to_thread(&self) -> bool {
+        self.returning_to.is_some()
     }
 }
 
@@ -853,6 +857,38 @@ impl BridgeCore {
             && same_home
             && self.adapter_registry.supports_native_resume(adapter_id.as_ref())
             && provider_session_id.is_some();
+        let pending_fork = head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str());
+        // A switch that leaves the current thread remembers it, and one that
+        // reaches an app and account this chat already ran on goes back to
+        // that thread. An unstarted aside's stored id is its source's thread,
+        // so it neither leaves nor finds one.
+        let (leaving, returning_to) = if native_continuation || pending_fork {
+            (None, None)
+        } else {
+            let db = self.try_db()?;
+            let leaving = provider_session_id.as_deref().and_then(|thread| {
+                crate::provider_threads::continuation_key(&db, &previous_harness, previous_account.as_deref())
+                    .map(|continuation_key| RememberedThread {
+                        continuation_key,
+                        provider_session_id: thread.to_owned(),
+                    })
+            });
+            let returning_to = self
+                .adapter_registry
+                .supports_native_resume(adapter_id.as_ref())
+                .then(|| crate::provider_threads::continuation_key(&db, &adapter_id, account.as_deref()))
+                .flatten()
+                .and_then(|continuation_key| {
+                    let thread = crate::provider_threads::find(&db, session_id, &continuation_key).ok()??;
+                    (Some(thread.provider_session_id.as_str()) != provider_session_id.as_deref()).then_some(
+                        RememberedThread {
+                            continuation_key,
+                            provider_session_id: thread.provider_session_id,
+                        },
+                    )
+                });
+            (leaving, returning_to)
+        };
         Ok(Some(ChatModelChange {
             session_id: session_id.to_owned(),
             adapter_id: adapter_id.into_owned(),
@@ -864,7 +900,9 @@ impl BridgeCore {
             native_continuation,
             previous_account,
             account,
-            pending_fork: head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str()),
+            pending_fork,
+            leaving,
+            returning_to,
         }))
     }
 
@@ -1263,10 +1301,10 @@ impl BridgeCore {
             )
             .optional()?;
         match kind.as_deref() {
-            // `checkpoint` alone is a late background landing (the new model had
-            // already spoken, so no boundary moved); paired, it precedes the
-            // `compaction` this query finds first. Either way the request was
-            // answered.
+            // A switch summary lands as a lone `checkpoint`. A `compaction` here
+            // is a boundary some other request committed after this one (or an
+            // entry written before switch summaries stopped moving the boundary);
+            // either way the request was answered.
             Some("compaction") | Some("checkpoint") => Ok(SwitchSummaryOutcome::Summarised),
             _ => Ok(SwitchSummaryOutcome::Failed),
         }
@@ -1413,6 +1451,16 @@ impl BridgeCore {
         let db = self.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
         session_supervisor::SessionSupervisor::clear_adapter_process_in_transaction(&transaction, session_id)?;
+        if let Some(leaving) = &change.leaving {
+            crate::provider_threads::record_left(
+                &transaction,
+                session_id,
+                &change.previous_harness,
+                change.previous_account.as_deref(),
+                &leaving.continuation_key,
+                &leaving.provider_session_id,
+            )?;
+        }
         if persist_chat_model_selection(
             &transaction,
             session_id,
@@ -1420,7 +1468,8 @@ impl BridgeCore {
             change.selected_model(),
             change.tier,
             (&change.previous_harness, change.previous_model.as_deref()),
-            change.resumes_natively(),
+            change.native_continuation,
+            change.returning_to.as_ref().map(|thread| thread.provider_session_id.as_str()),
         )? != 1
         {
             return Err(BridgeError::Invalid(
@@ -1433,7 +1482,24 @@ impl BridgeCore {
             params![session_id, change.account],
         )?;
         let resumes_natively = change.resumes_natively();
-        if resumes_natively {
+        // What the returned thread missed while the chat ran elsewhere: owed
+        // once, beside the next message, by its first native start.
+        let mut returned_entries = None;
+        if let Some(thread) = &change.returning_to {
+            let left_at = crate::provider_threads::find(&transaction, session_id, &thread.continuation_key)?
+                .map_or(0, |found| found.left_at_sequence);
+            crate::provider_threads::mark_returned(&transaction, session_id, &thread.continuation_key)?;
+            // The head names the returned thread outright: `set_head_state`
+            // would otherwise coalesce onto whatever id the head held.
+            restoration::set_head_state(
+                &transaction,
+                session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                Some(&thread.provider_session_id),
+            )?;
+            returned_entries = Some(crate::provider_threads::entries_since(&transaction, session_id, left_at)?);
+        } else if resumes_natively {
             // The stored thread is still this agent's own, so the next turn
             // resumes it under the new model. `set_head_state` coalesces a
             // `None` id, which is what keeps the identity here. An unstarted
@@ -1470,7 +1536,21 @@ impl BridgeCore {
         } else {
             "Chat"
         };
-        let detail = if resumes_natively && change.pending_fork {
+        let detail = if let Some(added) = returned_entries {
+            let since = match added {
+                0 => "nothing was said since then".to_owned(),
+                1 => "1 message since then is added".to_owned(),
+                count => format!("{count} messages since then are added"),
+            };
+            format!(
+                "{subject} runtime changed from {}/{} to {}/{}. The conversation goes back to its earlier {} session; {since}.",
+                change.previous_harness,
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.adapter_id,
+                change.selected_model().unwrap_or("default"),
+                change.adapter_id,
+            )
+        } else if resumes_natively && change.pending_fork {
             format!(
                 "{subject} model changed from {} to {}. The first message still branches from the source conversation.",
                 change.previous_model.as_deref().unwrap_or("automatic"),
@@ -1546,6 +1626,8 @@ impl BridgeCore {
                         // the claim truthful would have hidden the row.
                         "modelChanged": true,
                         "freshProviderSession": !resumes_natively,
+                        // Back on a thread this chat ran earlier on that app.
+                        "returnedToThread": returned_entries.is_some(),
                         // Catalog window sizes, so the divider can say how
                         // much room the incoming model has.
                         "previousWindowTokens": crate::model_catalog::context_window_tokens(
@@ -1557,12 +1639,16 @@ impl BridgeCore {
                             change.selected_model(),
                         ),
                     });
+                    if let Some(added) = returned_entries {
+                        obj["addedEntries"] = serde_json::json!(added);
+                    }
                     if let Some(carried) = carried {
                         obj["carriedContext"] = serde_json::json!({
                             "summary": carried.summary,
                             "decisions": carried.decisions,
                             "filesTouched": carried.files_touched,
                             "recentEntries": carried.recent_entries,
+                            "storedEntries": carried.stored_entries,
                         });
                     }
                     obj
@@ -2228,6 +2314,7 @@ pub(crate) fn persist_chat_model_selection(
     tier: CapabilityTier,
     (previous_harness, previous_model): (&str, Option<&str>),
     resumes_natively: bool,
+    returning_to: Option<&str>,
 ) -> Result<usize, BridgeError> {
     // A new selection invalidates the old context gauge even when the provider
     // thread resumes natively: the new model may have a different window. The
@@ -2240,10 +2327,14 @@ pub(crate) fn persist_chat_model_selection(
     // every later launch. A same-harness model change keeps the binding — the
     // same agent resumes under the same backend, and the recorded version and
     // installation stay true.
+    //
+    // `returning_to` is a thread this chat ran earlier on the target app and
+    // account: it takes the place of the cleared id, so the next start resumes
+    // it rather than projecting stored history into a new one.
     if previous_harness != adapter_id {
         return Ok(db.execute(
-            "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,backend_id=NULL,backend_version=NULL,backend_installation_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
-            params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
+            "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,provider_session_id=?7,backend_id=NULL,backend_version=NULL,backend_installation_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+            params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model, returning_to],
         )?);
     }
     if resumes_natively {
@@ -2265,8 +2356,8 @@ pub(crate) fn persist_chat_model_selection(
     // it for a resumable session; the backend binding stays, since the same
     // agent still serves the session.
     Ok(db.execute(
-        "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
-        params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
+        "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,provider_session_id=?7,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+        params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model, returning_to],
     )?)
 }
 
@@ -3665,6 +3756,7 @@ mod tests {
             CapabilityTier::Fast,
             ("claude", None),
             true,
+            None,
         )
         .unwrap();
         assert_eq!(read_backend().as_deref(), Some("claude.agent-sdk"));
@@ -3678,6 +3770,7 @@ mod tests {
             CapabilityTier::Fast,
             ("claude", Some("opus")),
             false,
+            None,
         )
         .unwrap();
         assert_eq!(read_backend(), None, "a different agent has nothing to continue");
@@ -4216,6 +4309,141 @@ mod tests {
         assert_eq!(account_and_thread(&core, &session_id).0.as_deref(), Some("personal"));
     }
 
+    fn set_thread(core: &BridgeCore, session_id: &str, thread: &str) {
+        let db = core.db.lock().unwrap();
+        db.execute("UPDATE sessions SET provider_session_id=?2 WHERE id=?1", params![session_id, thread]).unwrap();
+        restoration::set_head_state(&db, session_id, RestorationMode::Native, ResumeEligibility::Native, Some(thread)).unwrap();
+    }
+
+    fn say(core: &BridgeCore, session_id: &str, kind: session_forest::EntryKind, text: &str) {
+        session_forest::SessionForest::new(&core.db.lock().unwrap())
+            .append(session_id, kind, serde_json::json!({"text": text}))
+            .unwrap();
+    }
+
+    fn switch(core: &BridgeCore, session_id: &str, harness: Harness, model: &str, account: AccountRequest<'_>) -> (bool, AgentEvent) {
+        let change = core
+            .plan_chat_selection_change(session_id, &harness, Some(model), account)
+            .unwrap()
+            .expect("a change");
+        let returns = change.returns_to_thread();
+        (returns, core.commit_chat_model_change(change).unwrap())
+    }
+
+    #[test]
+    fn switching_back_to_an_app_resumes_the_thread_it_left() {
+        use session_forest::EntryKind;
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Claude, Some("stub-opus"), None).unwrap();
+        let session_id = only_session_id(&core);
+        say(&core, &session_id, EntryKind::UserMessage, "run the experiment");
+        say(&core, &session_id, EntryKind::AssistantMessage, "the experiment is running");
+        set_thread(&core, &session_id, "claude-thread");
+
+        // Away to Codex: a fresh thread there, the Claude one remembered.
+        let (returns, _) = switch(&core, &session_id, Harness::Codex, "stub-fast", AccountRequest::Keep);
+        assert!(!returns, "Codex never ran in this chat");
+        assert_eq!(account_and_thread(&core, &session_id), (None, None));
+        say(&core, &session_id, EntryKind::UserMessage, "asked codex");
+        say(&core, &session_id, EntryKind::AssistantMessage, "codex answered");
+        set_thread(&core, &session_id, "codex-thread");
+
+        // Back to Claude: the thread it left, not a projection into a new one.
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-opus"), AccountRequest::Keep)
+            .unwrap()
+            .unwrap();
+        assert!(change.resumes_natively() && change.returns_to_thread());
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id), (None, Some("claude-thread".into())));
+        assert_eq!(event.data["freshProviderSession"], false);
+        assert_eq!(event.data["returnedToThread"], true);
+        assert_eq!(event.data["addedEntries"], 2);
+        assert_eq!(event.data["carriedContext"], serde_json::Value::Null, "nothing is projected");
+        let text = event.text.as_deref().unwrap();
+        assert!(text.contains("goes back to its earlier claude session; 2 messages since then are added"), "{text}");
+        {
+            let db = core.db.lock().unwrap();
+            let (mode, head_thread): (String, Option<String>) = db
+                .query_row("SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id=?1", params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            assert_eq!((mode.as_str(), head_thread.as_deref()), ("native", Some("claude-thread")));
+            // Owed exactly what it missed, once, by its next native start.
+            let delta = crate::provider_threads::owed_delta(&db, &session_id, "claude-thread", 200_000).unwrap().unwrap();
+            assert!(delta.contains("asked codex") && delta.contains("codex answered"), "{delta}");
+            assert!(!delta.contains("run the experiment"), "the thread already holds it: {delta}");
+        }
+
+        // The Codex thread was remembered on the way out, so going there again
+        // resumes it too, owed only what Claude said in between.
+        say(&core, &session_id, EntryKind::UserMessage, "back on claude");
+        let (returns, event) = switch(&core, &session_id, Harness::Codex, "stub-fast", AccountRequest::Keep);
+        assert!(returns);
+        assert_eq!(account_and_thread(&core, &session_id), (None, Some("codex-thread".into())));
+        assert_eq!(event.data["addedEntries"], 1);
+    }
+
+    #[test]
+    fn a_return_needs_the_same_account_home() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Claude, Some("stub-opus"), None).unwrap();
+        let session_id = only_session_id(&core);
+        set_thread(&core, &session_id, "own-thread");
+        switch(&core, &session_id, Harness::Codex, "stub-fast", AccountRequest::Keep);
+
+        // Claude again, but on an account that reads threads from another home.
+        let (returns, _) = switch(&core, &session_id, Harness::Claude, "stub-opus", AccountRequest::Choose("personal"));
+        assert!(!returns, "another home cannot read the own-login thread");
+        assert_eq!(account_and_thread(&core, &session_id), (Some("personal".into()), None));
+        set_thread(&core, &session_id, "personal-thread");
+
+        // Same app, back to the own login: its thread, and the personal one is kept.
+        let (returns, _) = switch(&core, &session_id, Harness::Claude, "stub-opus", AccountRequest::Choose("claude"));
+        assert!(returns);
+        assert_eq!(account_and_thread(&core, &session_id), (None, Some("own-thread".into())));
+        let (returns, _) = switch(&core, &session_id, Harness::Claude, "stub-opus", AccountRequest::Choose("personal"));
+        assert!(returns);
+        assert_eq!(account_and_thread(&core, &session_id), (Some("personal".into()), Some("personal-thread".into())));
+    }
+
+    #[test]
+    fn a_same_app_model_change_keeps_its_thread_and_remembers_nothing() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Claude, Some("stub-opus"), None).unwrap();
+        let session_id = only_session_id(&core);
+        set_thread(&core, &session_id, "claude-thread");
+        let (returns, event) = switch(&core, &session_id, Harness::Claude, "stub-sonnet", AccountRequest::Keep);
+        assert!(!returns);
+        assert_eq!(event.data["returnedToThread"], false);
+        assert_eq!(account_and_thread(&core, &session_id).1.as_deref(), Some("claude-thread"));
+        let remembered: i64 = core.db.lock().unwrap()
+            .query_row("SELECT COUNT(*) FROM session_provider_threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remembered, 0, "the thread was never left");
+    }
+
+    #[test]
+    fn an_app_without_native_resume_is_never_returned_to() {
+        // `resume_fixture`: Claude resumes natively, its Codex stub does not.
+        let (_scratch, core) = resume_fixture();
+        let session_id = core.create_chat_id(&Harness::Claude, Some("stub-opus"), None).unwrap();
+        set_thread(&core, &session_id, "claude-thread");
+        let change = core.plan_chat_model_change(&session_id, &Harness::Codex, None).unwrap().unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        set_thread(&core, &session_id, "codex-thread");
+        let change = core.plan_chat_model_change(&session_id, &Harness::Claude, Some("stub-opus")).unwrap().unwrap();
+        assert!(change.returns_to_thread(), "Claude resumes natively");
+        core.commit_chat_model_change(change).unwrap();
+        // Codex left a thread too, but its adapter cannot resume it.
+        let back = core.plan_chat_model_change(&session_id, &Harness::Codex, None).unwrap().unwrap();
+        assert!(!back.returns_to_thread() && !back.resumes_natively());
+        core.commit_chat_model_change(back).unwrap();
+        let thread: Option<String> = core.db.lock().unwrap()
+            .query_row("SELECT provider_session_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(thread, None);
+    }
+
     #[test]
     fn asides_on_the_same_agent_keep_the_account() {
         let (_scratch, core) = account_fixture();
@@ -4548,6 +4776,7 @@ mod tests {
                 CapabilityTier::Standard,
                 ("codex", Some("someone-else-switched")),
                 true,
+                None,
             )
             .unwrap(),
             0
@@ -4590,7 +4819,7 @@ mod tests {
 
             let switch = |db: &Connection, previous: &str| persist_chat_model_selection(
                 db, "pressure", next_harness, Some("requested-new"), CapabilityTier::Standard,
-                ("codex", Some(previous)), resumes_natively,
+                ("codex", Some(previous)), resumes_natively, None,
             ).unwrap();
             assert_eq!(switch(&db, "stale-plan"), 0);
             let gauge = |db: &Connection| db.query_row(
@@ -4779,6 +5008,7 @@ mod tests {
             CapabilityTier::Strong,
             ("codex", Some("old-model")),
             false,
+            None,
         )
         .unwrap();
         assert_eq!(changed, 1);
@@ -4809,6 +5039,7 @@ mod tests {
             CapabilityTier::Standard,
             ("codex", Some("old-model")),
             false,
+            None,
         )
         .unwrap();
         assert_eq!(stale, 0, "a stale plan must not clobber a changed session");

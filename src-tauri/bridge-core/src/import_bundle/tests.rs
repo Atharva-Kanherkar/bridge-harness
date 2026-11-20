@@ -903,6 +903,7 @@ fn a_session_bridge_ran_stays_bridges_after_a_harness_switch() {
         crate::model::CapabilityTier::Standard,
         ("claude", Some("sonnet")),
         false,
+        None,
     )
     .unwrap();
     assert_eq!(switched, 1);

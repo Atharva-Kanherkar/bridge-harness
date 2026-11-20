@@ -1866,6 +1866,11 @@ export function modelChangeDetail(data: Record<string, unknown>): string | null 
       ].filter(Boolean);
       if (pieces.length) parts.push(`carried ${pieces.join(" + ")}`);
     }
+  } else if (data.returnedToThread === true) {
+    // Back on the thread this chat ran earlier on that app, not the one it
+    // was just on, so "same thread" would be wrong.
+    const added = typeof data.addedEntries === "number" ? data.addedEntries : 0;
+    parts.push(added > 0 ? `earlier thread · ${added} message${added === 1 ? "" : "s"} added` : "earlier thread");
   } else if (data.freshProviderSession === false) {
     parts.push("same thread");
   }

@@ -169,6 +169,19 @@ fn launch_session_context(
     session_id: &str,
     capability_summary: Option<&str>,
 ) -> Option<session_context::SessionContext> {
+    let (capabilities, packet) = launch_context_parts(state, session_id, capability_summary);
+    session_context::build(&capabilities, packet.as_deref())
+}
+
+/// What [`launch_session_context`] renders, before rendering: the capability
+/// text and the memory packet. `start_chat` holds these until it knows which
+/// thread it got, since a thread a switch came back to is owed one more
+/// section.
+fn launch_context_parts(
+    state: &Arc<BridgeCore>,
+    session_id: &str,
+    capability_summary: Option<&str>,
+) -> (String, Option<String>) {
     let mut capabilities = state.credential_broker.instructions(session_id);
     if let Some(summary) = capability_summary.map(str::trim).filter(|value| !value.is_empty()) {
         capabilities.push_str("\n\n");
@@ -182,10 +195,7 @@ fn launch_session_context(
         capabilities.push_str("\n\n");
         capabilities.push_str(guidance);
     }
-    session_context::build(
-        &capabilities,
-        compiled_memory_packet(state, session_id).as_deref(),
-    )
+    (capabilities, compiled_memory_packet(state, session_id))
 }
 
 fn worker_prompt_proposal_capability(db: &Connection, session_id: &str) -> bool {
@@ -2062,7 +2072,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     if is_orchestrator {
         capability_summary = with_routing_inventory(state, capability_summary);
     }
-    let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
+    let launch_parts = launch_context_parts(state, &session_id, capability_summary.as_deref());
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
@@ -2149,7 +2159,9 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         )
         .map_err(|error| crate::tool_selection::explain_launch_error(tool_launch.as_ref(), error))
     };
-    let checkpoint_instructions = checkpoint_context
+    // Kept whole, not just its text: a checkpoint-restored start records this
+    // prompt in the ledger, so the ledger shows the handoff it actually sent.
+    let checkpoint_prompt = checkpoint_context
         .as_deref()
         .map(|context| {
             if is_orchestrator {
@@ -2159,9 +2171,12 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             } else {
                 compile_purposed_session_prompt(&prompt_stack, &configured_prompt, Some(context), purpose.as_deref())
             }
-            .map(|prompt| prompt.instructions().to_owned())
         })
-        .transpose()?;    let (mut started, mode, eligibility) = match plan {
+        .transpose()?;
+    let checkpoint_instructions = checkpoint_prompt
+        .as_ref()
+        .map(|prompt| prompt.instructions().to_owned());
+    let (mut started, mode, eligibility) = match plan {
         restoration::RestorationPlan::NativeFork => {
             let provider = provider_id
                 .as_deref()
@@ -2264,6 +2279,9 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 Err(error) => {
                     let db = state.db.lock().unwrap();
                     restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
+                    // A thread that will not resume is gone for good: no later
+                    // switch may plan a return onto it.
+                    crate::provider_threads::forget(&db, &session_id, provider)?;
                     drop(db);
                     // A changed tool set keeps the thread. A fork or a fresh
                     // start would leave the conversation that the person
@@ -2356,6 +2374,25 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
     let mut usage_replay = None;
+    // A switch that came back to this thread owes it what was said in this
+    // chat while it ran elsewhere: once, beside the next message. Any other
+    // start projects stored history instead, which already covers it.
+    let returned_to = (mode == RestorationMode::Native)
+        .then_some(provider_id.as_deref())
+        .flatten();
+    let since_you_left = match returned_to {
+        Some(thread) => {
+            let db = state.db.lock().unwrap();
+            let window = restoration::session_context_window_tokens(&db, &session_id)?;
+            crate::provider_threads::owed_delta(&db, &session_id, thread, window)?
+        }
+        None => None,
+    };
+    let launch_context = session_context::build_with_handoff(
+        &launch_parts.0,
+        launch_parts.1.as_deref(),
+        since_you_left.as_deref(),
+    );
     {
         let db = state.db.lock().unwrap();
         // The change event of a tool set commits with the row of the launch
@@ -2400,7 +2437,13 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             },
             mode,
             root_chat_reuse_marker(&db, &session_id, adapter_id),
-            &compiled_prompt,
+            // A checkpoint-restored start was sent the handoff: record that
+            // prompt, so the ledger's variable bytes are what actually went.
+            // Its stable prefix is the same, so the hot check is unaffected.
+            match (mode, checkpoint_prompt.as_ref()) {
+                (RestorationMode::CheckpointRestored, Some(prompt)) => prompt,
+                _ => &compiled_prompt,
+            },
         ) {
             let _ = db.execute(
                 "UPDATE sessions SET status='failed' WHERE id=?1",
@@ -2428,6 +2471,11 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             .lock()
             .unwrap()
             .arm(&session_id, &thread_id, launch_context);
+        // The return is settled whichever way the start went: a resumed thread
+        // now holds the delta's frame, and a fallback projected everything.
+        if let Some(thread) = provider_id.as_deref() {
+            crate::provider_threads::settle(&db, &session_id, thread)?;
+        }
         // Say how much of the conversation the new provider actually inherits.
         // A fresh start over existing history is a projection, not a resume —
         // the same honesty rule start_session records by.
@@ -3840,7 +3888,7 @@ fn handle_agent_value_timed(
                         checkpoint_prompt_after_turn = Some(prompt);
                     }
                     Ok(outcome @ (compaction_controller::CheckpointOutcome::Completed { .. }
-                    | compaction_controller::CheckpointOutcome::LateCheckpoint { .. }
+                    | compaction_controller::CheckpointOutcome::HandoffCheckpoint { .. }
                     | compaction_controller::CheckpointOutcome::Failed)) => {
                         recover_compaction = matches!(
                             outcome,

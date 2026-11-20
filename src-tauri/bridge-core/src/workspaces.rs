@@ -316,6 +316,10 @@ pub fn archive_workspace_records(
         params![workspace_id],
     )?;
     transaction.execute(
+        "DELETE FROM session_provider_threads WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
+        params![workspace_id],
+    )?;
+    transaction.execute(
         "DELETE FROM session_entries WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
         params![workspace_id],
     )?;

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 85;
+const LATEST_SCHEMA_VERSION: i64 = 86;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -804,6 +804,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Personal app opens get an owner (chat or the person's surface)
             // and every locked app a generation.
             85 => crate::apps::open::install_owners(&transaction)?,
+            // The provider threads a chat left on a model switch, per app and
+            // account, so switching back resumes them. See `provider_threads`.
+            86 => crate::provider_threads::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

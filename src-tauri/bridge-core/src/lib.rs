@@ -153,6 +153,7 @@ pub mod policy;
 pub mod policy_coordinator;
 pub mod provider_accounts;
 pub mod provider_limit;
+pub mod provider_threads;
 pub mod policy_replay;
 pub mod project_onboarding;
 pub mod process_ledger;
