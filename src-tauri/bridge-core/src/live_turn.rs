@@ -2616,7 +2616,8 @@ fn cleanup_reader_state(
     // wipe the new stream's normalization maps mid-flight.
     let is_current_launch =
         reader_launch_is_current(&db, session_id, launch_started_at, provider_session_id);
-    drop(db);
+    // Keep the guard until the state is gone. A new launch writes its row and
+    // its usage seed under the same guard, so this forget cannot clear them.
     if is_current_launch
         && !provider_session_id.is_empty()
         && active_provider.as_deref() != Some(provider_session_id)
@@ -2624,6 +2625,7 @@ fn cleanup_reader_state(
         core.adapter_registry
             .forget_session(adapter_id, provider_session_id);
     }
+    drop(db);
     if active_provider.is_none() {
         if tracks_worker {
             core.worker_activity.lock().unwrap().remove(session_id);
