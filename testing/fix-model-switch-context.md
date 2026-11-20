@@ -65,8 +65,11 @@ already ran on resumes that app's own thread.
 
 - The first native start of a returned thread carries a
   `conversation_since_you_left` section in the session-context frame, listing
-  the user/assistant/worker/checkpoint entries after the recorded sequence,
-  oldest first, within the restoration budget of the returning model.
+  the user/assistant/worker entries after the recorded sequence, oldest first,
+  within the restoration budget of the returning model.
+- Amended during implementation: checkpoints are left out of that section. A
+  switch checkpoint in that window is either the returning thread's own
+  summary of itself or the other model's summary of turns already listed.
 - The section is owed once: after the native start it is not built again.
 - If the native resume fails, the row is forgotten and the ordinary
   `checkpoint_restored` projection carries the history.
