@@ -141,10 +141,16 @@ function earliestStart(sessions: readonly Session[]): number | null {
   return starts.length ? Math.min(...starts) : null;
 }
 
-/** What a live call is doing, worded the way the transcript's live card words it. */
+/**
+ * What a live call is doing, worded the way the transcript's live card words
+ * it. A command the transcript shortened to its first words keeps them, less
+ * a dangling flag: `cargo test -p` reads as `cargo test`.
+ */
 export function actionLabel(call: ToolCallDisplay): string {
-  if (call.passive) return `Watching${call.target ? ` ${call.target}` : ""}`;
-  return call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
+  const shortened = !!call.command && !!call.target && call.command !== call.target && call.command.startsWith(call.target);
+  const target = shortened ? call.target!.replace(/(\s+-\S*)+$/, "") : call.target;
+  if (call.passive) return `Watching${target ? ` ${target}` : ""}`;
+  return call.intent ?? `${call.doing}${target ? ` ${target}` : ""}`;
 }
 
 /** The newest call still running in a turn that is in flight. */

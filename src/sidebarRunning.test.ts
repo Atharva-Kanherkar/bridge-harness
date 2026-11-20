@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { asWireKind } from "./transcript/wire";
 import type { AgentEvent, Session } from "./types";
-import { formatElapsed, liveAction, rememberRunning, runningChats, runningDetail, turnInFlight, turnStartedAt, type RunningChat } from "./sidebarRunning";
+import { actionLabel, formatElapsed, liveAction, rememberRunning, runningChats, runningDetail, turnInFlight, turnStartedAt, type RunningChat } from "./sidebarRunning";
 
 const NOW = Date.parse("2026-11-21T10:00:00Z");
 
@@ -159,6 +159,14 @@ describe("runningChats current action", () => {
     const [row] = runningChats({ chats: [session("a", { activeTurnId: "t" })], events, now: NOW });
     expect(row.action).toBe("Running cargo test");
     expect(runningDetail(row)).toEqual({ text: "Running cargo test", tone: "live" });
+  });
+
+  it("drops a dangling flag from a shortened command, and keeps the harness's own account", () => {
+    const run = (command: string, extra: Record<string, unknown> = {}) => liveAction([frame("a", "tool.started", { itemId: "run", status: "inProgress", data: { type: "commandExecution", command, ...extra } })]);
+    expect(run("cargo test -p bridge-core policy::")).toBe("Running cargo test");
+    expect(run("npm install")).toBe("Running npm install");
+    expect(run("rg -n retry src")).toBe("Searching “retry”");
+    expect(actionLabel({ verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: "cargo test -p", command: "cargo test -p x", intent: "Run the policy tests", status: "running" })).toBe("Run the policy tests");
   });
 
   it("has no action when nothing is running, and ignores other chats' calls", () => {
