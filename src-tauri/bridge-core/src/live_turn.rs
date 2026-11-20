@@ -11625,76 +11625,14 @@ fn prepare_input(
             // of its own falls back to a Bridge checkpoint, which summarises
             // history for a later cold start without freeing a single
             // provider token. See `docs/compaction-and-resume.md`.
-            //
-            // The static half of the capability is asked here, off the
-            // adapters mutex, because answering it can cost a process launch:
-            // Codex reads its app-server schema, and doing that while holding
-            // the mutex would stall every other session's adapter I/O behind
-            // one chat's first `/compact`.
-            let harness_compacts = state
-                .adapter_registry
-                .supports_native_compaction(&session_harness);
-            let requested = if harness_compacts {
-                let adapters = state.adapters.lock().unwrap();
-                match adapters.get(session_id) {
-                    // The runtime refines the static answer with what only a
-                    // live process knows, then serves the request under the
-                    // same acquisition so nothing can slip in between.
-                    Some(runtime) => {
-                        let support = runtime.native_compaction();
-                        if support.is_supported() {
-                            runtime.compact_native(
-                                focus.as_deref().filter(|_| support.accepts_focus()),
-                            )?;
-                        }
-                        support
-                    }
-                    // The process went away between the two questions. Falling
-                    // through to the Bridge checkpoint is the honest answer:
-                    // it reports the missing process rather than inventing a
-                    // compaction that never happened.
-                    None => adapters::NativeCompaction::Unsupported,
-                }
-            } else {
-                adapters::NativeCompaction::Unsupported
-            };
-            if requested.is_supported() {
-                // A forwarded compaction is a turn the provider is now
-                // running: Claude reads the slash line off its input stream,
-                // Codex and OpenCode each run theirs as a turn of their own.
-                // Marking it before returning closes the window between this
-                // dispatch and the provider's `turn.started`, which is exactly
-                // where a message typed immediately after would otherwise be
-                // routed as a new turn and collide with the compaction. The
-                // provider's own `turn.completed` clears it, as it does for
-                // any other turn. See `turn_is_active`.
-                let _ = state.db.lock().unwrap().execute(
-                    "UPDATE sessions SET status='working' WHERE id=?1",
-                    params![session_id],
-                );
-                let focus_ignored = focus
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty())
-                    && !requested.accepts_focus();
-                if focus_ignored {
-                    // Naming what was ignored, rather than letting the reader
-                    // believe a focus they typed was applied.
-                    emit_local_assistant(
-                        core,
-                        session_id,
-                        &session_harness,
-                        &format!(
-                            "{} compacts the whole conversation, so the focus was not applied.",
-                            crate::model::Harness::from_stored(&session_harness).label()
-                        ),
-                    )?;
-                }
-                // The harness says when it starts compacting too, but not all
-                // of them do (OpenCode reports only the boundary), and a click
-                // that shows nothing until then reads as ignored.
-                emit_native_compacting(core, session_id, &session_harness)?;
-                core.events.publish(CoreEvent::StateChanged);
+            let forwarded = forward_native_compaction(
+                core,
+                session_id,
+                &session_harness,
+                focus.as_deref(),
+                CompactOrigin::Person,
+            )?;
+            if forwarded == Forwarded::Yes {
                 return Ok(InputPreparation::Handled { interceptions });
             }
             let prompt = state.begin_manual_compaction(session_id)?;
@@ -13442,6 +13380,103 @@ fn record_recoverable_adapter_failure(
         &error.to_string(),
     )?;
     Ok(())
+}
+
+/// Who asked for a native compaction. The origin selects nothing in the
+/// adapter call: each origin sends the same bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactOrigin {
+    /// A person typed `/compact`.
+    Person,
+    /// Bridge asked at an idle turn boundary. It never names a focus.
+    Early,
+}
+
+/// Whether the harness took the compaction command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forwarded {
+    Yes,
+    /// The harness has no compaction command, or the process is gone.
+    /// Nothing was sent.
+    Unsupported,
+}
+
+/// Send the harness its own compaction command. This is the one dispatch
+/// path for each origin, so a manual `/compact` and an early compaction
+/// write the same bytes.
+pub fn forward_native_compaction(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    harness: &str,
+    focus: Option<&str>,
+    origin: CompactOrigin,
+) -> Result<Forwarded, BridgeError> {
+    // The static half of the capability is asked here, off the
+    // adapters mutex, because answering it can cost a process launch:
+    // Codex reads its app-server schema, and doing that while holding
+    // the mutex would stall every other session's adapter I/O behind
+    // one chat's first `/compact`.
+    let harness_compacts = core.adapter_registry.supports_native_compaction(harness);
+    let requested = if harness_compacts {
+        let adapters = core.adapters.lock().unwrap();
+        match adapters.get(session_id) {
+            // The runtime refines the static answer with what only a
+            // live process knows, then serves the request under the
+            // same acquisition so nothing can slip in between.
+            Some(runtime) => {
+                let support = runtime.native_compaction();
+                if support.is_supported() {
+                    runtime.compact_native(focus.filter(|_| support.accepts_focus()))?;
+                }
+                support
+            }
+            // The process went away between the two questions. Falling
+            // through to the Bridge checkpoint is the honest answer:
+            // it reports the missing process rather than inventing a
+            // compaction that never happened.
+            None => adapters::NativeCompaction::Unsupported,
+        }
+    } else {
+        adapters::NativeCompaction::Unsupported
+    };
+    if !requested.is_supported() {
+        return Ok(Forwarded::Unsupported);
+    }
+    // A forwarded compaction is a turn the provider is now
+    // running: Claude reads the slash line off its input stream,
+    // Codex and OpenCode each run theirs as a turn of their own.
+    // Marking it before returning closes the window between this
+    // dispatch and the provider's `turn.started`, which is exactly
+    // where a message typed immediately after would otherwise be
+    // routed as a new turn and collide with the compaction. The
+    // provider's own `turn.completed` clears it, as it does for
+    // any other turn. See `turn_is_active`.
+    let _ = core.db.lock().unwrap().execute(
+        "UPDATE sessions SET status='working' WHERE id=?1",
+        params![session_id],
+    );
+    let focus_ignored = origin == CompactOrigin::Person
+        && focus.map(str::trim).is_some_and(|value| !value.is_empty())
+        && !requested.accepts_focus();
+    if focus_ignored {
+        // Naming what was ignored, rather than letting the reader
+        // believe a focus they typed was applied.
+        emit_local_assistant(
+            core,
+            session_id,
+            harness,
+            &format!(
+                "{} compacts the whole conversation, so the focus was not applied.",
+                crate::model::Harness::from_stored(harness).label()
+            ),
+        )?;
+    }
+    // The harness says when it starts compacting too, but not all
+    // of them do (OpenCode reports only the boundary), and a click
+    // that shows nothing until then reads as ignored.
+    emit_native_compacting(core, session_id, harness)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(Forwarded::Yes)
 }
 
 fn emit_local_assistant(
