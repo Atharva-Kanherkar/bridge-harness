@@ -634,6 +634,40 @@ mod tests {
     }
 
     #[test]
+    fn the_ledger_records_of_one_claude_process_sum_to_its_last_totals() {
+        // A real chat: turn 1, a `/compact` and turn 2 in one process, with an
+        // `init` before each result. Each result holds the session totals.
+        let result = |usage: [i64; 4], model: [i64; 4], cost: f64| json!({
+            "type":"result","subtype":"success","session_id":"s",
+            "usage":{"input_tokens":usage[0],"cache_read_input_tokens":usage[1],"cache_creation_input_tokens":usage[2],"output_tokens":usage[3]},
+            "total_cost_usd":cost,
+            "modelUsage":{"claude-haiku-5-5":{"inputTokens":model[0],"outputTokens":model[1],"cacheReadInputTokens":model[2],"cacheCreationInputTokens":model[3],"costUSD":cost}}
+        });
+        let frames = [
+            result([4, 56239, 42275, 861], [2255, 878, 56239, 42275], 0.00968189),
+            result([0, 0, 0, 0], [16681, 1801, 99046, 42746], 0.012072935),
+            result([2, 17254, 26368, 81], [16683, 1882, 116300, 69114], 0.017559775),
+        ];
+        let mut state = agent::ClaudeStreamState::default();
+        let mut records = Vec::new();
+        for frame in &frames {
+            agent::normalize_claude_message_with_state(&json!({"type":"system","subtype":"init","session_id":"s"}), &mut state);
+            for data in usage_event(agent::normalize_claude_message_with_state(frame, &mut state)) {
+                records.extend(normalize("provider.claude", &data));
+            }
+        }
+        assert_eq!(records.len(), 3);
+        let sum = |pick: fn(&UsageRecord) -> Option<i64>| records.iter().filter_map(pick).sum::<i64>();
+        assert_eq!(sum(|record| record.tokens.uncached_input_tokens), 16683);
+        assert_eq!(sum(|record| record.tokens.output_tokens), 1882);
+        assert_eq!(sum(|record| record.tokens.cache_read_tokens), 116300);
+        assert_eq!(sum(|record| record.tokens.cache_write_tokens), 69114);
+        // Each row rounds its own cost to micro-USD.
+        let cost = sum(|record| record.reported_cost_microusd);
+        assert!((cost - 17_560).abs() <= 1, "{cost}");
+    }
+
+    #[test]
     fn opencode_step_finish_carries_tokens_cost_and_the_owning_messages_model() {
         let mut state = agent::OpenCodeStreamState::default();
         agent::normalize_opencode_message_with_state(

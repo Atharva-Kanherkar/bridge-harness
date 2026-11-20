@@ -199,6 +199,12 @@ struct Script {
     /// A launch with a Codex skills part reports that it dropped the part,
     /// as for a config with a `skills` key of the user.
     drops_codex_skills: bool,
+    /// Each usage seed: the harness, the provider id and the stored payload.
+    seeds: Vec<(&'static str, String, Value)>,
+    /// The buffered startup frames of the next launch.
+    startup: Vec<Value>,
+    /// The lines that the reader of the next launch reads before it waits.
+    output: Vec<Value>,
 }
 
 type Shared = Arc<Mutex<Script>>;
@@ -224,12 +230,16 @@ impl Live {
             ("resume", Some(provider)) => provider.to_owned(),
             _ => format!("thread-{number}"),
         };
-        let reader: Box<dyn std::io::BufRead + Send> =
-            if script.output_ends { Box::new(std::io::Cursor::new(Vec::new())) } else { Box::new(std::io::BufReader::new(Idle)) };
+        let lines: String = std::mem::take(&mut script.output).iter().map(|line| format!("{line}\n")).collect();
+        let reader: Box<dyn std::io::BufRead + Send> = if script.output_ends {
+            Box::new(std::io::Cursor::new(Vec::new()))
+        } else {
+            Box::new(std::io::BufReader::new(std::io::Read::chain(std::io::Cursor::new(lines.into_bytes()), Idle)))
+        };
         Ok(StartedAdapter {
             runtime: Box::new(LiveRuntime { number, thread, turn: Arc::default(), script: self.script.clone() }),
             reader,
-            startup_messages: vec![],
+            startup_messages: std::mem::take(&mut script.startup),
             skills_dropped: script.drops_codex_skills && tools.is_some_and(ToolLaunch::has_codex_skills),
         })
     }
@@ -252,11 +262,13 @@ impl HarnessAdapter for Live {
         }))
         .unwrap()
     }
-    fn start(&self, _: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        Err(BridgeError::Invalid("start without start_chat".into()))
+    // A workspace chat and a worker launch through `start` and `resume`.
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.launch("start", None, request.instructions, None)
     }
-    fn resume(&self, _: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        Err(BridgeError::Invalid("resume without resume_chat".into()))
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let verb = if request.fork { "fork" } else { "resume" };
+        self.launch(verb, Some(request.provider_session_id), request.instructions, None)
     }
     fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
         self.launch("start", None, request.instructions, tools)
@@ -272,11 +284,14 @@ impl HarnessAdapter for Live {
         true
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
-        if self.id == "claude" {
-            agent::normalize_claude_message(value)
-        } else {
-            vec![]
+        match self.id {
+            "claude" => agent::normalize_claude_message(value),
+            "codex" => agent::normalize_codex_message(value),
+            _ => vec![],
         }
+    }
+    fn seed_usage_totals(&self, provider_session_id: &str, usage_event: &Value) {
+        self.script.lock().unwrap().seeds.push((self.id, provider_session_id.to_owned(), usage_event.clone()));
     }
 }
 
@@ -983,4 +998,459 @@ fn the_first_launch_with_a_first_choice_records_the_event_without_a_prefix_rewri
     let events = change_events(&core, &chat);
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["prefixRewritten"], true);
+}
+
+/// Store one `usage.updated` entry of `harness` for a chat, with a total cost.
+fn store_usage(core: &BridgeCore, chat: &str, harness: &str, cost: f64) {
+    let mut event = agent::NormalizedEvent::new("usage.updated");
+    event.data = json!({"usage": {"input_tokens": 1}, "totalCostUsd": cost, "modelUsage": {"m": {"inputTokens": 1, "costUSD": cost}}});
+    store::session_event(&core.db.lock().unwrap(), chat, &event, &json!({"adapter": harness})).unwrap();
+}
+
+fn seeds(script: &Shared) -> Vec<(&'static str, String, Value)> {
+    std::mem::take(&mut script.lock().unwrap().seeds)
+}
+
+#[test]
+fn a_native_resume_seeds_the_claude_totals_from_the_last_usage_entry() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", Some("thread-0"));
+    store_claude_usage(&core, &chat, "thread-0", 0.25);
+    store_claude_usage(&core, &chat, "thread-0", 0.5);
+    // A later entry of another kind does not hide the last usage entry.
+    store::session_event(&core.db.lock().unwrap(), &chat, &agent::NormalizedEvent::new("turn.completed"), &json!({"adapter": "claude"})).unwrap();
+    start_chat(&core, chat.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-0"));
+    assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
+    assert_eq!(seeded[0].2["providerMeta"]["adapter"], "claude");
+
+    // A native resume of a chat with no usage entry calls no seed.
+    let empty = chat_on(&core, "claude", Some("thread-1"));
+    start_chat(&core, empty).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-1"))]);
+    assert!(seeds(&script).is_empty());
+
+    // A Codex chat and an OpenCode chat get no Claude seed.
+    for harness in ["codex", "opencode"] {
+        let other = chat_on(&core, harness, Some("thread-2"));
+        store_usage(&core, &other, harness, 0.5);
+        start_chat(&core, other).unwrap();
+        assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-2"))], "{harness}");
+        assert!(seeds(&script).is_empty(), "{harness}");
+    }
+}
+
+#[test]
+fn a_fresh_claude_start_gets_no_seed() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", None);
+    store_usage(&core, &chat, "claude", 0.5);
+    start_chat(&core, chat).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)]);
+    assert!(seeds(&script).is_empty());
+
+    // A failed native resume falls back to a fresh start, which gets no seed.
+    let failed = chat_on(&core, "claude", Some("thread-0"));
+    store_usage(&core, &failed, "claude", 0.5);
+    script.lock().unwrap().resume_error = Some("the session did not load".into());
+    start_chat(&core, failed).unwrap();
+    assert_eq!(asked(&script).iter().map(|launch| launch.verb).collect::<Vec<_>>(), ["resume", "start"]);
+    assert!(seeds(&script).is_empty());
+}
+
+const D_THREAD: &str = "D-thread";
+
+/// A Codex usage frame of `thread` with the totals and the last request of a
+/// turn: input, cached input and output tokens.
+fn codex_usage(thread: &str, turn: &str, total: [i64; 3], last: [i64; 3]) -> Value {
+    let breakdown = |[input, cached, output]: [i64; 3]| json!({
+        "totalTokens": input + output, "inputTokens": input, "cachedInputTokens": cached,
+        "cacheWriteInputTokens": 0, "outputTokens": output, "reasoningOutputTokens": 0
+    });
+    json!({"method": "thread/tokenUsage/updated", "params": {
+        "threadId": thread, "turnId": turn,
+        "tokenUsage": {"total": breakdown(total), "last": breakdown(last), "modelContextWindow": 475000}
+    }})
+}
+
+/// The real usage frame of the second turn D2 of a Codex chat. Codex sent it
+/// again after `thread/resume` in a new process.
+fn d2_usage(thread: &str) -> Value {
+    codex_usage(thread, "D2", [64142, 31872, 10], [32080, 31872, 5])
+}
+
+/// The real usage frame of the third turn D3, the first turn after the resume.
+fn d3_usage(thread: &str) -> Value {
+    codex_usage(thread, "D3", [96969, 63744, 15], [32827, 31872, 5])
+}
+
+fn codex_turn(method: &str, thread: &str, turn: &str) -> Value {
+    json!({"method": method, "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}})
+}
+
+/// The `usage.updated` entries, the ledger rows and the context readings of a chat.
+fn usage_counts(core: &BridgeCore, chat: &str) -> (i64, i64, i64) {
+    let db = core.db.lock().unwrap();
+    let count = |sql: &str| db.query_row(sql, [chat], |row| row.get::<_, i64>(0)).unwrap();
+    (
+        count("SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='usage.updated'"),
+        count("SELECT COUNT(*) FROM usage_ledger WHERE session_id=?1"),
+        count("SELECT COUNT(*) FROM context_readings WHERE session_id=?1"),
+    )
+}
+
+/// A Codex chat on `thread` whose turn D2 recorded its usage in this daemon.
+fn codex_chat_after_d2(core: &Arc<BridgeCore>, thread: &str) -> String {
+    let chat = chat_on(core, "codex", Some(thread));
+    for value in [codex_turn("turn/started", thread, "D2"), d2_usage(thread), codex_turn("turn/completed", thread, "D2")] {
+        frame(core, &chat, value);
+    }
+    assert_eq!(usage_counts(core, &chat), (1, 1, 1));
+    chat
+}
+
+/// Wait until the reader of a chat stored `count` entries of `kind`.
+fn wait_for_entries(core: &BridgeCore, chat: &str, kind: &str, count: i64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while entry_count(core, chat, kind) < count {
+        assert!(std::time::Instant::now() < deadline, "the reader stored no {kind} entry");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_resumed_codex_thread_drops_the_replay_of_its_last_usage() {
+    let (_dir, core, script) = live();
+    // A daemon that still holds the old turn id, and a new daemon that holds
+    // none. The replay is a buffered startup frame or a line of the reader.
+    for (thread, new_daemon, buffered) in [("D-1", false, true), ("D-2", false, false), ("D-3", true, true), ("D-4", true, false)] {
+        let chat = codex_chat_after_d2(&core, thread);
+        let mut delegations = core.delegations.lock().unwrap();
+        if new_daemon {
+            delegations.last_turn_by_session.remove(&chat);
+        } else {
+            assert_eq!(delegations.last_turn_by_session.get(&chat).map(String::as_str), Some("D2"));
+        }
+        drop(delegations);
+        {
+            let mut script = script.lock().unwrap();
+            if buffered {
+                script.startup = vec![d2_usage(thread)];
+            } else {
+                script.output = vec![d2_usage(thread)];
+            }
+            // The next turn starts after the replay, so its entry shows that
+            // the reader read the replay.
+            script.output.push(codex_turn("turn/started", thread, "D3"));
+        }
+        start_chat(&core, chat.clone()).unwrap();
+        assert_eq!(verbs(&asked(&script)), [("resume", Some(thread))]);
+        wait_for_entries(&core, &chat, "turn.started", 2);
+        assert_eq!(usage_counts(&core, &chat), (1, 1, 1), "{thread}");
+    }
+}
+
+#[test]
+fn the_first_usage_of_the_next_turn_records_after_a_codex_resume() {
+    let (_dir, core, script) = live();
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    script.lock().unwrap().output = vec![
+        d2_usage(D_THREAD),
+        codex_turn("turn/started", D_THREAD, "D3"),
+        d3_usage(D_THREAD),
+        codex_turn("turn/completed", D_THREAD, "D3"),
+    ];
+    start_chat(&core, chat.clone()).unwrap();
+    wait_for_entries(&core, &chat, "turn.completed", 2);
+    assert_eq!(usage_counts(&core, &chat), (2, 2, 2));
+    let db = core.db.lock().unwrap();
+    let row: (Option<String>, i64, i64, i64, i64) = db
+        .query_row(
+            "SELECT turn_id,input_tokens,cache_read_tokens,uncached_input_tokens,output_tokens FROM usage_ledger WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+            [&chat],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (Some("D3".into()), 32827, 31872, 955, 5));
+    let reading: (Option<String>, i64, i64) = db
+        .query_row(
+            "SELECT turn_id,used_tokens,window_tokens FROM context_readings WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+            [&chat],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(reading, (Some("D3".into()), 32832, 475000));
+    let entry: String = db
+        .query_row(
+            "SELECT payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' ORDER BY sequence DESC LIMIT 1",
+            [&chat],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&entry).unwrap()["data"]["turnId"], "D3");
+}
+
+#[test]
+fn a_codex_usage_frame_that_differs_from_the_seed_still_records() {
+    let (_dir, core, script) = live();
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    // The same turn id with other figures, and the same figures with another turn id.
+    let other_figures = codex_usage(D_THREAD, "D2", [64142, 31872, 11], [32080, 31872, 6]);
+    let mut other_turn = d2_usage(D_THREAD);
+    other_turn["params"]["turnId"] = json!("D1");
+    script.lock().unwrap().output = vec![
+        d2_usage(D_THREAD),
+        other_figures,
+        other_turn,
+        // After the first turn starts, the seed is gone and an equal frame records.
+        codex_turn("turn/started", D_THREAD, "D3"),
+        d2_usage(D_THREAD),
+        codex_turn("turn/completed", D_THREAD, "D3"),
+    ];
+    start_chat(&core, chat.clone()).unwrap();
+    wait_for_entries(&core, &chat, "turn.completed", 2);
+    // D2 before the resume, then the two frames that differ and the late equal frame.
+    assert_eq!(usage_counts(&core, &chat), (4, 4, 4));
+    let db = core.db.lock().unwrap();
+    let mut entries = db.prepare("SELECT payload FROM session_entries WHERE session_id=?1 AND kind='usage.updated' ORDER BY sequence").unwrap();
+    let entries: Vec<(String, i64)> = entries
+        .query_map([&chat], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|payload| {
+            let data = serde_json::from_str::<Value>(&payload.unwrap()).unwrap()["data"].clone();
+            (data["turnId"].as_str().unwrap().to_owned(), data["tokenUsage"]["last"]["outputTokens"].as_i64().unwrap())
+        })
+        .collect();
+    assert_eq!(entries, [("D2".into(), 5), ("D2".into(), 6), ("D1".into(), 5), ("D2".into(), 5)]);
+    let mut ledger = db.prepare("SELECT output_tokens FROM usage_ledger WHERE session_id=?1 ORDER BY id").unwrap();
+    let ledger: Vec<i64> = ledger.query_map([&chat], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(ledger, [5, 6, 5, 5]);
+}
+
+#[test]
+fn a_new_codex_thread_and_a_chat_with_no_stored_usage_get_no_seed() {
+    let (_dir, core, script) = live();
+    // The chat has stored Codex usage, but its next launch starts a new thread.
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    core.db.lock().unwrap().execute("UPDATE sessions SET provider_session_id=NULL WHERE id=?1", [&chat]).unwrap();
+    script.lock().unwrap().output = vec![d2_usage("thread-1"), codex_turn("turn/started", "thread-1", "E1")];
+    start_chat(&core, chat.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)]);
+    wait_for_entries(&core, &chat, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &chat), (2, 2, 2));
+
+    // A native resume of a chat with no stored usage.
+    let empty = chat_on(&core, "codex", Some("E-thread"));
+    script.lock().unwrap().output = vec![d2_usage("E-thread"), codex_turn("turn/started", "E-thread", "E1")];
+    start_chat(&core, empty.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("E-thread"))]);
+    wait_for_entries(&core, &empty, "turn.started", 1);
+    assert_eq!(usage_counts(&core, &empty), (1, 1, 1));
+}
+
+/// A workspace with a stopped workspace chat on `harness`. Its next
+/// `start_session` resumes the provider session `thread` natively.
+fn workspace_chat(core: &BridgeCore, data_dir: &Path, harness: &str, thread: &str) -> String {
+    let path = data_dir.join("workspace");
+    let db = core.db.lock().unwrap();
+    db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![path.to_string_lossy()]).unwrap();
+    db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'stopped','now')", params![path.to_string_lossy()]).unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,provider_session_id) VALUES('workspace-chat','w',?1,'Orchestrator','stopped','reported',0,'orchestrator',?2)",
+        params![harness, thread],
+    )
+    .unwrap();
+    "workspace-chat".into()
+}
+
+#[test]
+fn a_native_resume_of_a_workspace_chat_seeds_the_claude_totals() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    store_claude_usage(&core, &chat, "thread-0", 0.5);
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-0"));
+    assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
+}
+
+#[test]
+fn a_native_resume_of_a_workspace_chat_drops_the_codex_replay() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "codex", D_THREAD);
+    for value in [codex_turn("turn/started", D_THREAD, "D2"), d2_usage(D_THREAD), codex_turn("turn/completed", D_THREAD, "D2")] {
+        frame(&core, &chat, value);
+    }
+    assert_eq!(usage_counts(&core, &chat), (1, 1, 1));
+    {
+        let mut script = script.lock().unwrap();
+        script.startup = vec![d2_usage(D_THREAD)];
+        script.output = vec![d2_usage(D_THREAD), codex_turn("turn/started", D_THREAD, "D3")];
+    }
+    start_session(&core, "w".into(), Some(Harness::Codex), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some(D_THREAD))]);
+    wait_for_entries(&core, &chat, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &chat), (1, 1, 1));
+}
+
+/// A stopped Claude worker with no runtime. The next delegation resumes its
+/// provider session natively.
+#[test]
+fn a_cold_worker_that_resumes_natively_gets_the_seed() {
+    let (dir, core, script) = live();
+    let request = delegation::DelegationRequest {
+        schema_version: delegation::SCHEMA_VERSION,
+        role: delegation::WorkerRole::Research,
+        objective: "Inspect the next task".into(),
+        acceptance_criteria: vec!["Return evidence for the new objective".into()],
+        known_facts: vec![],
+        decisions: vec![], evidence_ids: vec![], relevant_files: vec![],
+        owned_paths: vec![], write_mode: delegation::WriteMode::ReadOnly,
+        capability_tier: crate::model::CapabilityTier::Standard,
+        effort: delegation::Effort::Medium, network_access: false,
+        writable_output_paths: vec![], verification: vec![],
+        output_contract: delegation::OutputContract::ResearchResult,
+        harness: Some("claude".into()), model: Some("standard".into()),
+    };
+    // A read-only worker records a baseline of the tracked files first.
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    for args in [&["init", "-q"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "start"]] {
+        assert!(crate::git::git_command(&repo).args(args).status().unwrap().success());
+    }
+    {
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![repo.to_string_lossy()]).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![repo.to_string_lossy()]).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind)
+                VALUES('parent','w','claude','Parent','working','reported',0,'orchestrator');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,model,provider_session_id)
+                VALUES('worker','w','claude','Research','stopped','reported','parent',1,'standard','worker-thread');
+             INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at)
+                VALUES('worker','w','research','standard','research','[]','readOnly','checkpointed','now','now');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at)
+                VALUES('worker','parent','stopped','research','key','reported','now');",
+        )
+        .unwrap();
+    }
+    store_claude_usage(&core, "worker", "worker-thread", 0.5);
+    match launch_worker_outcome(&core, "parent", "turn-1", &request, false) {
+        WorkerLaunchOutcome::Launched(id) => assert_eq!(id, "worker"),
+        _ => {
+            let rejected: String = core.db.lock().unwrap().query_row("SELECT COALESCE(group_concat(payload, '; '),'none') FROM session_entries WHERE kind='delegation.rejected'", [], |row| row.get(0)).unwrap();
+            panic!("the cold worker did not launch: {rejected}");
+        }
+    }
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("worker-thread"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "worker-thread"));
+}
+
+/// Store the Claude `init` entry of the provider session `thread`.
+fn store_claude_init(core: &BridgeCore, chat: &str, thread: &str) {
+    let db = core.db.lock().unwrap();
+    for event in agent::normalize_claude_message(&claude_init(thread)) {
+        store::session_event(&db, chat, &event, &json!({"adapter": "claude"})).unwrap();
+    }
+}
+
+/// Store one Claude `usage.updated` entry with the saved totals of the
+/// provider session `thread`, as the normalizer writes it now.
+fn store_claude_usage(core: &BridgeCore, chat: &str, thread: &str, cost: f64) {
+    let model_usage = json!({"m": {"inputTokens": 1, "costUSD": cost}});
+    let mut event = agent::NormalizedEvent::new("usage.updated");
+    event.data = json!({
+        "usage": {"input_tokens": 1}, "totalCostUsd": cost, "modelUsage": model_usage,
+        "cumulative": {"sessionId": thread, "totalCostUsd": cost, "modelUsage": model_usage}
+    });
+    store::session_event(&core.db.lock().unwrap(), chat, &event, &json!({"adapter": "claude"})).unwrap();
+}
+
+/// Store one Codex `usage.updated` entry with the raw usage of `thread`.
+fn store_codex_usage(core: &BridgeCore, chat: &str, thread: Option<&str>, turn: &str) {
+    let mut event = agent::NormalizedEvent::new("usage.updated");
+    event.data = codex_usage(thread.unwrap_or_default(), turn, [9, 0, 9], [9, 0, 9])["params"].clone();
+    if thread.is_none() {
+        event.data.as_object_mut().unwrap().remove("threadId");
+    }
+    store::session_event(&core.db.lock().unwrap(), chat, &event, &json!({"adapter": "codex"})).unwrap();
+}
+
+#[test]
+fn a_newer_usage_entry_of_another_thread_does_not_hide_the_codex_seed() {
+    let (_dir, core, script) = live();
+    let chat = codex_chat_after_d2(&core, D_THREAD);
+    // An entry of another thread, and an entry that names no thread.
+    store_codex_usage(&core, &chat, Some("other-thread"), "X1");
+    store_codex_usage(&core, &chat, None, "X2");
+    script.lock().unwrap().output = vec![d2_usage(D_THREAD), codex_turn("turn/started", D_THREAD, "D3")];
+    start_chat(&core, chat.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some(D_THREAD))]);
+    wait_for_entries(&core, &chat, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &chat), (3, 1, 1));
+}
+
+#[test]
+fn a_newer_usage_entry_of_another_adapter_does_not_hide_the_seed() {
+    let (_dir, core, script) = live();
+    let claude = chat_on(&core, "claude", Some("thread-0"));
+    store_claude_usage(&core, &claude, "thread-0", 0.5);
+    store_codex_usage(&core, &claude, Some("thread-0"), "X1");
+    start_chat(&core, claude).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!(seeded[0].2["data"]["cumulative"]["totalCostUsd"], json!(0.5));
+
+    let codex = codex_chat_after_d2(&core, D_THREAD);
+    store_claude_usage(&core, &codex, D_THREAD, 0.5);
+    script.lock().unwrap().output = vec![d2_usage(D_THREAD), codex_turn("turn/started", D_THREAD, "D3")];
+    start_chat(&core, codex.clone()).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some(D_THREAD))]);
+    wait_for_entries(&core, &codex, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &codex), (2, 1, 1));
+}
+
+#[test]
+fn an_old_claude_usage_entry_of_another_provider_session_gives_no_seed() {
+    let (_dir, core, script) = live();
+    // Session A left an entry with no saved totals. Session B started in the
+    // same chat and stored no usage, and now B resumes.
+    let chat = chat_on(&core, "claude", Some("thread-B"));
+    store_claude_init(&core, &chat, "thread-A");
+    store_usage(&core, &chat, "claude", 0.5);
+    store_claude_init(&core, &chat, "thread-B");
+    start_chat(&core, chat).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-B"))]);
+    assert!(seeds(&script).is_empty());
+
+    // An old entry with no `init` entry before it names no session.
+    let unnamed = chat_on(&core, "claude", Some("thread-C"));
+    store_usage(&core, &unnamed, "claude", 0.5);
+    start_chat(&core, unnamed).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-C"))]);
+    assert!(seeds(&script).is_empty());
+}
+
+#[test]
+fn an_old_claude_usage_entry_of_the_same_provider_session_still_gives_the_seed() {
+    let (_dir, core, script) = live();
+    let chat = chat_on(&core, "claude", Some("thread-A"));
+    store_claude_init(&core, &chat, "thread-A");
+    store_usage(&core, &chat, "claude", 0.5);
+    // A newer entry of another adapter comes first, so the read goes past it.
+    store_codex_usage(&core, &chat, None, "X1");
+    start_chat(&core, chat).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-A"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-A"));
+    assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
 }
