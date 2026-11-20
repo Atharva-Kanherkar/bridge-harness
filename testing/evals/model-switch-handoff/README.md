@@ -17,7 +17,7 @@ since the first ask already rides in `started with:`.
 
 ## Live (the real app)
 
-`scripts/e2e-model-switch.sh` runs the branch-built `bridged` on a scratch data
+`CARGO_TARGET_DIR=<target> node scripts/e2e-model-switch.mjs` runs the branch-built `bridged` on a scratch data
 directory with the real Claude and Codex logins and drives it with
 `bridge exec --method`, as the desktop app does. See the script header for the
 steps and what each asserts.
