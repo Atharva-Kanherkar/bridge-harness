@@ -1321,7 +1321,7 @@ fn a_cold_worker_that_resumes_natively_gets_the_seed() {
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     for args in [&["init", "-q"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "start"]] {
-        assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        assert!(crate::git::git_command(&repo).args(args).status().unwrap().success());
     }
     {
         let db = core.db.lock().unwrap();
