@@ -37,6 +37,7 @@ import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
+import { ComposerKeyHints } from "./components/ComposerKeyHints";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
@@ -1526,6 +1527,9 @@ function AppContent() {
   const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
   const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
+  // Chats with a send on its way: the sidebar's Running group counts them as
+  // a turn in flight, as `turnActive` below does for the open chat.
+  const sendingChatIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
@@ -3806,6 +3810,9 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      sessions={visibleSessions}
+      liveEvents={agentEvents}
+      sendingChatIds={sendingChatIds}
       subagents={subagents}
       unread={unread.byChat}
       pullRequests={sidebarPrs}
@@ -4282,6 +4289,7 @@ function AppContent() {
                       onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
                       onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
                       onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
+                      trailing={<ComposerKeyHints state={turnActive ? activeAction : "idle"} />}
                     />}
                   />
                   <div className="mx-4 sm:mx-6"><ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} /></div>
@@ -4839,7 +4847,7 @@ function Welcome({ adapters, accounts, account, harness, model, knownLabel, load
         : workspace
         ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
         : <span>{greeting.hint}</span>}
-      <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
+      <ComposerKeyHints state="idle" className="shrink-0" />
     </div>
     {workspaces.length === 0 && <div className="mt-6 flex justify-center">
       <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-meta text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>

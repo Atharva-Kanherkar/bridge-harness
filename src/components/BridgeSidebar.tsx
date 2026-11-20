@@ -5,7 +5,7 @@ import { WindowNavButtons } from "./WindowNavButtons";
 import type { AppKey, BadgeText, LaunchEntry } from "../apps/registry";
 import { HarnessMark } from "./harnessMarks";
 import { FittedTitle } from "./FittedTitle";
-import type { AttentionKind, Session, SessionStatus, Workspace } from "../types";
+import type { AgentEvent, AttentionKind, Session, SessionStatus, Workspace } from "../types";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
 import { PullRequestGlyph, type SidebarPullRequests } from "./ChatPullRequests";
 import { SHELF_TONE } from "./WorkShelf";
@@ -21,6 +21,8 @@ import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import { ChatSearchResults } from "./ChatSearchResults";
 import { CHAT_SEARCH_MIN_CHARS, enterAction, useChatSearch } from "../chatSearch";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
+import { SidebarRunning } from "./SidebarRunning";
+import { rememberRunning, runningChats } from "../sidebarRunning";
 import {
   GROUP_ROW_CAP,
   NO_PROJECT_GROUP_KEY,
@@ -551,6 +553,14 @@ export type BridgeSidebarProps = {
   /** Each chat's live descendant agents. Workers never reach `chats`, so the
    * host counts them from every session and hands the answer in. */
   liveAgents?: LiveAgents;
+  /** Every session, workers included: the Running group reads their states.
+   * Without it a live worker counts as working. */
+  sessions?: readonly Session[];
+  /** The live event buffer: when a turn started and the step it is on. */
+  liveEvents?: readonly AgentEvent[];
+  /** Chats with a send still on its way, which the transcript already counts
+   * as a turn in flight. */
+  sendingChatIds?: ReadonlySet<string>;
   /** Imported subagent chats, keyed by the top-level chat they belong to
    * (`importedSubagents`). Like workers they never reach `chats`; unlike
    * workers they are history, listed under their chat's row to open. */
@@ -624,6 +634,9 @@ export type BridgeSidebarProps = {
 export function BridgeSidebar({
   chats,
   liveAgents,
+  sessions,
+  liveEvents,
+  sendingChatIds,
   subagents,
   unread,
   pullRequests,
@@ -829,6 +842,15 @@ export function BridgeSidebar({
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now, liveAgents }),
     [visible, view.groupBy, view.sortBy, workspaces, now, liveAgents],
   );
+  // Every chat with a turn or a worker in flight, whatever the filters say.
+  // The clocks carry from pass to pass, so a run whose start the live buffer
+  // has since dropped keeps the time it had rather than starting over.
+  const runningSeen = useRef<ReadonlyMap<string, number>>(new Map());
+  const running = useMemo(() => {
+    const rows = runningChats({ chats, liveAgents, sessions, sending: sendingChatIds, events: liveEvents, seen: runningSeen.current, now: Date.now() });
+    runningSeen.current = rememberRunning(rows);
+    return rows;
+  }, [chats, liveAgents, sessions, sendingChatIds, liveEvents]);
 
   // Collapsing takes the rail off the screen entirely; the panel controls move
   // to the canvas' chrome row, which is the only way back in besides ⌘B. The
@@ -988,6 +1010,12 @@ export function BridgeSidebar({
             );
           })}
         </nav>
+
+        {/* Above Projects and out of their scroll, so what is running stays in
+            view. A search has the rail to itself. */}
+        {running.length > 0 && !searching && (
+          <SidebarRunning rows={running} activeSessionId={activeSessionId} onOpenSession={onOpenSession} />
+        )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           {searchOpen && query.trim().length >= CHAT_SEARCH_MIN_CHARS && (
