@@ -80,7 +80,7 @@ fn a_2x_session_comes_over_as_opencode_showed_it() {
 
     assert_eq!(chat.key, "opencode:ses_all");
     assert_eq!((chat.title.as_deref(), chat.title_source.clone()), (Some("Fix the login"), TitleSource::Native));
-    assert_eq!((chat.cwd.as_deref(), chat.model.as_deref(), chat.effort.as_deref()), (Some("/work/app"), Some("glm-5.3"), Some("max")));
+    assert_eq!((chat.cwd.as_deref(), chat.model.as_deref(), chat.effort.as_deref()), (Some("/work/app"), Some("opencode-go/glm-5.3"), Some("max")));
     assert_eq!(chat.native_ref.as_ref().map(|native| native.session_id.as_str()), Some("ses_all"));
     assert_eq!(parsed.typed_messages, 2, "the two messages typed; system rows and nudges are not");
 
@@ -200,7 +200,7 @@ fn a_1x_session_reads_from_its_messages_and_parts() {
     assert_eq!((tools[1].status, tools[1].output.as_deref()), (ToolStatus::Failed, Some("no match")));
     assert_eq!(tools[2].status, ToolStatus::Unknown, "a call cut off mid-run has no result");
     assert_eq!(chat.entries[6].text.as_deref(), Some("We added a route."), "the summary is the compaction's text");
-    assert_eq!((chat.model.as_deref(), chat.effort.as_deref()), (Some("big-pickle"), Some("high")));
+    assert_eq!((chat.model.as_deref(), chat.effort.as_deref()), (Some("opencode/big-pickle"), Some("high")), "the model as Bridge names it");
     assert_eq!(parsed.typed_messages, 1);
     assert_eq!(parsed.skipped.get("part:mirage"), Some(&1));
 }

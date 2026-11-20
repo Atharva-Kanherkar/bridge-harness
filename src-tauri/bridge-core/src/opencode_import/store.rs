@@ -230,10 +230,14 @@ impl Reading {
         self.entries.push(BundleEntry { source_id: id, at: at.unwrap_or_default(), kind, text, tool, attachments: Vec::new() });
     }
 
-    /// The model and its variant, from an assistant message.
-    fn note_model(&mut self, model: Option<&str>, variant: Option<&str>) {
+    /// The model and its variant, from an assistant message. Bridge names an
+    /// OpenCode model `<provider>/<model>`, as OpenCode's own `--model` does.
+    fn note_model(&mut self, provider: Option<&str>, model: Option<&str>, variant: Option<&str>) {
         if let Some(model) = model.filter(|model| !model.is_empty()) {
-            self.model = Some(model.to_owned());
+            self.model = Some(match provider.filter(|provider| !provider.is_empty()) {
+                Some(provider) => format!("{provider}/{model}"),
+                None => model.to_owned(),
+            });
         }
         if let Some(variant) = variant.filter(|variant| !variant.is_empty() && *variant != "default") {
             self.effort = Some(variant.to_owned());
@@ -332,7 +336,7 @@ fn read_v2(conn: &Connection, session: &str, reading: &mut Reading) -> rusqlite:
                 }
             }
             "assistant" => {
-                reading.note_model(str_at(&data, "/model/id"), str_at(&data, "/model/variant"));
+                reading.note_model(str_at(&data, "/model/providerID"), str_at(&data, "/model/id"), str_at(&data, "/model/variant"));
                 v2_assistant(&id, at, &data, reading);
             }
             "synthetic" => v2_synthetic(&id, at, &data, reading),
@@ -535,8 +539,11 @@ fn read_v1(conn: &Connection, session: &str, reading: &mut Reading) -> rusqlite:
             continue;
         };
         let role = str_at(&message, "/role").unwrap_or("");
-        if role == "assistant" {
-            reading.note_model(str_at(&message, "/modelID"), str_at(&message, "/variant"));
+        let summary = message.get("summary").and_then(Value::as_bool) == Some(true);
+        // A compaction's summary may run on another model; the chat's is
+        // the one its replies used.
+        if role == "assistant" && !summary {
+            reading.note_model(str_at(&message, "/providerID"), str_at(&message, "/modelID"), str_at(&message, "/variant"));
         }
         let mut message_parts = Vec::new();
         if let Some(parts) = parts.as_mut() {
@@ -551,7 +558,7 @@ fn read_v1(conn: &Connection, session: &str, reading: &mut Reading) -> rusqlite:
         }
         match role {
             "user" => v1_user(&id, at, &message_parts, reading),
-            "assistant" if message.get("summary").and_then(Value::as_bool) == Some(true) => {
+            "assistant" if summary => {
                 v1_summary(&id, at, &message_parts, reading);
             }
             "assistant" => v1_assistant(at, &message_parts, reading),
