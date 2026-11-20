@@ -6,7 +6,7 @@ import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
-import { CHAT_VIEW_KEY } from "./sidebarChats";
+import { CHAT_VIEW_KEY, importedSubagents } from "./sidebarChats";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 
 // The static suite covers what the rail renders. This one covers what it does:
@@ -427,3 +427,52 @@ describe("BridgeSidebar pinned Notes", () => {
     expect(container.querySelector("button[aria-label='Unpin Notes']")).toBeNull();
   });
 });
+
+describe("imported subagents in the rail", () => {
+  beforeEach(() => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
+  });
+
+  const parent = session("imp", { title: "Fix the login", kind: "imported", harness: "opencode" });
+  const kids = [
+    session("kid-a", { title: "Audit the tests", kind: "imported", harness: "opencode", parentSessionId: "imp", startedAt: "2026-11-01T10:01:00Z" }),
+    session("kid-b", { title: "Scan the docs", kind: "imported", harness: "opencode", parentSessionId: "imp", startedAt: "2026-11-01T10:02:00Z" }),
+  ];
+  const all = [parent, session("plain", { title: "Japan relocation" }), ...kids];
+  const toggle = () => container.querySelector<HTMLButtonElement>("[aria-label$='subagents of Fix the login']")!;
+
+  it("counts a chat's imported subagents, folded, and unfolds to open one", () => {
+    const opened: string[] = [];
+    mount({ chats: [parent, all[1]], subagents: importedSubagents(all), onOpenSession: id => opened.push(id) });
+
+    expect(toggle().textContent).toBe("2 subagents");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector("[data-subagent-row]")).toBeNull();
+    expect(text()).not.toContain("Audit the tests");
+
+    click(toggle());
+    const rows = [...container.querySelectorAll<HTMLButtonElement>("[data-subagent-row]")];
+    expect(rows.map(row => row.getAttribute("data-subagent-row"))).toEqual(["kid-a", "kid-b"]);
+    click(rows[1]);
+    expect(opened).toEqual(["kid-b"]);
+
+    click(toggle());
+    expect(container.querySelector("[data-subagent-row]")).toBeNull();
+  });
+
+  it("unfolds the chat holding the open subagent by itself", () => {
+    mount({ chats: [parent, all[1]], subagents: importedSubagents(all), activeSessionId: "kid-a" });
+
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    const active = container.querySelector("[data-subagent-row='kid-a']")!;
+    expect(active.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("filters subagents with their chat and never lists them at the top", () => {
+    mount({ chats: [all[1]], subagents: importedSubagents(all) });
+
+    expect(toggle()).toBeNull();
+    expect(text()).not.toContain("Audit the tests");
+  });
+});
+

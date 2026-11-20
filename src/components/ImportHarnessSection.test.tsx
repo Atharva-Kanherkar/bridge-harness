@@ -34,6 +34,7 @@ describe("ImportHarnessSection", () => {
       expect(text).not.toContain(gone);
     }
     const buttons = [...container.querySelectorAll("button")].map(button => button.textContent?.trim());
-    expect(buttons).toEqual(["Import"]);
+    // One per tool Bridge imports today: Claude Code, Codex and OpenCode.
+    expect(buttons).toEqual(["Import", "Import", "Import"]);
   });
 });

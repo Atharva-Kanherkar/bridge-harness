@@ -71,14 +71,93 @@ fn transcript_path(home: &Path, cwd: &str, session: &str) -> PathBuf {
     home.join("projects").join(project_folder(cwd)).join(format!("{session}.jsonl"))
 }
 
+/// Where Bridge signs in to each tool it can resume natively.
+#[derive(Debug, Clone, Default)]
+pub struct SignInHomes {
+    pub claude: Vec<ClaudeHome>,
+    pub codex: Vec<ClaudeHome>,
+    /// OpenCode's data folders (`<data home>/opencode`): the user's own,
+    /// then each OpenCode account's.
+    pub opencode: Vec<ClaudeHome>,
+}
+
+impl SignInHomes {
+    pub fn claude_only(homes: &[ClaudeHome]) -> Self {
+        Self { claude: homes.to_vec(), ..Self::default() }
+    }
+}
+
+/// A tool whose sessions Bridge resumes natively: what to call it, and
+/// whether a home still holds a session for a folder.
+struct Resumable {
+    label: &'static str,
+    still_has: fn(home: &Path, cwd: &str, session: &str) -> bool,
+    /// Whether the place the chat was imported from still holds it.
+    at_source: fn(source_ref: &str, session: &str) -> bool,
+}
+
+fn source_file_exists(source_ref: &str, _session: &str) -> bool {
+    Path::new(source_ref).is_file()
+}
+
+const CLAUDE: Resumable = Resumable {
+    label: "Claude Code",
+    still_has: |home, cwd, session| transcript_path(home, cwd, session).is_file(),
+    at_source: source_file_exists,
+};
+
+const CODEX: Resumable = Resumable {
+    label: "Codex",
+    // A Codex thread's rollout is filed by date, not by folder.
+    still_has: |home, _cwd, session| crate::codex_import::find_rollout(home, session).is_some(),
+    at_source: source_file_exists,
+};
+
+const OPENCODE: Resumable = Resumable {
+    label: "OpenCode",
+    // A session is a row in the store under the data folder.
+    still_has: |home, _cwd, session| crate::opencode_import::still_has(home, session),
+    at_source: |source_ref, session| {
+        crate::opencode_import::parse_source_ref(source_ref)
+            .is_some_and(|(store, _)| crate::opencode_import::store_has(&store, session))
+    },
+};
+
+/// The OpenCode data folders Bridge signs in with: the user's own, then each
+/// OpenCode account in Settings (its data home's `opencode` folder).
+pub fn opencode_homes(db: &Connection) -> Result<Vec<ClaudeHome>, BridgeError> {
+    let host = HostHomes::from_env();
+    let own = host.xdg_data_home.clone().unwrap_or_else(|| host.home.join(".local/share"));
+    let mut homes = vec![(None, crate::opencode_import::data_folder(&own))];
+    let advanced = crate::agent_config::state(db)?
+        .harnesses
+        .into_iter()
+        .find(|item| item.id == "opencode")
+        .map(|item| item.advanced);
+    if let Some(advanced) = advanced {
+        for account in provider_accounts::accounts("opencode", &advanced)? {
+            if account.home_path.is_empty() {
+                continue;
+            }
+            let data_home = provider_accounts::expand_home_path(&account.home_path, &host.home);
+            homes.push((Some(account.id), crate::opencode_import::data_folder(&data_home)));
+        }
+    }
+    Ok(homes)
+}
+
 pub fn plan(core: &BridgeCore, imported_id: &str) -> Result<Plan, BridgeError> {
     let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let homes = claude_homes(&db)?;
+    let homes = SignInHomes {
+        claude: claude_homes(&db)?,
+        codex: crate::codex_import::machine_codex_homes().into_iter().map(|home| (None, home)).collect(),
+        opencode: opencode_homes(&db)?,
+    };
     plan_in(&db, imported_id, &homes)
 }
 
 /// Decide how `imported_id` continues, against the given sign-in homes.
-pub fn plan_in(db: &Connection, imported_id: &str, homes: &[ClaudeHome]) -> Result<Plan, BridgeError> {
+pub fn plan_in(db: &Connection, imported_id: &str, homes: &SignInHomes) -> Result<Plan, BridgeError> {
     let (kind, harness, cwd, parent): (String, String, Option<String>, Option<String>) = db
         .query_row(
             "SELECT kind, harness, cwd, parent_session_id FROM sessions WHERE id=?1",
@@ -90,21 +169,26 @@ pub fn plan_in(db: &Connection, imported_id: &str, homes: &[ClaudeHome]) -> Resu
     if kind != "imported" {
         return Err(BridgeError::Invalid("Only an imported chat continues this way".into()));
     }
-    if harness != "claude" {
-        return Ok(Plan::history("Bridge continues only Claude Code sessions natively so far."));
-    }
+    let (tool, homes) = match harness.as_str() {
+        "claude" => (CLAUDE, &homes.claude),
+        "codex" => (CODEX, &homes.codex),
+        "opencode" => (OPENCODE, &homes.opencode),
+        _ => return Ok(Plan::history("Bridge continues only Claude Code, Codex and OpenCode sessions natively so far.")),
+    };
+    let label = tool.label;
     if parent.is_some() {
         return Ok(Plan::history("A subagent's run cannot be resumed on its own."));
     }
     let native: Option<String> = db
         .query_row(
-            "SELECT native_key FROM import_native_sessions WHERE session_id=?1 AND native_key LIKE 'claude:%' LIMIT 1",
-            params![imported_id],
+            "SELECT native_key FROM import_native_sessions WHERE session_id=?1 AND native_key LIKE ?2 LIMIT 1",
+            params![imported_id, format!("{harness}:%")],
             |row| row.get(0),
         )
         .optional()?;
-    let Some(session) = native.and_then(|key| key.strip_prefix("claude:").map(str::to_owned)) else {
-        return Ok(Plan::history("Bridge did not record which Claude Code session this was."));
+    let prefix = format!("{harness}:");
+    let Some(session) = native.and_then(|key| key.strip_prefix(&prefix).map(str::to_owned)) else {
+        return Ok(Plan::history(&format!("Bridge did not record which {label} session this was.")));
     };
     let held: Option<String> = db
         .query_row(
@@ -114,14 +198,14 @@ pub fn plan_in(db: &Connection, imported_id: &str, homes: &[ClaudeHome]) -> Resu
         )
         .optional()?;
     if held.is_some() {
-        return Ok(Plan::history("Another Bridge chat already continues this Claude Code session."));
+        return Ok(Plan::history(&format!("Another Bridge chat already continues this {label} session.")));
     }
     let Some(cwd) = cwd.filter(|cwd| Path::new(cwd).is_dir()) else {
         return Ok(Plan::history("This chat's folder no longer exists."));
     };
     if let Some((account, _)) = homes
         .iter()
-        .find(|(_, home)| transcript_path(home, &cwd, &session).is_file())
+        .find(|(_, home)| (tool.still_has)(home, &cwd, &session))
     {
         return Ok(Plan { mode: NATIVE, reason: None, native: Some((session, account.clone())) });
     }
@@ -134,10 +218,10 @@ pub fn plan_in(db: &Connection, imported_id: &str, homes: &[ClaudeHome]) -> Resu
             |row| row.get(0),
         )
         .optional()?;
-    if source.is_some_and(|path| Path::new(&path).is_file()) {
-        return Ok(Plan::history("The session is saved under a Claude Code folder Bridge does not sign in with."));
+    if source.is_some_and(|source| (tool.at_source)(&source, &session)) {
+        return Ok(Plan::history(&format!("{label} keeps this session in a folder Bridge does not sign in with.")));
     }
-    Ok(Plan::history("Claude Code no longer has this session."))
+    Ok(Plan::history(&format!("{label} no longer has this session.")))
 }
 
 /// Continue `imported_id` in a new chat; returns its id and how it continues.

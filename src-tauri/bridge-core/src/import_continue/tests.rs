@@ -86,7 +86,7 @@ fn fixture() -> Fixture {
 impl Fixture {
     fn plan(&self, homes: &[ClaudeHome]) -> Plan {
         let db = self.core.db.lock().unwrap();
-        plan_in(&db, &self.imported, homes).unwrap()
+        plan_in(&db, &self.imported, &SignInHomes::claude_only(homes)).unwrap()
     }
     fn own_login(&self) -> Vec<ClaudeHome> {
         vec![(None, self.home.clone())]
@@ -155,7 +155,7 @@ fn every_reason_it_cannot_continue_natively() {
     let elsewhere = tempfile::tempdir().unwrap();
     assert_eq!(
         reason(f.plan(&[(None, elsewhere.path().to_path_buf())])),
-        "The session is saved under a Claude Code folder Bridge does not sign in with."
+        "Claude Code keeps this session in a folder Bridge does not sign in with."
     );
 
     {
@@ -187,7 +187,7 @@ fn only_an_imported_chat_continues_this_way() {
     let plan = f.plan(&f.own_login());
     let id = continue_in(&f.core.db.lock().unwrap(), &f.imported, &plan).unwrap();
     let db = f.core.db.lock().unwrap();
-    assert!(plan_in(&db, &id, &f.own_login()).unwrap_err().to_string().contains("Only an imported chat"));
+    assert!(plan_in(&db, &id, &SignInHomes::claude_only(&f.own_login())).unwrap_err().to_string().contains("Only an imported chat"));
 }
 
 #[test]
@@ -291,4 +291,148 @@ fn forking_an_imported_chat_makes_a_chat_that_can_start() {
 #[test]
 fn claude_code_files_a_session_under_its_folder_name() {
     assert_eq!(project_folder("/Users/you/work/my_app.v2"), "-Users-you-work-my-app-v2");
+}
+
+/// A Codex chat imported through the Codex importer continues its Codex
+/// thread natively while the rollout is in the Codex home Bridge signs in
+/// with, and from its history once Codex no longer has it.
+#[test]
+fn an_imported_codex_chat_continues_its_codex_thread() {
+    use crate::codex_import::CodexImporter;
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("work/app");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+    let home = root.path().join(".codex");
+    let rollout = home.join("sessions/2026/11/01/rollout-2026-11-01T10-00-00-thread-1.jsonl");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    let line = |kind: &str, payload: serde_json::Value| json!({ "timestamp": "2026-11-01T10:00:00Z", "type": kind, "payload": payload }).to_string();
+    fs::write(&rollout, [
+        line("session_meta", json!({ "id": "thread-1", "cwd": cwd, "timestamp": "2026-11-01T10:00:00Z", "source": "exec" })),
+        line("event_msg", json!({ "type": "item_completed", "item": { "type": "UserMessage", "id": "u1", "content": [{ "type": "text", "text": "remember TOUCAN-7" }] } })),
+        line("event_msg", json!({ "type": "item_completed", "item": { "type": "AgentMessage", "id": "a1", "content": [{ "type": "text", "text": "OK" }] } })),
+    ].join("\n")).unwrap();
+    let home = home.canonicalize().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+    let request = DiscoveryRequest {
+        provider: crate::codex_import::PROVIDER.into(),
+        approved_roots: vec![home.to_string_lossy().into_owned()],
+        selected_export: None,
+        source_version: None,
+        schema_version: None,
+        format_versions: std::collections::BTreeMap::new(),
+    };
+    let discovery = CodexImporter.discover_with_homes(&request, std::slice::from_ref(&home)).unwrap();
+    let selection = DiscoverySelection { artifact_ids: discovery.artifacts.iter().map(|a| a.artifact_id.clone()).collect() };
+    let normalized: Vec<_> = CodexImporter.preview(&discovery, &selection).unwrap().into_iter().map(|c| CodexImporter.normalize(c).unwrap()).collect();
+    let imported = normalized[0].deterministic_bridge_id.clone();
+    {
+        let db = core.db.lock().unwrap();
+        let plan = ImportPlan {
+            selected_candidate_ids: normalized.iter().map(|c| c.candidate.candidate_id.clone()).collect(),
+            conflict_policy: ConflictPolicy::Skip,
+            setup_activation_policy: SetupActivationPolicy::Disabled,
+            memory_scope: None,
+            dry_run: false,
+            created_at: "2026-11-20T10:00:00Z".into(),
+        };
+        assert_eq!(commit_import(&db, &normalized, &plan).unwrap().imported, 1);
+    }
+    let homes = SignInHomes { codex: vec![(None, home.clone())], ..SignInHomes::default() };
+    let plan = plan_in(&core.db.lock().unwrap(), &imported, &homes).unwrap();
+    assert_eq!(plan, Plan { mode: NATIVE, reason: None, native: Some(("thread-1".into(), None)) });
+    let kept = fs::read(&rollout).unwrap();
+    fs::remove_file(&rollout).unwrap();
+    let gone = plan_in(&core.db.lock().unwrap(), &imported, &homes).unwrap();
+    assert_eq!(gone.reason.as_deref(), Some("Codex no longer has this session."));
+    fs::write(&rollout, kept).unwrap();
+
+    let id = continue_in(&core.db.lock().unwrap(), &imported, &plan).unwrap();
+    let (kind, provider, harness): (String, Option<String>, String) = core.db.lock().unwrap()
+        .query_row("SELECT kind, provider_session_id, harness FROM sessions WHERE id=?1", params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap();
+    assert_eq!((kind.as_str(), provider.as_deref(), harness.as_str()), ("direct", Some("thread-1"), "codex"));
+    let context = crate::restoration::checkpoint_context(&core.db.lock().unwrap(), &id).unwrap().unwrap();
+    assert!(context.contains("remember TOUCAN-7"), "the history is there if the resume falls back: {context}");
+
+}
+
+/// An imported OpenCode chat in a fresh store, with its folder and data
+/// folder. Returns the core, the imported chat's id and the fixture store.
+fn opencode_imported(root: &Path) -> (tempfile::TempDir, Arc<BridgeCore>, String, crate::opencode_import::fixture::Fixture) {
+    use crate::opencode_import::fixture::{replied, said, Fixture};
+    use crate::opencode_import::OpenCodeImporter;
+    let cwd = root.join("work/app");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+    let fixture = Fixture::new(&root.join("data"));
+    fixture.session("ses_1", None, &cwd, Some("Remember the bird"), 1_790_000_000_000);
+    fixture.row("ses_1", 1, "user", &said("remember TOUCAN-7"));
+    fixture.row("ses_1", 2, "assistant", &replied("OK"));
+    let scratch = tempfile::tempdir().unwrap();
+    let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+    let request = DiscoveryRequest {
+        provider: crate::opencode_import::PROVIDER.into(),
+        approved_roots: vec![fixture.home.to_string_lossy().into_owned()],
+        selected_export: None,
+        source_version: None,
+        schema_version: None,
+        format_versions: std::collections::BTreeMap::new(),
+    };
+    let discovery = OpenCodeImporter.discover(&request).unwrap();
+    let selection = DiscoverySelection { artifact_ids: discovery.artifacts.iter().map(|a| a.artifact_id.clone()).collect() };
+    let normalized: Vec<_> = OpenCodeImporter.preview(&discovery, &selection).unwrap().into_iter().map(|c| OpenCodeImporter.normalize(c).unwrap()).collect();
+    let imported = normalized[0].deterministic_bridge_id.clone();
+    {
+        let db = core.db.lock().unwrap();
+        let plan = ImportPlan {
+            selected_candidate_ids: normalized.iter().map(|c| c.candidate.candidate_id.clone()).collect(),
+            conflict_policy: ConflictPolicy::Skip,
+            setup_activation_policy: SetupActivationPolicy::Disabled,
+            memory_scope: None,
+            dry_run: false,
+            created_at: "2026-11-20T10:00:00Z".into(),
+        };
+        assert_eq!(commit_import(&db, &normalized, &plan).unwrap().imported, 1);
+    }
+    (scratch, core, imported, fixture)
+}
+
+#[test]
+fn an_imported_opencode_chat_continues_its_opencode_session() {
+    let root = tempfile::tempdir().unwrap();
+    let (_scratch, core, imported, fixture) = opencode_imported(root.path());
+    let homes = SignInHomes { opencode: vec![(Some("work".into()), fixture.home.clone())], ..SignInHomes::default() };
+
+    let plan = plan_in(&core.db.lock().unwrap(), &imported, &homes).unwrap();
+    assert_eq!(plan, Plan { mode: NATIVE, reason: None, native: Some(("ses_1".into(), Some("work".into()))) });
+
+    let id = continue_in(&core.db.lock().unwrap(), &imported, &plan).unwrap();
+    let (kind, provider, harness, account): (String, Option<String>, String, Option<String>) = core.db.lock().unwrap()
+        .query_row("SELECT kind, provider_session_id, harness, account FROM sessions WHERE id=?1", params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .unwrap();
+    assert_eq!((kind.as_str(), provider.as_deref(), harness.as_str(), account.as_deref()), ("direct", Some("ses_1"), "opencode", Some("work")));
+    let context = crate::restoration::checkpoint_context(&core.db.lock().unwrap(), &id).unwrap().unwrap();
+    assert!(context.contains("remember TOUCAN-7"), "the history is there if the resume falls back: {context}");
+}
+
+#[test]
+fn an_imported_opencode_chat_says_why_it_starts_with_its_history() {
+    let root = tempfile::tempdir().unwrap();
+    let (_scratch, core, imported, fixture) = opencode_imported(root.path());
+    let plan = |homes: &SignInHomes| plan_in(&core.db.lock().unwrap(), &imported, homes).unwrap();
+    let signed_in = SignInHomes { opencode: vec![(None, fixture.home.clone())], ..SignInHomes::default() };
+    let elsewhere = SignInHomes { opencode: vec![(None, root.path().join("other/opencode"))], ..SignInHomes::default() };
+
+    assert_eq!(plan(&elsewhere).reason.as_deref(), Some("OpenCode keeps this session in a folder Bridge does not sign in with."));
+    core.db.lock().unwrap().execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,provider_session_id,kind) VALUES('other',NULL,'opencode','Other','stopped','reported','ses_1','direct')",
+        [],
+    ).unwrap();
+    assert_eq!(plan(&signed_in).reason.as_deref(), Some("Another Bridge chat already continues this OpenCode session."));
+    core.db.lock().unwrap().execute("DELETE FROM sessions WHERE id='other'", []).unwrap();
+    fixture.delete("ses_1");
+    assert_eq!(plan(&signed_in).reason.as_deref(), Some("OpenCode no longer has this session."));
+    assert_eq!(plan(&signed_in).mode, HISTORY);
 }

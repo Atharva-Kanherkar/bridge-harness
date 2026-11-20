@@ -53,16 +53,42 @@ describe("MoveToBridge", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
   };
 
-  it("lists every tool with one Import button, only where Bridge can import today", async () => {
+  const section = (tool: string) => container.querySelector(`[data-import-tool="${tool}"]`) as HTMLElement;
+
+  it("gives every tool its own section, with its mark and, where Bridge can import it, its own button", async () => {
     await render();
     const text = container.textContent ?? "";
     expect(text).toContain("Found on this Mac");
-    expect(text).toContain("3 chats in 1 project · 1 setup item");
-    expect(text).toContain("Claude Code keeps using its own memory");
-    expect(text).toContain("Not found on this Mac");
     expect(text).not.toContain("Review");
-    expect(container.querySelectorAll("button").length).toBe(1);
-    expect(button(container, "Import").disabled).toBe(false);
+    const tools = [...container.querySelectorAll("[data-import-tool]")].map(item => item.getAttribute("data-import-tool"));
+    expect(tools).toEqual(["claude_code", "codex", "opencode", "conductor", "t3code", "orca", "superset"]);
+    expect(section("claude_code").textContent).toContain("3 chats in 1 project · 1 setup item");
+    expect(section("claude_code").textContent).toContain("Claude Code keeps using its own memory");
+    expect(section("codex").textContent).toContain("Codex keeps using its own memory");
+    expect(section("claude_code").querySelector("[data-tool-mark] svg[data-harness='claude']")).not.toBeNull();
+    expect(section("codex").querySelector("[data-tool-mark] svg[data-harness='codex']")).not.toBeNull();
+    expect(section("opencode").textContent).toContain("9 chats in 3 projects");
+    expect(section("opencode").textContent).toContain("OpenCode keeps its own memory and setup");
+    expect(section("opencode").querySelector("[data-tool-mark] svg[data-harness='opencode']")).not.toBeNull();
+    expect(section("conductor").querySelector("[data-tool-mark]")?.textContent).toBe("C");
+    expect(button(section("claude_code"), "Import").disabled).toBe(false);
+    expect(button(section("codex"), "Import").disabled).toBe(false);
+    expect(button(section("opencode"), "Import").disabled).toBe(false);
+    expect(section("conductor").querySelector("button")).toBeNull();
+    expect(section("conductor").textContent).toContain("Coming");
+    expect(container.querySelectorAll("button").length).toBe(3);
+  });
+
+  it("each tool keeps its own last import", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ jobs: [
+      job({ jobId: "c", tool: "codex", status: "done", total: 7, processed: 7, imported: 7, finishedAt: "2026-11-20T10:00:00Z" }),
+      job({ jobId: "a", tool: "claude_code", status: "done", total: 5, processed: 5, imported: 5, finishedAt: "2026-11-19T10:00:00Z" }),
+    ] });
+    await render();
+    expect(section("claude_code").querySelector("[data-import-result='imported']")?.textContent).toBe("5");
+    expect(section("codex").querySelector("[data-import-result='imported']")?.textContent).toBe("7");
+    expect(button(section("claude_code"), "Import again").disabled).toBe(false);
+    expect(button(section("codex"), "Import again").disabled).toBe(false);
   });
 
   it("starts the import in the background and shows its progress live", async () => {
@@ -72,8 +98,11 @@ describe("MoveToBridge", () => {
     await act(async () => { button(container, "Import").click(); await flush(); });
 
     expect(start).toHaveBeenCalledWith("claude_code");
-    expect(container.textContent).toContain("Finding your chats…");
-    expect(button(container, "Importing…").disabled).toBe(true);
+    expect(section("claude_code").textContent).toContain("Finding your chats…");
+    expect(button(section("claude_code"), "Importing…").disabled).toBe(true);
+    expect(button(section("codex"), "Import").disabled).toBe(true);
+    expect(section("codex").textContent).toContain("Waits for the import that is running.");
+    expect(section("codex").querySelector("[aria-label='Import progress']")).toBeNull();
 
     await send(job({ total: 400, processed: 100, imported: 90, alreadyInBridge: 10, currentProject: "/Users/you/work/invoice-app", updatedAt: "2026-11-19T10:00:05Z" }));
     const bar = container.querySelector("[role='progressbar']")!;
@@ -98,6 +127,33 @@ describe("MoveToBridge", () => {
     expect(stage.querySelectorAll(".import-transfer-card").length).toBe(6);
     expect(stage.querySelector(".import-transfer-check")).toBeNull();
     expect(container.querySelector("[data-import-time-left]")?.textContent).toBe("Less than a minute left");
+  });
+
+  it("draws a Codex import from Codex's tile, in Codex's section", async () => {
+    vi.spyOn(bridgeApi, "importStatus").mockResolvedValue({ job: job({ tool: "codex", total: 40, processed: 10, imported: 10, updatedAt: "2026-11-19T10:00:03Z" }) });
+    await render();
+    expect(section("claude_code").querySelector("[data-transfer]")).toBeNull();
+    const stage = section("codex").querySelector("[data-transfer]")!;
+    expect(stage.textContent).toContain("Codex");
+    expect(stage.textContent).not.toContain("Claude Code");
+    expect(stage.querySelector("[data-harness='codex']")).not.toBeNull();
+  });
+
+  it("imports OpenCode from OpenCode's own section, drawn from OpenCode's tile", async () => {
+    const start = vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({ tool: "opencode" }));
+    await render();
+
+    await act(async () => { button(section("opencode"), "Import").click(); await flush(); });
+
+    expect(start).toHaveBeenCalledWith("opencode");
+    expect(button(section("opencode"), "Importing…").disabled).toBe(true);
+    expect(button(section("claude_code"), "Import").disabled).toBe(true);
+    expect(section("claude_code").textContent).toContain("Waits for the import that is running.");
+    await send(job({ tool: "opencode", total: 30, processed: 10, imported: 10, updatedAt: "2026-11-19T10:00:05Z" }));
+    const stage = section("opencode").querySelector("[data-transfer]")!;
+    expect(stage.textContent).toContain("OpenCode");
+    expect(stage.querySelector("[data-harness='opencode']")).not.toBeNull();
+    expect(section("claude_code").querySelector("[data-transfer]")).toBeNull();
   });
 
   it("lands the transfer with a check when the import ends", async () => {
@@ -132,7 +188,8 @@ describe("MoveToBridge", () => {
     expect(text).toContain("4 × documents or PDFs inside messages");
     expect(text).toContain("Could not be imported");
     expect(container.querySelector("[role='progressbar']")).toBeNull();
-    expect(button(container, "Import again").disabled).toBe(false);
+    expect(button(section("claude_code"), "Import again").disabled).toBe(false);
+    expect(button(section("codex"), "Import").disabled).toBe(false);
   });
 
   it("opened in the middle of an import, shows that import instead of a fresh button", async () => {

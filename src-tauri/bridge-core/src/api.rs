@@ -141,6 +141,8 @@ pub fn discover_external_import(
     let request: external_import::DiscoveryRequest = protocol_wire(params.clone())?;
     let discovery = match request.provider.as_str() {
         claude_import::PROVIDER => claude_import::ClaudeCodeImporter.discover(&request)?,
+        crate::codex_import::PROVIDER => crate::codex_import::CodexImporter.discover(&request)?,
+        crate::opencode_import::PROVIDER => crate::opencode_import::OpenCodeImporter.discover(&request)?,
         provider => {
             return Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
@@ -170,6 +172,12 @@ pub fn preview_external_import(
     let candidates = match discovery.provider.as_str() {
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
+        }
+        crate::codex_import::PROVIDER => {
+            crate::codex_import::CodexImporter.preview(&discovery, &selection)?
+        }
+        crate::opencode_import::PROVIDER => {
+            crate::opencode_import::OpenCodeImporter.preview(&discovery, &selection)?
         }
         provider => {
             return Err(BridgeError::Invalid(format!(
@@ -210,7 +218,13 @@ pub fn detect_import_sources(
     let (home, claude_config_dir) = claude_import::claude_env()
         .ok_or_else(|| BridgeError::Invalid("HOME is not set; Bridge cannot look for other tools".into()))?;
     Ok(wire::ImportSourcesDetection {
-        sources: crate::import_sources::detect(&home, claude_config_dir.as_deref(), &[]),
+        sources: crate::import_sources::detect_with(
+            &home,
+            claude_config_dir.as_deref(),
+            &[],
+            std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
+            std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
+        ),
         detected_at: chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -243,7 +257,7 @@ pub fn continue_imported_chat(
 
 /// The latest background import, running or finished.
 pub fn import_status(core: &Arc<BridgeCore>) -> Result<wire::ImportJobStatus, BridgeError> {
-    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)? })
+    Ok(wire::ImportJobStatus { job: crate::import_job::status(core)?, jobs: crate::import_job::status_by_tool(core)? })
 }
 
 /// Chats written per transaction. A big import commits batch by batch so the
@@ -413,6 +427,12 @@ pub fn commit_external_import(
         claude_import::PROVIDER => {
             claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
         }
+        crate::codex_import::PROVIDER => {
+            crate::codex_import::CodexImporter.preview(&discovery, &selection)?
+        }
+        crate::opencode_import::PROVIDER => {
+            crate::opencode_import::OpenCodeImporter.preview(&discovery, &selection)?
+        }
         provider => {
             return Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
@@ -428,6 +448,8 @@ pub fn commit_external_import(
         .filter(|candidate| candidate.kind != external_import::CandidateKind::Unsupported)
         .map(|candidate| match candidate.source.provider.as_str() {
             claude_import::PROVIDER => claude_import::ClaudeCodeImporter.normalize(candidate),
+            crate::codex_import::PROVIDER => crate::codex_import::CodexImporter.normalize(candidate),
+            crate::opencode_import::PROVIDER => crate::opencode_import::OpenCodeImporter.normalize(candidate),
             provider => Err(BridgeError::Invalid(format!(
                 "External import provider '{provider}' is not available in this build"
             ))),

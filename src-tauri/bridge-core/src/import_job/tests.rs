@@ -237,7 +237,7 @@ fn a_file_that_vanishes_mid_import_costs_only_that_file() {
     let mut job = new_job();
     save(&core, &job, None).unwrap();
 
-    Runner { core: &core, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
+    Runner { core: &core, source: Source::Claude, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
 
     assert_eq!(job.processed, 3);
     assert_eq!(job.failed, 1, "only the vanished chat: {job:?}");
@@ -297,7 +297,7 @@ fn one_refused_item_costs_only_itself() {
     let mut job = new_job();
     save(&core, &job, None).unwrap();
 
-    Runner { core: &core, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
+    Runner { core: &core, source: Source::Claude, job: &mut job, last_publish: None }.run_work(work, None).unwrap();
 
     assert_eq!((job.processed, job.failed), (4, 1), "{job:?}");
     assert_eq!(imported_sessions(&core), 2, "the chats in the same batch still came over");
@@ -362,4 +362,360 @@ fn measure_one_transcript() {
     let started = Instant::now();
     let job = run_job(&core, &roots);
     println!("MEASURE one_secs={:.1} bytes={} status={} imported={} failed={}", started.elapsed().as_secs_f64(), fs::metadata(&source).unwrap().len(), job.status, job.imported, job.failed);
+}
+
+mod codex {
+    use super::*;
+
+    fn line(kind: &str, payload: serde_json::Value) -> String {
+        json!({ "timestamp": "2026-11-01T10:00:00Z", "ordinal": 0, "type": kind, "payload": payload }).to_string()
+    }
+    fn meta(id: &str, cwd: &str, parent: Option<&str>) -> String {
+        let source = match parent {
+            Some(parent) => json!({ "subagent": { "thread_spawn": { "parent_thread_id": parent } } }),
+            None => json!("exec"),
+        };
+        line("session_meta", json!({ "id": id, "cwd": cwd, "timestamp": "2026-11-01T10:00:00Z", "originator": "codex_exec", "source": source }))
+    }
+    fn item(item: serde_json::Value) -> String {
+        line("event_msg", json!({ "type": "item_completed", "item": item }))
+    }
+    fn said(id: &str, text: &str) -> String {
+        item(json!({ "type": "UserMessage", "id": id, "content": [{ "type": "text", "text": text, "text_elements": [] }] }))
+    }
+    fn replied(id: &str, text: &str) -> String {
+        item(json!({ "type": "AgentMessage", "id": id, "content": [{ "type": "text", "text": text }] }))
+    }
+
+    /// A Codex home: a chat with a command, its subagent in its own file, an
+    /// archived chat, a background run in the temp folder, and a copy of
+    /// another tool's chat nobody typed into here.
+    pub(super) fn codex_home(root: &Path) -> Vec<PathBuf> {
+        let home = root.join(".codex");
+        let rollout = |rel: &str, lines: Vec<String>| write(&home.join(rel), &lines.join("\n"));
+        rollout("sessions/2026/11/01/rollout-2026-11-01T10-00-00-t1.jsonl", vec![
+            meta("t1", "/work/app", None),
+            said("u1", "fix the login"),
+            item(json!({ "type": "CommandExecution", "id": "c1", "command": ["/bin/zsh", "-lc", "cargo test"], "cwd": "/work/app", "aggregated_output": "ok", "exit_code": 0, "status": "completed" })),
+            replied("a1", "Fixed."),
+        ]);
+        rollout("sessions/2026/11/01/rollout-2026-11-01T10-05-00-t2.jsonl", vec![
+            meta("t2", "/work/app", Some("t1")),
+            said("u2", "check the session cookie"),
+            replied("a2", "The cookie is fine."),
+        ]);
+        rollout("archived_sessions/rollout-2026-10-01T09-00-00-t3.jsonl", vec![meta("t3", "/work/api", None), said("u3", "add a route"), replied("a3", "Added.")]);
+        rollout("sessions/2026/11/02/rollout-2026-11-02T08-00-00-t4.jsonl", vec![meta("t4", "/private/var/folders/xy/T/probe", None), said("u4", "ping"), replied("a4", "pong")]);
+        rollout("sessions/2026/11/02/rollout-2026-11-02T09-00-00-t5.jsonl", vec![meta("t5", "/work/app", None), replied("a5", "copied history")]);
+        let source = root.join("claude-session.jsonl");
+        write(&source, "{}");
+        write(&home.join("external_agent_session_imports.json"), &json!({ "records": [{ "imported_thread_id": "t5", "source_path": source.to_string_lossy(), "content_sha256": "x", "imported_at": 1 }] }).to_string());
+        write(&home.join("session_index.jsonl"), &json!({ "id": "t1", "thread_name": "Fix the login", "updated_at": "2026-11-01T10:10:00Z" }).to_string());
+        vec![home.canonicalize().unwrap()]
+    }
+
+    pub(super) fn run_codex(core: &Arc<BridgeCore>, roots: &[PathBuf]) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = crate::codex_import::PROVIDER.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        run(core, job, roots, None);
+        status(core).unwrap().unwrap()
+    }
+
+    fn codex_chats(core: &BridgeCore) -> Vec<(String, Option<String>, Option<String>, Option<String>)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare("SELECT title, parent_session_id, archived_at, (SELECT native_key FROM import_native_sessions n WHERE n.session_id=s.id) FROM sessions s WHERE kind='imported' AND harness='codex' ORDER BY title")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn codex_chats_come_over_with_their_children_and_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let roots = codex_home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        let job = run_codex(&core, &roots);
+
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!((job.total, job.left_out), (4, 1), "the temp-folder run is left out");
+        assert_eq!(job.imported, 3, "{job:?}");
+        assert!(job.not_carried.iter().any(|item| item.text.contains("Codex copies of another tool's chat") && item.count == 1), "{:?}", job.not_carried);
+        let chats = codex_chats(&core);
+        assert_eq!(chats.len(), 3, "{chats:?}");
+        let by_key = |key: &str| chats.iter().find(|chat| chat.3.as_deref() == Some(key)).cloned().unwrap();
+        let (title, parent, archived, _) = by_key("codex:t1");
+        assert_eq!((title.as_str(), parent, archived), ("Fix the login", None, None));
+        let parent_id: String = core.db.lock().unwrap().query_row("SELECT session_id FROM import_native_sessions WHERE native_key='codex:t1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(by_key("codex:t2").1.as_deref(), Some(parent_id.as_str()), "the subagent is a child of its parent");
+        assert!(by_key("codex:t3").2.is_some(), "the archived thread is archived");
+        let shell: i64 = core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='tool.completed' AND payload LIKE '%\"name\":\"shell\"%' AND payload LIKE '%cargo test%'",
+            params![parent_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(shell, 1, "the command came over as a shell row");
+
+        let again = run_codex(&core, &roots);
+        assert_eq!((again.imported, again.already_in_bridge), (0, 3), "{again:?}");
+    }
+
+    #[test]
+    fn a_thread_bridge_ran_is_already_in_bridge() {
+        let root = tempfile::tempdir().unwrap();
+        let roots = codex_home(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,provider_session_id,kind) VALUES('bridge-chat',NULL,'codex','Mine','stopped','reported','t1','direct')",
+            [],
+        ).unwrap();
+
+        let job = run_codex(&core, &roots);
+
+        assert_eq!((job.imported, job.already_in_bridge), (2, 1), "{job:?}");
+        let parent: Option<String> = core.db.lock().unwrap().query_row(
+            "SELECT parent_session_id FROM sessions WHERE id=(SELECT session_id FROM import_native_sessions WHERE native_key='codex:t2')",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(parent.as_deref(), Some("bridge-chat"), "the subagent joins the chat Bridge ran");
+    }
+}
+
+mod opencode {
+    use super::*;
+    use crate::opencode_import::fixture::{replied, said, Fixture};
+
+    /// An OpenCode store: a chat with a command and its subagent, an archived
+    /// chat, a background run in the temp folder, and enough filler sessions
+    /// that the subagent lands in a later batch than its parent.
+    pub(super) fn opencode_store(data_home: &Path) -> (Fixture, Vec<PathBuf>) {
+        let fixture = Fixture::new(data_home);
+        fixture.session("ses_parent", None, "/work/app", Some("Fix the login"), 1_000);
+        fixture.row("ses_parent", 1, "user", &said("fix the login"));
+        fixture.row("ses_parent", 2, "assistant", &json!({
+            "time": {}, "model": { "id": "big-pickle", "variant": "default" },
+            "content": [
+                { "type": "tool", "id": "call_1", "name": "shell", "state": { "status": "completed", "input": { "command": "cargo test" }, "content": [{ "type": "text", "text": "ok" }], "metadata": { "exit": 0 } } },
+                { "type": "text", "text": "Fixed." }
+            ]
+        }));
+        for index in 0..BATCH_FILES {
+            let id = format!("ses_filler_{index:02}");
+            fixture.session(&id, None, "/work/app", Some(&format!("Filler {index:02}")), 2_000 + index as i64);
+            fixture.row(&id, 1, "user", &said("hello"));
+            fixture.row(&id, 2, "assistant", &replied("hi"));
+        }
+        fixture.session("ses_child", Some("ses_parent"), "/work/app", Some("Audit (@general subagent)"), 9_000);
+        fixture.row("ses_child", 1, "user", &said("audit the tests"));
+        fixture.row("ses_child", 2, "assistant", &replied("All good."));
+        fixture.session("ses_old", None, "/work/api", Some("Add a route"), 500);
+        fixture.row("ses_old", 1, "user", &said("add a route"));
+        fixture.row("ses_old", 2, "assistant", &replied("Added."));
+        fixture.archive("ses_old");
+        fixture.session("ses_temp", None, "/private/var/folders/xy/T/probe", Some("probe"), 9_500);
+        fixture.row("ses_temp", 1, "user", &said("ping"));
+        let roots = vec![fixture.home.clone()];
+        (fixture, roots)
+    }
+
+    pub(super) fn run_opencode(core: &Arc<BridgeCore>, roots: &[PathBuf]) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = crate::opencode_import::PROVIDER.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        run(core, job, roots, None);
+        status(core).unwrap().unwrap()
+    }
+
+    fn session_of(core: &BridgeCore, key: &str) -> (String, Option<String>, Option<String>) {
+        core.db.lock().unwrap().query_row(
+            "SELECT s.id, s.parent_session_id, s.archived_at FROM sessions s JOIN import_native_sessions n ON n.session_id=s.id WHERE n.native_key=?1",
+            params![key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap()
+    }
+
+    #[test]
+    fn opencode_chats_come_over_with_their_children_and_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let (_fixture, roots) = opencode_store(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        let job = run_opencode(&core, &roots);
+
+        let chats = BATCH_FILES as u64 + 3;
+        assert_eq!(job.status, "done", "{job:?}");
+        assert_eq!((job.total, job.left_out, job.imported), (chats, 1, chats), "{job:?}");
+        let (parent, parent_of_parent, _) = session_of(&core, "opencode:ses_parent");
+        assert_eq!(parent_of_parent, None);
+        let (_, child_parent, _) = session_of(&core, "opencode:ses_child");
+        assert_eq!(child_parent.as_deref(), Some(parent.as_str()), "the subagent, read in a later batch, is a child of its parent");
+        assert!(session_of(&core, "opencode:ses_old").2.is_some(), "the archived session is archived");
+        let (harness, title): (String, String) = core.db.lock().unwrap().query_row(
+            "SELECT harness, title FROM sessions WHERE id=?1", params![parent], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!((harness.as_str(), title.as_str()), ("opencode", "Fix the login"));
+        let shell: i64 = core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='tool.completed' AND payload LIKE '%\"name\":\"bash\"%' AND payload LIKE '%cargo test%'",
+            params![parent],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(shell, 1, "the command came over as a shell row");
+
+        let again = run_opencode(&core, &roots);
+        assert_eq!((again.imported, again.already_in_bridge), (0, chats), "{again:?}");
+    }
+
+    #[test]
+    fn a_session_bridge_ran_is_already_in_bridge() {
+        let root = tempfile::tempdir().unwrap();
+        let (_fixture, roots) = opencode_store(root.path());
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,provider_session_id,kind) VALUES('bridge-chat',NULL,'opencode','Mine','stopped','reported','ses_parent','direct')",
+            [],
+        ).unwrap();
+
+        let job = run_opencode(&core, &roots);
+
+        assert_eq!(job.already_in_bridge, 1, "{job:?}");
+        assert_eq!(session_of(&core, "opencode:ses_child").1.as_deref(), Some("bridge-chat"), "the subagent joins the chat Bridge ran");
+    }
+
+    #[test]
+    fn a_job_quit_in_the_middle_resumes_after_its_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let (_fixture, roots) = opencode_store(root.path());
+        let work = crate::opencode_import::job_work(&roots).unwrap();
+        let cursor = Source::OpenCode.key(&work.artifacts[2]);
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        let mut job = new_job();
+        job.tool = crate::opencode_import::PROVIDER.into();
+        job.processed = 3;
+        save(&core, &job, Some(&cursor)).unwrap();
+
+        assert!(resume_with_roots(&core, roots.clone()).unwrap());
+        let started = Instant::now();
+        while core.import_job_running.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let finished = status(&core).unwrap().unwrap();
+        assert_eq!(finished.status, "done", "{finished:?}");
+        assert_eq!(finished.imported, work.artifacts.len() as u64 - 3, "only what came after the cursor");
+    }
+}
+
+/// OpenCode's job against this Mac's real store, into a scratch database.
+/// Prints aggregate numbers only.
+#[test]
+#[ignore = "reads the real OpenCode store; run by hand to measure"]
+fn measure_the_opencode_job_on_this_machine() {
+    let roots = crate::opencode_import::machine_opencode_homes();
+    let started = Instant::now();
+    let work = crate::opencode_import::job_work(&roots).unwrap();
+    println!("MEASURE work_list_secs={:.2} sessions={} left_out={}", started.elapsed().as_secs_f64(), work.artifacts.len(), work.left_out);
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let started = Instant::now();
+    let job = opencode::run_opencode(&core, &roots);
+    println!(
+        "MEASURE job_secs={:.1} status={} processed={} imported={} already={} failed={} left_out={} errors={}",
+        started.elapsed().as_secs_f64(), job.status, job.processed, job.imported, job.already_in_bridge, job.failed, job.left_out, job.errors.len()
+    );
+    for item in &job.not_carried {
+        println!("MEASURE not_carried: {} x {}", item.count, item.text.chars().take(120).collect::<String>());
+    }
+    for error in &job.errors {
+        println!("MEASURE error: {}", error.chars().take(200).collect::<String>());
+    }
+    let db = core.db.lock().unwrap();
+    let count = |sql: &str| db.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap();
+    println!(
+        "MEASURE tool_rows={} child_chats={} messages={}",
+        count("SELECT COUNT(*) FROM session_entries WHERE kind='tool.completed'"),
+        count("SELECT COUNT(*) FROM sessions WHERE kind='imported' AND parent_session_id IS NOT NULL"),
+        count("SELECT COUNT(*) FROM session_entries"),
+    );
+}
+
+/// The Codex job against this Mac's real Codex home, into a scratch
+/// database. Prints aggregate numbers only.
+#[test]
+#[ignore = "reads the real ~/.codex; run by hand to measure"]
+fn measure_the_codex_job_on_this_machine() {
+    let roots = crate::codex_import::machine_codex_homes();
+    let started = Instant::now();
+    let work = crate::codex_import::job_work(&roots).unwrap();
+    println!("MEASURE work_list_secs={:.1} files={} left_out={}", started.elapsed().as_secs_f64(), work.artifacts.len(), work.left_out);
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let started = Instant::now();
+    let job = codex::run_codex(&core, &roots);
+    println!(
+        "MEASURE job_secs={:.1} status={} processed={} imported={} already={} failed={} left_out={} errors={}",
+        started.elapsed().as_secs_f64(), job.status, job.processed, job.imported, job.already_in_bridge, job.failed, job.left_out, job.errors.len()
+    );
+    for item in &job.not_carried {
+        println!("MEASURE not_carried: {} x {}", item.count, item.text.chars().take(120).collect::<String>());
+    }
+    for error in &job.errors {
+        println!("MEASURE error: {}", error.chars().take(200).collect::<String>());
+    }
+    let tools: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE kind='tool.completed'", [], |row| row.get(0)).unwrap();
+    let children: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions WHERE kind='imported' AND parent_session_id IS NOT NULL", [], |row| row.get(0)).unwrap();
+    println!("MEASURE tool_rows={tools} child_chats={children}");
+}
+
+/// What the removed Review step cost: Claude Code discovery over this Mac's
+/// real store, as Review ran it. Prints aggregate numbers only.
+#[test]
+#[ignore = "reads the real ~/.claude; run by hand to measure"]
+fn measure_claude_discovery_on_this_machine() {
+    use crate::external_import::{DiscoveryRequest, ExternalHarnessImporter};
+    let roots = claude_import::machine_config_roots();
+    let request = DiscoveryRequest {
+        provider: claude_import::PROVIDER.into(),
+        approved_roots: roots.iter().map(|r| r.to_string_lossy().into_owned()).collect(),
+        selected_export: None, source_version: None, schema_version: None,
+        format_versions: std::collections::BTreeMap::new(),
+    };
+    let started = Instant::now();
+    let discovery = ClaudeCodeImporter.discover(&request).unwrap();
+    let bytes = serde_json::to_vec(&discovery).unwrap().len();
+    println!("MEASURE discover_secs={:.1} artifacts={} json_mb={:.1}", started.elapsed().as_secs_f64(), discovery.artifacts.len(), bytes as f64 / 1e6);
+}
+
+/// Each tool's section shows its own last import: a Codex import after a
+/// Claude Code one does not hide the Claude Code result.
+#[test]
+fn the_latest_import_of_each_tool_is_kept() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = core(scratch.path());
+    let mut first = new_job();
+    first.status = "done".into();
+    save(&core, &first, None).unwrap();
+    let mut codex = new_job();
+    codex.tool = crate::codex_import::PROVIDER.into();
+    save(&core, &codex, None).unwrap();
+    let mut second = new_job();
+    second.status = "done".into();
+    save(&core, &second, None).unwrap();
+
+    let jobs = status_by_tool(&core).unwrap();
+
+    let ids: Vec<(&str, &str)> = jobs.iter().map(|job| (job.tool.as_str(), job.job_id.as_str())).collect();
+    assert_eq!(ids, vec![(claude_import::PROVIDER, second.job_id.as_str()), (crate::codex_import::PROVIDER, codex.job_id.as_str())]);
 }

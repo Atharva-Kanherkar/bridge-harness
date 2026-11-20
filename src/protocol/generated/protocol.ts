@@ -4331,6 +4331,7 @@ export interface StartImportParams {
 
 export interface ImportJobStatus {
   job?: ImportJob | null;
+  jobs?: ImportJob[];
 }
 
 export interface ImportContinuationParams {

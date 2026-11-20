@@ -1,8 +1,9 @@
 //! Which tools on this machine Bridge can import from, and how much each holds.
 //!
-//! Read-only and cheap: it lists folders and counts files. It never opens a
-//! database, never reads a transcript, and never reads a credential file, so
-//! it is safe to run on every visit to the import screen.
+//! Read-only and cheap: it lists folders and counts files, and reads only
+//! OpenCode's session table (opened read-only). It never reads a transcript
+//! or a message, and never reads a credential file or table, so it is safe to
+//! run on every visit to the import screen.
 
 use bridge_protocol::messages as wire;
 use std::fs;
@@ -21,22 +22,6 @@ struct KnownTool {
 }
 
 const OTHER_TOOLS: &[KnownTool] = &[
-    KnownTool {
-        tool: "codex",
-        label: "Codex",
-        supported: false,
-        markers: &[".codex/sessions"],
-        worktree_roots: &[],
-        note: "Codex chats are next. Nothing is read until then.",
-    },
-    KnownTool {
-        tool: "opencode",
-        label: "OpenCode",
-        supported: false,
-        markers: &[".local/share/opencode/opencode.db"],
-        worktree_roots: &[],
-        note: "OpenCode chats are coming. Nothing is read until then.",
-    },
     KnownTool {
         tool: "conductor",
         label: "Conductor",
@@ -202,9 +187,80 @@ pub fn detect(
     claude_config_dir: Option<&Path>,
     accounts: &[PathBuf],
 ) -> Vec<wire::DetectedImportSource> {
-    std::iter::once(claude(home, claude_config_dir, accounts))
+    detect_with(home, claude_config_dir, accounts, None, None)
+}
+
+/// [`detect`], with the Codex home named (`CODEX_HOME`) instead of
+/// `~/.codex`, and the data home (`XDG_DATA_HOME`) instead of `~/.local/share`.
+pub fn detect_with(
+    home: &Path,
+    claude_config_dir: Option<&Path>,
+    accounts: &[PathBuf],
+    codex_home: Option<&Path>,
+    xdg_data_home: Option<&Path>,
+) -> Vec<wire::DetectedImportSource> {
+    [claude(home, claude_config_dir, accounts), codex(home, codex_home), opencode(home, xdg_data_home)]
+        .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
         .collect()
+}
+
+/// Codex: each rollout is a chat, counted from its first line only. One that
+/// ran in the OS temp folder is a background run; a subagent's thread comes
+/// over under its parent and is not counted on its own.
+fn codex(home: &Path, codex_home: Option<&Path>) -> wire::DetectedImportSource {
+    let root = codex_home.map(Path::to_path_buf).unwrap_or_else(|| home.join(".codex"));
+    let installed = root.join("sessions").is_dir() || root.join("archived_sessions").is_dir();
+    let mut counts = wire::ImportSourceCounts::default();
+    let mut folders = std::collections::HashSet::new();
+    if installed {
+        for path in crate::codex_import::list_rollouts(&root) {
+            let meta = crate::codex_import::rollout::read_meta(&path).unwrap_or_default();
+            let cwd = meta.cwd.unwrap_or_default();
+            if crate::codex_import::is_temp_folder(&cwd) {
+                counts.background += 1;
+            } else if meta.parent_thread_id.is_none() {
+                counts.chats += 1;
+                folders.insert(cwd);
+            }
+        }
+        counts.projects = folders.len() as u64;
+    }
+    wire::DetectedImportSource {
+        tool: crate::codex_import::PROVIDER.into(),
+        label: "Codex".into(),
+        installed,
+        supported: true,
+        roots: if installed { vec![root.canonicalize().unwrap_or(root).to_string_lossy().into_owned()] } else { Vec::new() },
+        counts,
+        note: Some("Chats with their commands, edits and MCP calls. Codex keeps using its own memory.".into()),
+    }
+}
+
+/// OpenCode: each session in its store is a chat, counted from the session
+/// table only. One that ran in the OS temp folder or in Bridge's title
+/// scratch folder is a background run; a subagent's session comes over under
+/// its parent and is not counted on its own.
+fn opencode(home: &Path, xdg_data_home: Option<&Path>) -> wire::DetectedImportSource {
+    let data_home = xdg_data_home.map_or_else(|| home.join(".local/share"), Path::to_path_buf);
+    let folder = crate::opencode_import::data_folder(&data_home);
+    let store = folder.join(crate::opencode_import::STORE_FILE);
+    let installed = store.is_file();
+    let mut counts = wire::ImportSourceCounts::default();
+    if let Some(found) = installed.then(|| crate::opencode_import::count_sessions(&store)).flatten() {
+        counts.chats = found.chats;
+        counts.projects = found.projects;
+        counts.background = found.background;
+    }
+    wire::DetectedImportSource {
+        tool: crate::opencode_import::PROVIDER.into(),
+        label: "OpenCode".into(),
+        installed,
+        supported: true,
+        roots: if installed { vec![folder.canonicalize().unwrap_or(folder).to_string_lossy().into_owned()] } else { Vec::new() },
+        counts,
+        note: Some("Chats with their commands, edits and subagents. OpenCode keeps its own memory and setup.".into()),
+    }
 }
 
 #[cfg(test)]
@@ -233,7 +289,8 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.installed));
-        assert!(sources[0].supported && sources.iter().skip(1).all(|source| !source.supported));
+        assert!(sources[0].supported && sources[1].supported && sources[2].supported, "Claude Code, Codex and OpenCode import today");
+        assert!(sources.iter().skip(3).all(|source| !source.supported));
     }
 
     #[test]
@@ -263,6 +320,59 @@ mod tests {
             ),
             (3, 2, 1, 2)
         );
+    }
+
+    #[test]
+    fn codex_counts_chats_from_first_lines_leaving_background_runs_and_subagents_out() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        let rollout = |rel: &str, cwd: &str, parent: Option<&str>| {
+            let source = parent.map_or(serde_json::json!("exec"), |parent| serde_json::json!({ "subagent": { "thread_spawn": { "parent_thread_id": parent } } }));
+            let line = serde_json::json!({ "timestamp": "t", "type": "session_meta", "payload": { "id": rel, "cwd": cwd, "source": source } });
+            let path = codex.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("{line}\n")).unwrap();
+        };
+        rollout("sessions/2026/11/01/rollout-a.jsonl", "/work/app", None);
+        rollout("sessions/2026/11/01/rollout-b.jsonl", "/work/api", None);
+        rollout("sessions/2026/11/01/rollout-c.jsonl", "/work/app", Some("a"));
+        rollout("sessions/2026/11/02/rollout-d.jsonl", "/private/var/folders/xy/T/probe", None);
+        rollout("archived_sessions/rollout-e.jsonl", "/work/app", None);
+
+        let codex = detect(home.path(), None, &[]).into_iter().find(|source| source.tool == "codex").unwrap();
+
+        assert!(codex.installed && codex.supported);
+        assert_eq!((codex.counts.chats, codex.counts.projects, codex.counts.background), (3, 2, 1));
+    }
+
+    #[test]
+    fn opencode_counts_chats_from_its_session_table_leaving_background_runs_and_subagents_out() {
+        let home = tempfile::tempdir().unwrap();
+        let fixture = crate::opencode_import::fixture::Fixture::new(&home.path().join(".local/share"));
+        fixture.session("ses_a", None, "/work/app", Some("a"), 1);
+        fixture.session("ses_b", None, "/work/api", Some("b"), 2);
+        fixture.session("ses_c", Some("ses_a"), "/work/app", Some("c"), 3);
+        fixture.session("ses_d", None, "/private/var/folders/xy/T/probe", Some("d"), 4);
+        fixture.v1_session("ses_e", None, "/work/app", "e", 5);
+
+        let opencode = detect(home.path(), None, &[]).into_iter().find(|source| source.tool == "opencode").unwrap();
+
+        assert!(opencode.installed && opencode.supported);
+        assert_eq!((opencode.counts.chats, opencode.counts.projects, opencode.counts.background), (3, 2, 1));
+        assert_eq!(opencode.roots, vec![fixture.home.to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn opencode_follows_the_data_home() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let fixture = crate::opencode_import::fixture::Fixture::new(data.path());
+        fixture.session("ses_a", None, "/work/app", Some("a"), 1);
+
+        let sources = detect_with(home.path(), None, &[], None, Some(data.path()));
+        let opencode = sources.iter().find(|source| source.tool == "opencode").unwrap();
+
+        assert_eq!((opencode.installed, opencode.counts.chats), (true, 1));
     }
 
     #[test]

@@ -598,6 +598,7 @@ fn finish(mut reader: Reader, path: &Path, key: &str, label: &str) -> ParsedTran
             transcript_path: Some(path.to_string_lossy().into_owned()),
         }),
         parent_chat_key: None,
+        parent_native_key: None,
         agent_role: None,
         entries_source: if reader.entries.is_empty() {
             EntriesSource::None

@@ -69,6 +69,8 @@ pub mod chat_defaults;
 pub mod check_runner;
 pub mod claude_adapter;
 pub mod claude_import;
+pub mod codex_import;
+pub mod opencode_import;
 pub mod codex_adapter;
 mod codex_update;
 pub mod compaction_controller;

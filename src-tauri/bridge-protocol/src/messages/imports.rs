@@ -389,6 +389,9 @@ pub struct ContinuedImportedChat {
 pub struct ImportJobStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<ImportJob>,
+    /// The latest import from each tool, so each tool's section shows its own.
+    #[serde(default)]
+    pub jobs: Vec<ImportJob>,
 }
 
 #[cfg(test)]
