@@ -41,6 +41,8 @@ const TRANSCRIPT_COMPONENTS = [
   "../components/TranscriptPane.tsx",
   "../components/transcriptFacets.ts",
   "../components/AgentChat.tsx",
+  "../components/TurnChangesCard.tsx",
+  "../turnChanges.ts",
 ];
 
 /**

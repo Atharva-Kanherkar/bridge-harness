@@ -1204,6 +1204,9 @@ function AppContent() {
     dispatchDock({ type: "open-pane", pane: "terminal" });
     return requestTerminalRun(runWorkspaceId, command);
   }, [runWorkspaceId, dispatchDock]);
+  // A turn's changes card hands off to the Changes pane, where the header's
+  // Review goes too. Stable so a settled turn's card does not redraw.
+  const reviewTurnChanges = useCallback(() => dispatchDock({ type: "open-pane", pane: "changes" }), [dispatchDock]);
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
@@ -4096,6 +4099,7 @@ function AppContent() {
                    onFollowUp={followUpToComposer}
                    onRetryTurn={retryFailedTurn}
                    onEditTurn={editFailedTurn}
+                   onReviewChanges={hasRepo && workspace ? reviewTurnChanges : undefined}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as

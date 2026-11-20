@@ -42,6 +42,8 @@ import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import { QuestionCard, type ResolveQuestion } from "./QuestionCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
+import { TurnChangesCard, TurnEndBlock, TurnLine } from "./TurnChangesCard";
+import { describeTurnEnds, keepStable, type TurnEnd } from "../turnChanges";
 import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
@@ -859,7 +861,7 @@ const NO_ANSWER: ResolveQuestion = async () => undefined;
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeProcessEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, onRunInTerminal, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, onBackgroundWork, entryWindow, onForkSession, onRewindEntry, onRetryTurn, onEditTurn, onReviewChanges, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeProcessEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; /** Send a failed turn's message again, as it was. */ onRetryTurn?: RetryTurn; /** Put a failed turn's message back in the composer. */ onEditTurn?: (prompt: ConversationItem) => void; /** Open the Changes pane from a turn's changes card; without it the card has no Review button. */ onReviewChanges?: () => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; /** Run a shell block in the chat's own terminal; without it, shell blocks offer Copy alone. */ onRunInTerminal?: RunInTerminal; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; /** Where the chat reports work its agent left running; the composer shelf and the Work pane read it. The main chat passes the global store, a Mission Control tile its own. */ onBackgroundWork?: (work: BackgroundWork) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -979,6 +981,18 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // suppress the model's own status while a new request is starting.
   const streaming = turnActive && visibleItems.some(item => item.turn === latestTurn
     && (item.status === "streaming" || item.status === "inProgress"));
+  // What closes each settled turn: its changes card and its caption, keyed by
+  // the row they follow. The running turn has neither until it settles.
+  // Unchanged ends keep the object the last render held, so a live flush
+  // never redraws a settled turn's card.
+  const heldTurnEnds = useRef<ReadonlyMap<string, TurnEnd>>(new Map());
+  const turnEnds = useMemo(() => keepStable(heldTurnEnds.current, describeTurnEnds(shownItems, visibleItems, {
+    liveTurn: turnActive ? latestTurn : null,
+    cwd: session?.cwd,
+    sessionModel: session?.model,
+    now,
+  })), [shownItems, visibleItems, turnActive, latestTurn, session?.cwd, session?.model, now]);
+  heldTurnEnds.current = turnEnds;
   const processSnapshots = useMemo(() => projectActiveProcesses(activeProcessEntries, events), [activeProcessEntries, events]);
   const processIds = useMemo(() => new Set(processSnapshots.map(item => item.identity)), [processSnapshots]);
   const snapshotSequence = Math.max(0, ...forestEntries?.map(entry => entry.sequence) ?? []);
@@ -1122,6 +1136,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     retryPrompt={retryFor(entry)?.prompt}
     onRetryTurn={retryFor(entry) ? onRetryTurn : undefined}
     onEditTurn={retryFor(entry) ? onEditTurn : undefined}
+    turnEnd={turnEnds.get(entry.key)}
+    onReviewChanges={!readOnly && turnEnds.has(entry.key) ? onReviewChanges : undefined}
   />;
   return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><RuntimeActive.Provider value={runtimeActive}><FileLinkContext.Provider value={fileLinks}><ChatRunInTerminal.Provider value={onRunInTerminal ?? null}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
@@ -1633,7 +1649,7 @@ function DeliveryLabel({ note }: { note: DeliveryNote }) {
   return <p className="mt-1 text-right text-caption text-muted-foreground">{note === "steered" ? "Steering" : "Queued — sent when this step finishes"}</p>;
 }
 
-const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
+const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   const settled = item.status !== "streaming" && item.text.trim() !== "";
   const entryId = settled ? item.entryId : undefined;
   const actions = settled ? <>
@@ -1664,16 +1680,27 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same row. */}
     {isStreamingText(item.status) && !item.text.trim() ? <ThinkingRow harness={item.harness}/> : <StreamedProse text={item.text} streaming={item.status === "streaming"} />}
-    {/* The latest reply keeps its bar in flow and visible. Older replies float
-        theirs into the gap below on hover, so a hidden bar costs no height. */}
-    {actions && <div
+    {turnEnd?.changes && <TurnChangesCard changes={turnEnd.changes} onReview={onReviewChanges} className="mt-4"/>}
+    {/* A reply that closes its turn carries the turn's caption, always shown,
+        with the actions in flow before it: shown on the latest reply, and on
+        an older one revealed on hover in the space they keep. */}
+    {turnEnd?.line ? <div data-turn-footer className="-ml-1.5 mt-1.5 flex min-h-7 min-w-0 items-center gap-0.5">
+      {actions && <div
+        data-reply-actions={latest ? "latest" : "hover"}
+        className={cn("flex items-center gap-0.5", !latest && "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
+      >{actions}</div>}
+      <TurnLine line={turnEnd.line} className="ml-1.5 min-w-0 truncate"/>
+    </div>
+    /* The latest reply keeps its bar in flow and visible. Older replies float
+       theirs into the gap below on hover, so a hidden bar costs no height. */
+    : actions && <div
       data-reply-actions={latest ? "latest" : "hover"}
       className={cn("-ml-1.5 flex items-center gap-0.5", latest
         ? "mt-1.5"
         : "absolute left-0 top-full z-10 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
     >{actions}</div>}
   </div>;
-}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
+}, (previous, next) => previous.latest === next.latest && previous.delivery === next.delivery && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && previous.turnEnd === next.turnEnd && previous.onReviewChanges === next.onReviewChanges && sameItem(previous.item, next.item));
 
 /// One icon in a message's action bar: 28px, with the name in a tooltip.
 function ReplyAction({ label, title, onClick, children }: { label: string; title?: string; onClick: () => void; children: ReactNode }) {
@@ -1700,9 +1727,9 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext, retryPrompt, onRetryTurn, onEditTurn, turnEnd, onReviewChanges }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext; retryPrompt?: ConversationItem; onRetryTurn?: RetryTurn; onEditTurn?: (prompt: ConversationItem) => void; /** What closes the turn when this row is its last; a reply draws it, `TranscriptEntry` draws it after anything else. */ turnEnd?: TurnEnd; onReviewChanges?: () => void }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable} turnEnd={turnEnd} onReviewChanges={onReviewChanges}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -1738,8 +1765,14 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
   instant: boolean;
   highlighted: boolean;
 } & Omit<React.ComponentProps<typeof ItemView>, "item">) {
+  // A reply draws its turn's end beside its own actions; any other last row
+  // gets it underneath.
+  const trailingEnd = itemProps.turnEnd && (entry.kind !== "item" || entry.item.type !== "message")
+    ? <TurnEndBlock end={itemProps.turnEnd} onReview={itemProps.onReviewChanges}/>
+    : null;
   if (entry.kind === "group") return <TranscriptRow instant={instant}>
     <ActivityGroup items={entry.items} turnActive={itemProps.turnActive} autoExpandEditActivity={itemProps.autoExpandEditActivity}/>
+    {trailingEnd}
   </TranscriptRow>;
   if (entry.kind === "raw-group") return <TranscriptRow instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>;
   return <TranscriptRow
@@ -1750,6 +1783,7 @@ const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highligh
     className={highlighted ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
   >
     <ItemView {...itemProps} item={entry.item}/>
+    {trailingEnd}
   </TranscriptRow>;
 });
 
