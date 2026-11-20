@@ -148,13 +148,14 @@ impl Fixture {
     }
 
     pub fn checkout(&self, workspace: &str, repo: &str, path: Option<&Path>, position: i64) {
-        let _ = self.try_insert("workspace_checkouts", &[
+        // A repeated checkout is refused by its key; the first one stands.
+        self.try_insert("workspace_checkouts", &[
             ("id", t(format!("co-{workspace}-{repo}"))),
             ("workspace_id", t(workspace)),
             ("repository_id", t(repo)),
             ("path", path.map_or(Value::Null, |path| Value::Text(path.to_string_lossy().into_owned()))),
             ("position", position.into()),
-        ]);
+        ]).unwrap_or_default();
     }
 
     pub fn session(&self, id: &str, workspace: &str, agent: &str) {

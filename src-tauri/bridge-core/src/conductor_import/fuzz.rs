@@ -186,7 +186,7 @@ fn fill(fixture: &Fixture, repos: &[RepoSpec], workspaces: &[WorkspaceSpec]) {
             ("workspace_path", workspace.path.clone()),
             ("DEPRECATED_archived", workspace.flag.clone()),
         ];
-        let _ = fixture.try_insert("workspaces", &values);
+        fixture.try_insert("workspaces", &values).unwrap_or_default();
         if index % 3 == 0 {
             fixture.checkout(&key, &repo, None, index as i64);
         }
