@@ -107,7 +107,8 @@ fn workers_briefings_and_workflows_launch_without_a_tool_launch() {
     let recorded = launches(&core, &calls, &chat);
     assert!(recorded.len() == 1 && recorded[0].0 == "start" && chosen(&recorded[0]), "{recorded:?}");
 
-    // A child session and a worker each hold a row, and neither reads it.
+    // A child session and a worker each hold a row. The generic start refuses
+    // both, so neither reaches the adapter with it.
     {
         let db = core.db.lock().unwrap();
         db.execute(
@@ -124,7 +125,8 @@ fn workers_briefings_and_workflows_launch_without_a_tool_launch() {
     }
     for session in ["child", "worker"] {
         choose(&core, session);
-        assert_eq!(launches(&core, &calls, session), [("start", false, None)], "{session}");
+        assert_eq!(start_chat(&core, session.to_owned()).unwrap_err().to_string(), WORKER_START_REFUSAL, "{session}");
+        assert!(calls.lock().unwrap().is_empty(), "{session}");
     }
 
     // A workflow run launches under its briefing policy, with no tool launch.
@@ -1453,6 +1455,95 @@ fn an_old_claude_usage_entry_of_the_same_provider_session_still_gives_the_seed()
     assert_eq!(seeded.len(), 1, "{seeded:?}");
     assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-A"));
     assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
+}
+
+// --- the worker start guards ---------------------------------------------------
+
+/// A stopped Claude worker of parent, as launch_worker writes it. The
+/// insert names no kind, so the row is an orchestrator, at depth 1, with a
+/// runtime row.
+fn bridge_worker(core: &BridgeCore, id: &str, parent: &str, thread: &str) -> String {
+    let db = core.db.lock().unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,provider_session_id,parent_session_id,depth)
+         SELECT ?1,workspace_id,'claude','Research','stopped','reported','standard',?3,id,1 FROM sessions WHERE id=?2",
+        params![id, parent, thread],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES(?1,?2,'stopped','research','key','reported','now')",
+        params![id, parent],
+    )
+    .unwrap();
+    id.to_owned()
+}
+
+/// The depth, the parent and the kind of a session.
+fn lineage(core: &BridgeCore, session: &str) -> (i64, Option<String>, String) {
+    core.db
+        .lock()
+        .unwrap()
+        .query_row("SELECT depth,parent_session_id,kind FROM sessions WHERE id=?1", [session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+}
+
+#[test]
+fn start_chat_refuses_a_bridge_worker_and_launches_nothing() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    let before = lineage(&core, &worker);
+    assert_eq!(before, (1, Some(chat.clone()), "orchestrator".to_owned()));
+
+    // The RPC body of sessions/start_chat, which any daemon client can send.
+    let error = crate::api::start_chat(&core, worker.clone()).unwrap_err().to_string();
+    assert_eq!(error, WORKER_START_REFUSAL);
+    assert!(asked(&script).is_empty(), "nothing reached the launcher");
+    assert!(warm_thread(&core, &worker).is_none());
+    assert_eq!(lineage(&core, &worker), before, "the worker keeps its depth, parent and kind");
+    assert_eq!(row_of(&core, &worker), ("stopped".to_owned(), Some("worker-thread".to_owned())));
+}
+
+#[test]
+fn start_chat_refuses_a_live_worker_without_replacing_its_process() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    core.db.lock().unwrap().execute("UPDATE sessions SET status='working' WHERE id=?1", [&worker]).unwrap();
+    let runtime = LiveRuntime { number: 1, thread: "worker-thread".into(), turn: Arc::default(), script: script.clone() };
+    core.adapters.lock().unwrap().insert(worker.clone(), Box::new(runtime));
+    let before = lineage(&core, &worker);
+
+    // No prompt record matches the live process, so a start past the guard
+    // would stop it and launch another.
+    let error = start_chat(&core, worker.clone()).unwrap_err().to_string();
+    assert_eq!(error, WORKER_START_REFUSAL);
+    {
+        let script = script.lock().unwrap();
+        assert!(script.asked.is_empty(), "nothing reached the launcher: {:?}", verbs(&script.asked));
+        assert!(script.stopped.is_empty(), "the live process was stopped: {:?}", script.stopped);
+    }
+    assert_eq!(warm_thread(&core, &worker).as_deref(), Some("worker-thread"), "the same process stays in place");
+    assert_eq!(lineage(&core, &worker), before);
+    assert_eq!(row_of(&core, &worker).0, "working");
+}
+
+#[test]
+fn start_chat_still_reaches_the_launcher_for_a_top_level_chat() {
+    let (dir, core, script) = live();
+    // A worker row is an orchestrator too. The control is a top-level
+    // orchestrator of the same workspace and harness, and a direct chat.
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    assert_eq!(start_chat(&core, worker.clone()).unwrap_err().to_string(), WORKER_START_REFUSAL);
+    start_chat(&core, chat.clone()).unwrap();
+    let direct = chat_on(&core, "claude", None);
+    start_chat(&core, direct.clone()).unwrap();
+
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0")), ("start", None)]);
+    assert_eq!(warm_thread(&core, &chat).as_deref(), Some("thread-0"));
+    assert!(warm_thread(&core, &direct).is_some());
+    assert!(warm_thread(&core, &worker).is_none());
 }
 
 mod off_trace;

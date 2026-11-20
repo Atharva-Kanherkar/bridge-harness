@@ -1788,6 +1788,9 @@ impl LaunchTiming {
     }
 }
 
+/// The refusal of a generic chat launcher for a Bridge worker.
+const WORKER_START_REFUSAL: &str = "This is a worker; it resumes through its orchestrator, not from here.";
+
 /// The caller owns the session lifecycle across a cancellation and continuation.
 fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), BridgeError> {
     let state = core;
@@ -1821,6 +1824,13 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<(), 
             "Imported history cannot resume a foreign provider session. Start a fresh Bridge conversation explicitly instead."
                 .into(),
         ));
+    }
+    // A Bridge worker starts only through its orchestrator, inside its pool
+    // reservation and with its sandbox and write scope. This launcher would
+    // drop all three and set its depth to 0. The check comes before the
+    // workspace lock, a process stop or a row update.
+    if !crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)? {
+        return Err(BridgeError::Invalid(WORKER_START_REFUSAL.into()));
     }
     // An empty stored id is not a thread to resume; treating it as Some would
     // send `""` to registry.resume under the native plan.
@@ -13697,9 +13707,7 @@ pub fn deliver_queued_now(core: &Arc<BridgeCore>, session_id: &str) -> Result<Qu
         |row| row.get(0),
     )?;
     if worker {
-        return Err(BridgeError::Invalid(
-            "This is a worker; it resumes through its orchestrator, not from here.".into(),
-        ));
+        return Err(BridgeError::Invalid(WORKER_START_REFUSAL.into()));
     }
     let queued = session_input::next_queued(&core.db.lock().unwrap(), session_id)?.is_some();
     if !queued {
