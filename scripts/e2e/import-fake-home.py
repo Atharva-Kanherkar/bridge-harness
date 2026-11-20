@@ -11,7 +11,7 @@ folder, one Claude memory and a CLAUDE.md, one Codex chat, an OpenCode store
 with a chat and its subagent, plus traces of Conductor and T3 Code so the
 "Found on this Mac" list shows what is coming.
 """
-import base64, json, os, shutil, sqlite3, sys, uuid
+import base64, json, os, shutil, sqlite3, subprocess, sys, uuid
 
 home = os.path.abspath(sys.argv[1])
 repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -76,7 +76,7 @@ write(f".claude/projects/-private-var-folders-h7-T-probe/{probe}.jsonl", [
 os.makedirs(os.path.join(home, ".claude/projects/-work-billing-service/memory"))
 open(os.path.join(home, ".claude/projects/-work-billing-service/memory/MEMORY.md"), "w").write("- The billing service uses pnpm, not npm.\n- Email templates live in templates/.\n")
 open(os.path.join(home, ".claude/CLAUDE.md"), "w").write("Prefer small commits. Run tests before saying done.\n")
-for folder in [".codex/sessions/2026/11/17", "conductor/workspaces/billing-service/tokyo", "conductor/workspaces/billing-service/lima", "conductor/workspaces/docs-site/paris", ".t3/userdata"]:
+for folder in [".codex/sessions/2026/11/17", ".t3/userdata"]:
     os.makedirs(os.path.join(home, folder), exist_ok=True)
 # One Codex chat, shaped like a real rollout: what Codex showed is in
 # item_completed events.
@@ -128,4 +128,52 @@ oc_session("ses_probe", None, "/private/var/folders/h7/T/probe", "probe", 1_795_
 oc_row("ses_probe", 1, "user", {"time": {}, "text": "ping"})
 db.commit()
 db.close()
+# Conductor, as it lays things out (0.97.0): a repository with three
+# workspaces as real git worktrees under ~/conductor/workspaces/storefront/,
+# and its database built from the real schema (rebuilt from its own
+# rollbacks): "Fix the cart total" is active, "Old spike" is archived in
+# Conductor, and lima sits on a detached HEAD. A Claude Code chat ran in the
+# active one. Its env_vars table holds a canary nothing may ever show.
+def git(cwd, *args):
+    env = dict(os.environ, GIT_AUTHOR_NAME="Fake", GIT_AUTHOR_EMAIL="fake@example.com", GIT_COMMITTER_NAME="Fake", GIT_COMMITTER_EMAIL="fake@example.com", HOME=home)
+    subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+store_repo = os.path.join(home, "code/storefront")
+os.makedirs(store_repo)
+git(store_repo, "init", "-q", "-b", "main")
+with open(os.path.join(store_repo, "cart.js"), "w") as out:
+    out.write("export const total = lines => lines.reduce((sum, line) => sum + line.price, 0);\n")
+git(store_repo, "add", "-A")
+git(store_repo, "commit", "-q", "-m", "first")
+workspaces = os.path.join(home, "conductor/workspaces/storefront")
+os.makedirs(workspaces)
+for directory, branch in [("tokyo", "fix-cart-total"), ("oslo", "old-spike")]:
+    git(store_repo, "worktree", "add", "-q", "-b", branch, os.path.join(workspaces, directory))
+git(store_repo, "worktree", "add", "-q", "--detach", os.path.join(workspaces, "lima"))
+with open(os.path.join(workspaces, "tokyo/cart.js"), "a") as out:
+    out.write("// uncommitted: multiply by qty\n")
+tokyo = os.path.realpath(os.path.join(workspaces, "tokyo"))
+conductor_db = os.path.join(home, "Library/Application Support/com.conductor.app/conductor.db")
+os.makedirs(os.path.dirname(conductor_db))
+fixtures = os.path.join(repo, "testing/fixtures/import/conductor")
+db = sqlite3.connect(conductor_db)
+db.executescript(open(os.path.join(fixtures, "schema-181.sql")).read())
+for line in open(os.path.join(fixtures, "migrations-181.txt")):
+    number, description = line.rstrip("\n").split("|", 1)
+    db.execute("INSERT INTO _sqlx_migrations(version,description,installed_on,success,checksum,execution_time) VALUES(?,?,'2026-11-20',1,x'00',1)", (int(number), description))
+db.execute("INSERT INTO env_vars(id,key,value,scope) VALUES('e','STRIPE_KEY','CANARY-conductor-secret','user')")
+db.execute("INSERT INTO repos(id,name,root_path,storage_version,setup_script,run_script,run_script_mode) VALUES('r','storefront',?,3,'pnpm install','pnpm dev','concurrent')", (os.path.realpath(store_repo),))
+db.execute("INSERT INTO projects(id,name) VALUES('p','storefront')")
+db.execute("INSERT INTO project_repositories(id,project_id,repository_id,position) VALUES('pr','p','r',0)")
+for key, directory, name, branch, state in [("w1", "tokyo", "Fix the cart total", "fix-cart-total", "active"), ("w2", "oslo", "Old spike", "old-spike", "archived"), ("w3", "lima", None, None, "active")]:
+    db.execute("INSERT INTO workspaces(local_id,project_id,directory_name,workspace_name,branch,state) VALUES(?,?,?,?,?,?)", (key, "p", directory, name, branch, state))
+db.execute("INSERT INTO sessions(id,workspace_id,agent_type,claude_session_id,title) VALUES('s1','w1','claude','6f1e2d3c-4b5a-4c6d-8e7f-0a1b2c3d4e5f','CANARY-conductor-secret')")
+db.commit()
+db.close()
+conductor_chat = "6f1e2d3c-4b5a-4c6d-8e7f-0a1b2c3d4e5f"
+slug = "".join(c if c.isalnum() else "-" for c in tokyo)
+write(f".claude/projects/{slug}/{conductor_chat}.jsonl", [
+    {"type": "user", "uuid": "c1", "sessionId": conductor_chat, "timestamp": "2026-11-19T15:00:00Z", "cwd": tokyo, "message": {"role": "user", "content": "The cart total ignores quantities. Fix it."}},
+    {"type": "assistant", "uuid": "c2", "sessionId": conductor_chat, "timestamp": "2026-11-19T15:00:40Z", "cwd": tokyo, "message": {"role": "assistant", "content": [{"type": "text", "text": "The total now multiplies each price by its quantity."}]}},
+    {"type": "custom-title", "customTitle": "Cart total ignores quantities", "sessionId": conductor_chat},
+])
 print(home)

@@ -24,8 +24,11 @@ const OUT = process.env.OUT ?? "/tmp/import-fake-user";
 const PORT = Number(process.env.CDP_PORT ?? 9377);
 const RECORD = process.env.RECORD !== "0";
 // How many generated chats the fake home holds (import-fake-home.py), plus 5
-// hand-made in ~/.claude and 1 in the work account's folder.
-const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 6;
+// hand-made in ~/.claude, 1 that ran in a Conductor workspace, and 1 in the
+// work account's folder.
+const CHATS = Number(process.env.IMPORT_FAKE_CHATS ?? 600) + 7;
+// The fake home, to check on disk that Bridge left Conductor's folders alone.
+const FAKE_HOME = process.env.FAKE_HOME;
 if (!LINK) throw new Error("Set LINK to a daemon link from scripts/web-link.mjs");
 
 rmSync(OUT, { recursive: true, force: true });
@@ -174,7 +177,7 @@ try {
   await waitFor("the tools list", `document.body.innerText.includes("Found on this Mac") && !document.body.innerText.includes("Looking for other tools")`);
   await caption("Bridge finds the tools already on this Mac, without reading any chat");
   const found = await text();
-  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 6 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
+  check("Claude Code is found with its chats from both folders, projects, setup and the background run left out", new RegExp(`${CHATS.toLocaleString("en-US")} chats in 7 projects · from 2 folders · 1 setup item · \\d+ background runs? left out`).test(found), found.slice(found.indexOf("Found on this Mac"), found.indexOf("Found on this Mac") + 700).replace(/\n+/g, " | "));
   check("Conductor is found by its worktrees and says its chats come with Claude Code", found.includes("3 workspaces in 2 repos") && found.includes("Conductor runs Claude Code"));
   check("Codex is found with its own section, mark and Import button", found.includes("Codex keeps using its own memory")
     && await js(`!!document.querySelector('[data-import-tool="codex"] [data-tool-mark] svg') && !!document.querySelector('[data-import-tool="codex"] button')`));
@@ -299,6 +302,41 @@ try {
   await sleep(1000);
   check("The chat from the work account's folder is in the sidebar and opens", (await text()).includes("Rotated both keys and updated the deploy secrets."));
   await shot("05g-account-chat-dark");
+
+  await caption("Conductor's workspaces come over where they are");
+  const conductorFound = await js(`document.querySelector('[data-import-tool="conductor"]').innerText`);
+  check("Conductor is found with its workspaces and its own Import button", conductorFound.includes("2 workspaces in 1 repo") && conductorFound.includes("left where they are")
+    && await js(`!!document.querySelector('[data-import-tool="conductor"] button')`), conductorFound.replace(/\n+/g, " | "));
+  await click("Import", '[data-import-tool="conductor"] button');
+  await waitFor("the Conductor import to finish", `!!document.querySelector('[data-import-tool="conductor"] [data-import-result="imported"]')`, 60000);
+  const conductorSummary = await js(`document.querySelector('[data-import-tool="conductor"]').innerText`);
+  check("Conductor's active workspace came over, the archived one was left out, and the detached one needs a branch",
+    Number(await js(`document.querySelector('[data-import-tool="conductor"] [data-import-result="imported"]').textContent`)) === 1
+      && conductorSummary.includes("Archived in Conductor, left out") && conductorSummary.includes("need a branch first"),
+    conductorSummary.replace(/\n+/g, " | "));
+  check("Nothing shows Conductor's secrets", !(await text()).includes("CANARY"));
+  await js(`document.querySelector('[data-import-tool="conductor"]').scrollIntoView({ block: "center" })`);
+  await sleep(600);
+  await shot("05h-conductor-summary-dark");
+  const adopted = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    const state = await bridgeApi.state();
+    const workspace = state.workspaces.find(item => item.title === "Fix the cart total");
+    const chat = state.sessions.find(item => item.title === "Cart total ignores quantities");
+    return { id: workspace?.id, path: workspace?.path, branch: workspace?.branch, chatWorkspace: chat?.workspaceId };
+  })()`);
+  check("The workspace keeps Conductor's name, folder and branch", !!adopted.id && adopted.path.endsWith("/conductor/workspaces/storefront/tokyo") && adopted.branch === "fix-cart-total", JSON.stringify(adopted));
+  check("The Claude Code chat that ran there is under it", adopted.chatWorkspace === adopted.id, JSON.stringify(adopted));
+  await caption("Archiving it in Bridge leaves Conductor's folder alone");
+  const archived = await js(`(async () => {
+    const { bridgeApi } = await import("/src/api.ts");
+    await bridgeApi.archiveWorkspace(${JSON.stringify(adopted.id)});
+    const state = await bridgeApi.state();
+    return !state.workspaces.some(item => item.id === ${JSON.stringify(adopted.id)});
+  })()`);
+  const { existsSync, readFileSync: read } = await import("node:fs");
+  const kept = FAKE_HOME ? existsSync(join(FAKE_HOME, "conductor/workspaces/storefront/tokyo/cart.js")) && read(join(FAKE_HOME, "conductor/workspaces/storefront/tokyo/cart.js"), "utf8").includes("uncommitted") : null;
+  check("Archived in Bridge, the folder and its uncommitted work are still there for Conductor", archived === true && kept !== false, `archived=${archived} kept=${kept}`);
 
   await caption("Find the imported chat in the sidebar and open it");
   await click("Invoice email header fix");
