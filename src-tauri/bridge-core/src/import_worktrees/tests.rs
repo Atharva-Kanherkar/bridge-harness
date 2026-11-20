@@ -1,11 +1,10 @@
 use super::*;
 use crate::runtime::BridgeCore;
 use std::fs;
-use std::process::Command;
 
 pub(crate) fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
+    // Through the counted constructor, like every git Bridge starts.
+    let out = crate::git::git_command(dir)
         .args(args)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@t")
