@@ -89,26 +89,6 @@ fn a_2x_session_comes_over_as_opencode_showed_it() {
     assert_eq!(user.attachments.len(), 1);
     assert_eq!((user.attachments[0].media_type.as_str(), user.attachments[0].data_base64.as_deref()), ("image/png", Some("iVBORw0KGgo=")));
     assert_eq!((chat.entries[1].kind.clone(), chat.entries[1].text.as_deref()), (BundleEntryKind::Reasoning, Some("Looking at the form.")));
-
-    let tools = tools(&parsed);
-    let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
-    assert_eq!(names, vec![
-        "bash", "bash", "read", "edit", "write", "apply_patch", "grep", "glob", "webfetch", "websearch", "todowrite",
-        "bridge_visualize", "task", "task", "edit", "task", "bash",
-    ]);
-    let by_index = |index: usize| tools[index];
-    assert_eq!((by_index(0).input["command"].as_str(), by_index(0).output.as_deref(), by_index(0).status), (Some("cargo test"), Some("ok"), ToolStatus::Completed));
-    assert_eq!(by_index(1).status, ToolStatus::Failed, "a non-zero exit failed");
-    assert_eq!(by_index(2).input["file_path"].as_str(), Some("/work/app/src/login.rs"));
-    assert!(by_index(3).output.as_deref().unwrap().starts_with("--- a/src/login.rs"), "an edit carries its diff");
-    assert_eq!(by_index(3).input["file_path"].as_str(), Some("/work/app/src/login.rs"));
-    assert_eq!(by_index(4).input["file_path"].as_str(), Some("/work/app/NOTES.md"));
-    assert_eq!((by_index(12).input["description"].as_str(), by_index(12).input["subagent_type"].as_str()), (Some("Audit the tests"), Some("general")));
-    assert_eq!(by_index(13).input["subagent_type"].as_str(), Some("explore"), "a subagent call names its agent");
-    assert_eq!((by_index(14).status, by_index(14).output.as_deref()), (ToolStatus::Failed, Some("Could not find oldString")), "an errored tool failed with why");
-    assert_eq!((by_index(15).output.as_deref(), by_index(15).status), (Some("The docs are current."), ToolStatus::Completed), "a background subagent's result");
-    assert_eq!((by_index(16).input["command"].as_str(), by_index(16).status), (Some("npm run build"), ToolStatus::Failed), "a background command's result");
-
     let reply = chat.entries.iter().find(|entry| entry.kind == BundleEntryKind::AssistantMessage).unwrap();
     assert_eq!(reply.text.as_deref(), Some("Fixed the login."));
     let compaction = chat.entries.iter().find(|entry| entry.kind == BundleEntryKind::CompactionBoundary).unwrap();
@@ -117,6 +97,44 @@ fn a_2x_session_comes_over_as_opencode_showed_it() {
 
     let skipped: Vec<(&str, u32)> = parsed.skipped.iter().map(|(reason, count)| (reason.as_str(), *count)).collect();
     assert_eq!(skipped, vec![("content:hologram", 1), ("row:teleport", 1), ("unreadable_row", 1)], "bookkeeping is not a loss");
+}
+
+#[test]
+fn each_2x_tool_is_the_row_bridge_draws_for_it_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path());
+    every_shape(&fixture);
+
+    let parsed = read(&fixture, "ses_all");
+    let tools = tools(&parsed);
+
+    let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(names, vec![
+        "bash", "bash", "read", "edit", "write", "apply_patch", "grep", "glob", "webfetch", "websearch", "todowrite",
+        "bridge_visualize", "task", "task", "edit", "task", "bash",
+    ]);
+    assert_eq!((tools[0].input["command"].as_str(), tools[0].output.as_deref(), tools[0].status), (Some("cargo test"), Some("ok"), ToolStatus::Completed));
+    assert_eq!(tools[1].status, ToolStatus::Failed, "a non-zero exit failed");
+    assert_eq!(tools[2].input["file_path"].as_str(), Some("/work/app/src/login.rs"));
+    assert!(tools[3].output.as_deref().unwrap().starts_with("--- a/src/login.rs"), "an edit carries its diff");
+    assert_eq!(tools[3].input["file_path"].as_str(), Some("/work/app/src/login.rs"));
+    assert_eq!(tools[4].input["file_path"].as_str(), Some("/work/app/NOTES.md"));
+    assert_eq!((tools[12].input["description"].as_str(), tools[12].input["subagent_type"].as_str()), (Some("Audit the tests"), Some("general")));
+    assert_eq!(tools[13].input["subagent_type"].as_str(), Some("explore"), "a subagent call names its agent");
+}
+
+#[test]
+fn errors_and_background_results_keep_their_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path());
+    every_shape(&fixture);
+
+    let parsed = read(&fixture, "ses_all");
+    let tools = tools(&parsed);
+
+    assert_eq!((tools[14].status, tools[14].output.as_deref()), (ToolStatus::Failed, Some("Could not find oldString")), "an errored tool failed with why");
+    assert_eq!((tools[15].output.as_deref(), tools[15].status), (Some("The docs are current."), ToolStatus::Completed), "a background subagent's result");
+    assert_eq!((tools[16].input["command"].as_str(), tools[16].status), (Some("npm run build"), ToolStatus::Failed), "a background command's result");
 }
 
 #[test]
