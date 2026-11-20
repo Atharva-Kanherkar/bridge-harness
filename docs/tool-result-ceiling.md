@@ -14,7 +14,7 @@ ceiling:
   The unit of `offset` is one item.
 - `Document`, 32 KiB: `notes_read` (`markdown`). The unit of `offset` is one
   character (a Unicode scalar value).
-- `Bounded`, 32 KiB: `chats_search`, `chats_read`, `settings_read`, `visualize`.
+- `Bounded`, 32 KiB: `chats_search`, `chats_read`, `chats_history` (which pages itself under 24 KiB), `settings_read`, `visualize`.
 - `Write`, 32 KiB: each tool that changes data, and each tool with no entry.
 - An error reply of each tool: 8 KiB.
 

@@ -396,7 +396,9 @@ mod tests {
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut chat = VisualServer::with_notes(Some(NotesLink::new(Box::new(HistoryCore { calls: calls.clone(), top_level: true }))));
         let names = tool_names(&mut chat);
-        assert!(names.contains(&"chats_search".to_owned()) && names.contains(&"chats_read".to_owned()), "{names:?}");
+        for tool in crate::history_tools::TOOLS {
+            assert!(names.contains(&tool.to_owned()), "{tool} missing from {names:?}");
+        }
         let arguments = json!({"query": "staging proxy"});
         let found = chat.handle(&request(2, "tools/call", json!({"name": "chats_search", "arguments": arguments}))).unwrap();
         assert_eq!(found["result"]["isError"], false);
@@ -411,6 +413,8 @@ mod tests {
         assert!(!names.iter().any(|name| name.starts_with("chats_")), "{names:?}");
         let refused = worker.handle(&request(4, "tools/call", json!({"name": "chats_read", "arguments": {"id": "old"}}))).unwrap();
         assert_eq!(refused["result"]["isError"], true);
+        let refused = worker.handle(&request(6, "tools/call", json!({"name": "chats_history", "arguments": {}}))).unwrap();
+        assert_eq!(refused["result"]["isError"], true, "a worker never reads its own history either");
         // Without a chat link there is nothing to forward to.
         let unknown = VisualServer::default().handle(&request(5, "tools/call", json!({"name": "chats_search", "arguments": {"query": "x"}}))).unwrap();
         assert_eq!(unknown["error"]["code"], -32602);

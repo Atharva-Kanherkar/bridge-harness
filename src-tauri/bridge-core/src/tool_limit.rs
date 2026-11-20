@@ -85,12 +85,13 @@ impl Limit {
 }
 
 /// Every tool of the `bridge` server and its class.
-const TABLE: [(&str, Class); 18] = [
+const TABLE: [(&str, Class); 19] = [
     ("notes_search", Class::List { key: "pages" }),
     ("memory_search", Class::List { key: "records" }),
     ("notes_read", Class::Document { key: "markdown" }),
     ("chats_search", Class::Bounded),
     ("chats_read", Class::Bounded),
+    ("chats_history", Class::Bounded),
     ("settings_read", Class::Bounded),
     (crate::mcp_apps::tool::TOOL_NAME, Class::Bounded),
     ("apps_draft", Class::Write),

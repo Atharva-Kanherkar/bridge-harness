@@ -36,7 +36,7 @@ pub use builtin::{builtin, builtins, BadgeSource, BuiltinApp};
 
 /// `bridge` server tools that belong to Bridge itself, not to an app. They
 /// cannot be turned off. `(name, asks_first)`.
-pub const CORE_TOOLS: [(&str, bool); 8] = [
+pub const CORE_TOOLS: [(&str, bool); 9] = [
     ("apps_draft", false),
     ("apps_open", false),
     ("visualize", false),
@@ -46,6 +46,7 @@ pub const CORE_TOOLS: [(&str, bool); 8] = [
     // Reads of the person's other chats, for top-level chats only.
     ("chats_search", false),
     ("chats_read", false),
+    ("chats_history", false),
 ];
 
 /// The app an attention kind's badge belongs to. Every current kind is about

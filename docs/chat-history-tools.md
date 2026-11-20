@@ -15,6 +15,22 @@ Both read the chat-search index (`session_entry_fts`, `chat_digest_fts`), so a
 lookup is a bounded FTS query and costs no model call. Code:
 `src-tauri/bridge-core/src/history_tools.rs`.
 
+A third tool reads the calling chat itself:
+
+- `chats_history(before?, limit?)` returns one page of the chat's own active
+  branch older than `before`, listed oldest first: messages (clipped to 2000
+  characters) and completed tool calls, each with its fact (`ran \`cargo
+  test\` (exit 0)`, `edited src/a.rs`) and its output (clipped to 1200
+  characters). `limit` defaults to 20, at most 50, and a page also stops at
+  24 KiB so the server's ceiling never cuts it. `nextBefore` is the `before`
+  of the page before it, or null at the start of the chat.
+
+It exists for model switches. The model that takes over a chat is handed what
+fits its budget ([compaction and resume](compaction-and-resume.md)); when that
+is not everything, the handoff says how many older messages it left out and
+names the `before` to start reading from. Tool output is returned here, and
+only here, because the chat already had it; it goes through the same scrub.
+
 ## What a chat can never get
 
 ```mermaid
@@ -34,8 +50,11 @@ flowchart LR
   background sessions (briefing, suggestion, extraction, outcome evaluation,
   consolidation, chat search, connector), workers and asides never appear.
   Reading one by id answers the same "not found" as an id that does not exist.
-- **Itself.** The calling chat is never a result; it has its own context.
-- **Tool output.** Only what the person and agents wrote is read: user and
+- **Itself.** The calling chat is never a result of `chats_search` or
+  `chats_read`; it has its own context. `chats_history` reads only the caller,
+  and only a top-level chat: a worker, an aside or a hidden background session
+  gets "not found".
+- **Tool output of other chats.** Only what the person and agents wrote is read: user and
   assistant messages, worker results and summaries. Commands, command output,
   tool calls and results, reasoning, permissions, errors and session frames
   are never returned, even when they match. That is where environment dumps
@@ -55,7 +74,7 @@ flowchart LR
 
 Access: only a top-level chat lists and calls the tools. The route answers any
 other session 403. Claude-native subagents carry the root chat's token, so the
-sidecar's PreToolUse hook denies both tools to any call with an `agent_id`.
+sidecar's PreToolUse hook denies all three tools to any call with an `agent_id`.
 OpenCode denies them to read-only sessions. In Ask mode they run like the other
 Bridge reads, without a prompt. A chat gets 30 lookups per five minutes. Each
 part of a result has its own character cap, and the largest result is below the
