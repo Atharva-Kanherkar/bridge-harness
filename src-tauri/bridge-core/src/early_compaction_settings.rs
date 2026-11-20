@@ -85,7 +85,7 @@ pub fn stored_switch(db: &Connection) -> bool {
 
 /// Runs `write` under the input lease and the database lock, then loads the
 /// stored switch into memory before the lease ends. The lease comes first,
-/// the same order as a send.
+/// the same order as a send. With the switch off, each due mark goes at once.
 pub fn with_switch_write<T>(
     core: &BridgeCore,
     write: impl FnOnce(&Connection) -> Result<T, BridgeError>,
@@ -93,7 +93,11 @@ pub fn with_switch_write<T>(
     let _lease = core.input_activity.read().unwrap_or_else(PoisonError::into_inner);
     let db = core.db.lock().unwrap_or_else(PoisonError::into_inner);
     let result = write(&db);
-    core.early_compaction.set_enabled(stored_switch(&db));
+    let enabled = stored_switch(&db);
+    core.early_compaction.set_enabled(enabled);
+    if !enabled {
+        core.early_compaction.clear_marks();
+    }
     result
 }
 
@@ -279,5 +283,36 @@ mod tests {
             view(&core.db.lock().unwrap(), Some("chat-1")).unwrap(),
             EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: false }
         );
+    }
+
+    #[test]
+    fn a_save_that_turns_the_switch_off_drops_each_due_mark() {
+        use crate::early_compaction::{DueMark, Receipt};
+        let mark = |session_id: &str| {
+            Receipt::Due(DueMark {
+                session_id: session_id.into(),
+                turn_id: None,
+                completed_at: chrono::Utc::now(),
+                launch: None,
+                harness: "claude".into(),
+            })
+        };
+        let (_scratch, core) = core();
+        let core = Arc::new(core);
+        save(&core, &global(Some(true))).unwrap();
+        core.early_compaction.accept(mark("chat-1"));
+        core.early_compaction.accept(mark("chat-2"));
+        // A save that keeps the switch on keeps the marks.
+        save(&core, &chat("chat-3", Some(false))).unwrap();
+        assert_eq!(core.early_compaction.marks().len(), 2);
+        // Off and on again before the next sweep: no old mark is left.
+        save(&core, &global(Some(false))).unwrap();
+        assert!(core.early_compaction.marks().is_empty(), "a due mark outlived the switch");
+        save(&core, &global(Some(true))).unwrap();
+        assert!(core.early_compaction.marks().is_empty());
+        // A reset turns the switch off too.
+        core.early_compaction.accept(mark("chat-1"));
+        crate::api::reset_all_config(&core).unwrap();
+        assert!(core.early_compaction.marks().is_empty(), "a due mark outlived the reset");
     }
 }
