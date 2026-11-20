@@ -2256,6 +2256,32 @@ fn a_codex_reading_of_the_compaction_turn_is_not_the_next_reading() -> TestResul
     Ok(())
 }
 
+#[test]
+fn a_reading_of_a_later_launch_does_not_fill_the_attempt() -> TestResult {
+    for (chat, harness) in [(CLAUDE_CHAT, "claude"), (CODEX_CHAT, "codex")] {
+        let world = fired(chat)?;
+        // Launch A gets its boundary and stops before its next reading.
+        if chat == CLAUDE_CHAT {
+            let mut frames = claude_compaction_start();
+            frames.push(claude_boundary(Some(POST_TOKENS)));
+            world.feed(chat, &frames)?;
+        } else {
+            world.compaction(chat)?;
+        }
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("compacted"), "{chat}");
+        // Launch B resumes the same provider session with the same model.
+        world.relaunch(chat)?;
+        world.turn(chat, LARGE)?;
+        world.sweep_after(1);
+        assert_eq!(world.attempt(chat)?.next_reading_id, None, "{chat}: a reading of launch B filled the attempt of launch A");
+        assert!(world.core.early_compaction.fills().is_empty(), "{chat}: the fill of launch A stays");
+        world.inject_mark(chat, harness)?;
+        let memory = world.core.early_compaction.memory_inputs(chat, Utc::now()).ok_or("no mark")?;
+        assert_eq!(memory.launch_stop, None, "{chat}: launch B is stopped");
+    }
+    Ok(())
+}
+
 /// A whole compaction of `chat`. On Claude, the reading after the result
 /// has `used` tokens. On Codex, the next turn gives the next reading.
 fn compaction_then_reading(world: &World, chat: &str, used: u64) -> TestResult {

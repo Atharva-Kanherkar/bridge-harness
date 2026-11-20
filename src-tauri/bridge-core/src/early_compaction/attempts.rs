@@ -55,17 +55,19 @@ const ENDED_STATUSES: [&str; 4] = ["stopped", "failed", "completed", "cancelled"
 const TOOL_STARTS: [&str; 3] = ["tool.started", "command.started", "file_change.started"];
 const TOOL_COMPLETIONS: [&str; 3] = ["tool.completed", "command.completed", "file_change.completed"];
 
-/// The first reading after a compacted attempt. It comes after the
-/// boundary, and the reading of the compaction turn itself never counts.
-/// Both times come from `to_rfc3339` in UTC, so their text order is their
-/// time order.
-const NEXT_READING: &str = "SELECT r.id, r.used_tokens FROM early_compaction_attempts a
-    JOIN context_readings r ON r.session_id=a.session_id AND r.id>a.trigger_reading_id
-    WHERE a.id=?1 AND a.outcome='compacted' AND a.next_reading_id IS NULL
+/// Whether the chat is still on the launch of a compacted attempt, and the
+/// first reading after it. The reading comes after the boundary, and the
+/// reading of the compaction turn itself never counts. Both times come from
+/// `to_rfc3339` in UTC, so their text order is their time order.
+const NEXT_READING: &str = "SELECT s.started_at IS a.launch_started_at, r.id, r.used_tokens
+    FROM early_compaction_attempts a
+    JOIN sessions s ON s.id=a.session_id
+    LEFT JOIN context_readings r ON r.session_id=a.session_id AND r.id>a.trigger_reading_id
       AND r.created_at>=a.settled_at
       AND r.harness=a.harness AND r.model IS a.model AND r.provider_session_id IS a.provider_session_id
       AND (a.compaction_turn_id IS NULL OR r.turn_id IS NOT a.compaction_turn_id)
-    ORDER BY r.id LIMIT 1";
+    WHERE a.id=?1 AND a.outcome='compacted' AND a.next_reading_id IS NULL
+    ORDER BY r.id IS NULL, r.id LIMIT 1";
 
 pub(crate) fn install_store(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(STORE)
@@ -213,27 +215,30 @@ fn fill_next_readings(core: &BridgeCore, now: DateTime<Utc>) {
             let db = core.db.lock().unwrap_or_else(PoisonError::into_inner);
             let next = db
                 .query_row(NEXT_READING, params![fill.attempt_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                    Ok((row.get::<_, bool>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<i64>>(2)?))
                 })
                 .optional();
             match next {
-                Ok(Some((reading_id, used_tokens))) => db
+                Ok(Some((true, Some(reading_id), Some(used_tokens)))) => db
                     .execute(
                         "UPDATE early_compaction_attempts SET next_reading_id=?2,next_used_tokens=?3
                          WHERE id=?1 AND next_reading_id IS NULL",
                         params![fill.attempt_id, reading_id, used_tokens],
                     )
-                    .map(|_| Some(used_tokens)),
-                Ok(None) => Ok(None),
+                    .map(|_| (true, Some(used_tokens))),
+                Ok(Some((current, _, _))) => Ok((current, None)),
+                Ok(None) => Ok((true, None)),
                 Err(error) => Err(error),
             }
         };
         match found {
-            Ok(Some(used_tokens)) => {
+            Ok((_, Some(used_tokens))) => {
                 tracker.record_next_reading(&session_id, &fill.launch, used_tokens);
                 tracker.drop_fill(&session_id, &fill.attempt_id);
             }
-            Ok(None) => {}
+            // The chat left the launch of the attempt, so no next reading can come.
+            Ok((false, None)) => tracker.drop_fill(&session_id, &fill.attempt_id),
+            Ok((true, None)) => {}
             Err(error) => eprintln!("[early-compaction] next reading {}: {error}", fill.attempt_id),
         }
     }
