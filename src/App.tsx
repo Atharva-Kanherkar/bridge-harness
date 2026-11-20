@@ -1226,6 +1226,13 @@ function AppContent() {
     setAgentFocus({ sessionId, nonce: agentFocusNonce.current });
     dispatchDock({ type: "open-pane", pane: "tasks" });
   }
+  // A fan-out card's opener: the pane on its lineage, not on whichever
+  // agent's chat it last showed.
+  const showAgentsInDock = useCallback(() => {
+    agentFocusNonce.current += 1;
+    setAgentFocus({ sessionId: null, nonce: agentFocusNonce.current });
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }, [dispatchDock]);
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
   // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
@@ -4094,6 +4101,10 @@ function AppContent() {
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
                   onOpenAgent={showAgentInDock}
+                  workerSessions={visibleSessions}
+                  workerRuntimes={forest?.workerRuntimes}
+                  onStopWorker={stopWorker}
+                  onOpenAgents={showAgentsInDock}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}

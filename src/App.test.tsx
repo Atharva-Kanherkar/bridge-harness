@@ -694,7 +694,8 @@ describe("the dock in the session view", () => {
     expect(dock.textContent).toContain(agentName("session-1w"));
     expect(dock.textContent).toContain("Implementation");
     expect(dock.textContent).toContain("Refactor the auth module to use the new token store");
-    expect(dock.textContent).toContain("WORKING");
+    // The lineage writes states in sentence case.
+    expect(dock.textContent).toContain("Working");
     // The finished verification worker is the chat's history, not a running agent.
     expect(dock.textContent).not.toContain("Verification");
     expect(dock.textContent).toContain("Update the auth serializer");
