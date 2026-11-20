@@ -436,3 +436,86 @@ fn an_imported_opencode_chat_says_why_it_starts_with_its_history() {
     assert_eq!(plan(&signed_in).reason.as_deref(), Some("OpenCode no longer has this session."));
     assert_eq!(plan(&signed_in).mode, HISTORY);
 }
+
+fn add_accounts(db: &Connection, harness: &str, accounts: serde_json::Value) {
+    let mut config = crate::agent_config::state(db).unwrap().harnesses.into_iter().find(|item| item.id == harness).unwrap();
+    config.advanced = json!({ "accounts": accounts });
+    crate::agent_config::save_harness(db, config).unwrap();
+}
+
+#[test]
+fn each_tool_signs_in_with_your_own_folder_then_each_account() {
+    let scratch = tempfile::tempdir().unwrap();
+    let core = BridgeCore::for_tests(scratch.path());
+    let db = core.db.lock().unwrap();
+    let home = PathBuf::from("/Users/me");
+    let host = HostHomes { home: home.clone(), claude_config_dir: None, codex_home: None, xdg_data_home: None };
+    add_accounts(&db, "claude", json!([{ "id": "work", "label": "Work", "homePath": "/Users/me/.claude_work" }]));
+    add_accounts(&db, "codex", json!([
+        { "id": "work", "label": "Work", "homePath": "/Users/me/.codex_work" },
+        { "id": "shadow", "label": "Shadow", "shadowHomePath": "/Users/me/.codex_shadow" },
+    ]));
+    add_accounts(&db, "opencode", json!([{ "id": "go", "label": "Go", "homePath": "/Users/me/.opencode_go" }]));
+
+    let homes = sign_in_homes_with(&db, &host).unwrap();
+
+    let named = |list: &[ClaudeHome]| list.iter().map(|(id, path)| (id.clone(), path.clone())).collect::<Vec<_>>();
+    assert_eq!(named(&homes.claude), vec![(None, home.join(".claude")), (Some("work".into()), home.join(".claude_work"))]);
+    assert_eq!(
+        named(&homes.codex),
+        vec![(None, home.join(".codex")), (Some("work".into()), home.join(".codex_work")), (Some("shadow".into()), home.join(".codex"))],
+        "a login overlay keeps its threads in your own home",
+    );
+    assert_eq!(named(&homes.opencode), vec![(None, home.join(".local/share/opencode")), (Some("go".into()), home.join(".opencode_go/opencode"))]);
+    assert_eq!(own_homes(&host).claude.len(), 1);
+}
+
+#[test]
+fn a_codex_account_chat_continues_signed_in_with_that_account() {
+    use crate::codex_import::CodexImporter;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let cwd = home.join("work/app");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.to_string_lossy().into_owned();
+    let work = home.join("codex-work");
+    let rollout = work.join("sessions/2026/11/01/rollout-2026-11-01T10-00-00-thread-w.jsonl");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    let line = |kind: &str, payload: serde_json::Value| json!({ "timestamp": "2026-11-01T10:00:00Z", "type": kind, "payload": payload }).to_string();
+    fs::write(&rollout, [
+        line("session_meta", json!({ "id": "thread-w", "cwd": cwd, "timestamp": "2026-11-01T10:00:00Z", "source": "exec" })),
+        line("event_msg", json!({ "type": "item_completed", "item": { "type": "UserMessage", "id": "u1", "content": [{ "type": "text", "text": "remember HERON-2" }] } })),
+        line("event_msg", json!({ "type": "item_completed", "item": { "type": "AgentMessage", "id": "a1", "content": [{ "type": "text", "text": "OK" }] } })),
+    ].join("\n")).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+    let request = DiscoveryRequest {
+        provider: crate::codex_import::PROVIDER.into(),
+        approved_roots: vec![work.to_string_lossy().into_owned()],
+        selected_export: None,
+        source_version: None,
+        schema_version: None,
+        format_versions: std::collections::BTreeMap::new(),
+    };
+    let discovery = CodexImporter.discover_with_homes(&request, std::slice::from_ref(&work)).unwrap();
+    let selection = DiscoverySelection { artifact_ids: discovery.artifacts.iter().map(|a| a.artifact_id.clone()).collect() };
+    let normalized: Vec<_> = CodexImporter.preview(&discovery, &selection).unwrap().into_iter().map(|c| CodexImporter.normalize(c).unwrap()).collect();
+    let imported = normalized[0].deterministic_bridge_id.clone();
+    let db = core.db.lock().unwrap();
+    let plan = ImportPlan {
+        selected_candidate_ids: normalized.iter().map(|c| c.candidate.candidate_id.clone()).collect(),
+        conflict_policy: ConflictPolicy::Skip,
+        setup_activation_policy: SetupActivationPolicy::Disabled,
+        memory_scope: None,
+        dry_run: false,
+        created_at: "2026-11-20T10:00:00Z".into(),
+    };
+    assert_eq!(commit_import(&db, &normalized, &plan).unwrap().imported, 1);
+    add_accounts(&db, "codex", json!([{ "id": "work", "label": "Work", "homePath": work.to_string_lossy() }]));
+    let host = HostHomes { home: home.clone(), claude_config_dir: None, codex_home: None, xdg_data_home: None };
+
+    let plan = plan_in(&db, &imported, &sign_in_homes_with(&db, &host).unwrap()).unwrap();
+
+    assert_eq!(plan, Plan { mode: NATIVE, reason: None, native: Some(("thread-w".into(), Some("work".into()))) });
+}
+

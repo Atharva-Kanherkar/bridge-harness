@@ -422,27 +422,29 @@ pub fn job_discovery(roots: &[PathBuf], artifacts: Vec<DiscoveredArtifact>) -> D
 /// What one store holds, for the Import page: chats (subagents come over
 /// under their parent and are not counted), their folders, and background
 /// runs. Reads the session tables only.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StoreCounts {
     pub chats: u64,
     pub projects: u64,
     pub background: u64,
+    /// The chats' folders, so counts across several stores add up projects
+    /// once.
+    pub folders: std::collections::BTreeSet<String>,
 }
 
 pub fn count_sessions(store: &Path) -> Option<StoreCounts> {
     let conn = store::open(store).ok()?;
     let rows = store::list_session_heads(&conn).ok()?;
     let mut counts = StoreCounts::default();
-    let mut folders = HashSet::new();
     for (directory, is_child) in rows {
         if is_background(&directory) {
             counts.background += 1;
         } else if !is_child {
             counts.chats += 1;
-            folders.insert(directory);
+            counts.folders.insert(directory);
         }
     }
-    counts.projects = folders.len() as u64;
+    counts.projects = counts.folders.len() as u64;
     Some(counts)
 }
 

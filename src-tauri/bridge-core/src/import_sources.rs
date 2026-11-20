@@ -181,26 +181,41 @@ pub(crate) fn is_temp_project(project: &Path) -> bool {
         })
 }
 
+/// The account folders added in Settings, per tool: Claude config folders,
+/// Codex homes, and OpenCode data folders (`<data home>/opencode`).
+#[derive(Debug, Clone, Default)]
+pub struct AccountFolders {
+    pub claude: Vec<PathBuf>,
+    pub codex: Vec<PathBuf>,
+    pub opencode: Vec<PathBuf>,
+}
+
 /// Every known tool, Claude Code first, then the rest in a fixed order.
 pub fn detect(
     home: &Path,
     claude_config_dir: Option<&Path>,
     accounts: &[PathBuf],
 ) -> Vec<wire::DetectedImportSource> {
-    detect_with(home, claude_config_dir, accounts, None, None)
+    let accounts = AccountFolders { claude: accounts.to_vec(), ..AccountFolders::default() };
+    detect_with(home, claude_config_dir, &accounts, None, None)
 }
 
 /// [`detect`], with the Codex home named (`CODEX_HOME`) instead of
-/// `~/.codex`, and the data home (`XDG_DATA_HOME`) instead of `~/.local/share`.
+/// `~/.codex`, the data home (`XDG_DATA_HOME`) instead of `~/.local/share`,
+/// and each tool's account folders.
 pub fn detect_with(
     home: &Path,
     claude_config_dir: Option<&Path>,
-    accounts: &[PathBuf],
+    accounts: &AccountFolders,
     codex_home: Option<&Path>,
     xdg_data_home: Option<&Path>,
 ) -> Vec<wire::DetectedImportSource> {
-    [claude(home, claude_config_dir, accounts), codex(home, codex_home), opencode(home, xdg_data_home)]
-        .into_iter()
+    [
+        claude(home, claude_config_dir, &accounts.claude),
+        codex(home, codex_home, &accounts.codex),
+        opencode(home, xdg_data_home, &accounts.opencode),
+    ]
+    .into_iter()
         .chain(OTHER_TOOLS.iter().map(|known| other(home, known)))
         .collect()
 }
@@ -208,13 +223,16 @@ pub fn detect_with(
 /// Codex: each rollout is a chat, counted from its first line only. One that
 /// ran in the OS temp folder is a background run; a subagent's thread comes
 /// over under its parent and is not counted on its own.
-fn codex(home: &Path, codex_home: Option<&Path>) -> wire::DetectedImportSource {
-    let root = codex_home.map(Path::to_path_buf).unwrap_or_else(|| home.join(".codex"));
-    let installed = root.join("sessions").is_dir() || root.join("archived_sessions").is_dir();
+fn codex(home: &Path, codex_home: Option<&Path>, accounts: &[PathBuf]) -> wire::DetectedImportSource {
+    let own = codex_home.map(Path::to_path_buf).unwrap_or_else(|| home.join(".codex"));
+    let roots = crate::codex_import::existing_folders(std::iter::once(own).chain(accounts.iter().cloned()), |root| {
+        root.join("sessions").is_dir() || root.join("archived_sessions").is_dir()
+    });
+    let installed = !roots.is_empty();
     let mut counts = wire::ImportSourceCounts::default();
     let mut folders = std::collections::HashSet::new();
-    if installed {
-        for path in crate::codex_import::list_rollouts(&root) {
+    for root in &roots {
+        for path in crate::codex_import::list_rollouts(root) {
             let meta = crate::codex_import::rollout::read_meta(&path).unwrap_or_default();
             let cwd = meta.cwd.unwrap_or_default();
             if crate::codex_import::is_temp_folder(&cwd) {
@@ -224,14 +242,14 @@ fn codex(home: &Path, codex_home: Option<&Path>) -> wire::DetectedImportSource {
                 folders.insert(cwd);
             }
         }
-        counts.projects = folders.len() as u64;
     }
+    counts.projects = folders.len() as u64;
     wire::DetectedImportSource {
         tool: crate::codex_import::PROVIDER.into(),
         label: "Codex".into(),
         installed,
         supported: true,
-        roots: if installed { vec![root.canonicalize().unwrap_or(root).to_string_lossy().into_owned()] } else { Vec::new() },
+        roots: roots.iter().map(|root| root.to_string_lossy().into_owned()).collect(),
         counts,
         note: Some("Chats with their commands, edits and MCP calls. Codex keeps using its own memory.".into()),
     }
@@ -241,23 +259,29 @@ fn codex(home: &Path, codex_home: Option<&Path>) -> wire::DetectedImportSource {
 /// table only. One that ran in the OS temp folder or in Bridge's title
 /// scratch folder is a background run; a subagent's session comes over under
 /// its parent and is not counted on its own.
-fn opencode(home: &Path, xdg_data_home: Option<&Path>) -> wire::DetectedImportSource {
+fn opencode(home: &Path, xdg_data_home: Option<&Path>, accounts: &[PathBuf]) -> wire::DetectedImportSource {
     let data_home = xdg_data_home.map_or_else(|| home.join(".local/share"), Path::to_path_buf);
-    let folder = crate::opencode_import::data_folder(&data_home);
-    let store = folder.join(crate::opencode_import::STORE_FILE);
-    let installed = store.is_file();
+    let own = crate::opencode_import::data_folder(&data_home);
+    let roots = crate::codex_import::existing_folders(std::iter::once(own).chain(accounts.iter().cloned()), |folder| {
+        folder.join(crate::opencode_import::STORE_FILE).is_file()
+    });
+    let installed = !roots.is_empty();
     let mut counts = wire::ImportSourceCounts::default();
-    if let Some(found) = installed.then(|| crate::opencode_import::count_sessions(&store)).flatten() {
-        counts.chats = found.chats;
-        counts.projects = found.projects;
-        counts.background = found.background;
+    let mut projects = std::collections::HashSet::new();
+    for root in &roots {
+        if let Some(found) = crate::opencode_import::count_sessions(&root.join(crate::opencode_import::STORE_FILE)) {
+            counts.chats += found.chats;
+            counts.background += found.background;
+            projects.extend(found.folders);
+        }
     }
+    counts.projects = projects.len() as u64;
     wire::DetectedImportSource {
         tool: crate::opencode_import::PROVIDER.into(),
         label: "OpenCode".into(),
         installed,
         supported: true,
-        roots: if installed { vec![folder.canonicalize().unwrap_or(folder).to_string_lossy().into_owned()] } else { Vec::new() },
+        roots: roots.iter().map(|root| root.to_string_lossy().into_owned()).collect(),
         counts,
         note: Some("Chats with their commands, edits and subagents. OpenCode keeps its own memory and setup.".into()),
     }
@@ -369,10 +393,46 @@ mod tests {
         let fixture = crate::opencode_import::fixture::Fixture::new(data.path());
         fixture.session("ses_a", None, "/work/app", Some("a"), 1);
 
-        let sources = detect_with(home.path(), None, &[], None, Some(data.path()));
+        let sources = detect_with(home.path(), None, &AccountFolders::default(), None, Some(data.path()));
         let opencode = sources.iter().find(|source| source.tool == "opencode").unwrap();
 
         assert_eq!((opencode.installed, opencode.counts.chats), (true, 1));
+    }
+
+    #[test]
+    fn account_folders_are_counted_with_your_own() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let rollout = |codex: &Path, id: &str, cwd: &str| {
+            let line = serde_json::json!({ "timestamp": "t", "type": "session_meta", "payload": { "id": id, "cwd": cwd, "source": "exec" } });
+            let path = codex.join(format!("sessions/2026/11/01/rollout-{id}.jsonl"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("{line}\n")).unwrap();
+        };
+        rollout(&h.join(".codex"), "a", "/work/app");
+        rollout(&h.join("codex-work"), "b", "/work/api");
+        let own = crate::opencode_import::fixture::Fixture::new(&h.join(".local/share"));
+        own.session("ses_a", None, "/work/app", Some("a"), 1);
+        let work = crate::opencode_import::fixture::Fixture::new(&h.join("opencode-work"));
+        work.session("ses_b", None, "/work/app", Some("b"), 2);
+        work.session("ses_c", None, "/work/web", Some("c"), 3);
+        touch(&h.join(".claude/projects/-a/1.jsonl"));
+        touch(&h.join("claude-work/projects/-b/2.jsonl"));
+        let accounts = AccountFolders {
+            claude: vec![h.join("claude-work"), h.join(".claude")],
+            codex: vec![h.join("codex-work"), h.join("codex-missing")],
+            opencode: vec![work.home.clone()],
+        };
+
+        let sources = detect_with(h, None, &accounts, None, None);
+        let by = |tool: &str| sources.iter().find(|source| source.tool == tool).unwrap().clone();
+
+        let claude = by("claude_code");
+        assert_eq!((claude.counts.chats, claude.roots.len()), (2, 2), "your own folder listed once");
+        let codex = by("codex");
+        assert_eq!((codex.counts.chats, codex.counts.projects, codex.roots.len()), (2, 2, 2), "a missing account home is skipped");
+        let opencode = by("opencode");
+        assert_eq!((opencode.counts.chats, opencode.counts.projects, opencode.roots.len()), (3, 2, 2), "a folder in two stores is one project");
     }
 
     #[test]

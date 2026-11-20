@@ -40,25 +40,6 @@ impl Plan {
 /// user's own login) and its config folder.
 pub type ClaudeHome = (Option<String>, PathBuf);
 
-/// The Claude config folders Bridge signs in with: the user's own, then each
-/// Claude account in Settings.
-pub fn claude_homes(db: &Connection) -> Result<Vec<ClaudeHome>, BridgeError> {
-    let host = HostHomes::from_env();
-    let mut homes = vec![(None, provider_accounts::claude_home(None, &host))];
-    let advanced = crate::agent_config::state(db)?
-        .harnesses
-        .into_iter()
-        .find(|item| item.id == "claude")
-        .map(|item| item.advanced);
-    if let Some(advanced) = advanced {
-        for account in provider_accounts::accounts("claude", &advanced)? {
-            let home = provider_accounts::claude_home(Some(&account), &host);
-            homes.push((Some(account.id), home));
-        }
-    }
-    Ok(homes)
-}
-
 /// Claude Code files a session under its project folder, named after the
 /// working directory with every character that is not a letter or a digit
 /// written as `-`.
@@ -123,36 +104,68 @@ const OPENCODE: Resumable = Resumable {
     },
 };
 
-/// The OpenCode data folders Bridge signs in with: the user's own, then each
-/// OpenCode account in Settings (its data home's `opencode` folder).
-pub fn opencode_homes(db: &Connection) -> Result<Vec<ClaudeHome>, BridgeError> {
-    let host = HostHomes::from_env();
-    let own = host.xdg_data_home.clone().unwrap_or_else(|| host.home.join(".local/share"));
-    let mut homes = vec![(None, crate::opencode_import::data_folder(&own))];
+/// One harness's accounts from Settings.
+fn accounts_of(db: &Connection, harness: &str) -> Result<Vec<provider_accounts::ProviderAccount>, BridgeError> {
     let advanced = crate::agent_config::state(db)?
         .harnesses
         .into_iter()
-        .find(|item| item.id == "opencode")
+        .find(|item| item.id == harness)
         .map(|item| item.advanced);
-    if let Some(advanced) = advanced {
-        for account in provider_accounts::accounts("opencode", &advanced)? {
-            if account.home_path.is_empty() {
-                continue;
-            }
-            let data_home = provider_accounts::expand_home_path(&account.home_path, &host.home);
-            homes.push((Some(account.id), crate::opencode_import::data_folder(&data_home)));
+    match advanced {
+        Some(advanced) => provider_accounts::accounts(harness, &advanced),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Where Bridge signs in to each tool: your own folder first, then each
+/// account in Settings. The import reads these folders, and a continuation
+/// resumes in whichever still holds the session.
+pub fn sign_in_homes(db: &Connection) -> Result<SignInHomes, BridgeError> {
+    sign_in_homes_with(db, &HostHomes::from_env())
+}
+
+/// Your own folder for each tool, without accounts.
+pub fn own_homes(host: &HostHomes) -> SignInHomes {
+    let own_data = host.xdg_data_home.clone().unwrap_or_else(|| host.home.join(".local/share"));
+    SignInHomes {
+        claude: vec![(None, provider_accounts::claude_home(None, host))],
+        codex: vec![(None, provider_accounts::codex_home_layout(None, host).shared_home_path)],
+        opencode: vec![(None, crate::opencode_import::data_folder(&own_data))],
+    }
+}
+
+pub fn sign_in_homes_with(db: &Connection, host: &HostHomes) -> Result<SignInHomes, BridgeError> {
+    let mut homes = own_homes(host);
+    // Claude: the account's config folder.
+    for account in accounts_of(db, "claude")? {
+        let home = provider_accounts::claude_home(Some(&account), host);
+        homes.claude.push((Some(account.id), home));
+    }
+    // Codex: the account's shared home holds its threads. An account with
+    // only a login overlay shares your own home, threads included.
+    for account in accounts_of(db, "codex")? {
+        let home = provider_accounts::codex_home_layout(Some(&account), host).shared_home_path;
+        homes.codex.push((Some(account.id), home));
+    }
+    // OpenCode: the account's data home keeps its own store in `opencode/`.
+    for account in accounts_of(db, "opencode")? {
+        if account.home_path.is_empty() {
+            continue;
         }
+        let data_home = provider_accounts::expand_home_path(&account.home_path, &host.home);
+        homes.opencode.push((Some(account.id), crate::opencode_import::data_folder(&data_home)));
     }
     Ok(homes)
 }
 
+/// The folders of one tool's homes, for reading.
+pub fn folders(homes: &[ClaudeHome]) -> Vec<PathBuf> {
+    homes.iter().map(|(_, folder)| folder.clone()).collect()
+}
+
 pub fn plan(core: &BridgeCore, imported_id: &str) -> Result<Plan, BridgeError> {
     let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let homes = SignInHomes {
-        claude: claude_homes(&db)?,
-        codex: crate::codex_import::machine_codex_homes().into_iter().map(|home| (None, home)).collect(),
-        opencode: opencode_homes(&db)?,
-    };
+    let homes = sign_in_homes(&db)?;
     plan_in(&db, imported_id, &homes)
 }
 

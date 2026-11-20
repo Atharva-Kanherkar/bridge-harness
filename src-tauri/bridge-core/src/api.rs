@@ -213,15 +213,25 @@ fn preview_summaries(
 
 /// Read-only: which tools on this machine Bridge can import from.
 pub fn detect_import_sources(
-    _core: &Arc<BridgeCore>,
+    core: &Arc<BridgeCore>,
 ) -> Result<wire::ImportSourcesDetection, BridgeError> {
     let (home, claude_config_dir) = claude_import::claude_env()
         .ok_or_else(|| BridgeError::Invalid("HOME is not set; Bridge cannot look for other tools".into()))?;
+    // The account folders in Settings count too: the import reads them.
+    let homes = {
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::import_continue::sign_in_homes(&db).unwrap_or_default()
+    };
+    let accounts = crate::import_sources::AccountFolders {
+        claude: crate::import_continue::folders(&homes.claude),
+        codex: crate::import_continue::folders(&homes.codex),
+        opencode: crate::import_continue::folders(&homes.opencode),
+    };
     Ok(wire::ImportSourcesDetection {
         sources: crate::import_sources::detect_with(
             &home,
             claude_config_dir.as_deref(),
-            &[],
+            &accounts,
             std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
             std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).as_deref(),
         ),

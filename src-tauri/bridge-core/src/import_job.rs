@@ -11,6 +11,8 @@
 
 use crate::claude_import::{self, ClaudeCodeImporter};
 use crate::codex_import::{self, CodexImporter};
+use crate::import_continue::{folders, SignInHomes};
+use crate::provider_accounts::HostHomes;
 use crate::opencode_import::{self, OpenCodeImporter};
 use crate::BridgeError;
 use crate::events::CoreEvent;
@@ -127,12 +129,31 @@ impl Source {
             Self::OpenCode => "OpenCode",
         }
     }
-    /// The folders this machine keeps the tool's data in.
-    fn machine_roots(self) -> Vec<PathBuf> {
+    /// The folders this machine keeps the tool's data in, and each account
+    /// folder for it in Settings.
+    fn machine_roots(self, core: &BridgeCore) -> Vec<PathBuf> {
+        let host = HostHomes::from_env();
+        let homes = {
+            let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            crate::import_continue::sign_in_homes_with(&db, &host)
+        };
+        let homes = homes.unwrap_or_else(|error| {
+            eprintln!("bridge: import reads only your own folders; accounts are unreadable: {error}");
+            crate::import_continue::own_homes(&host)
+        });
+        self.roots(&host, &homes)
+    }
+
+    /// Your own folders for the tool plus its account folders: missing ones
+    /// left out, one reached twice read once. Claude Code also keeps
+    /// `~/.claude` when `CLAUDE_CONFIG_DIR` points elsewhere.
+    pub(crate) fn roots(self, host: &HostHomes, homes: &SignInHomes) -> Vec<PathBuf> {
         match self {
-            Self::Claude => claude_import::machine_config_roots(),
-            Self::Codex => codex_import::machine_codex_homes(),
-            Self::OpenCode => opencode_import::machine_opencode_homes(),
+            Self::Claude => claude_import::config_roots(&host.home, host.claude_config_dir.as_deref(), &folders(&homes.claude)),
+            Self::Codex => codex_import::existing_folders(folders(&homes.codex).into_iter(), Path::is_dir),
+            Self::OpenCode => codex_import::existing_folders(folders(&homes.opencode).into_iter(), |folder| {
+                folder.join(opencode_import::STORE_FILE).is_file()
+            }),
         }
     }
     fn work(self, roots: &[PathBuf]) -> Result<claude_import::JobWork, BridgeError> {
@@ -186,7 +207,7 @@ impl Source {
 /// once. While a job runs, it is returned instead of starting another.
 pub fn start(core: &Arc<BridgeCore>, tool: &str) -> Result<wire::ImportJob, BridgeError> {
     let source = Source::of(tool).ok_or_else(|| BridgeError::Invalid(format!("Bridge cannot import from '{tool}' yet")))?;
-    start_with_roots(core, tool, source.machine_roots())
+    start_with_roots(core, tool, source.machine_roots(core))
 }
 
 pub(crate) fn start_with_roots(
@@ -225,7 +246,7 @@ pub(crate) fn start_with_roots(
 /// On startup: carry on with an import Bridge quit in the middle of, from
 /// the tool it was importing.
 pub fn start_import_maintenance(core: Arc<BridgeCore>) {
-    if let Err(error) = resume_with(&core, |source| source.machine_roots()) {
+    if let Err(error) = resume_with(&core, |source| source.machine_roots(&core)) {
         eprintln!("bridge: could not resume the import: {error}");
     }
 }

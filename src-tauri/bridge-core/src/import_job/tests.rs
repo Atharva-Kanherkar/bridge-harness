@@ -618,6 +618,147 @@ mod opencode {
     }
 }
 
+/// Accounts added in Settings, each with its own folder.
+mod accounts {
+    use super::*;
+    use crate::opencode_import::fixture::{replied, said, Fixture};
+
+    fn add_accounts(core: &BridgeCore, harness: &str, accounts: serde_json::Value) {
+        let db = core.db.lock().unwrap();
+        let mut config = crate::agent_config::state(&db).unwrap().harnesses.into_iter().find(|item| item.id == harness).unwrap();
+        config.advanced = json!({ "accounts": accounts });
+        crate::agent_config::save_harness(&db, config).unwrap();
+    }
+
+    /// The homes a job on a machine whose home folder is `home` reads.
+    fn roots(core: &BridgeCore, home: &Path, source: Source) -> Vec<PathBuf> {
+        let host = HostHomes { home: home.to_path_buf(), claude_config_dir: None, codex_home: None, xdg_data_home: None };
+        let homes = crate::import_continue::sign_in_homes_with(&core.db.lock().unwrap(), &host).unwrap();
+        source.roots(&host, &homes)
+    }
+
+    fn run_tool(core: &Arc<BridgeCore>, tool: &str, roots: &[PathBuf]) -> wire::ImportJob {
+        let mut job = new_job();
+        job.tool = tool.into();
+        save(core, &job, None).unwrap();
+        core.import_job_running.store(true, Ordering::SeqCst);
+        run(core, job, roots, None);
+        status(core).unwrap().unwrap()
+    }
+
+    fn native_keys(core: &BridgeCore) -> Vec<String> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT native_key FROM import_native_sessions ORDER BY native_key").unwrap();
+        statement.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn a_claude_account_folder_is_read_with_your_own() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        write(&home.join(".claude/projects/-work-app/s1.jsonl"), &session("s1", "/work/app", "fix the login"));
+        let work = home.join("claude-work");
+        write(&work.join("projects/-work-api/s2.jsonl"), &session("s2", "/work/api", "add a route"));
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        add_accounts(&core, "claude", json!([
+            { "id": "work", "label": "Work", "homePath": work.to_string_lossy() },
+            { "id": "gone", "label": "Gone", "homePath": home.join("never-made").to_string_lossy() },
+        ]));
+
+        let roots = roots(&core, &home, Source::Claude);
+        assert_eq!(roots, vec![home.join(".claude"), work.clone()], "your own folder, then the account's; a missing one is skipped");
+        let job = run_tool(&core, claude_import::PROVIDER, &roots);
+
+        assert_eq!((job.status.as_str(), job.imported), ("done", 2), "{job:?}");
+        assert_eq!(native_keys(&core), vec!["claude:s1", "claude:s2"]);
+        let again = run_tool(&core, claude_import::PROVIDER, &roots);
+        assert_eq!((again.imported, again.already_in_bridge), (0, 2), "{again:?}");
+    }
+
+    #[test]
+    fn an_account_pointing_at_your_own_folder_is_read_once() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        write(&home.join(".claude/projects/-work-app/s1.jsonl"), &session("s1", "/work/app", "fix the login"));
+        let alias = home.join("claude-alias");
+        std::os::unix::fs::symlink(home.join(".claude"), &alias).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        add_accounts(&core, "claude", json!([{ "id": "alias", "label": "Alias", "homePath": alias.to_string_lossy() }]));
+
+        assert_eq!(roots(&core, &home, Source::Claude), vec![home.join(".claude")]);
+    }
+
+    #[test]
+    fn a_codex_account_home_is_read_with_your_own() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let rollout = |codex: &Path, id: &str, text: &str| {
+            let line = |kind: &str, payload: serde_json::Value| json!({ "timestamp": "2026-11-01T10:00:00Z", "type": kind, "payload": payload }).to_string();
+            write(&codex.join(format!("sessions/2026/11/01/rollout-2026-11-01T10-00-00-{id}.jsonl")), &[
+                line("session_meta", json!({ "id": id, "cwd": "/work/app", "timestamp": "2026-11-01T10:00:00Z", "source": "exec" })),
+                line("event_msg", json!({ "type": "item_completed", "item": { "type": "UserMessage", "id": format!("{id}-u"), "content": [{ "type": "text", "text": text }] } })),
+                line("event_msg", json!({ "type": "item_completed", "item": { "type": "AgentMessage", "id": format!("{id}-a"), "content": [{ "type": "text", "text": "Done." }] } })),
+            ].join("\n"));
+        };
+        rollout(&home.join(".codex"), "t-own", "fix the login");
+        let work = home.join("codex-work");
+        rollout(&work, "t-work", "add a route");
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        add_accounts(&core, "codex", json!([
+            { "id": "work", "label": "Work", "homePath": work.to_string_lossy() },
+            { "id": "shadow", "label": "Shadow", "shadowHomePath": home.join("codex-shadow").to_string_lossy() },
+        ]));
+
+        let roots = roots(&core, &home, Source::Codex);
+        assert_eq!(roots, vec![home.join(".codex"), work], "a login overlay shares your own home");
+        let job = run_tool(&core, codex_import::PROVIDER, &roots);
+
+        assert_eq!((job.status.as_str(), job.imported), ("done", 2), "{job:?}");
+        assert_eq!(native_keys(&core), vec!["codex:t-own", "codex:t-work"]);
+    }
+
+    #[test]
+    fn an_opencode_account_store_is_read_with_your_own() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let own = Fixture::new(&home.join(".local/share"));
+        own.session("ses_own", None, "/work/app", Some("Fix the login"), 1);
+        own.row("ses_own", 1, "user", &said("fix the login"));
+        own.row("ses_own", 2, "assistant", &replied("Done."));
+        let work_data = home.join("opencode-work");
+        let work = Fixture::new(&work_data);
+        work.session("ses_work", None, "/work/api", Some("Add a route"), 2);
+        work.row("ses_work", 1, "user", &said("add a route"));
+        work.row("ses_work", 2, "assistant", &replied("Added."));
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+        add_accounts(&core, "opencode", json!([{ "id": "work", "label": "Work", "homePath": work_data.to_string_lossy() }]));
+
+        let roots = roots(&core, &home, Source::OpenCode);
+        assert_eq!(roots, vec![own.home.clone(), work.home.clone()]);
+        let job = run_tool(&core, opencode_import::PROVIDER, &roots);
+
+        assert_eq!((job.status.as_str(), job.imported), ("done", 2), "{job:?}");
+        assert_eq!(native_keys(&core), vec!["opencode:ses_own", "opencode:ses_work"]);
+    }
+
+    #[test]
+    fn with_no_accounts_only_your_own_folders_are_read() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        write(&home.join(".claude/projects/-work-app/s1.jsonl"), &session("s1", "/work/app", "fix the login"));
+        let scratch = tempfile::tempdir().unwrap();
+        let core = core(scratch.path());
+
+        assert_eq!(roots(&core, &home, Source::Claude), vec![home.join(".claude")]);
+        assert!(roots(&core, &home, Source::Codex).is_empty());
+        assert!(roots(&core, &home, Source::OpenCode).is_empty());
+    }
+}
+
 /// OpenCode's job against this Mac's real store, into a scratch database.
 /// Prints aggregate numbers only.
 #[test]
