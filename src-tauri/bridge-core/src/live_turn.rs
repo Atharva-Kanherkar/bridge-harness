@@ -1224,6 +1224,18 @@ mod account_launch_tests {
     }
 }
 
+/// The newest session of the workspace and harness that start_session may
+/// launch again. A session with a parent or a worker runtime never qualifies:
+/// this launcher would drop the authority of a worker and clear its depth.
+fn reusable_workspace_session(db: &Connection, workspace_id: &str, harness: &str) -> Option<(String, Option<String>)> {
+    db.query_row(
+        "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND parent_session_id IS NULL AND NOT EXISTS(SELECT 1 FROM worker_runtime w WHERE w.session_id=sessions.id) AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
+        params![workspace_id, harness],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
+
 pub fn start_session(
     core: &Arc<BridgeCore>,
     workspace_id: String,
@@ -1285,11 +1297,7 @@ pub fn start_session(
         params![workspace_id],
         |r| r.get::<_, Option<String>>(0),
     )?;
-    let existing: Option<(String, Option<String>)> = db.query_row(
-        "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
-        params![workspace_id, adapter_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).ok();
+    let existing = reusable_workspace_session(&db, &workspace_id, adapter_id);
     let session_id = existing
         .as_ref()
         .map(|(id, _)| id.clone())

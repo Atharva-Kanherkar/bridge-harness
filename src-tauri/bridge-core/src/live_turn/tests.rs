@@ -1546,6 +1546,55 @@ fn start_chat_still_reaches_the_launcher_for_a_top_level_chat() {
     assert!(warm_thread(&core, &worker).is_none());
 }
 
+#[test]
+fn start_session_reuse_skips_workers_and_harness_subagents() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+
+    // A newer Bridge worker of the same workspace and harness.
+    let worker = bridge_worker(&core, "worker", &chat, "worker-thread");
+    let worker_lineage = lineage(&core, &worker);
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))], "the top-level chat is reused, not the worker");
+    assert!(warm_thread(&core, &worker).is_none());
+    assert_eq!(lineage(&core, &worker), worker_lineage);
+
+    // A newer harness subagent of the chat.
+    core.db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth,parent_session_id,provider_session_id) VALUES('subagent','w','claude','Subagent','working','estimated',?1,1,?2,'subagent-thread')",
+            params![crate::harness_subagents::KIND, chat],
+        )
+        .unwrap();
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    let launched = asked(&script);
+    assert!(launched.iter().all(|launch| launch.provider.as_deref() == Some("thread-0")), "{:?}", verbs(&launched));
+    assert!(warm_thread(&core, "subagent").is_none());
+    assert_eq!(lineage(&core, "subagent"), (1, Some(chat.clone()), crate::harness_subagents::KIND.to_owned()));
+
+    // A Codex orchestrator with a Claude worker: the workspace has no
+    // reusable Claude session. This phase does not assert the start result:
+    // the path for a new session fails at is_top_level_chat, before a launch.
+    // The worker must stay as it was.
+    {
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w2','p','Lima','Other','bridge/other',?1,'stopped','now')",
+            params![dir.path().join("other").to_string_lossy()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind) VALUES('codex-chat','w2','codex','Orchestrator','stopped','reported',0,'orchestrator')", []).unwrap();
+    }
+    let claude_worker = bridge_worker(&core, "claude-worker", "codex-chat", "claude-worker-thread");
+    let outcome = start_session(&core, "w2".into(), Some(Harness::Claude), None).map(|_| ());
+    let launched = asked(&script);
+    assert!(launched.iter().all(|launch| launch.provider.as_deref() != Some("claude-worker-thread")), "{outcome:?} {:?}", verbs(&launched));
+    assert!(warm_thread(&core, &claude_worker).is_none());
+    assert_eq!(lineage(&core, &claude_worker), (1, Some("codex-chat".to_owned()), "orchestrator".to_owned()));
+}
+
 mod off_trace;
 
 /// The off guarantee of `testing/feat-early-compaction.md`. Each later commit
