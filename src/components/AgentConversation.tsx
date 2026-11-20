@@ -1929,12 +1929,13 @@ export function modelChangeDetail(data: Record<string, unknown>): string | null 
   parts.push(before === after ? `window ${compactWindow(after)}` : `window ${compactWindow(before)} → ${compactWindow(after)}`);
   if (data.freshProviderSession === true) {
     parts.push("fresh thread");
-    const carried = data.carriedContext as { summary?: unknown; decisions?: unknown; filesTouched?: unknown } | undefined;
+    const carried = data.carriedContext as { summary?: unknown; decisions?: unknown; filesTouched?: unknown; links?: unknown } | undefined;
     if (carried && typeof carried === "object") {
       const pieces = [
         carried.summary ? "summary" : null,
         typeof carried.decisions === "number" && carried.decisions > 0 ? `${carried.decisions} decision${carried.decisions === 1 ? "" : "s"}` : null,
         typeof carried.filesTouched === "number" && carried.filesTouched > 0 ? `${carried.filesTouched} file${carried.filesTouched === 1 ? "" : "s"}` : null,
+        typeof carried.links === "number" && carried.links > 0 ? `${carried.links} link${carried.links === 1 ? "" : "s"}` : null,
       ].filter(Boolean);
       if (pieces.length) parts.push(`carried ${pieces.join(" + ")}`);
     }

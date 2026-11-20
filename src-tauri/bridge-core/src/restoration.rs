@@ -243,6 +243,8 @@ pub struct RestorationHandoff {
     pub carried_entries: usize,
     /// Conversation entries the projection held, carried or not.
     pub eligible_entries: usize,
+    /// What Bridge wrote itself from the branch, with no model.
+    pub facts: crate::handoff_facts::HandoffFacts,
 }
 
 pub fn restoration_handoff(
@@ -280,14 +282,45 @@ pub fn restoration_handoff(
     // checkpoint is not repeated below it.
     let entries = projection.render_entries.iter().collect::<Vec<_>>();
     let eligible_entries = entries.iter().filter(|entry| entry_text(entry).is_some()).count();
-    let tail = render_tail(&entries, budget.saturating_sub(header_bytes), restoration_entry_bytes(budget));
-    if header.is_empty() && tail.lines.is_empty() {
+    // Bridge's own facts follow the model's summary, and never wait on one.
+    // Their widest form (the first ask, and a pointer with the largest numbers
+    // it can hold) is reserved before the tail is cut, so whatever the tail
+    // turns out to carry, the final block fits the room it was given.
+    let facts = crate::handoff_facts::collect(&branch);
+    let reads_history = crate::history_tools::reads_own_history(db, session_id);
+    let past_newest = branch.iter().map(|entry| entry.sequence).max().unwrap_or(0).saturating_add(1);
+    let widest = facts.lines(
+        false,
+        reads_history.then(|| crate::handoff_facts::earlier_line(eligible_entries, past_newest)),
+    );
+    let facts_room = crate::handoff_facts::MAX_FACTS_BYTES.min(MAX_RESTORATION_BUDGET_BYTES.saturating_sub(header_bytes));
+    let reserved = crate::handoff_facts::bound(widest, facts_room)
+        .iter()
+        .map(|line| line.len() + 1)
+        .sum::<usize>();
+    let tail = render_tail(
+        &entries,
+        budget.saturating_sub(header_bytes + reserved),
+        restoration_entry_bytes(budget),
+    );
+    let first_ask_carried = facts
+        .first_ask
+        .as_ref()
+        .is_some_and(|(sequence, _)| tail.oldest_sequence.is_some_and(|oldest| oldest <= *sequence));
+    let older = eligible_entries.saturating_sub(tail.messages);
+    let earlier = (reads_history && older > 0).then(|| {
+        crate::handoff_facts::earlier_line(older, tail.oldest_sequence.unwrap_or(past_newest))
+    });
+    let facts_lines = crate::handoff_facts::bound(facts.lines(first_ask_carried, earlier), reserved);
+    if header.is_empty() && facts_lines.is_empty() && tail.lines.is_empty() {
         return Ok(None);
     }
     let carried_entries = tail.messages;
     let mut lines = header;
+    lines.extend(facts_lines);
     lines.extend(tail.lines);
-    // By construction: header ≤ MAX, tail ≤ budget − header ≤ MAX − header.
+    // By construction: header ≤ MAX, facts ≤ MAX − header, and
+    // tail ≤ budget − header − facts.
     let context = lines.join("\n");
     Ok(Some(RestorationHandoff {
         text: format!(
@@ -296,6 +329,7 @@ pub fn restoration_handoff(
         header: source,
         carried_entries,
         eligible_entries,
+        facts,
     }))
 }
 
@@ -796,6 +830,111 @@ pub(crate) mod tests {
         assert_eq!(all.lines.len(), 3, "{:?}", all.lines);
         assert_eq!(all.messages, 2);
         assert_eq!(all.oldest_sequence, Some(entries[0].sequence));
+    }
+
+    #[test]
+    fn the_facts_header_exists_without_any_summary() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"ship the importer"})).unwrap();
+        tool_event(&db, "s", "file_change.completed", "x", None, None, serde_json::json!({"changes":[{"path":"src/import.rs"}]}));
+        tool_event(&db, "s", "command.completed", "y", None, Some("https://github.com/acme/app/pull/41"), serde_json::json!({"command":"gh pr create","exitCode":0}));
+        forest.append("s", EntryKind::AssistantMessage, serde_json::json!({"text":"opened the PR"})).unwrap();
+        let handoff = restoration_handoff(&db, "s", 200_000).unwrap().unwrap();
+        assert!(handoff.header.is_none(), "no model summary");
+        let text = &handoff.text;
+        for line in ["goal: ship the importer", "files touched: src/import.rs", "links: https://github.com/acme/app/pull/41"] {
+            assert!(text.lines().any(|candidate| candidate == line), "{line} missing: {text}");
+        }
+        assert!(!text.contains("earlier:"), "everything fit: {text}");
+        assert!(text.find("links:").unwrap() < text.find("user.message: ship").unwrap(), "facts head the tail: {text}");
+        assert_eq!((handoff.facts.file_count(), handoff.facts.links.len()), (1, 1));
+    }
+
+    #[test]
+    fn a_model_summary_comes_first_and_the_facts_follow() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"audit the token store"})).unwrap();
+        forest.append("s", EntryKind::Checkpoint, serde_json::json!({
+            "schemaVersion":1,"summary":"audited the store","decisions":["keep SQLite"],
+            "filesTouched":["src/store.rs"],"openWork":["rotate keys"],"reason":"before_downgrade"
+        })).unwrap();
+        let text = restoration_handoff(&db, "s", 200_000).unwrap().unwrap().text;
+        let order = ["checkpoint: audited the store", "decision: keep SQLite", "still open: rotate keys", "goal: audit the token store", "files touched: src/store.rs", "user.message: audit the token store"]
+            .iter()
+            .map(|needle| text.find(needle).unwrap_or_else(|| panic!("{needle} missing: {text}")))
+            .collect::<Vec<_>>();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}: {text}");
+    }
+
+    #[test]
+    fn started_with_appears_only_when_the_tail_lost_the_first_ask() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"FIRST ASK: build the Conductor importer"})).unwrap();
+        for index in 0..30 {
+            forest.append("s", EntryKind::AssistantMessage, serde_json::json!({"text": format!("{index} {}", "z".repeat(900))})).unwrap();
+        }
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"now add tests"})).unwrap();
+        let narrow = restoration_handoff(&db, "s", 1_000).unwrap().unwrap();
+        assert!(narrow.text.contains("started with: FIRST ASK: build the Conductor importer"), "{}", narrow.text);
+        assert!(!narrow.text.contains("user.message: FIRST ASK"), "the tail lost it");
+        let wide = restoration_handoff(&db, "s", 1_000_000).unwrap().unwrap();
+        assert!(wide.text.contains("user.message: FIRST ASK"));
+        assert!(!wide.text.contains("started with:"), "carried in the tail, so not said twice");
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(narrow.text.len() - envelope <= MIN_RESTORATION_BUDGET_BYTES, "{}", narrow.text.len());
+    }
+
+    #[test]
+    fn the_handoff_names_chats_history_and_the_oldest_carried_sequence() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        for index in 0..40 {
+            forest.append("s", EntryKind::UserMessage, serde_json::json!({"text": format!("{index}: {}", "x".repeat(900))})).unwrap();
+        }
+        let handoff = restoration_handoff(&db, "s", 1_000).unwrap().unwrap();
+        let entries = SessionForest::new(&db).active_branch("s").unwrap();
+        let oldest_carried = entries
+            .iter()
+            .find(|entry| handoff.text.contains(&format!("\nuser.message: {}: ", entry.payload["text"].as_str().unwrap().split(':').next().unwrap())))
+            .unwrap()
+            .sequence;
+        let older = handoff.eligible_entries - handoff.carried_entries;
+        let expected = format!(
+            "earlier: {older} older messages are not in this handoff; call chats_history with before={oldest_carried} to read them, tool output included."
+        );
+        assert!(handoff.text.lines().any(|line| line == expected), "{expected}\n{}", handoff.text);
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(handoff.text.len() - envelope <= MIN_RESTORATION_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn a_worker_handoff_never_names_chats_history() {
+        let db = database();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child','w','codex','Worker','stopped','reported','s')", []).unwrap();
+        let forest = SessionForest::new(&db);
+        for index in 0..40 {
+            forest.append("child", EntryKind::UserMessage, serde_json::json!({"text": format!("{index}: {}", "x".repeat(900))})).unwrap();
+        }
+        let handoff = restoration_handoff(&db, "child", 1_000).unwrap().unwrap();
+        assert!(handoff.carried_entries < handoff.eligible_entries);
+        assert!(!handoff.text.contains("chats_history"), "{}", handoff.text);
+    }
+
+    #[test]
+    fn the_facts_header_is_deterministic() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest.append("s", EntryKind::UserMessage, serde_json::json!({"text":"see https://github.com/a/b/issues/1 and https://github.com/a/b/pull/2"})).unwrap();
+        for index in 0..5 {
+            tool_event(&db, "s", "file_change.completed", &format!("f{index}"), None, None, serde_json::json!({"changes":[{"path": format!("src/{index}.rs")}]}));
+        }
+        let first = restoration_handoff(&db, "s", 64_000).unwrap().unwrap().text;
+        for _ in 0..5 {
+            assert_eq!(restoration_handoff(&db, "s", 64_000).unwrap().unwrap().text, first);
+        }
     }
 
     #[test]

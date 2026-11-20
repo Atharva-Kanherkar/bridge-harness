@@ -107,6 +107,7 @@ pub mod github_poll;
 pub mod github_policy;
 pub mod handoff;
 pub mod health;
+pub mod handoff_facts;
 pub mod history_tools;
 #[cfg(test)]
 mod history_tools_eval;

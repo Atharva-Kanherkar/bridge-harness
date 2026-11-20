@@ -480,30 +480,6 @@ fn scrub_clip(text: &str, scrub_bytes: usize, chars: usize) -> String {
     truncate_chars(&scrub(&text[..cut]), chars)
 }
 
-/// What a completed tool printed or returned, wherever its adapter keeps it.
-fn tool_output(payload: &Value) -> Option<String> {
-    let text = |value: &Value| -> Option<String> {
-        match value {
-            Value::String(text) => Some(text.clone()),
-            Value::Array(parts) => {
-                let joined = parts
-                    .iter()
-                    .filter_map(|part| part.get("text").and_then(Value::as_str).or_else(|| part.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(joined)
-            }
-            _ => None,
-        }
-    };
-    ["/text", "/data/aggregatedOutput", "/data/content", "/data/state/output", "/data/output", "/data/result"]
-        .iter()
-        .filter_map(|pointer| payload.pointer(pointer))
-        .filter_map(text)
-        .map(|output| output.trim().to_owned())
-        .find(|output| !output.is_empty())
-}
-
 /// One page of the calling chat's own active branch, before `before`.
 fn history(db: &Connection, caller: &str, args: &Value) -> Result<Value, ToolError> {
     let args: HistoryArgs = serde_json::from_value(args.clone())
@@ -537,7 +513,7 @@ fn history(db: &Connection, caller: &str, args: &Value) -> Result<Value, ToolErr
                 "at": entry.created_at,
                 "role": "tool",
                 "fact": fact.render(),
-                "output": tool_output(&entry.payload)
+                "output": crate::tool_facts::output(&entry.payload)
                     .map(|output| scrub_clip(&output, HISTORY_SCRUB_BYTES, HISTORY_OUTPUT_CHARS)),
             })
         } else {

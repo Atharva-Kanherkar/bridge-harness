@@ -219,6 +219,30 @@ fn called(completed: &Value, started: Option<&Value>, input: Option<&Value>, fai
     Some(ToolFact::Called { name, target, failed })
 }
 
+/// What a completed tool printed or returned, wherever its adapter keeps it.
+pub fn output(payload: &Value) -> Option<String> {
+    let text = |value: &Value| -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(parts) => {
+                let joined = parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str).or_else(|| part.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(joined)
+            }
+            _ => None,
+        }
+    };
+    ["/text", "/data/aggregatedOutput", "/data/content", "/data/state/output", "/data/output", "/data/result"]
+        .iter()
+        .filter_map(|pointer| payload.pointer(pointer))
+        .filter_map(text)
+        .map(|output| output.trim().to_owned())
+        .find(|output| !output.is_empty())
+}
+
 /// The tool's input object, wherever this adapter keeps it, when it holds
 /// anything.
 fn input(payload: &Value) -> Option<&Value> {

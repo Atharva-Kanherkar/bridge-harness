@@ -90,6 +90,8 @@ pub struct CarriedContext {
     pub recent_entries: usize,
     /// Conversation entries the stored history holds, carried or not.
     pub stored_entries: usize,
+    /// Pull request and issue links Bridge found in the branch and carried.
+    pub links: usize,
 }
 
 impl CarriedContext {
@@ -99,13 +101,30 @@ impl CarriedContext {
         } else {
             format!("the latest {} of {} messages", self.recent_entries, self.stored_entries)
         };
+        let count = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         if self.summary {
+            let links = if self.links > 0 { format!(" + {}", count(self.links, "link", "links")) } else { String::new() };
             format!(
-                "carried forward: summary + {} decisions + {} files, and {messages}",
+                "carried forward: summary + {} decisions + {} files{links}, and {messages}",
                 self.decisions, self.files_touched
             )
         } else {
-            format!("carried forward: {messages} (no summary available)")
+            // No model wrote a summary; say what Bridge carried from the
+            // stored history itself.
+            let facts = [
+                (self.files_touched > 0).then(|| count(self.files_touched, "file", "files")),
+                (self.links > 0).then(|| count(self.links, "link", "links")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            let carried = match facts.as_slice() {
+                [] => messages,
+                [one] => format!("{messages} and {one}"),
+                [files, links] => format!("{messages}, {files} and {links}"),
+                _ => unreachable!("two facts at most"),
+            };
+            format!("carried forward: {carried} (no model summary)")
         }
     }
 }
@@ -120,9 +139,14 @@ fn carried_context(db: &Connection, session_id: &str) -> Option<CarriedContext> 
     Some(CarriedContext {
         summary: header.is_some(),
         decisions: header.map_or(0, |header| header.decisions.len()),
-        files_touched: header.map_or(0, |header| header.files_touched.len()),
+        // Bridge's own list includes the newest checkpoint's; an older
+        // compaction's list can still be the longer one.
+        files_touched: header
+            .map_or(0, |header| header.files_touched.len())
+            .max(handoff.facts.file_count()),
         recent_entries: handoff.carried_entries,
         stored_entries: handoff.eligible_entries,
+        links: handoff.facts.links.len(),
     })
 }
 
@@ -1649,6 +1673,7 @@ impl BridgeCore {
                             "filesTouched": carried.files_touched,
                             "recentEntries": carried.recent_entries,
                             "storedEntries": carried.stored_entries,
+                            "links": carried.links,
                         });
                     }
                     obj
@@ -2739,6 +2764,24 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM sessions", [], |row| row.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn the_notice_says_what_bridge_carried_without_a_model_summary() {
+        let carried = |summary, files_touched, links, recent_entries, stored_entries| CarriedContext {
+            summary,
+            decisions: usize::from(summary),
+            files_touched,
+            recent_entries,
+            stored_entries,
+            links,
+        };
+        assert_eq!(carried(false, 3, 2, 12, 12).describe(), "carried forward: all 12 messages, 3 files and 2 links (no model summary)");
+        assert_eq!(carried(false, 1, 0, 40, 147).describe(), "carried forward: the latest 40 of 147 messages and 1 file (no model summary)");
+        assert_eq!(carried(false, 0, 1, 2, 2).describe(), "carried forward: all 2 messages and 1 link (no model summary)");
+        assert_eq!(carried(false, 0, 0, 2, 2).describe(), "carried forward: all 2 messages (no model summary)");
+        assert_eq!(carried(true, 3, 2, 12, 12).describe(), "carried forward: summary + 1 decisions + 3 files + 2 links, and all 12 messages");
+        assert_eq!(carried(true, 0, 0, 1, 1).describe(), "carried forward: summary + 1 decisions + 0 files, and all 1 messages");
     }
 
     #[test]

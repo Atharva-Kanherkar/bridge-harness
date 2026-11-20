@@ -36,6 +36,13 @@ describe("modelChangeDetail", () => {
     })).toBe("window 400k → 128k · fresh thread · carried 1 decision");
   });
 
+  it("names the files and links Bridge carried when no model summary landed", () => {
+    expect(modelChangeDetail({
+      previousWindowTokens: 1_000_000, windowTokens: 400_000, freshProviderSession: true,
+      carriedContext: { summary: false, decisions: 0, filesTouched: 3, links: 1, recentEntries: 40, storedEntries: 147 },
+    })).toBe("window 1M → 400k · fresh thread · carried 3 files + 1 link");
+  });
+
   it("leaves entries written before window sizes existed untouched", () => {
     expect(modelChangeDetail({ freshProviderSession: true, carriedContext: { summary: true, decisions: 2 } })).toBeNull();
   });
