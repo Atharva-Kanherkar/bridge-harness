@@ -1520,6 +1520,9 @@ function AppContent() {
   const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
   const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
+  // Chats with a send on its way: the sidebar's Running group counts them as
+  // a turn in flight, as `turnActive` below does for the open chat.
+  const sendingChatIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
@@ -3792,6 +3795,9 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
+      sessions={state.sessions}
+      liveEvents={agentEvents}
+      sendingChatIds={sendingChatIds}
       subagents={subagents}
       unread={unread.byChat}
       pullRequests={sidebarPrs}
