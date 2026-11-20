@@ -9,6 +9,7 @@
  */
 
 import { alignTurns, isToolItem, mergeConversationProjections, reduceConversation, toolCallDisplay, type ConversationItem } from "./conversation";
+import { turnChangesByTurn, type TurnChanges as TurnFileChanges } from "./turnChanges";
 import { projectSessionConversationCached } from "./transcript/projectionCache";
 import type { AgentEvent, BaseBranchDivergence, CompletionSummary, SessionEntry } from "./types";
 
@@ -140,55 +141,16 @@ export function formatTurnDuration(ms: number): string {
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
-function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry !== "") : [];
-}
-
 /**
- * What one turn's edit calls changed. A file edited twice counts once with its
- * counts summed. A multi-file summary (a turn diff) adds its files, and its
- * counts only when none of those files had a call of its own, so a summary of
- * edits already counted is not counted twice. Failed and unfinished edits
- * changed nothing yet.
+ * One turn's changes as the overview counts them, read from the same per-turn
+ * fold the transcript's changes card draws, so the two can never disagree.
+ * Line counts nobody reported stay unknown rather than reading as zero.
  */
-export function turnChanges(items: readonly ConversationItem[]): TurnChanges | null {
-  const perFile = new Map<string, { additions?: number; deletions?: number }>();
-  const summaries: { paths: string[]; additions?: number; deletions?: number }[] = [];
-  const seen = new Set<string>();
-  for (const item of items) {
-    if (!isToolItem(item)) continue;
-    const call = toolCallDisplay(item);
-    if (call.verb !== "edit" || call.status === "failed" || call.status === "running" || call.preparing) continue;
-    const identity = call.sourceCallId ?? item.identity ?? item.key;
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    const paths = stringList(item.data.paths);
-    if (paths.length > 1) {
-      summaries.push({ paths, additions: call.additions, deletions: call.deletions });
-      continue;
-    }
-    const path = call.path ?? call.target ?? identity;
-    const current = perFile.get(path) ?? {};
-    perFile.set(path, {
-      additions: call.additions === undefined ? current.additions : (current.additions ?? 0) + call.additions,
-      deletions: call.deletions === undefined ? current.deletions : (current.deletions ?? 0) + call.deletions,
-    });
-  }
-  const files = new Set(perFile.keys());
-  let additions: number | undefined;
-  let deletions: number | undefined;
-  const add = (counts: { additions?: number; deletions?: number }) => {
-    if (counts.additions !== undefined) additions = (additions ?? 0) + counts.additions;
-    if (counts.deletions !== undefined) deletions = (deletions ?? 0) + counts.deletions;
-  };
-  for (const counts of perFile.values()) add(counts);
-  for (const summary of summaries) {
-    const overlaps = summary.paths.some(path => perFile.has(path));
-    for (const path of summary.paths) files.add(path);
-    if (!overlaps) add(summary);
-  }
-  if (files.size === 0) return null;
-  return { files: files.size, additions, deletions };
+export function summarizeTurnChanges(changes: TurnFileChanges | undefined): TurnChanges | null {
+  if (!changes || changes.files.length === 0) return null;
+  const counted = changes.additions > 0 || changes.deletions > 0
+    || changes.files.some(file => file.additions !== undefined || file.deletions !== undefined);
+  return { files: changes.files.length, additions: counted ? changes.additions : undefined, deletions: counted ? changes.deletions : undefined };
 }
 
 /** Wall-clock the turn's tool calls occupied: the union's span, as "Worked for" measures it. */
@@ -214,7 +176,8 @@ function isUserTurn(item: ConversationItem): boolean {
  * One entry per turn the person opened, newest first. Rows before the first
  * prompt (turn 0) belong to no turn and are skipped.
  */
-export function turnHistory(items: readonly ConversationItem[], turnActive: boolean): TurnHistoryEntry[] {
+export function turnHistory(items: readonly ConversationItem[], turnActive: boolean, cwd?: string | null): TurnHistoryEntry[] {
+  const byTurn = turnChangesByTurn(items, cwd);
   const turns = new Map<number, ConversationItem[]>();
   for (const item of items) {
     if (item.turn <= 0) continue;
@@ -236,7 +199,7 @@ export function turnHistory(items: readonly ConversationItem[], turnActive: bool
       harness: rows.find(row => !isUserTurn(row) && row.harness)?.harness,
       durationMs: live ? undefined : turnDuration(rows),
       live,
-      changes: live ? null : turnChanges(rows),
+      changes: live ? null : summarizeTurnChanges(byTurn.get(turn)),
     });
   }
   return entries.sort((a, b) => b.turn - a.turn);
@@ -263,5 +226,5 @@ export function chatOverview(input: ChatOverviewInput): ChatOverviewModel {
   if (input.changes) rows.push({ kind: "changes", ...input.changes });
   const checks = checksRow(input.completion, input.items);
   if (checks) rows.push(checks);
-  return { headline: headline(input, checks), rows, turns: turnHistory(input.items, input.turnActive) };
+  return { headline: headline(input, checks), rows, turns: turnHistory(input.items, input.turnActive, input.path) };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { chatConversationItems, chatOverview, checksRow, divergencePhrase, formatTurnDuration, overviewPath, turnChanges, turnHistory, turnTitle } from "./chatOverview";
+import { chatConversationItems, chatOverview, checksRow, divergencePhrase, formatTurnDuration, overviewPath, summarizeTurnChanges, turnHistory, turnTitle } from "./chatOverview";
+import { turnChangesByTurn } from "./turnChanges";
 import { asWireKind } from "./transcript/wire";
 import type { AgentEvent, BaseBranchDivergence, CompletionSummary } from "./types";
 
@@ -181,22 +182,22 @@ describe("turn history", () => {
 });
 
 describe("turn changes", () => {
-  it("adds a multi-file summary's files, and its counts only when no file had a call of its own", () => {
-    const summary = (paths: string[], additions: number, seconds: number) =>
-      event("diff.updated", { createdAt: at(seconds), data: { path: paths[0], paths, additions, deletions: 0 } });
-    const overlapping = chatConversationItems(undefined, null, [prompt("go", 0), edit("a.ts", 2, 1, 1), summary(["a.ts", "b.ts"], 9, 2)]);
-    expect(turnChanges(overlapping)).toEqual({ files: 2, additions: 2, deletions: 1 });
-    const alone = chatConversationItems(undefined, null, [prompt("go", 0), summary(["a.ts", "b.ts"], 9, 2)]);
-    expect(turnChanges(alone)).toEqual({ files: 2, additions: 9, deletions: 0 });
-  });
+  // The per-file rules (splitting, summing, marks) live in turnChanges.ts and
+  // its tests; the overview only summarizes that fold.
+  const summarize = (items: ReturnType<typeof chatConversationItems>) => summarizeTurnChanges([...turnChangesByTurn(items).values()][0]);
 
   it("counts files without inventing line counts nobody reported", () => {
     const items = chatConversationItems(undefined, null, [prompt("go", 0), edit("a.ts", undefined, undefined, 1)]);
-    expect(turnChanges(items)).toEqual({ files: 1, additions: undefined, deletions: undefined });
+    expect(summarize(items)).toEqual({ files: 1, additions: undefined, deletions: undefined });
+  });
+
+  it("sums a file edited twice and counts it once", () => {
+    const items = chatConversationItems(undefined, null, [prompt("go", 0), edit("a.ts", 2, 1, 1), edit("a.ts", 3, 0, 2)]);
+    expect(summarize(items)).toEqual({ files: 1, additions: 5, deletions: 1 });
   });
 
   it("ignores reads", () => {
-    expect(turnChanges(chatConversationItems(undefined, null, [prompt("go", 0), read("a.ts", 1)]))).toBeNull();
+    expect(summarize(chatConversationItems(undefined, null, [prompt("go", 0), read("a.ts", 1)]))).toBeNull();
   });
 });
 
