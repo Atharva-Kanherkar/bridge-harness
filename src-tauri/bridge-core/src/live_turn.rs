@@ -3191,6 +3191,9 @@ fn handle_agent_value_timed(
     // forwarded `/compact` wrote. The release's side effects run after the
     // database guard is dropped, because draining takes the lock itself.
     let mut native_compaction_released = false;
+    // The early compaction receipt reads only the values above and below.
+    let mut native_boundary: Option<crate::early_compaction::Boundary> = None;
+    let early_receipt: Option<crate::early_compaction::Receipt>;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
     let mut checkpoint_response_seen = false;
     let mut checkpoint_turn_handled = false;
@@ -3543,6 +3546,13 @@ fn handle_agent_value_timed(
                 // status instead.
                 agent::NATIVE_COMPACTION_KIND => {
                     native_compaction_released |= release_native_compaction(&db, session_id);
+                    // A Claude compaction runs under a synthetic turn id,
+                    // and its readings carry no turn id at all.
+                    native_boundary = Some(crate::early_compaction::Boundary {
+                        pre_tokens: event.data.get("preTokens").and_then(serde_json::Value::as_i64),
+                        post_tokens: event.data.get("postTokens").and_then(serde_json::Value::as_i64),
+                        turn_id: observed_turn_id.clone().filter(|_| adapter_id != "claude"),
+                    });
                 }
                 "usage.updated" => {
                     let scope = workspace_id.as_deref().unwrap_or(session_id);
@@ -4272,6 +4282,26 @@ fn handle_agent_value_timed(
                 chrono::Utc::now(),
             );
         }
+        early_receipt = state.early_compaction.receipt(
+            &crate::early_compaction::Frame {
+                session_id,
+                harness: &adapter_id,
+                direct: is_direct,
+                depth: own_depth,
+                turn_completed,
+                turn_failed,
+                checkpoint_turn: checkpoint_turn_active,
+                prompt_control: prompt_control_turn || completes_prompt_control,
+                turn_id: observed_turn_id.as_deref(),
+                boundary: native_boundary,
+                launch: expected_launch,
+            },
+            Utc::now(),
+        );
+    }
+
+    if let Some(receipt) = early_receipt {
+        crate::early_compaction::accept(core, receipt, Utc::now());
     }
 
     // A released compaction owes what a turn's end owes. The status change
@@ -13204,6 +13234,19 @@ pub const QUEUED_INPUT_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 /// cannot see: a daemon that restarted while input was queued, and a turn that
 /// ended without the completion event reaching the drain.
 pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
+    let mut attention_seen = recover_before_maintenance(&core);
+    thread::spawn(move || loop {
+        thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
+        queued_input_maintenance_tick(&core, &mut attention_seen);
+    });
+}
+
+/// What the maintenance loop settles once, before its first tick. Returns
+/// the attention revision that the first tick compares with.
+fn recover_before_maintenance(core: &Arc<BridgeCore>) -> i64 {
+    // The process that sent an open early compaction is gone, so no signal
+    // can settle the attempt. Nothing is sent again.
+    crate::early_compaction::settle_at_startup(core, Utc::now());
     // Rows a previous process claimed but never confirmed. Redelivering could
     // duplicate and silence would lose, so each one is surfaced to the session
     // it belonged to and the user decides.
@@ -13233,7 +13276,7 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         // them rather than being left to wonder.
         if let Some(harness) = harness {
             let _ = emit_local_assistant(
-                &core,
+                core,
                 &input.session_id,
                 &harness,
                 &format!(
@@ -13243,11 +13286,7 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
             );
         }
     }
-    let mut attention_seen = crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0);
-    thread::spawn(move || loop {
-        thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
-        queued_input_maintenance_tick(&core, &mut attention_seen);
-    });
+    crate::attention::revision(&core.db.lock().unwrap()).unwrap_or(0)
 }
 
 /// One pass of the maintenance sweep. A test runs it on its own clock.
@@ -13263,6 +13302,8 @@ fn queued_input_maintenance_tick(core: &Arc<BridgeCore>, attention_seen: &mut i6
     }
     // A bridge-wait past its deadline, including one a restart left armed.
     fire_due_orchestrator_waits(core);
+    // After the drain, so a chat with delivered input reads as busy.
+    crate::early_compaction::sweep(core, Utc::now());
     // What is still queued now has no adapter to drain into, or is waiting
     // on a turn. The first kind is the person's to know about.
     escalate_stranded_input(core);

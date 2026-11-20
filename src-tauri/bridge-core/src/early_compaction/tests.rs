@@ -706,3 +706,177 @@ fn a_model_switch_in_the_idle_delay_is_a_reading_mismatch() {
         });
     }
 }
+
+// The suppression state against a real store.
+
+type StoreResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+/// A store with the chat of [`session`] on Claude. Its forest starts with a
+/// turn start, so the tool scan has a floor.
+struct Store {
+    _scratch: tempfile::TempDir,
+    core: crate::runtime::BridgeCore,
+}
+
+impl Store {
+    fn new() -> StoreResult<Self> {
+        let scratch = tempfile::tempdir()?;
+        let core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        let store = Self { _scratch: scratch, core };
+        let chat = session("claude");
+        store.sql(
+            "INSERT INTO sessions(id,harness,model,label,title,status,metric_source,kind,depth,provider_session_id,started_at)
+             VALUES('chat-1','claude',?1,'Chat','Notes chat','ready','reported','direct',0,?2,?3)",
+            rusqlite::params![chat.model, chat.provider_session_id, chat.started_at],
+        )?;
+        store.entry("turn.started", serde_json::json!({}), None)?;
+        Ok(store)
+    }
+
+    fn db(&self) -> MutexGuard<'_, rusqlite::Connection> {
+        self.core.db.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn sql(&self, sql: &str, values: impl rusqlite::Params) -> rusqlite::Result<usize> {
+        self.db().execute(sql, values)
+    }
+
+    /// Append one forest entry of the chat. Returns its sequence.
+    fn entry(&self, kind: &str, payload: serde_json::Value, item: Option<&str>) -> StoreResult<i64> {
+        let entry = crate::store::append_session_entry(&self.db(), "chat-1", None, kind, &payload, item, "visible", None)?;
+        Ok(entry.sequence)
+    }
+
+    fn state(&self) -> ChatState {
+        attempts::chat_state(&self.db(), "chat-1", "ready")
+    }
+
+    /// The decision for inputs that fire, with the state of this store.
+    fn decide(&self) -> Decision {
+        let mut inputs = firing("claude");
+        inputs.snapshot.state = self.state();
+        rule::decide(&inputs)
+    }
+}
+
+#[test]
+fn an_open_approval_among_resolved_ones_suppresses() -> StoreResult {
+    let store = Store::new()?;
+    assert_eq!(store.decide(), FIRE, "no request yet");
+    let first = store.entry("approval.requested", serde_json::json!({"approvalId": "approval-a"}), None)?;
+    let second = store.entry("approval.requested", serde_json::json!({"approvalId": "approval-b"}), None)?;
+    store.entry("approval.resolved", serde_json::json!({"requestEventId": second}), None)?;
+    assert_eq!(store.state().approval, Probe::Present, "request A is still open");
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::ApprovalOpen));
+    store.entry("approval.resolved", serde_json::json!({"requestEventId": first}), None)?;
+    assert_eq!(store.state().approval, Probe::Clear);
+    assert_eq!(store.decide(), FIRE);
+    Ok(())
+}
+
+#[test]
+fn a_write_scope_approval_suppresses_until_its_approval_resolves() -> StoreResult {
+    let store = Store::new()?;
+    let approval_id = "delegation-path-scope:turn-1:src/**";
+    let request = store.entry(
+        "approval.requested",
+        serde_json::json!({"approvalId": approval_id, "approvalType": "delegation_path_scope", "status": "pending"}),
+        None,
+    )?;
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::ApprovalOpen));
+    // Policy writes this for ordinary routing, with no request id.
+    store.entry("delegation.approved", serde_json::json!({"requestId": "turn-1"}), None)?;
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::ApprovalOpen), "a routing decision answered the card");
+    store.entry("approval.resolved", serde_json::json!({"approvalId": approval_id, "requestEventId": request}), None)?;
+    assert_eq!(store.decide(), FIRE);
+    Ok(())
+}
+
+#[test]
+fn a_foreground_tool_with_no_completion_suppresses() -> StoreResult {
+    let kinds = [
+        ("tool.started", "tool.completed"),
+        ("command.started", "command.completed"),
+        ("file_change.started", "file_change.completed"),
+    ];
+    for (start, end) in kinds {
+        let store = Store::new()?;
+        store.entry(start, serde_json::json!({"status": "inProgress"}), Some("item-1"))?;
+        assert_eq!(store.state().tool, Probe::Present, "{start}");
+        assert_eq!(store.decide(), Decision::Suppress(Suppression::ToolOpen), "{start}");
+        store.entry(end, serde_json::json!({"status": "completed"}), Some("item-2"))?;
+        assert_eq!(store.decide(), Decision::Suppress(Suppression::ToolOpen), "{start}: another item closed it");
+        store.entry(end, serde_json::json!({"status": "completed"}), Some("item-1"))?;
+        assert_eq!(store.decide(), FIRE, "{start}");
+    }
+    // A start from before the last turn start is not open.
+    let store = Store::new()?;
+    store.entry("tool.started", serde_json::json!({}), Some("item-old"))?;
+    store.entry("turn.started", serde_json::json!({}), None)?;
+    assert_eq!(store.state().tool, Probe::Clear);
+    Ok(())
+}
+
+#[test]
+fn a_worker_result_or_outbox_delivery_not_done_suppresses() -> StoreResult {
+    let store = Store::new()?;
+    store.sql("INSERT INTO sessions(id,harness,label,status,metric_source,parent_session_id) VALUES('worker-1','codex','Worker','working','reported','chat-1')", [])?;
+    store.sql(
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at)
+         VALUES('worker-1','chat-1','working','research','key','pending','now')",
+        [],
+    )?;
+    assert_eq!(store.state().children, Probe::Present);
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::ChildrenLive), "worker result");
+    store.sql("UPDATE worker_runtime SET result_status='reported' WHERE session_id='worker-1'", [])?;
+    assert_eq!(store.decide(), FIRE);
+    store.sql(
+        "INSERT INTO durable_outbox(id,destination,event_type,payload,idempotency_key,status,next_attempt_at,created_at)
+         VALUES('result','parent','worker.result','{\"report\":{\"parent_session_id\":\"chat-1\"}}','result','pending','now','now')",
+        [],
+    )?;
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::ChildrenLive), "outbox delivery");
+    store.sql("UPDATE durable_outbox SET status='delivered' WHERE id='result'", [])?;
+    assert_eq!(store.decide(), FIRE);
+    Ok(())
+}
+
+#[test]
+fn a_tool_scan_past_the_cap_is_state_unknown() -> StoreResult {
+    let store = Store::new()?;
+    let fill = |count: usize| -> StoreResult {
+        let base: i64 = store.db().query_row("SELECT MAX(sequence) FROM session_entries WHERE session_id='chat-1'", [], |row| row.get(0))?;
+        store.sql(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?2)
+             INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at)
+             SELECT 'filler-'||(?1+i),'chat-1',?1+i,'assistant.message','{}','2026-11-20T10:00:00+00:00' FROM n",
+            rusqlite::params![base, i64::try_from(count)?],
+        )?;
+        Ok(())
+    };
+    // The turn start is the last row inside the cap.
+    fill(TOOL_SCAN_CAP - 1)?;
+    assert_eq!(store.state().tool, Probe::Clear);
+    assert_eq!(store.decide(), FIRE);
+    fill(1)?;
+    assert_eq!(store.state().tool, Probe::Unknown);
+    assert_eq!(store.decide(), Decision::Suppress(Suppression::StateUnknown));
+    Ok(())
+}
+
+#[test]
+fn a_failed_state_query_is_state_unknown() -> StoreResult {
+    let probes: [(&str, fn(ChatState) -> Probe); 3] = [
+        ("queued_session_input", |state| state.queue),
+        ("attention_events", |state| state.approval),
+        ("session_entries", |state| state.tool),
+    ];
+    for (table, probe) in probes {
+        let store = Store::new()?;
+        assert_eq!(store.decide(), FIRE, "{table}");
+        store.sql(&format!("ALTER TABLE {table} RENAME TO {table}_gone"), [])?;
+        assert_eq!(probe(store.state()), Probe::Unknown, "{table}");
+        assert_eq!(store.decide(), Decision::Suppress(Suppression::StateUnknown), "{table}");
+    }
+    Ok(())
+}

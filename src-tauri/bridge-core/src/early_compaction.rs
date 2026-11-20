@@ -7,7 +7,8 @@
 //!
 //! The frame path hands the [`Tracker`] a [`Receipt`] for a turn that can
 //! lead to a compaction. A sweep checks [`rule::precheck`] from memory, then
-//! reads one [`Snapshot`] of the chat and asks [`rule::decide`].
+//! reads one [`Snapshot`] of the chat and asks [`rule::decide`]. The
+//! [`attempts`] module holds the sweep, the dispatch and the attempt record.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -142,6 +143,43 @@ pub enum Receipt {
 pub struct OpenAttempt {
     pub attempt_id: String,
     pub launch: Launch,
+}
+
+/// A native boundary as the frame path saw it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Boundary {
+    pub pre_tokens: Option<i64>,
+    pub post_tokens: Option<i64>,
+    /// The active turn at the boundary. `None` on Claude.
+    pub turn_id: Option<String>,
+}
+
+/// The values that the frame path holds at the end of its lock. The receipt
+/// comes from these values only, so it adds no SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame<'a> {
+    pub session_id: &'a str,
+    pub harness: &'a str,
+    pub direct: bool,
+    pub depth: i64,
+    pub turn_completed: bool,
+    pub turn_failed: bool,
+    pub checkpoint_turn: bool,
+    /// The frame completed a prompt-control turn, or the turn holds one.
+    pub prompt_control: bool,
+    pub turn_id: Option<&'a str>,
+    pub boundary: Option<Boundary>,
+    /// The `started_at` and `provider_session_id` of the reader launch.
+    pub launch: Option<(&'a str, &'a str)>,
+}
+
+/// A compacted attempt that waits for its next reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fill {
+    pub attempt_id: String,
+    pub launch: Launch,
+    /// The search stops after this time.
+    pub until: DateTime<Utc>,
 }
 
 /// Why no other attempt runs on a launch.
@@ -595,6 +633,8 @@ struct Memory {
     open: HashMap<String, OpenAttempt>,
     /// One entry for each chat, because a chat has one current launch.
     stopped: HashMap<String, (Launch, LaunchStop)>,
+    /// Lost at restart, so the next reading of that attempt stays null.
+    fills: HashMap<String, Fill>,
 }
 
 impl Tracker {
@@ -727,7 +767,122 @@ impl Tracker {
             );
         }
     }
+
+    /// The receipt of one frame, from the values of the frame path only.
+    /// The boundary flag goes first, so the turn end of a compaction gives
+    /// no due mark. An open attempt of the same launch takes the boundary
+    /// or the turn end, and its turn gives no due mark.
+    pub fn receipt(&self, frame: &Frame<'_>, now: DateTime<Utc>) -> Option<Receipt> {
+        if frame.boundary.is_some() {
+            self.note_boundary(frame.session_id);
+        }
+        let compaction_end = frame.turn_completed && self.take_compaction_end(frame.session_id);
+        if frame.boundary.is_none() && !frame.turn_completed {
+            return None;
+        }
+        let launch = frame.launch.map(|(started_at, provider_session_id)| Launch {
+            started_at: started_at.to_owned(),
+            provider_session_id: provider_session_id.to_owned(),
+        });
+        if let Some(open) = self.open_attempt(frame.session_id) {
+            if launch.as_ref() != Some(&open.launch) {
+                return None;
+            }
+            let (outcome, boundary) = match &frame.boundary {
+                Some(boundary) => (Outcome::Compacted, boundary.clone()),
+                None if frame.turn_failed => (Outcome::Failed, Boundary::default()),
+                None => (Outcome::EndedWithoutBoundary, Boundary::default()),
+            };
+            return Some(Receipt::Settle(Settlement {
+                session_id: frame.session_id.to_owned(),
+                attempt_id: open.attempt_id,
+                outcome,
+                boundary_pre_tokens: boundary.pre_tokens,
+                boundary_post_tokens: boundary.post_tokens,
+                compaction_turn_id: boundary.turn_id,
+            }));
+        }
+        let due = self.enabled()
+            && frame.turn_completed
+            && !frame.turn_failed
+            && frame.direct
+            && frame.depth == 0
+            && harness_allowed(frame.harness)
+            && !frame.checkpoint_turn
+            && !frame.prompt_control
+            && !compaction_end;
+        let launch = launch.filter(|_| due)?;
+        Some(Receipt::Due(DueMark {
+            session_id: frame.session_id.to_owned(),
+            turn_id: frame.turn_id.map(str::to_owned),
+            completed_at: now,
+            launch: Some(launch),
+            harness: frame.harness.to_owned(),
+        }))
+    }
+
+    /// A copy of each due mark, so the sweep holds no tracker lock while it
+    /// works on one.
+    pub fn marks(&self) -> Vec<DueMark> {
+        self.memory().due.values().cloned().collect()
+    }
+
+    /// The sweep calls this when the switch is off.
+    pub fn clear_marks(&self) {
+        self.memory().due.clear();
+    }
+
+    pub fn open_attempts(&self) -> Vec<(String, OpenAttempt)> {
+        self.memory()
+            .open
+            .iter()
+            .map(|(session_id, open)| (session_id.clone(), open.clone()))
+            .collect()
+    }
+
+    /// Remove an open attempt whose row is closed already. The launch stays
+    /// free.
+    pub fn forget(&self, session_id: &str, attempt_id: &str) -> bool {
+        let mut memory = self.memory();
+        if memory
+            .open
+            .get(session_id)
+            .is_none_or(|open| open.attempt_id != attempt_id)
+        {
+            return false;
+        }
+        memory.open.remove(session_id).is_some()
+    }
+
+    /// A compacted attempt starts the search for its next reading. A newer
+    /// attempt of the chat replaces an older search.
+    pub fn add_fill(&self, session_id: &str, fill: Fill) {
+        self.memory().fills.insert(session_id.to_owned(), fill);
+    }
+
+    pub fn fills(&self) -> Vec<(String, Fill)> {
+        self.memory()
+            .fills
+            .iter()
+            .map(|(session_id, fill)| (session_id.clone(), fill.clone()))
+            .collect()
+    }
+
+    pub fn drop_fill(&self, session_id: &str, attempt_id: &str) {
+        let mut memory = self.memory();
+        if memory
+            .fills
+            .get(session_id)
+            .is_some_and(|fill| fill.attempt_id == attempt_id)
+        {
+            memory.fills.remove(session_id);
+        }
+    }
 }
+
+pub(crate) mod attempts;
+
+pub(crate) use attempts::{accept, install_store, settle_at_startup, sweep};
 
 #[cfg(test)]
 mod tests;

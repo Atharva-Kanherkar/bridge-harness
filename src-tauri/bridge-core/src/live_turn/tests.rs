@@ -1464,3 +1464,910 @@ fn with_the_switch_off_send_frame_and_manual_compaction_traces_are_unchanged() {
     off_trace::check(off_trace::Switch::Absent);
     off_trace::check(off_trace::Switch::SavedOff);
 }
+
+// Early compaction: the due mark, the single dispatch path, the adapter
+// command, the attempt record and the off guarantee. The world and the
+// frames are in `early.rs`.
+mod early;
+
+use early::*;
+use off_trace::{claude_turn_with_auto_compaction, codex_compaction_start, codex_turn_completed, CLAUDE_CHAT, CODEX_CHAT};
+
+#[test]
+fn a_completed_direct_chat_turn_is_marked_due() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = World::new()?;
+        world.switch(true)?;
+        let before = Utc::now();
+        let turn = world.turn(chat, LARGE)?;
+        let after = Utc::now();
+        let mark = world.mark(chat).ok_or("no due mark")?;
+        let (started_at, provider_session_id) = world.launch(chat)?;
+        assert_eq!(mark.launch, Some(crate::early_compaction::Launch { started_at, provider_session_id }), "{chat}");
+        assert_eq!(mark.harness, if chat == CLAUDE_CHAT { "claude" } else { "codex" });
+        assert!(mark.completed_at >= before && mark.completed_at <= after, "{chat}");
+        if chat == CODEX_CHAT {
+            assert_eq!(mark.turn_id.as_deref(), Some(turn.as_str()), "a Codex reading binds by this turn id");
+        }
+        // The mark waits for the sweep: the frame path dispatches nothing.
+        assert!(world.compacts(chat).is_empty() && world.attempts(chat)?.is_empty(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failed_turn_is_not_marked() -> TestResult {
+    for chat in FIRING_CHATS {
+        assert!(marked_after(chat, Ending::Completed)?, "{chat}: the control turn");
+        assert!(!marked_after(chat, Ending::Failed)?, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_provider_error_is_not_marked() -> TestResult {
+    for chat in FIRING_CHATS {
+        assert!(marked_after(chat, Ending::Completed)?, "{chat}: the control turn");
+        assert!(!marked_after(chat, Ending::ProviderError)?, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_prompt_control_turn_is_not_marked() -> TestResult {
+    for chat in FIRING_CHATS {
+        assert!(marked_after(chat, Ending::Completed)?, "{chat}: the control turn");
+        let world = World::new()?;
+        world.switch(true)?;
+        world.turn_ending(chat, Ending::PromptControl, LARGE)?;
+        let recorded = world.count("SELECT COUNT(*) FROM events WHERE kind='prompt_mutation.control_turn' AND entity_id=?1", params![chat]);
+        assert_eq!(recorded?, 1, "{chat}: the frame path saw a prompt control turn");
+        assert!(world.mark(chat).is_none(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_checkpoint_turn_is_not_marked() -> TestResult {
+    for chat in FIRING_CHATS {
+        assert!(marked_after(chat, Ending::Completed)?, "{chat}: the control turn");
+        let world = World::new()?;
+        world.switch(true)?;
+        world.send(chat, "Read notes.txt and summarise it.")?;
+        world.sql("UPDATE sessions SET status='checkpointing' WHERE id=?1", params![chat])?;
+        let (_, frames) = turn_frames(chat, 1, Ending::Completed, LARGE);
+        world.feed(chat, &frames)?;
+        assert!(world.mark(chat).is_none(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_turn_of_an_open_attempt_is_not_marked() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        assert!(world.mark(chat).is_none(), "{chat}: the fire took the mark");
+        world.turn_end_without_boundary(chat)?;
+        assert!(world.mark(chat).is_none(), "{chat}: the compaction turn gave a mark");
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("ended_without_boundary"), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_turn_end_of_a_compaction_makes_no_due_mark() -> TestResult {
+    for chat in FIRING_CHATS {
+        // An early compaction.
+        let world = fired(chat)?;
+        world.compaction(chat)?;
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("compacted"), "{chat}");
+        assert!(world.mark(chat).is_none(), "{chat}: early");
+        // A manual `/compact`. Its boundary also takes the mark of the turn
+        // before it: that mark no longer tells the size of the window.
+        let (world, _) = marked(chat)?;
+        world.manual_compaction(chat)?;
+        assert!(world.mark(chat).is_none(), "{chat}: manual");
+        // A compaction that the harness starts inside a turn.
+        let world = World::new()?;
+        world.switch(true)?;
+        world.send(chat, "Reply with the single word ok.")?;
+        let frames = if chat == CLAUDE_CHAT { claude_turn_with_auto_compaction() } else { codex_turn_with_auto_compaction("codex-turn-1", LARGE) };
+        world.feed(chat, &frames)?;
+        assert!(world.mark(chat).is_none(), "{chat}: harness");
+        assert!(world.compacts(chat).is_empty() && world.attempts(chat)?.is_empty(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_turn_after_a_compaction_is_marked_again() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        world.compaction(chat)?;
+        assert!(world.mark(chat).is_none(), "{chat}");
+        let turn = world.turn(chat, LARGE)?;
+        let mark = world.mark(chat).ok_or("no mark after the compaction")?;
+        if chat == CODEX_CHAT {
+            assert_eq!(mark.turn_id, Some(turn));
+        }
+        let (world, _) = marked(chat)?;
+        world.manual_compaction(chat)?;
+        world.turn(chat, LARGE)?;
+        assert!(world.mark(chat).is_some(), "{chat}: after a manual compaction");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_fire_removes_the_due_mark() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        // Inside the idle delay the mark waits and stays.
+        world.sweep_after(5);
+        assert!(world.mark(chat).is_some() && world.compacts(chat).is_empty(), "{chat}");
+        world.fire();
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}");
+        assert!(world.mark(chat).is_none(), "{chat}");
+        world.fire();
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}: a second sweep sends again");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_orchestrator_or_worker_turn_is_not_marked() -> TestResult {
+    let changes = [
+        "UPDATE sessions SET kind='orchestrator' WHERE id=?1",
+        "UPDATE sessions SET depth=1,parent_session_id='opencode-chat' WHERE id=?1",
+    ];
+    for chat in FIRING_CHATS {
+        for change in changes {
+            let world = World::new()?;
+            world.switch(true)?;
+            world.send(chat, "Read notes.txt and summarise it.")?;
+            world.sql(change, params![chat])?;
+            let (_, frames) = turn_frames(chat, 1, Ending::Completed, LARGE);
+            world.feed(chat, &frames)?;
+            assert!(world.mark(chat).is_none(), "{chat}: {change}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn no_mark_with_the_switch_off() -> TestResult {
+    for chat in FIRING_CHATS {
+        let absent = World::new()?;
+        absent.turn(chat, LARGE)?;
+        assert!(absent.mark(chat).is_none(), "{chat}: switch absent");
+        let saved_off = World::new()?;
+        saved_off.switch(false)?;
+        saved_off.turn(chat, LARGE)?;
+        assert!(saved_off.mark(chat).is_none(), "{chat}: switch saved off");
+        saved_off.switch(true)?;
+        saved_off.turn(chat, LARGE)?;
+        assert!(saved_off.mark(chat).is_some(), "{chat}: the control turn");
+    }
+    Ok(())
+}
+
+#[test]
+fn with_the_switch_on_a_turn_frame_adds_no_sql() -> TestResult {
+    for chat in FIRING_CHATS {
+        let mut runs = Vec::new();
+        for on in [false, true] {
+            let world = World::new()?;
+            world.switch(on)?;
+            world.send(chat, "Read notes.txt and summarise it.")?;
+            let (started_at, provider) = world.launch(chat)?;
+            let (_, frames) = turn_frames(chat, 1, Ending::Completed, LARGE);
+            let (fed, ran) = statements(&world.core, || world.feed_as(chat, (&started_at, &provider), &frames));
+            fed?;
+            runs.push((shapes(&ran)?, world.mark(chat).is_some()));
+        }
+        let (off, on) = (&runs[0], &runs[1]);
+        assert!(!off.0.is_empty(), "{chat}: the trace caught the frame path");
+        assert!(!off.1 && on.1, "{chat}: only the run with the switch on marks");
+        assert_eq!(off.0, on.0, "{chat}: the due mark added SQL to the frame path");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_slash_command_and_the_early_trigger_share_forward_native_compaction() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (manual, _) = marked(chat)?;
+        manual.take_calls();
+        manual.send(chat, "/compact")?;
+        let (early, _) = marked(chat)?;
+        early.take_calls();
+        early.fire();
+        let calls = early.take_calls();
+        assert_eq!(calls, vec![json!({"session": chat, "call": "compact_native", "args": [null]})], "{chat}");
+        assert_eq!(calls, manual.take_calls(), "{chat}: the same adapter call");
+        assert_eq!(early.status(chat)?, "working", "{chat}: the same optimistic mark");
+        assert_eq!(early.status(chat)?, manual.status(chat)?, "{chat}");
+        assert_eq!(early.attempts(chat)?.len(), 1, "{chat}");
+        assert!(manual.attempts(chat)?.is_empty(), "{chat}: a manual compaction writes no attempt");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_user_send_and_the_early_trigger_cannot_both_dispatch() -> TestResult {
+    for chat in FIRING_CHATS {
+        // The send first: a sweep inside its adapter call finds the lease
+        // taken and keeps the mark.
+        let (world, _) = marked(chat)?;
+        let core = Arc::downgrade(&world.core);
+        world.levers.on_send(move || {
+            if let Some(core) = core.upgrade() {
+                crate::early_compaction::sweep(&core, Utc::now() + chrono::TimeDelta::seconds(WARM_SECONDS));
+            }
+        });
+        world.send(chat, "And list the line numbers.")?;
+        assert!(world.compacts(chat).is_empty(), "{chat}: the sweep dispatched during a send");
+        assert!(world.mark(chat).is_some(), "{chat}: a busy lease keeps the mark");
+        assert!(lock(&world.levers.leased_sends).iter().all(|leased| *leased), "{chat}: a send ran without the lease");
+        // The sweep first: a send that starts inside its adapter call waits
+        // for the dispatch to finish.
+        let (world, _) = marked(chat)?;
+        world.take_calls();
+        let race = Race::arm(&world, move |core| submit_input(&core, chat.to_owned(), "And list the line numbers.".to_owned()).is_ok());
+        world.fire();
+        let (waited, sent) = race.finish()?;
+        assert!(waited && sent, "{chat}: waited {waited}, sent {sent}");
+        let calls = world.take_calls();
+        assert_eq!(calls.first().map(|call| call["call"].clone()), Some(json!("compact_native")), "{chat}: {calls:?}");
+        assert_eq!(world.compacts(chat).len(), 0, "{chat}: the log was taken");
+    }
+    Ok(())
+}
+
+/// The result, the adapter calls and the status of one send after a
+/// compaction that a person or the sweep asked for.
+fn send_after_compaction(chat: &str, variant: Variant, early: bool) -> Outcome<(String, Vec<Value>, String)> {
+    let (world, _) = marked(chat)?;
+    if early {
+        world.fire();
+    } else {
+        world.send(chat, "/compact")?;
+    }
+    world.take_calls();
+    let result = world.send_variant(chat, variant);
+    Ok((without_ids(&result)?, world.take_calls(), world.status(chat)?))
+}
+
+#[test]
+fn a_send_after_an_early_dispatch_routes_as_after_a_manual_compact() -> TestResult {
+    for chat in FIRING_CHATS {
+        for variant in VARIANTS {
+            let manual = send_after_compaction(chat, variant, false)?;
+            let early = send_after_compaction(chat, variant, true)?;
+            assert_eq!(early, manual, "{chat}: {variant:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_opt_out_saved_before_the_reservation_wins() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        world.opt_out(chat, true)?;
+        world.fire();
+        assert!(world.compacts(chat).is_empty() && world.attempts(chat)?.is_empty(), "{chat}");
+        assert!(world.mark(chat).is_none(), "{chat}: an opt-out drops the mark");
+        world.opt_out(chat, false)?;
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}: the chat fires after the opt-out goes");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_switch_turned_off_before_the_reservation_wins() -> TestResult {
+    for chat in FIRING_CHATS {
+        // Through the save: the switch in memory goes off.
+        let (world, _) = marked(chat)?;
+        world.switch(false)?;
+        world.fire();
+        assert!(world.compacts(chat).is_empty() && world.mark(chat).is_none(), "{chat}: save");
+        // Through the row only: the sweep reads the row again after its
+        // reservation.
+        let (world, _) = marked(chat)?;
+        let changed = world.sql("UPDATE configuration_entries SET payload='{\"enabled\":false}' WHERE kind='early_compaction_settings' AND id='global'", []);
+        assert_eq!(changed?, 1);
+        assert!(world.core.early_compaction.enabled(), "{chat}: memory still says on");
+        world.fire();
+        assert!(world.compacts(chat).is_empty() && world.attempts(chat)?.is_empty(), "{chat}: row");
+        assert!(world.mark(chat).is_none(), "{chat}: disabled drops the mark");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_save_waits_for_a_dispatch_in_flight() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        let race = Race::arm(&world, |core| {
+            let params = bridge_protocol::messages::SaveEarlyCompactionSettingsParams { session_id: None, enabled: Some(false) };
+            crate::early_compaction_settings::save(&core, &params).is_ok()
+        });
+        world.fire();
+        let (waited, saved) = race.finish()?;
+        assert!(waited, "{chat}: the save did not wait for the dispatch");
+        assert!(saved && !world.core.early_compaction.enabled(), "{chat}: the save finished after it");
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_taken_lifecycle_claim_keeps_the_mark() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        let claim = world.core.claim_session_lifecycle(chat, "a test")?;
+        world.fire();
+        assert!(world.compacts(chat).is_empty(), "{chat}");
+        assert!(world.mark(chat).is_some(), "{chat}: a taken claim keeps the mark");
+        drop(claim);
+        world.fire();
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn idle_release_and_the_early_trigger_cannot_both_act() -> TestResult {
+    // The release first: it stops the oldest idle runtime, the Claude chat,
+    // and the sweep then finds no runtime to compact.
+    let (world, _) = marked(CLAUDE_CHAT)?;
+    crate::runtime_budget::IdleRuntimes::default().maintain(&world.core);
+    assert!(!lock(&world.core.adapters).contains_key(CLAUDE_CHAT), "the release kept the Claude runtime");
+    world.fire();
+    assert!(world.compacts(CLAUDE_CHAT).is_empty() && world.attempts(CLAUDE_CHAT)?.is_empty());
+    // The sweep first: while it dispatches it holds the lease alone, so the
+    // release does nothing.
+    let (world, _) = marked(CLAUDE_CHAT)?;
+    let exclusive = Arc::new(Mutex::new(None));
+    let (seen, core) = (exclusive.clone(), Arc::downgrade(&world.core));
+    world.levers.on_compact(move || {
+        if let Some(core) = core.upgrade() {
+            *lock(&seen) = Some(core.input_activity.try_read().is_err());
+            crate::runtime_budget::IdleRuntimes::default().maintain(&core);
+        }
+    });
+    world.fire();
+    assert_eq!(*lock(&exclusive), Some(true), "the dispatch ran without the lease");
+    assert_eq!(world.compacts(CLAUDE_CHAT).len(), 1);
+    assert_eq!(lock(&world.core.adapters).len(), 3, "the release acted during the dispatch");
+    Ok(())
+}
+
+#[test]
+fn an_early_compaction_never_starts_a_bridge_checkpoint() -> TestResult {
+    let checkpoint = "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind IN ('compaction','compaction.failed','checkpoint','compaction.requested')";
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        let during = Arc::new(Mutex::new(None));
+        let (seen, core) = (during.clone(), Arc::downgrade(&world.core));
+        world.levers.on_compact(move || {
+            if let Some(core) = core.upgrade() {
+                *lock(&seen) = status_in(&core, chat).ok();
+            }
+        });
+        world.fire();
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}");
+        assert_eq!(lock(&during).as_deref(), Some("ready"), "{chat}");
+        assert_eq!(world.status(chat)?, "working", "{chat}");
+        world.compaction(chat)?;
+        assert_eq!(world.status(chat)?, "ready", "{chat}");
+        assert_eq!(world.count(checkpoint, params![chat])?, 0, "{chat}");
+        let pending = compaction_controller::CompactionController::pending(&lock(&world.core.db), chat)?;
+        assert!(pending.is_none(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn stop_during_an_early_compaction_settles_the_attempt_as_interrupted() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        stop_session(&world.core, chat.to_owned())?;
+        world.sweep_after(WARM_SECONDS + 1);
+        let attempt = world.attempt(chat)?;
+        assert_eq!(attempt.outcome.as_deref(), Some("interrupted"), "{chat}");
+        assert!(attempt.settled_at.is_some(), "{chat}");
+        world.sweep_after(WARM_SECONDS + 2);
+        assert_eq!(world.compacts(chat).len(), 1, "{chat}: a second send");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_early_fire_on_claude_sends_a_bare_compact() -> TestResult {
+    let world = fired(CLAUDE_CHAT)?;
+    assert_eq!(world.compacts(CLAUDE_CHAT), vec![json!([null])]);
+    Ok(())
+}
+
+#[test]
+fn an_early_fire_on_codex_sends_thread_compact_start() -> TestResult {
+    let world = fired(CODEX_CHAT)?;
+    assert_eq!(world.compacts(CODEX_CHAT), vec![json!([null])]);
+    Ok(())
+}
+
+#[test]
+fn an_opencode_chat_is_never_fired() -> TestResult {
+    let world = World::new()?;
+    world.switch(true)?;
+    world.turn(OPENCODE_CHAT, LARGE)?;
+    assert!(world.mark(OPENCODE_CHAT).is_none(), "an OpenCode turn gave a due mark");
+    world.inject_mark(OPENCODE_CHAT, "opencode")?;
+    world.fire();
+    assert!(world.compacts(OPENCODE_CHAT).is_empty() && world.attempts(OPENCODE_CHAT)?.is_empty());
+    assert!(world.mark(OPENCODE_CHAT).is_none(), "harness_not_allowed drops the mark");
+    Ok(())
+}
+
+#[test]
+fn an_attempt_row_exists_before_the_adapter_call() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        let seen = Arc::new(Mutex::new(None));
+        let (slot, core) = (seen.clone(), Arc::downgrade(&world.core));
+        world.levers.on_compact(move || {
+            if let Some(core) = core.upgrade() {
+                *lock(&slot) = Some(attempts_in(&core, chat));
+            }
+        });
+        world.fire();
+        let during = lock(&seen).take().ok_or("the adapter call did not run")??;
+        assert_eq!(during.len(), 1, "{chat}: {during:?}");
+        assert!(!during[0].dispatched && during[0].outcome.is_none(), "{chat}: {during:?}");
+        let after = world.attempt(chat)?;
+        assert_eq!(after.id, during[0].id, "{chat}");
+        assert!(after.dispatched && after.outcome.is_none(), "{chat}: {after:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_claude_boundary_settles_the_attempt_with_pre_and_post_tokens() -> TestResult {
+    let (world, _) = marked(CLAUDE_CHAT)?;
+    let mark = world.mark(CLAUDE_CHAT).ok_or("no due mark")?;
+    let (trigger_id, _, trigger_used) = world.last_reading(CLAUDE_CHAT)?;
+    world.fire();
+    world.feed(CLAUDE_CHAT, &claude_compaction_with(Some(POST_TOKENS), SMALL))?;
+    let attempt = world.attempt(CLAUDE_CHAT)?;
+    assert_eq!(attempt.outcome.as_deref(), Some("compacted"));
+    assert_eq!((attempt.pre, attempt.post), (Some(PRE_TOKENS), Some(POST_TOKENS)));
+    assert_eq!(attempt.compaction_turn_id, None, "Claude has no turn id at the boundary");
+    assert_eq!(attempt.trigger_turn_id, mark.turn_id);
+    assert_eq!((attempt.trigger_reading_id, attempt.trigger_used_tokens), (trigger_id, trigger_used));
+    assert_eq!(trigger_used, i64::try_from(LARGE)?);
+    assert_eq!(attempt.reason, "window_over_threshold");
+    assert_eq!(attempt.launch_started_at, world.launch(CLAUDE_CHAT)?.0);
+    assert!(attempt.dispatched && attempt.settled_at.is_some());
+    assert_eq!(world.status(CLAUDE_CHAT)?, "ready");
+    Ok(())
+}
+
+#[test]
+fn a_claude_boundary_without_post_tokens_settles_with_a_null_after_figure() -> TestResult {
+    let world = fired(CLAUDE_CHAT)?;
+    world.feed(CLAUDE_CHAT, &claude_compaction_with(None, SMALL))?;
+    let attempt = world.attempt(CLAUDE_CHAT)?;
+    assert_eq!(attempt.outcome.as_deref(), Some("compacted"));
+    assert_eq!((attempt.pre, attempt.post), (Some(PRE_TOKENS), None));
+    // The window after comes from the next reading, not from the boundary.
+    world.sweep_after(WARM_SECONDS + 1);
+    assert_eq!(world.attempt(CLAUDE_CHAT)?.next_used_tokens, Some(i64::try_from(SMALL)?));
+    Ok(())
+}
+
+#[test]
+fn a_codex_boundary_settles_with_absent_figures_and_labeled_readings() -> TestResult {
+    let (world, turn) = marked(CODEX_CHAT)?;
+    let (trigger_id, trigger_turn, _) = world.last_reading(CODEX_CHAT)?;
+    assert_eq!(trigger_turn.as_deref(), Some(turn.as_str()), "the trigger reading has the turn id");
+    world.fire();
+    let compaction = world.compaction(CODEX_CHAT)?;
+    let settled = world.attempt(CODEX_CHAT)?;
+    assert_eq!(settled.outcome.as_deref(), Some("compacted"));
+    assert_eq!((settled.pre, settled.post), (None, None), "Codex reports no figures");
+    assert_eq!(settled.compaction_turn_id.as_deref(), Some(compaction.as_str()));
+    assert_eq!(settled.trigger_turn_id.as_deref(), Some(turn.as_str()));
+    assert_eq!(settled.trigger_reading_id, trigger_id);
+    let next_turn = world.turn(CODEX_CHAT, SMALL)?;
+    world.sweep_after(WARM_SECONDS + 1);
+    let (next_id, next_reading_turn, next_used) = world.last_reading(CODEX_CHAT)?;
+    assert_eq!(next_reading_turn.as_deref(), Some(next_turn.as_str()), "the next reading has the turn id");
+    let filled = world.attempt(CODEX_CHAT)?;
+    assert_eq!((filled.next_reading_id, filled.next_used_tokens), (Some(next_id), Some(next_used)));
+    Ok(())
+}
+
+#[test]
+fn a_boundary_before_the_dispatched_write_settles_its_attempt() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        let feeder = world.feeder(chat)?;
+        let boundary = if chat == CLAUDE_CHAT {
+            claude_boundary(Some(POST_TOKENS))
+        } else {
+            codex_boundary("codex-turn-early", "codex-compaction-early")
+        };
+        let seen = Arc::new(Mutex::new(None));
+        let (slot, core) = (seen.clone(), Arc::downgrade(&world.core));
+        world.levers.on_compact(move || {
+            feeder.feed(&[boundary]);
+            if let Some(core) = core.upgrade() {
+                *lock(&slot) = Some(attempts_in(&core, chat));
+            }
+        });
+        world.fire();
+        let during = lock(&seen).take().ok_or("the adapter call did not run")??;
+        let states: Vec<_> = during.iter().map(|attempt| (attempt.outcome.clone(), attempt.dispatched)).collect();
+        assert_eq!(states, vec![(Some("compacted".to_owned()), false)], "{chat}");
+        let after = world.attempt(chat)?;
+        assert_eq!((after.outcome.as_deref(), after.dispatched), (Some("compacted"), true), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_later_manual_boundary_is_not_credited_to_an_early_attempt() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        world.turn_end_without_boundary(chat)?;
+        let settled = world.attempt(chat)?;
+        assert_eq!(settled.outcome.as_deref(), Some("ended_without_boundary"), "{chat}");
+        world.manual_compaction(chat)?;
+        world.sweep_after(WARM_SECONDS + 1);
+        assert_eq!(world.compacts(chat).len(), 2, "{chat}: the manual compaction did not run");
+        assert_eq!(world.attempt(chat)?, settled, "{chat}: the manual boundary changed the early row");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_boundary_of_another_launch_settles_nothing() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        let frames = if chat == CLAUDE_CHAT {
+            claude_compaction_with(Some(POST_TOKENS), SMALL)
+        } else {
+            codex_compaction("codex-turn-old", "codex-compaction-old")
+        };
+        // A reader of an older launch.
+        world.feed_as(chat, ("2026-01-01T00:00:00+00:00", "an-older-thread"), &frames)?;
+        assert_eq!(world.attempt(chat)?.outcome, None, "{chat}: older launch");
+        // The reader of a newer launch.
+        world.relaunch(chat)?;
+        world.compaction(chat)?;
+        assert_eq!(world.attempt(chat)?.outcome, None, "{chat}: newer launch");
+        world.sweep_after(WARM_SECONDS + 1);
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("interrupted"), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_turn_end_without_a_boundary_settles_as_ended_without_boundary() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        world.turn_end_without_boundary(chat)?;
+        let attempt = world.attempt(chat)?;
+        assert_eq!(attempt.outcome.as_deref(), Some("ended_without_boundary"), "{chat}");
+        assert!(attempt.settled_at.is_some() && attempt.pre.is_none() && attempt.compaction_turn_id.is_none(), "{chat}");
+        assert!(world.mark(chat).is_none(), "{chat}: the turn of the attempt gave a due mark");
+        // This outcome does not stop the launch.
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 2, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_adapter_error_settles_as_failed_and_leaves_the_status() -> TestResult {
+    for chat in FIRING_CHATS {
+        let (world, _) = marked(chat)?;
+        world.levers.fail_compact("the harness refused the request");
+        world.fire();
+        let attempt = world.attempt(chat)?;
+        assert_eq!(attempt.outcome.as_deref(), Some("failed"), "{chat}");
+        assert!(attempt.error.as_deref().is_some_and(|error| error.contains("the harness refused the request")), "{chat}: {attempt:?}");
+        assert!(!attempt.dispatched && attempt.settled_at.is_some(), "{chat}");
+        assert_eq!(world.status(chat)?, "ready", "{chat}");
+        // A failed attempt stops the launch.
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 1, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn no_terminal_signal_within_the_limit_settles_as_unsettled() -> TestResult {
+    // The attempt starts at `WARM_SECONDS` and the limit is 300 seconds.
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        world.sweep_after(320);
+        assert_eq!(world.attempt(chat)?.outcome, None, "{chat}: within the limit");
+        world.sweep_after(340);
+        let attempt = world.attempt(chat)?;
+        assert_eq!(attempt.outcome.as_deref(), Some("unsettled"), "{chat}");
+        assert!(attempt.settled_at.is_some(), "{chat}");
+        assert_eq!(world.status(chat)?, "working", "{chat}: unsettled changed the status");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_launch_change_settles_the_open_attempt_as_interrupted() -> TestResult {
+    let changes = [
+        "UPDATE sessions SET started_at='2026-11-20T00:00:00+00:00' WHERE id=?1",
+        "UPDATE sessions SET provider_session_id='another-thread' WHERE id=?1",
+    ];
+    for chat in FIRING_CHATS {
+        for change in changes {
+            let world = fired(chat)?;
+            world.sweep_after(WARM_SECONDS + 1);
+            assert_eq!(world.attempt(chat)?.outcome, None, "{chat}: the current launch keeps it open");
+            world.sql(change, params![chat])?;
+            world.sweep_after(WARM_SECONDS + 2);
+            let attempt = world.attempt(chat)?;
+            assert_eq!(attempt.outcome.as_deref(), Some("interrupted"), "{chat}: {change}");
+            assert!(attempt.settled_at.is_some(), "{chat}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unsettled_attempt_stops_further_attempts_on_that_launch() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        world.sweep_after(340);
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("unsettled"), "{chat}");
+        world.idle(chat)?;
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 1, "{chat}: a second attempt on the same launch");
+        // A new launch can try again.
+        world.relaunch(chat)?;
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 2, "{chat}: the new launch");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_next_reading_fills_after_a_compacted_attempt() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        world.compaction(chat)?;
+        assert_eq!(world.attempt(chat)?.next_reading_id, None, "{chat}: the fill waits for a sweep");
+        if chat == CODEX_CHAT {
+            world.turn(chat, SMALL)?;
+        }
+        world.sweep_after(WARM_SECONDS + 1);
+        let (id, _, used) = world.last_reading(chat)?;
+        let filled = world.attempt(chat)?;
+        assert_eq!((filled.next_reading_id, filled.next_used_tokens), (Some(id), Some(used)), "{chat}");
+        assert_eq!(used, i64::try_from(SMALL)?, "{chat}");
+        assert!(id > filled.trigger_reading_id, "{chat}");
+        // A later reading does not replace it.
+        world.turn(chat, 50_000)?;
+        world.sweep_after(WARM_SECONDS + 2);
+        assert_eq!(world.attempt(chat)?.next_reading_id, Some(id), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_claude_reading_after_the_compaction_result_is_the_next_reading() -> TestResult {
+    let world = fired(CLAUDE_CHAT)?;
+    world.feed(CLAUDE_CHAT, &claude_compaction_start())?;
+    world.feed(CLAUDE_CHAT, &[claude_reading(140_000)])?;
+    let (before_id, _, _) = world.last_reading(CLAUDE_CHAT)?;
+    world.feed(CLAUDE_CHAT, &[claude_boundary(Some(POST_TOKENS))])?;
+    world.sweep_after(WARM_SECONDS + 1);
+    let settled = world.attempt(CLAUDE_CHAT)?;
+    assert!(before_id > settled.trigger_reading_id, "the reading before the boundary is newer than the trigger");
+    assert_eq!(settled.next_reading_id, None, "a reading from before the boundary is not the window after");
+    world.feed(CLAUDE_CHAT, &claude_compaction_end(SMALL))?;
+    world.sweep_after(WARM_SECONDS + 2);
+    let (after_id, _, _) = world.last_reading(CLAUDE_CHAT)?;
+    let filled = world.attempt(CLAUDE_CHAT)?;
+    assert_eq!((filled.next_reading_id, filled.next_used_tokens), (Some(after_id), Some(i64::try_from(SMALL)?)));
+    Ok(())
+}
+
+#[test]
+fn a_codex_reading_of_the_compaction_turn_is_not_the_next_reading() -> TestResult {
+    let world = fired(CODEX_CHAT)?;
+    let (turn, item) = ("codex-turn-90", "codex-compaction-90");
+    let mut frames = codex_compaction_start(3, turn, item);
+    frames.push(codex_reading(turn, 40_000));
+    frames.push(codex_boundary(turn, item));
+    frames.push(codex_reading(turn, 32_942));
+    frames.push(codex_turn_completed(turn, "completed"));
+    world.feed(CODEX_CHAT, &frames)?;
+    let settled = world.attempt(CODEX_CHAT)?;
+    assert_eq!(settled.compaction_turn_id.as_deref(), Some(turn));
+    let labeled = world.readings(CODEX_CHAT)?.into_iter().filter(|(_, reading_turn, _)| reading_turn.as_deref() == Some(turn)).count();
+    assert_eq!(labeled, 2, "the readings of the compaction turn carry its turn id");
+    // Also with a time equal to the time of the boundary.
+    let moved = world.sql(
+        "UPDATE context_readings SET created_at=(SELECT settled_at FROM early_compaction_attempts WHERE session_id=?1)
+         WHERE session_id=?1 AND turn_id=?2",
+        params![CODEX_CHAT, turn],
+    )?;
+    assert_eq!(moved, 2);
+    world.sweep_after(WARM_SECONDS + 1);
+    assert_eq!(world.attempt(CODEX_CHAT)?.next_reading_id, None);
+    let next_turn = world.turn(CODEX_CHAT, SMALL)?;
+    world.sweep_after(WARM_SECONDS + 2);
+    let (id, reading_turn, _) = world.last_reading(CODEX_CHAT)?;
+    assert_eq!(reading_turn.as_deref(), Some(next_turn.as_str()));
+    assert_eq!(world.attempt(CODEX_CHAT)?.next_reading_id, Some(id));
+    Ok(())
+}
+
+/// A whole compaction of `chat`. On Claude, the reading after the result
+/// has `used` tokens. On Codex, the next turn gives the next reading.
+fn compaction_then_reading(world: &World, chat: &str, used: u64) -> TestResult {
+    if chat == CLAUDE_CHAT {
+        world.feed(chat, &claude_compaction_with(Some(POST_TOKENS), used))
+    } else {
+        world.compaction(chat).map(|_| ())
+    }
+}
+
+#[test]
+fn a_next_reading_at_the_threshold_stops_further_attempts_on_that_launch() -> TestResult {
+    let at = crate::early_compaction::THRESHOLD_TOKENS;
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        compaction_then_reading(&world, chat, u64::try_from(at)?)?;
+        // This turn reads at the threshold too, so only the stop holds it.
+        world.turn(chat, u64::try_from(at)?)?;
+        world.fire();
+        assert_eq!(world.attempt(chat)?.next_used_tokens, Some(at), "{chat}");
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 1, "{chat}: a second attempt on the same launch");
+        world.relaunch(chat)?;
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 2, "{chat}: the new launch");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_next_reading_below_the_threshold_lets_a_later_turn_fire() -> TestResult {
+    let below = crate::early_compaction::THRESHOLD_TOKENS - 1;
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        compaction_then_reading(&world, chat, u64::try_from(below)?)?;
+        world.turn(chat, u64::try_from(below)?)?;
+        world.fire();
+        assert_eq!(world.attempt(chat)?.next_used_tokens, Some(below), "{chat}");
+        world.turn(chat, LARGE)?;
+        world.fire();
+        assert_eq!(world.attempts(chat)?.len(), 2, "{chat}");
+        assert_eq!(world.compacts(chat).len(), 2, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_turn_end_after_a_boundary_does_not_change_the_settled_row() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        let (turn, item) = ("codex-turn-91", "codex-compaction-91");
+        let (start, end) = if chat == CLAUDE_CHAT {
+            let mut start = claude_compaction_start();
+            start.push(claude_boundary(Some(POST_TOKENS)));
+            (start, claude_compaction_end(SMALL))
+        } else {
+            let mut start = codex_compaction_start(3, turn, item);
+            start.push(codex_reading(turn, 32_942));
+            start.push(codex_boundary(turn, item));
+            (start, vec![codex_turn_completed(turn, "completed")])
+        };
+        world.feed(chat, &start)?;
+        let settled = world.attempt(chat)?;
+        assert_eq!(settled.outcome.as_deref(), Some("compacted"), "{chat}");
+        world.feed(chat, &end)?;
+        assert_eq!(world.attempt(chat)?, settled, "{chat}");
+        assert!(world.mark(chat).is_none(), "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn disable_does_not_skip_settlement() -> TestResult {
+    for chat in FIRING_CHATS {
+        // By a frame.
+        let world = fired(chat)?;
+        world.switch(false)?;
+        world.compaction(chat)?;
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("compacted"), "{chat}: frame");
+        // By the sweep.
+        let world = fired(chat)?;
+        world.switch(false)?;
+        world.sweep_after(340);
+        assert_eq!(world.attempt(chat)?.outcome.as_deref(), Some("unsettled"), "{chat}: sweep");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_open_attempt_is_settled_as_interrupted_at_startup_with_no_second_send() -> TestResult {
+    for chat in FIRING_CHATS {
+        let world = fired(chat)?;
+        let restarted = world.restart()?;
+        assert!(restarted.core.early_compaction.enabled(), "{chat}: the restart reads the switch");
+        let mut seen = recover_before_maintenance(&restarted.core);
+        let attempt = restarted.attempt(chat)?;
+        assert_eq!(attempt.outcome.as_deref(), Some("interrupted"), "{chat}");
+        assert!(attempt.settled_at.is_some(), "{chat}");
+        restarted.fire();
+        queued_input_maintenance_tick(&restarted.core, &mut seen);
+        assert!(restarted.compacts(chat).is_empty(), "{chat}: a second send");
+        assert_eq!(restarted.attempts(chat)?.len(), 1, "{chat}");
+    }
+    Ok(())
+}
+
+#[test]
+fn with_the_switch_off_the_sweep_runs_no_sql() -> TestResult {
+    for saved in [None, Some(false)] {
+        let world = World::new()?;
+        if let Some(enabled) = saved {
+            world.switch(enabled)?;
+        }
+        world.inject_mark(CLAUDE_CHAT, "claude")?;
+        let ((), traced) = statements(&world.core, || world.fire());
+        assert!(traced.is_empty(), "{saved:?}: {traced:?}");
+        assert!(world.mark(CLAUDE_CHAT).is_none(), "{saved:?}: the mark stayed");
+    }
+    // The trace sees the sweep when the switch is on.
+    let world = World::new()?;
+    world.switch(true)?;
+    world.inject_mark(CLAUDE_CHAT, "claude")?;
+    let ((), traced) = statements(&world.core, || world.fire());
+    assert!(!traced.is_empty());
+    Ok(())
+}
+
+#[test]
+fn with_the_switch_off_the_attempt_table_stays_empty() -> TestResult {
+    for saved in [None, Some(false)] {
+        let world = World::new()?;
+        if let Some(enabled) = saved {
+            world.switch(enabled)?;
+        }
+        let mut seen = 0;
+        for chat in FIRING_CHATS {
+            world.turn(chat, LARGE)?;
+            world.fire();
+            queued_input_maintenance_tick(&world.core, &mut seen);
+            world.manual_compaction(chat)?;
+            world.fire();
+            queued_input_maintenance_tick(&world.core, &mut seen);
+            assert_eq!(world.compacts(chat), vec![json!([null])], "{saved:?} {chat}: only the manual compaction");
+        }
+        assert_eq!(world.count("SELECT COUNT(*) FROM early_compaction_attempts", [])?, 0, "{saved:?}");
+    }
+    Ok(())
+}

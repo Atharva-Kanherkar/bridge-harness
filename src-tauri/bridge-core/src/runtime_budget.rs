@@ -531,6 +531,43 @@ mod tests {
     }
 
     #[test]
+    fn can_release_keeps_its_behaviour_with_the_shared_fragment() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::early_compaction::Probe;
+        // The blockers that the early compaction reads as live children and
+        // as queued input. Each other blocker leaves the chat idle.
+        const CHILDREN: &[&str] = &[
+            "worker_pending",
+            "outbox_pending",
+            "subagent_waiting",
+            "subagent_recent",
+            "subagent_spoke_recently",
+            "task_own",
+            "task_of_subagent",
+        ];
+        const QUEUE: &[&str] = &["queued", "claiming"];
+        let dir = tempfile::tempdir()?;
+        let core = BridgeCore::for_tests(dir.path());
+        let db = core.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let probe = |present: bool| if present { Probe::Present } else { Probe::Clear };
+        for (blocker, idle) in BLOCKERS {
+            let id = format!("chat-{blocker}");
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES(?1,'claude','Chat','ready','reported','direct')",
+                rusqlite::params![id],
+            )?;
+            seed_blocker(&db, &id, blocker);
+            assert_eq!(can_release(&db, &id), *idle, "{blocker}");
+            assert_eq!(old_can_release(&db, &id, OLD_CAN_RELEASE), *idle, "{blocker}");
+            let state = crate::early_compaction::attempts::chat_state(&db, &id, "ready");
+            assert_eq!(state.children, probe(CHILDREN.contains(blocker)), "{blocker}");
+            assert_eq!(state.queue, probe(QUEUE.contains(blocker)), "{blocker}");
+            // Each blocker that holds the release holds the early compaction.
+            assert_eq!(!idle, CHILDREN.contains(blocker) || QUEUE.contains(blocker), "{blocker}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn a_new_process_or_resumed_activity_restarts_the_idle_deadline() {
         let mut pool = IdleRuntimes::default();
         let now = Instant::now();

@@ -9,12 +9,12 @@ use rusqlite::types::ValueRef;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const CLAUDE_CHAT: &str = "claude-chat";
-const CODEX_CHAT: &str = "codex-chat";
-const CLAUDE_THREAD: &str = "claude-thread-1";
-const CODEX_THREAD: &str = "codex-thread-1";
-const CLAUDE_MODEL: &str = "claude-haiku-5-5";
-const CODEX_MODEL: &str = "gpt-6.2-sol";
+pub(super) const CLAUDE_CHAT: &str = "claude-chat";
+pub(super) const CODEX_CHAT: &str = "codex-chat";
+pub(super) const CLAUDE_THREAD: &str = "claude-thread-1";
+pub(super) const CODEX_THREAD: &str = "codex-thread-1";
+pub(super) const CLAUDE_MODEL: &str = "claude-haiku-5-5";
+pub(super) const CODEX_MODEL: &str = "gpt-6.2-sol";
 const STARTED_AT: &str = "2026-11-20T10:00:00+00:00";
 /// Set to record the fixture again from the run with the switch absent.
 const RECORD: &str = "BRIDGE_RECORD_OFF_TRACE";
@@ -24,7 +24,7 @@ const CODEX_TURN_START_ID: i64 = crate::codex_adapter::TURN_START_REQUEST_ID_BAS
 const UUID: &str = r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const TIME: &str = r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?";
 
-type CallLog = Arc<Mutex<Vec<Value>>>;
+pub(super) type CallLog = Arc<Mutex<Vec<Value>>>;
 
 /// How the early compaction switch is stored for one run.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -227,14 +227,14 @@ fn save_switch_off(core: &BridgeCore) {
 
 /// A harness that starts nothing and normalizes frames as the real Claude and
 /// Codex adapters do, with the same stream keys.
-struct TraceHarness {
+pub(super) struct TraceHarness {
     id: &'static str,
     claude: Mutex<HashMap<String, agent::ClaudeStreamState>>,
     codex: Mutex<HashMap<String, agent::CodexStreamState>>,
 }
 
 impl TraceHarness {
-    fn new(id: &'static str) -> Self {
+    pub(super) fn new(id: &'static str) -> Self {
         Self { id, claude: Mutex::default(), codex: Mutex::default() }
     }
 }
@@ -287,13 +287,13 @@ impl HarnessAdapter for TraceHarness {
 
 /// A live process that logs each call in the shape that fixes the bytes the
 /// real adapter writes. Turn names and refusals follow the real runtimes.
-struct TraceRuntime {
-    session: &'static str,
-    provider: &'static str,
-    claude: bool,
-    turn: Arc<Mutex<Option<String>>>,
-    requests: AtomicUsize,
-    calls: CallLog,
+pub(super) struct TraceRuntime {
+    pub(super) session: &'static str,
+    pub(super) provider: &'static str,
+    pub(super) claude: bool,
+    pub(super) turn: Arc<Mutex<Option<String>>>,
+    pub(super) requests: AtomicUsize,
+    pub(super) calls: CallLog,
 }
 
 impl TraceRuntime {
@@ -404,30 +404,30 @@ impl AdapterRuntime for TraceRuntime {
     }
 }
 
-fn claude_frame(mut frame: Value) -> Value {
+pub(super) fn claude_frame(mut frame: Value) -> Value {
     frame["session_id"] = json!(CLAUDE_THREAD);
     frame
 }
 
-fn claude_init() -> Value {
+pub(super) fn claude_init() -> Value {
     json!({"type": "system", "subtype": "init", "model": CLAUDE_MODEL, "tools": ["Read"], "mcp_servers": [], "slash_commands": ["compact"], "uuid": "claude-init"})
 }
 
-fn claude_status(status: Value, uuid: &str) -> Value {
+pub(super) fn claude_status(status: Value, uuid: &str) -> Value {
     json!({"type": "system", "subtype": "status", "status": status, "uuid": uuid})
 }
 
-fn claude_usage(input: u64, cache_write: u64, cache_read: u64, output: u64) -> Value {
+pub(super) fn claude_usage(input: u64, cache_write: u64, cache_read: u64, output: u64) -> Value {
     json!({"input_tokens": input, "cache_creation_input_tokens": cache_write, "cache_read_input_tokens": cache_read, "output_tokens": output})
 }
 
-fn claude_assistant(id: &str, content: Value, usage: Value) -> Value {
+pub(super) fn claude_assistant(id: &str, content: Value, usage: Value) -> Value {
     json!({"type": "assistant", "message": {"id": id, "role": "assistant", "model": CLAUDE_MODEL, "content": content, "usage": usage}, "parent_tool_use_id": null, "uuid": format!("{id}-uuid")})
 }
 
 /// A `result` frame. `usage` is the share of the turn and `modelUsage` holds
 /// the session totals, as the SDK sends them.
-fn claude_result(text: &str, turns: u64, usage: Value, totals: (u64, u64, u64, u64, f64)) -> Value {
+pub(super) fn claude_result(text: &str, turns: u64, usage: Value, totals: (u64, u64, u64, u64, f64)) -> Value {
     let (input, output, cache_read, cache_write, cost) = totals;
     json!({
         "type": "result", "subtype": "success", "is_error": false, "duration_ms": 7071, "num_turns": turns, "result": text, "usage": usage,
@@ -436,7 +436,7 @@ fn claude_result(text: &str, turns: u64, usage: Value, totals: (u64, u64, u64, u
     })
 }
 
-fn claude_context_usage(used: u64) -> Value {
+pub(super) fn claude_context_usage(used: u64) -> Value {
     json!({"type": "context_usage", "usedTokens": used, "windowTokens": 256_000, "categories": []})
 }
 
@@ -460,7 +460,7 @@ fn claude_first_turn() -> Vec<Value> {
 
 /// A `/compact` as Claude Code answers it: status frames, the boundary, and a
 /// `result` with a usage of zero.
-fn claude_compaction(trigger: &str) -> Vec<Value> {
+pub(super) fn claude_compaction(trigger: &str) -> Vec<Value> {
     vec![
         claude_status(json!("compacting"), "claude-compacting"),
         json!({"type": "system", "subtype": "status", "status": null, "compact_result": "success", "uuid": "claude-compacted"}),
@@ -474,7 +474,7 @@ fn claude_compaction(trigger: &str) -> Vec<Value> {
     .collect()
 }
 
-fn claude_turn_with_auto_compaction() -> Vec<Value> {
+pub(super) fn claude_turn_with_auto_compaction() -> Vec<Value> {
     vec![
         claude_init(),
         claude_status(json!("requesting"), "claude-request-3"),
@@ -491,27 +491,27 @@ fn claude_turn_with_auto_compaction() -> Vec<Value> {
     .collect()
 }
 
-fn codex(method: &str, params: Value) -> Value {
+pub(super) fn codex(method: &str, params: Value) -> Value {
     json!({"method": method, "params": params})
 }
 
-fn codex_turn(id: &str, status: &str) -> Value {
+pub(super) fn codex_turn(id: &str, status: &str) -> Value {
     json!({"id": id, "rootTurnId": id, "items": [], "itemsView": "notLoaded", "status": status, "error": null})
 }
 
-fn codex_item(method: &str, turn: &str, item: Value) -> Value {
+pub(super) fn codex_item(method: &str, turn: &str, item: Value) -> Value {
     codex(method, json!({"item": item, "threadId": CODEX_THREAD, "turnId": turn}))
 }
 
-fn codex_tokens(total: u64, input: u64, cached: u64, output: u64) -> Value {
+pub(super) fn codex_tokens(total: u64, input: u64, cached: u64, output: u64) -> Value {
     json!({"totalTokens": total, "inputTokens": input, "cachedInputTokens": cached, "cacheWriteInputTokens": 0, "outputTokens": output, "reasoningOutputTokens": 0})
 }
 
-fn codex_usage(turn: &str, total: Value, last: Value) -> Value {
+pub(super) fn codex_usage(turn: &str, total: Value, last: Value) -> Value {
     codex("thread/tokenUsage/updated", json!({"threadId": CODEX_THREAD, "turnId": turn, "tokenUsage": {"total": total, "last": last, "modelContextWindow": 475_000}}))
 }
 
-fn codex_turn_completed(turn: &str, status: &str) -> Value {
+pub(super) fn codex_turn_completed(turn: &str, status: &str) -> Value {
     codex("turn/completed", json!({"threadId": CODEX_THREAD, "turn": codex_turn(turn, status)}))
 }
 
@@ -534,7 +534,7 @@ fn codex_turn_frames(turn: &str, text: &str, reply: &str) -> Vec<Value> {
 }
 
 /// The frames of `thread/compact/start` up to the open compaction item.
-fn codex_compaction_start(request: i64, turn: &str, item: &str) -> Vec<Value> {
+pub(super) fn codex_compaction_start(request: i64, turn: &str, item: &str) -> Vec<Value> {
     vec![
         json!({"id": request, "result": {}}),
         codex("turn/started", json!({"threadId": CODEX_THREAD, "turn": codex_turn(turn, "inProgress")})),
@@ -542,7 +542,7 @@ fn codex_compaction_start(request: i64, turn: &str, item: &str) -> Vec<Value> {
     ]
 }
 
-fn codex_compaction_end(turn: &str, item: &str) -> Vec<Value> {
+pub(super) fn codex_compaction_end(turn: &str, item: &str) -> Vec<Value> {
     vec![
         codex_usage(turn, codex_tokens(65_315, 65_195, 28_288, 120), codex_tokens(32_942, 0, 0, 0)),
         codex_item("item/completed", turn, json!({"type": "contextCompaction", "id": item})),
