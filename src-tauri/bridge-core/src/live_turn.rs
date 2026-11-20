@@ -1331,7 +1331,9 @@ pub fn start_session(
     };
     let dispatch_id = launch_plan.adapter_id.as_str();
     let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
-    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
+    // A new session has no row yet. The insert below writes it with no parent
+    // and no worker runtime, so it is a top-level chat.
+    let interactive = existing.is_none() || crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)

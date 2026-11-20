@@ -1588,11 +1588,41 @@ fn start_session_reuse_skips_workers_and_harness_subagents() {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind) VALUES('codex-chat','w2','codex','Orchestrator','stopped','reported',0,'orchestrator')", []).unwrap();
     }
     let claude_worker = bridge_worker(&core, "claude-worker", "codex-chat", "claude-worker-thread");
-    let outcome = start_session(&core, "w2".into(), Some(Harness::Claude), None).map(|_| ());
-    let launched = asked(&script);
-    assert!(launched.iter().all(|launch| launch.provider.as_deref() != Some("claude-worker-thread")), "{outcome:?} {:?}", verbs(&launched));
+    start_session(&core, "w2".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)], "a new session starts, the worker is not reused");
+    let started = new_session_of(&core, "w2", "claude", &[&claude_worker]);
+    assert!(warm_thread(&core, &started).is_some());
     assert!(warm_thread(&core, &claude_worker).is_none());
     assert_eq!(lineage(&core, &claude_worker), (1, Some("codex-chat".to_owned()), "orchestrator".to_owned()));
+}
+
+/// The one session of the workspace and harness that is not in `known`.
+fn new_session_of(core: &BridgeCore, workspace: &str, harness: &str, known: &[&str]) -> String {
+    let db = core.db.lock().unwrap();
+    let mut statement = db.prepare("SELECT id FROM sessions WHERE workspace_id=?1 AND harness=?2 ORDER BY rowid").unwrap();
+    let ids: Vec<String> = statement
+        .query_map(params![workspace, harness], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|id: &String| !known.contains(&id.as_str()))
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    ids[0].clone()
+}
+
+#[test]
+fn start_session_starts_a_new_session_when_none_is_reusable() {
+    let (dir, core, script) = live();
+    // The workspace has a Codex chat only, so no Claude session is reusable.
+    let codex_chat = workspace_chat(&core, dir.path(), "codex", "codex-thread");
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("start", None)]);
+    let started = new_session_of(&core, "w", "claude", &[]);
+    assert_ne!(started, codex_chat);
+    assert_eq!(lineage(&core, &started), (0, None, "orchestrator".to_owned()));
+    assert_eq!(row_of(&core, &started).1.as_deref(), Some("thread-1"));
+    assert_eq!(warm_thread(&core, &started).as_deref(), Some("thread-1"));
+    assert!(warm_thread(&core, &codex_chat).is_none());
 }
 
 mod off_trace;
