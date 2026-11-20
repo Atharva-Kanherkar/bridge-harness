@@ -3622,7 +3622,7 @@ export const bridgeApi = {
   },
   listWorkspaceFiles: (sessionId: string): Promise<string[]> => hasBackend()
     ? call("workspaces/list_workspace_files", { sessionId })
-    : Promise.resolve(["src/App.tsx", "src/api.ts", "src/types.ts", "src-tauri/src/lib.rs", "README.md"]),
+    : Promise.resolve(["README.md", "docs/delegation-policy.md", "src/App.tsx", "src/api.ts", "src/types.ts", "src/auth/client.ts", "src/auth/tokenStore.ts", "src/components/PolicyCard.tsx", "src-tauri/src/lib.rs", "src-tauri/bridge-core/src/policy.rs", "src-tauri/bridge-core/src/policy_coordinator.rs", "src-tauri/bridge-core/tests/policy_tests.rs"]),
   connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
     if (hasBackend()) return call("workspaces/connect_workspace_folder", { workspaceId, path });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
