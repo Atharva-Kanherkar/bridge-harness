@@ -262,11 +262,13 @@ impl HarnessAdapter for Live {
         }))
         .unwrap()
     }
-    fn start(&self, _: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        Err(BridgeError::Invalid("start without start_chat".into()))
+    // A workspace chat and a worker launch through `start` and `resume`.
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.launch("start", None, request.instructions, None)
     }
-    fn resume(&self, _: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        Err(BridgeError::Invalid("resume without resume_chat".into()))
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let verb = if request.fork { "fork" } else { "resume" };
+        self.launch(verb, Some(request.provider_session_id), request.instructions, None)
     }
     fn start_chat(&self, request: StartRequest<'_>, tools: Option<&ToolLaunch>) -> Result<StartedAdapter, BridgeError> {
         self.launch("start", None, request.instructions, tools)
@@ -1233,4 +1235,106 @@ fn a_new_codex_thread_and_a_chat_with_no_stored_usage_get_no_seed() {
     assert_eq!(verbs(&asked(&script)), [("resume", Some("E-thread"))]);
     wait_for_entries(&core, &empty, "turn.started", 1);
     assert_eq!(usage_counts(&core, &empty), (1, 1, 1));
+}
+
+/// A workspace with a stopped workspace chat on `harness`. Its next
+/// `start_session` resumes the provider session `thread` natively.
+fn workspace_chat(core: &BridgeCore, data_dir: &Path, harness: &str, thread: &str) -> String {
+    let path = data_dir.join("workspace");
+    let db = core.db.lock().unwrap();
+    db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![path.to_string_lossy()]).unwrap();
+    db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'stopped','now')", params![path.to_string_lossy()]).unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,provider_session_id) VALUES('workspace-chat','w',?1,'Orchestrator','stopped','reported',0,'orchestrator',?2)",
+        params![harness, thread],
+    )
+    .unwrap();
+    "workspace-chat".into()
+}
+
+#[test]
+fn a_native_resume_of_a_workspace_chat_seeds_the_claude_totals() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "claude", "thread-0");
+    store_usage(&core, &chat, "claude", 0.5);
+    start_session(&core, "w".into(), Some(Harness::Claude), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("thread-0"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "thread-0"));
+    assert_eq!(seeded[0].2["data"]["totalCostUsd"], json!(0.5));
+}
+
+#[test]
+fn a_native_resume_of_a_workspace_chat_drops_the_codex_replay() {
+    let (dir, core, script) = live();
+    let chat = workspace_chat(&core, dir.path(), "codex", D_THREAD);
+    for value in [codex_turn("turn/started", D_THREAD, "D2"), d2_usage(D_THREAD), codex_turn("turn/completed", D_THREAD, "D2")] {
+        frame(&core, &chat, value);
+    }
+    assert_eq!(usage_counts(&core, &chat), (1, 1, 1));
+    {
+        let mut script = script.lock().unwrap();
+        script.startup = vec![d2_usage(D_THREAD)];
+        script.output = vec![d2_usage(D_THREAD), codex_turn("turn/started", D_THREAD, "D3")];
+    }
+    start_session(&core, "w".into(), Some(Harness::Codex), None).unwrap();
+    assert_eq!(verbs(&asked(&script)), [("resume", Some(D_THREAD))]);
+    wait_for_entries(&core, &chat, "turn.started", 2);
+    assert_eq!(usage_counts(&core, &chat), (1, 1, 1));
+}
+
+/// A stopped Claude worker with no runtime. The next delegation resumes its
+/// provider session natively.
+#[test]
+fn a_cold_worker_that_resumes_natively_gets_the_seed() {
+    let (dir, core, script) = live();
+    let request = delegation::DelegationRequest {
+        schema_version: delegation::SCHEMA_VERSION,
+        role: delegation::WorkerRole::Research,
+        objective: "Inspect the next task".into(),
+        acceptance_criteria: vec!["Return evidence for the new objective".into()],
+        known_facts: vec![],
+        decisions: vec![], evidence_ids: vec![], relevant_files: vec![],
+        owned_paths: vec![], write_mode: delegation::WriteMode::ReadOnly,
+        capability_tier: crate::model::CapabilityTier::Standard,
+        effort: delegation::Effort::Medium, network_access: false,
+        writable_output_paths: vec![], verification: vec![],
+        output_contract: delegation::OutputContract::ResearchResult,
+        harness: Some("claude".into()), model: Some("standard".into()),
+    };
+    // A read-only worker records a baseline of the tracked files first.
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    for args in [&["init", "-q"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "start"]] {
+        assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+    }
+    {
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![repo.to_string_lossy()]).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![repo.to_string_lossy()]).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind)
+                VALUES('parent','w','claude','Parent','working','reported',0,'orchestrator');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,model,provider_session_id)
+                VALUES('worker','w','claude','Research','stopped','reported','parent',1,'standard','worker-thread');
+             INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at)
+                VALUES('worker','w','research','standard','research','[]','readOnly','checkpointed','now','now');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at)
+                VALUES('worker','parent','stopped','research','key','reported','now');",
+        )
+        .unwrap();
+    }
+    store_usage(&core, "worker", "claude", 0.5);
+    match launch_worker_outcome(&core, "parent", "turn-1", &request, false) {
+        WorkerLaunchOutcome::Launched(id) => assert_eq!(id, "worker"),
+        _ => {
+            let rejected: String = core.db.lock().unwrap().query_row("SELECT COALESCE(group_concat(payload, '; '),'none') FROM session_entries WHERE kind='delegation.rejected'", [], |row| row.get(0)).unwrap();
+            panic!("the cold worker did not launch: {rejected}");
+        }
+    }
+    assert_eq!(verbs(&asked(&script)), [("resume", Some("worker-thread"))]);
+    let seeded = seeds(&script);
+    assert_eq!(seeded.len(), 1, "{seeded:?}");
+    assert_eq!((seeded[0].0, seeded[0].1.as_str()), ("claude", "worker-thread"));
 }

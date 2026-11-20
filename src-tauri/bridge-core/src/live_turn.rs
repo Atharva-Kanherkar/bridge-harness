@@ -1676,7 +1676,17 @@ pub fn start_session(
             &serde_json::json!({"adapter": adapter_id, "hidden": true}),
         );
     }
+    // A fresh start after a failed resume has a new provider session, so it
+    // gets no usage seed.
+    let mut usage_replay = if restoration_mode == RestorationMode::Native {
+        native_resume_usage(&db, &state.adapter_registry, adapter_id, &session_id, &thread_id)
+    } else {
+        None
+    };
     for message in &started.startup_messages {
+        if !passes_usage_replay(&mut usage_replay, message) {
+            continue;
+        }
         persist_agent_value(
             &db,
             &state.adapter_registry,
@@ -1704,7 +1714,7 @@ pub fn start_session(
         process_id,
         current_turn,
         reader,
-        None,
+        usage_replay,
     );
     core.events.publish(CoreEvent::StateChanged);
     store::state(&state.db.lock().unwrap())
@@ -2466,18 +2476,10 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 &serde_json::json!({"adapter": adapter_id, "hidden": true}),
             );
         }
-        // A native resume restores the Claude session totals in the new
-        // process. The normalizer starts from the last stored totals, before
-        // the first frame of the launch. A resumed Codex thread sends its last
-        // usage again, so the launch keeps that usage to drop the repeat.
-        if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native && matches!(adapter_id, "claude" | "codex") {
-            if let Some(usage_event) = last_usage_event(&db, &session_id) {
-                if adapter_id == "claude" {
-                    state.adapter_registry.seed_usage_totals(adapter_id, &thread_id, &usage_event);
-                } else {
-                    usage_replay = CodexUsageReplay::from_usage_event(&usage_event, &thread_id);
-                }
-            }
+        // A fork gets a new provider session, so only a native resume of the
+        // same session gets the usage seed.
+        if plan == restoration::RestorationPlan::Native && mode == RestorationMode::Native {
+            usage_replay = native_resume_usage(&db, &state.adapter_registry, adapter_id, &session_id, &thread_id);
         }
         for message in &started.startup_messages {
             if !passes_usage_replay(&mut usage_replay, message) {
@@ -2895,6 +2897,29 @@ fn spawn_reader_thread(
         }
         core.events.publish(CoreEvent::StateChanged);
     });
+}
+
+/// The usage setup of a launch that resumed the provider session `thread_id`
+/// natively. A Claude process starts from the session totals of the last
+/// stored usage, before the first frame of the launch. A resumed Codex thread
+/// sends its last usage again, so the result keeps that usage to drop the
+/// repeat. Call it only when the launch kept the same provider session.
+fn native_resume_usage(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+    adapter_id: &str,
+    session_id: &str,
+    thread_id: &str,
+) -> Option<CodexUsageReplay> {
+    if !matches!(adapter_id, "claude" | "codex") {
+        return None;
+    }
+    let usage_event = last_usage_event(db, session_id)?;
+    if adapter_id == "claude" {
+        registry.seed_usage_totals(adapter_id, thread_id, &usage_event);
+        return None;
+    }
+    CodexUsageReplay::from_usage_event(&usage_event, thread_id)
 }
 
 /// The stored payload of the last `usage.updated` entry of a chat. The read
@@ -6677,6 +6702,7 @@ pub fn launch_worker_outcome(
         .unwrap()
         .arm(&session_id, &thread_id, launch_context);
 
+    let mut usage_replay = None;
     {
         let db = state.db.lock().unwrap();
         let _ = db.execute(
@@ -6720,7 +6746,15 @@ pub fn launch_worker_outcome(
             "UPDATE workspaces SET status='working' WHERE id=?1",
             params![reservation.workspace_id],
         );
+        // A fresh or restored worker has a new provider session, so it gets
+        // no usage seed.
+        if activation == WorkerActivation::Native {
+            usage_replay = native_resume_usage(&db, &state.adapter_registry, &harness, &session_id, &thread_id);
+        }
         for message in &startup_messages {
+            if !passes_usage_replay(&mut usage_replay, message) {
+                continue;
+            }
             let _ =
                 persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
         }
@@ -6821,7 +6855,7 @@ pub fn launch_worker_outcome(
         process_id,
         current_turn,
         reader,
-        None,
+        usage_replay,
     );
     if let Err(error) = deliver_worker_objective(&state, &session_id, &directive.objective)
     {
