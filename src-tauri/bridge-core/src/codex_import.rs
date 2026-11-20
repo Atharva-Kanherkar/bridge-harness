@@ -40,7 +40,20 @@ pub fn machine_codex_homes() -> Vec<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")));
-    home.and_then(|home| home.canonicalize().ok()).filter(|home| home.is_dir()).into_iter().collect()
+    existing_folders(home.into_iter(), Path::is_dir)
+}
+
+/// Each folder that exists and passes `keep`, by its real path, once.
+pub(crate) fn existing_folders(candidates: impl Iterator<Item = PathBuf>, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        if let Ok(real) = candidate.canonicalize() {
+            if keep(&real) && !out.contains(&real) {
+                out.push(real);
+            }
+        }
+    }
+    out
 }
 
 /// A Codex home: one this machine uses, or a folder laid out like one.

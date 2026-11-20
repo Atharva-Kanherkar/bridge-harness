@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DetectedImportSource, ImportJob } from "./protocol/generated/protocol";
 import { finishedLabel, folderLabel, importNotice, importPercent, newerJob, sourceSummary, timeLeft } from "./moveToBridge";
 
-const source = (counts: Partial<DetectedImportSource["counts"]>, installed = true): DetectedImportSource => ({
-  tool: "claude_code", label: "Claude Code", installed, supported: true, roots: [], note: null,
+const source = (counts: Partial<DetectedImportSource["counts"]>, installed = true, roots: string[] = []): DetectedImportSource => ({
+  tool: "claude_code", label: "Claude Code", installed, supported: true, roots, note: null,
   counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0, ...counts },
 });
 
@@ -21,6 +21,12 @@ describe("Move to Bridge logic", () => {
     expect(sourceSummary(source({ projects: 2, workspaces: 5 }))).toBe("5 workspaces in 2 repos");
     expect(sourceSummary(source({}))).toBe("Found, but nothing to bring over yet");
     expect(sourceSummary(source({ chats: 9 }, false))).toBe("Not found on this Mac");
+  });
+
+  it("says when a tool's chats come from more than one folder, as with an account in Settings", () => {
+    expect(sourceSummary(source({ chats: 305, projects: 4, setup: 1 }, true, ["/Users/you/.claude", "/Users/you/.claude_work"]))).toBe("305 chats in 4 projects · from 2 folders · 1 setup item");
+    expect(sourceSummary(source({ chats: 3, projects: 1 }, true, ["/Users/you/.claude"]))).toBe("3 chats in 1 project");
+    expect(sourceSummary({ ...source({ projects: 2, workspaces: 5 }, true, ["/a", "/b"]), supported: false })).toBe("5 workspaces in 2 repos");
   });
 
   it("shortens folders to their last two segments", () => {

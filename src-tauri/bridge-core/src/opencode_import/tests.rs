@@ -103,7 +103,7 @@ fn counts_leave_background_runs_apart_and_subagents_out() {
 
     let counts = count_sessions(&fixture.store).unwrap();
 
-    assert_eq!(counts, StoreCounts { chats: 2, projects: 2, background: 2 });
+    assert_eq!((counts.chats, counts.projects, counts.background), (2, 2, 2));
 }
 
 #[test]

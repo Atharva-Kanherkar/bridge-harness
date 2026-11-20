@@ -60,6 +60,14 @@ for n in range(int(os.environ.get("IMPORT_FAKE_CHATS", "600"))):
         turns.append({"type": "user", "uuid": f"g{n}-u{t}", "sessionId": s, "timestamp": f"2026-10-{(n % 28) + 1:02d}T09:{t:02d}:00Z", "cwd": f"/work/{project}", "message": {"role": "user", "content": f"Task {n}.{t}: tidy the {project} handlers"}})
         turns.append({"type": "assistant", "uuid": f"g{n}-a{t}", "sessionId": s, "timestamp": f"2026-10-{(n % 28) + 1:02d}T09:{t:02d}:30Z", "cwd": f"/work/{project}", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done, the handlers are tidier. " * 20}]}})
     write(f".claude/projects/-work-{project}/{s}.jsonl", turns)
+# A second Claude account's folder, as added in Settings (the fake user adds
+# it as `~/.claude-work`): one chat that ~/.claude does not have.
+work = "5c3a2b1d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+write(f".claude-work/projects/-work-billing-service/{work}.jsonl", [
+    {"type": "user", "uuid": "w1", "sessionId": work, "timestamp": "2026-11-19T12:00:00Z", "cwd": "/work/billing-service", "message": {"role": "user", "content": "Rotate the Stripe keys before Friday's release."}},
+    {"type": "assistant", "uuid": "w2", "sessionId": work, "timestamp": "2026-11-19T12:00:30Z", "cwd": "/work/billing-service", "message": {"role": "assistant", "content": [{"type": "text", "text": "Rotated both keys and updated the deploy secrets."}]}},
+    {"type": "custom-title", "customTitle": "Rotate the Stripe keys", "sessionId": work},
+])
 # A run Claude Code made in the OS temp folder: a background run, left out.
 probe = "9d2e4c1a-0b3f-4a5e-8c7d-6e5f4a3b2c1d"
 write(f".claude/projects/-private-var-folders-h7-T-probe/{probe}.jsonl", [
