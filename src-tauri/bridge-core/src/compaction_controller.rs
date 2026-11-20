@@ -420,9 +420,9 @@ pub enum CheckpointOutcome {
         checkpoint_entry_id: String,
         compaction_entry_id: String,
     },
-    /// A valid background summary that arrived after the incoming model had
-    /// already spoken: recorded as a plain `checkpoint`, no boundary moved.
-    LateCheckpoint {
+    /// A valid model-switch handoff summary: recorded as a plain
+    /// `checkpoint`, no boundary moved.
+    HandoffCheckpoint {
         checkpoint_entry_id: String,
     },
     Repair {
@@ -683,12 +683,15 @@ impl CompactionController {
         // An incomplete list is completed, not rejected: Bridge is holding the
         // missing items already, and the provenance says who supplied them.
         let provenance = evidence.augment(&mut checkpoint);
-        if pending.background && conversation_appended_since_request(db, session_id)? {
-            // The incoming model has already spoken. Moving the boundary now
-            // would hide its turns behind a summary the outgoing model wrote
-            // without seeing them, so the summary is kept as a plain
-            // checkpoint the projection carries in its tail.
-            return Self::record_late_checkpoint(db, session_id, checkpoint, pending, provenance);
+        if pending.background {
+            // A model switch's handoff summary never moves the boundary. The
+            // outgoing model saw only its own thread (after a round trip, a
+            // couple of turns), yet a boundary would let its paragraph stand
+            // in for the whole chat and drop every older entry from the next
+            // cold start. Kept as a plain checkpoint, it heads the projection
+            // while the stored history still fills the tail.
+            let late = conversation_appended_since_request(db, session_id)?;
+            return Self::record_switch_checkpoint(db, session_id, checkpoint, pending, provenance, late);
         }
         Self::record_checkpoint(
             db,
@@ -759,26 +762,35 @@ impl CompactionController {
     /// Record a validated summary as a `checkpoint` entry only — no
     /// `compaction` boundary, no retained-set change. `pending_from_branch`
     /// treats a checkpoint newer than the request as its settlement.
-    fn record_late_checkpoint(
+    /// A model switch's handoff summary: one `checkpoint` entry, with no
+    /// `compaction` and no `branch.summary`, and the head left where it is.
+    /// `late` says the incoming model had already replied when it landed.
+    fn record_switch_checkpoint(
         db: &Connection,
         session_id: &str,
         checkpoint: Checkpoint,
         pending: PendingCompaction,
         provenance: &str,
+        late: bool,
     ) -> Result<CheckpointOutcome, BridgeError> {
         let mut payload = checkpoint_payload(&checkpoint, &pending, provenance);
-        payload["landing"] = json!("late");
+        payload["landing"] = json!(if late { "late" } else { "switch" });
         let entry = SessionForest::new(db)
             .append(session_id, EntryKind::Checkpoint, payload)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        store::event(
-            db,
-            "compaction",
-            "checkpoint.landed_late",
-            session_id,
-            "Background handoff summary recorded as a checkpoint; the new model had already replied, so no boundary moved",
-        )?;
-        Ok(CheckpointOutcome::LateCheckpoint {
+        let (kind, body) = if late {
+            (
+                "checkpoint.landed_late",
+                "Background handoff summary recorded as a checkpoint after the new model had replied; no boundary moved",
+            )
+        } else {
+            (
+                "checkpoint.switch_recorded",
+                "Background handoff summary recorded as a checkpoint; stored history still carries, no boundary moved",
+            )
+        };
+        store::event(db, "compaction", kind, session_id, body)?;
+        Ok(CheckpointOutcome::HandoffCheckpoint {
             checkpoint_entry_id: entry.id,
         })
     }
@@ -1678,7 +1690,7 @@ mod tests {
             &valid_output(&pending, "What the old model knew"),
         )
         .unwrap();
-        assert!(matches!(outcome, CheckpointOutcome::LateCheckpoint { .. }), "{outcome:?}");
+        assert!(matches!(outcome, CheckpointOutcome::HandoffCheckpoint { .. }), "{outcome:?}");
         let entries = store::session_entries(&db, "s").unwrap();
         let kinds = entries.iter().map(|entry| entry.kind.as_str()).collect::<Vec<_>>();
         assert_eq!(
@@ -1702,6 +1714,52 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_summary_that_lands_first_is_still_only_a_checkpoint() {
+        // The outgoing model saw its own thread, not the chat: after a round
+        // trip, two turns. Its summary must not stand in for everything older.
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"an hour of earlier work"}))
+            .unwrap();
+        let head_before: Option<String> = db
+            .query_row("SELECT active_entry_id FROM session_heads WHERE session_id='s'", [], |row| row.get(0))
+            .optional()
+            .unwrap()
+            .flatten();
+        CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 978_872)
+            .unwrap().prompt()
+            .unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        assert!(!conversation_appended_since_request(&db, "s").unwrap(), "the new model has not spoken");
+        let outcome = CompactionController::handle_output(
+            &db,
+            "s",
+            &valid_output(&pending, "This session only attempted to inspect Safari"),
+        )
+        .unwrap();
+        assert!(matches!(outcome, CheckpointOutcome::HandoffCheckpoint { .. }), "{outcome:?}");
+        let entries = store::session_entries(&db, "s").unwrap();
+        assert_eq!(entries.last().unwrap().kind, "checkpoint");
+        assert_eq!(entries.last().unwrap().payload["landing"], "switch");
+        assert!(!entries.iter().any(|entry| entry.kind == "compaction"), "no boundary");
+        assert!(!entries.iter().any(|entry| entry.kind == "branch.summary"), "no retained marker");
+        let head_after: Option<String> = db
+            .query_row("SELECT active_entry_id FROM session_heads WHERE session_id='s'", [], |row| row.get(0))
+            .optional()
+            .unwrap()
+            .flatten();
+        assert_eq!(head_after, head_before, "the head did not move");
+        assert!(CompactionController::pending(&db, "s").unwrap().is_none(), "the request is settled");
+        let branch = SessionForest::new(&db).active_branch("s").unwrap();
+        let projection = crate::context::ContextProjector::project(&branch, 128_000).unwrap();
+        assert!(projection.restoration_context.is_none());
+        assert!(projection
+            .render_entries
+            .iter()
+            .any(|entry| entry.payload["text"] == "an hour of earlier work"));
+    }
+
+    #[test]
     fn background_evidence_is_scoped_to_what_the_outgoing_model_saw() {
         let db = database();
         CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 9)
@@ -1720,7 +1778,7 @@ mod tests {
         }).to_string();
         let outcome = CompactionController::handle_output(&db, "s", &output).unwrap();
         assert!(
-            matches!(outcome, CheckpointOutcome::LateCheckpoint { .. }),
+            matches!(outcome, CheckpointOutcome::HandoffCheckpoint { .. }),
             "evidence the outgoing model could not have seen must not reject its summary: {outcome:?}"
         );
     }

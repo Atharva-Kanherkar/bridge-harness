@@ -138,6 +138,67 @@ pub fn select_plan(
     }
 }
 
+/// What heads a cold start's handoff text: the newest valid compaction
+/// boundary, else the newest checkpoint on the branch.
+///
+/// A model switch's summary is a checkpoint, not a boundary, so it heads the
+/// text without cutting the tail: everything older stays eligible under the
+/// budget. Decisions and open work ride with either source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffHeader {
+    /// `compaction` or `checkpoint`: the line's label in the handoff text.
+    pub label: &'static str,
+    pub summary: String,
+    pub decisions: Vec<String>,
+    pub files_touched: Vec<String>,
+    pub open_work: Vec<String>,
+}
+
+pub fn handoff_header(
+    branch: &[crate::model::SessionEntry],
+    projection: &crate::context::ContextProjection,
+) -> Option<HandoffHeader> {
+    if let Some(restoration) = &projection.restoration_context {
+        return Some(HandoffHeader {
+            label: "compaction",
+            summary: restoration.summary.clone(),
+            decisions: restoration.decisions.clone(),
+            files_touched: restoration.files_touched.clone(),
+            open_work: restoration.open_work.clone(),
+        });
+    }
+    let strings = |entry: &crate::model::SessionEntry, key: &str| {
+        entry
+            .payload
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    branch.iter().rev().find_map(|entry| {
+        let summary = (entry.kind == "checkpoint")
+            .then(|| entry.payload.get("summary").and_then(serde_json::Value::as_str))
+            .flatten()
+            .map(str::trim)
+            .filter(|summary| !summary.is_empty())?;
+        Some(HandoffHeader {
+            label: "checkpoint",
+            summary: summary.to_owned(),
+            decisions: strings(entry, "decisions"),
+            files_touched: strings(entry, "filesTouched"),
+            open_work: strings(entry, "openWork"),
+        })
+    })
+}
+
 /// The stored history a cold start injects when no native thread can be
 /// resumed, sized by the session's own (incoming) model. See
 /// [`checkpoint_context_with_window`].
@@ -152,8 +213,8 @@ pub fn checkpoint_context(
 /// Project the active branch into labelled restoration text for a model with
 /// `context_window_tokens` of room.
 ///
-/// The header — the newest valid compaction's summary and decisions, else the
-/// latest checkpoint summary — is never dropped. Below it, the conversation
+/// The header ([`handoff_header`]: the newest valid compaction, else the newest
+/// checkpoint) is never dropped. Below it, the conversation
 /// tail is walked newest-first and kept verbatim, whole entries only, until
 /// [`restoration_budget_bytes`] is spent; if even the newest entry alone does
 /// not fit, its head is trimmed so the most recent words survive. The former
@@ -168,35 +229,46 @@ pub fn checkpoint_context_with_window(
     session_id: &str,
     context_window_tokens: i64,
 ) -> Result<Option<String>, BridgeError> {
+    Ok(restoration_handoff(db, session_id, context_window_tokens)?.map(|handoff| handoff.text))
+}
+
+/// The handoff a cold start would inject, with what it is made of: the header
+/// and how many of the branch's conversation entries fit the budget. The
+/// switch notice reads this so it can say what the new model actually gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorationHandoff {
+    pub text: String,
+    pub header: Option<HandoffHeader>,
+    /// Conversation entries carried in the tail.
+    pub carried_entries: usize,
+    /// Conversation entries the projection held, carried or not.
+    pub eligible_entries: usize,
+}
+
+pub fn restoration_handoff(
+    db: &Connection,
+    session_id: &str,
+    context_window_tokens: i64,
+) -> Result<Option<RestorationHandoff>, BridgeError> {
     let branch = SessionForest::new(db)
         .active_branch(session_id)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let projection = ContextProjector::project(&branch, context_window_tokens.max(1))
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let budget = restoration_budget_bytes(context_window_tokens);
+    let source = handoff_header(&branch, &projection);
     let mut header = Vec::new();
-    if let Some(restoration) = projection.restoration_context {
-        header.push(format!("compaction: {}", restoration.summary));
-        for decision in restoration.decisions {
+    if let Some(source) = &source {
+        header.push(format!("{}: {}", source.label, source.summary));
+        for decision in &source.decisions {
             header.push(format!("decision: {decision}"));
         }
         // What was unfinished at the boundary. Carried under the decisions so
         // the budget trim, which cuts the header's end, drops it before it
         // drops the summary or the earliest decisions.
-        for open in restoration.open_work {
+        for open in &source.open_work {
             header.push(format!("still open: {open}"));
         }
-    } else if let Some(summary) = branch.iter().rev().find_map(|entry| {
-        (entry.kind == "checkpoint")
-            .then(|| {
-                entry
-                    .payload
-                    .get("summary")
-                    .and_then(serde_json::Value::as_str)
-            })
-            .flatten()
-    }) {
-        header.push(format!("checkpoint: {summary}"));
     }
     // Reserve the header's room first, and bound the header itself: checkpoint
     // fields have no length limit, and the compiler's ceiling must hold even
@@ -204,25 +276,62 @@ pub fn checkpoint_context_with_window(
     // line and the earliest decisions — the front is what carries meaning.
     let header = bound_header(header, MAX_RESTORATION_BUDGET_BYTES);
     let header_bytes = header.iter().map(|line| line.len() + 1).sum::<usize>();
-    let mut remaining = budget.saturating_sub(header_bytes);
-    let entry_allowance = restoration_entry_bytes(budget);
+    // Bare checkpoints never render as conversation, so the header's own
+    // checkpoint is not repeated below it.
+    let entries = projection.render_entries.iter().collect::<Vec<_>>();
+    let eligible_entries = entries.iter().filter(|entry| entry_text(entry).is_some()).count();
+    let tail = render_tail(&entries, budget.saturating_sub(header_bytes), restoration_entry_bytes(budget));
+    if header.is_empty() && tail.is_empty() {
+        return Ok(None);
+    }
+    let carried_entries = tail.len();
+    let mut lines = header;
+    lines.extend(tail);
+    // By construction: header ≤ MAX, tail ≤ budget − header ≤ MAX − header.
+    let context = lines.join("\n");
+    Ok(Some(RestorationHandoff {
+        text: format!(
+            "Bridge checkpoint-restoration context (stored history, not native provider resume):\n{context}"
+        ),
+        header: source,
+        carried_entries,
+        eligible_entries,
+    }))
+}
+
+/// The text a handoff carries for one forest entry, if it carries any.
+pub(crate) fn entry_text(entry: &crate::model::SessionEntry) -> Option<&str> {
+    match entry.kind.as_str() {
+        "checkpoint" | "compaction" | "branch.summary" | "handoff.brief" => entry
+            .payload
+            .get("summary")
+            .or_else(|| entry.payload.get("text"))
+            .and_then(serde_json::Value::as_str),
+        "user.message" | "assistant.message" | "worker.result" => entry
+            .payload
+            .get("text")
+            .or_else(|| entry.payload.get("summary"))
+            .or_else(|| entry.payload.pointer("/data/text"))
+            .and_then(serde_json::Value::as_str),
+        _ => None,
+    }
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+}
+
+/// Labelled lines for `entries` (oldest first), kept newest-first until
+/// `budget` bytes are spent, each clipped to `entry_allowance`, and returned
+/// oldest first. If even the newest entry does not fit, its most recent bytes
+/// are kept rather than nothing.
+pub(crate) fn render_tail(
+    entries: &[&crate::model::SessionEntry],
+    budget: usize,
+    entry_allowance: usize,
+) -> Vec<String> {
+    let mut remaining = budget;
     let mut tail = Vec::new();
-    for entry in projection.render_entries.iter().rev() {
-        let value = match entry.kind.as_str() {
-            "checkpoint" | "compaction" | "branch.summary" | "handoff.brief" => entry
-                .payload
-                .get("summary")
-                .or_else(|| entry.payload.get("text"))
-                .and_then(serde_json::Value::as_str),
-            "user.message" | "assistant.message" | "worker.result" => entry
-                .payload
-                .get("text")
-                .or_else(|| entry.payload.get("summary"))
-                .or_else(|| entry.payload.pointer("/data/text"))
-                .and_then(serde_json::Value::as_str),
-            _ => None,
-        };
-        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+    for entry in entries.iter().rev() {
+        let Some(value) = entry_text(entry) else {
             continue;
         };
         let clipped = clip_middle(value, entry_allowance);
@@ -236,24 +345,13 @@ pub fn checkpoint_context_with_window(
         }
         let prefix = format!("{}: …", entry.kind);
         if tail.is_empty() && remaining > prefix.len() + 1 {
-            // The newest entry alone is over budget: keep its most recent bytes,
-            // still labelled, rather than nothing.
             let kept = keep_tail(value, remaining - prefix.len() - 1);
             tail.push(format!("{prefix}{kept}"));
         }
         break;
     }
-    if header.is_empty() && tail.is_empty() {
-        return Ok(None);
-    }
     tail.reverse();
-    let mut header = header;
-    header.extend(tail);
-    // By construction: header ≤ MAX, tail ≤ budget − header ≤ MAX − header.
-    let context = header.join("\n");
-    Ok(Some(format!(
-        "Bridge checkpoint-restoration context (stored history, not native provider resume):\n{context}"
-    )))
+    tail
 }
 
 /// Keep the header's lines in order until `max_bytes` is spent; the line that
@@ -543,6 +641,61 @@ mod tests {
         assert!(context.contains("stable decision"));
         assert!(!context.contains("raw log"));
         assert!(context.contains("not native provider resume"));
+    }
+
+    #[test]
+    fn a_switch_checkpoint_heads_the_handoff_without_cutting_older_history() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest
+            .append("s", EntryKind::UserMessage, serde_json::json!({"text":"check whether the masked MCP leaks prod data"}))
+            .unwrap();
+        forest
+            .append("s", EntryKind::AssistantMessage, serde_json::json!({"text":"the experiment is set up on staging"}))
+            .unwrap();
+        forest
+            .append(
+                "s",
+                EntryKind::Checkpoint,
+                serde_json::json!({
+                    "schemaVersion":1,
+                    "summary":"This session only attempted to inspect Safari",
+                    "decisions":["Use staging only"],
+                    "filesTouched":["scripts/probe.sh"],
+                    "openWork":["Send the query to Yamada-san"],
+                    "reason":"before_downgrade",
+                    "landing":"switch"
+                }),
+            )
+            .unwrap();
+        let handoff = restoration_handoff(&db, "s", 128_000).unwrap().unwrap();
+        let text = &handoff.text;
+        assert!(text.contains("checkpoint: This session only attempted to inspect Safari"), "{text}");
+        assert!(text.contains("decision: Use staging only"), "{text}");
+        assert!(text.contains("still open: Send the query to Yamada-san"), "{text}");
+        assert!(text.contains("check whether the masked MCP leaks prod data"), "older history survives: {text}");
+        assert!(text.contains("the experiment is set up on staging"), "{text}");
+        assert_eq!(text.matches("only attempted to inspect Safari").count(), 1, "said once: {text}");
+        let header = handoff.header.unwrap();
+        assert_eq!(header.label, "checkpoint");
+        assert_eq!(header.files_touched, vec!["scripts/probe.sh".to_owned()]);
+        assert_eq!((handoff.carried_entries, handoff.eligible_entries), (2, 2));
+    }
+
+    #[test]
+    fn the_handoff_counts_what_fit_against_what_was_stored() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        for index in 0..40 {
+            forest
+                .append("s", EntryKind::UserMessage, serde_json::json!({"text": format!("{index}: {}", "x".repeat(900))}))
+                .unwrap();
+        }
+        let handoff = restoration_handoff(&db, "s", 1_000).unwrap().unwrap();
+        assert_eq!(handoff.eligible_entries, 40);
+        assert!(handoff.carried_entries > 0 && handoff.carried_entries < 40, "{}", handoff.carried_entries);
+        assert!(handoff.text.contains("39: "), "the newest survive");
+        assert!(!handoff.text.contains("\nuser.message: 0: "), "the oldest do not");
     }
 
     #[test]

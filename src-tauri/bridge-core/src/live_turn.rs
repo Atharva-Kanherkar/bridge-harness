@@ -3840,7 +3840,7 @@ fn handle_agent_value_timed(
                         checkpoint_prompt_after_turn = Some(prompt);
                     }
                     Ok(outcome @ (compaction_controller::CheckpointOutcome::Completed { .. }
-                    | compaction_controller::CheckpointOutcome::LateCheckpoint { .. }
+                    | compaction_controller::CheckpointOutcome::HandoffCheckpoint { .. }
                     | compaction_controller::CheckpointOutcome::Failed)) => {
                         recover_compaction = matches!(
                             outcome,
