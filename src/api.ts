@@ -1742,7 +1742,7 @@ function startMockImport(tool: string): ImportJob {
   return job;
 }
 
-/** Mock-mode tools: Claude Code found with history, two ADEs found, the rest absent. */
+/** Mock-mode tools: Claude Code, Codex and OpenCode found with history, an ADE found, the rest absent. */
 function mockImportSources(): ImportSourcesDetection {
   const absent = (tool: string, label: string, note: string) => ({ tool, label, installed: false, supported: false, roots: [], counts: { chats: 0, projects: 0, workspaces: 0, memories: 0, setup: 0, background: 0 }, note });
   return {
@@ -1750,7 +1750,7 @@ function mockImportSources(): ImportSourcesDetection {
     sources: [
       { tool: "claude_code", label: "Claude Code", installed: true, supported: true, roots: ["/mock/.claude"], counts: { chats: 3, projects: 1, workspaces: 0, memories: 1, setup: 1, background: 0 }, note: "Chats with their tool calls, thinking, images and subagents, plus setup. Claude Code keeps using its own memory." },
       { tool: "codex", label: "Codex", installed: true, supported: true, roots: ["/mock/.codex"], counts: { chats: 12, projects: 2, workspaces: 0, memories: 0, setup: 0, background: 4 }, note: "Chats with their commands, edits and MCP calls. Codex keeps using its own memory." },
-      absent("opencode", "OpenCode", "OpenCode chats are coming. Nothing is read until then."),
+      { tool: "opencode", label: "OpenCode", installed: true, supported: true, roots: ["/mock/.local/share/opencode"], counts: { chats: 9, projects: 3, workspaces: 0, memories: 0, setup: 0, background: 6 }, note: "Chats with their commands, edits and subagents. OpenCode keeps its own memory and setup." },
       { tool: "conductor", label: "Conductor", installed: true, supported: false, roots: ["/mock/conductor/workspaces"], counts: { chats: 0, projects: 2, workspaces: 5, memories: 0, setup: 0, background: 0 }, note: "Conductor runs Claude Code, so its chats come over with the Claude Code import. Its workspace names and scripts are coming." },
       absent("t3code", "T3 Code", "T3 Code runs Claude Code, so its Claude chats come over with the Claude Code import. Thread titles and projects are coming."),
       absent("orca", "Orca", "Orca's Claude Code chats come over with the Claude Code import. Its projects and multi-agent runs are coming."),

@@ -14,6 +14,7 @@ const FLIGHTS = 6;
 const TOOLS: Record<string, { label: string; harness: string }> = {
   claude_code: { label: "Claude Code", harness: "claude" },
   codex: { label: "Codex", harness: "codex" },
+  opencode: { label: "OpenCode", harness: "opencode" },
 };
 
 export function ImportTransfer({ tool, done = false }: { tool: string; done?: boolean }) {

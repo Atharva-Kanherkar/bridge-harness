@@ -67,12 +67,16 @@ describe("MoveToBridge", () => {
     expect(section("codex").textContent).toContain("Codex keeps using its own memory");
     expect(section("claude_code").querySelector("[data-tool-mark] svg[data-harness='claude']")).not.toBeNull();
     expect(section("codex").querySelector("[data-tool-mark] svg[data-harness='codex']")).not.toBeNull();
+    expect(section("opencode").textContent).toContain("9 chats in 3 projects");
+    expect(section("opencode").textContent).toContain("OpenCode keeps its own memory and setup");
+    expect(section("opencode").querySelector("[data-tool-mark] svg[data-harness='opencode']")).not.toBeNull();
     expect(section("conductor").querySelector("[data-tool-mark]")?.textContent).toBe("C");
     expect(button(section("claude_code"), "Import").disabled).toBe(false);
     expect(button(section("codex"), "Import").disabled).toBe(false);
+    expect(button(section("opencode"), "Import").disabled).toBe(false);
     expect(section("conductor").querySelector("button")).toBeNull();
     expect(section("conductor").textContent).toContain("Coming");
-    expect(container.querySelectorAll("button").length).toBe(2);
+    expect(container.querySelectorAll("button").length).toBe(3);
   });
 
   it("each tool keeps its own last import", async () => {
@@ -133,6 +137,23 @@ describe("MoveToBridge", () => {
     expect(stage.textContent).toContain("Codex");
     expect(stage.textContent).not.toContain("Claude Code");
     expect(stage.querySelector("[data-harness='codex']")).not.toBeNull();
+  });
+
+  it("imports OpenCode from OpenCode's own section, drawn from OpenCode's tile", async () => {
+    const start = vi.spyOn(bridgeApi, "startImport").mockResolvedValue(job({ tool: "opencode" }));
+    await render();
+
+    await act(async () => { button(section("opencode"), "Import").click(); await flush(); });
+
+    expect(start).toHaveBeenCalledWith("opencode");
+    expect(button(section("opencode"), "Importing…").disabled).toBe(true);
+    expect(button(section("claude_code"), "Import").disabled).toBe(true);
+    expect(section("claude_code").textContent).toContain("Waits for the import that is running.");
+    await send(job({ tool: "opencode", total: 30, processed: 10, imported: 10, updatedAt: "2026-11-19T10:00:05Z" }));
+    const stage = section("opencode").querySelector("[data-transfer]")!;
+    expect(stage.textContent).toContain("OpenCode");
+    expect(stage.querySelector("[data-harness='opencode']")).not.toBeNull();
+    expect(section("claude_code").querySelector("[data-transfer]")).toBeNull();
   });
 
   it("lands the transfer with a check when the import ends", async () => {
