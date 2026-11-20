@@ -42,7 +42,9 @@ Rust's compaction controller decides when a checkpoint is needed. The session be
 
 Checkpoints are triggered at phase boundaries, before suspension or model downgrade, before risky native resume, or on manual request. They are suppressed during tool calls and approvals, for short-lived workers with valid final results, and when no meaningful work occurred since the last boundary.
 
-The `ContextPressure` trigger stays reachable only where Bridge is the sole owner of the window: a harness that reports a context gauge and has no compaction of its own, which today means the agent-protocol harnesses. A direct chat never auto-compacts, and that exclusion is deliberate rather than an oversight. Its harness owns the live window, so Bridge has no pressure to relieve, and its boundaries are the four above.
+The `ContextPressure` trigger stays reachable only where Bridge is the sole owner of the window: a harness that reports a context gauge and has no compaction of its own, which today means the agent-protocol harnesses. A direct chat never gets an automatic Bridge checkpoint, and that exclusion is deliberate rather than an oversight. Its harness owns the live window, so Bridge has no pressure to relieve, and its boundaries are the four above.
+
+Early compaction is the one case where Bridge asks for a native compaction on its own. At an idle turn boundary of a top-level direct Claude or Codex chat, Bridge compares the window reading of that turn with one token threshold. When the reading is at or above the threshold, Bridge sends the harness its own compaction command, with no focus. This is the same call that a manual `/compact` makes. The harness does the compaction and reports its boundary as above. Bridge only picks the moment and keeps an attempt record, which it settles from the boundary or from the end of the turn. An early compaction never starts a Bridge checkpoint. A global switch controls the trigger, and a chat can opt out. The switch is off by default. With the switch off, this feature writes no row and sends no command.
 
 ### What the model is asked for
 
