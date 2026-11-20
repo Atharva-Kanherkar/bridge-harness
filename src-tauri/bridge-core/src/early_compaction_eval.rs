@@ -10,8 +10,20 @@
 //! [`World`] plays the frame path and the sweep with the real `Tracker` and
 //! the real `rule`. It keeps the session row, the state and the latest reading
 //! in memory, so it needs no database. It makes no claim about tokens.
+//!
+//! `live` is ignored and runs only when `BRIDGE_EARLY_COMPACTION_EVAL` is set.
+//! It plays `testing/evals/early-compaction/workload.json` in real Claude and
+//! Codex chats, one time with the switch on and one time with no switch. It
+//! scores the last four turns, adds the tokens of each chat from
+//! `usage_ledger` and writes a report. `docs/compaction-and-resume.md` gives
+//! the command and the values.
+
+mod driver;
+mod report;
+mod workload;
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::Deserialize;
@@ -453,6 +465,45 @@ fn offline() -> Result<(), String> {
             .map(|label| format!("no sweep expects {label}")),
     );
     println!("early compaction offline: {} cases", corpus.cases.len());
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+/// The live eval. Each run costs real tokens, so the test is ignored and
+/// needs the gate value too.
+#[test]
+#[ignore = "runs real Claude and Codex chats, needs BRIDGE_EARLY_COMPACTION_EVAL"]
+fn live() -> Result<(), String> {
+    let gate = std::env::var(driver::ENV_PREFIX).unwrap_or_default();
+    assert!(!gate.trim().is_empty(), "set {}=1 to run the live eval", driver::ENV_PREFIX);
+    let targets = driver::plan(
+        driver::env("HARNESS").as_deref(),
+        driver::env("MODEL").as_deref(),
+        driver::env("ONLY").as_deref(),
+    )?;
+    let workload = workload::load()?;
+    let rubric = workload.rubric()?;
+    let started = Utc::now();
+    let reports: Vec<report::HarnessReport> = targets
+        .iter()
+        .map(|target| {
+            let runs = driver::run_target(&workload, &rubric, target);
+            let verdict = report::verdict(&target.harness, &runs);
+            report::HarnessReport { harness: target.harness.clone(), model: target.model.clone(), runs, verdict }
+        })
+        .collect();
+    let dir = driver::env("REPORT_DIR")
+        .map_or_else(|| std::env::temp_dir().join("bridge-early-compaction-eval"), PathBuf::from);
+    let (markdown_path, json_path) = report::write_report(&dir, started, &reports)?;
+    println!("{}", report::markdown(started, &reports));
+    println!("report: {} and {}", markdown_path.display(), json_path.display());
+    let failures: Vec<String> = reports
+        .iter()
+        .flat_map(|report| report.verdict.failures.iter().map(|failure| format!("{}: {failure}", report.harness)))
+        .collect();
     if failures.is_empty() {
         Ok(())
     } else {

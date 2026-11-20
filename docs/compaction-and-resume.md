@@ -50,6 +50,36 @@ The threshold is 100,000 tokens, and it is provisional: the live eval and a ledg
 
 A global switch controls the trigger, and a chat can opt out. The switch is off by default. With the switch off, this feature writes no row and sends no command.
 
+### The live eval
+
+The live eval plays one scripted chat two times on a real harness: with the switch on, and with no switch. Each run costs real tokens, so the test has the `#[ignore]` mark and needs a gate value. Run it from the root of the repository:
+
+```bash
+BRIDGE_EARLY_COMPACTION_EVAL=1 cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core --lib early_compaction_eval::live -- --ignored --nocapture
+```
+
+These values change the run:
+
+- `BRIDGE_EARLY_COMPACTION_EVAL_HARNESS`: `claude` or `codex`. With no value, the eval runs the two harnesses, one after the other.
+- `BRIDGE_EARLY_COMPACTION_EVAL_MODEL`: the model of the chat. The defaults are `claude-haiku-5-5` and `gpt-6.2-sol`. Set the harness too when you set a model.
+- `BRIDGE_EARLY_COMPACTION_EVAL_ONLY`: `claude`, `codex`, `on` or `off`. It runs one harness or one arm. A run of one arm writes the figures, but it gives no verdict.
+- `BRIDGE_EARLY_COMPACTION_EVAL_REPORT_DIR`: the directory of the report. The default is `bridge-early-compaction-eval` in the temp directory of the system.
+
+The workload is `testing/evals/early-compaction/workload.json`. Turns 1 to 3 give three rules in the chat only. Turns 4 to 10 read large data files, so the window goes past the threshold. Turns 11 to 14 need the rules. Each of these turns gets 1 point when its check command passes, and 1 point when its file obeys each rule. The maximum is 8 points for each arm.
+
+The two arms of one harness run at the same time, each with its own data directory. After each turn, the two arms wait until the due mark has a final decision, or until the warm limit. An open attempt gets up to the settle limit. The eval adds the tokens of each chat from `usage_ledger` after the last turn. Then it stops the harness process with no checkpoint turn, so no checkpoint row goes into the sums.
+
+A harness passes when all of these are true:
+
+- The two arms finish each turn.
+- Arm `on` has at least one `compacted` attempt. On Claude, that attempt has `boundary_pre_tokens`.
+- On Claude, each compaction has a ledger row with tokens above zero before the next send. If one compaction has no such row, the harness fails with `compaction_usage_unobserved`.
+- On Codex, the harness does not report the tokens of the compaction request. The eval adds the trigger reading of each compacted attempt one time as uncached input, in the column `compaction bound (not observed)`. A compacted attempt with no trigger reading fails with `compaction_usage_unobserved`.
+- The score of arm `on` is at least the score of arm `off` minus 1, and arm `off` scores at least 6.
+- The input total of arm `on` (uncached, cache write and cache read, with the bound on Codex) is less than the total of arm `off`.
+
+The report is a Markdown file and a JSON file. It holds the raw sums, the points of each turn, the attempt rows and the verdict. The price from `usage_pricing` is a side figure, and it is not part of the bar. A model with no rate shows `no rate`. Each arm runs one time, so the figures are noise-prone. On Codex, the resend of the skills list (about 10,000 tokens) adds noise to the sums.
+
 ### What the model is asked for
 
 A checkpoint request asks the session for meaning only: a summary, the decisions taken, the files touched, and what is still open. Bridge fills the bookkeeping itself, so the schema version, the source agent, the first retained entry, the token count, and the reason are never echoed by a model and can never be echoed wrongly. The reply is read by extracting its first JSON object, so a fenced block or a sentence of preamble parses.
