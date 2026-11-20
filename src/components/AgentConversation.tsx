@@ -1151,13 +1151,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         {/* Hydrated rows mount in place without an entrance: they were always
             part of the conversation, they just arrived from an idle slice. */}
         {shownItems.slice(windowStart).map((entry, index) => renderEntry(entry, windowStart + index < instantBefore))}
-        {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
+        {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}>
+        {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
+        <div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
             {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
           </div>}
         </div>
-        {bubble.delivery && <DeliveryLabel note={bubble.delivery}/>}
         </TranscriptRow>)}
         {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
@@ -1627,10 +1628,17 @@ function StreamedProse({ text, streaming }: { text: string; streaming: boolean }
 /// what made a hundred-step turn stop responding. Streaming prose still
 /// re-renders on every chunk, because its text length moves.
 /// What the backend did with a message sent mid-turn: it either joined the
-/// running step or waits for it to finish. Said on the message itself, since
-/// that is what the reader is looking at.
+/// running step or waits for it to finish. Said right above the message,
+/// aligned with it, since that is what the reader is looking at.
+const DELIVERY_CAPTION: Record<DeliveryNote, string> = {
+  steered: "Steer · lands after this step",
+  queued: "Queued · sent when this step finishes",
+};
 function DeliveryLabel({ note }: { note: DeliveryNote }) {
-  return <p className="mt-1 text-right text-caption text-muted-foreground">{note === "steered" ? "Steering" : "Queued — sent when this step finishes"}</p>;
+  return <p data-delivery-caption={note} className="mb-1 flex items-center justify-end gap-1 text-caption text-muted-foreground">
+    {note === "steered" && <CornerDownRight size={12} className="shrink-0" aria-hidden="true"/>}
+    {DELIVERY_CAPTION[note]}
+  </p>;
 }
 
 const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
@@ -1647,6 +1655,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
     // The actions sit beside the bubble, out of flow: a hidden bar must not
     // leave an empty line of padding under every message the user sent.
     return <>
+      {delivery && <DeliveryLabel note={delivery}/>}
       <div className={cn(BUBBLE, "group relative")}>
         <MentionText text={item.text}/>
         {actions && <div data-reply-actions className="absolute bottom-0 right-full mr-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">{actions}</div>}
@@ -1654,7 +1663,6 @@ const MessageRow = memo(function MessageRow({ item, sessionId, delivery, latest,
           {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
         </div>}
       </div>
-      {delivery && <DeliveryLabel note={delivery}/>}
     </>;
   }
   // No bubble, no card: the agent writes straight onto the canvas, in body

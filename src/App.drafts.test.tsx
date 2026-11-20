@@ -226,7 +226,7 @@ describe("a follow-up sent while the chat works", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
     const transcript = container.querySelector("[data-conversation-content]")!;
     expect(transcript.textContent!.split("then run the linter").length - 1, "one bubble").toBe(1);
-    expect(transcript.textContent).toContain("Queued — sent when this step finishes");
+    expect(transcript.textContent).toContain("Queued · sent when this step finishes");
   });
 });
 
