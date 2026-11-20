@@ -5964,6 +5964,11 @@ mod tests {
             requires_user_approval: false,
             child_worktrees_available: false,
         });
+        // Counts are uncapped by default; this checks that a workspace cap is
+        // scoped to the parent turn, so it sets one.
+        let mut settings = bridge_core::worker_settings::load(&db, "w").unwrap();
+        settings.max_workers_per_turn = 3;
+        bridge_core::worker_settings::save(&db, "w", &settings).unwrap();
         for index in 0..3 {
             policy::record_spawn_usage(
                 &db,

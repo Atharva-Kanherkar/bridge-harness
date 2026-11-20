@@ -198,16 +198,35 @@ pub struct PolicyConfig {
     pub max_capability_units_per_turn: i64,
 }
 
+/// Count budgets default to unlimited. Every worker is its own process in its
+/// own read-only sandbox or worktree, so running them side by side is safe;
+/// the gates that protect correctness (depth, write scope, one writer per
+/// worktree, approvals, independent verification) are not counts and stay.
+/// A workspace can still set its own caps in worker settings.
 impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_workers: 2,
+            max_concurrent_workers: usize::MAX,
             max_writers_per_worktree: 1,
-            max_workers_per_turn: 3,
-            max_strong_workers_per_turn: 1,
+            max_workers_per_turn: usize::MAX,
+            max_strong_workers_per_turn: usize::MAX,
             max_automatic_retries: 1,
             max_depth: 1,
+            max_capability_units_per_turn: i64::MAX,
+        }
+    }
+}
+
+impl PolicyConfig {
+    /// The caps the policy shipped with before counts became unlimited. Tests
+    /// that exercise the budget gates opt into them explicitly.
+    pub fn capped() -> Self {
+        Self {
+            max_concurrent_workers: 2,
+            max_workers_per_turn: 3,
+            max_strong_workers_per_turn: 1,
             max_capability_units_per_turn: 24,
+            ..Self::default()
         }
     }
 }
@@ -262,7 +281,7 @@ impl PolicyEngine {
             restoration,
             input.retry_count > 0,
         );
-        if input.budget.capability_units_used + units > self.config.max_capability_units_per_turn {
+        if input.budget.capability_units_used.saturating_add(units) > self.config.max_capability_units_per_turn {
             return outcome(
                 RouteDecision::Reject,
                 RouteReason::CapabilityBudgetExhausted,
@@ -1264,10 +1283,32 @@ mod tests {
     }
 
     #[test]
+    fn default_policy_has_no_count_limits_for_readers_or_writers() {
+        let engine = PolicyEngine::default();
+        let mut reader = input();
+        reader.request.write_mode = WriteMode::ReadOnly;
+        reader.request.owned_paths.clear();
+        reader.request.capability_tier = CapabilityTier::Strong;
+        reader.active_workers = (0..40)
+            .map(|index| worker(&format!("r{index}"), WorkerRole::Research, CapabilityTier::Strong, WriteMode::ReadOnly, &[]))
+            .collect();
+        reader.budget = RequestBudget { workers_used: 40, strong_workers_used: 40, capability_units_used: 10_000 };
+        assert!(matches!(engine.decide(&reader).decision, RouteDecision::SpawnWorker(_)), "{:?}", engine.decide(&reader));
+
+        let mut writer = input();
+        writer.active_workers = (0..40)
+            .map(|index| worker(&format!("w{index}"), WorkerRole::Implementation, CapabilityTier::Standard, WriteMode::Isolated, &["other/**"]))
+            .collect();
+        writer.budget = RequestBudget { workers_used: 40, strong_workers_used: 0, capability_units_used: 10_000 };
+        let decided = engine.decide(&writer);
+        assert!(matches!(decided.decision, RouteDecision::SpawnWorker(_)), "{decided:?}");
+    }
+
+    #[test]
     fn write_claim_without_provenance_requires_user_approval() {
         let mut case = input();
         case.owned_path_provenance = OwnedPathProvenance::default();
-        let outcome = PolicyEngine::default().decide(&case);
+        let outcome = PolicyEngine::new(PolicyConfig::capped()).decide(&case);
         assert_eq!(outcome.reason, RouteReason::OwnedPathProvenanceRequired);
         assert!(matches!(
             outcome.decision,
@@ -1279,11 +1320,11 @@ mod tests {
     fn full_access_authorizes_any_scope_but_not_past_hard_limits() {
         let mut case = input();
         case.owned_path_provenance = OwnedPathProvenance { full_access: true, ..Default::default() };
-        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        assert!(matches!(PolicyEngine::new(PolicyConfig::capped()).decide(&case).decision, RouteDecision::SpawnWorker(_)));
         case.request.owned_paths.clear();
-        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        assert!(matches!(PolicyEngine::new(PolicyConfig::capped()).decide(&case).decision, RouteDecision::SpawnWorker(_)));
         case.budget.workers_used = 1000;
-        assert_eq!(PolicyEngine::default().decide(&case).reason, RouteReason::WorkerBudgetExhausted);
+        assert_eq!(PolicyEngine::new(PolicyConfig::capped()).decide(&case).reason, RouteReason::WorkerBudgetExhausted);
     }
 
     #[test]
@@ -1291,14 +1332,14 @@ mod tests {
         let mut case = input();
         case.request.owned_paths.clear();
         case.owned_path_provenance = OwnedPathProvenance { unscoped_write_approved: true, ..Default::default() };
-        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        assert!(matches!(PolicyEngine::new(PolicyConfig::capped()).decide(&case).decision, RouteDecision::SpawnWorker(_)));
         case.request.owned_paths = vec!["src/**".into()];
-        assert_eq!(PolicyEngine::default().decide(&case).reason, RouteReason::OwnedPathProvenanceRequired);
+        assert_eq!(PolicyEngine::new(PolicyConfig::capped()).decide(&case).reason, RouteReason::OwnedPathProvenanceRequired);
     }
 
     #[test]
     fn hard_limits_reject_before_requesting_scope_approval() {
-        let engine = PolicyEngine::default();
+        let engine = PolicyEngine::new(PolicyConfig::capped());
         for (field, reason) in [
             ("workers", RouteReason::WorkerBudgetExhausted),
             ("strong", RouteReason::StrongWorkerLimit),
@@ -1325,7 +1366,7 @@ mod tests {
         case.request.owned_paths = vec!["src/**".into()];
         case.owned_path_provenance.trusted_paths = vec!["src/auth/session.rs".into()];
         assert_eq!(
-            PolicyEngine::default().decide(&case).reason,
+            PolicyEngine::new(PolicyConfig::capped()).decide(&case).reason,
             RouteReason::OwnedPathProvenanceRequired
         );
         assert!(owned_paths_are_provenanced(
@@ -1361,7 +1402,7 @@ mod tests {
         case.request.owned_paths.clear();
         case.owned_path_provenance = OwnedPathProvenance::default();
         assert!(matches!(
-            PolicyEngine::default().decide(&case).decision,
+            PolicyEngine::new(PolicyConfig::capped()).decide(&case).decision,
             RouteDecision::SpawnWorker(_)
         ));
     }
@@ -1381,14 +1422,14 @@ mod tests {
         )];
 
         assert!(matches!(
-            PolicyEngine::default().decide(&case).decision,
+            PolicyEngine::new(PolicyConfig::capped()).decide(&case).decision,
             RouteDecision::SpawnWorker(_)
         ));
     }
 
     #[test]
     fn decision_matrix_covers_every_route_and_limit() {
-        let engine = PolicyEngine::default();
+        let engine = PolicyEngine::new(PolicyConfig::capped());
 
         let mut case = input();
         case.parent_can_execute = true;
@@ -1478,7 +1519,7 @@ mod tests {
         case.request.capability_tier = CapabilityTier::Strong;
         let tight = PolicyEngine::new(PolicyConfig {
             max_capability_units_per_turn: 5,
-            ..PolicyConfig::default()
+            ..PolicyConfig::capped()
         });
         assert_eq!(
             tight.decide(&case).reason,
@@ -1488,7 +1529,7 @@ mod tests {
 
     #[test]
     fn read_only_parallelism_and_disjoint_isolated_writers_are_allowed() {
-        let engine = PolicyEngine::default();
+        let engine = PolicyEngine::new(PolicyConfig::capped());
         let mut reads = input();
         reads.request.write_mode = WriteMode::ReadOnly;
         reads.request.owned_paths.clear();
@@ -1527,7 +1568,7 @@ mod tests {
 
     #[test]
     fn same_inputs_produce_identical_decision_and_reason() {
-        let engine = PolicyEngine::default();
+        let engine = PolicyEngine::new(PolicyConfig::capped());
         let input = input();
         assert_eq!(engine.decide(&input), engine.decide(&input));
     }
@@ -1611,7 +1652,7 @@ mod tests {
 
     #[test]
     fn warm_worker_compatibility_uses_complete_key() {
-        let engine = PolicyEngine::default();
+        let engine = PolicyEngine::new(PolicyConfig::capped());
         let compatible = worker(
             "warm",
             WorkerRole::Implementation,
@@ -2149,7 +2190,7 @@ mod tests {
     #[test]
     fn new_turn_resets_request_budget() {
         let db = database();
-        let outcome = PolicyEngine::default().decide(&input());
+        let outcome = PolicyEngine::new(PolicyConfig::capped()).decide(&input());
         for _ in 0..3 {
             record_spawn_usage(
                 &db,
@@ -2177,7 +2218,7 @@ mod tests {
     fn policy_decision_is_persisted_in_active_forest() {
         let db = database();
         let input = input();
-        let outcome = PolicyEngine::default().decide(&input);
+        let outcome = PolicyEngine::new(PolicyConfig::capped()).decide(&input);
         record_decision(&db, "parent", "turn-1", &input, &outcome).unwrap();
         let branch = SessionForest::new(&db).active_branch("parent").unwrap();
         assert_eq!(branch.len(), 1);

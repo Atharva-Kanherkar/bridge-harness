@@ -38,7 +38,8 @@ See [the audit](worker-storage-audit.md) for measurement and platform limits.
 
 Two costs are paid knowingly. Concurrent builds of one repository serialize on
 cargo's lock rather than building in parallel, which is the right trade against
-a multi-gigabyte target directory per worker (`max_concurrent_workers` is 2).
+a multi-gigabyte target directory per worker (worker concurrency has no default cap,
+so the shared cache matters more, not less).
 And switching branches rebuilds changed crates, while unchanged dependencies —
 the bulk — are reused.
 

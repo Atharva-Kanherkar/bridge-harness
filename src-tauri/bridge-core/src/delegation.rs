@@ -1329,7 +1329,7 @@ pub const WAIT_DEFAULT_TIMEOUT_SECONDS: u64 = 900;
 pub const WAIT_MIN_TIMEOUT_SECONDS: u64 = 30;
 pub const WAIT_MAX_TIMEOUT_SECONDS: u64 = 3_600;
 /// More than this many ids is not a list of one orchestrator's workers.
-const WAIT_MAX_LISTED_WORKERS: usize = 64;
+const WAIT_MAX_LISTED_WORKERS: usize = 256;
 
 /// Which workers a `bridge-wait` covers: every live worker, or a named few.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1412,7 +1412,8 @@ impl WaitRequest {
                 return Err(format!("bridge-wait names at most {WAIT_MAX_LISTED_WORKERS} workers"))
             }
             WaitWorkers::Listed(ids) => {
-                if !ids.iter().all(|id| valid_child_session_id(id)) {
+                // A queued worker has no session yet and is named `queue:<id>`.
+                if !ids.iter().all(|id| valid_child_session_id(id.strip_prefix("queue:").unwrap_or(id))) {
                     return Err("bridge-wait worker ids must be 1-128 identifier characters".into());
                 }
             }
@@ -1768,7 +1769,7 @@ When you start two or more workers in one turn, emit one fenced `bridge-wait` bl
 {"workers":"all","until":"all_done","timeoutSeconds":900}
 ```
 
-Bridge then holds their results and wakes you once, with a single `bridge-worker-results` notice that carries every result, instead of spending one of your turns per worker. `"all"` means the workers running when your turn ends; you can list session ids instead. `"until":"any_done"` wakes you at the first result. It wakes you early when a worker fails or needs the person (`breakOn`, default `["failed","needs_you"]`; `[]` never breaks early), and at the timeout (30 to 3600 seconds) with whatever has arrived plus `stillRunning`.
+Bridge then holds their results and wakes you once, with a single `bridge-worker-results` notice that carries every result, instead of spending one of your turns per worker. `"all"` means every worker you started that has not reported, including ones still queued; you can list session ids instead (a queued worker appears in the fleet as `queue:<id>`, and that id works too). `"until":"any_done"` wakes you at the first result. It wakes you early when a worker fails or needs the person (`breakOn`, default `["failed","needs_you"]`; `[]` never breaks early), and at the timeout (30 to 3600 seconds) with whatever has arrived plus `stillRunning`.
 
 Until that notice arrives, the work is not done: do not claim it is, and do not summarize results you have not seen. If the notice lists workers in `stillRunning`, report what finished and what is still running; wait again or peek if you need them."#;
 
