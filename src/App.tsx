@@ -3796,7 +3796,7 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       liveAgents={liveAgents}
-      sessions={state.sessions}
+      sessions={visibleSessions}
       liveEvents={agentEvents}
       sendingChatIds={sendingChatIds}
       subagents={subagents}
