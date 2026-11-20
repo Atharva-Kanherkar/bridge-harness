@@ -193,3 +193,14 @@ describe("the turn line", () => {
     expect(footers[1].querySelector("[data-reply-actions]")!.getAttribute("data-reply-actions")).toBe("latest");
   });
 });
+
+describe("the turn's worked-for summary", () => {
+  it("names edited files, not edit calls, so it agrees with the changes card", () => {
+    act(() => {
+      root.render(<AgentConversation session={session} events={editingTurn()} onResolve={() => undefined} />);
+    });
+    // policy.rs is edited twice and retry.md once: two files, like the card.
+    expect(host.textContent).toContain("edited 2 files");
+    expect(host.querySelectorAll("[data-turn-file]")).toHaveLength(2);
+  });
+});

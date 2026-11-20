@@ -202,12 +202,22 @@ function summarize(items: ConversationItem[], live: boolean): string {
   // the repo is not "searching the web".
   let web = 0;
   const counted = new Set<string>();
+  // "Edited 4 files" names files, not calls: a file edited twice is one file,
+  // the way the turn's changes card counts it. A call without a path still
+  // counts on its own.
+  const files: Partial<Record<ToolVerb, Set<string>>> = { edit: new Set(), read: new Set() };
   for (const item of items) {
     if (!isToolItem(item)) continue;
     const call = toolCallDisplay(item);
     const identity = call.sourceCallId ?? item.identity ?? item.key;
     if (counted.has(identity)) continue;
     counted.add(identity);
+    const named = files[call.verb];
+    if (named) {
+      const file = call.path ? `path:${call.path}` : `call:${identity}`;
+      if (named.has(file)) continue;
+      named.add(file);
+    }
     counts[call.verb] += 1;
     if (call.verb === "search" && call.glyph === "globe") web += 1;
   }
