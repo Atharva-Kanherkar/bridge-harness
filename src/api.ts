@@ -1164,7 +1164,10 @@ function emitState() { stateListeners.forEach(listener => listener()); }
 function emitMemoryChanged(scopeKey: string) { memoryListeners.forEach(listener => listener({ scopeKey })); }
 function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent> = {}) {
   const event = agentEvent(nextEventId++, sessionId, kind, fields);
-  event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence)) + 1;
+  // After the stored history too, as the core's log is: a demo chat's forest
+  // runs past its seeded frames, and a message sent into it belongs at the end.
+  const stored = mockForests[sessionId]?.entries.map(entry => entry.sequence) ?? [];
+  event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence), ...stored) + 1;
   mockState.agentEvents.push(event);
   // Cloned per listener so no subscriber can mutate the stored row or another
   // subscriber's copy — the same isolation a wire round-trip gives.
