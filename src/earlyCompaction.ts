@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { bridgeApi } from "./api";
 import type { EarlyCompactionSettings } from "./types";
 
-/** The text of both controls: what the feature does and its default. */
+/** The text of both controls. The chat item shows only while the global switch is on, so its note names no default. */
 export const EARLY_COMPACTION_DESCRIPTION = "When a Claude or Codex chat ends a turn and stays idle, Bridge asks the agent to make its context smaller. Off by default.";
-export const EARLY_COMPACTION_CHAT_NOTE = "Makes the context smaller at an idle turn end. Off by default.";
+export const EARLY_COMPACTION_CHAT_NOTE = "Makes the context smaller at an idle turn end. Clear the tick to keep this chat out.";
 
 /** `sessionId` set: the switch as that chat sees it. Unset: the global switch only. */
 export function useEarlyCompaction(sessionId?: string): {

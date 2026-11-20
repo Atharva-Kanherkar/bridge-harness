@@ -343,7 +343,7 @@ function ChatRowMenu({
  * The host decides which chat the feature covers, so the row tests no harness.
  */
 function ChatEarlyCompaction({ chatId }: { chatId: string }) {
-  const { view, busy, set } = useEarlyCompaction(chatId);
+  const { view, error, busy, set } = useEarlyCompaction(chatId);
   if (!view?.globalEnabled || !view.sessionEligible) return null;
   const on = view.enabled === true;
   return (
@@ -363,6 +363,7 @@ function ChatEarlyCompaction({ chatId }: { chatId: string }) {
           <span className="block text-[11px] leading-snug text-muted-foreground">{EARLY_COMPACTION_CHAT_NOTE}</span>
         </span>
       </button>
+      {error && <p role="alert" className="pb-1 pl-7 pr-2 text-[11px] leading-snug text-destructive">{error}</p>}
     </>
   );
 }

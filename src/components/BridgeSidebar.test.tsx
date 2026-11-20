@@ -721,7 +721,8 @@ describe("BridgeSidebar chat menu early compaction", () => {
     expect(optOut()?.getAttribute("aria-checked")).toBe("true");
     expect(optOut()?.textContent).toContain("Compact early");
     expect(optOut()?.textContent).toContain("context smaller at an idle turn end");
-    expect(optOut()?.textContent).toContain("Off by default");
+    expect(optOut()?.textContent).toContain("Clear the tick to keep this chat out.");
+    expect(optOut()?.textContent, "the item shows only while the switch is on").not.toContain("Off by default");
 
     act(() => optOut()!.click()); await settle();
     expect(optOut()?.getAttribute("aria-checked")).toBe("false");
@@ -729,6 +730,27 @@ describe("BridgeSidebar chat menu early compaction", () => {
     act(() => optOut()!.click()); await settle();
     expect(optOut()?.getAttribute("aria-checked")).toBe("true");
     expect((await bridgeApi.earlyCompactionSettings(direct.id)).sessionOptedOut).toBe(false);
+    await closeMenu();
+  });
+
+  it("shows a refused opt-out in the menu and keeps the last value", async () => {
+    const direct = await mockChat("codex", "Refused chat");
+    await bridgeApi.saveEarlyCompactionSettings(null, true);
+    await openMenu(direct);
+    const alert = () => document.body.querySelector('[role="menu"] [role="alert"]');
+    const save = vi.spyOn(bridgeApi, "saveEarlyCompactionSettings").mockRejectedValueOnce(new Error("the store is read-only"));
+    act(() => optOut()!.click()); await settle();
+    expect(save).toHaveBeenCalledWith(direct.id, false);
+    expect(alert()?.textContent).toBe("the store is read-only");
+    expect(alert()?.className).toContain("text-destructive");
+    expect(optOut()?.getAttribute("aria-checked"), "a refused save keeps the confirmed value").toBe("true");
+
+    // A save that works clears the error.
+    act(() => optOut()!.click()); await settle();
+    expect(alert()).toBeNull();
+    expect(optOut()?.getAttribute("aria-checked")).toBe("false");
+    save.mockRestore();
+    await bridgeApi.saveEarlyCompactionSettings(direct.id, null);
     await closeMenu();
   });
 
