@@ -42,6 +42,23 @@ test("the Bridge hook allows local reads and explicitly denies mutation", async 
   }
 });
 
+test("a read-only worker cannot start a Claude subagent", async () => {
+  for (const networkAllowed of [false, true]) {
+    const options = readOnlyOptions({ networkAllowed, mcpServers: { notion: {} } });
+    assert.ok(!options.tools.includes("Agent"), `networkAllowed=${networkAllowed}`);
+    assert.ok(!options.tools.includes("Task"), `networkAllowed=${networkAllowed}`);
+    // The hook that Bridge hands to the SDK, and one made on its own.
+    const hooks = [options.hooks.PreToolUse[0].hooks[0], makeReadOnlyHook({ networkAllowed, mcpServers: { notion: {} } })];
+    for (const hook of hooks) {
+      for (const tool_name of ["Agent", "Task"]) {
+        const output = await hook({ hook_event_name: "PreToolUse", tool_name, tool_input: { prompt: "Read the repository" } });
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny", `${tool_name} networkAllowed=${networkAllowed}`);
+        assert.match(output.hookSpecificOutput.permissionDecisionReason, /Bridge read-only policy denied mutating or unknown tool/);
+      }
+    }
+  }
+});
+
 test("MCP matching is fail-closed and network authorization is enforced", async () => {
   for (const name of [
     "mcp__notion__search",
