@@ -76,3 +76,10 @@ describe("workerStatus", () => {
     expect(isVisibleWorker(session({ status: "failed" }), runtime({ lifecycleState: "failed", resultStatus: "reported", lastResult: { status: "failed" } }))).toBe(true);
   });
 });
+
+it("reads harness child status without inventing a worker runtime", () => {
+  expect(workerStatus(session({kind:"harness_subagent"}))).toMatchObject({tone:"working",label:"WORKING"});
+  expect(workerStatus(session({kind:"harness_subagent",status:"waiting"}))).toMatchObject({tone:"waiting"});
+  expect(workerStatus(session({kind:"harness_subagent",status:"stopped"}))).toMatchObject({label:"INTERRUPTED"});
+  expect(workerStatus(session())).toMatchObject({label:"STATUS UNAVAILABLE"});
+});

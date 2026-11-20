@@ -82,14 +82,23 @@ export type FanOuts = {
 /// folded on. A classified failure keeps its own alert row in the transcript,
 /// because it carries an action the reader has to see (Retry).
 export function isQuietWorkerRow(item: ConversationItem): boolean {
-  if (item.type !== "delegation" || !delegationChildSessionId(item)) return false;
+  if (!isBridgeWorkerRow(item)) return false;
   const facet = delegationFacet(item);
   if (facet === "spawn") return true;
   return facet === "result" && typeof item.data.failureCause !== "string";
 }
 
+/**
+ * A delegation row for a Bridge worker. A provider-owned subagent (folded in
+ * as a delegation with `harnessSubagent`) is not one: it keeps its own row and
+ * its own Stop, and a fan-out card never counts or stops it.
+ */
+function isBridgeWorkerRow(item: ConversationItem): boolean {
+  return item.type === "delegation" && !!delegationChildSessionId(item) && item.data.harnessSubagent !== true;
+}
+
 function isWorkerRow(item: ConversationItem): boolean {
-  if (item.type !== "delegation" || !delegationChildSessionId(item)) return false;
+  if (!isBridgeWorkerRow(item)) return false;
   const facet = delegationFacet(item);
   return facet === "spawn" || facet === "result";
 }

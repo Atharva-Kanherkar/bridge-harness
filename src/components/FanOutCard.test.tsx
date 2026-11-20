@@ -219,3 +219,20 @@ describe("the fan-out card beside a turn's end", () => {
     expect(ends.some(end => card.compareDocumentPosition(end) & Node.DOCUMENT_POSITION_FOLLOWING), "a turn end after the fan-out card").toBe(true);
   });
 });
+
+describe("the fan-out card and provider subagents", () => {
+  it("counts and groups Bridge workers only, leaving a harness subagent its own row", async () => {
+    const subagentStarted = event("subagent.started", {
+      status: "working",
+      data: { childSessionId: "provider-child", subagent: { sessionId: "p-1", agent: "Explore", title: "Check authentication" } },
+    });
+    await mount({ events: [user("Split it"), spawn("a"), spawn("b"), subagentStarted] });
+    expect(cards()).toHaveLength(1);
+    const card = cards()[0]!;
+    expect(card.textContent).toContain("2 workers");
+    expect(card.textContent).not.toContain("Check authentication");
+    // The provider's child keeps its own quiet row outside the card.
+    const outside = [...host.querySelectorAll("button")].filter(button => !card.contains(button) && button.textContent?.includes("Subagent"));
+    expect(outside.length).toBeGreaterThan(0);
+  });
+});

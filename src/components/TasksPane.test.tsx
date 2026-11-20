@@ -331,3 +331,38 @@ describe("lineage", () => {
     expect(worktreeLabel(null)).toBeUndefined();
   });
 });
+
+describe("harness subagent sessions", () => {
+  it("lists runtime-free children with workers, scopes them and retains pinned outcomes", () => {
+    const sessions=[chat,session("child",{kind:"harness_subagent"}),session("other",{kind:"harness_subagent",parentSessionId:"elsewhere"}),session("done",{kind:"harness_subagent",status:"completed"}),session("worker")];
+    expect(activeAgentRows("chat",sessions,[runtime("worker")],new Set(["done"])).map(row=>row.session.id)).toEqual(["done","worker","child"]);
+  });
+  it("opens the child with provenance and sends Stop to the child session", async () => {
+    const onStopWorker=vi.fn().mockResolvedValue(undefined);
+    const child=session("child",{kind:"harness_subagent",title:"Check authentication",harness:"claude"});
+    await mount({sessions:[chat,child],onStopWorker,onSteer:async()=>undefined});
+    expect(container.textContent).toContain("subagent");
+    expect(container.textContent).not.toContain("STATUS UNAVAILABLE");
+    await click(byLabel(`View ${agentName("child")}`));
+    expect(container.textContent).toContain("Started by Claude in this chat.");
+    expect(container.textContent).toContain("Not a Bridge worker.");
+    expect(container.querySelector("textarea")).toBeNull();
+    await click(byLabel(`Stop subagent ${agentName("child")}`));
+    expect(onStopWorker).toHaveBeenCalledWith("child");
+  });
+});
+
+describe("lineage with provider subagents", () => {
+  it("lists a harness subagent in the tree as a subagent, without a runtime record", async () => {
+    const child = session("child", { kind: "harness_subagent", title: "Check authentication", harness: "claude" });
+    const onStopWorker = vi.fn().mockResolvedValue(undefined);
+    await mount({ sessions: [chat, session("w1"), child], runtimes: [runtime("w1")], onStopWorker });
+    const row = container.querySelector('[data-agent-row="child"]');
+    expect(row, "the subagent is in the lineage").toBeTruthy();
+    expect(row!.getAttribute("data-depth")).toBe("1");
+    expect(row!.textContent).toContain("Check authentication");
+    expect(container.textContent).toContain("1 worker · 1 subagent");
+    await click(byLabel(`Stop subagent ${agentName("child")}`));
+    expect(onStopWorker).toHaveBeenCalledWith("child");
+  });
+});

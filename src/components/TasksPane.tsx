@@ -71,19 +71,25 @@ export function descendantIds(rootId: string, sessions: readonly Session[]): Set
   return found;
 }
 
-export type AgentRow = { runtime: WorkerRuntimeRecord; session: Session; pinned: boolean };
+export type AgentRow = { runtime?: WorkerRuntimeRecord; session: Session; pinned: boolean };
 
 /// The rows the pane lists: this chat's active workers, plus any it pinned.
 export function activeAgentRows(chatId: string, sessions: readonly Session[], runtimes: readonly WorkerRuntimeRecord[], pinned: ReadonlySet<string>): AgentRow[] {
   const mine = descendantIds(chatId, sessions);
-  const rows = runtimes.flatMap(runtime => {
+  const rows: AgentRow[] = runtimes.flatMap(runtime => {
     if (!mine.has(runtime.sessionId)) return [];
     const session = sessions.find(item => item.id === runtime.sessionId);
-    if (!session) return [];
+    if (!session || session.kind === "harness_subagent") return [];
     const isPinned = pinned.has(runtime.sessionId);
     if (!isPinned && !isActiveTone(workerStatus(session, runtime).tone)) return [];
     return [{ runtime, session, pinned: isPinned }];
   });
+  for (const session of sessions) {
+    if (session.kind !== "harness_subagent" || !mine.has(session.id)) continue;
+    const isPinned = pinned.has(session.id);
+    if (!isPinned && !isActiveTone(workerStatus(session).tone)) continue;
+    rows.push({ session, pinned: isPinned });
+  }
   return rows.sort((left, right) => Number(right.pinned) - Number(left.pinned) || (left.session.startedAt ?? "").localeCompare(right.session.startedAt ?? ""));
 }
 
@@ -144,6 +150,16 @@ const STATE_ICON: Record<WorkerState, LucideIcon> = {
 /** Indent by depth: the orchestrator, then one step per generation. */
 const DEPTH_INDENT = ["pl-3", "pl-8", "pl-13", "pl-18"];
 
+function childStep(sessionId: string, events: readonly AgentEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.sessionId !== sessionId) continue;
+    const step = event.title ?? event.data.last_tool_name ?? event.data.summary;
+    if (typeof step === "string" && step.trim()) return step;
+  }
+  return undefined;
+}
+
 function queueObjective(request: unknown): string | undefined {
   if (typeof request !== "object" || request === null) return undefined;
   const value = (request as Record<string, unknown>).objective;
@@ -193,7 +209,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
     const runtime = runtimes.find(item => item.sessionId === open.id);
     const status = workerStatus(open, runtime);
     const name = agentName(open.id);
-    const topic = agentTopic(open);
+    const topic = open.kind === "harness_subagent" ? open.title : agentTopic(open);
     const isPinned = pinned.has(open.id);
     return <div className="flex h-full flex-col">
       <div className="flex min-h-11 shrink-0 items-center gap-1.5 border-b border-border px-1.5 py-1.5">
@@ -208,7 +224,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5">
             <b className="shrink-0 text-ui font-medium text-foreground">{name}</b>
-            <span className="min-w-0 truncate text-meta text-muted-foreground">{agentRole(open.label)}</span>
+            <span className="min-w-0 truncate text-meta text-muted-foreground">{open.kind === "harness_subagent" ? "subagent" : agentRole(open.label)}</span>
             <span className={cn("shrink-0 text-caption font-semibold", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
           </span>
           {topic && <span className="mt-0.5 block truncate text-meta text-foreground/80" title={topic}>{topic}</span>}
@@ -216,7 +232,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         </span>
         <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{formatElapsed(open.startedAt, workerClock(open, runtime, now))}</span>
         <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(open.id)} />
-        {onStopWorker && runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState) && <StopButton name={name} onStop={() => void onStopWorker(open.id)} />}
+        {onStopWorker && (open.kind === "harness_subagent" ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState)) && <StopButton name={name} subagent={open.kind === "harness_subagent"} onStop={() => void onStopWorker(open.id)} />}
         <button
           type="button"
           onClick={() => onOpenSession(open.id)}
@@ -225,6 +241,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
           className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         ><ArrowUpRight size={13} aria-hidden="true" /></button>
       </div>
+      {open.kind === "harness_subagent" && <p className="shrink-0 border-b border-border px-3 py-2 text-caption leading-relaxed text-muted-foreground">Started by {harnessLabel(open.harness)} in this chat. Runs with this chat’s permissions. Not a Bridge worker.</p>}
       <div className="min-h-0 flex-1">
         <AgentChat key={open.id} session={open} runtime={runtime} liveEvents={liveEvents} reasons={reasons} onOpenSession={onOpenSession} onSteer={onSteer} />
       </div>
@@ -244,8 +261,12 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
     return Number.isFinite(at) ? [at] : [];
   }));
   const orchestrator = sessions.find(item => item.id === chatSessionId);
+  const subagentCount = rows.filter(row => row.session.kind === "harness_subagent").length;
+  const workerCount = rows.length - subagentCount;
   const headline = [
-    ...(rows.length > 0 ? [`${rows.length} ${rows.length === 1 ? "worker" : "workers"}`, `${running} running`] : []),
+    ...(workerCount > 0 ? [`${workerCount} ${workerCount === 1 ? "worker" : "workers"}`] : []),
+    ...(subagentCount > 0 ? [`${subagentCount} ${subagentCount === 1 ? "subagent" : "subagents"}`] : []),
+    ...(rows.length > 0 ? [`${running} running`] : []),
     ...(queued.length > 0 ? [`${queued.length} queued`] : []),
   ].join(" · ");
   const paneDigit = dockPaneChord("tasks");
@@ -276,20 +297,23 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
             const state = stateOfTone(status.tone);
             const StateIcon = STATE_ICON[state];
             const name = agentName(session.id);
-            const topic = agentTopic(session);
-            const role = agentRole(session.label);
-            const worktree = worktreeLabel(runtime.worktreePath);
+            const subagent = session.kind === "harness_subagent";
+            const topic = subagent ? session.title : agentTopic(session);
+            const role = subagent ? "subagent" : agentRole(session.label);
+            const worktree = worktreeLabel(runtime?.worktreePath);
             const meta = [topic ? role : null, worktree, session.model ? modelLabel(session.model) : null].filter(Boolean).join(" · ");
-            const detail = runtime.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime.progressSummary;
-            const files = status.tone === "done" && runtime.resultStatus === "reported" && Array.isArray(runtime.lastResult?.filesChanged) ? runtime.lastResult.filesChanged.length : 0;
+            // A provider-owned subagent has no runtime record: its newest step
+            // (or its harness) says what it is doing.
+            const detail = runtime?.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime ? runtime.progressSummary : childStep(session.id, liveEvents) ?? harnessLabel(session.harness);
+            const files = status.tone === "done" && runtime?.resultStatus === "reported" && Array.isArray(runtime.lastResult?.filesChanged) ? runtime.lastResult.filesChanged.length : 0;
             const label = files > 0 ? `Done · ${files} ${files === 1 ? "file" : "files"}` : sentenceCase(status.label);
             const started = Date.parse(session.startedAt ?? "");
-            const stoppable = onStopWorker && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState);
-            return <section key={runtime.sessionId} data-agent-row={runtime.sessionId} data-depth={depth} className="group/agent">
+            const stoppable = onStopWorker && (subagent ? isActiveTone(status.tone) : runtime && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState));
+            return <section key={session.id} data-agent-row={session.id} data-depth={depth} className="group/agent">
               <div className={clsx("flex min-h-12 items-center gap-1 py-1.5 pr-3 transition-colors hover:bg-accent/50 group-focus-within/agent:bg-accent/50", DEPTH_INDENT[Math.min(depth, DEPTH_INDENT.length - 1)])}>
                 <button
                   type="button"
-                  onClick={() => setSelected(runtime.sessionId)}
+                  onClick={() => setSelected(session.id)}
                   aria-label={`View ${name}`}
                   className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left"
                 >
@@ -301,7 +325,7 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                       {isPinned && <Pin size={10} className="shrink-0 self-center fill-current text-muted-foreground" aria-hidden="true"/>}
                       <span className="min-w-0 truncate text-meta text-foreground/80">{topic ?? role}</span>
                     </span>
-                    {meta && <span className="block truncate text-caption text-faint" title={runtime.worktreePath ?? undefined}>{meta}</span>}
+                    {meta && <span className="block truncate text-caption text-faint" title={runtime?.worktreePath ?? undefined}>{meta}</span>}
                     {detail && <span className="block truncate font-mono text-caption text-muted-foreground">{detail}</span>}
                   </span>
                   <span className="shrink-0 text-right">
@@ -314,8 +338,8 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
                 {/* Actions take no room until the row is pointed at or
                     focused, so states line up on the right edge. */}
                 <span className="hidden shrink-0 items-center gap-0.5 group-hover/agent:flex group-focus-within/agent:flex">
-                  <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(runtime.sessionId)} />
-                  {stoppable && <StopButton name={name} onStop={() => void onStopWorker(runtime.sessionId)} />}
+                  <PinButton name={name} pinned={isPinned} onToggle={() => onTogglePin(session.id)} />
+                  {stoppable && <StopButton name={name} subagent={subagent} onStop={() => void onStopWorker(session.id)} />}
                 </span>
               </div>
             </section>;
@@ -364,12 +388,12 @@ function PinButton({ name, pinned, onToggle }: { name: string; pinned: boolean; 
   ><Pin size={12} className={cn(pinned && "fill-current")} aria-hidden="true" /></button>;
 }
 
-function StopButton({ name, onStop }: { name: string; onStop: () => void }) {
+function StopButton({ name, onStop, subagent = false }: { name: string; onStop: () => void; subagent?: boolean }) {
   return <button
     type="button"
     onClick={onStop}
-    aria-label={`Stop worker ${name}`}
-    title="Stop this worker"
+    aria-label={`Stop ${subagent ? "subagent" : "worker"} ${name}`}
+    title={`Stop this ${subagent ? "subagent" : "worker"}`}
     className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
   ><Square size={10} strokeWidth={1.8} aria-hidden="true" /></button>;
 }
