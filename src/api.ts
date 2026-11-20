@@ -1562,9 +1562,16 @@ function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
 
 let mockEarlyCompactionGlobal = false;
 const mockEarlyCompactionOptOuts = new Set<string>();
+/** The harnesses that the Rust rule allows. The host decides the scope, so only the mock names them. */
+const MOCK_EARLY_COMPACTION_HARNESSES: readonly string[] = ["claude", "codex"];
+function mockEarlyCompactionEligible(sessionId: string): boolean {
+  const chat = mockState.sessions.find(item => item.id === sessionId);
+  return chat !== undefined && chat.kind === "direct" && !chat.parentSessionId && !chat.depth && MOCK_EARLY_COMPACTION_HARNESSES.includes(chat.harness);
+}
 function mockEarlyCompactionView(sessionId?: string): EarlyCompactionSettings {
   const sessionOptedOut = sessionId ? mockEarlyCompactionOptOuts.has(sessionId) : false;
-  return { enabled: mockEarlyCompactionGlobal && !sessionOptedOut, globalEnabled: mockEarlyCompactionGlobal, sessionOptedOut };
+  const sessionEligible = sessionId ? mockEarlyCompactionEligible(sessionId) : false;
+  return { enabled: mockEarlyCompactionGlobal && !sessionOptedOut, globalEnabled: mockEarlyCompactionGlobal, sessionOptedOut, sessionEligible };
 }
 
 // Workflows in mock mode: an in-memory store that follows the Rust rules the
@@ -2943,6 +2950,7 @@ export const bridgeApi = {
     } else if (enabled === true) {
       throw new Error("a chat can only opt out of early compaction, the global switch turns it on");
     } else if (enabled === false) {
+      if (!mockEarlyCompactionEligible(sessionId)) throw new Error("early compaction does not cover this chat, so it cannot opt out");
       mockEarlyCompactionOptOuts.add(sessionId);
     } else {
       mockEarlyCompactionOptOuts.delete(sessionId);

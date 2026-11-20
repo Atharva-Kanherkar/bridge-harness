@@ -12,6 +12,11 @@
       "default": false,
       "type": "boolean"
     },
+    "sessionEligible": {
+      "default": false,
+      "description": "The rule covers the chat of `session_id`: it exists, it is a direct chat with no parent at depth 0, and its harness is allowed. Only such a chat can opt out. False when the request names no chat.",
+      "type": "boolean"
+    },
     "sessionOptedOut": {
       "default": false,
       "type": "boolean"

@@ -309,7 +309,7 @@ fn read_chat(db: &Connection, session_id: &str) -> rusqlite::Result<Option<ChatR
     Ok(Some((enabled, opted_out, session, state, reading)))
 }
 
-fn session_row(db: &Connection, session_id: &str) -> rusqlite::Result<Option<SessionRow>> {
+pub(crate) fn session_row(db: &Connection, session_id: &str) -> rusqlite::Result<Option<SessionRow>> {
     db.query_row(
         "SELECT COALESCE(kind,''),parent_session_id,COALESCE(depth,0),harness,model,COALESCE(status,''),
                 active_turn_id,started_at,provider_session_id

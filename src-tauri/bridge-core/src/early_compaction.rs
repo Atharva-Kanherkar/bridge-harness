@@ -375,6 +375,13 @@ pub mod rule {
         Suppression::BelowThreshold,
     ];
 
+    /// The suppressions that tell whether the rule covers a chat at all.
+    const SCOPE: [Suppression; 3] = [
+        Suppression::HarnessNotAllowed,
+        Suppression::NotDirect,
+        Suppression::HasParent,
+    ];
+
     /// What a decision does to the due mark.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum MarkEffect {
@@ -489,6 +496,23 @@ pub mod rule {
         Mismatch,
     }
 
+    /// No scope suppression holds for the chat, so the rule can fire for it.
+    /// The settings use this check, so only such a chat can opt out.
+    pub fn in_scope(session: &SessionRow) -> bool {
+        !SCOPE
+            .into_iter()
+            .any(|suppression| scope_holds(suppression, session))
+    }
+
+    fn scope_holds(suppression: Suppression, session: &SessionRow) -> bool {
+        match suppression {
+            Suppression::HarnessNotAllowed => !harness_allowed(&session.harness),
+            Suppression::NotDirect => session.kind != DIRECT_KIND,
+            Suppression::HasParent => session.parent_session_id.is_some() || session.depth > 0,
+            _ => false,
+        }
+    }
+
     /// The suppressions that need only memory, in the order of the checks.
     pub fn precheck(memory: &MemoryInputs) -> Option<Suppression> {
         ORDER
@@ -591,9 +615,9 @@ pub mod rule {
         match suppression {
             Suppression::Disabled => !snapshot.enabled,
             Suppression::OptedOut => snapshot.opted_out,
-            Suppression::HarnessNotAllowed => !harness_allowed(&session.harness),
-            Suppression::NotDirect => session.kind != DIRECT_KIND,
-            Suppression::HasParent => session.parent_session_id.is_some() || session.depth > 0,
+            Suppression::HarnessNotAllowed | Suppression::NotDirect | Suppression::HasParent => {
+                scope_holds(suppression, session)
+            }
             Suppression::Unsupported => !snapshot.native_compaction.is_supported(),
             Suppression::NoRuntime => !snapshot.has_runtime,
             Suppression::LaunchMismatch => !launch_is_current(mark, session),

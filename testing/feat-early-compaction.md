@@ -116,8 +116,9 @@ Bridge asks a top-level direct Claude or Codex chat to compact its own window at
 
 - Configuration kind `early_compaction_settings`, id `global`, value `{"enabled": bool}`. Absent means off.
 - Configuration kind `early_compaction_opt_out`, id is the chat id. A row means off for that chat.
-- `config/get_early_compaction_settings {sessionId?}` returns `{enabled, globalEnabled, sessionOptedOut}`.
+- `config/get_early_compaction_settings {sessionId?}` returns `{enabled, globalEnabled, sessionOptedOut, sessionEligible}`. `sessionEligible` is true only for an existing direct chat with no parent, at depth 0, on an allowed harness. It is false when the request names no chat.
 - `config/save_early_compaction_settings {sessionId?, enabled?}`: a global save needs `enabled`. A chat save of `false` writes the opt-out, and `null` deletes it. A chat save of `true` is `Invalid`.
+- The host decides the scope with the checks of the rule: a chat save of `false` for a chat outside it is `Invalid` and writes nothing.
 - Unknown fields are an error. The protocol minor is the next minor after T3. The generator makes the artifacts.
 - A save sets the switch in memory after its write. At startup, Bridge reads the switch row into memory. The sweep reads the row again under the reservation.
 - `settings_tools` has no entry for these kinds, so a chat cannot change them. A configuration reset deletes both kinds.
@@ -209,6 +210,8 @@ Bridge asks a top-level direct Claude or Codex chat to compact its own window at
 - `a_global_save_without_a_value_is_refused`
 - `a_save_sets_the_switch_in_memory`
 - `a_configuration_reset_turns_it_off`
+- `get_reports_the_scope_of_a_chat` (a missing id, a worker, a depth 1 direct chat, an OpenCode chat and eligible chats)
+- `an_opt_out_for_a_chat_outside_the_scope_is_refused`
 
 `live_turn::tests`, the due mark:
 
@@ -295,6 +298,7 @@ Frontend:
 
 - `src/components/settings/EarlyCompactionSetting.test.tsx`: the switch reads and saves the global value in mock mode.
 - `src/components/BridgeSidebar.test.tsx`: the chat menu shows the opt-out only when the global switch is on.
+- `src/components/BridgeSidebar.test.tsx`: `the host decides which chat gets the opt-out` and `the mock reports the scope of each chat of its data`.
 
 ## Integration / Functional Tests
 

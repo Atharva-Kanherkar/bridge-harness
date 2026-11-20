@@ -1,7 +1,7 @@
 //! The early compaction switch: one global value and an opt-out for each chat.
 //!
 //! An absent row means off. A chat can only opt out, so no chat row turns the
-//! feature on. A write holds the input lease, so a save and a dispatch of the
+//! feature on. Only a chat that the rule covers can opt out. A write holds the input lease, so a save and a dispatch of the
 //! sweep never interleave. Nothing here publishes an event or touches policy.
 
 use crate::{BridgeCore, BridgeError};
@@ -68,13 +68,25 @@ pub fn opted_out(db: &Connection, session_id: &str) -> Result<bool, BridgeError>
     Ok(row.is_some())
 }
 
+/// The rule covers the chat: the row exists and no scope check of the rule
+/// holds for it. The host decides this, so the menu needs no harness test.
+pub fn session_eligible(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    let session = crate::early_compaction::attempts::session_row(db, session_id)?;
+    Ok(session.is_some_and(|session| crate::early_compaction::rule::in_scope(&session)))
+}
+
 pub fn view(db: &Connection, session_id: Option<&str>) -> Result<EarlyCompactionSettingsView, BridgeError> {
     let global_enabled = global_enabled(db)?;
-    let session_opted_out = match session_id {
-        Some(session_id) => opted_out(db, session_id)?,
-        None => false,
+    let (session_opted_out, session_eligible) = match session_id {
+        Some(session_id) => (opted_out(db, session_id)?, session_eligible(db, session_id)?),
+        None => (false, false),
     };
-    Ok(EarlyCompactionSettingsView { enabled: global_enabled && !session_opted_out, global_enabled, session_opted_out })
+    Ok(EarlyCompactionSettingsView {
+        enabled: global_enabled && !session_opted_out,
+        global_enabled,
+        session_opted_out,
+        session_eligible,
+    })
 }
 
 /// The value that startup and each write load into memory. A read failure
@@ -106,7 +118,16 @@ pub fn save(core: &BridgeCore, params: &SaveEarlyCompactionSettingsParams) -> Re
     with_switch_write(core, |db| {
         match change {
             Change::Global(enabled) => upsert(db, GLOBAL_KIND, GLOBAL_ID, &json(&GlobalSwitch { enabled })?)?,
-            Change::OptOut(session_id) => upsert(db, OPT_OUT_KIND, session_id, "{}")?,
+            Change::OptOut(session_id) => {
+                // The removal of an opt-out stays open to each chat id, so an
+                // old row can always go.
+                if !session_eligible(db, session_id)? {
+                    return Err(BridgeError::Invalid(
+                        "early compaction does not cover this chat, so it cannot opt out".into(),
+                    ));
+                }
+                upsert(db, OPT_OUT_KIND, session_id, "{}")?
+            }
             Change::RemoveOptOut(session_id) => {
                 db.execute(
                     "DELETE FROM configuration_entries WHERE kind=?1 AND id=?2",
@@ -151,6 +172,42 @@ mod tests {
         SaveEarlyCompactionSettingsParams { session_id: Some(session_id.into()), enabled }
     }
 
+    /// One session row. The kind, the parent, the depth and the harness set
+    /// whether the rule covers it.
+    fn seed(core: &BridgeCore, id: &str, harness: &str, kind: &str, parent: Option<&str>, depth: i64) {
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,kind,parent_session_id,depth)
+                 VALUES(?1,?2,'Chat','ready','reported',?3,?4,?5)",
+                params![id, harness, kind, parent, depth],
+            )
+            .unwrap();
+    }
+
+    fn direct(core: &BridgeCore, id: &str) {
+        seed(core, id, "claude", "direct", None, 0);
+    }
+
+    /// An eligible Claude chat, an eligible Codex chat and one chat for each
+    /// reason that puts a chat outside the scope.
+    fn scope(core: &BridgeCore) -> [(&'static str, bool); 6] {
+        direct(core, "claude-chat");
+        seed(core, "codex-chat", "codex", "direct", None, 0);
+        seed(core, "worker-chat", "codex", "worker", Some("claude-chat"), 1);
+        seed(core, "deep-chat", "claude", "direct", None, 1);
+        seed(core, "opencode-chat", "opencode", "direct", None, 0);
+        [
+            ("claude-chat", true),
+            ("codex-chat", true),
+            ("missing-chat", false),
+            ("worker-chat", false),
+            ("deep-chat", false),
+            ("opencode-chat", false),
+        ]
+    }
+
     fn rows(core: &BridgeCore) -> Vec<(String, String, String)> {
         let db = core.db.lock().unwrap();
         let mut statement = db
@@ -167,14 +224,8 @@ mod tests {
     fn the_switch_is_off_when_absent() {
         let (_scratch, core) = core();
         let db = core.db.lock().unwrap();
-        assert_eq!(
-            view(&db, None).unwrap(),
-            EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: false }
-        );
-        assert_eq!(
-            view(&db, Some("chat-1")).unwrap(),
-            EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: false }
-        );
+        assert_eq!(view(&db, None).unwrap(), EarlyCompactionSettingsView::default());
+        assert_eq!(view(&db, Some("chat-1")).unwrap(), EarlyCompactionSettingsView::default());
         assert!(!stored_switch(&db));
         drop(db);
         assert!(!core.early_compaction.enabled());
@@ -185,39 +236,41 @@ mod tests {
     fn the_global_switch_round_trips() {
         let (_scratch, core) = core();
         let on = save(&core, &global(Some(true))).unwrap();
-        assert_eq!(on, EarlyCompactionSettingsView { enabled: true, global_enabled: true, session_opted_out: false });
+        assert_eq!(on, EarlyCompactionSettingsView { enabled: true, global_enabled: true, session_opted_out: false, session_eligible: false });
         assert_eq!(rows(&core), vec![(GLOBAL_KIND.into(), GLOBAL_ID.into(), r#"{"enabled":true}"#.into())]);
         assert!(view(&core.db.lock().unwrap(), Some("chat-1")).unwrap().enabled);
 
         let off = save(&core, &global(Some(false))).unwrap();
-        assert_eq!(off, EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: false });
+        assert_eq!(off, EarlyCompactionSettingsView::default());
         assert_eq!(rows(&core), vec![(GLOBAL_KIND.into(), GLOBAL_ID.into(), r#"{"enabled":false}"#.into())]);
     }
 
     #[test]
     fn a_chat_can_opt_out_and_back() {
         let (_scratch, core) = core();
+        direct(&core, "chat-1");
         save(&core, &global(Some(true))).unwrap();
 
         let out = save(&core, &chat("chat-1", Some(false))).unwrap();
-        assert_eq!(out, EarlyCompactionSettingsView { enabled: false, global_enabled: true, session_opted_out: true });
+        assert_eq!(out, EarlyCompactionSettingsView { enabled: false, global_enabled: true, session_opted_out: true, session_eligible: true });
         assert!(rows(&core).contains(&(OPT_OUT_KIND.into(), "chat-1".into(), "{}".into())));
         let other = view(&core.db.lock().unwrap(), Some("chat-2")).unwrap();
         assert!(other.enabled, "an opt-out belongs to one chat");
         assert!(core.early_compaction.enabled(), "an opt-out leaves the global switch on");
 
         let back = save(&core, &chat("chat-1", None)).unwrap();
-        assert_eq!(back, EarlyCompactionSettingsView { enabled: true, global_enabled: true, session_opted_out: false });
+        assert_eq!(back, EarlyCompactionSettingsView { enabled: true, global_enabled: true, session_opted_out: false, session_eligible: true });
         assert_eq!(rows(&core).len(), 1, "removing the opt-out deletes its row");
 
         save(&core, &global(Some(false))).unwrap();
         let kept = save(&core, &chat("chat-1", Some(false))).unwrap();
-        assert_eq!(kept, EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: true });
+        assert_eq!(kept, EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: true, session_eligible: true });
     }
 
     #[test]
     fn a_chat_cannot_turn_the_feature_on() {
         let (_scratch, core) = core();
+        direct(&core, "chat-1");
         let error = save(&core, &chat("chat-1", Some(true))).unwrap_err();
         assert!(matches!(error, BridgeError::Invalid(_)), "{error:?}");
         assert!(rows(&core).is_empty());
@@ -241,6 +294,7 @@ mod tests {
     #[test]
     fn a_save_sets_the_switch_in_memory() {
         let (_scratch, core) = core();
+        direct(&core, "chat-1");
         let core = Arc::new(core);
         assert!(!core.early_compaction.enabled());
 
@@ -270,6 +324,7 @@ mod tests {
     #[test]
     fn a_configuration_reset_turns_it_off() {
         let (_scratch, core) = core();
+        direct(&core, "chat-1");
         let core = Arc::new(core);
         save(&core, &global(Some(true))).unwrap();
         save(&core, &chat("chat-1", Some(false))).unwrap();
@@ -281,8 +336,45 @@ mod tests {
         assert!(!core.early_compaction.enabled());
         assert_eq!(
             view(&core.db.lock().unwrap(), Some("chat-1")).unwrap(),
-            EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: false }
+            EarlyCompactionSettingsView { enabled: false, global_enabled: false, session_opted_out: false, session_eligible: true }
         );
+    }
+
+    #[test]
+    fn get_reports_the_scope_of_a_chat() {
+        let (_scratch, core) = core();
+        let cases = scope(&core);
+        save(&core, &global(Some(true))).unwrap();
+        let db = core.db.lock().unwrap();
+        assert!(!view(&db, None).unwrap().session_eligible, "a request with no chat names no scope");
+        for (session_id, eligible) in cases {
+            let view = view(&db, Some(session_id)).unwrap();
+            assert_eq!(view.session_eligible, eligible, "{session_id}");
+            assert!(view.global_enabled, "{session_id}");
+        }
+    }
+
+    #[test]
+    fn an_opt_out_for_a_chat_outside_the_scope_is_refused() {
+        let (_scratch, core) = core();
+        let cases = scope(&core);
+        save(&core, &global(Some(true))).unwrap();
+        for (session_id, eligible) in cases {
+            let result = save(&core, &chat(session_id, Some(false)));
+            let stored = rows(&core).iter().any(|(kind, id, _)| kind == OPT_OUT_KIND && id == session_id);
+            if eligible {
+                assert!(result.unwrap().session_opted_out, "{session_id}");
+                assert!(stored, "{session_id}");
+            } else {
+                assert!(matches!(result, Err(BridgeError::Invalid(_))), "{session_id}: {result:?}");
+                assert!(!stored, "{session_id} got an opt-out row");
+            }
+            // The removal of an opt-out stays open to each chat id.
+            let removed = save(&core, &chat(session_id, None)).unwrap();
+            assert!(!removed.session_opted_out, "{session_id}");
+        }
+        assert_eq!(rows(&core).len(), 1, "only the global switch is left");
+        assert!(core.early_compaction.enabled(), "a refused opt-out leaves the switch on");
     }
 
     #[test]
@@ -298,6 +390,7 @@ mod tests {
             })
         };
         let (_scratch, core) = core();
+        direct(&core, "chat-3");
         let core = Arc::new(core);
         save(&core, &global(Some(true))).unwrap();
         core.early_compaction.accept(mark("chat-1"));

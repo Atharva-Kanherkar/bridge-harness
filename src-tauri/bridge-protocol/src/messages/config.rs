@@ -172,6 +172,10 @@ pub struct EarlyCompactionSettingsView {
     pub enabled: bool,
     pub global_enabled: bool,
     pub session_opted_out: bool,
+    /// The rule covers the chat of `session_id`: it exists, it is a direct
+    /// chat with no parent at depth 0, and its harness is allowed. Only such
+    /// a chat can opt out. False when the request names no chat.
+    pub session_eligible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -798,8 +802,11 @@ mod tests {
         assert!(serde_json::from_value::<SaveEarlyCompactionSettingsParams>(json!({"session_id": "chat-1", "enabled": false})).is_err());
         assert!(serde_json::from_value::<SaveEarlyCompactionSettingsParams>(json!({"enabled": "yes"})).is_err());
 
-        let view = EarlyCompactionSettingsView { enabled: false, global_enabled: true, session_opted_out: true };
-        assert_eq!(serde_json::to_value(&view).unwrap(), json!({"enabled": false, "globalEnabled": true, "sessionOptedOut": true}));
+        let view = EarlyCompactionSettingsView { enabled: false, global_enabled: true, session_opted_out: true, session_eligible: true };
+        assert_eq!(
+            serde_json::to_value(&view).unwrap(),
+            json!({"enabled": false, "globalEnabled": true, "sessionOptedOut": true, "sessionEligible": true})
+        );
         assert!(serde_json::from_value::<EarlyCompactionSettingsView>(json!({"enabled": true, "extra": 1})).is_err());
         assert_eq!(round_trip(&view), view);
     }

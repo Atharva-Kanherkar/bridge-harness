@@ -702,9 +702,14 @@ describe("BridgeSidebar chat menu early compaction", () => {
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label^="Chat actions for"]')!.click());
     await settle();
   };
-  const direct = session("chat-1", { title: "Policy engine budget", harness: "claude", kind: "direct", status: "ready" });
+  /** A chat of the mock data, so the mock answers for its scope. */
+  const mockChat = async (harness: Session["harness"], title: string): Promise<Session> => {
+    const state = await bridgeApi.createChat(harness, null, title);
+    return { ...state.sessions[state.sessions.length - 1], status: "ready" };
+  };
 
   it("the chat menu shows the opt-out only when the global switch is on", async () => {
+    const direct = await mockChat("claude", "Policy engine budget");
     await bridgeApi.saveEarlyCompactionSettings(null, false);
     await openMenu(direct);
     expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
@@ -720,21 +725,59 @@ describe("BridgeSidebar chat menu early compaction", () => {
 
     act(() => optOut()!.click()); await settle();
     expect(optOut()?.getAttribute("aria-checked")).toBe("false");
-    expect(await bridgeApi.earlyCompactionSettings("chat-1")).toEqual({ enabled: false, globalEnabled: true, sessionOptedOut: true });
+    expect(await bridgeApi.earlyCompactionSettings(direct.id)).toEqual({ enabled: false, globalEnabled: true, sessionOptedOut: true, sessionEligible: true });
     act(() => optOut()!.click()); await settle();
     expect(optOut()?.getAttribute("aria-checked")).toBe("true");
-    expect((await bridgeApi.earlyCompactionSettings("chat-1")).sessionOptedOut).toBe(false);
+    expect((await bridgeApi.earlyCompactionSettings(direct.id)).sessionOptedOut).toBe(false);
     await closeMenu();
+  });
 
-    for (const other of [
-      session("chat-2", { title: "OpenCode chat", harness: "opencode", kind: "direct", status: "ready" }),
-      session("chat-3", { title: "Orchestrator", harness: "claude", kind: "orchestrator", status: "ready" }),
-      session("chat-4", { title: "Child chat", harness: "codex", kind: "direct", parentSessionId: "chat-1", status: "ready" }),
-    ]) {
-      await openMenu(other);
+  it("the host decides which chat gets the opt-out", async () => {
+    await bridgeApi.saveEarlyCompactionSettings(null, true);
+    const outside = [
+      await mockChat("opencode", "OpenCode chat"),
+      session("session-2", { title: "Orchestrator", harness: "codex", kind: "orchestrator", status: "ready" }),
+      session("session-1w2", { title: "Worker", harness: "codex", kind: "worker", parentSessionId: "session-1", depth: 1, status: "ready" }),
+      session("chat-unknown", { title: "Unknown chat", harness: "claude", kind: "direct", status: "ready" }),
+    ];
+    for (const chat of outside) {
+      await openMenu(chat);
       expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
-      expect(optOut()).toBeNull();
+      expect(optOut(), chat.id).toBeNull();
       await closeMenu();
     }
+
+    // The row tests no harness: the item follows the answer of the host.
+    const read = vi.spyOn(bridgeApi, "earlyCompactionSettings")
+      .mockResolvedValue({ enabled: true, globalEnabled: true, sessionOptedOut: false, sessionEligible: true });
+    await openMenu(session("chat-5", { title: "Any chat", harness: "opencode", kind: "direct", status: "ready" }));
+    expect(read).toHaveBeenCalledWith("chat-5");
+    expect(optOut()).not.toBeNull();
+    await closeMenu();
+    read.mockResolvedValue({ enabled: true, globalEnabled: true, sessionOptedOut: false, sessionEligible: false });
+    await openMenu(session("chat-6", { title: "Claude chat", harness: "claude", kind: "direct", status: "ready" }));
+    expect(optOut()).toBeNull();
+    await closeMenu();
+    read.mockRestore();
+  });
+
+  it("the mock reports the scope of each chat of its data", async () => {
+    const claude = await mockChat("claude", "Claude chat");
+    const codex = await mockChat("codex", "Codex chat");
+    const opencode = await mockChat("opencode", "OpenCode chat");
+    const cases: Array<[string, boolean]> = [
+      [claude.id, true], [codex.id, true], [opencode.id, false], ["session-2", false], ["session-1w", false], ["chat-unknown", false],
+    ];
+    for (const [id, eligible] of cases) {
+      expect((await bridgeApi.earlyCompactionSettings(id)).sessionEligible, id).toBe(eligible);
+    }
+    expect((await bridgeApi.earlyCompactionSettings()).sessionEligible).toBe(false);
+
+    await bridgeApi.saveEarlyCompactionSettings(null, true);
+    await expect(bridgeApi.saveEarlyCompactionSettings("session-1w", false)).rejects.toThrow("cannot opt out");
+    expect((await bridgeApi.earlyCompactionSettings("session-1w")).sessionOptedOut).toBe(false);
+    expect((await bridgeApi.saveEarlyCompactionSettings("session-1w", null)).sessionOptedOut).toBe(false);
+    expect((await bridgeApi.saveEarlyCompactionSettings(claude.id, false)).sessionOptedOut).toBe(true);
+    await bridgeApi.saveEarlyCompactionSettings(claude.id, null);
   });
 });

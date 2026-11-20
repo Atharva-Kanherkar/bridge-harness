@@ -6072,6 +6072,7 @@ export interface GetEarlyCompactionSettingsParams {
 export interface EarlyCompactionSettingsView {
   enabled?: boolean;
   globalEnabled?: boolean;
+  sessionEligible?: boolean;
   sessionOptedOut?: boolean;
 }
 

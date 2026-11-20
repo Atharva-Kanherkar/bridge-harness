@@ -322,7 +322,7 @@ function ChatRowMenu({
             <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
           </button>
         )}
-        {earlyCompactionApplies(chat) && <ChatEarlyCompaction chatId={chat.id} />}
+        <ChatEarlyCompaction chatId={chat.id} />
         {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} item={item} />}
         {onArchive && (
           <>
@@ -338,15 +338,13 @@ function ChatRowMenu({
   );
 }
 
-/** Early compaction covers top-level direct chats on Claude and Codex, so only those get the opt-out. */
-function earlyCompactionApplies(chat: Session): boolean {
-  return chat.kind === "direct" && !chat.parentSessionId && (chat.harness === "claude" || chat.harness === "codex");
-}
-
-/** The opt-out of one chat. It shows only while the global switch is on, because a chat cannot turn the feature on. */
+/**
+ * The opt-out of one chat. It shows only while the global switch is on, because a chat cannot turn the feature on.
+ * The host decides which chat the feature covers, so the row tests no harness.
+ */
 function ChatEarlyCompaction({ chatId }: { chatId: string }) {
   const { view, busy, set } = useEarlyCompaction(chatId);
-  if (!view?.globalEnabled) return null;
+  if (!view?.globalEnabled || !view.sessionEligible) return null;
   const on = view.enabled === true;
   return (
     <>

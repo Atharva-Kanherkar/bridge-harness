@@ -26,7 +26,7 @@ it("the switch reads and saves the global value in mock mode", async () => {
   act(() => toggle().click()); await settle();
   expect(save).toHaveBeenCalledWith(null, true);
   expect(toggle().getAttribute("aria-checked")).toBe("true");
-  expect(await bridgeApi.earlyCompactionSettings()).toEqual({ enabled: true, globalEnabled: true, sessionOptedOut: false });
+  expect(await bridgeApi.earlyCompactionSettings()).toEqual({ enabled: true, globalEnabled: true, sessionOptedOut: false, sessionEligible: false });
 
   // A new mount reads the saved value back, and turning it off saves false.
   act(() => root.unmount()); root = createRoot(container);
