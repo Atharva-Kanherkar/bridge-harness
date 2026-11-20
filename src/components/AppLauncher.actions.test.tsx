@@ -2,6 +2,8 @@
 // Contract: testing/feat-t3-inspired-chat-ui.md §G. Typing in the launcher
 // finds the keymap's commands, each with its real chord, and runs them through
 // the dispatcher the chord uses.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Code2, FileCode2, ListChecks, Monitor, TerminalSquare } from "lucide-react";
@@ -305,6 +307,16 @@ describe("launcher actions against the keymap and the dispatcher", () => {
     expect([...listed, ...skipped].sort()).toEqual([...declared].sort());
     expect(listed.filter(id => skipped.includes(id))).toEqual([]);
     expect(skipped).toContain("open-launcher");
+  });
+
+  it("lists only commands App's dispatcher handles, and hands the launcher that dispatcher", () => {
+    const source = readFileSync(join(process.cwd(), "src/App.tsx"), "utf8");
+    const start = source.indexOf("commandRef.current = (id, index) => {");
+    expect(start, "App's command dispatcher").toBeGreaterThan(0);
+    const body = source.slice(start, source.indexOf("\n  };\n", start));
+    const handled = new Set([...body.matchAll(/case "([a-z-]+)":/g)].map(match => match[1]));
+    for (const id of listed) expect(handled.has(id), `${id} has a case in the dispatcher`).toBe(true);
+    expect(source).toMatch(/onRunCommand=\{\(id, index\) => commandRef\.current\(id, index\)\}/);
   });
 
   it("claims no key a keymap chord answers to", () => {

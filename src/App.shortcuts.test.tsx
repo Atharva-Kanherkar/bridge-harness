@@ -219,3 +219,47 @@ describe("keyboard shortcuts inside the app", () => {
     expect(document.documentElement.hasAttribute("data-fullscreen"), "⌥⌘F squared the layout").toBe(true);
   });
 });
+
+// Contract: testing/feat-t3-inspired-chat-ui.md §G. An action typed into ⌘K
+// lands on the handler its chord runs, not on a copy of it.
+describe("actions in the launcher", () => {
+  const launcherInput = () => document.body.querySelector<HTMLInputElement>('input[role="combobox"]');
+
+  async function typeInLauncher(value: string) {
+    const input = launcherInput()!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+  }
+
+  async function launcherKey(key: string) {
+    await act(async () => { launcherInput()!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+  }
+
+  it("runs the sidebar toggle the way ⌘B does, and closes", async () => {
+    await press({ key: "k", code: "KeyK", metaKey: true });
+    await settle();
+    await typeInLauncher("sidebar");
+    await launcherKey("Enter");
+    await settle();
+    expect(localStorage.getItem("bridge.sidebar.collapsed")).toBe("1");
+    expect(launcherInput(), "the launcher closed").toBeNull();
+  });
+
+  it("opens a dock pane from the Open dock pane submenu", async () => {
+    await press({ key: "n", code: "KeyN", metaKey: true });
+    await settle();
+    await sendFirst("open a pane from the launcher");
+    await press({ key: "k", code: "KeyK", metaKey: true });
+    await settle();
+    await typeInLauncher("transcript");
+    const parent = document.body.querySelector('[data-command="open-dock-pane"]');
+    expect(parent?.textContent, "a pane's name finds its parent").toContain("Transcript");
+    for (let step = 0; step < 20 && document.body.querySelector('[role="option"][aria-selected="true"]') !== parent; step++) await launcherKey("ArrowDown");
+    await launcherKey("ArrowRight");
+    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain("Transcript");
+    await launcherKey("Enter");
+    await settle();
+    const tab = [...container.querySelectorAll('[role="tab"]')].find(node => node.getAttribute("aria-label") === "Transcript");
+    expect(tab?.getAttribute("aria-selected"), "the Transcript pane is open").toBe("true");
+  });
+});
